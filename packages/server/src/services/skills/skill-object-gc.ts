@@ -2,8 +2,9 @@ import { eq, inArray } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agentSkills } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import { normalizeSkillObjectPrefix } from "./skill-object-prefix.js";
 import {
-  isSkillObjectKey,
+  isSkillObjectKeyUnder,
   type SkillObjectListEntry,
   type SkillObjectStore,
   SkillObjectStoreError,
@@ -19,8 +20,10 @@ import {
  *
  * The safety rules are what matter, so they are stated once here:
  *
- * - **Only a Skill object key is a candidate.** The bucket may hold other prefixes; a key that does
- *   not parse as `…/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz` is never touched.
+ * - **Only a key exactly under this deployment's normalized prefix is a candidate.** The bucket may
+ *   be shared, including with a nested prefix (`skills/staging`) or a sibling, and the other
+ *   deployment's rows live in a database this one cannot reference-check. A key whose tail merely
+ *   looks like a Skill object is never touched.
  * - **Only an object past the grace period is a candidate**, so a just-written object is never swept.
  * - **An object any row references is never deleted.** References are checked in batches, then the
  *   single key is re-checked immediately before its delete, because a row can appear in between.
@@ -46,7 +49,7 @@ export interface SkillObjectGcSummary {
 export interface SkillObjectGcOptions {
   database: DatabaseClient;
   store: SkillObjectStore;
-  /** The deployment object-key prefix; only `<prefix>/…` is listed. */
+  /** The deployment object-key prefix, normalized once; only `<prefix>/…` is listed and matched. */
   prefix: string;
   graceMs?: number;
   intervalMs?: number;
@@ -74,7 +77,7 @@ export class SkillObjectGc {
   constructor(options: SkillObjectGcOptions) {
     this.#database = options.database;
     this.#store = options.store;
-    this.#prefix = options.prefix;
+    this.#prefix = normalizeSkillObjectPrefix(options.prefix);
     this.#graceMs = options.graceMs ?? SKILL_GC_DEFAULT_GRACE_MS;
     this.#intervalMs = options.intervalMs ?? SKILL_GC_DEFAULT_INTERVAL_MS;
     this.#pageSize = options.pageSize ?? SKILL_GC_DEFAULT_PAGE_SIZE;
@@ -149,7 +152,7 @@ export class SkillObjectGc {
     const candidates: SkillObjectListEntry[] = [];
     for (const object of objects) {
       summary.scanned += 1;
-      if (!isSkillObjectKey(object.key)) {
+      if (!isSkillObjectKeyUnder(this.#prefix, object.key)) {
         summary.skippedForeign += 1;
         continue;
       }

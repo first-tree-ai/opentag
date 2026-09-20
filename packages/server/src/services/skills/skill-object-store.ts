@@ -1,4 +1,5 @@
 import { redactForLog } from "@opentag/shared";
+import { normalizeSkillObjectPrefix } from "./skill-object-prefix.js";
 
 /**
  * Object-storage contract for Agent Skill bundles.
@@ -74,22 +75,24 @@ export interface SkillObjectKeyInput {
   sha256: string;
 }
 
-const SEGMENT = /^[A-Za-z0-9._-]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
-
-function requireSegment(label: string, value: string): string {
-  if (typeof value !== "string" || value.length === 0 || value.includes("/") || !SEGMENT.test(value)) {
-    throw new SkillObjectStoreError("rejected", `Skill object key ${label} is malformed`);
-  }
-  return value;
-}
 
 function requireUuid(label: string, value: string): string {
   if (typeof value !== "string" || !UUID.test(value)) {
     throw new SkillObjectStoreError("rejected", `Skill object key ${label} is not an identifier`);
   }
   return value;
+}
+
+/** Maps the shared prefix rule's rejection into this module's typed store error. */
+function requireNormalizedPrefix(prefix: string): string {
+  try {
+    return normalizeSkillObjectPrefix(prefix);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Skill object key prefix is malformed";
+    throw new SkillObjectStoreError("rejected", message);
+  }
 }
 
 /**
@@ -99,12 +102,7 @@ function requireUuid(label: string, value: string): string {
  * segment or an unexpected shape even if a caller of this helper misbehaves.
  */
 export function skillObjectKey(input: SkillObjectKeyInput): string {
-  const prefix = input.prefix
-    .split("/")
-    .filter((segment) => segment.length > 0)
-    .map((segment) => requireSegment("prefix", segment))
-    .join("/");
-  if (prefix.length === 0) throw new SkillObjectStoreError("rejected", "Skill object key prefix is empty");
+  const prefix = requireNormalizedPrefix(input.prefix);
   const accountId = requireUuid("accountId", input.accountId);
   const agentId = requireUuid("agentId", input.agentId);
   const skillId = requireUuid("skillId", input.skillId);
@@ -117,16 +115,21 @@ export function skillObjectKey(input: SkillObjectKeyInput): string {
 const ARCHIVE_FILENAME = /^[0-9a-f]{64}\.tar\.gz$/;
 
 /**
- * Whether `key` has the shape `skillObjectKey` produces, without knowing the prefix.
+ * Whether `key` is exactly `<normalizedPrefix>/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz`.
  *
- * The GC must never delete anything else that happens to share the bucket, so it checks the full
- * tail — `accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz` — rather than a prefix match.
- * A caller cannot reach this with a traversal segment, because a stored key is always built here.
+ * The binding is exact on purpose. Another deployment may share the bucket under a nested prefix
+ * (`skills/staging`) or an adjacent one (`skills-staging`), and its rows live in a different
+ * database this one cannot see; a tail-only match would let the shallower prefix's collector delete
+ * that deployment's live objects. So `skills` must not match `skills/staging/...`, and `prefix` must
+ * already be normalized (see `normalizeSkillObjectPrefix`). A key that fails this is never a
+ * collection candidate.
  */
-export function isSkillObjectKey(key: string): boolean {
-  const segments = key.split("/");
-  if (segments.length < 8) return false;
-  const [accounts, account, agents, agent, skills, skill, filename] = segments.slice(-7);
+export function isSkillObjectKeyUnder(normalizedPrefix: string, key: string): boolean {
+  const head = `${normalizedPrefix}/`;
+  if (!key.startsWith(head)) return false;
+  const segments = key.slice(head.length).split("/");
+  if (segments.length !== 7) return false;
+  const [accounts, account, agents, agent, skills, skill, filename] = segments;
   return (
     accounts === "accounts" &&
     agents === "agents" &&

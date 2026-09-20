@@ -48,7 +48,11 @@ export {
   type SkillObjectGcSummary,
 } from "./skill-object-gc.js";
 export {
-  isSkillObjectKey,
+  normalizeSkillObjectPrefix,
+  SkillObjectPrefixError,
+} from "./skill-object-prefix.js";
+export {
+  isSkillObjectKeyUnder,
   type SkillObjectKeyInput,
   type SkillObjectListEntry,
   type SkillObjectListOptions,

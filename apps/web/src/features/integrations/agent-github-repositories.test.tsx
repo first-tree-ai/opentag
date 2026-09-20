@@ -1005,6 +1005,31 @@ describe("AgentGitHubRepositories scope editing", () => {
     expect(await screen.findByText("GitHub authorization was denied.")).toBeTruthy();
   });
 
+  it("treats a later page with no truncation field as unabridged too, for a server that predates it", async () => {
+    stubCommon(activeConnection());
+    vi.spyOn(browserApi, "githubRepositories")
+      .mockResolvedValueOnce({
+        installations: [installation],
+        repositories: [repository],
+        nextCursor: "cursor-1",
+      } as never)
+      .mockResolvedValueOnce({
+        installations: [installation],
+        repositories: [{ ...repository, repositoryId: "987654322", fullName: "octocat/second" }],
+        nextCursor: null,
+      } as never);
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] } as never);
+    vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+    render(<AgentGitHubRepositories agentId={AGENT_ID} />);
+
+    expect(await screen.findByText("octocat/hello-world")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Load more repositories" }));
+
+    expect(await screen.findByText("octocat/second")).toBeTruthy();
+    // An older Server's page says nothing about truncation, which is not the same as claiming it.
+    expect(screen.queryByText(/Some repositories are omitted/)).toBeNull();
+  });
+
   it("treats a page with no truncation field as unabridged", async () => {
     stubCommon(activeConnection());
     vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({

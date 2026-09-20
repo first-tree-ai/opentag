@@ -4,7 +4,7 @@ import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildSandboxRunArgv,
   NativeSandbox,
@@ -125,6 +125,11 @@ function stalledCall(
   });
 }
 
+/** One macrotask boundary: enough for the channel's constructor wiring to complete. */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 function authority(
   executionIdentity: string,
   options: { signal?: AbortSignal; dispatch?: NativeWebExecutionAuthority["dispatch"] } = {},
@@ -139,6 +144,113 @@ function authority(
           ? searchResult("bridge-search")
           : { ...searchResult("bridge-fetch"), results: [] }),
   };
+}
+
+/**
+ * A fully in-process `NativeSandbox` double for the bridge CHANNEL itself: it hands the channel a
+ * scripted duplex so frame decoding, readiness, cancellation, and teardown can be driven exactly.
+ */
+function duplexSandbox(input: { name?: string; onOpen?: (duplex: FakeDuplex) => void }): {
+  sandbox: NativeSandbox;
+  duplex: () => FakeDuplex;
+} {
+  let created: FakeDuplex | undefined;
+  const sandbox = {
+    name: input.name ?? "ots-web-test",
+    openDuplex: () => {
+      created = new FakeDuplex();
+      input.onOpen?.(created);
+      return created;
+    },
+  } as unknown as NativeSandbox;
+  return {
+    duplex: () => {
+      if (!created) throw new Error("the duplex was never opened");
+      return created;
+    },
+    sandbox,
+  };
+}
+
+/** A duplex whose listeners the test drives directly, mirroring the real pipe contract. */
+class FakeDuplex {
+  readonly written: Buffer[] = [];
+  readonly kills: (NodeJS.Signals | undefined)[] = [];
+  ended = false;
+  private readonly dataListeners = new Set<(chunk: Buffer) => void>();
+  private readonly stderrListeners = new Set<(chunk: Buffer) => void>();
+  private readonly errorListeners = new Set<(error: Error) => void>();
+  private readonly exitListeners = new Set<(code: number | null, signal: NodeJS.Signals | null) => void>();
+
+  write(chunk: Uint8Array): void {
+    const buffer = Buffer.from(chunk);
+    this.written.push(buffer);
+    for (const frame of this.decoded()) void frame;
+  }
+
+  end(): void {
+    this.ended = true;
+    this.emitExit(0, null);
+  }
+
+  kill(signal?: NodeJS.Signals): void {
+    this.kills.push(signal);
+  }
+
+  onData(listener: (chunk: Buffer) => void): () => void {
+    this.dataListeners.add(listener);
+    return () => this.dataListeners.delete(listener);
+  }
+
+  onStderr(listener: (chunk: Buffer) => void): () => void {
+    this.stderrListeners.add(listener);
+    return () => this.stderrListeners.delete(listener);
+  }
+
+  onError(listener: (error: Error) => void): () => void {
+    this.errorListeners.add(listener);
+    return () => this.errorListeners.delete(listener);
+  }
+
+  onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): () => void {
+    this.exitListeners.add(listener);
+    return () => this.exitListeners.delete(listener);
+  }
+
+  /** Deliver one decoded frame the way the real bridge process would. */
+  send(frame: unknown): void {
+    const body = Buffer.from(JSON.stringify(frame), "utf8");
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(body.length, 0);
+    for (const listener of [...this.dataListeners]) listener(Buffer.concat([header, body]));
+  }
+
+  /** Deliver raw bytes, for malformed-frame coverage. */
+  sendRaw(chunk: Buffer): void {
+    for (const listener of [...this.dataListeners]) listener(chunk);
+  }
+
+  emitStderr(chunk: Buffer): void {
+    for (const listener of [...this.stderrListeners]) listener(chunk);
+  }
+
+  emitError(error: Error): void {
+    for (const listener of [...this.errorListeners]) listener(error);
+  }
+
+  emitExit(code: number | null, signal: NodeJS.Signals | null): void {
+    for (const listener of [...this.exitListeners]) listener(code, signal);
+  }
+
+  /** The frames this channel wrote back, decoded. */
+  decoded(): unknown[] {
+    const frames: unknown[] = [];
+    for (const buffer of this.written) {
+      const size = buffer.readUInt32BE(0);
+      frames.push(JSON.parse(buffer.subarray(4, 4 + size).toString("utf8")));
+    }
+    return frames;
+  }
 }
 
 describe("NativeSandboxWebGateway", () => {
@@ -398,6 +510,203 @@ describe("NativeSandboxWebGateway", () => {
       /closed/,
     );
   });
+  it("fails closed on an empty execution identity", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    cleanup.push(() => gateway.close());
+    await expect(gateway.openExecution({ sandbox: localSandbox(), authority: authority("") })).rejects.toThrow(
+      /nonempty identity/,
+    );
+  });
+
+  it("closes the channel and surfaces the failure when the bridge never becomes ready", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    cleanup.push(() => gateway.close());
+    const harness = duplexSandbox({});
+    await expect(
+      gateway.openExecution({
+        sandbox: harness.sandbox,
+        authority: authority("exec-no-ready"),
+        startupTimeoutMs: 20,
+      }),
+    ).rejects.toThrow(/did not become ready/);
+    // The failed open closed its own bridge instead of leaking a half-open channel.
+    expect(harness.duplex().written).toEqual([]);
+  });
+
+  it("fails the channel when the bridge process exits before ready", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    cleanup.push(() => gateway.close());
+    const harness = duplexSandbox({});
+    const opening = gateway.openExecution({
+      sandbox: harness.sandbox,
+      authority: authority("exec-exit-early"),
+      startupTimeoutMs: 5_000,
+    });
+    await tick();
+    harness.duplex().emitExit(2, null);
+    await expect(opening).rejects.toThrow(/exited/);
+  });
+
+  it("fails the channel when the bridge dies after it became ready", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    const harness = duplexSandbox({});
+    const opening = gateway.openExecution({
+      sandbox: harness.sandbox,
+      authority: authority("exec-die-live"),
+    });
+    // The bridge reports ready as soon as it is spawned.
+    await tick();
+    harness.duplex().send({ t: "ready" });
+    const channel = await opening;
+    const closed = channel.whenClosed;
+    harness.duplex().emitExit(9, null);
+    await closed;
+    expect(channel.closed).toBe(true);
+    await gateway.close();
+  });
+
+  it("kills the bridge when it sends a malformed frame", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    const harness = duplexSandbox({});
+    const opening = gateway.openExecution({ sandbox: harness.sandbox, authority: authority("exec-garbage") });
+    await tick();
+    harness.duplex().send({ t: "ready" });
+    const channel = await opening;
+    const closed = channel.whenClosed;
+    // An oversize length prefix is a fatal framing error, never a dropped frame.
+    const bogus = Buffer.alloc(4);
+    bogus.writeUInt32BE(0xffffffff, 0);
+    harness.duplex().sendRaw(bogus);
+    await closed;
+    expect(harness.duplex().kills).toContain("SIGKILL");
+    await gateway.close();
+  });
+
+  it("ignores non-object, unknown, and non-integer frames from the bridge", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    const harness = duplexSandbox({});
+    const opening = gateway.openExecution({ sandbox: harness.sandbox, authority: authority("exec-noise") });
+    await tick();
+    harness.duplex().send({ t: "ready" });
+    const channel = await opening;
+    // A duplicate ready, an array frame, an unknown type, and a cancel with no integer id are all
+    // ignored rather than treated as protocol failures.
+    harness.duplex().send({ t: "ready" });
+    harness.duplex().send([1, 2, 3]);
+    harness.duplex().send({ t: "unknown" });
+    harness.duplex().send({ t: "cancel", id: "not-a-number" });
+    await tick();
+    expect(harness.duplex().kills).toEqual([]);
+    expect(channel.closed).toBe(false);
+    await gateway.close();
+  });
+
+  it("rejects an unknown operation and a non-base64 body with bounded responses", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    const harness = duplexSandbox({});
+    const opening = gateway.openExecution({ sandbox: harness.sandbox, authority: authority("exec-bad-request") });
+    await tick();
+    harness.duplex().send({ t: "ready" });
+    await opening;
+    for (const frame of [
+      { body: "", id: 1, path: "/web/nope", remaining: "1000", t: "request" },
+      { body: "not base64!!", id: 2, path: "/web/search", remaining: "1000", t: "request" },
+      { body: "", id: 3, path: "/web/search", remaining: "0", t: "request" },
+      { body: "", id: "bad", path: "/web/search", remaining: "1000", t: "request" },
+    ]) {
+      harness.duplex().send(frame);
+    }
+    await vi.waitFor(() => expect(harness.duplex().decoded()).toHaveLength(3));
+    const responses = harness.duplex().decoded() as { status: number; body: string }[];
+    expect(responses.map((response) => response.status)).toEqual([404, 400, 400]);
+    expect(JSON.parse(responses[0]?.body ?? "{}").error.code).toBe("invalid_request");
+    await gateway.close();
+  });
+
+  it("cancels an in-flight bridge request when the bridge asks for it", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    const harness = duplexSandbox({});
+    let aborted = false;
+    const opening = gateway.openExecution({
+      sandbox: harness.sandbox,
+      authority: authority("exec-cancel-frame", {
+        dispatch: (_input, signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener(
+              "abort",
+              () => {
+                aborted = true;
+                reject(new WebGatewayDispatchError("timeout", "cancelled"));
+              },
+              { once: true },
+            );
+          }),
+      }),
+    });
+    await tick();
+    harness.duplex().send({ t: "ready" });
+    await opening;
+    harness.duplex().send({
+      body: Buffer.from(JSON.stringify({ protocolVersion: 1, toolCallId: randomUUID(), query: "q" }), "utf8").toString(
+        "base64",
+      ),
+      id: 7,
+      path: "/web/search",
+      remaining: "1000",
+      t: "request",
+    });
+    await vi.waitFor(() => expect(harness.duplex().kills).toEqual([]));
+    harness.duplex().send({ id: 7, t: "cancel" });
+    await vi.waitFor(() => expect(aborted).toBe(true));
+    await gateway.close();
+  });
+
+  it("logs bridge stderr and survives a throwing debug logger", async () => {
+    let logged = 0;
+    const gateway = await NativeSandboxWebGateway.start({
+      logger: {
+        debug: () => {
+          logged += 1;
+          throw new Error("logger exploded");
+        },
+        warn: () => undefined,
+      },
+      sandboxName: "ots-web-test",
+    });
+    const harness = duplexSandbox({});
+    const opening = gateway.openExecution({ sandbox: harness.sandbox, authority: authority("exec-stderr") });
+    await tick();
+    // The first stderr write throws from inside the logger and must not break the channel.
+    harness.duplex().emitStderr(Buffer.from("bridge noise\n"));
+    harness.duplex().send({ t: "ready" });
+    const channel = await opening;
+    expect(logged).toBeGreaterThan(0);
+    expect(channel.closed).toBe(false);
+    await gateway.close();
+  });
+
+  it("terminates a bridge that ignores the graceful end and awaits the exit", async () => {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: "ots-web-test" });
+    const harness = duplexSandbox({
+      // Swallow the graceful exit: only SIGKILL resolves the exit promise.
+      onOpen: (duplex) => {
+        duplex.emitExit = () => undefined;
+      },
+    });
+    const opening = gateway.openExecution({ sandbox: harness.sandbox, authority: authority("exec-stubborn") });
+    await tick();
+    harness.duplex().send({ t: "ready" });
+    const channel = await opening;
+    const closing = channel.close();
+    expect(harness.duplex().ended).toBe(true);
+    // The graceful end produced no exit, so the channel escalates to SIGKILL after its bounded
+    // shutdown grace rather than hanging the teardown forever.
+    await vi.waitFor(() => expect(harness.duplex().kills).toContain("SIGKILL"), { timeout: 5_000 });
+    FakeDuplex.prototype.emitExit.call(harness.duplex(), null, "SIGKILL");
+    await closing;
+    expect(channel.closed).toBe(true);
+    await gateway.close();
+  }, 10_000);
 });
 
 describe("native sandbox argv", () => {

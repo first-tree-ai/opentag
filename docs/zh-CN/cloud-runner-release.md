@@ -21,8 +21,16 @@ Runner 使用 CLI 的发布版本。现有 npm 发布流程先从同一份干净
 
 现有发布服务账号只需目标镜像仓库上的 `roles/artifactregistry.writer`。
 部署通过同一个 provider 使用**直接身份联邦**，不模拟发布服务账号。
-将镜像仓库 reader 和对应 CapRover secret 的 `roles/secretmanager.secretAccessor` 授予精确的 GitHub Environment subject：
-`repo:first-tree-ai/opentag:environment:staging` 或 `:production`。
+将镜像仓库 reader 和对应 CapRover secret 的 `roles/secretmanager.secretAccessor` 授予精确的 GitHub Environment subject。
+构造身份前，先读取仓库的 subject 配置：
+
+```sh
+gh api repos/first-tree-ai/opentag/actions/oidc/customization/sub
+```
+
+默认模板下，若 `use_immutable_subject: true`，须在返回的 `sub_claim_prefix` 后追加 `:environment:staging`
+或 `:production`；该前缀包含组织和仓库的不可变 ID。旧的 `repo:first-tree-ai/opentag:environment:staging`
+格式无法匹配这类令牌。若使用自定义模板，核验实际 `sub` 声明，不假定上述任一格式。
 完整成员格式为 `principal://iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/subject/<subject>`。
 不向发布服务账号授予管理员 secret 访问权，也无需新建服务账号。
 
@@ -40,6 +48,13 @@ production 启用使用 `CAPROVER_PROD_SERVER`、`CAPROVER_PROD_APP`；生产批
 staging 部署在 `npm Publish` 成功后启动，读取该次运行的准确发布记录，验证 npm gitHead 和镜像身份。
 先部署匹配的 Server，再一起更新 `OPENTAG_CLOUD_RUNNER_IMAGE` 和 `OPENTAG_CLOUD_RUNNER_VERSION`。
 已被 main 新提交替代的自动部署仍跳过；Runner 发布不完整时，不能悄悄保留旧 Runner 却宣称新 Cloud 版本发布完成。
+
+npm 接受发布后，包仍可能处于处理阶段。准确版本查询返回 E404 时进行有时限的等待；元数据无效、认证失败或
+源码不匹配仍立即失败。Runner 启用还会先等待初始 CapRover 构建完成，再获取配置快照。`check` 与写入前的
+最后一次构建状态／配置并发检查仍立即失败，配置写入不进行重试。
+
+若启用流程在写入后的验证阶段失败，先对同一目标运行 **Deploy Runner** 的 `mode=check`，再决定是否重新写入。
+响应或读取失败，不能证明配置写入没有成功。
 
 正式 tag 同时发布正式 CLI 和 Runner。先通过现有生产流程部署兼容 Server，再从 main 运行 **Deploy Runner**：
 选择 `channel=prod`、准确的已发布 `version`，以及已部署 Server 的完整 `server_revision`。

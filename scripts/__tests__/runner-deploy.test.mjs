@@ -88,7 +88,7 @@ function stateRunnerHash(definition) {
   return runnerTargetHash({ image: env.get(RUNNER_IMAGE_KEY), version: env.get(RUNNER_VERSION_KEY) });
 }
 
-/** Stateful fake CapRover + readyz router. */
+/** Stateful fake CapRover + readyz router. `isBuilding` may be a per-read sequence (clamped at the last value). */
 function caproverFake({
   definition = appDefinition(),
   isBuilding = false,
@@ -101,6 +101,13 @@ function caproverFake({
   const state = { definition: structuredClone(definition) };
   const calls = [];
   let reads = 0;
+  let buildReads = 0;
+  const buildState = () => {
+    if (!Array.isArray(isBuilding)) return isBuilding;
+    const value = isBuilding[Math.min(buildReads, isBuilding.length - 1)];
+    buildReads += 1;
+    return value;
+  };
   const readyz = () => {
     const runnerHash = ready === "stale" ? "0".repeat(64) : stateRunnerHash(state.definition);
     return {
@@ -127,7 +134,7 @@ function caproverFake({
     if (url.endsWith("/readyz")) return readyz();
     if (url.endsWith("/api/v2/login")) return envelope({ token: "fixture-token" });
     if (url.includes("/api/v2/user/apps/appData/")) {
-      return appData ? envelope(appData) : envelope({ isAppBuilding: isBuilding });
+      return appData ? envelope(appData) : envelope({ isAppBuilding: buildState() });
     }
     if (url.endsWith("/api/v2/user/apps/appDefinitions/update")) return update(options);
     if (url.endsWith("/api/v2/user/apps/appDefinitions")) return definitions();
@@ -401,6 +408,47 @@ test("apply aborts when the configuration changes between validation and update"
   const fake = caproverFake({ onRead });
   await assert.rejects(runDeploy(deployDeps(fake, { mode: "apply" })), /changed between validation and update/);
   assert.equal(fake.updates().length, 0, "a concurrent change must stop before the mutation");
+});
+
+test("apply waits out an in-progress build, then updates exactly once", async () => {
+  const fake = caproverFake({ isBuilding: [true, true, false] });
+  const summary = await runDeploy(deployDeps(fake, { mode: "apply" }));
+  assert.equal(summary.updated, true);
+  assert.equal(summary.active, true);
+  assert.equal(fake.updates().length, 1, "one update after the build finished");
+});
+
+test("apply re-gates on the fresh post-build snapshot, not the pre-build state", async () => {
+  const onRead = (definition, reads) => {
+    if (reads === 2) {
+      definition.versions = [{ version: 7, deployedImageName: `ghcr.io/first-tree-ai/opentag:${RELEASE_SHA}` }];
+    }
+  };
+  const fake = caproverFake({ isBuilding: [true, false], onRead });
+  await assert.rejects(runDeploy(deployDeps(fake, { mode: "apply" })), /deployed image/);
+  assert.equal(fake.updates().length, 0, "a Server change during the build must stop before the mutation");
+});
+
+test("apply fails closed with zero updates when the build never finishes", async () => {
+  const fake = caproverFake({ isBuilding: true });
+  await assert.rejects(
+    runDeploy(
+      deployDeps(fake, {
+        mode: "apply",
+        deadlineMs: 30,
+        intervalMs: 10,
+        sleep: (ms) => new Promise((settle) => setTimeout(settle, ms)),
+      }),
+    ),
+    /ongoing app build/,
+  );
+  assert.equal(fake.updates().length, 0);
+});
+
+test("apply never waits through a build that starts at the pre-update check", async () => {
+  const fake = caproverFake({ isBuilding: [false, true] });
+  await assert.rejects(runDeploy(deployDeps(fake, { mode: "apply" })), /ongoing app build/);
+  assert.equal(fake.updates().length, 0, "the fresh pre-update check stays fail-fast");
 });
 
 test("a failed update is never blindly retried and reports the observed state", async () => {

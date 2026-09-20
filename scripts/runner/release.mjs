@@ -10,7 +10,9 @@
  *
  * `resolve` is read-only: it verifies that a CLI release (npm `gitHead`) and its Runner image
  * (registry labels, digest-verified) agree on channel, version, and source, and emits the release
- * record a deployment may act on. Any incomplete or contradictory release fails closed.
+ * record a deployment may act on. Any incomplete or contradictory release fails closed. Because
+ * npm processes a publish asynchronously, the exact-version metadata lookup allows one small
+ * bounded wait for the not-yet-visible E404; every other lookup failure stays immediately fatal.
  *
  * Credentials (gcloud access token) live only in process memory; the release record written to
  * `--output` holds no secrets and must live outside the source checkout.
@@ -47,6 +49,10 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..");
 
 const DOCKER_TRANSFER_TIMEOUT_MS = 30 * 60 * 1000;
 const SMOKE_PREFIX = "opentag-runner-release";
+const NPM_METADATA_WAIT_DEADLINE_MS = 5 * 60 * 1000;
+const NPM_METADATA_WAIT_INTERVAL_MS = 15_000;
+
+const defaultSleep = (milliseconds) => new Promise((settle) => setTimeout(settle, milliseconds));
 
 function defaultNpmView(args) {
   const result = spawnSync("npm", ["view", ...args], { encoding: "utf8", timeout: 60_000 });
@@ -139,8 +145,21 @@ export async function publishRunnerRelease({
   return { ...record, reused: existing.present };
 }
 
-async function lookupNpmGitHead({ npmView, packageName, version }) {
-  const result = await npmView([`${packageName}@${version}`, "version", "gitHead", "--json"]);
+/** npm publish processing can briefly hide a just-published version; only that exact E404 retries. */
+function isNpmVersionNotFound(result) {
+  return result.status !== 0 && /\bE404\b/.test(result.stderr);
+}
+
+async function lookupNpmGitHead({ npmView, packageName, version, sleep, deadlineMs, intervalMs, now }) {
+  const args = [`${packageName}@${version}`, "version", "gitHead", "--json"];
+  const deadline = now() + deadlineMs;
+  let result = await npmView(args);
+  while (isNpmVersionNotFound(result)) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(intervalMs, remaining));
+    result = await npmView(args);
+  }
   return assertFullSha(classifyPublishedMetadataLookup({ ...result, expectedVersion: version }).gitHead, "npm gitHead");
 }
 
@@ -198,6 +217,10 @@ export async function resolveRunnerRelease({
   runCommand = runLocalCommand,
   npmView = defaultNpmView,
   npmVersions = readNpmVersions,
+  sleep = defaultSleep,
+  deadlineMs = NPM_METADATA_WAIT_DEADLINE_MS,
+  intervalMs = NPM_METADATA_WAIT_INTERVAL_MS,
+  now = Date.now,
 }) {
   const repository = parseGarRepository(image);
   assertChannel(channel);
@@ -213,7 +236,15 @@ export async function resolveRunnerRelease({
   const packageName = CHANNEL_CONFIG[channel].packageName;
   const targetVersion =
     version ?? metadata?.version ?? (await findVersionForSourceSha({ npmVersions, packageName, channel, sourceSha }));
-  const gitHead = await lookupNpmGitHead({ npmView, packageName, version: targetVersion });
+  const gitHead = await lookupNpmGitHead({
+    npmView,
+    packageName,
+    version: targetVersion,
+    sleep,
+    deadlineMs,
+    intervalMs,
+    now,
+  });
   if (sourceSha && gitHead !== sourceSha) {
     throw new Error(`npm gitHead for ${packageName}@${targetVersion} is ${gitHead}, expected ${sourceSha}`);
   }

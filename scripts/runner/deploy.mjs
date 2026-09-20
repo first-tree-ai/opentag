@@ -9,7 +9,10 @@
  * revision on /readyz. `apply` then changes only OPENTAG_CLOUD_RUNNER_IMAGE and
  * OPENTAG_CLOUD_RUNNER_VERSION, together, in one full-definition update built from a safelisted
  * copy of the current configuration, and waits (bounded) until /readyz proves the responding
- * Server adopted the exact Runner target. No force termination, no instance deletion, no
+ * Server adopted the exact Runner target. If the app is still building when `apply` starts — the
+ * Server deploy's own build may not have finished yet — `apply` waits (bounded) for it, then
+ * re-reads a fresh snapshot and applies every gate to that; `check` stays fail-fast.
+ * No force termination, no instance deletion, no
  * provisioning, no database access, and no rollback of arbitrary concurrent state on failure.
  *
  * The CapRover password comes from Secret Manager via gcloud (WIF credentials the workflow
@@ -261,6 +264,33 @@ function buildSummary({ mode, app, release, serverRevision, runnerHash, extra })
 }
 
 /**
+ * Bounded wait until CapRover reports a definite `false` build state. Unknown state or read errors
+ * remain fatal through getAppBuildState; a build that never finishes fails at the deadline.
+ */
+export async function waitForAppIdle({
+  server,
+  token,
+  appName,
+  fetchImpl = fetch,
+  sleep = defaultSleep,
+  deadlineMs = 300_000,
+  intervalMs = 5_000,
+  now = Date.now,
+}) {
+  const deadline = now() + deadlineMs;
+  for (;;) {
+    if (!(await getAppBuildState({ server, token, appName, fetchImpl }))) return;
+    const remaining = deadline - now();
+    if (remaining <= 0) {
+      throw new Error(
+        `CapRover reports an ongoing app build that did not finish within ${Math.round(deadlineMs / 1000)}s`,
+      );
+    }
+    await sleep(Math.min(intervalMs, remaining));
+  }
+}
+
+/**
  * Runs the deployment gate (`check`) or the gated Runner switch (`apply`). Returns the non-secret
  * summary that is also what the CLI prints.
  */
@@ -281,7 +311,13 @@ export async function runDeploy({
   const token = await caproverLogin({ server: config.server, password, fetchImpl });
   const context = { server: config.server, token, appName: config.app, fetchImpl };
 
-  const initial = await readState(context);
+  let initial = await readState(context);
+  if (mode === "apply" && initial.isBuilding) {
+    // The Server deploy's own CapRover build can still be running when apply starts; only apply
+    // waits for it (bounded), then every gate below runs against a fresh post-build snapshot.
+    await waitForAppIdle({ ...context, fetchImpl, sleep, deadlineMs, intervalMs });
+    initial = await readState(context);
+  }
   const current = validateState({ state: initial, release, serverRevision, publicUrl: config.publicUrl });
   if (mode === "apply") {
     await waitForRunnerTarget({

@@ -22,8 +22,17 @@ Reuse the portable workflow's `OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER` 
 
 The existing publisher service account needs `roles/artifactregistry.writer` only on the selected image repository.
 Deployment uses **direct federation** through the same provider, without impersonating that publisher. Grant the exact
-GitHub Environment subject `repo:first-tree-ai/opentag:environment:staging` (or `:production`) reader access on its image
-repository and `roles/secretmanager.secretAccessor` on its own CapRover secret. The full member is
+GitHub Environment subject reader access on its image repository and `roles/secretmanager.secretAccessor` on its own
+CapRover secret. Read the repository subject configuration before constructing that identity:
+
+```sh
+gh api repos/first-tree-ai/opentag/actions/oidc/customization/sub
+```
+
+For the default template with `use_immutable_subject: true`, append `:environment:staging` (or `:production`) to the
+returned `sub_claim_prefix`; it includes immutable organization/repository IDs. The older
+`repo:first-tree-ai/opentag:environment:staging` form does not match such a token. For a custom template, verify its actual
+`sub` claim instead of assuming either format. The full member is
 `principal://iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/subject/<subject>`.
 Do not grant administrator-secret access to the publisher service account. No additional service account is required.
 
@@ -44,6 +53,14 @@ Staging deployment starts after successful `npm Publish`, reads that run's exact
 gitHead and registry identity. It deploys the matching Server first, then changes `OPENTAG_CLOUD_RUNNER_IMAGE` and
 `OPENTAG_CLOUD_RUNNER_VERSION` together. Superseded automatic revisions still skip. An incomplete Runner publication
 cannot silently leave an old Runner while reporting the new Cloud release complete.
+
+An accepted npm publication can remain unavailable while npm processes it. Exact-version E404 responses receive a
+bounded wait; invalid metadata, authorization failures and source mismatches still fail immediately. Runner activation
+also waits for the initial CapRover build to finish before capturing the configuration snapshot. `check` and the final
+pre-update build/configuration checks remain fail-fast; configuration writes are never retried.
+
+If activation fails during post-update verification, run **Deploy Runner** with `mode=check` for the same target before
+repeating an update. A failed response or read does not prove that the configuration write failed.
 
 Production tags publish the formal CLI and Runner together. Deploy the compatible Server through the existing production
 procedure, then run **Deploy Runner** on main with `channel=prod`, the exact published `version`, and the full

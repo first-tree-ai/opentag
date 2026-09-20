@@ -218,6 +218,94 @@ test("resolve fails closed when the registry tag is absent (incomplete release)"
   }
 });
 
+test("resolve waits out the npm processing window for an exact-version E404", async () => {
+  const base = npmViewFake({ [VERSION]: SHA });
+  let lookups = 0;
+  const npmView = async (args) => {
+    if (args[0] === `${PACKAGE}@${VERSION}`) {
+      lookups += 1;
+      if (lookups < 3) return { status: 1, stdout: "", stderr: "npm error code E404" };
+    }
+    return base.npmView(args);
+  };
+  const sleeps = [];
+  const { deps, root, outDir } = await resolveDeps({
+    npmView,
+    sleep: async (ms) => sleeps.push(ms),
+    deadlineMs: 1_000,
+    intervalMs: 10,
+  });
+  try {
+    const record = await resolveRunnerRelease({ ...deps, version: VERSION });
+    assert.equal(record.version, VERSION);
+    assert.equal(record.sourceSha, SHA);
+    assert.equal(lookups, 3, "two not-yet-visible E404s, then the published version");
+    assert.deepEqual(sleeps, [10, 10]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("resolve bounds the exact-version E404 wait and then fails closed", async () => {
+  let time = 0;
+  let lookups = 0;
+  const npmView = async () => {
+    lookups += 1;
+    return { status: 1, stdout: "", stderr: "npm error code E404" };
+  };
+  const { deps, root, outDir } = await resolveDeps({
+    npmView,
+    now: () => time,
+    sleep: async (ms) => {
+      time += ms;
+    },
+    deadlineMs: 30,
+    intervalMs: 10,
+  });
+  try {
+    await assert.rejects(resolveRunnerRelease({ ...deps, version: VERSION }), /npm registry metadata lookup failed/);
+    assert.equal(lookups, 4, "the wait is bounded, never an unbounded retry");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("resolve never retries a source mismatch or a non-E404 metadata failure", async () => {
+  const base = npmViewFake({ [VERSION]: SHA });
+  let found = 0;
+  const countingView = async (args) => {
+    found += 1;
+    return base.npmView(args);
+  };
+  const sleeps = [];
+  const wait = { sleep: async (ms) => sleeps.push(ms), deadlineMs: 1_000, intervalMs: 10 };
+  const { deps, root, outDir } = await resolveDeps({ npmView: countingView, ...wait });
+  try {
+    await assert.rejects(resolveRunnerRelease({ ...deps, version: VERSION, sourceSha: OTHER_SHA }), /npm gitHead/);
+    assert.equal(found, 1, "a visible version with the wrong source is fatal, not retried");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outDir, { recursive: true, force: true });
+  }
+
+  let denied = 0;
+  const authView = async () => {
+    denied += 1;
+    return { status: 1, stdout: "", stderr: "npm error code E401" };
+  };
+  const { deps: authDeps, root: authRoot, outDir: authOutDir } = await resolveDeps({ npmView: authView, ...wait });
+  try {
+    await assert.rejects(resolveRunnerRelease({ ...authDeps, version: VERSION }), /metadata lookup failed/);
+    assert.equal(denied, 1, "a non-E404 lookup failure is fatal, not retried");
+  } finally {
+    await rm(authRoot, { recursive: true, force: true });
+    await rm(authOutDir, { recursive: true, force: true });
+  }
+  assert.deepEqual(sleeps, [], "neither fatal failure waited");
+});
+
 test("parseReleaseArgv rejects unknown, duplicate, and valueless arguments", () => {
   assert.throws(
     () => parseReleaseArgv(["resolve", "--image", IMAGE, "--channel", "staging", "--output", "/tmp/x", "--wat", "1"]),

@@ -18,6 +18,7 @@ import {
   skillLimitReached,
   skillNameConflict,
   skillNotFound,
+  skillRevisionConflict,
   skillStorageUnavailable,
 } from "./errors.js";
 import { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-archive.js";
@@ -138,7 +139,7 @@ export class SkillService {
       .set({ enabled, updatedAt: this.#now() })
       .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
       .returning();
-    if (!row) throw skillNameConflict("The Skill changed concurrently; reload and retry");
+    if (!row) throw skillRevisionConflict();
     this.#logger?.info(
       { agentId, enabled, skillId: row.id, name: row.name },
       enabled ? "Skill enabled" : "Skill disabled",
@@ -153,7 +154,7 @@ export class SkillService {
       .delete(agentSkills)
       .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
       .returning();
-    if (deleted.length === 0) throw skillNameConflict("The Skill changed concurrently; reload and retry");
+    if (deleted.length === 0) throw skillRevisionConflict();
     const row = deleted[0] as SkillRow;
     if (this.#store) {
       await bestEffortDeleteSkillObject(this.#store, row.objectKey, "removed Skill", this.#logger, {
@@ -347,7 +348,7 @@ export class SkillService {
     }
     if (!row) {
       await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
-      throw skillNameConflict("The Skill changed concurrently; retry the upload");
+      throw skillRevisionConflict("The Skill changed concurrently; retry the upload");
     }
     if (existing.objectKey !== objectKey) {
       await deleteReplacedObject(this.#database, store, existing, objectKey, this.#logger);

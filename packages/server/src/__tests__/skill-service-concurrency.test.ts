@@ -138,7 +138,7 @@ describe("SkillService object lifecycle", () => {
     const late = await h.upload(service, accountId, agentId, "race", { replace: true });
     release();
     await expect(winner).rejects.toMatchObject({
-      code: SKILL_ERROR_CODES.NAME_CONFLICT,
+      code: SKILL_ERROR_CODES.REVISION_CONFLICT,
       message: expect.stringContaining("concurrently"),
     });
 
@@ -180,7 +180,7 @@ describe("SkillService object lifecycle", () => {
           ? service.setEnabled(accountId, agentId, seeded.id, false)
           : service.remove(accountId, agentId, seeded.id);
       const outcome = expect(call).rejects.toMatchObject({
-        code: SKILL_ERROR_CODES.NAME_CONFLICT,
+        code: SKILL_ERROR_CODES.REVISION_CONFLICT,
         message: expect.stringContaining("concurrently"),
       });
       await revved;

@@ -18,6 +18,7 @@ export {
   skillNameConflict,
   skillNameReserved,
   skillNotFound,
+  skillRevisionConflict,
   skillStorageFailure,
   skillStorageUnavailable,
 } from "./errors.js";

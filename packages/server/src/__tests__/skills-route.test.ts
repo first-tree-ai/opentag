@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   AGENT_SKILL_BUNDLE_TEMPLATE,
+  AGENT_SKILL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   COMPUTER_AGENT_SKILLS_TEMPLATE,
   ErrorEnvelopeSchema,
@@ -28,6 +29,7 @@ import {
   type SkillService,
   type SkillServiceError,
   skillNameConflict,
+  skillRevisionConflict,
   skillStorageUnavailable,
 } from "../services/skills/index.js";
 
@@ -230,6 +232,28 @@ describe("Skill routes", () => {
       code: SKILL_ERROR_CODES.NAME_CONFLICT,
       category: "deterministic",
       requestId: expect.any(String),
+    });
+    await app.close();
+  });
+
+  it("renders a revision conflict as its own 409 envelope, not a name conflict", async () => {
+    const app = createApp({});
+    registerSkillRoutes(
+      app,
+      fakeService({ setEnabled: vi.fn(async () => Promise.reject(skillRevisionConflict())) }),
+      userAuth(),
+      {},
+    );
+    const response = await app.inject({
+      method: "PATCH",
+      url: AGENT_SKILL_TEMPLATE.replace(":agentId", AGENT).replace(":skillId", SKILL),
+      headers: { authorization: "Bearer good-token" },
+      payload: { enabled: false },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(ErrorEnvelopeSchema.parse(response.json()).error).toMatchObject({
+      code: SKILL_ERROR_CODES.REVISION_CONFLICT,
+      category: "deterministic",
     });
     await app.close();
   });

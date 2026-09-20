@@ -32,6 +32,10 @@ export function skillNameConflict(message = "A Skill with that name already exis
   return new SkillServiceError(SKILL_ERROR_CODES.NAME_CONFLICT, message);
 }
 
+export function skillRevisionConflict(message = "The Skill changed concurrently; reload and retry"): SkillServiceError {
+  return new SkillServiceError(SKILL_ERROR_CODES.REVISION_CONFLICT, message);
+}
+
 export function skillLimitReached(): SkillServiceError {
   return new SkillServiceError(SKILL_ERROR_CODES.LIMIT_REACHED, "This Agent has reached its Skill limit");
 }

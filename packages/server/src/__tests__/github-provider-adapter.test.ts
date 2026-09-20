@@ -990,6 +990,22 @@ describe("production GitHub provider adapter GraphQL reads on a Tree grant", () 
     });
   });
 
+  it("constrains a Tree read of the repository node, which carries no pull request number", async () => {
+    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
+    // The scoped REST read records the repository node identity, and that identity has no number.
+    await built.handle(request("/repos/owner/repository"), authorization);
+    const original = upstream.getMockImplementation();
+    upstream.mockImplementation(async (...args) => {
+      if (new URL(String(args[0])).pathname === "/graphql")
+        return Response.json({ data: { node: { id: "R_test", nameWithOwner: "owner/repository" } } });
+      return (original as typeof fetch)(...args);
+    });
+    const body = {
+      query: 'query { node(id:"R_test") { ... on Repository { id nameWithOwner } } }',
+    };
+    expect((await built.handle(request("/graphql", "POST", body), authorization)).status).toBe(200);
+  });
+
   it("denies a Tree-scoped GraphQL read whose recorded pull request left the knowledge branch", async () => {
     const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
     await built.handle(request("/repos/owner/repository/pulls/1"), authorization);
@@ -1150,29 +1166,40 @@ describe("production GitHub provider adapter response sanitizing", () => {
   });
 
   it("denies a GraphQL update whose recorded node identity carries no pull request number", async () => {
-    // The repository node is recorded by a scoped read but has no PR number, so it can never
-    // authorize an updatePullRequest mutation even though it resolves to a known repository.
-    await adapter.handle(request("/repos/owner/repository"), authorization);
+    // The `repository-123` index entry is recorded by `#context` for the repository node itself. Its
+    // repositoryId matches a granted repository, so the policy resolves, but it carries no pull
+    // request number and can therefore never authorize an updatePullRequest mutation.
+    const built = adapterFor();
+    const original = upstream.getMockImplementation();
+    upstream.mockImplementation(async (url, init) => {
+      if (new URL(String(url)).pathname === "/repositories/123") return Response.json({ ...metadata, node_id: "123" });
+      return (original as typeof fetch)(url, init);
+    });
+    await built.handle(request("/repos/owner/repository"), authorization);
     const body = {
       query:
         'mutation($id:ID!){updatePullRequest(input:{pullRequestId:$id,title:"x"}){pullRequest{id number headRefName baseRefName}}}',
-      variables: { id: "R_test" },
+      variables: { id: "repository-123" },
     };
-    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
+    const error = await built.handle(request("/graphql", "POST", body), authorization).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ code: "scope_denied" });
     expect(writeCount).toBe(0);
   });
 
   it("denies a GraphQL addComment whose recorded subject carries no pull request number", async () => {
-    await adapter.handle(request("/repos/owner/repository"), authorization);
+    const built = adapterFor();
+    const original = upstream.getMockImplementation();
+    upstream.mockImplementation(async (url, init) => {
+      if (new URL(String(url)).pathname === "/repositories/123") return Response.json({ ...metadata, node_id: "123" });
+      return (original as typeof fetch)(url, init);
+    });
+    await built.handle(request("/repos/owner/repository"), authorization);
     const body = {
       query: 'mutation($id:ID!){addComment(input:{subjectId:$id,body:"x"}){commentEdge{node{id}}}}',
-      variables: { id: "R_test" },
+      variables: { id: "repository-123" },
     };
-    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
+    const error = await built.handle(request("/graphql", "POST", body), authorization).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ code: "scope_denied" });
     expect(writeCount).toBe(0);
   });
 
@@ -1183,6 +1210,53 @@ describe("production GitHub provider adapter response sanitizing", () => {
     };
     await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toBeInstanceOf(Error);
     expect(writeCount).toBe(0);
+  });
+
+  it("denies a create mutation whose input omits both ref names", async () => {
+    // A policy-valid input object may simply omit headRefName/baseRefName; the ref assertion then
+    // receives empty strings and must refuse the write rather than treat the absence as permissive.
+    await adapter.handle(request("/repos/owner/repository"), authorization);
+    const body = {
+      query:
+        "mutation($input:CreatePullRequestInput!){createPullRequest(input:$input){pullRequest{id number headRefName baseRefName}}}",
+      variables: { input: { repositoryId: "R_test", title: "Work" } },
+    };
+    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
+      code: "scope_denied",
+    });
+    expect(writeCount).toBe(0);
+  });
+
+  it("treats a non-string new base as an absent base on a GraphQL update", async () => {
+    // The mutation input schema is key-checked, not value-typed; a non-string baseRefName must be
+    // read as "no new base" rather than stringified into a ref assertion.
+    await adapter.handle(request("/repos/owner/repository"), authorization);
+    const read = adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
+    const original = upstream.getMockImplementation();
+    upstream.mockImplementation(async (...args) => {
+      const path = new URL(String(args[0])).pathname;
+      if (path === "/graphql" && String((args[1] as RequestInit).body).includes("mutation")) {
+        writeCount++;
+        return Response.json({
+          data: {
+            updatePullRequest: {
+              pullRequest: { id: "PR_one", number: 1, headRefName: "topic", baseRefName: "main" },
+            },
+          },
+        });
+      }
+      return (original as typeof fetch)(...args);
+    });
+    await read;
+    const body = {
+      query:
+        "mutation($id:ID!,$base:String){updatePullRequest(input:{pullRequestId:$id,baseRefName:$base}){pullRequest{id number headRefName baseRefName}}}",
+      variables: { base: 123, id: "PR_one" },
+    };
+    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).resolves.toMatchObject({
+      status: 200,
+    });
+    expect(writeCount).toBe(1);
   });
 
   it("ignores scalar and null entries in a read response when recording node identities", async () => {

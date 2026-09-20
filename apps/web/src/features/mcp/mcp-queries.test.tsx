@@ -113,9 +113,18 @@ describe("MCP mutation bodies", () => {
  * addressed to the wrong id changes it.
  */
 describe("MCP queries and id-only mutations", () => {
-  /** Counts what the mounted read asked the API for, without caring which query owns it. */
+  /**
+   * Spies on one API method and resolves it with the value the caller supplies.
+   *
+   * The cast is on the spy's own type, not on the method: `keyof typeof browserApi` widens to a
+   * union of signatures, and only the spy carries `mockResolvedValue` and `mock.calls`.
+   */
   function countCalls(method: keyof typeof browserApi, value: unknown) {
-    const spy = vi.spyOn(browserApi, method as never).mockResolvedValue(value as never);
+    const spy = vi.spyOn(browserApi, method as never) as unknown as {
+      mockResolvedValue: (result: unknown) => unknown;
+      mock: { calls: unknown[][] };
+    };
+    spy.mockResolvedValue(value);
     return spy;
   }
 

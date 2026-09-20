@@ -153,7 +153,15 @@ describe("installAnalytics", () => {
   });
 
   /** A window just real enough for the installer: a location, a document, and a data layer. */
-  function targetWindow(hostname: string, pathname: string) {
+  type InstallTarget = Window & {
+    dataLayer?: unknown[][];
+    document: {
+      createElement: ReturnType<typeof vi.fn>;
+      head: { append: ReturnType<typeof vi.fn> };
+    };
+  };
+
+  function targetWindow(hostname: string, pathname: string): InstallTarget {
     const head = { append: vi.fn() };
     const document = {
       createElement: vi.fn((tag: string) => ({ tagName: tag.toUpperCase(), async: false, src: "" })),
@@ -162,7 +170,7 @@ describe("installAnalytics", () => {
     return {
       document,
       location: { hostname, pathname },
-    } as unknown as Window & { document: typeof document };
+    } as unknown as InstallTarget;
   }
 
   it("does nothing at all on a host the deployment does not measure", () => {
@@ -188,7 +196,7 @@ describe("installAnalytics", () => {
     // The flag is set from the pathname the installer was handed, before any command is queued.
     expect(Reflect.get(target, `ga-disable-${ANALYTICS_MEASUREMENT_ID}`)).toBe(false);
     expect(reporter.active).toBe(true);
-    const queued = target.dataLayer as unknown[][];
+    const queued = target.dataLayer ?? [];
     expect(queued[0]?.[0]).toBe("js");
     expect(queued[1]?.[0]).toBe("config");
     expect(queued[1]?.[1]).toBe(ANALYTICS_MEASUREMENT_ID);
@@ -226,7 +234,7 @@ describe("installAnalytics", () => {
 
     installAnalytics(target, new AnalyticsReporter());
 
-    expect((target.dataLayer as unknown[][])[1]?.[2]).toMatchObject({ traffic_type: "internal" });
+    expect((target.dataLayer ?? [])[1]?.[2]).toMatchObject({ traffic_type: "internal" });
   });
 
   it("defaults to the module reporter and the document's own window", () => {

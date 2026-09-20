@@ -167,6 +167,10 @@ test("readDeployConfig requires HTTPS origins and validates secret and app names
     publicUrl: "https://dev.opentag.build",
   });
   assert.throws(() => readDeployConfig({ ...env, CAPROVER_SERVER: "http://captain.apps.example.com" }), /HTTPS/);
+  assert.throws(
+    () => readDeployConfig({ ...env, CAPROVER_SERVER: `http://user:${PASSWORD}@captain.example.com` }),
+    (error) => /HTTPS/.test(error.message) && !error.message.includes(PASSWORD),
+  );
   assert.throws(() => readDeployConfig({ ...env, CAPROVER_SERVER: "https://captain.example.com/path" }), /bare origin/);
   assert.throws(() => readDeployConfig({ ...env, OPENTAG_PUBLIC_URL: "https://user:pw@example.com" }), /bare origin/);
   assert.throws(() => readDeployConfig({ ...env, CAPROVER_PASSWORD_SECRET: "captain-password" }), /projects\//);

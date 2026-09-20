@@ -92,6 +92,7 @@ export async function publishDeps(overrides = {}) {
     output: join(outDir, "runner-release.json"),
     repositoryRoot: root,
     readSource: () => ({ sourceSha: SHA, sourceDirty: false, cliVersion: "0.0.5" }),
+    runCommand: commandRecorder().runCommand,
     build: async (args) => {
       calls.push(["build", args]);
       return { architecture: "amd64", tag: args.tag };

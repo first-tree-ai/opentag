@@ -56,7 +56,7 @@ export function parseSecureOrigin(value, label, { allowLoopbackHttp = false } = 
   }
   const loopbackHttp = allowLoopbackHttp && url.protocol === "http:" && LOOPBACK_HOSTNAMES.has(url.hostname);
   if (url.protocol !== "https:" && !loopbackHttp) {
-    throw new Error(`${label} must be an HTTPS origin, got "${value ?? ""}"`);
+    throw new Error(`${label} must be an HTTPS origin`);
   }
   if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) {
     throw new Error(`${label} must be a bare origin without credentials, path, query, or fragment`);

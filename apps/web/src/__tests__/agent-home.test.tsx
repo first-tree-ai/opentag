@@ -15,7 +15,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "View Usage" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
+    expect(within(screen.getByRole("region", { name: "Usage" })).queryByRole("link")).toBeNull();
     /*
      * Status sits beside Usage without adding another visible card title. Its two rows name the
      * execution environment and messaging dependency directly, so Settings remains the header's only trailing
@@ -126,7 +126,8 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("link", { name: "View Usage" }));
+    const usageNavigation = await screen.findByRole("navigation", { name: "Agent" });
+    fireEvent.click(within(usageNavigation).getByRole("link", { name: "Usage" }));
 
     expect(await screen.findByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
     expect(agentReads).toBe(0);

@@ -40,7 +40,10 @@ jobs:
   runner:
     if: github.repository == 'first-tree-ai/opentag' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The helper's bounded waits (build idle, pre-update and post-update readyz) can legitimately
+    # spend up to ~15 minutes combined; keep explicit headroom for checkout, auth, release
+    # resolution, and the update itself, mirroring the staging rollout's job budget.
+    timeout-minutes: 45
     environment: ${{ inputs.channel == 'staging' && 'staging' || 'production' }}
     env:
       RUNNER_IMAGE: ${{ vars[format('OPENTAG_RUNNER_{0}_IMAGE_REPOSITORY', inputs.channel == 'staging' && 'STAGING' || 'PROD')] }}

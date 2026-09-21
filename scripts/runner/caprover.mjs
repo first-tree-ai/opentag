@@ -147,13 +147,14 @@ export async function getAppDefinition({ server, token, appName, fetchImpl = fet
  * state fails closed because mutating configuration under a running build is exactly the race this
  * check exists to prevent.
  */
-export async function getAppBuildState({ server, token, appName, fetchImpl = fetch }) {
+export async function getAppBuildState({ server, token, appName, fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_MS }) {
   const data = await caproverApi({
     server,
     token,
     method: "GET",
     path: `/api/v2/user/apps/appData/${encodeURIComponent(appName)}`,
     fetchImpl,
+    timeoutMs,
   });
   if (typeof data?.isAppBuilding !== "boolean") {
     throw new Error("CapRover did not report a usable app build state; refusing to assume the app is idle");

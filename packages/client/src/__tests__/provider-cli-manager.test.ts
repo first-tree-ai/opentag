@@ -739,12 +739,15 @@ describe("ProviderCliManager selection-invalid and layout paths", () => {
   it("dry-run reports unsupported_platform when the catalog has no artifact for this platform", async () => {
     const { accountHome } = await makeManager({});
     const base = (await makeManagedCatalog("feishu", "1.0.92")).catalog[0] as ProviderCliCatalogEntry;
+    // A catalog whose only artifact targets the OTHER supported platform is unsupported here for
+    // real: `findCatalogArtifact` matches on this process's platform.
+    const otherPlatform = process.platform === "darwin" ? "linux" : "darwin";
     const foreign = {
       ...base,
       artifacts: [
         {
           ...(base.artifacts[0] as (typeof base.artifacts)[number]),
-          platform: "win32",
+          platform: otherPlatform,
           arch: "x64",
         },
       ],

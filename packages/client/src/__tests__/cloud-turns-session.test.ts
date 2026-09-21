@@ -543,10 +543,11 @@ describe("CloudTurnRunner Session collaboration", () => {
 
   it("refuses a Session re-dispatch whose journal key belongs to an IM delivery", async () => {
     const delivery = cloudDeliveryFixture();
-    const scope: CloudTurnScope = {
+    // The journal scope contract needs a non-nullable resource uid.
+    const scope = {
       environmentGeneration: 1,
       resourceName: "projects/p/locations/r/instances/ots-s-x-1",
-      resourceUid: "uid-1",
+      resourceUid: "uid-1" as string,
       sandboxId: randomUUID(),
       sessionId: delivery.sessionId,
     };

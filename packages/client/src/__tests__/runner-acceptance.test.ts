@@ -378,7 +378,7 @@ function scriptedFailureFactory(
     async probe() {
       const ready = behaviour.ready !== false;
       return {
-        issues: ready ? [] : [{ code: "provider_unavailable", message: "Pi is not installed" }],
+        issues: ready ? [] : [{ code: "artifact_missing", message: "Pi is not installed" }],
         ready,
         version: "0.84.2",
       };

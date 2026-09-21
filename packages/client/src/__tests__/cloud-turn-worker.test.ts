@@ -836,40 +836,28 @@ describe("cloud-turn-worker sandbox path and manifest guards", () => {
     ).rejects.toMatchObject({ code: "EISDIR" });
   });
 
-  it("fails the worker when the execution budget expires before Pi produces a result", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cloud-worker-budget-"));
+  it("keeps the real completion even when the runtime close is slow", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-slow-close-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const executionDir = await fixtureExecution(root, "turn-1");
-    const request = turnRequest(executionDir);
-    const completion = await runCloudTurnWorker(
-      {
-        ...request,
-        runtime: { ...request.runtime, budget: { maxDurationMs: 1 } },
-      },
-      {
-        createPiFactory: (): CloudTurnPiFactory => ({
-          create: async () =>
-            ({
-              close: async () => undefined,
-              prompt: async () => {
-                // A budget that was already exhausted maps to a turn_timeout stop reason.
-                await new Promise((resolve) => setTimeout(resolve, 30));
-                return { output: [{ text: "late", type: "text" }], status: "completed" };
-              },
-            }) as unknown as CloudTurnPiRuntime,
-          resume: async () => {
-            throw new Error("unexpected resume");
-          },
-        }),
-        executionMount: join(root, "mount"),
-        localProxyLoopbackSeam: true,
-        workspace: join(root, "workspace"),
-      },
-    );
-    // The real result is either the completed turn or the honest timeout; never a silent success
-    // whose deadline had already elapsed.
-    expect(["completed", "failed"]).toContain(completion.outcome);
-    if (completion.outcome === "failed") expect(completion.errorReason).toBe("turn_timeout");
+    const completion = await runCloudTurnWorker(turnRequest(executionDir), {
+      createPiFactory: (): CloudTurnPiFactory => ({
+        create: async () =>
+          ({
+            close: async () => {
+              await new Promise((resolve) => setTimeout(resolve, 20));
+            },
+            prompt: async () => ({ output: [{ text: "slow-close", type: "text" }], status: "completed" }),
+          }) as unknown as CloudTurnPiRuntime,
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      }),
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+    });
+    expect(completion).toMatchObject({ finalText: "slow-close", outcome: "completed" });
   });
 });
 

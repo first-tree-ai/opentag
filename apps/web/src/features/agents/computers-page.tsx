@@ -91,7 +91,7 @@ function ComputerContent({
 }) {
   const [connecting, setConnecting] = useState(false);
   // Redemption can populate inventory before the daemon starts. Keep the exact attempt mounted
-  // until it confirms online, so this intermediate state never offers a second enrollment.
+  // until it confirms online, so this intermediate state never offers a second connection attempt.
   const finishConnection = () => {
     setConnecting(false);
     onConnected();

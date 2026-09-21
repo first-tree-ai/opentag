@@ -123,7 +123,7 @@ describe("Account Computer management", () => {
     expect(screen.queryByRole("heading", { name: "Ada's Mac" })).toBeNull();
   });
 
-  it("does not offer enrollment when the computer read fails", async () => {
+  it("does not offer a new connection when the computer read fails", async () => {
     installApi({ computerEvidenceFails: true });
     openComputer();
     expect(await screen.findByRole("alert")).toBeTruthy();

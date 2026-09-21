@@ -384,6 +384,76 @@ async function localSteerScope() {
   return { accountId, agentId, computerId, instanceId, bindingId, channelSessionId, threadSessionId, rootDeliveryId };
 }
 
+/** A minimal Local runtime snapshot the worker's assembler seam can return. */
+const LOCAL_RUNTIME = {
+  revision: { agent: { sequence: 1, id: "rev-a" }, session: { sequence: 1, id: "rev-s" } },
+  agentId: "agent-local",
+  provider: "pi",
+  model: "unit-model",
+  instructions: { platform: "P", agent: "A" },
+  execution: { approvalPolicy: "never", networkAccess: false },
+  workspace: { workspaceId: "w", mode: "empty_on_create", sharing: "agent" },
+};
+
+/**
+ * A pending channel row with no accepted sibling, so the worker claims it as a fresh delivery
+ * rather than as a steer. The thread sibling is present, which is what makes `#replyRole` resolve
+ * the observer role for this row.
+ */
+async function localPendingDelivery(scope: Awaited<ReturnType<typeof localSteerScope>>) {
+  const messageId = randomUUID();
+  const deliveryId = randomUUID();
+  await unit.database.insert(imMessages).values({
+    id: messageId,
+    imBindingId: scope.bindingId,
+    channelId: "unit-local-channel",
+    externalMessageId: `ext-${messageId.slice(0, 8)}`,
+    providerRevisionKey: "1",
+    operation: "created",
+    direction: "inbound",
+    authorKind: "human",
+    authorExternalId: "unit-user",
+    content: { version: 1, fallbackText: "hello local", blocks: [], truncated: false },
+    providerContext: { provider: "feishu" },
+    occurredAt: new Date(),
+    threadKey: "omt_local",
+  });
+  await unit.database.insert(imMessageDeliveries).values({
+    id: deliveryId,
+    messageId,
+    sessionId: scope.channelSessionId,
+    attention: "direct",
+    state: "pending",
+    placementGeneration: 1,
+    expiresAt: new Date(Date.now() + 3_600_000),
+  });
+  const threadDeliveryId = randomUUID();
+  await unit.database.insert(imMessageDeliveries).values({
+    id: threadDeliveryId,
+    messageId,
+    sessionId: scope.threadSessionId,
+    attention: "direct",
+    state: "pending",
+    placementGeneration: 1,
+    expiresAt: new Date(Date.now() + 3_600_000),
+  });
+  // The channel row is claimable now; its thread sibling is pushed out so this tick takes the
+  // delivery path rather than competing for the same message.
+  await unit.database
+    .update(imMessageDeliveries)
+    .set({ nextAttemptAt: new Date(Date.now() - 60_000) })
+    .where(eq(imMessageDeliveries.id, deliveryId));
+  await unit.database
+    .update(imMessageDeliveries)
+    .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+    .where(eq(imMessageDeliveries.id, threadDeliveryId));
+  // The accepted root turn is removed: with no accepted sibling, this row is claimed as its own
+  // delivery rather than as a steer. The thread sibling only exists so `#replyRole` resolves the
+  // observer role for the message.
+  await unit.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, scope.rootDeliveryId));
+  return { deliveryId, messageId, threadDeliveryId };
+}
+
 /** A pending channel follow-up that `#replyRole` resolves to the observer role. */
 async function observerFollowUp(scope: Awaited<ReturnType<typeof localSteerScope>>) {
   const messageId = randomUUID();
@@ -479,10 +549,12 @@ function makeWorker(
     registry?: ConnectionRegistry;
     afterClaimRowLocked?: () => Promise<void>;
     claimRenewMs?: number;
+    assembler?: { assembleForSession: (sessionId: string) => Promise<unknown> };
+    imDeliveryCapability?: number;
   } = {},
 ) {
   return new ImDeliveryWorker({
-    assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
+    assembler: (options.assembler ?? new EffectiveRuntimeSnapshotAssembler(unit.database)) as never,
     database: unit.database,
     domain: (options.domain ?? {}) as never,
     ...(options.registry ? { registry: options.registry } : { registry: new ConnectionRegistry() }),
@@ -1766,6 +1838,117 @@ describe("ImDeliveryWorker Cloud-only worker branches", () => {
     // The Agent is active but no runtime can be assembled yet: recovery waits for the next tick
     // instead of reconciling an environment it cannot describe.
     expect(reconciles).toEqual([]);
+  });
+
+  it("drops a claim whose row disappears before the delivery reads it", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    const diagnostics: string[] = [];
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      domain: { requestDelivery: vi.fn() },
+      onDiagnostic: (code) => diagnostics.push(code),
+      // The row is deleted between the claim commit and the delivery read: the pass must stop
+      // rather than dispatch work for a row that no longer exists.
+      afterClaimRowLocked: async () => {
+        await unit.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+      },
+    });
+    await worker.runOnce();
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("refuses a Local delivery whose placement advanced after the claim", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await localPendingDelivery(scope);
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      domain: { requestDelivery: vi.fn() },
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(LOCAL_RUNTIME) },
+      afterClaimRowLocked: async () => {
+        await unit.database
+          .update(sessionPlacements)
+          .set({ generation: 2 })
+          .where(eq(sessionPlacements.sessionId, scope.channelSessionId));
+      },
+    });
+    await worker.runOnce();
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({ state: "pending", lastErrorCode: "IM_DELIVERY_PLACEMENT_STALE" });
+  });
+
+  it("refuses an observer delivery when the connection negotiated only delivery version one", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await localPendingDelivery(scope);
+    const delivered: unknown[] = [];
+    const worker = makeWorker(undefined, undefined, {
+      // The connection carries delivery, but not the observer contract the reply needs.
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imDelivery]: 1 })).registry,
+      domain: {
+        requestDelivery: vi.fn((...args: unknown[]) => {
+          delivered.push(args);
+          return Promise.resolve({ status: "accepted" });
+        }),
+      },
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(LOCAL_RUNTIME) },
+    });
+    await worker.runOnce();
+    expect(delivered).toEqual([]);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({ state: "pending", lastErrorCode: "IM_DELIVERY_OBSERVER_UNSUPPORTED" });
+  });
+
+  it("fences a Local delivery when another turn of the Agent holds custody", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await localPendingDelivery(scope);
+    const delivered: unknown[] = [];
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imDelivery]: 2 })).registry,
+      domain: {
+        requestDelivery: vi.fn((...args: unknown[]) => {
+          delivered.push(args);
+          return Promise.resolve({ status: "accepted" });
+        }),
+      },
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(LOCAL_RUNTIME) },
+      // A second turn of the same Agent takes custody after the claim: the Agent-wide fence must
+      // refuse this delivery rather than let two turns of one Agent run at once.
+      afterClaimRowLocked: async () => {
+        // A second, distinct message in the other Session of the same Agent takes custody.
+        const rivalMessageId = randomUUID();
+        await unit.database.insert(imMessages).values({
+          id: rivalMessageId,
+          imBindingId: scope.bindingId,
+          channelId: "unit-local-channel",
+          externalMessageId: `rival-${rivalMessageId.slice(0, 8)}`,
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "unit-user",
+          content: { version: 1, fallbackText: "rival", blocks: [], truncated: false },
+          providerContext: { provider: "feishu" },
+          occurredAt: new Date(),
+        });
+        await unit.database.insert(imMessageDeliveries).values({
+          id: randomUUID(),
+          messageId: rivalMessageId,
+          sessionId: scope.threadSessionId,
+          attention: "direct",
+          state: "accepted",
+          placementGeneration: 1,
+          inputHash: "rival-hash",
+          turnId: "turn-rival",
+          reportOwnerInstanceId: scope.instanceId,
+          acceptedAt: new Date(),
+          expiresAt: new Date(Date.now() + 3_600_000),
+        });
+      },
+    });
+    await worker.runOnce();
+    expect(delivered).toEqual([]);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({ state: "pending", lastErrorCode: "IM_DELIVERY_AGENT_CUSTODY_FENCED" });
   });
 
   it("reports an abandoned dispatch when the operation deadline passes first", async () => {

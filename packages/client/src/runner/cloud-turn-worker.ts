@@ -216,19 +216,41 @@ function renderCloudContextTree(
   status: CloudContextTreeStatus | undefined,
 ): readonly string[] {
   if (!status) return [];
-  if (status.status === "configured")
+  if (status.status === "configured") {
     return [
       "## Context Trees",
       "Trees have no implied precedence. Use the upstream skills to select relevant trees, attribute disagreements to aliases, and choose an explicit write destination.",
       ...status.connections.flatMap((entry) => [
         `Alias ${entry.alias} — ${entry.repository}:`,
-        ...renderCloudContextTree(snapshot, entry),
+        ...renderCloudTreeFacts(entry),
       ]),
+      ...new Set(status.connections.flatMap((entry) => renderCloudTreeGuidance(snapshot, entry))),
     ];
-  return renderCloudTreeStatus(snapshot, status);
+  }
+  return ["## Context Tree", "", ...renderCloudTreeFacts(status), ...renderCloudTreeGuidance(snapshot, status)];
 }
 
-function renderCloudTreeStatus(
+function renderCloudTreeFacts(status: Exclude<CloudContextTreeStatus, { status: "configured" }>): readonly string[] {
+  if (status.status === "ready")
+    return [
+      `Context Tree: ${status.treePath} — synchronized at the start of this Turn${
+        status.branch && status.sha ? ` (branch ${status.branch}, commit ${status.sha.slice(0, 12)})` : ""
+      }.`,
+    ];
+  if (status.status === "stale")
+    return [
+      `Context Tree: ${status.treePath} — ${
+        status.reason === "DIRTY_TREE"
+          ? "the preserved checkout has unpublished changes"
+          : `this Turn's synchronization failed (${status.reason})`
+      }.`,
+    ];
+  if (status.status === "unconfigured")
+    return ["Context Tree: disabled for this Agent (no Context Tree repository is selected in the Agent's settings)."];
+  return [`Context Tree unavailable (${status.reason}).`];
+}
+
+function renderCloudTreeGuidance(
   snapshot: EffectiveRuntimeSnapshot,
   status: Exclude<CloudContextTreeStatus, { status: "configured" }>,
 ): readonly string[] {
@@ -238,12 +260,7 @@ function renderCloudTreeStatus(
       ? `Your Agent slug is \`${slug}\` (also stated in the Platform section): \`members/${slug}/\` is your own private working memory in the tree. Do not write to another Agent's member directory.`
       : "`members/<your Agent slug>/` is your own private working memory in the tree; the Agent slug is stated in the Platform section below. Do not write to another Agent's member directory.";
     return [
-      "## Context Tree",
-      "",
-      `Context Tree: ${status.treePath} — synchronized at the start of this Turn${
-        status.branch && status.sha ? ` (branch ${status.branch}, commit ${status.sha.slice(0, 12)})` : ""
-      }.`,
-      "This Context Tree is connected in this Agent's settings. The checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session.",
+      "Ready Context Trees are connected in this Agent's settings. Each checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session.",
       "Read the decisions that bear on a task before planning or changing code, and record durable decisions there. Use the context-tree-read and context-tree-write skills; the `context-tree` command is on PATH.",
       member,
       "",
@@ -252,37 +269,24 @@ function renderCloudTreeStatus(
   if (status.status === "stale") {
     const dirty = status.reason === "DIRTY_TREE";
     return [
-      "## Context Tree",
-      "",
-      `Context Tree: ${status.treePath} — ${
-        dirty
-          ? "the preserved checkout has unpublished changes"
-          : `this Turn's synchronization failed (${status.reason})`
-      }.`,
       ...(dirty
         ? [
-            "The changes were left untouched. Inspect them with the `context-tree` command (`context-tree read --tree-path <tree> …`, `context-tree verify --tree-path <tree>`) or with `git`, and continue any prepared write worktree. Synchronizing or publishing will keep failing until the changes are committed or otherwise resolved; do not reset or discard them silently.",
+            "For stale trees with unpublished changes: the changes were left untouched. Inspect them with the `context-tree` command (`context-tree read --tree-path <tree> …`, `context-tree verify --tree-path <tree>`) or with `git`, and continue any prepared write worktree. Synchronizing or publishing will keep failing until the changes are committed or otherwise resolved; do not reset or discard them silently.",
           ]
         : [
-            "The on-disk copy may be outdated: it is not confirmed to be the newest published state. Unpublished drafts were left untouched. You may read the local copy as potentially stale context, and expect synchronizing or publishing to fail until a later Turn succeeds.",
+            "For other stale trees, the on-disk copy may be outdated: it is not confirmed to be the newest published state. Unpublished drafts were left untouched. You may read the local copy as potentially stale context, and expect synchronizing or publishing to fail until a later Turn succeeds.",
           ]),
       "",
     ];
   }
   if (status.status === "unconfigured") {
     return [
-      "## Context Tree",
-      "",
-      "Context Tree: disabled for this Agent (no Context Tree repository is selected in the Agent's settings).",
       "Durable memory is not active. Do not assume earlier decisions were recorded, and do not create or connect a tree yourself.",
       "",
     ];
   }
   return [
-    "## Context Tree",
-    "",
-    `Context Tree unavailable (${status.reason}).`,
-    "This tree is not active for this Turn; other ready trees remain usable. Continue the task without this tree. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
+    "Unavailable trees are not active for this Turn; other ready trees remain usable. Continue the task without those trees. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
     ...(status.reason === "GITHUB_PERMISSION"
       ? [
           "The current execution does not grant this Session the selected repository, so the managed connection stays detached until the grant returns.",

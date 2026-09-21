@@ -115,3 +115,26 @@ it("attributes partial memory results to aliases without disabling healthy trees
   expect(prompt).toContain("explicit alias for every write");
   expect(prompt).not.toContain("Durable memory is not active for this Session");
 });
+
+it("renders shared multi-tree instructions once while preserving each path and reason", () => {
+  const prompt = renderManagedSystemPrompt(snapshot, {
+    ...session,
+    contextTree: {
+      status: "configured",
+      connections: [
+        { alias: "team", repository: "acme/team", status: "ready", treePath: "/trees/team" },
+        { alias: "product", repository: "acme/product", status: "ready", treePath: "/trees/product" },
+        { alias: "pending", repository: "acme/pending", status: "unavailable", reason: "PREPARING" },
+        { alias: "denied", repository: "acme/denied", status: "unavailable", reason: "GITHUB_PERMISSION" },
+      ],
+    },
+  });
+  expect(prompt).toContain("Context Tree: /trees/team");
+  expect(prompt).toContain("Context Tree: /trees/product");
+  expect(prompt).toContain("Alias pending — acme/pending");
+  expect(prompt).toContain("preparation is continuing");
+  expect(prompt).toContain("GITHUB_PERMISSION");
+  expect(prompt.match(/Use the context-tree-read and context-tree-write skills/g)).toHaveLength(1);
+  expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
+  expect(prompt.match(/Other ready trees remain usable/g)).toHaveLength(1);
+});

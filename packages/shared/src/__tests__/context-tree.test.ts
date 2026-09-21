@@ -45,3 +45,12 @@ it("normalizes identity without precedence or mutation", () => {
   expect(normalizeContextTrees(trees)).toEqual(normalizeContextTrees([...trees].reverse()));
   expect(trees[0]?.repository).toBe("Acme/Z");
 });
+
+it("accepts 32 trees and rejects a 33rd tree", () => {
+  const connections = Array.from({ length: 33 }, (_, index) => ({
+    alias: `tree-${index}`,
+    repository: `acme/tree-${index}`,
+  }));
+  expect(ContextTreesSchema.safeParse(connections.slice(0, 32)).success).toBe(true);
+  expect(ContextTreesSchema.safeParse(connections).success).toBe(false);
+});

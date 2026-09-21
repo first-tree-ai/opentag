@@ -19,18 +19,23 @@ export const ContextTreeConnectionSchema = z
     repository: ContextTreeRepositorySchema,
   })
   .strict();
-export const ContextTreesSchema = z.array(ContextTreeConnectionSchema).superRefine((connections, context) => {
-  const aliases = new Set<string>();
-  const repositories = new Set<string>();
-  connections.forEach((connection, index) => {
-    if (aliases.has(connection.alias))
-      context.addIssue({ code: "custom", path: [index, "alias"], message: "Aliases must be unique" });
-    if (repositories.has(connection.repository.toLowerCase()))
-      context.addIssue({ code: "custom", path: [index, "repository"], message: "Repositories must be unique" });
-    aliases.add(connection.alias);
-    repositories.add(connection.repository.toLowerCase());
+// Bound per-Agent preparation work and runtime prompt size.
+const CONTEXT_TREES_MAX = 32;
+export const ContextTreesSchema = z
+  .array(ContextTreeConnectionSchema)
+  .max(CONTEXT_TREES_MAX)
+  .superRefine((connections, context) => {
+    const aliases = new Set<string>();
+    const repositories = new Set<string>();
+    connections.forEach((connection, index) => {
+      if (aliases.has(connection.alias))
+        context.addIssue({ code: "custom", path: [index, "alias"], message: "Aliases must be unique" });
+      if (repositories.has(connection.repository.toLowerCase()))
+        context.addIssue({ code: "custom", path: [index, "repository"], message: "Repositories must be unique" });
+      aliases.add(connection.alias);
+      repositories.add(connection.repository.toLowerCase());
+    });
   });
-});
 export type ContextTreeConnection = z.infer<typeof ContextTreeConnectionSchema>;
 
 /** Array order is presentation only; no tree takes precedence over another. */

@@ -11,10 +11,11 @@ configuration. The empty list disables memory. One JSONB column owns the list; t
 connection table or separate connection ID. APIs and effective runtime snapshots use the same
 shared Zod schema. Aliases follow the upstream CLI's safe single-segment rule (1–100 characters,
 starting with a letter or digit, no `.git` suffix). Aliases are case-sensitive; repository identity
-is case-insensitive. Duplicate aliases or repositories are rejected.
+is case-insensitive. Duplicate aliases or repositories are rejected. Each Agent may connect at most
+32 trees to bound preparation work and runtime prompt size.
 
 Configuration hashes sort connections by alias and normalize repository identity. Array order
-conveys no priority. Agents may share any number of repositories, and a repository's published
+conveys no priority. Agents may share repositories within that limit, and a repository's published
 knowledge is shared with other Agents that connect it.
 
 **Agent settings → Context Tree** shows alias/repository rows with individual Disconnect buttons.

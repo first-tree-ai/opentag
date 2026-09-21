@@ -201,6 +201,58 @@ function validationRunFrame(overrides: Record<string, unknown> = {}) {
   };
 }
 
+describe("provider CLI reconciler abort and close edges", () => {
+  it("refuses readiness after close and never inspects again", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await reconciler.close();
+    const callsAfterClose = inspect.mock.calls.length;
+    // Every entry point returns undefined after close instead of inspecting again.
+    await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
+    await expect(reconciler.readySelectionForRun("feishu")).resolves.toBeUndefined();
+    expect(inspect.mock.calls.length).toBe(callsAfterClose);
+  });
+
+  it("ignores frames delivered after close", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await reconciler.close();
+    const before = inspect.mock.calls.length;
+    await runtime.emit(requirement);
+    await runtime.emit(prewarm);
+    expect(inspect.mock.calls.length).toBe(before);
+  });
+
+  it("rejects a readiness wait when the caller already aborted", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    const reason = new Error("caller aborted");
+    const controller = new AbortController();
+    controller.abort(reason);
+    // The caller's own abort reason is rethrown verbatim so the Run path can classify it.
+    await expect(reconciler.readySelectionForRun("slack", controller.signal)).rejects.toBe(reason);
+    await reconciler.close();
+  });
+});
+
 describe("provider CLI reconciler", () => {
   it("does not inspect or mutate without a binding requirement", async () => {
     const inspect = vi.fn();

@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentPromptRequest,
@@ -412,6 +413,114 @@ function runWithFactory(workspace: string, factory: AgentRuntimeFactory) {
     assembleSkills: async () => fakeAssembledSkills(workspace),
   });
 }
+
+describe("runner acceptance real Pi skill evidence", () => {
+  /** The checked-in hermetic Pi RPC fixture: it answers `get_commands` with one skill + one builtin. */
+  const piRpcFixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "pi-rpc.mjs");
+
+  /**
+   * A `pi` stand-in answering the REAL probe contract (version/help/list-models) and forwarding
+   * RPC stdin/stdout to the shared hermetic fixture, so `createTrackedFactory` accepts it.
+   */
+  async function installPiStub(workspace: string): Promise<string> {
+    const bin = join(workspace, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(
+      join(bin, "pi"),
+      `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --version) echo "0.84.2"; exit 0 ;;
+    --help) echo "${RUNNER_PROBE_HELP}"; exit 0 ;;
+    --list-models) printf 'provider model context max-out thinking images\nfixture fixture-model 128000 8192 max no\n'; exit 0 ;;
+  esac
+done
+exec '${process.execPath}' '${piRpcFixture}' normal
+`,
+      { mode: 0o755 },
+    );
+    return bin;
+  }
+
+  function assembledSkills(workspace: string, names: readonly string[]) {
+    return {
+      ...fakeAssembledSkills(workspace),
+      skills: names.map((name) => ({
+        directory: join(workspace, "skills", name),
+        name,
+        skillFile: join(workspace, "skills", name, "SKILL.md"),
+      })),
+    };
+  }
+
+  it("fails the real skill-list comparison with the exact expected/loaded diagnostic", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-real-skills-"));
+    directories.push(workspace);
+    const path = await installPiStub(workspace);
+    const report = await runRunnerAcceptance({
+      mode: "real",
+      piHome: workspace,
+      runtimeHome: workspace,
+      sessionDirectory: join(workspace, "sessions"),
+      workspace,
+      path,
+      probeTools: async () => [{ name: "git", ok: true }],
+      // A real factory is used here so the real `loadPiSkillNames` RPC path runs; the assembled set
+      // deliberately does not match the fixture's single `skill:fixture-skill` command.
+      assembleSkills: async () => assembledSkills(workspace, ["something-else"]),
+    });
+    expect(report.model).toBe("failed");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("skill list mismatch");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("fixture-skill");
+  }, 60_000);
+
+  it("fails closed when Pi answers the skill listing without a command list", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-real-skills-empty-"));
+    directories.push(workspace);
+    const bin = join(workspace, "bin");
+    await mkdir(bin, { recursive: true });
+    // The same real probe contract, but the RPC backend answers without a `commands` payload.
+    // A standalone script avoids nested shell/JS quoting entirely.
+    const backend = join(workspace, "empty-commands.mjs");
+    await writeFile(
+      backend,
+      `import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const frame = JSON.parse(line);
+  process.stdout.write(JSON.stringify({ type: "response", id: frame.id, command: frame.type, success: true, data: {} }) + "\\n");
+});
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(bin, "pi"),
+      `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --version) echo "0.84.2"; exit 0 ;;
+    --help) echo "${RUNNER_PROBE_HELP}"; exit 0 ;;
+    --list-models) printf 'provider model context max-out thinking images\nfixture fixture-model 128000 8192 max no\n'; exit 0 ;;
+  esac
+done
+exec '${process.execPath}' '${backend}'
+`,
+      { mode: 0o755 },
+    );
+    const report = await runRunnerAcceptance({
+      mode: "real",
+      piHome: workspace,
+      runtimeHome: workspace,
+      sessionDirectory: join(workspace, "sessions"),
+      workspace,
+      path: bin,
+      probeTools: async () => [{ name: "git", ok: true }],
+      assembleSkills: async () => fakeAssembledSkills(workspace),
+    });
+    expect(report.model).toBe("failed");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("no command list");
+  }, 60_000);
+});
 
 describe("runner acceptance model failure evidence", () => {
   it("fails when the fixture turn does not complete", async () => {

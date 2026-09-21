@@ -1149,6 +1149,17 @@ describe("Provider CLI Turn plan schema", () => {
     ).resolves.toBeUndefined();
     await expect(manager.recover()).resolves.toBeUndefined();
   });
+
+  // Guards the boundary between a per-Turn plan and the shared account launcher: preparing a Turn must
+  // never write into `layout.bin`. The malformed-plan cases above do not cover it -- they all fail before
+  // anything is published -- so this stays as its own test rather than folded into one of them.
+  it("does not rewrite the account-global launcher v1 marker", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    await expect(stat(join(layout.bin, "lark-cli"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 describe("resolveProviderCliAccountLayout plans root", () => {

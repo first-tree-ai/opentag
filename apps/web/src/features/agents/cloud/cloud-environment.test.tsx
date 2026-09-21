@@ -709,26 +709,17 @@ describe("AgentComputerSettings Cloud and Local compatibility", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
-  it("keeps the Local repair flow exactly as it was, with no Cloud reads", async () => {
+  it("routes Local recovery to the Account Computer, with no Cloud reads", async () => {
     const read = vi.spyOn(browserApi, "agentCloudOverview").mockResolvedValue(overview());
-    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
-      bootstrapCommand: "opentag computer connect -- code",
-      connectCodeId: "connect-code",
-      expiresIn: 900,
-      issuedAt: "2026-08-20T00:00:00.000Z",
-    });
-    vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
-      computerId: null,
-      connectCodeId: "connect-code",
-      redeemedAt: null,
-      state: "pending",
-    });
+    const connect = vi.spyOn(browserApi, "issueComputerConnectCode");
 
     await renderInRouter(
       <AgentComputerSettings agent={agentView("local", "action_required")} onAgentChanged={vi.fn()} />,
     );
 
-    expect(await screen.findByRole("button", { name: "Generate an install command" })).toBeTruthy();
+    const recovery = await screen.findByRole("link", { name: "Restore connection" });
+    expect(recovery.getAttribute("href")).toContain(COMPUTER_ID);
+    expect(connect).not.toHaveBeenCalled();
     expect(screen.getByText("Offline")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
     expect(read).not.toHaveBeenCalled();

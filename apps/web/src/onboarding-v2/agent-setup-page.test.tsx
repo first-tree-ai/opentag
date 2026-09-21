@@ -209,10 +209,7 @@ describe("AgentSetupPage stages", () => {
     await advance(1);
 
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer runs on your own computer.")).toBeTruthy();
-    expect(
-      screen.getByText("Agent work stays on this computer. Messages and results pass through OpenTag."),
-    ).toBeTruthy();
+    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through OpenTag.")).toBeTruthy();
     const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
     expect(summary?.textContent).toContain("No computer connected");
     expect(summary?.textContent).toContain("Not connected");
@@ -230,7 +227,7 @@ describe("AgentSetupPage stages", () => {
     await settle();
 
     expect(
-      screen.getByText("Review Mac belongs to another Account. Choose a Computer owned by this Account for Reviewer."),
+      screen.getByText("Review Mac belongs to another account. Choose a computer from this account for Reviewer."),
     ).toBeTruthy();
     expectComputerStepLayoutState("requires-rebind");
     expect(screen.getByText("Connect your computer")).toBeTruthy();
@@ -250,13 +247,12 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(reads).toHaveBeenCalledTimes(1);
 
-    /*
-     * The remedy for a Computer that is only switched off, stated here and nowhere else in this
-     * step. The Settings panel carries the same instruction in its own recovery sentence, so a
-     * sentence deleted from the shared connect surface as "duplicated" is only duplicated there;
-     * here its absence leaves a reader whose OpenTag is not running with nothing but a reinstall.
-     */
-    expect(screen.getByText("Start OpenTag on Review Mac; this page will continue when it reconnects.")).toBeTruthy();
+    // Ordinary offline guidance does not assume OpenTag was uninstalled.
+    expect(screen.getByText("Turn on or wake this computer and check its internet connection.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Get connection help" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+    expect(screen.getByText("You can continue when this computer is ready.")).toBeTruthy();
+    expect(screen.queryByText("Complete the action above, then check again.")).toBeNull();
 
     // An offline Computer is expected to come back without the page being touched, so it is polled.
     const readsBeforePoll = reads.mock.calls.length;
@@ -264,7 +260,7 @@ describe("AgentSetupPage stages", () => {
     expect(reads.mock.calls.length).toBeGreaterThan(readsBeforePoll);
   });
 
-  it("expands the shared command surface directly when an offline Computer needs reinstalling", async () => {
+  it("issues a targeted repair only after opening connection help and requesting repair", async () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand: "opentag computer connect --server https://opentag.example.com -- repair-code",
       connectCodeId: "repair-code",
@@ -281,15 +277,24 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    const repairAction = screen.getByRole("button", { name: "Generate an install command" });
-    expect(repairAction.closest(".ots-command__body")).toBeTruthy();
-    expect(screen.getByText("Need to reinstall?")).toBeTruthy();
+    expect(issue).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
+    await settle();
+    expect(issue).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Assistant requested a repair?" }));
+    await settle();
+    const repairAction = screen.getByRole("button", { name: "Repair connection" });
+    expect(repairAction.closest(".ots-command__body")).toBeNull();
+    expect(screen.queryByText("Need to reinstall?")).toBeNull();
     fireEvent.click(repairAction);
     await settle();
 
     const repairSurface = document.querySelector('[data-ui="computer-connect"]');
     expect(repairSurface?.querySelector(".ots-command__body")).not.toBeNull();
-    expect(screen.getByText("Paste this command into the coding agent on Review Mac.")).toBeTruthy();
+    expect(screen.getByText("Paste this command into your coding assistant on Review Mac.")).toBeTruthy();
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
     expect(screen.getByText("Waiting for Review Mac to reconnect…").closest('[role="status"]')).toBeTruthy();
     expect(issue).toHaveBeenCalledWith({
@@ -312,8 +317,7 @@ describe("AgentSetupPage stages", () => {
     expect(rowTitle("runtime")).toContain("Installation required");
     // An install is a manual action the operator owns: OpenTag never installs Runtime CLIs, and
     // the row never claims a preparing/installing state exists.
-    expect(rowDetail("runtime")).toContain("Install Codex on Review Mac, then check again.");
-    expect(rowDetail("runtime")).toContain("OpenTag won't install it for you");
+    expect(rowDetail("runtime")).toBe("Install Codex on Review Mac.");
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
     const footer = document.querySelector('[data-ui="onboarding-v2-step-2-nav"]');
     const refresh = screen.getByRole("button", { name: "Check again" });
@@ -405,7 +409,7 @@ describe("AgentSetupPage stages", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Installation required");
-    expect(rowDetail("messaging-support")).toContain("Continue messaging setup in the coding agent on Review Mac");
+    expect(rowDetail("messaging-support")).toContain("Continue messaging setup in your coding assistant on Review Mac");
     expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
@@ -574,7 +578,7 @@ describe("preparation review regressions", () => {
     renderSetup(memory.adapter);
     await settle();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("needs-attention");
-    expect(rowDetail("runtime")).toContain("Continue the repair in the coding agent on Review Mac");
+    expect(rowDetail("runtime")).toContain("Open Codex on Review Mac and check for errors.");
     expect(rowDetail("runtime")).not.toMatch(/not responding|isn't responding|timed out|opentag doctor/i);
   });
 

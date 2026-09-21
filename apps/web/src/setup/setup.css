@@ -66,6 +66,11 @@
   color: #9fb27f;
 }
 
+.ots-command__code:focus-visible {
+  outline: 2px solid var(--on-dark);
+  outline-offset: 2px;
+}
+
 /*
  * The trailing token is an opaque secret and breaks strictly by character. Left to break at its own
  * hyphens and underscores, two codes of the same length wrap to a different number of lines and the

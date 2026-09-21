@@ -295,7 +295,7 @@ describe("Agent availability model and presentation", () => {
           },
         },
       }),
-    ).toContain("not running");
+    ).toContain("cannot reach Desk Mac");
     expect(
       computerRecoveryMessage({
         ...base,

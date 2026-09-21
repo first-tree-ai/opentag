@@ -13,10 +13,10 @@ import {
   agentComputerStatus,
   agentMessagingStatus,
   agentRecoveryMessage,
+  agentRuntimeIssue,
   agentStatusPresentation,
   messagingChannelLabel,
   platformLabel,
-  runtimeProviderName,
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
@@ -116,22 +116,20 @@ export function AgentObjectHeader({
 }
 
 /**
- * The two user-facing conditions an Agent needs before it can do work. Runtime readiness stays
- * folded into Computer: it is part of the execution environment, and only needs to be named when
- * it changes that row's status or recovery action.
+ * Connection and messaging stay visible; runtime only appears when it needs attention.
  */
 export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const computer = agentComputerStatus(agent);
   const messaging = agentMessagingStatus(agent);
+  const runtime = agentRuntimeIssue(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
-  const runtimeName = runtimeProviderName(agent.runtimeProvider);
   return (
     <section
       className="grid rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
       aria-label={m.agents_status_region()}
       data-ui="agent-status-overview"
     >
-      <ul className="grid h-full list-none grid-rows-2">
+      <ul className="grid h-full list-none divide-y divide-kumo-line">
         <AgentStatusRow
           agent={agent}
           dependency="computer"
@@ -139,17 +137,31 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
           // nothing would leave a bare separator where a machine should be. `identity` is
           // optional for exactly this: the messaging row below omits it the same way.
           identity={
-            agent.computer
-              ? m.agents_computer_identity({
-                  name: agent.computer.displayName,
-                  platform: platformLabel(agent.computer.platform),
-                  runtime: runtimeName,
-                })
-              : undefined
+            agent.computer ? `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)}` : undefined
           }
           name={m.agents_status_computer()}
           status={computer}
         />
+        {runtime ? (
+          <li className="grid gap-2 py-4 wrap-anywhere" data-ui="agent-status-runtime">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium" data-state={runtime.tone}>
+                <span
+                  aria-hidden="true"
+                  className={`size-1.5 shrink-0 rounded-full bg-current ${dependencyStatusClassName(runtime.tone)}`}
+                />
+                {runtime.label}
+              </span>
+              {runtime.action ? (
+                <Link className="inline-flex items-center gap-1 text-sm text-kumo-link" {...runtime.action.link}>
+                  {runtime.action.label}
+                  <Icon className="size-3.5" name="chevron-right" />
+                </Link>
+              ) : null}
+            </div>
+            {runtime.guidance ? <p className="text-sm text-kumo-subtle">{runtime.guidance}</p> : null}
+          </li>
+        ) : null}
         <AgentStatusRow
           agent={agent}
           dependency="messaging"
@@ -175,11 +187,8 @@ function AgentStatusRow({
   name: string;
   status: AgentDependencyStatus;
 }) {
-  const isMessaging = dependency === "messaging";
-  const rowClassName = isMessaging
-    ? "grid content-center gap-2 border-t border-kumo-line pt-4"
-    : "grid content-center gap-2 pb-4";
-  const dataUi = isMessaging ? "agent-status-message-channel" : "agent-status-computer";
+  const rowClassName = "grid content-center gap-2 py-4 first:pt-0 last:pb-0";
+  const dataUi = dependency === "messaging" ? "agent-status-message-channel" : "agent-status-computer";
   return (
     <li className={rowClassName} data-ui={dataUi}>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">

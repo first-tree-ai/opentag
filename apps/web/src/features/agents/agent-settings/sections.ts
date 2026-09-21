@@ -120,7 +120,7 @@ export function agentSettingsSummary(
     const state = agent.availability.dependencies.computer.state;
     const status =
       state === "ready"
-        ? m.agent_settings_computer_online()
+        ? onlineComputerLabel(agent)
         : state === "action_required"
           ? m.agent_settings_computer_offline()
           : m.agent_settings_computer_unconfirmed();
@@ -143,4 +143,8 @@ function reasoningSummary(value: string | null): string {
       max: m.agent_settings_reasoning_max(),
     }[value] ?? value
   );
+}
+
+function onlineComputerLabel(agent: AgentDetailView) {
+  return agent.computerKind === "cloud" ? m.computer_managed() : m.agent_settings_computer_online();
 }

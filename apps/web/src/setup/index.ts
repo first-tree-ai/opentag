@@ -11,6 +11,6 @@
  */
 
 export { formatRemaining, type MessagingCliStatus } from "./checks.js";
-export { CommandBlock } from "./command-block.js";
+export { CommandBlock, InstructionBlock } from "./command-block.js";
 export { QrCode, useRemaining, WAITING_LINE } from "./components.js";
 export { type ConnectCodeVerdict, readConnectCodeVerdict } from "./connect-code-verdict.js";

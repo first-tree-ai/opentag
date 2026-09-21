@@ -1098,7 +1098,7 @@ packages:
     resolution: {integrity: sha512-g89ag4BCcD9YP5wBZXixzoLnuf5j89p/sXFcfpCiv2pdEkYYukBEoK3heVzqsp0EAtszVDc2BBZG0KZqeAShIA==}
 
   '@first-tree-ai/context-tree@0.1.16':
-    resolution: {tarball: https://registry.npmjs.org/@first-tree-ai/context-tree/-/context-tree-0.1.16.tgz}
+    resolution: {integrity: sha512-52iwDcENtwyrKpCBj/k6XU3xOfO1iRK80AXOvjU8CMd3QGjFwJSwizsz1qcveIeO7/FGeYoHZxGmfgsp/niNXg==}
     engines: {node: '>=22.13.0'}
     hasBin: true
 

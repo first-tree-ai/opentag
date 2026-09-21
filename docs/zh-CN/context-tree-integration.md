@@ -91,9 +91,8 @@ Server、Clients 和 Cloud runner 镜像必须一起部署。迁移 `0049_multip
 添加默认空列表的 JSONB 列，不翻译旧选择。旧 Agent 需重新选择，不迁移旧快照、操作记录或 CLI 存储。
 不支持的存储必须显式处理并保留未发布工作。
 
-`0.1.16` 发布前，可打包上游提交 `1ebe3cd`，临时用 pnpm override 指向本地 tarball 进行验证。
-该 override 及本地 lockfile 不应进入发布提交。发布后删除 override，运行 `pnpm install` 生成 registry
-lockfile，并对正式包重新运行打包冒烟检查。
+`0.1.16` 已发布到 npm。使用 `pnpm install --frozen-lockfile` 安装固定版本的 registry 包，
+并对该正式包运行打包冒烟检查。
 
 ## 验证
 

@@ -114,10 +114,8 @@ drops the former nullable repository column and adds an empty-list JSONB column 
 old selections. Existing Agents require fresh selection. Old snapshots, operation records, and CLI
 stores are not migrated. Unsupported stores must be handled explicitly while preserving unpublished work.
 
-Before `0.1.16` is published, local verification can pack upstream commit `1ebe3cd` and temporarily
-set a pnpm override to that tarball. Keep that override and its local lockfile out of release commits.
-After publication, remove the override, regenerate the registry lockfile with `pnpm install`, and
-repeat package smoke checks against the published package.
+`0.1.16` is published on npm. Install the pinned registry package with `pnpm install --frozen-lockfile`
+and run package smoke checks against that published package.
 
 ## Verification
 

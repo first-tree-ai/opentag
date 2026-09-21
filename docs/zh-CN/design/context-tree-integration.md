@@ -1,6 +1,6 @@
 # Context Tree 集成
 
-[English](../design/context-tree-integration.md)
+[English](../../design/context-tree-integration.md)
 
 状态：已实现。同步日期：2026-09-21。
 

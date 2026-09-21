@@ -1,6 +1,6 @@
 # Context Tree Integration
 
-[简体中文](../zh-CN/context-tree-integration.md)
+[简体中文](../zh-CN/design/context-tree-integration.md)
 
 Status: implemented. Updated: 2026-09-21.
 

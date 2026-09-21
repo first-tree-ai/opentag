@@ -329,6 +329,7 @@ export class ContextTreeManager {
     { target: string; results: ContextTreeResult[]; promise: Promise<ContextTreeStatus> }
   >();
   readonly #observedTarget = new Map<string, string>();
+  readonly #skillsInstalled = new Set<string>();
   #shimPreparation: Promise<boolean> | undefined;
   #shimRetryAt = 0;
   #pending: Promise<unknown> = Promise.resolve();
@@ -436,6 +437,8 @@ export class ContextTreeManager {
     results: ContextTreeResult[],
     environment?: Readonly<Record<string, string | undefined>>,
   ): Promise<ContextTreeStatus> {
+    if (this.#managedCredentials && !environment)
+      return connections.length ? { status: "configured", connections: [...results] } : { status: "unconfigured" };
     try {
       return await this.#prepareConnections(cwd, provider, connections, target, results, environment);
     } catch (error) {
@@ -483,8 +486,9 @@ export class ContextTreeManager {
       if (cached.result.status === "ready" && !reconciliation.attachedAliases.has(alias))
         previousCache?.results.delete(alias);
     }
-    if (!(await this.#prepareShim())) return failAll("SHIM_UNAVAILABLE");
+    const shimReady = await this.#prepareShim();
     if (!connections.length) return { status: "unconfigured" };
+    if (!shimReady) return failAll("SHIM_UNAVAILABLE");
     const installFailure = await this.#installSkills(cwd, provider, environment);
     if (installFailure) return failAll(installFailure);
     return this.#connectAll(cwd, connections, target, results, environment);
@@ -495,14 +499,16 @@ export class ContextTreeManager {
     provider: AgentRuntimeProvider | undefined,
     environment?: Readonly<Record<string, string | undefined>>,
   ): Promise<string | undefined> {
-    if (provider === "pi") return undefined;
+    if (provider === "pi" || this.#skillsInstalled.has(cwd)) return undefined;
     await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false, environment);
     const installed = await this.#run(["install", "--host", "codex"], cwd, false, {
       ...this.#environment,
       HOME: resolveAccountHome(this.#environment),
       CODEX_HOME: this.#codexHome,
     });
-    return codexInstallSkipReason(installed);
+    const failure = codexInstallSkipReason(installed);
+    if (!failure) this.#skillsInstalled.add(cwd);
+    return failure;
   }
 
   async #connectAll(

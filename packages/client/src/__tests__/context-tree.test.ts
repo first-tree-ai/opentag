@@ -105,6 +105,8 @@ describe("named Context Tree preparation", () => {
     expect(f.calls.filter(([command]) => command === "install")).toHaveLength(2);
     await f.manager.ensureAgent(f.cwd, "codex", [...trees].reverse());
     expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(2);
+    expect(f.calls.filter(([command]) => command === "install")).toHaveLength(2);
+    expect(f.calls.filter(([command]) => command === "resolve")).toHaveLength(2);
     await f.manager.ensureAgent(f.cwd, "pi", trees);
     expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(4);
     expect(await readFile(join(f.manager.binDirectory(), "context-tree"), "utf8")).toContain(process.execPath);
@@ -176,6 +178,11 @@ describe("named Context Tree preparation", () => {
       connections: trees.map((entry) => ({ ...entry, status: "unavailable", reason: options.reason })),
     });
   });
+  it("reports no configured trees without requiring a working shim", async () => {
+    const f = await fixture({ platform: "win32" });
+    expect(await f.manager.ensureAgent(f.cwd, "codex", [])).toEqual({ status: "unconfigured" });
+    expect(f.calls.map(([command]) => command)).toEqual(["resolve"]);
+  });
   it("rechecks grants before cached results and removes revoked aliases without networking", async () => {
     const f = await fixture({ managed: true });
     const grant = (entries: readonly ContextTreeConnection[]) => ({
@@ -192,9 +199,15 @@ describe("named Context Tree preparation", () => {
     expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(previousConnects);
     expect(f.calls).toContainEqual(["disconnect", "--tree", "product", "--project-path", f.cwd, "--json"]);
     expect(f.environments[0]).not.toHaveProperty("GITHUB_TOKEN");
+    const callsBeforeMissingEnvironment = f.calls.length;
     expect(await f.manager.ensureAgent(f.cwd, "pi", trees)).toMatchObject({
       connections: [{ reason: "AUTHENTICATION_REQUIRED" }, { reason: "AUTHENTICATION_REQUIRED" }],
     });
+    expect(f.calls).toHaveLength(callsBeforeMissingEnvironment);
+    expect(await f.manager.ensureAgent(f.cwd, "pi", trees, grant([trees[0]]))).toMatchObject({
+      connections: [{ status: "ready" }, { reason: "GITHUB_PERMISSION" }],
+    });
+    expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(previousConnects);
   });
 });
 

@@ -43,7 +43,7 @@ Local 设置继续使用原有 Computer 通信。
 
 每个 Cloud Sandbox 有独立副本。暴露 CLI 前先断开已移除或撤权的别名，但保留副本和草稿。
 每个仓库单独检查当前授权。版本 2 CLI 响应按别名报告结果；部分失败或三十秒总预算超时仍保留
-已完成结果，明确标记过时或未完成的树。树之间没有隐含优先级。详见[具名 Context Tree 集成](./context-tree-integration.md)。
+已完成结果，明确标记过时或未完成的树。树之间没有隐含优先级。详见[具名 Context Tree 集成](./design/context-tree-integration.md)。
 固定版本的 Context Tree CLI 和配套 skills 负责读取、同步、
 准备写入、校验和发布。Cloud 准备使用当前执行的受管 GitHub 环境，并检查仓库授权；不得回退到宿主
 Git 配置或 `gh auth login`。

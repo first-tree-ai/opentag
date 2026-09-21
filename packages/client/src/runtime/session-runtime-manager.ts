@@ -307,8 +307,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     // Context Tree is prepared here rather than in workspace preparation because `verifyAgent`
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
-    // caches per workspace, snapshot repository, and Provider, and
-    // never throws, so a failure only changes what the prompt reports.
+    // caches connections per workspace, configured tree set, and Provider while rechecking grants
+    // and attachments. It never throws, so a failure only changes what the prompt reports.
     const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId);
     const contextTree = await prepareContextTree(
       this.#contextTree,

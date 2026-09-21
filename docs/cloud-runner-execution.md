@@ -231,9 +231,28 @@ For E4, the Server additionally requires these model settings when enabling exec
 | Server variable | Meaning |
 | --- | --- |
 | `OPENTAG_CLOUD_MODEL_ENABLED` | Default `false`; `true` opts into the Cloud model proxy |
-| `OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` | Fixed HTTPS OpenAI-compatible API base URL |
-| `OPENTAG_CLOUD_MODEL_MASTER_KEY` | Server-only upstream secret; never copied into the Runner image or Sandbox |
-| `OPENTAG_CLOUD_MODEL_ALLOWED_MODELS` | Comma-separated model allowlist; the first is used when the Agent has no explicit model |
+| `OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` | Fixed HTTPS Router API base URL, including `/v1` |
+| `OPENTAG_CLOUD_MODEL_MASTER_KEY` | Server-only Router LLM credential; never copied into the Runner image or Sandbox |
+
+Cloud model choices come from the Router's authenticated `GET /models` response using that same
+base URL and credential. The Router applies tenant permissions and model availability. The
+Server uses one bounded, short-lived catalog for model selection, configuration validation,
+dispatch and model grants. An Agent without an explicit model uses the first returned model;
+an explicit model must be in the current catalog. Failed refreshes and empty lists are unavailable,
+never a fallback to the Local Pi model suggestions. `OPENTAG_CLOUD_MODEL_ALLOWED_MODELS` is retired
+and no longer restricts or supplies Cloud models; remove it after the rollback window.
+
+The model settings page tests hosted model connectivity with one short Server-to-Router request.
+This consumes a small model request but creates no Session, Sandbox or Instance, and does not add
+task usage history. It proves model access only: Pi execution, tools, messaging and workspace
+recovery still require a real task check. Local model selection and daemon diagnostics are unchanged.
+
+When upgrading a deployment that directly calls a provider, configure the existing base URL and
+credential for that environment's Router tenant. Listing a provider's models directly does not
+establish Router integration. The Runner's Pi provider configuration bounds output to Router's
+8,192-token limit and disables the unsupported OpenAI `store` field. Publish the updated Runner
+through the existing joint CLI/Runner release before accepting real Cloud tasks on Router. No
+additional feature switch, database migration or Runner protocol upgrade is needed.
 
 Keep the bounded transport defaults unless acceptance shows a need to tune them. See
 [`cloud-model-config.ts`](../packages/server/src/cloud-model-config.ts) for the optional timeout,

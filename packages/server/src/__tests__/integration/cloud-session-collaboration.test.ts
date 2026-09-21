@@ -17,6 +17,7 @@ import { RuntimeExecutionRegistry } from "../../runtime-credentials/execution-re
 import { AgentService } from "../../services/agents/index.js";
 import { ComputerService } from "../../services/computers/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
+import { createStaticCloudModelCatalog } from "../../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../../services/sandboxes/cloud-model-grants.js";
 import { type CloudConnectionRecord, CloudRuntimeFence } from "../../services/sandboxes/cloud-runtime-fence.js";
 import {
@@ -153,7 +154,7 @@ function makeStack(): Stack {
   const fence = new CloudRuntimeFence();
   const registry = new RuntimeExecutionRegistry();
   const grants = new CloudModelGrantService(JWT_SECRET, {
-    allowedModels: [MODEL],
+    catalog: createStaticCloudModelCatalog([MODEL]),
     maxStreamsPerToken: 2,
     ttlSeconds: 600,
   });

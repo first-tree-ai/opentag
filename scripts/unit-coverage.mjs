@@ -405,6 +405,29 @@ export function summarizeTestResults(report, elapsedMs = 0) {
   };
 }
 
+function testFileFailureLines(file) {
+  const failed = (file.assertionResults ?? []).filter((assertion) => assertion.status === "failed");
+  if (file.status !== "failed" && failed.length === 0) return [];
+  const lines = [file.name ?? "(unknown test file)"];
+  if (file.message) lines.push(file.message);
+  for (const assertion of failed) {
+    lines.push(`${file.name} > ${assertion.fullName ?? assertion.title ?? "(unnamed test)"}`);
+    lines.push(...(assertion.failureMessages ?? []));
+  }
+  return lines;
+}
+
+/** Keep failed test details and process errors visible even when coverage artifacts were produced. */
+export function formatTestFailureLines({ error, report, signal, status, stderr, stdout }) {
+  if (status === 0) return [];
+  const lines = [`Vitest failed (exit code ${status ?? "unknown"}${signal ? `, signal ${signal}` : ""}).`];
+  lines.push(...(report?.testResults ?? []).flatMap(testFileFailureLines));
+  if (error) lines.push(String(error));
+  if (stdout) lines.push(`Captured stdout:\n${stdout}`);
+  if (stderr) lines.push(`Captured stderr:\n${stderr}`);
+  return lines;
+}
+
 /**
  * Concatenate per-workspace Istanbul maps. Each file must appear in exactly one map: a second copy
  * is the merged-pass collision this script exists to avoid, not a number to max() or last-write.
@@ -466,15 +489,16 @@ function runProject(project, scope) {
 
   try {
     const { detailedPath, summaryPath } = assertCoverageArtifacts(reportsDirectory, project.name);
+    const report = existsSync(testResultsPath) ? JSON.parse(readFileSync(testResultsPath, "utf8")) : undefined;
+    if (result.status !== 0) {
+      process.stderr.write(`${formatTestFailureLines({ ...result, report }).join("\n")}\n`);
+    }
     return {
       detailed: JSON.parse(readFileSync(detailedPath, "utf8")),
       failed: result.status !== 0,
-      testReport: existsSync(testResultsPath) ? JSON.parse(readFileSync(testResultsPath, "utf8")) : undefined,
       summary: JSON.parse(readFileSync(summaryPath, "utf8")),
-      timing: summarizeTestResults(
-        existsSync(testResultsPath) ? JSON.parse(readFileSync(testResultsPath, "utf8")) : undefined,
-        performance.now() - startedAt,
-      ),
+      testReport: report,
+      timing: summarizeTestResults(report, performance.now() - startedAt),
     };
   } catch (error) {
     process.stderr.write(result.stdout ?? "");

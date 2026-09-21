@@ -18,6 +18,7 @@ import type { RuntimeDispatchAdmission } from "../runtime/runtime-domain-owner.j
 import { PostgresRuntimeDurableWorkStore } from "../runtime/runtime-durable-work-store.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
+import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import { type CloudConnectionRecord, CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
 import {
@@ -171,7 +172,7 @@ function makeStack(
   const registry = new RuntimeExecutionRegistry();
   const work = new CloudSessionWorkTracker();
   const grants = new CloudModelGrantService(JWT_SECRET, {
-    allowedModels: [MODEL],
+    catalog: createStaticCloudModelCatalog([MODEL]),
     maxStreamsPerToken: 2,
     ttlSeconds: 600,
   });
@@ -826,8 +827,8 @@ describe("CloudSessionCollaborationOwner", () => {
         write: async () => undefined,
       },
       modelGrants: {
-        defaultModel: MODEL,
-        isModelAllowed: () => true,
+        defaultModel: async () => MODEL,
+        isModelAllowed: async () => true,
         issue: async () => {
           throw new Error("mint exploded");
         },
@@ -1622,7 +1623,7 @@ describe("CloudSessionCollaborationOwner", () => {
     const fence = new CloudRuntimeFence();
     const work = new CloudSessionWorkTracker();
     const grants = new CloudModelGrantService(JWT_SECRET, {
-      allowedModels: [MODEL],
+      catalog: createStaticCloudModelCatalog([MODEL]),
       maxStreamsPerToken: 2,
       ttlSeconds: 600,
     });
@@ -1717,7 +1718,7 @@ describe("CloudSessionCollaborationOwner", () => {
       hub: new RunnerHub(),
       modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
       modelGrants: new CloudModelGrantService(JWT_SECRET, {
-        allowedModels: [MODEL],
+        catalog: createStaticCloudModelCatalog([MODEL]),
         maxStreamsPerToken: 2,
         ttlSeconds: 600,
       }),
@@ -1756,7 +1757,7 @@ describe("CloudSessionCollaborationOwner", () => {
       hub: new RunnerHub(),
       modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
       modelGrants: new CloudModelGrantService(JWT_SECRET, {
-        allowedModels: [MODEL],
+        catalog: createStaticCloudModelCatalog([MODEL]),
         maxStreamsPerToken: 2,
         ttlSeconds: 600,
       }),

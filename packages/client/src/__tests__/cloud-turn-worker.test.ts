@@ -198,6 +198,10 @@ describe("cloud-turn-worker", () => {
     expect(models.providers.opentag?.api).toBe("openai-completions");
     expect(models.providers.opentag?.baseUrl).toBe("https://server.example.com/api/v1/cloud-model");
     expect(models.providers.opentag?.models[0]?.id).toBe("deepseek-v4.1-flash-expires-on-0910");
+    expect(models.providers.opentag?.models[0]).toMatchObject({
+      maxTokens: 8_192,
+      compat: { supportsStore: false },
+    });
     const settings = JSON.parse(documents.settingsJson) as { defaultProvider: string; defaultModel: string };
     expect(settings.defaultProvider).toBe("opentag");
     expect(settings.defaultModel).toBe("opentag/deepseek-v4.1-flash-expires-on-0910");

@@ -3,6 +3,7 @@ import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH } from "@opentag/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerCloudModelProxyRoutes } from "../api/cloud-model-proxy.js";
+import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import {
   type CloudModelUpstream,
@@ -25,7 +26,6 @@ type ProxyConfig = Parameters<typeof registerCloudModelProxyRoutes>[1]["config"]
 
 function makeConfig(upstreamBaseUrl: string, overrides: Partial<ProxyConfig> = {}): ProxyConfig {
   return {
-    allowedModels: ["model-a"],
     enabled: true,
     masterKey: FIXTURE_MASTER_KEY,
     maxRequestBytes: 64 * 1024,
@@ -40,7 +40,7 @@ function makeConfig(upstreamBaseUrl: string, overrides: Partial<ProxyConfig> = {
 
 function makeGrants(options: { now?: () => Date; ttlSeconds?: number } = {}) {
   return new CloudModelGrantService(SECRET, {
-    allowedModels: ["model-a"],
+    catalog: createStaticCloudModelCatalog(["model-a"]),
     maxStreamsPerToken: 1,
     sweepIntervalMs: 0,
     ttlSeconds: options.ttlSeconds ?? 60,

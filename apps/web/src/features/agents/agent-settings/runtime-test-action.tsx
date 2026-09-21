@@ -15,12 +15,14 @@ type RuntimeTestView =
 
 export function RuntimeTestAction({
   agentId,
+  cloud = false,
   disabledReason,
   expectedRevision,
   expectedRuntimeConfigRevision,
   providerName,
 }: {
   readonly agentId: string;
+  readonly cloud?: boolean;
   readonly disabledReason?: string;
   readonly expectedRevision: number;
   readonly expectedRuntimeConfigRevision: number;
@@ -32,6 +34,7 @@ export function RuntimeTestAction({
     <RuntimeTestActionSession
       key={`${agentId}:${expectedRevision}:${expectedRuntimeConfigRevision}`}
       agentId={agentId}
+      cloud={cloud}
       disabledReason={disabledReason}
       expectedRevision={expectedRevision}
       expectedRuntimeConfigRevision={expectedRuntimeConfigRevision}
@@ -42,12 +45,14 @@ export function RuntimeTestAction({
 
 function RuntimeTestActionSession({
   agentId,
+  cloud,
   disabledReason,
   expectedRevision,
   expectedRuntimeConfigRevision,
   providerName,
 }: {
   readonly agentId: string;
+  readonly cloud: boolean;
   readonly disabledReason?: string;
   readonly expectedRevision: number;
   readonly expectedRuntimeConfigRevision: number;
@@ -93,8 +98,12 @@ function RuntimeTestActionSession({
 
   return (
     <SettingsRow
-      description={<span id={descriptionId}>{m.agent_settings_runtime_test_description()}</span>}
-      label={m.agent_settings_runtime_test_heading()}
+      description={
+        <span id={descriptionId}>
+          {cloud ? m.agent_settings_cloud_test_description() : m.agent_settings_runtime_test_description()}
+        </span>
+      }
+      label={cloud ? m.agent_settings_cloud_test_heading() : m.agent_settings_runtime_test_heading()}
       supportingContent={
         <>
           {disabledReason ? (
@@ -102,7 +111,7 @@ function RuntimeTestActionSession({
               {disabledReason}
             </p>
           ) : null}
-          {result ? <RuntimeTestResultMessage providerName={providerName} result={result} /> : null}
+          {result ? <RuntimeTestResultMessage cloud={cloud} providerName={providerName} result={result} /> : null}
         </>
       }
     >
@@ -121,22 +130,26 @@ function RuntimeTestActionSession({
 }
 
 function RuntimeTestResultMessage({
+  cloud,
   providerName,
   result,
 }: {
+  readonly cloud: boolean;
   readonly providerName: string;
   readonly result: RuntimeTestView;
 }) {
   if (result.status === "passed") {
     return (
       <p className="text-sm text-kumo-success" role="status">
-        {m.agent_settings_runtime_test_passed()}
+        {cloud ? m.agent_settings_cloud_test_passed() : m.agent_settings_runtime_test_passed()}
       </p>
     );
   }
   return (
     <p className="text-sm text-kumo-danger" role="alert">
-      {runtimeTestFailureMessage(result.code, providerName)}
+      {cloud && ["computer_unavailable", "capability_missing", "provider_start_failed"].includes(result.code)
+        ? m.agent_settings_cloud_test_unavailable()
+        : runtimeTestFailureMessage(result.code, providerName)}
     </p>
   );
 }

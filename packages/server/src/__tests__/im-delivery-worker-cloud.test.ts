@@ -22,6 +22,7 @@ import { AgentService } from "../services/agents/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
 import { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
+import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import { CloudRuntimeFence, cloudInstanceIdFor } from "../services/sandboxes/cloud-runtime-fence.js";
 import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
@@ -287,12 +288,12 @@ async function localScope() {
   return { accountId, agentId, bindingId, computerId, instanceId, firstSessionId, secondSessionId, registry };
 }
 
-function makeStack(options: { withModel?: boolean } = {}) {
+function makeStack(options: { withModel?: boolean; catalogModels?: string[] } = {}) {
   const hub = new RunnerHub();
   const fence = new CloudRuntimeFence();
   const custody = new PostgresRuntimeCustodyStore(unit.database);
   const grants = new CloudModelGrantService("unit-test-jwt-secret-at-least-32-characters", {
-    allowedModels: [MODEL],
+    catalog: createStaticCloudModelCatalog(options.catalogModels ?? [MODEL]),
     maxStreamsPerToken: 2,
     ttlSeconds: 600,
   });
@@ -440,7 +441,7 @@ describe("ImDeliveryWorker Cloud routing", () => {
       .update(agentRuntimeConfigs)
       .set({ model: null })
       .where(eq(agentRuntimeConfigs.agentId, agent.id));
-    // No injected default: the real CloudModelGrantService.defaultModel getter supplies it.
+    // No injected default: the grant service resolves the catalog default (first Router model).
     const stack = makeStack();
     const sent: RunnerServerFrame[] = [];
     const socket = fakeSocket(sent);
@@ -459,6 +460,52 @@ describe("ImDeliveryWorker Cloud routing", () => {
     const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
     expect(row?.dispatchInputHash).toBe(computeDirectInputHash(run.delivery));
     expect(row?.dispatchPayload).toMatchObject({ runtime: { model: MODEL } });
+  });
+
+  it("never dispatches a model the Router catalog does not currently offer", async () => {
+    const { scope, cloud, agent } = await cloudScope();
+    // The Agent's saved model was delisted by the Router: the fresh dispatch fails closed before
+    // any payload is frozen, with the transient model-unavailable backoff, and no Runner frame.
+    await unit.database
+      .update(agentRuntimeConfigs)
+      .set({ model: "delisted-model" })
+      .where(eq(agentRuntimeConfigs.agentId, agent.id));
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    const worker = makeWorker(stack.owner);
+    await worker.runOnce();
+    expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(0);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({
+      state: "pending",
+      lastErrorCode: "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
+      dispatchRequestId: null,
+    });
+  });
+
+  it("never falls back to a default while the Router catalog is unavailable", async () => {
+    const { scope, cloud, agent } = await cloudScope();
+    await unit.database
+      .update(agentRuntimeConfigs)
+      .set({ model: null })
+      .where(eq(agentRuntimeConfigs.agentId, agent.id));
+    const stack = makeStack({ catalogModels: [] });
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    const worker = makeWorker(stack.owner);
+    await worker.runOnce();
+    expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(0);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.lastErrorCode).toBe("IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE");
   });
 
   it("requests allocation through the injected port and never provisions anything when the model path is off", async () => {

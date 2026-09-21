@@ -4,18 +4,16 @@ import {
   type UpdateAgentRequest,
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
+import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
+import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
-import {
-  Banner,
-  InputArea,
-  KumoInputControl,
-  Select,
-  SettingsList,
-  SettingsRow,
-  Text,
-} from "../../../ui/design-system.js";
+import { queryKeys } from "../../../query/keys.js";
+import { liveResourceQueryOptions } from "../../../query/live.js";
+import { Banner, InputArea, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
+import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
+import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./runtime-model-field.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
 
@@ -23,34 +21,43 @@ const CUSTOM_MODEL_OPTION = "__custom_model__";
 const PROVIDER_DEFAULT_OPTION = "__provider_default__";
 
 export interface RuntimeConfigurationFormProps {
+  readonly computerKind?: "local" | "cloud";
   readonly computerOnline?: boolean;
   readonly initialConfig: AgentAdminConfig;
   readonly save: (input: UpdateAgentRequest) => Promise<AgentAdminConfig>;
   readonly section?: "all" | "execution" | "instructions";
 }
 
-export function RuntimeConfigurationForm({
-  computerOnline = true,
-  initialConfig,
-  save,
-  section = "all",
-}: RuntimeConfigurationFormProps) {
-  return (
-    <RuntimeConfigurationEditor
-      computerOnline={computerOnline}
-      initialConfig={initialConfig}
-      save={save}
-      section={section}
-    />
-  );
+export function RuntimeConfigurationForm(props: RuntimeConfigurationFormProps) {
+  if (props.computerKind === "cloud" && props.section !== "instructions") {
+    return <CloudRuntimeConfigurationForm {...props} />;
+  }
+  return <RuntimeConfigurationEditor {...props} />;
+}
+
+function CloudRuntimeConfigurationForm(props: RuntimeConfigurationFormProps) {
+  const query = useQuery({
+    queryKey: queryKeys.cloudModelOptions(),
+    queryFn: () => browserApi.cloudModelOptions(),
+    ...liveResourceQueryOptions,
+  });
+  const cloudModelState: CloudModelState =
+    isConfirmedQuerySuccess(query) && query.data?.available
+      ? { kind: "ready", value: query.data }
+      : query.isPending
+        ? { kind: "loading" }
+        : { kind: "unavailable", retry: () => void query.refetch() };
+  return <RuntimeConfigurationEditor {...props} cloudModelState={cloudModelState} />;
 }
 
 function RuntimeConfigurationEditor({
+  computerKind = "local",
   computerOnline = true,
+  cloudModelState,
   initialConfig,
   save,
   section = "all",
-}: RuntimeConfigurationFormProps) {
+}: RuntimeConfigurationFormProps & { cloudModelState?: CloudModelState }) {
   const initialOptions = getRuntimeConfigurationOptions(initialConfig.runtimeProvider);
   const [config, setConfig] = useState(initialConfig);
   const [modelDraft, setModelDraft] = useState(initialConfig.runtimeConfig.model ?? "");
@@ -71,6 +78,10 @@ function RuntimeConfigurationEditor({
   const providerName = runtimeProviderName(config.runtimeProvider);
   const TroubleshootingHeading = section === "execution" ? "h2" : "h3";
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
+  const cloud = computerKind === "cloud";
+  const cloudOptions = cloudModelState?.kind === "ready" ? cloudModelState.value : undefined;
+  const modelField = runtimeModelField({ cloud, cloudOptions, modelDraft, modelSelection, runtimeOptions });
+  const { unavailable: cloudModelsUnavailable, unsupported: savedModelUnavailable, invalid: modelInvalid } = modelField;
   const hasHistoricalReasoningDraft =
     reasoningSelection !== PROVIDER_DEFAULT_OPTION &&
     !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningSelection);
@@ -78,12 +89,11 @@ function RuntimeConfigurationEditor({
   const runtimeDirty =
     modelDraft !== (config.runtimeConfig.model ?? "") ||
     reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
-  const customModelInvalid = modelSelection === CUSTOM_MODEL_OPTION && modelDraft.trim().length === 0;
   const instructionsDirty = instructionsDraft !== config.runtimeConfig.instructions;
 
   async function saveRuntime(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (saving || customModelInvalid) return;
+    if (saving || modelInvalid) return;
     setSaving("runtime");
     setMessage(undefined);
     try {
@@ -98,8 +108,8 @@ function RuntimeConfigurationEditor({
       setModelSelection(modelSelectionFor(updated.runtimeConfig.model, updatedOptions.modelSuggestions));
       setReasoningSelection(updated.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
       setMessage({ kind: "success", section: "runtime", text: m.agent_settings_model_saved() });
-    } catch {
-      setMessage({ kind: "error", section: "runtime", text: m.agent_settings_execution_save_failed() });
+    } catch (cause) {
+      setMessage({ kind: "error", section: "runtime", text: modelSaveFailureMessage(cause) });
     } finally {
       setSaving(undefined);
     }
@@ -151,48 +161,25 @@ function RuntimeConfigurationEditor({
                   <span className="text-sm text-kumo-default">{providerName}</span>
                 </div>
               </SettingsRow>
-              <SettingsRow label={m.agent_settings_model()}>
-                <div className="grid w-full gap-2 @min-[44rem]/content:ml-auto @min-[44rem]/content:max-w-80">
-                  <Select
-                    aria-label={m.agent_settings_model()}
-                    className="w-full"
-                    id={fieldId("model")}
-                    itemToStringLabel={(value) => modelOptionLabel(String(value))}
-                    value={modelSelection}
-                    onValueChange={(nextValue) => {
-                      const selection = String(nextValue);
-                      setModelSelection(selection);
-                      if (selection === CUSTOM_MODEL_OPTION) {
-                        if (modelSelection !== CUSTOM_MODEL_OPTION) setModelDraft("");
-                      } else {
-                        setModelDraft(selection === PROVIDER_DEFAULT_OPTION ? "" : selection);
-                      }
-                      setMessage(undefined);
-                    }}
-                  >
-                    <Select.Option value={PROVIDER_DEFAULT_OPTION}>{m.agent_settings_provider_default()}</Select.Option>
-                    {runtimeOptions.modelSuggestions.map((model) => (
-                      <Select.Option value={model} key={model}>
-                        {model}
-                      </Select.Option>
-                    ))}
-                    <Select.Option value={CUSTOM_MODEL_OPTION}>{m.agent_settings_model_custom()}</Select.Option>
-                  </Select>
-                  {modelSelection === CUSTOM_MODEL_OPTION ? (
-                    <KumoInputControl
-                      aria-label={m.agent_settings_model_custom_label()}
-                      autoComplete="off"
-                      id={fieldId("custom-model")}
-                      required
-                      value={modelDraft}
-                      onChange={(event) => {
-                        setModelDraft(event.currentTarget.value);
-                        setMessage(undefined);
-                      }}
-                    />
-                  ) : null}
-                </div>
-              </SettingsRow>
+              <RuntimeModelField
+                state={modelField}
+                cloudModelState={cloudModelState}
+                modelDraft={modelDraft}
+                id={fieldId("model")}
+                onSelectionChange={(selection) => {
+                  setModelSelection(selection);
+                  if (selection === CUSTOM_MODEL_OPTION) {
+                    if (modelSelection !== CUSTOM_MODEL_OPTION) setModelDraft("");
+                  } else {
+                    setModelDraft(selection === PROVIDER_DEFAULT_OPTION ? "" : selection);
+                  }
+                  setMessage(undefined);
+                }}
+                onModelChange={(value) => {
+                  setModelDraft(value);
+                  setMessage(undefined);
+                }}
+              />
               <SettingsRow
                 description={m.agent_settings_reasoning_effort_description()}
                 label={m.agent_settings_reasoning_effort()}
@@ -200,6 +187,7 @@ function RuntimeConfigurationEditor({
                 <div className="w-full @min-[44rem]/content:ml-auto @min-[44rem]/content:max-w-80">
                   <Select
                     aria-label={m.agent_settings_reasoning_effort()}
+                    disabled={cloudModelsUnavailable}
                     className="w-full"
                     id={fieldId("reasoning-effort")}
                     itemToStringLabel={(value) => reasoningOptionLabel(String(value))}
@@ -228,7 +216,7 @@ function RuntimeConfigurationEditor({
             {runtimeDirty ? (
               <SettingsSaveActions
                 busy={Boolean(saving)}
-                saveDisabled={customModelInvalid}
+                saveDisabled={modelInvalid}
                 onDiscard={discardRuntimeChanges}
               />
             ) : null}
@@ -240,14 +228,16 @@ function RuntimeConfigurationEditor({
             </Text>
             <SettingsList>
               <RuntimeTestAction
+                key={cloud ? `${cloudOptions?.defaultModel ?? "unavailable"}:${savedModelUnavailable}` : "local"}
                 agentId={config.id}
-                disabledReason={
-                  runtimeDirty
-                    ? m.agent_settings_runtime_test_disabled_unsaved()
-                    : computerOnline
-                      ? undefined
-                      : m.agent_settings_runtime_test_disabled_computer()
-                }
+                cloud={cloud}
+                disabledReason={runtimeTestDisabledReason({
+                  runtimeDirty,
+                  cloudModelsUnavailable,
+                  savedModelUnavailable,
+                  cloud,
+                  computerOnline,
+                })}
                 expectedRevision={config.revision}
                 expectedRuntimeConfigRevision={config.runtimeConfig.revision}
                 providerName={providerName}
@@ -313,12 +303,6 @@ function modelSelectionFor(model: string | null, suggestions: readonly string[])
   return suggestions.includes(model) ? model : CUSTOM_MODEL_OPTION;
 }
 
-function modelOptionLabel(value: string): string {
-  if (value === PROVIDER_DEFAULT_OPTION) return m.agent_settings_provider_default();
-  if (value === CUSTOM_MODEL_OPTION) return m.agent_settings_model_custom();
-  return value;
-}
-
 function reasoningOptionLabel(value: string): string {
   if (value === PROVIDER_DEFAULT_OPTION) return m.agent_settings_provider_default();
   return (
@@ -354,4 +338,26 @@ export function runtimeConfigurationFromForm(data: FormData): UpdateAgentRuntime
 function nullableText(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
   return text || null;
+}
+
+function modelSaveFailureMessage(cause: unknown): string {
+  if (cause instanceof ApiError) {
+    if (cause.code === "CLOUD_MODEL_NOT_ALLOWED") return m.agent_settings_cloud_model_not_allowed();
+    if (cause.code === "CLOUD_MODEL_UNAVAILABLE") return m.agent_settings_cloud_models_unavailable();
+  }
+  return m.agent_settings_execution_save_failed();
+}
+
+function runtimeTestDisabledReason(input: {
+  runtimeDirty: boolean;
+  cloudModelsUnavailable: boolean;
+  savedModelUnavailable: boolean;
+  cloud: boolean;
+  computerOnline: boolean;
+}): string | undefined {
+  if (input.runtimeDirty) return m.agent_settings_runtime_test_disabled_unsaved();
+  if (input.cloudModelsUnavailable) return m.agent_settings_cloud_models_unavailable();
+  if (input.savedModelUnavailable) return m.agent_settings_cloud_model_not_allowed();
+  if (!input.cloud && !input.computerOnline) return m.agent_settings_runtime_test_disabled_computer();
+  return undefined;
 }

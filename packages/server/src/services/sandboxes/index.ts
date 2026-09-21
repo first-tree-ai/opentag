@@ -7,6 +7,12 @@ export {
   type CloudModelGrantPort,
   type CloudSessionCancelOutcome,
 } from "./cloud-delivery-owner.js";
+export {
+  type CloudModelCatalog,
+  createStaticCloudModelCatalog,
+  RouterCloudModelCatalog,
+  type RouterCloudModelCatalogOptions,
+} from "./cloud-model-catalog.js";
 export { CloudModelGrantService } from "./cloud-model-grants.js";
 export {
   type CloudConnectionRecord,

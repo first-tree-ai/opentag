@@ -55,6 +55,8 @@ import {
   CLOUD_IDENTITY_CAPABILITY_HEADER,
   type CloudAvailability,
   CloudAvailabilitySchema,
+  type CloudModelOptions,
+  CloudModelOptionsSchema,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
@@ -504,6 +506,12 @@ export class BrowserApi {
   cloudAvailability(): Promise<CloudAvailability> {
     return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
       this.request(HTTP_PATHS.accountCloudComputer, CloudAvailabilitySchema, { signal }),
+    );
+  }
+
+  cloudModelOptions(): Promise<CloudModelOptions> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(HTTP_PATHS.accountCloudModels, CloudModelOptionsSchema, { signal }),
     );
   }
 

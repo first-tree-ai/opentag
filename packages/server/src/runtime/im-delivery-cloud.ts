@@ -190,7 +190,7 @@ export class CloudDeliveryCoordinator {
       persistedRequest?.runtime ??
       (await this.#options.assembleRuntime(deliveryId, row.session.id, "delivery", claimToken));
     if (!assembledRuntime) return { kind: "stop" };
-    const runtime = persistedRequest ? assembledRuntime : cloudDelivery.resolveRuntimeModel(assembledRuntime);
+    const runtime = persistedRequest ? assembledRuntime : await cloudDelivery.resolveRuntimeModel(assembledRuntime);
     if (!runtime) {
       await this.#options.recordFailure(
         deliveryId,

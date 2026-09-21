@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type {
+  CloudModelOptions,
   ImConversationKind,
   InternalSessionRuntimeOverrides,
   Session,
@@ -22,6 +23,7 @@ import {
   sessions,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -153,6 +155,7 @@ export class SessionServiceError extends Error {
 export class SessionService {
   readonly #database: DatabaseClient;
   readonly #afterPlacementLock: (() => Promise<void>) | undefined;
+  readonly #cloudModelCatalog: CloudModelCatalog | undefined;
   readonly #cloudSourceConnection:
     | ((input: { computerId: string; connectionInstanceId: string; sessionId: string }) => boolean)
     | undefined;
@@ -163,6 +166,12 @@ export class SessionService {
     database: DatabaseClient,
     options: {
       afterPlacementLock?: () => Promise<void>;
+      /**
+       * The one Server-owned Router model catalog; consulted only when a new internal Session
+       * carries an explicit model override onto a Cloud placement, and only read OUTSIDE the
+       * transaction so no row lock is held across the network.
+       */
+      cloudModelCatalog?: CloudModelCatalog;
       /**
        * Cloud source liveness evidence: whether the exact current execution-eligible Runner
        * connection for a Cloud Session's Sandbox allocation still holds. A Cloud Computer's own
@@ -179,6 +188,7 @@ export class SessionService {
   ) {
     this.#database = database;
     this.#afterPlacementLock = options.afterPlacementLock;
+    this.#cloudModelCatalog = options.cloudModelCatalog;
     this.#cloudSourceConnection = options.cloudSourceConnection;
     this.#now = options.now ?? (() => new Date());
     this.#logger = options.logger;
@@ -242,6 +252,16 @@ export class SessionService {
   async createInternalSessionWithMessage(
     input: CreateInternalSessionWithMessageInput,
   ): Promise<CreateInternalSessionWithMessageResult> {
+    const modelOverride = input.overrides?.model;
+    // Pre-load the Router model snapshot OUTSIDE the transaction when an explicit override could
+    // target a Cloud placement: the unlocked pre-read derives the creator's Computer kind, and the
+    // locked authority check inside the transaction re-derives it (the kind is immutable and the
+    // placement is re-verified), so no lock is ever held across the catalog's network read.
+    let catalogSnapshot: CloudModelOptions | undefined;
+    if (modelOverride !== undefined && this.#cloudModelCatalog) {
+      const creatorKind = await this.#sessionComputerKind(input.creatorSessionId);
+      if (creatorKind === "cloud") catalogSnapshot = await this.#cloudModelCatalog.list();
+    }
     return this.#database.transaction(async (transaction) => {
       const creator = await this.#activeSource(transaction, {
         sessionId: input.creatorSessionId,
@@ -273,6 +293,10 @@ export class SessionService {
           attemptCount: attempt.attemptCount,
         };
       }
+      // Model admission runs only on the create path: a deduplicated replay returns its recorded
+      // Session without re-validating, so a model the Router stopped offering (or a Router outage)
+      // never breaks the idempotent retry of an already-created internal Session.
+      assertCloudSessionModel(creator.computerKind, modelOverride, catalogSnapshot);
       const now = this.#now();
       const [created] = await transaction
         .insert(sessions)
@@ -985,6 +1009,18 @@ export class SessionService {
     };
   }
 
+  /** Unlocked kind read of the Computer a Session is placed on; missing rows resolve undefined. */
+  async #sessionComputerKind(sessionId: string): Promise<"local" | "cloud" | undefined> {
+    const [row] = await this.#database
+      .select({ kind: computers.kind })
+      .from(sessions)
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(and(eq(sessions.id, sessionId), isNull(sessions.endedAt)))
+      .limit(1);
+    return row?.kind;
+  }
+
   async #resolveComputer(transaction: DatabaseTransaction, imBindingId: string): Promise<string> {
     const [candidate] = await transaction
       .select({ agentId: agents.id })
@@ -1118,4 +1154,18 @@ function truncateUtf8(value: string, maxBytes: number): string {
     result += character;
   }
   return `${result}…`;
+}
+
+function assertCloudSessionModel(
+  computerKind: "cloud" | "local",
+  model: string | undefined,
+  snapshot: CloudModelOptions | undefined,
+): void {
+  if (model === undefined || computerKind !== "cloud") return;
+  if (!snapshot?.available) {
+    throw new SessionServiceError("SESSION_MODEL_CATALOG_UNAVAILABLE", "The Cloud model list could not be confirmed");
+  }
+  if (!snapshot.models.includes(model)) {
+    throw new SessionServiceError("SESSION_MODEL_UNAVAILABLE", "The model is not offered by the Cloud model Router");
+  }
 }

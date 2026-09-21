@@ -403,6 +403,108 @@ describe("Agent Runtime test HTTP API", () => {
   });
 });
 
+describe("Agent Runtime test Cloud branch", () => {
+  it("runs the hosted-model probe for a Cloud-bound Agent and never touches the Local owner", async () => {
+    const owner = { start: vi.fn() };
+    const cloud = { test: vi.fn().mockResolvedValue({ status: "passed" }) };
+    const service = agentService();
+    const runtimeTest = new AgentRuntimeTestService(service as never, owner as never, {
+      computerKind: async () => "cloud",
+      cloud,
+    });
+    const { app } = appWith(service, runtimeTest);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agentId}/runtime-test`,
+      headers: { authorization: "Bearer access" },
+      payload: { expectedRevision: 4, expectedRuntimeConfigRevision: 2 },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "passed" });
+    // The saved model and the caller disconnect signal reach the probe; the Local owner never runs.
+    expect(cloud.test).toHaveBeenCalledWith({
+      computerId,
+      model: "gpt-5.6",
+      signal: expect.any(AbortSignal),
+    });
+    expect(owner.start).not.toHaveBeenCalled();
+    // The probe writes nothing: no Session, Sandbox, Instance, or product-history mutation.
+    expect(service.createForAccount).not.toHaveBeenCalled();
+    expect(service.updateById).not.toHaveBeenCalled();
+    expect(service.suspendById).not.toHaveBeenCalled();
+    expect(service.reactivateById).not.toHaveBeenCalled();
+    expect(service.rebindById).not.toHaveBeenCalled();
+    expect(service.deleteById).not.toHaveBeenCalled();
+  });
+
+  it("keeps auth and revision checks ahead of the Cloud branch", async () => {
+    const cloud = { test: vi.fn() };
+    const service = agentService();
+    const runtimeTest = new AgentRuntimeTestService(service as never, { start: vi.fn() } as never, {
+      computerKind: async () => "cloud",
+      cloud,
+    });
+    const { app } = appWith(service, runtimeTest);
+    const anonymous = await app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agentId}/runtime-test`,
+      payload: { expectedRevision: 4, expectedRuntimeConfigRevision: 2 },
+    });
+    expect(anonymous.statusCode).toBe(401);
+    const stale = await app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agentId}/runtime-test`,
+      headers: { authorization: "Bearer access" },
+      payload: { expectedRevision: 1, expectedRuntimeConfigRevision: 2 },
+    });
+    expect(stale.json()).toEqual({ status: "failed", code: "stale_configuration" });
+    expect(cloud.test).not.toHaveBeenCalled();
+  });
+
+  it("answers computer_unavailable for a Cloud-bound Agent when the deployment model path is off", async () => {
+    const cloud = { test: vi.fn() };
+    const service = agentService();
+    const runtimeTest = new AgentRuntimeTestService(service as never, { start: vi.fn() } as never, {
+      computerKind: async () => "cloud",
+    });
+    const { app } = appWith(service, runtimeTest);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agentId}/runtime-test`,
+      headers: { authorization: "Bearer access" },
+      payload: { expectedRevision: 4, expectedRuntimeConfigRevision: 2 },
+    });
+    expect(response.json()).toEqual({ status: "failed", code: "computer_unavailable" });
+    expect(cloud.test).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Local dispatch for a Local Computer", async () => {
+    const owner = { start: vi.fn().mockResolvedValue({ status: "passed" }) };
+    const cloud = { test: vi.fn() };
+    const service = agentService();
+    const runtimeTest = new AgentRuntimeTestService(service as never, owner as never, {
+      computerKind: async () => "local",
+      cloud,
+    });
+    const { app } = appWith(service, runtimeTest);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agentId}/runtime-test`,
+      headers: { authorization: "Bearer access" },
+      payload: { expectedRevision: 4, expectedRuntimeConfigRevision: 2 },
+    });
+    expect(response.json()).toEqual({ status: "passed" });
+    expect(owner.start).toHaveBeenCalledWith(computerId, {
+      computerId,
+      provider: "codex",
+      model: "gpt-5.6",
+      reasoningEffort: "medium",
+      signal: expect.any(AbortSignal),
+    });
+    expect(cloud.test).not.toHaveBeenCalled();
+  });
+});
+
 function agentService() {
   return {
     createForAccount: vi.fn(),

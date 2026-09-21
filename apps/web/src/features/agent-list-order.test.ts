@@ -308,7 +308,7 @@ describe("Agent availability model and presentation", () => {
           },
         },
       }),
-    ).toContain("could not confirm");
+    ).toBe("Couldn’t confirm this computer’s connection status.");
     expect(messagingChannelLabel(base, binding("active", "feishu"))).toContain("@reviewer");
     expect(messagingChannelLabel(base, binding("active", "slack", "Team Bot"))).toContain("Team Bot");
     expect(messagingChannelLabel(base, binding("active", "slack", null))).toBe("Slack");

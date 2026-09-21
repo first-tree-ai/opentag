@@ -124,13 +124,49 @@ describe("Agent creation with a Cloud destination", () => {
     expect(screen.getByRole("button", { name: /Codex/ })).toBeTruthy();
   });
 
-  it("fails closed when the availability read fails, without inventing a default", async () => {
-    vi.spyOn(browserApi, "cloudAvailability").mockRejectedValue(new Error("network down"));
+  it("fails closed when the availability read fails, reports the failed check, and retries on request", async () => {
+    const read = vi.spyOn(browserApi, "cloudAvailability").mockRejectedValue(new Error("network down"));
     renderCreation();
 
+    // The read never answered: Cloud stays disabled and nothing is selected for the reader.
     await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(true));
     expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    // The copy reports the check that failed — not a deployment fact the Server never stated.
+    expect(screen.getByText("Could not check")).toBeTruthy();
+    expect(
+      screen.getByText("Cloud availability could not be checked. Try again, or run the agent on your own computer."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Temporarily unavailable")).toBeNull();
+    expect(screen.queryByText(/temporarily unavailable on this deployment/)).toBeNull();
+    // Local is untouched by the failed Cloud read.
+    expect(screen.getByRole("button", { name: /Local computer/ }).hasAttribute("disabled")).toBe(false);
+
+    // The retry re-reads; an available answer unlocks and pre-selects Cloud exactly as a first
+    // successful read would.
+    read.mockResolvedValue(availability());
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
+    await waitFor(() => expect(cloudCard().getAttribute("aria-pressed")).toBe("true"));
+    expect(screen.queryByText("Could not check")).toBeNull();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("says the availability check is running while it is, without the unavailable verdict", async () => {
+    const read = deferred<CloudAvailability>();
+    vi.spyOn(browserApi, "cloudAvailability").mockReturnValue(read.promise);
+    renderCreation();
+
+    // The unanswered read describes the destination and says it is checking; the unavailable
+    // claim belongs to an answered "no", so it never flashes on a normal load.
+    expect(await screen.findByText("Checking…")).toBeTruthy();
+    expect(screen.getByText("We run the agent for you, with tokens included.")).toBeTruthy();
+    expect(screen.queryByText(/temporarily unavailable on this deployment/)).toBeNull();
+    expect(screen.queryByText("Temporarily unavailable")).toBeNull();
+    expect(cloudCard().hasAttribute("disabled")).toBe(true);
+
+    read.resolve(availability());
+    await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
   });
 
   it("never overrides a destination the reader picked before the availability answer arrived", async () => {

@@ -9,7 +9,7 @@ Cloud Computer 是账号的逻辑身份，固定在线不表示物理 Instance �
 复用 `OPENTAG_CLOUD_IDENTITIES_ENABLED` 作为默认关闭的总开关，同时控制身份与 Runner。
 仅保留 `OPENTAG_CLOUD_MODEL_ENABLED` 作为第二个开关，便于暂停模型请求时保留工作区保存和
 资源释放能力。总开关关闭时三项能力全部关闭；开启时要求完整 Runner 配置。
-不再使用 `OPENTAG_CLOUD_RUNNER_ENABLED`。前端不增加开关或独立隐藏设置：直接使用已有
+旧 `OPENTAG_CLOUD_RUNNER_ENABLED` 仅进行升级冲突校验，不再控制运行行为，参见[升级规则](./cloud-runner-execution.md)。前端不增加开关或独立隐藏设置：直接使用已有
 可用性接口，未开放或不可用时保留灰色禁用的 Cloud 选项，不选中它，也不影响 Local 创建。
 
 `GET /api/v1/computers/cloud` 只读查询部署可用性；相同地址的 `PUT` 幂等取得本账号 Computer，再由已有创建 Agent API 以 `runtimeProvider=pi` 绑定。Cloud setup 使用服务端配置和 IM 授权，不等待本地 daemon，也不伪造 CLI 检测结果；真正执行仍须通过 Runner 就绪与当前执行授权。
@@ -35,11 +35,11 @@ Cloud Computer 是账号的逻辑身份，固定在线不表示物理 Instance �
 
 在原有分配入口预留新增资源前，通过短 PostgreSQL advisory 事务锁串行计数与预留；网络操作位于事务外。创建结果未知、删除未确认、保存失败均保留占位。已有实例、同账号复用、清理不额外占位。降低上限不会终止已有工作。该限制控制并发，不是模型和存储总费用封顶。
 
-满额时 IM 留在原有有界可靠队列；显式 start 返回 `CLOUD_CAPACITY_EXCEEDED`；内部子任务在执行前持久化失败，避免父任务持有资源、子任务无限等待。不新增队列、配额表、资源池或生命周期状态。继续沿用空闲回收。
+满额时 IM 留在原有有界可靠队列；显式 start 返回 `CLOUD_CAPACITY_EXCEEDED`；内部子任务在执行前持久化 `unreachable` 与 `cloud_capacity_exceeded`，容量恢复后可重试同一消息及子 Session，不会在父任务持有资源时自动无限等待。不新增队列、配额表、资源池或生命周期状态。继续沿用空闲回收。
 
 ## 恢复与释放
 
-复用任务取消和 Sandbox stop。保存释放须确认归档持久化与物理删除；保存失败保留资源并允许重试。显式丢弃须二次确认并提交当时的 `environmentGeneration`，旧页面不能删除新一代资源。请求超时先查询状态，不自动重放破坏性操作。Runner 控制服务保持启用时，Agent／Session 停止后仍可读取及清理。完全关闭 Cloud Runner 会同时移除控制接口，因此关闭前须先保存并释放资源；模型不可用不需要关闭控制服务。
+复用任务取消和 Sandbox stop。保存释放须确认归档持久化与物理删除；保存失败保留资源并允许重试。保存与丢弃请求都须提交当时的 `environmentGeneration`，旧页面不能停止新一代资源；显式丢弃还须二次确认。请求超时先查询状态，不自动重放破坏性操作。Runner 控制服务保持启用时，Agent／Session 停止后仍可读取及清理。完全关闭 Cloud Runner 会同时移除控制接口，因此关闭前须先保存并释放资源；模型不可用不需要关闭控制服务。
 
 账号被停用时仍沿用现有认证拒绝，不能通过浏览器自助清理；其资源继续计入占用，由原有运行时清理或运维处理。Agent 暂停、Session 结束不等于账号停用。
 

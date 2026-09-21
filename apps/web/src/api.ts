@@ -526,7 +526,7 @@ export class BrowserApi {
 
   stopCloudSandbox(
     sandboxId: string,
-    input: AccountSandboxRunnerStopRequest = {},
+    input: AccountSandboxRunnerStopRequest,
   ): Promise<AccountSandboxRunnerStatusResponse> {
     return withDeadline(CLOUD_CONTROL_TIMEOUT_MS, (signal) =>
       this.request(accountSandboxRunnerStopPath(sandboxId), AccountSandboxRunnerStatusResponseSchema, {

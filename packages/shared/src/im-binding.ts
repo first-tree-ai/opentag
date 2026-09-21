@@ -414,7 +414,7 @@ export const ImBindingDiagnosticsSchema = z
     provider: ImProviderSchema,
     ready: z.boolean(),
     agentRuntimeReadiness: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
-    providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable"]),
+    providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable", "not_applicable"]),
     providerCliReason: ProviderCliArtifactPublicReasonSchema.optional(),
     credentialExecutionReadiness: IntegrationCredentialExecutionStatusSchema,
     credentialExecutionReason: IntegrationCredentialExecutionReasonSchema.optional(),

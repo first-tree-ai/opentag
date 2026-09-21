@@ -362,7 +362,14 @@ async function cleanupAllocation({ api, allocation, shared, receipt, sleepFn }) 
         .catch(() => {
           allocation.receiptError = true;
         });
-      const stopped = await api("POST", shared.accountSandboxRunnerStopPath(allocation.sandboxId), {}, true);
+      const stopped = await api(
+        "POST",
+        shared.accountSandboxRunnerStopPath(allocation.sandboxId),
+        {
+          environmentGeneration: current.environmentGeneration,
+        },
+        true,
+      );
       if (stopped.lifecycle !== "unallocated" || stopped.currentResourceName !== null)
         throw new Error("Cloud removal is uncertain");
       allocation.cleanup = "verified-removed";

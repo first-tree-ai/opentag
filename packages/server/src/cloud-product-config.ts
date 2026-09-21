@@ -6,9 +6,9 @@ import type { ServerConfig } from "./config.js";
  *
  * This is a configuration fact, never a probe: `available` means the platform is configured to
  * start an execution environment for a real task (identities, Runner allocation, and the brokered
- * model path all enabled), not that an environment is already running or was validated. The three
- * legs are deliberately kept apart so a reader can tell "the product is not offered here" from
- * "offered, but execution cannot start" from "execution works but no model is configured".
+ * model path all enabled), not that an environment is already running or was validated.
+ * `execution_unavailable` remains a defensive contract value for injected/older configuration;
+ * normal startup now enables identities and Runner together with the overall Cloud switch.
  *
  * Configuration is all-or-nothing at startup, so a running Server's answer is stable per process;
  * `now` only timestamps the observation.

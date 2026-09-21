@@ -39,6 +39,7 @@ Runner 必须重新正常认证，存储 HTTP 接口仍拒绝旧的过期凭证�
 Server 验证归档属于当前执行环境后才删除 Instance。保存失败时保留资源绑定及本地副本，允许重试。若已确认 Instance 不存在，就没有本地副本可再保存，
 恢复只能使用上次成功归档。
 
+普通 Account stop 请求须提供 `{ "environmentGeneration": <看到的代次> }`，服务端在释放操作的行锁内校验，防止旧页面停止新一代环境。
 永久无法保存或 Runner 不可用时，Account stop 接口接受显式请求
 `{ "discardUnsavedChanges": true, "environmentGeneration": <当前代次> }`。
 系统记录本次分配的丢弃意图，保留之前归档，再按原有 UID 校验删除 Instance；旧代次请求被拒绝。

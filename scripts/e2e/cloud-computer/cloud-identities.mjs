@@ -418,7 +418,13 @@ async function executeCloudIdentities(repositoryRoot) {
     );
     await runResourceConstraints(ctx);
     await fixture.restartServer(
-      cloudEnv(cliVersion, { OPENTAG_CLOUD_IDENTITIES_ENABLED: "false", OPENTAG_CLOUD_MODEL_ENABLED: "true" }),
+      cloudEnv(cliVersion, {
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "false",
+        OPENTAG_CLOUD_MODEL_ENABLED: "true",
+        OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models-fixture.example.com/v1",
+        OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-model-key-not-a-secret",
+        OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "fixture-model",
+      }),
     );
     await runFlagOffCases(ctx);
     if (assertions.some((entry) => !entry.ok)) throw new Error("Acceptance contains a failed assertion");

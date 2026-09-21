@@ -1,5 +1,7 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
 import * as m from "../../../paraglide/messages.js";
+import { queryKeys } from "../../../query/keys.js";
 import { Button, Icon, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import { ComputerConnect } from "../../computer-connect/computer-connect.js";
 import { AgentComputerChoice } from "../agent-computer-choice.js";
@@ -92,19 +94,7 @@ export function AgentComputerSettings({
    */
   if (agent.computerKind === "cloud") return <CloudComputerSettings agent={agent} />;
   if (agent.computerKind === undefined && computerState.state === "unconfirmed") {
-    return (
-      <div className="grid gap-4">
-        <Text as="h2" variant="heading">
-          {agent.computer.displayName}
-        </Text>
-        <StatusIndicator label={m.agent_settings_computer_unconfirmed()} tone="neutral" />
-        <div>
-          <Button type="button" variant="secondary" onClick={onAgentChanged}>
-            {m.common_try_again()}
-          </Button>
-        </div>
-      </div>
-    );
+    return <UnconfirmedComputerSettings computer={agent.computer} onAgentChanged={onAgentChanged} />;
   }
   return (
     <div className="grid gap-6">
@@ -158,6 +148,38 @@ export function AgentComputerSettings({
           />
         ) : null}
       </section>
+    </div>
+  );
+}
+
+/**
+ * The bound Computer's kind could not be confirmed. "Unconfirmed" is the Account's Computers read
+ * having failed, so retrying re-reads that inventory as well as the Agent — syncing the Agent
+ * alone never touches the read that failed.
+ */
+function UnconfirmedComputerSettings({
+  computer,
+  onAgentChanged,
+}: {
+  computer: NonNullable<AgentDetailView["computer"]>;
+  onAgentChanged: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const retry = () => {
+    onAgentChanged();
+    void queryClient.invalidateQueries({ queryKey: queryKeys.computers() });
+  };
+  return (
+    <div className="grid gap-4">
+      <Text as="h2" variant="heading">
+        {computer.displayName}
+      </Text>
+      <StatusIndicator label={m.agent_settings_computer_unconfirmed()} tone="neutral" />
+      <div>
+        <Button type="button" variant="secondary" onClick={retry}>
+          {m.common_try_again()}
+        </Button>
+      </div>
     </div>
   );
 }

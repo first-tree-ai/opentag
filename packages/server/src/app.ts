@@ -772,6 +772,7 @@ function registerAvailableAccountRoutes(
   if (
     !(
       options.agentService ||
+      options.cloudAvailability ||
       options.taskService ||
       options.computerService ||
       options.sandboxService ||

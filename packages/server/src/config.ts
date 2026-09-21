@@ -838,6 +838,12 @@ export function serverEnvironmentSummary(config: ServerConfig) {
   return {
     binName: config.channel.binName,
     channel: config.channel.channel,
+    // Effective Cloud toggles only; coordinates, endpoints, and key material are never summarized.
+    cloud: {
+      identities: config.cloudIdentities.enabled,
+      runner: config.cloudRunner.enabled,
+      model: config.cloudModel.enabled,
+    },
     environment: config.environment,
     packageName: config.channel.packageName,
     publicUrl: config.publicUrl,

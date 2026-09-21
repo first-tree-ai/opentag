@@ -14,7 +14,9 @@ The existing `OPENTAG_CLOUD_IDENTITIES_ENABLED` is the overall default-off switc
 identities and Runner control together. `OPENTAG_CLOUD_MODEL_ENABLED` is the only secondary switch;
 turn it off to stop model requests while retaining workspace save and release. The overall switch
 off disables all three capabilities. Complete Runner configuration is required when it is on.
-`OPENTAG_CLOUD_RUNNER_ENABLED` is retired. There is no frontend flag or separate visibility setting:
+`OPENTAG_CLOUD_RUNNER_ENABLED` is retired; it is read only to reject conflicting legacy upgrade
+settings, not as another switch. See the [upgrade rules](./cloud-runner-execution.md).
+There is no frontend flag or separate visibility setting:
 the existing availability response keeps Cloud visible but gray and disabled when unavailable,
 without selecting it or affecting Local creation.
 
@@ -59,16 +61,17 @@ allocations, same-Account reuse and cleanup do not consume another slot. Lowerin
 kill existing work. These controls limit concurrency, not total model or storage spending.
 
 At capacity, IM stays in the existing bounded reliable queue. Explicit start reports
-`CLOUD_CAPACITY_EXCEEDED`. Internal child work reports a durable failure before execution rather
-than waiting indefinitely while the parent holds resources. There is no additional queue, quota
+`CLOUD_CAPACITY_EXCEEDED`. Internal child work records an `unreachable` result with
+`cloud_capacity_exceeded` before execution. The same message and child Session can retry when
+capacity returns; there is no automatic wait while the parent holds resources. There is no additional queue, quota
 table, resource pool or lifecycle state. Existing idle reclamation remains in force.
 
 ## Recovery and release
 
 Use the existing task cancellation and Sandbox stop operations. Saving and releasing waits for
 archive persistence and verified deletion. A failed save retains the allocation and enables
-retry. Explicit discard requires confirmation and the captured `environmentGeneration`; stale
-pages cannot discard a replacement. A timed-out mutation requires a status read, not automatic
+retry. Both save and discard requests require the captured `environmentGeneration`; stale
+pages cannot stop a replacement. Explicit discard also requires confirmation. A timed-out mutation requires a status read, not automatic
 destructive replay. Read and cleanup remain possible after an Agent or Session is stopped,
 provided the Runner control service remains enabled. Save and release allocations before disabling
 the entire Cloud Runner service; disabling it also removes its control endpoints. Model

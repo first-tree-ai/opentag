@@ -62,6 +62,8 @@ and retires an input it never accepted; accepted custody receives cancellation a
 Unanswered drain receipts/reports retry every five seconds within the original release deadline.
 This reuses the existing receipt/report protocol; reports for unaccepted dispatches remain invalid. Failed saving retains the resource binding and local copy for retry.
 A confirmed missing Instance has no local copy to save; recovery uses the last successful archive.
+An ordinary Account stop request requires `{ "environmentGeneration": <observed generation> }`.
+The Server checks it under the release row lock; a stale page cannot stop a newer allocation.
 For a permanently unsaveable or unavailable Runner, the Account stop endpoint supports an explicit
 `{ "discardUnsavedChanges": true, "environmentGeneration": <current generation> }` body. It records
 the discard intent for that allocation, preserves the previous archive, and performs the same

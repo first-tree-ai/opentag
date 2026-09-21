@@ -860,11 +860,9 @@ export class CloudSessionCollaborationOwner {
       return { kind: "unreachable", outcome: { status: "rejected", code: "restore_required" } };
     }
     if (outcome === "capacity") {
-      // Capacity admission rejected the NEW allocation this child needs: terminate the message
-      // durably before any execution with a stable reason the source caller can plan around.
-      // The rejected message id is terminal in SessionService; only a NEW logical message may
-      // retry after resources become available.
-      return { kind: "unreachable", outcome: { status: "rejected", code: "cloud_capacity_exceeded" } };
+      // Occupied resources may be releasing. Keep the same durable message retryable after
+      // capacity returns; no child work has taken custody or executed at this point.
+      return { kind: "unreachable", outcome: { status: "unreachable", code: "cloud_capacity_exceeded" } };
     }
     if (outcome !== "ready") return notReady;
     const converged = await loadManagedSandboxBySessionId(this.#database, targetSessionId);

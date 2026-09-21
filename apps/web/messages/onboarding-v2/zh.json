@@ -32,6 +32,8 @@
   "onboarding_v2_connect_privacy": "Agent 工作留在这台电脑上；消息和结果会通过 OpenTag 传输。",
   "onboarding_v2_connect_title": "连接你的电脑",
   "onboarding_v2_connect_unconfirmed": "无法确认",
+  "onboarding_v2_destination_cloud_check_failed_badge": "无法检查",
+  "onboarding_v2_destination_cloud_check_failed_description": "无法确认此部署的云端可用性。请重试，或将 Agent 运行在自己的电脑上。",
   "onboarding_v2_destination_cloud_checking": "检查中…",
   "onboarding_v2_destination_cloud_description": "我们会为你运行 Agent，并包含 Tokens。",
   "onboarding_v2_destination_cloud_title": "云端电脑",

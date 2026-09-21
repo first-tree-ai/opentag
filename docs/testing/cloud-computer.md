@@ -177,8 +177,9 @@ Those belong to E3 (Runner), E4 (real IM), and E9 (default product UI). No custo
 here. The disposable Postgres helper still names containers with the E1 prefix; summaries label E2.
 
 E9 extends this harness to require Cloud setup and preparation-refresh responses from the Server,
-without allocating a Sandbox or claiming a Local CLI observation. With the fixture's Runner disabled,
-deployment availability must report execution unavailable while the Computer remains logically online.
+without allocating a Sandbox or claiming a Local CLI observation. The fixture injects complete but
+inert Runner coordinates and leaves the model path off, so deployment availability must report
+`model_unavailable` while the Computer remains logically online.
 The empty Agent Cloud overview is readable only by its Account. These are production HTTP/database
 checks; they do not establish real provider authorization or Cloud execution.
 Sandbox creation locks the active IM binding until commit so a concurrent provider-driven disable

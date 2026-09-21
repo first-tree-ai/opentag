@@ -237,9 +237,9 @@ export const AccountSandboxRunnerAcceptanceRequestSchema = z
 
 export type AccountSandboxRunnerAcceptanceRequest = z.infer<typeof AccountSandboxRunnerAcceptanceRequestSchema>;
 
-/** Ordinary stop saves first; discarding local files requires an explicit allocation generation. */
+/** Both save and discard stop work, so each Account request must identify the observed allocation. */
 export const AccountSandboxRunnerStopRequestSchema = z.union([
-  z.object({}).strict(),
+  z.object({ environmentGeneration: z.number().int().nonnegative().safe() }).strict(),
   z
     .object({ discardUnsavedChanges: z.literal(true), environmentGeneration: z.number().int().positive().safe() })
     .strict(),

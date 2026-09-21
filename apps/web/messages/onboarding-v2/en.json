@@ -32,6 +32,8 @@
   "onboarding_v2_connect_privacy": "Agent work stays on this computer. Messages and results pass through OpenTag.",
   "onboarding_v2_connect_title": "Connect your computer",
   "onboarding_v2_connect_unconfirmed": "Unable to confirm",
+  "onboarding_v2_destination_cloud_check_failed_badge": "Could not check",
+  "onboarding_v2_destination_cloud_check_failed_description": "Cloud availability could not be checked. Try again, or run the agent on your own computer.",
   "onboarding_v2_destination_cloud_checking": "Checking…",
   "onboarding_v2_destination_cloud_description": "We run the agent for you, with tokens included.",
   "onboarding_v2_destination_cloud_title": "Cloud computer",

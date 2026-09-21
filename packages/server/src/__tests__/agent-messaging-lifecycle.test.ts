@@ -848,7 +848,7 @@ describe("Cloud Agent messaging readiness", () => {
     expect(diagnostics.ready).toBe(true);
     expect(diagnostics.agentRuntimeReadiness).toBe("ready");
     // No local artifact was ever provisioned and no local credential execution ever ran.
-    expect(diagnostics.providerCliReadiness).toBe("unavailable");
+    expect(diagnostics.providerCliReadiness).toBe("not_applicable");
     expect(diagnostics.credentialExecutionReadiness).toBe("unconfirmed");
     expect(diagnostics.credentialStatus).toBe("valid");
     expect(diagnostics.reauthorizationRequired).toBe(false);

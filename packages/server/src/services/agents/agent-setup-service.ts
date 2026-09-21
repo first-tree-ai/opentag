@@ -133,8 +133,7 @@ export class AgentSetupService {
         409,
       );
     }
-    const requiredImCliProviders =
-      computer.kind === "cloud" ? [] : ([...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS] as ImProvider[]);
+    const requiredImCliProviders = computer.kind === "cloud" ? [] : [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
     const components = projectAgentSetupComponents({
       computer,
       runtime,

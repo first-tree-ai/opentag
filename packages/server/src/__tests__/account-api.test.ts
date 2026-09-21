@@ -910,6 +910,20 @@ describe("the connect-code redemption status read", () => {
 });
 
 describe("Account Cloud identity routes", () => {
+  it("registers availability even when no other Account service is wired", async () => {
+    const availability = {
+      enabled: false,
+      available: false,
+      reason: "disabled",
+      observedAt: "2026-09-21T00:00:00Z",
+    } as const;
+    const app = createApp({ authService: authService(), cloudAvailability: () => availability });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudComputer, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(availability);
+  });
+
   it("reads deployment availability without creating an identity or environment", async () => {
     const service = services();
     const cloudAvailability = vi.fn().mockReturnValue({

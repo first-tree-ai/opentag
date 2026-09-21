@@ -4,7 +4,7 @@ import type {
   AgentCloudOverview,
   CloudSessionSummary,
 } from "@opentag/shared/browser";
-import { type InfiniteData, useQueryClient } from "@tanstack/react-query";
+import { type InfiniteData, type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type RefObject, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../../api.js";
@@ -19,7 +19,28 @@ interface ReleaseOutcome {
   status: AccountSandboxRunnerStatusResponse;
 }
 
-// Retain only the public environment fields. Task state and totals await a fresh overview.
+// Match the overview's publicDiagnostic: hide phase markers and redact unknown errors.
+const ENVIRONMENT_PHASE_MARKERS = new Set([
+  "cloud_create_pending",
+  "workspace_save_required",
+  "workspace_discard_requested",
+]);
+const PUBLIC_ENVIRONMENT_ERRORS = new Set([
+  "cloud_create_uncertain",
+  "cloud_create_rejected",
+  "cloud_create_failed",
+  "cloud_instance_unverified",
+  "cloud_delete_incomplete",
+  "workspace_save_failed",
+  "workspace_restore_required",
+]);
+
+function redactedEnvironmentError(code: string | null): string | null {
+  if (!code || ENVIRONMENT_PHASE_MARKERS.has(code)) return null;
+  return PUBLIC_ENVIRONMENT_ERRORS.has(code) ? code : "environment_unavailable";
+}
+
+// Preserve authoritative errors/actions if the overview refresh fails; task state and totals await that read.
 function afterRelease(session: CloudSessionSummary, status: AccountSandboxRunnerStatusResponse): CloudSessionSummary {
   if (
     session.sandboxId !== status.sandboxId ||
@@ -27,17 +48,21 @@ function afterRelease(session: CloudSessionSummary, status: AccountSandboxRunner
     session.environmentGeneration > status.environmentGeneration
   )
     return session;
+  const lastErrorCode = redactedEnvironmentError(status.lastErrorCode);
   return {
     ...session,
     lifecycle: status.lifecycle,
     environmentGeneration: status.environmentGeneration,
     runnerConnected: status.runnerConnected,
     runnerReady: status.runnerReady,
-    lastErrorCode: status.lastErrorCode ? "environment_unavailable" : null,
-    lastErrorAt: status.lastErrorAt,
+    lastErrorCode,
+    lastErrorAt: lastErrorCode ? status.lastErrorAt : null,
     updatedAt: status.updatedAt,
-    canRelease: false,
-    canDiscard: false,
+    canRelease: status.currentResourceName !== null,
+    canDiscard:
+      status.currentResourceName !== null &&
+      status.lifecycle === "releasing" &&
+      lastErrorCode === "workspace_save_failed",
   };
 }
 
@@ -137,7 +162,9 @@ function sessionKindLabel(kind: CloudSessionSummary["kind"]): string {
 }
 
 function outcomeText(outcome: ReleaseOutcome): string {
-  if (outcome.status.lifecycle !== "unallocated") return m.cloud_outcome_releasing();
+  // Released means released cleanly: an answer that still carries a failure is not a success.
+  if (outcome.status.lifecycle !== "unallocated" || redactedEnvironmentError(outcome.status.lastErrorCode) !== null)
+    return m.cloud_outcome_releasing();
   return outcome.mode === "discard" ? m.cloud_outcome_released_discarded() : m.cloud_outcome_released_saved();
 }
 
@@ -147,6 +174,24 @@ function isReleaseRefusal(error: unknown): error is ApiError {
 
 function unconfirmedReleaseNotice(error: unknown): string {
   return error instanceof ApiError && error.status === 409 ? m.cloud_notice_conflict() : m.cloud_notice_unconfirmed();
+}
+
+/** Account-wide capacity changes affect every Agent and Session Cloud overview. */
+function invalidateCloudOverviews(queryClient: QueryClient): Promise<void> {
+  return queryClient.invalidateQueries({
+    predicate: (query) => query.queryKey[0] === "agents" && query.queryKey[2] === "cloud",
+  });
+}
+
+/** The card survives generation changes, but old operation messages must not follow it. */
+interface ScopedMessage {
+  environmentGeneration: number;
+  message: string;
+}
+
+function scopedMessage(entry: ScopedMessage | null, session: CloudSessionSummary): string | null {
+  if (entry === null || entry.environmentGeneration !== session.environmentGeneration) return null;
+  return entry.message;
 }
 
 /** Remount action state when the Account's selected Agent/Session environment changes. */
@@ -174,13 +219,16 @@ function SessionEnvironment({
   const [pending, setPending] = useState<"save" | "discard" | null>(null);
   const [discardConfirm, setDiscardConfirm] = useState<{ sandboxId: string; generation: number } | null>(null);
   const [outcome, setOutcome] = useState<ReleaseOutcome | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<ScopedMessage | null>(null);
+  const [actionError, setActionError] = useState<ScopedMessage | null>(null);
   const discardButtonRef = useRef<HTMLButtonElement>(null);
-  // Unallocated is terminal for a generation. A confirmed release must not regress to an older read.
+  // A confirmed release is terminal for its generation; it must not regress to an older read.
   const visibleOutcome = outcome?.status.environmentGeneration === session.environmentGeneration ? outcome : null;
-  const displayedSession =
-    visibleOutcome?.status.lifecycle === "unallocated" ? afterRelease(session, visibleOutcome.status) : session;
+  // Pending or failed saves retain their controls; only a removed environment retires them.
+  const terminalOutcome = visibleOutcome?.status.lifecycle === "unallocated" ? visibleOutcome : null;
+  const displayedSession = terminalOutcome ? afterRelease(session, terminalOutcome.status) : session;
+  const visibleNotice = scopedMessage(notice, session);
+  const visibleActionError = scopedMessage(actionError, session);
 
   async function runRelease(mode: "save" | "discard", generation: number) {
     if (pendingRef.current || !actionsEnabled) return;
@@ -190,8 +238,12 @@ function SessionEnvironment({
     setNotice(null);
     setActionError(null);
     const queryKey = queryKeys.agents.cloudOverview(agentId);
+    // Save and discard alike name the environment generation this card is showing: both stop the
+    // work running in it, so both are fenced to the observed allocation.
     const request: AccountSandboxRunnerStopRequest =
-      mode === "discard" ? { discardUnsavedChanges: true, environmentGeneration: generation } : {};
+      mode === "discard"
+        ? { discardUnsavedChanges: true, environmentGeneration: generation }
+        : { environmentGeneration: generation };
     try {
       await queryClient.cancelQueries({ queryKey });
       const status = await browserApi.stopCloudSandbox(session.sandboxId, request);
@@ -201,39 +253,44 @@ function SessionEnvironment({
         reconcileRelease(data, status),
       );
       setDiscardConfirm(null);
-      setOutcome({ mode, status });
+      // The final status read may already describe a replacement. It is not this operation's outcome.
+      setOutcome(status.environmentGeneration === generation ? { mode, status } : null);
     } catch (error) {
       if (isReleaseRefusal(error)) {
-        setActionError(error.message);
+        setActionError({ environmentGeneration: generation, message: error.message });
       } else {
         setDiscardConfirm(null);
-        setNotice(unconfirmedReleaseNotice(error));
+        setNotice({ environmentGeneration: generation, message: unconfirmedReleaseNotice(error) });
       }
     } finally {
       // No mutation replay. Failed reads remain errors in the existing query cache.
-      await queryClient.invalidateQueries({ queryKey });
+      await invalidateCloudOverviews(queryClient);
       pendingRef.current = false;
       setPending(null);
     }
   }
 
+  // A background refresh disables controls; only changed environment facts stale the confirmation.
   const discardStale =
     pending === null &&
     discardConfirm !== null &&
     (discardConfirm.sandboxId !== session.sandboxId ||
       discardConfirm.generation !== session.environmentGeneration ||
-      !session.canDiscard ||
-      !actionsEnabled);
+      !session.canDiscard);
 
   return (
     <div className="grid gap-3 py-4 first:pt-0 last:pb-0" data-kind={session.kind} data-ui="cloud-session-environment">
       <SessionRowHeader agentId={agentId} session={session} />
       <SessionStateFacts session={displayedSession} />
       {visibleOutcome ? <Banner description={outcomeText(visibleOutcome)} role="status" variant="secondary" /> : null}
-      {notice ? <Banner description={notice} role="status" variant="alert" /> : null}
-      {actionError && !discardConfirm ? <Banner description={actionError} role="alert" variant="error" /> : null}
-      {visibleOutcome === null && actionsEnabled ? (
+      {visibleNotice ? <Banner description={visibleNotice} role="status" variant="alert" /> : null}
+      {visibleActionError && !discardConfirm ? (
+        <Banner description={visibleActionError} role="alert" variant="error" />
+      ) : null}
+      {/* Keep controls mounted during refresh so they do not disappear under the cursor. */}
+      {terminalOutcome === null ? (
         <ReleaseActionButtons
+          actionsEnabled={actionsEnabled}
           discardButtonRef={discardButtonRef}
           pending={pending}
           session={session}
@@ -250,7 +307,8 @@ function SessionEnvironment({
       ) : null}
       {discardConfirm ? (
         <DiscardReleaseDialog
-          actionError={actionError}
+          actionError={visibleActionError}
+          actionsEnabled={actionsEnabled}
           discardButtonRef={discardButtonRef}
           pending={pending}
           stale={discardStale}
@@ -318,12 +376,14 @@ function SessionStateFacts({ session }: { session: CloudSessionSummary }) {
 }
 
 function ReleaseActionButtons({
+  actionsEnabled,
   discardButtonRef,
   onDiscard,
   onSave,
   pending,
   session,
 }: {
+  actionsEnabled: boolean;
   discardButtonRef: RefObject<HTMLButtonElement | null>;
   onDiscard: () => void;
   onSave: () => void;
@@ -335,7 +395,7 @@ function ReleaseActionButtons({
     <div className="flex flex-wrap gap-3">
       {session.canRelease ? (
         <Button
-          disabled={pending !== null}
+          disabled={pending !== null || !actionsEnabled}
           loading={pending === "save"}
           type="button"
           variant="secondary"
@@ -348,7 +408,7 @@ function ReleaseActionButtons({
       ) : null}
       {session.canDiscard ? (
         <Button
-          disabled={pending !== null}
+          disabled={pending !== null || !actionsEnabled}
           ref={discardButtonRef}
           type="button"
           variant="secondary-destructive"
@@ -363,6 +423,7 @@ function ReleaseActionButtons({
 
 function DiscardReleaseDialog({
   actionError,
+  actionsEnabled,
   discardButtonRef,
   onClose,
   onConfirm,
@@ -370,6 +431,7 @@ function DiscardReleaseDialog({
   stale,
 }: {
   actionError: string | null;
+  actionsEnabled: boolean;
   discardButtonRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   onConfirm: () => void;
@@ -392,9 +454,10 @@ function DiscardReleaseDialog({
           <Button disabled={pending !== null} type="button" variant="ghost" onClick={onClose}>
             {m.cloud_discard_keep()}
           </Button>
+          {/* Only true staleness removes the confirm; a re-read in flight merely holds it. */}
           {stale ? null : (
             <Button
-              disabled={pending !== null}
+              disabled={pending !== null || !actionsEnabled}
               loading={pending === "discard"}
               type="button"
               variant="secondary-destructive"

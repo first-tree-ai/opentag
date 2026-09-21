@@ -71,7 +71,8 @@ interface CreationReport {
 /**
  * How far the Cloud availability read got. `ready` carries the Server's answer; `failed` is a read
  * that did not answer — the Cloud choice stays disabled either way, and nothing silently picks
- * Local for the reader instead.
+ * Local for the reader instead. `failed` is told apart from `loading`: an unanswered read is still
+ * checking, a failed one says so and offers the retry, and neither claims the deployment's answer.
  */
 type CloudAvailabilityRead =
   | { readonly kind: "loading" }
@@ -221,10 +222,12 @@ function AgentCreatePage({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   /**
-   * The deployment's Cloud availability, read once on mount. Creation never blocks on it for
-   * Local, and never offers Cloud before the answer arrives.
+   * The deployment's Cloud availability. Creation never blocks on it for Local, never offers Cloud
+   * before the answer arrives, and after a failed read offers the reader an explicit retry.
    */
   const [cloudRead, setCloudRead] = useState<CloudAvailabilityRead>({ kind: "loading" });
+  /** A retry supersedes the earlier attempt: a late answer from it must not overwrite the newer one. */
+  const cloudReadAttempt = useRef(0);
   /** A destination the reader picked themselves is never overridden by a late availability answer. */
   const destinationChosen = useRef(creationPreviewInitialView === "agent");
   /**
@@ -241,21 +244,27 @@ function AgentCreatePage({
     onCreationPreviewViewChange?.(destinationConfirmed ? "agent" : "destination");
   }, [destinationConfirmed, onCreationPreviewViewChange]);
 
-  useEffect(() => {
+  /** One availability read per invocation — the mount effect below and the reader's retry alike. */
+  const readCloudAvailability = useCallback(() => {
     if (creationPreview) return;
-    let live = true;
+    const attempt = ++cloudReadAttempt.current;
+    setCloudRead({ kind: "loading" });
     browserApi.cloudAvailability().then(
       (value) => {
-        if (live) setCloudRead({ kind: "ready", value });
+        if (cloudReadAttempt.current === attempt) setCloudRead({ kind: "ready", value });
       },
       () => {
-        if (live) setCloudRead({ kind: "failed" });
+        if (cloudReadAttempt.current === attempt) setCloudRead({ kind: "failed" });
       },
     );
-    return () => {
-      live = false;
-    };
   }, [creationPreview]);
+
+  useEffect(() => {
+    readCloudAvailability();
+    return () => {
+      cloudReadAttempt.current += 1;
+    };
+  }, [readCloudAvailability]);
 
   // Cloud is the default once it is known to be available; an unavailable or unreadable service
   // leaves the choice to the reader rather than pre-selecting a destination that cannot run.
@@ -379,14 +388,15 @@ function AgentCreatePage({
             <DestinationStep
               cloud={
                 cloudRead.kind === "ready"
-                  ? { available: cloudRead.value.available, reason: cloudRead.value.reason }
-                  : undefined
+                  ? { kind: "ready", available: cloudRead.value.available, reason: cloudRead.value.reason }
+                  : cloudRead
               }
               draft={draft}
               onChoose={(destination) => {
                 destinationChosen.current = true;
                 setDraft({ ...draft, destination });
               }}
+              onCloudRetry={readCloudAvailability}
               onSubmit={() => setDestinationConfirmed(true)}
             />
           )}

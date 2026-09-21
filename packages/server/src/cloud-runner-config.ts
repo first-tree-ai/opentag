@@ -1,9 +1,12 @@
 import { z } from "zod";
+import { DEFAULT_CLOUD_CAPACITY_LIMITS } from "./services/sandboxes/sandbox-capacity.js";
 
 /**
  * E3 Cloud Runner configuration: derived, never independently switched. The overall Cloud switch
- * (OPENTAG_CLOUD_IDENTITIES_ENABLED) enables the Runner; there is no separate Runner flag, and the
- * retired OPENTAG_CLOUD_RUNNER_ENABLED name is ignored rather than parsed. When enabled, every
+ * (OPENTAG_CLOUD_IDENTITIES_ENABLED) enables the Runner; there is no separate Runner flag. The
+ * retired OPENTAG_CLOUD_RUNNER_ENABLED is checked only for malformed or conflicting upgrade
+ * settings. An agreeing "true" remains tolerated during the older Server rollback window.
+ * When enabled, every
  * coordinate the Server needs to allocate Cloud Run Instances is validated up front — the
  * digest-pinned Runner image, project/region/service account, the WSS backend origin Runners dial
  * back to, and the Direct VPC attachment (network/subnetwork/execution tag, ALL_TRAFFIC egress).
@@ -66,9 +69,21 @@ export const CloudRunnerEnvironmentSchema = z
     /*
      * E9 admission ceilings: occupied Instances per Account and platform-wide, counted from the
      * durable Sandbox facts; lowering them only blocks NEW reservations, never kills running work.
+     * The defaults are single-sourced from DEFAULT_CLOUD_CAPACITY_LIMITS, which the Sandbox
+     * admission path also uses.
      */
-    OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: z.coerce.number().int().min(1).max(10_000).default(3),
-    OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: z.coerce.number().int().min(1).max(1_000_000).default(20),
+    OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10_000)
+      .default(DEFAULT_CLOUD_CAPACITY_LIMITS.accountLimit),
+    OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1_000_000)
+      .default(DEFAULT_CLOUD_CAPACITY_LIMITS.platformLimit),
   })
   .strict();
 
@@ -119,6 +134,7 @@ export function resolveCloudRunnerConfig(
   environment: NodeJS.ProcessEnv,
   cloudIdentitiesEnabled: boolean,
 ): CloudRunnerConfig {
+  validateRetiredRunnerEnabled(environment, cloudIdentitiesEnabled);
   const parsed = CloudRunnerEnvironmentSchema.parse({
     OPENTAG_CLOUD_RUNNER_IMAGE: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_IMAGE),
     OPENTAG_CLOUD_RUNNER_PROJECT: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_PROJECT),
@@ -145,7 +161,9 @@ export function resolveCloudRunnerConfig(
   }
   const missing = REQUIRED_FIELDS.filter((field) => parsed[field] === undefined);
   if (missing.length > 0) {
-    throw new Error(`Cloud Runner is enabled without required configuration: ${missing.join(", ")}`);
+    throw new Error(
+      `OPENTAG_CLOUD_IDENTITIES_ENABLED=true enables the Cloud Runner, but required configuration is missing: ${missing.join(", ")}`,
+    );
   }
   return {
     enabled: true,
@@ -175,4 +193,20 @@ export function resolveCloudRunnerConfig(
 function emptyToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+/** Reject silent activation of a previously paused Runner; this does not restore a third switch. */
+function validateRetiredRunnerEnabled(environment: NodeJS.ProcessEnv, cloudIdentitiesEnabled: boolean): void {
+  const retired = emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_ENABLED);
+  if (retired === undefined) return;
+  if (retired !== "true" && retired !== "false") {
+    throw new Error(
+      'OPENTAG_CLOUD_RUNNER_ENABLED is retired and no longer switches the Cloud Runner; remove it from the deployment (only "true"/"false" remain recognizable migration values)',
+    );
+  }
+  if (retired === "false" && cloudIdentitiesEnabled) {
+    throw new Error(
+      "OPENTAG_CLOUD_RUNNER_ENABLED=false no longer pauses the Cloud Runner: OPENTAG_CLOUD_IDENTITIES_ENABLED=true now enables it. Remove the retired variable to keep Cloud on, or set OPENTAG_CLOUD_IDENTITIES_ENABLED=false to keep execution off",
+    );
+  }
 }

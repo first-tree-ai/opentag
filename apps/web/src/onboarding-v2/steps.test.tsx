@@ -9,7 +9,7 @@ describe("creation step navigation", () => {
   it("shows only Continue on the first step and enables it after a destination is selected", () => {
     const onSubmit = vi.fn();
     const { rerender } = render(
-      <DestinationStep cloud={undefined} draft={baseDraft} onChoose={() => undefined} onSubmit={onSubmit} />,
+      <DestinationStep cloud={{ kind: "loading" }} draft={baseDraft} onChoose={() => undefined} onSubmit={onSubmit} />,
     );
 
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
@@ -18,7 +18,7 @@ describe("creation step navigation", () => {
 
     rerender(
       <DestinationStep
-        cloud={{ available: false, reason: "disabled" }}
+        cloud={{ kind: "ready", available: false, reason: "disabled" }}
         draft={{ ...baseDraft, destination: "local" }}
         onChoose={() => undefined}
         onSubmit={onSubmit}
@@ -80,7 +80,7 @@ describe("creation step navigation", () => {
   it("enables the Cloud destination only once the service answers available", () => {
     const onChoose = vi.fn();
     const { rerender } = render(
-      <DestinationStep cloud={undefined} draft={baseDraft} onChoose={onChoose} onSubmit={() => undefined} />,
+      <DestinationStep cloud={{ kind: "loading" }} draft={baseDraft} onChoose={onChoose} onSubmit={() => undefined} />,
     );
     // No answer yet: the Cloud choice is disabled rather than guessed, and says it is checking.
     expect(screen.getByRole("button", { name: /Cloud computer/ }).hasAttribute("disabled")).toBe(true);
@@ -88,7 +88,7 @@ describe("creation step navigation", () => {
 
     rerender(
       <DestinationStep
-        cloud={{ available: true, reason: null }}
+        cloud={{ kind: "ready", available: true, reason: null }}
         draft={baseDraft}
         onChoose={onChoose}
         onSubmit={() => undefined}
@@ -100,7 +100,7 @@ describe("creation step navigation", () => {
 
     rerender(
       <DestinationStep
-        cloud={{ available: false, reason: "execution_unavailable" }}
+        cloud={{ kind: "ready", available: false, reason: "execution_unavailable" }}
         draft={baseDraft}
         onChoose={onChoose}
         onSubmit={() => undefined}
@@ -109,6 +109,32 @@ describe("creation step navigation", () => {
     expect(screen.getByRole("button", { name: /Cloud computer/ }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByText("Temporarily unavailable")).toBeTruthy();
     expect(onChoose).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the availability check failed — never that the deployment lacks Cloud — and retries on request", () => {
+    const onCloudRetry = vi.fn();
+    render(
+      <DestinationStep
+        cloud={{ kind: "failed" }}
+        draft={baseDraft}
+        onChoose={() => undefined}
+        onCloudRetry={onCloudRetry}
+        onSubmit={() => undefined}
+      />,
+    );
+
+    // The failed read keeps Cloud disabled, and the copy reports the check, not a deployment fact.
+    expect(screen.getByRole("button", { name: /Cloud computer/ }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Could not check")).toBeTruthy();
+    expect(
+      screen.getByText("Cloud availability could not be checked. Try again, or run the agent on your own computer."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Temporarily unavailable")).toBeNull();
+    // Local is untouched by the failed Cloud read.
+    expect(screen.getByRole("button", { name: /Local computer/ }).hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(onCloudRetry).toHaveBeenCalledOnce();
   });
 
   it("fixes the runtime for a Cloud destination and needs no selection to submit", () => {

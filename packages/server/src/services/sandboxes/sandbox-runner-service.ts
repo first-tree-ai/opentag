@@ -181,16 +181,16 @@ function preservedMarkersFor(incomingCode: string): string[] {
     : [...CREATE_PHASE_MARKER_LIST, ...WORKSPACE_RELEASE_MARKER_LIST];
 }
 
-/** The discard opt-in is checked under the same row lock that records its allocation-bound intent. */
+/** Account stops are generation-fenced under the same row lock that records release intent. */
 function stopReleaseMarker(
   row: Pick<typeof sandboxes.$inferSelect, "lifecycle" | "environmentGeneration" | "lastErrorCode">,
-  input: AccountSandboxRunnerStopRequest,
+  input: AccountSandboxRunnerStopRequest | undefined,
   persistence: boolean,
 ): string | undefined {
-  if ("discardUnsavedChanges" in input) {
-    if (input.environmentGeneration !== row.environmentGeneration) {
-      throw runnerConflict("The discard request refers to a different environment generation");
-    }
+  if (input && input.environmentGeneration !== row.environmentGeneration) {
+    throw runnerConflict("The release request refers to a different environment generation");
+  }
+  if (input && "discardUnsavedChanges" in input) {
     if (row.lifecycle === "ready" || WORKSPACE_RELEASE_MARKER_LIST.includes(row.lastErrorCode ?? "")) {
       return WORKSPACE_DISCARD_REQUESTED;
     }
@@ -571,7 +571,7 @@ export class SandboxRunnerService {
   async stopForAccount(
     accountId: string,
     sandboxId: string,
-    input: AccountSandboxRunnerStopRequest = {},
+    input?: AccountSandboxRunnerStopRequest,
   ): Promise<AccountSandboxRunnerStatusResponse> {
     const transition = await this.#database.transaction(async (transaction) => {
       const owned = await loadOwnedSandbox(transaction, accountId, sandboxId, { lock: true, authority: "read" });

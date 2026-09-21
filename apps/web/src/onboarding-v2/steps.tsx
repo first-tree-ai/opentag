@@ -119,26 +119,80 @@ export function CardCopy({
   );
 }
 
+/**
+ * The deployment's Cloud availability as far as this page has confirmed it. Until the read
+ * answers — and when it has failed — the Cloud choice stays disabled rather than guessing either
+ * way, and the copy says which of the three the reader is looking at.
+ */
+export type CloudDestinationRead =
+  | { readonly kind: "loading" }
+  | { readonly kind: "failed" }
+  | { readonly kind: "ready"; readonly available: boolean; readonly reason: CloudAvailability["reason"] };
+
+function DestinationCard({
+  badge,
+  description,
+  disabled = false,
+  icon,
+  onChoose,
+  selected,
+  title,
+}: {
+  badge?: string;
+  description: string;
+  disabled?: boolean;
+  icon: "laptop" | "model";
+  onChoose: () => void;
+  selected: boolean;
+  title: string;
+}) {
+  return (
+    <Button aria-pressed={selected} className={CARD} disabled={disabled} onClick={onChoose} variant="ghost">
+      <Icon className={`size-10 shrink-0 ${disabled ? "text-kumo-subtle" : "text-kumo-brand"}`} name={icon} />
+      <CardCopy badge={badge} description={description} disabled={disabled} title={title} />
+    </Button>
+  );
+}
+
+/*
+ * Three Cloud cards, one per read state: the unanswered read describes the destination and says it
+ * is checking; the failed read says the check failed and offers the retry; only an answered "no"
+ * claims the deployment cannot offer Cloud.
+ */
+function cloudDestinationCopy(cloud: CloudDestinationRead): { badge?: string; description: string } {
+  if (cloud.kind === "failed") {
+    return {
+      badge: m.onboarding_v2_destination_cloud_check_failed_badge(),
+      description: m.onboarding_v2_destination_cloud_check_failed_description(),
+    };
+  }
+  if (cloud.kind === "ready" && !cloud.available) {
+    return {
+      badge: m.onboarding_v2_destination_cloud_unavailable_badge(),
+      description: m.onboarding_v2_destination_cloud_unavailable_description(),
+    };
+  }
+  return {
+    badge: cloud.kind === "loading" ? m.onboarding_v2_destination_cloud_checking() : undefined,
+    description: m.onboarding_v2_destination_cloud_description(),
+  };
+}
+
 export function DestinationStep({
   cloud,
   draft,
   onChoose,
+  onCloudRetry,
   onSubmit,
 }: {
-  /**
-   * The deployment's Cloud availability as far as this page has confirmed it. `undefined` means
-   * the read has not answered yet: the Cloud choice stays disabled rather than guessing either way.
-   */
-  cloud: { readonly available: boolean; readonly reason: CloudAvailability["reason"] } | undefined;
+  cloud: CloudDestinationRead;
   draft: AgentDraft;
   onChoose: (destination: Destination) => void;
+  onCloudRetry?: () => void;
   onSubmit: () => void;
 }) {
-  const cloudEnabled = cloud?.available === true;
-  const destinations: readonly { id: Destination; icon: "laptop" | "model"; enabled: boolean }[] = [
-    { id: "local", icon: "laptop", enabled: true },
-    { id: "cloud", icon: "model", enabled: cloudEnabled },
-  ];
+  const cloudEnabled = cloud.kind === "ready" && cloud.available;
+  const cloudCopy = cloudDestinationCopy(cloud);
   return (
     <section className={STEP} data-ui="onboarding-v2-step-destination">
       <header className={HEADER}>
@@ -147,51 +201,33 @@ export function DestinationStep({
         </Text>
       </header>
       <ul className={CHOICES}>
-        {destinations.map((destination) => {
-          const copy =
-            destination.id === "local"
-              ? {
-                  title: m.onboarding_v2_destination_local_title(),
-                  description: m.onboarding_v2_destination_local_description(),
-                }
-              : cloudEnabled
-                ? {
-                    title: m.onboarding_v2_destination_cloud_title(),
-                    description: m.onboarding_v2_destination_cloud_description(),
-                  }
-                : {
-                    title: m.onboarding_v2_destination_cloud_title(),
-                    description: m.onboarding_v2_destination_cloud_unavailable_description(),
-                  };
-          const badge =
-            destination.id === "cloud" && !cloudEnabled
-              ? cloud === undefined
-                ? m.onboarding_v2_destination_cloud_checking()
-                : m.onboarding_v2_destination_cloud_unavailable_badge()
-              : undefined;
-          return (
-            <li key={destination.id}>
-              <Button
-                aria-pressed={draft.destination === destination.id}
-                className={CARD}
-                disabled={!destination.enabled}
-                onClick={() => onChoose(destination.id)}
-                variant="ghost"
-              >
-                <Icon
-                  className={`size-10 shrink-0 ${destination.enabled ? "text-kumo-brand" : "text-kumo-subtle"}`}
-                  name={destination.icon}
-                />
-                <CardCopy
-                  badge={badge}
-                  description={copy.description}
-                  disabled={!destination.enabled}
-                  title={copy.title}
-                />
+        <li>
+          <DestinationCard
+            description={m.onboarding_v2_destination_local_description()}
+            icon="laptop"
+            selected={draft.destination === "local"}
+            title={m.onboarding_v2_destination_local_title()}
+            onChoose={() => onChoose("local")}
+          />
+        </li>
+        <li>
+          <DestinationCard
+            badge={cloudCopy.badge}
+            description={cloudCopy.description}
+            disabled={!cloudEnabled}
+            icon="model"
+            selected={draft.destination === "cloud"}
+            title={m.onboarding_v2_destination_cloud_title()}
+            onChoose={() => onChoose("cloud")}
+          />
+          {cloud.kind === "failed" && onCloudRetry ? (
+            <div className="mt-2 flex justify-end">
+              <Button size="compact" type="button" variant="secondary" onClick={onCloudRetry}>
+                {m.common_try_again()}
               </Button>
-            </li>
-          );
-        })}
+            </div>
+          ) : null}
+        </li>
       </ul>
       <StepNav nextDisabled={!draft.destination} onNext={onSubmit} />
     </section>

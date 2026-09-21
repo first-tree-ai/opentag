@@ -27,11 +27,12 @@ const shared = {
 test("cleanupAllocations attempts every allocation when the first one fails and records both", async () => {
   const calls = [];
   let receipts = 0;
-  const api = async (method, path) => {
+  const api = async (method, path, body) => {
     calls.push(`${method} ${path}`);
     if (path === "/runner/A") throw new Error("allocation A is gone");
     if (method === "GET")
       return { currentResourceName: "resource-B", currentResourceUid: "uid-B", environmentGeneration: 3 };
+    assert.deepEqual(body, { environmentGeneration: 3 }, "cleanup targets the allocation just observed");
     return { lifecycle: "unallocated", currentResourceName: null };
   };
   const allocations = [

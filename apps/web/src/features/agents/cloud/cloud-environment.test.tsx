@@ -7,7 +7,7 @@ import type {
   TaskDetail,
   TaskSummary,
 } from "@opentag/shared/browser";
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../../__tests__/support/router.js";
@@ -15,6 +15,7 @@ import { ApiError, browserApi, CancelledRequestError } from "../../../api.js";
 import { queryKeys } from "../../../query/keys.js";
 import { TaskDetailPage } from "../../tasks-page.js";
 import type { AgentDetailView } from "../agent-model.js";
+import { useComputersQuery } from "../agent-queries.js";
 import { AgentComputerSettings } from "../agent-settings/agent-computer-settings.js";
 import { AgentCloudOverviewPanel, CloudSessionEnvironmentCard } from "./cloud-environment.js";
 
@@ -211,7 +212,8 @@ describe("Cloud Session release actions", () => {
       fireEvent.click(button);
     });
     await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
-    expect(stop).toHaveBeenCalledWith(SANDBOX_ID, {});
+    // Save and discard alike are fenced to the environment generation the reader was looking at.
+    expect(stop).toHaveBeenCalledWith(SANDBOX_ID, { environmentGeneration: 3 });
 
     // The Server answered the release; the re-read it triggered fails and stays failed.
     vi.spyOn(browserApi, "agentCloudOverview").mockRejectedValue(new Error("network down"));
@@ -292,7 +294,10 @@ describe("Cloud Session release actions", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Save and release" }));
     expect(await screen.findByText(/release result could not be confirmed/)).toBeTruthy();
     expect(await screen.findByText(/Update failed/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Save and release" })).toBeNull();
+    // The control stays put but disabled while the authoritative read is failed: it never acts on
+    // an unconfirmed state, and it never vanishes from under the cursor either.
+    const retry = screen.getByRole("button", { name: "Save and release" });
+    expect(retry.hasAttribute("disabled")).toBe(true);
     expect(stop).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(2);
   });
@@ -323,7 +328,7 @@ describe("Cloud Session release actions", () => {
     // explicit escape beside it, not a silent part of it.
     expect(screen.getByRole("button", { name: "Discard and release…" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry save and release" }));
-    await waitFor(() => expect(stop).toHaveBeenCalledWith(SANDBOX_ID, {}));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith(SANDBOX_ID, { environmentGeneration: 3 }));
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
@@ -456,6 +461,169 @@ describe("Cloud Session release actions", () => {
     expect(stop).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/Environment released/)).toBeNull();
   });
+
+  it("keeps the discard dialog steady while a background re-read is in flight and changes nothing", async () => {
+    const saveFailed = sessionSummary({
+      lifecycle: "releasing",
+      lastErrorCode: "workspace_save_failed",
+      canDiscard: true,
+    });
+    let finishRefresh!: (value: AgentCloudOverview) => void;
+    const read = vi
+      .spyOn(browserApi, "agentCloudOverview")
+      .mockResolvedValueOnce(overview({ sessions: [saveFailed] }))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRefresh = resolve;
+          }),
+      )
+      .mockResolvedValue(
+        overview({
+          sessions: [
+            sessionSummary({ lifecycle: "unallocated", runnerConnected: false, runnerReady: false, canRelease: false }),
+          ],
+        }),
+      );
+    const stop = vi.spyOn(browserApi, "stopCloudSandbox").mockResolvedValue(stopStatus());
+    let cache!: QueryClient;
+    function CaptureCache() {
+      cache = useQueryClient();
+      return null;
+    }
+    await renderInRouter(
+      <>
+        <CaptureCache />
+        <AgentCloudOverviewPanel agentId={AGENT_ID} />
+      </>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Discard and release…" }));
+    const dialog = await screen.findByRole("alertdialog");
+    const confirm = () => within(dialog).getByRole("button", { name: "Discard changes and release" });
+
+    // A routine re-read starts while the dialog is open. Nothing about the environment changed,
+    // so the dialog does not accuse itself of staleness: the confirm is only held, never removed.
+    await act(async () => {
+      void cache.invalidateQueries({ queryKey: queryKeys.agents.cloudOverview(AGENT_ID) });
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(confirm().hasAttribute("disabled")).toBe(true));
+    expect(within(dialog).queryByText(/changed while this dialog was open/)).toBeNull();
+
+    // The re-read settles with the same environment, and the dialog is exactly as usable as before.
+    await act(async () => {
+      finishRefresh(overview({ sessions: [saveFailed] }));
+    });
+    await waitFor(() => expect(confirm().hasAttribute("disabled")).toBe(false));
+    expect(within(dialog).queryByText(/changed while this dialog was open/)).toBeNull();
+    fireEvent.click(confirm());
+    await waitFor(() =>
+      expect(stop).toHaveBeenCalledWith(SANDBOX_ID, { discardUnsavedChanges: true, environmentGeneration: 3 }),
+    );
+    expect(await screen.findByText(/Environment released\. Unsaved changes were discarded/)).toBeTruthy();
+  });
+
+  it("keeps the failed save and its retry controls from the authoritative answer when the re-read fails", async () => {
+    const saveFailed = sessionSummary({
+      lifecycle: "releasing",
+      runnerConnected: false,
+      runnerReady: false,
+      lastErrorCode: "workspace_save_failed",
+      lastErrorAt: "2026-09-20T00:05:00.000Z",
+      canDiscard: true,
+    });
+    vi.spyOn(browserApi, "agentCloudOverview").mockResolvedValue(overview({ sessions: [saveFailed] }));
+    let finishStop!: (value: AccountSandboxRunnerStatusResponse) => void;
+    const stop = vi
+      .spyOn(browserApi, "stopCloudSandbox")
+      .mockImplementation(() => new Promise((resolve) => (finishStop = resolve)));
+
+    await renderInRouter(<AgentCloudOverviewPanel agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry save and release" }));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith(SANDBOX_ID, { environmentGeneration: 3 }));
+
+    // The Server's answer: the save failed again and the resource is still bound. The re-read the
+    // release triggered then fails, so this answer is all the row has.
+    vi.mocked(browserApi.agentCloudOverview).mockRejectedValue(new Error("network down"));
+    await act(async () => {
+      finishStop(
+        stopStatus({
+          lifecycle: "releasing",
+          currentResourceName: "projects/p/locations/l/instances/i-3",
+          currentResourceUid: "uid-3",
+          lastErrorCode: "workspace_save_failed",
+          lastErrorAt: "2026-09-20T00:06:00.000Z",
+        }),
+      );
+    });
+
+    // The exact failure survives — it is not watered down to a generic "needs attention" — and no
+    // successful-release banner is claimed for a save that failed.
+    expect(await screen.findByText("The workspace could not be saved")).toBeTruthy();
+    expect(screen.queryByText("The environment needs attention")).toBeNull();
+    expect(screen.queryByText(/Environment released\./)).toBeNull();
+    expect(screen.getByText("The request returned. Check the current environment state.")).toBeTruthy();
+    expect(await screen.findByText(/Update failed/)).toBeTruthy();
+    // The retry and the explicit discard the Server's predicates allow stay mounted — disabled
+    // only while the authoritative read is failed.
+    expect(screen.getByRole("button", { name: "Retry save and release" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Discard and release…" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("retires a release notice once the environment generation it answered for is gone", async () => {
+    const read = vi
+      .spyOn(browserApi, "agentCloudOverview")
+      .mockResolvedValueOnce(overview({ sessions: [sessionSummary()] }))
+      .mockResolvedValue(overview({ sessions: [sessionSummary({ environmentGeneration: 4 })] }));
+    const stop = vi
+      .spyOn(browserApi, "stopCloudSandbox")
+      .mockRejectedValue(
+        new ApiError(
+          409,
+          "The release request refers to a different environment generation",
+          "SANDBOX_RUNNER_CONFLICT",
+        ),
+      );
+
+    await renderInRouter(<AgentCloudOverviewPanel agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Save and release" }));
+
+    // The refusal belongs to generation 3; the re-read it triggered shows the environment moved
+    // to generation 4, and the refusal goes with the generation it described.
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(/changed before the request completed/)).toBeNull());
+    expect(screen.getByText("Environment ready")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save and release" }).hasAttribute("disabled")).toBe(false);
+    expect(stop).toHaveBeenCalledWith(SANDBOX_ID, { environmentGeneration: 3 });
+  });
+
+  it("re-reads every Agent's Cloud overview after a release, because capacity is Account-wide", async () => {
+    const stop = vi.spyOn(browserApi, "stopCloudSandbox").mockResolvedValue(stopStatus());
+    const read = vi
+      .spyOn(browserApi, "agentCloudOverview")
+      .mockImplementation((agentId: string) =>
+        Promise.resolve(
+          agentId === AGENT_ID
+            ? overview({ sessions: [sessionSummary()] })
+            : overview({ agentId: OTHER_AGENT_ID, capacity: { accountUsed: 1, accountLimit: 3 } }),
+        ),
+      );
+
+    await renderInRouter(
+      <>
+        <AgentCloudOverviewPanel agentId={AGENT_ID} />
+        <AgentCloudOverviewPanel agentId={OTHER_AGENT_ID} />
+      </>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Save and release" }));
+    await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+
+    // The sibling board is not left showing capacity this release freed until its own poll comes.
+    const readsFor = (agentId: string) => read.mock.calls.filter(([id]) => id === agentId).length;
+    await waitFor(() => expect(readsFor(OTHER_AGENT_ID)).toBe(2));
+    expect(readsFor(AGENT_ID)).toBe(2);
+  });
 });
 
 describe("Agent identity switches", () => {
@@ -520,9 +688,23 @@ describe("AgentComputerSettings Cloud and Local compatibility", () => {
     delete agent.computerKind;
     const retry = vi.fn();
     const connect = vi.spyOn(browserApi, "issueComputerConnectCode");
-    await renderInRouter(<AgentComputerSettings agent={agent} onAgentChanged={retry} />);
+    // An active Computers reader, so the retry's re-read of the failed inventory is observable.
+    function ComputersObserver() {
+      useComputersQuery();
+      return null;
+    }
+    const computers = vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    await renderInRouter(
+      <>
+        <ComputersObserver />
+        <AgentComputerSettings agent={agent} onAgentChanged={retry} />
+      </>,
+    );
     expect(screen.queryByRole("button", { name: /install command/ })).toBeNull();
+    await waitFor(() => expect(computers).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    // "Unconfirmed" is the Computers read having failed, so retrying re-reads it — not only the Agent.
+    await waitFor(() => expect(computers).toHaveBeenCalledTimes(2));
     expect(retry).toHaveBeenCalledTimes(1);
     expect(connect).not.toHaveBeenCalled();
   });

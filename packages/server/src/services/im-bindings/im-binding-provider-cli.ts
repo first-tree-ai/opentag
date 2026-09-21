@@ -1,4 +1,5 @@
 import type {
+  ImBindingDiagnostics,
   ImBindingHandoffStatus,
   ImBindingState,
   ImCliProvider,
@@ -39,7 +40,7 @@ export interface ImBindingReadinessInput {
 export interface ImBindingReadiness {
   handoff: ImBindingHandoffStatus;
   agentRuntimeReadiness: ProviderReadinessStatus;
-  providerCliReadiness: ImCliReadinessStatus;
+  providerCliReadiness: ImBindingDiagnostics["providerCliReadiness"];
   providerCliReason?: ProviderCliArtifactPublicReason;
   credentialExecutionReadiness: IntegrationCredentialExecutionStatus;
   credentialExecutionReason?: IntegrationCredentialExecutionReason;
@@ -366,9 +367,8 @@ export class ImBindingProviderCli {
             ? { bindingState: "active", handoffReady: true }
             : { bindingState, handoffReady: false },
         agentRuntimeReadiness: runtime,
-        // No local artifact is provisioned ahead of the first Cloud execution, so there is no
-        // artifact observation to report; the fence value states that rather than a fabrication.
-        providerCliReadiness: "unavailable",
+        // The image supplies the CLI at execution time; Local installation readiness does not apply.
+        providerCliReadiness: "not_applicable",
         credentialExecutionReadiness: "unconfirmed",
         reauthorizationRequired: needsReauthorization,
         connection,

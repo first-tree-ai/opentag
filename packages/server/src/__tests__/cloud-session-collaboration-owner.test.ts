@@ -1694,7 +1694,7 @@ describe("CloudSessionCollaborationOwner", () => {
     void sent;
   });
 
-  it("terminates a cold child durably before execution when capacity admission rejects it", async () => {
+  it("keeps a capacity-blocked cold child retryable without taking execution custody", async () => {
     const fixture = await seedCloudSession();
     const messageId = randomUUID();
     await insertMessage(messageId, fixture);
@@ -1724,10 +1724,10 @@ describe("CloudSessionCollaborationOwner", () => {
       work: new CloudSessionWorkTracker(),
     });
 
-    // A terminal capacity outcome the source caller can plan around — never an indefinite wait,
-    // and nothing executes: no custody record, no busy registration, no dispatch tail left behind.
+    // No custody, busy registration, or dispatch tail is created. The caller may retry the same
+    // durable message once a releasing environment frees capacity.
     await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
-      status: "rejected",
+      status: "unreachable",
       code: "cloud_capacity_exceeded",
     });
     expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);

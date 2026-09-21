@@ -154,7 +154,8 @@ E4（真实 IM）和 E9（默认产品 UI）。此处不增加面向客户的 UI
 E1 前缀；摘要中的标签为 E2。
 
 E9 扩展此脚本，要求 Cloud setup 与 preparation-refresh 由 Server 返回，不分配 Sandbox、不伪造 Local CLI 观测。
-测试环境关闭 Runner 时，可用性须明确执行服务不可用，Computer 仍逻辑在线。Agent 空概览仅归属账号可读。
+测试环境注入完整但不触达 GCP 的 Runner 参数且不启用模型路径，可用性须报告 `model_unavailable`，
+Computer 仍逻辑在线。Agent 空概览仅归属账号可读。
 这些验证真实 HTTP／数据库路径，不代表真实 Provider 授权或云端执行验收。
 Sandbox 创建事务会锁住活跃 IM binding 直至提交，确保并发的 Provider 停用能结束刚提交的 Session，
 不会留下 binding 已停用但 Session 仍活跃的记录。

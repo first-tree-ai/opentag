@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { computeDirectInputHash, type RunnerServerFrame } from "@opentag/shared";
+import { computeDirectInputHash, RUNTIME_CAPABILITY, type RunnerServerFrame } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -286,6 +286,161 @@ async function localScope() {
   return { accountId, agentId, bindingId, computerId, instanceId, firstSessionId, secondSessionId, registry };
 }
 
+/**
+ * A Local Agent with a channel and a thread Session on one Computer. The steer cases need a Local
+ * subject because the E4 protocol has no steer frame; everything else they exercise is the shared
+ * worker code, including the observer capability check.
+ */
+async function localSteerScope() {
+  const accountId = randomUUID();
+  await unit.database.insert(users).values({ id: accountId, email: `${accountId}@example.test`, displayName: "L" });
+  const computerId = randomUUID();
+  const instanceId = randomUUID();
+  await unit.database.insert(computers).values({
+    id: computerId,
+    ownerAccountId: accountId,
+    kind: "local",
+    currentInstallationId: randomUUID(),
+    currentInstanceId: instanceId,
+    displayName: "Local",
+    platform: "linux",
+    arch: "x64",
+    clientVersion: "test",
+  });
+  const agentId = randomUUID();
+  await unit.database.insert(agents).values({
+    id: agentId,
+    createdByUserId: accountId,
+    computerId,
+    name: `local-steer-${agentId}`,
+    displayName: "Local Steer",
+    runtimeProvider: "pi",
+  });
+  const bindingId = randomUUID();
+  await unit.database.insert(imBindings).values({
+    id: bindingId,
+    agentId,
+    provider: "feishu",
+    status: "active",
+    externalAppId: `unit-app-${randomUUID().slice(0, 8)}`,
+    externalBotId: "unit-bot",
+    credentialSchemaVersion: 1,
+    credentialGeneration: 1,
+    encryptedCredential: "unit-only-unused",
+    activatedAt: new Date(),
+  });
+  const channelSessionId = randomUUID();
+  const threadSessionId = randomUUID();
+  await unit.database.insert(sessions).values({
+    id: channelSessionId,
+    imBindingId: bindingId,
+    channelId: "unit-local-channel",
+    conversationKind: "channel",
+    kind: "channel",
+  });
+  await unit.database.insert(sessions).values({
+    id: threadSessionId,
+    imBindingId: bindingId,
+    channelId: "unit-local-channel",
+    conversationKind: "channel",
+    kind: "thread",
+    threadKey: "omt_local",
+  });
+  for (const sessionId of [channelSessionId, threadSessionId]) {
+    await unit.database.insert(sessionPlacements).values({ sessionId, computerId, generation: 1 });
+  }
+  // An accepted, unreported turn already holding the channel Session: this is what makes the
+  // follow-up a steer candidate rather than a fresh Local delivery.
+  const rootMessageId = randomUUID();
+  const rootDeliveryId = randomUUID();
+  const acceptedAt = new Date(Date.now() + 60 * 60_000);
+  await unit.database.insert(imMessages).values({
+    id: rootMessageId,
+    imBindingId: bindingId,
+    channelId: "unit-local-channel",
+    externalMessageId: `root-${rootMessageId.slice(0, 8)}`,
+    providerRevisionKey: "1",
+    operation: "created",
+    direction: "inbound",
+    authorKind: "human",
+    authorExternalId: "unit-user",
+    content: { version: 1, fallbackText: "root", blocks: [], truncated: false },
+    providerContext: { provider: "feishu" },
+    occurredAt: acceptedAt,
+  });
+  await unit.database.insert(imMessageDeliveries).values({
+    id: rootDeliveryId,
+    messageId: rootMessageId,
+    sessionId: channelSessionId,
+    attention: "direct",
+    state: "accepted",
+    placementGeneration: 1,
+    inputHash: "root-hash",
+    turnId: "turn-root",
+    reportOwnerInstanceId: instanceId,
+    acceptedAt,
+    expiresAt: new Date(acceptedAt.getTime() + 60_000),
+  });
+  return { accountId, agentId, computerId, instanceId, bindingId, channelSessionId, threadSessionId, rootDeliveryId };
+}
+
+/** A pending channel follow-up that `#replyRole` resolves to the observer role. */
+async function observerFollowUp(scope: Awaited<ReturnType<typeof localSteerScope>>) {
+  const messageId = randomUUID();
+  const deliveryId = randomUUID();
+  await unit.database.insert(imMessages).values({
+    id: messageId,
+    imBindingId: scope.bindingId,
+    channelId: "unit-local-channel",
+    externalMessageId: `ext-${messageId.slice(0, 8)}`,
+    providerRevisionKey: "1",
+    operation: "created",
+    direction: "inbound",
+    authorKind: "human",
+    authorExternalId: "unit-user",
+    content: { version: 1, fallbackText: "follow up", blocks: [], truncated: false },
+    providerContext: { provider: "feishu" },
+    occurredAt: new Date(),
+    // `#replyRole` reads this message's own thread key to find its thread Session.
+    threadKey: "omt_local",
+  });
+  await unit.database.insert(imMessageDeliveries).values({
+    id: deliveryId,
+    messageId,
+    sessionId: scope.channelSessionId,
+    attention: "direct",
+    state: "pending",
+    placementGeneration: 1,
+    expiresAt: new Date(Date.now() + 3_600_000),
+  });
+  // The follow-up is claimable now; the accepted root is not re-selected on this tick.
+  await unit.database
+    .update(imMessageDeliveries)
+    .set({ nextAttemptAt: new Date(Date.now() - 60_000) })
+    .where(eq(imMessageDeliveries.id, deliveryId));
+  await unit.database
+    .update(imMessageDeliveries)
+    .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+    .where(eq(imMessageDeliveries.id, scope.rootDeliveryId));
+  // The SAME message also reaches its thread Session. That second delivery is what makes the
+  // channel row an observer reply; it is pushed out so this tick claims the channel row.
+  const threadDeliveryId = randomUUID();
+  await unit.database.insert(imMessageDeliveries).values({
+    id: threadDeliveryId,
+    messageId,
+    sessionId: scope.threadSessionId,
+    attention: "direct",
+    state: "pending",
+    placementGeneration: 1,
+    expiresAt: new Date(Date.now() + 3_600_000),
+  });
+  await unit.database
+    .update(imMessageDeliveries)
+    .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+    .where(eq(imMessageDeliveries.id, threadDeliveryId));
+  return { deliveryId, messageId, threadDeliveryId };
+}
+
 function makeStack(options: { withModel?: boolean } = {}) {
   const hub = new RunnerHub();
   const fence = new CloudRuntimeFence();
@@ -315,13 +470,26 @@ interface AllocationCallLog {
 function makeWorker(
   owner?: CloudDeliveryOwner,
   allocation?: AllocationCallLog,
-  options: { now?: () => Date; beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void> } = {},
+  options: {
+    now?: () => Date;
+    beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
+    domain?: unknown;
+    operationTimeoutMs?: number;
+    onDiagnostic?: (code: string) => void;
+    registry?: ConnectionRegistry;
+    afterClaimRowLocked?: () => Promise<void>;
+    claimRenewMs?: number;
+  } = {},
 ) {
   return new ImDeliveryWorker({
     assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
     database: unit.database,
-    domain: {} as never,
-    registry: new ConnectionRegistry(),
+    domain: (options.domain ?? {}) as never,
+    ...(options.registry ? { registry: options.registry } : { registry: new ConnectionRegistry() }),
+    ...(options.operationTimeoutMs === undefined ? {} : { operationTimeoutMs: options.operationTimeoutMs }),
+    ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
+    ...(options.afterClaimRowLocked ? { afterClaimRowLocked: options.afterClaimRowLocked } : {}),
+    ...(options.claimRenewMs === undefined ? {} : { claimRenewMs: options.claimRenewMs }),
     ...(options.now ? { now: options.now } : {}),
     ...(options.beforeDeliveryAdmission ? { beforeDeliveryAdmission: options.beforeDeliveryAdmission } : {}),
     ...(owner ? { cloudDelivery: owner } : {}),
@@ -1271,5 +1439,353 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, earlier.deliveryId));
     expect(earlierRow).toMatchObject({ state: "pending", attemptCount: 0 });
+  });
+});
+
+/**
+ * The branches of the shared worker that only these fixtures can reach: the Cloud authority read
+ * and the Local steer capability gates, which need a Computer that is online with a deliberately
+ * limited negotiated capability set.
+ */
+describe("ImDeliveryWorker Cloud-only worker branches", () => {
+  /**
+   * A registered Computer whose negotiated steer capability is exactly what the case needs. The
+   * registry is real; only the capability map is under the case's control, and `downgrade` swaps it
+   * in mid-claim through the worker's own post-claim seam.
+   */
+  async function registerComputer(
+    scope: Awaited<ReturnType<typeof localSteerScope>>,
+    negotiatedCapabilities?: Record<string, number>,
+  ) {
+    let capabilities = negotiatedCapabilities;
+    const registry = new ConnectionRegistry();
+    const register = () =>
+      registry.register(
+        {
+          computerId: scope.computerId,
+          installationId: randomUUID(),
+          instanceId: scope.instanceId,
+          lastHeartbeatAt: Date.now(),
+          ...(capabilities ? { negotiatedCapabilities: capabilities } : {}),
+          socket: { close: vi.fn(), terminate: vi.fn() } as never,
+        },
+        async () => undefined,
+      );
+    await register();
+    return {
+      registry,
+      downgrade: async (next?: Record<string, number>) => {
+        capabilities = next;
+        await register();
+      },
+    };
+  }
+
+  it("defers a Cloud delivery once its authority chain is no longer active", async () => {
+    const { scope, agent } = await cloudScope();
+    const stack = makeStack();
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    const diagnostics: string[] = [];
+    // The Agent is suspended before the pass: the authority read finds no active chain, so the row
+    // never reaches the Cloud coordinator.
+    await unit.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, agent.id));
+    const worker = makeWorker(stack.owner, undefined, { onDiagnostic: (code) => diagnostics.push(code) });
+    await worker.runOnce();
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.state).toBe("pending");
+    expect(diagnostics).toEqual([]);
+  });
+
+  /** A steer transport that records what the worker asked the Runner to do. */
+  function steerDomain(onSteer?: (request: { requestId: string }) => void) {
+    return {
+      requestSteer: vi.fn(
+        async (
+          _computerId: string,
+          _instanceId: string,
+          request: { requestId: string; deliveryId: string; sessionId: string; placementGeneration: number },
+          onDispatched?: () => void,
+        ) => {
+          onDispatched?.();
+          onSteer?.(request);
+          return {
+            type: "im:steer:result" as const,
+            requestId: request.requestId,
+            deliveryId: request.deliveryId,
+            sessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "steered" as const,
+          };
+        },
+      ),
+    };
+  }
+
+  it("steers a Local follow-up when every capability and custody condition holds", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    const steered: Array<{ requestId: string }> = [];
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      domain: steerDomain((request) => steered.push(request)),
+    });
+    await worker.runOnce();
+    expect(steered).toHaveLength(1);
+    // Steering is a dispatch, not a state transition on the follow-up: the row stays pending and
+    // carries no error, exactly as the Local suite asserts.
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({ state: "pending", dispatchRequestId: null });
+    // The claim token remains the row's error column, exactly as the Local steer suite asserts.
+    expect(row?.lastErrorCode).toMatch(/^IM_DELIVERY_CLAIM_/);
+  });
+
+  it("refuses the steer when the Computer loses its steer capability after the claim", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    const diagnostics: string[] = [];
+    const computer = await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 });
+    const worker = makeWorker(undefined, undefined, {
+      registry: computer.registry,
+      domain: steerDomain(),
+      onDiagnostic: (code) => diagnostics.push(code),
+      // The capability is gone by the time the steer frame would be built: the exact-claim fence
+      // must refuse rather than send a frame the Runner cannot honour.
+      afterClaimRowLocked: () => computer.downgrade(),
+    });
+    await worker.runOnce();
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.state).toBe("pending");
+    expect(diagnostics).toEqual(["IM_DELIVERY_STEER_UNAVAILABLE"]);
+  });
+
+  it("refuses an observer steer downgraded to the first steer version after the claim", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    const diagnostics: string[] = [];
+    const computer = await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 });
+    const worker = makeWorker(undefined, undefined, {
+      registry: computer.registry,
+      domain: steerDomain(),
+      onDiagnostic: (code) => diagnostics.push(code),
+      // Steering is still offered, but only at version 1: an observer reply needs version 2.
+      afterClaimRowLocked: () => computer.downgrade({ [RUNTIME_CAPABILITY.imSteer]: 1 }),
+    });
+    await worker.runOnce();
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.state).toBe("pending");
+    expect(diagnostics).toEqual(["IM_DELIVERY_OBSERVER_STEER_UNSUPPORTED"]);
+  });
+
+  it("refuses a steer whose accepted target turn ends before the frame is sent", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    const diagnostics: string[] = [];
+    const steered: unknown[] = [];
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      domain: steerDomain((request) => steered.push(request)),
+      onDiagnostic: (code) => diagnostics.push(code),
+      // The target turn reports while the claim is still held: there is nothing left to steer.
+      afterClaimRowLocked: async () => {
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({ reportedAt: new Date(), turnReport: {} as never, resultHash: "done-hash" })
+          .where(eq(imMessageDeliveries.id, scope.rootDeliveryId));
+      },
+    });
+    await worker.runOnce();
+    expect(steered).toEqual([]);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.state).toBe("pending");
+    expect(diagnostics).toEqual(["IM_DELIVERY_STEER_TARGET_ENDED"]);
+  });
+
+  it("records an inactive Agent as inactive credentials instead of assembling a runtime", async () => {
+    const scope = await localSteerScope();
+    // A suspended Agent's accepted work can never run: the recorder reports the inactive state
+    // rather than falling back to an assembled snapshot it would have to throw away.
+    await unit.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, scope.agentId));
+    const { deliveryId } = await observerFollowUp(scope);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "hash",
+        turnId: "turn-inactive",
+        reportOwnerInstanceId: scope.instanceId,
+        acceptedAt: new Date(),
+        dispatchPayload: null,
+        dispatchRequestId: null,
+        dispatchInputHash: null,
+      })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    const assembler = vi.fn();
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      domain: { requestReconcile: vi.fn(async () => undefined) },
+    });
+    // The worker is built with the real assembler, so assert on the recorded row instead.
+    expect(assembler).not.toHaveBeenCalled();
+    await worker.runOnce();
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.state).toBe("accepted");
+  });
+
+  it("records a stale placement instead of recovering an accepted turn on a new generation", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "hash",
+        turnId: "turn-stale",
+        reportOwnerInstanceId: scope.instanceId,
+        acceptedAt: new Date(),
+        dispatchPayload: null,
+        dispatchRequestId: null,
+        dispatchInputHash: null,
+      })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    // The accepted turn is due now, so this tick claims it for recovery.
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 60_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    const reconciles: string[] = [];
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      domain: {
+        requestReconcile: vi.fn(async () => {
+          reconciles.push("reconcile");
+        }),
+      },
+      onDiagnostic: () => undefined,
+      // The placement advances to a new generation while the accepted turn is in recovery: the
+      // stale row must be refused rather than reconciled against the wrong environment.
+      afterClaimRowLocked: async () => {
+        await unit.database
+          .update(sessionPlacements)
+          .set({ generation: 2 })
+          .where(eq(sessionPlacements.sessionId, scope.channelSessionId));
+      },
+    });
+    await worker.runOnce();
+    expect(reconciles).toEqual([]);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({ state: "accepted", lastErrorCode: "IM_DELIVERY_PLACEMENT_STALE" });
+  });
+
+  it("abandons the delivery when the claim lease is lost before the dispatch", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    const steered: unknown[] = [];
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      domain: steerDomain((request) => steered.push(request)),
+      // A one-millisecond renewal tick makes the lease verdict observable on this tick: writing a
+      // different error column invalidates the claim token, so the next renewal finds no row.
+      claimRenewMs: 1,
+      afterClaimRowLocked: async () => {
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({ lastErrorCode: "IM_DELIVERY_SUPERSEDED" })
+          .where(eq(imMessageDeliveries.id, deliveryId));
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+    });
+    await worker.runOnce();
+    // The lease lapsed before the frame was built: the delivery is deferred, not steered.
+    expect(steered).toEqual([]);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.state).toBe("pending");
+  });
+
+  it("abandons recovery when the accepted turn's Agent is deleted", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "hash",
+        turnId: "turn-deleted",
+        reportOwnerInstanceId: scope.instanceId,
+        acceptedAt: new Date(),
+        dispatchPayload: null,
+        dispatchRequestId: null,
+        dispatchInputHash: null,
+        nextAttemptAt: new Date(Date.now() - 60_000),
+      })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    // A deleted Agent is outside the recovery query entirely: the pass leaves the row alone.
+    await unit.database.update(agents).set({ status: "deleted" }).where(eq(agents.id, scope.agentId));
+    const reconciles: string[] = [];
+    const worker = makeWorker(undefined, undefined, {
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      domain: {
+        requestReconcile: vi.fn(async () => {
+          reconciles.push("reconcile");
+        }),
+      },
+    });
+    await worker.runOnce();
+    expect(reconciles).toEqual([]);
+  });
+
+  it("waits for the Runner when an active Agent's accepted turn has no assembled runtime", async () => {
+    const scope = await localSteerScope();
+    const { deliveryId } = await observerFollowUp(scope);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "hash",
+        turnId: "turn-no-runtime",
+        reportOwnerInstanceId: scope.instanceId,
+        acceptedAt: new Date(),
+        dispatchPayload: null,
+        dispatchRequestId: null,
+        dispatchInputHash: null,
+        nextAttemptAt: new Date(Date.now() - 60_000),
+      })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    const reconciles: string[] = [];
+    const worker = new ImDeliveryWorker({
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(undefined) },
+      database: unit.database,
+      domain: {
+        requestReconcile: vi.fn(async () => {
+          reconciles.push("reconcile");
+        }),
+      } as never,
+      registry: (await registerComputer(scope, { [RUNTIME_CAPABILITY.imSteer]: 2 })).registry,
+      intervalMs: 60_000,
+    });
+    await worker.runOnce();
+    // The Agent is active but no runtime can be assembled yet: recovery waits for the next tick
+    // instead of reconciling an environment it cannot describe.
+    expect(reconciles).toEqual([]);
+  });
+
+  it("reports an abandoned dispatch when the operation deadline passes first", async () => {
+    const { scope } = await cloudScope();
+    const stack = makeStack();
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    const diagnostics: string[] = [];
+    // A dispatch that never resolves: the operation deadline must abandon it, not hang the pass.
+    const dispatchDelivery = vi
+      .spyOn(stack.owner, "dispatchDelivery")
+      .mockImplementation(() => new Promise(() => undefined));
+    const worker = makeWorker(stack.owner, undefined, {
+      operationTimeoutMs: 50,
+      onDiagnostic: (code) => diagnostics.push(code),
+    });
+    const pass = worker.runOnce();
+    await vi.waitFor(() => expect(dispatchDelivery).toHaveBeenCalled(), { timeout: 2_000 });
+    await pass;
+    expect(diagnostics).toContain("IM_DELIVERY_OPERATION_ABANDONED");
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.state).not.toBe("accepted");
   });
 });

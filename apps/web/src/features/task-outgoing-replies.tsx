@@ -8,21 +8,6 @@ import { taskReplyTime } from "./task-timeline.js";
 type OutgoingSnapshot = NonNullable<NonNullable<TaskTurn["report"]>["outgoingReplies"]>;
 type OutgoingReply = OutgoingSnapshot["replies"][number];
 
-export function TaskOutgoingReplies({ snapshot }: { snapshot: OutgoingSnapshot }) {
-  return (
-    <div className="grid gap-3" data-ui="task-sent-replies">
-      {snapshot.replies.map((reply) => (
-        <TaskOutgoingReply key={reply.messageId} reply={reply} />
-      ))}
-      {snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0 ? (
-        <p className="text-sm text-kumo-subtle" data-ui="task-reply-incomplete">
-          {m.tasks_reply_incomplete()}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 export function TaskOutgoingReply({ reply }: { reply: OutgoingReply }) {
   const content = reply.content;
   const typeLabel = replyTypeLabel(content.msgType);

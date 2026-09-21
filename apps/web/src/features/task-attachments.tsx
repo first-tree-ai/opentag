@@ -6,7 +6,8 @@ export function TaskAttachments({ attachments }: { attachments: readonly TaskAtt
   return (
     <ul className="grid gap-2 text-sm" aria-label={m.tasks_attachments()} data-ui="task-attachments">
       {attachments.map((attachment, index) => (
-        <li className="grid gap-0.5 break-words" key={attachment.ordinal ?? index}>
+        // biome-ignore lint/suspicious/noArrayIndexKey: Stored attachment order is fixed and ordinals may repeat.
+        <li className="grid gap-0.5 break-words" key={index}>
           <span>{[attachmentType(attachment.kind), attachment.filename].filter(Boolean).join(" · ")}</span>
           {attachment.availability && attachment.availability !== "available" ? (
             <span className="text-xs text-kumo-subtle">{attachmentAvailability(attachment.availability)}</span>

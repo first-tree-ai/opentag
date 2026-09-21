@@ -101,6 +101,17 @@ it("keeps incomplete capture, truncation and execution failure visible beside a 
   expect(screen.getByText("Reply history is incomplete. Some messages or content could not be included.")).toBeTruthy();
 });
 
+it.each([0, 3])("shows the incomplete-history notice only when replies were omitted (count: %i)", (omittedCount) => {
+  const current = turn();
+  if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");
+  current.report.outgoingReplies.omittedCount = omittedCount;
+  render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+
+  expect(screen.queryByText("Review finished")).toBeNull();
+  expect(screen.getByText("Here is the review")).toBeTruthy();
+  expect(screen.queryAllByText(/Reply history is incomplete/)).toHaveLength(omittedCount > 0 ? 1 : 0);
+});
+
 it("renders attachment-only input with names, types and availability without an empty text placeholder", () => {
   const current = turn();
   current.message.fallbackText = "";

@@ -10,7 +10,6 @@ import {
   headerMap,
   IMAGE,
   OTHER_SHA,
-  PACKAGE,
   publishDeps,
   SHA,
   VERSION,
@@ -64,20 +63,16 @@ test("publish fails a tag claimed by a different commit with the manual recovery
       (error) => {
         assert.match(
           String(error?.message),
-          /does not match this release/,
+          /was claimed by a different release/,
           "the identity mismatch is reported as a claimed-version collision",
         );
         assert.match(
           String(error?.message),
-          new RegExp(`delete or retag ${IMAGE}:${VERSION} in Artifact Registry`),
-          "the message names the tag removal recovery step",
-        );
-        assert.match(
-          String(error?.message),
-          new RegExp(`placeholder ${PACKAGE}@${VERSION} to npm`),
-          "the message names the npm sequence-advance recovery step",
+          new RegExp(`add a quarantine tag to the claimed image and then delete the exact ${IMAGE}:${VERSION} tag`),
+          "the message names the quarantine-then-delete recovery step",
         );
         assert.match(String(error?.message), /Never overwrite the existing tag/);
+        assert.ok(error?.cause instanceof Error, "the underlying identity mismatch is preserved as the cause");
         return true;
       },
       "a claimed tag never falls through to an overwrite",
@@ -85,6 +80,44 @@ test("publish fails a tag claimed by a different commit with the manual recovery
     assert.ok(
       !recorder.calls.some((call) => call[0] === "docker"),
       "no docker pull/push happens for a mismatched existing tag",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("publish preserves an inconclusive registry failure without recovery guidance", async () => {
+  const gar = garRouter();
+  const fetchImpl = async (url, options) => {
+    if (String(url).includes("/blobs/")) {
+      return { status: 503, headers: headerMap({}), arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    return gar.fetchImpl(url, options);
+  };
+  const recorder = commandRecorder();
+  const { deps, root, outDir } = await publishDeps({ fetchImpl, runCommand: recorder.runCommand });
+  try {
+    await assert.rejects(
+      publishRunnerRelease(deps),
+      (error) => {
+        assert.match(
+          String(error?.message),
+          /registry blobs fetch of .* failed with status 503/,
+          "the original inconclusive fetch failure is preserved unchanged",
+        );
+        assert.doesNotMatch(
+          String(error?.message),
+          /Manual recovery|quarantine|delete the exact/,
+          "an inconclusive read never prescribes a destructive recovery",
+        );
+        return true;
+      },
+      "a transient registry failure stays fail-closed without recovery instructions",
+    );
+    assert.ok(
+      !recorder.calls.some((call) => call[0] === "docker"),
+      "no docker pull/push happens for an inconclusive registry read",
     );
   } finally {
     await rm(root, { recursive: true, force: true });

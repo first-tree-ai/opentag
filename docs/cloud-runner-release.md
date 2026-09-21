@@ -45,9 +45,9 @@ merging/enabling this workflow: missing publishing configuration fails before np
 
 A publish run that claims a version tag (Runner image pushed) but fails before npm publication leaves an orphaned image
 tag. Staging versions derive from the published npm sequence, so every later commit recomputes the same version and the
-workflow fails the tag identity check instead of overwriting it. Recovery: delete or retag the claimed image tag in
-Artifact Registry (a re-run rebuilds it from clean source), or publish a placeholder npm version with the same number so
-the next release advances the sequence. Never overwrite the existing tag with a different build.
+workflow fails the tag identity check instead of overwriting it. Recovery: add a quarantine tag to the claimed image and
+then delete the exact version tag in Artifact Registry, then re-run the workflow (it rebuilds the version from clean
+source). Never overwrite the existing tag with a different build.
 
 The CapRover App Token still deploys the Server image. It cannot update environment variables, so Runner activation
 retrieves the existing administrator credential through workload identity, keeps it in memory and changes only the two

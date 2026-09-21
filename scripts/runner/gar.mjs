@@ -174,6 +174,9 @@ function selectLinuxAmd64Entry(index) {
   return digest;
 }
 
+/** Thrown only when the published image provably carries a different release identity, as opposed to an inconclusive registry read. */
+export class RunnerIdentityMismatchError extends Error {}
+
 function assertRunnerLabels(labels, expected) {
   const actual = labels ?? {};
   const checks = [
@@ -184,7 +187,9 @@ function assertRunnerLabels(labels, expected) {
   ];
   for (const [label, wanted] of checks) {
     if (actual[label] !== wanted) {
-      throw new Error(`published image label ${label} is "${actual[label] ?? "(unset)"}", expected "${wanted}"`);
+      throw new RunnerIdentityMismatchError(
+        `published image label ${label} is "${actual[label] ?? "(unset)"}", expected "${wanted}"`,
+      );
     }
   }
 }

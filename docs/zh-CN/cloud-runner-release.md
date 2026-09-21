@@ -42,9 +42,9 @@ gh api repos/first-tree-ai/opentag/actions/oidc/customization/sub
 ### 失败发布的恢复
 
 若某次发布已占用版本 tag（Runner 镜像已 push）但在 npm 发布前失败，会留下一个孤儿镜像 tag。staging 版本号派生自
-npm 已发布序列，因此后续每个提交都会重算出同一个版本号，流程在 tag 身份校验处失败而非覆盖它。恢复方式：在
-Artifact Registry 中删除或改 tag 掉该镜像 tag（重跑会从干净源码重建），或发布一个同号的 npm 占位版本让下一次发布
-推进序列。绝不用不同构建覆盖已有 tag。
+npm 已发布序列，因此后续每个提交都会重算出同一个版本号，流程在 tag 身份校验处失败而非覆盖它。恢复方式：先给被占用
+的镜像加一个隔离（quarantine）tag，再在 Artifact Registry 中删除原版本号 tag，然后重跑（会从干净源码重建该版本）。
+绝不用不同构建覆盖已有 tag。
 
 CapRover App Token 继续负责部署 Server 镜像，但不能修改环境变量。Runner 启用步骤因此通过工作负载身份读取已有
 管理员凭证，仅在内存中使用，只修改两个 Runner 目标配置，不往 GitHub Secrets 增加管理员密码。

@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { ContextTreeRepositorySchema } from "./context-tree.js";
+import { ContextTreeAliasSchema, ContextTreeRepositorySchema } from "./context-tree.js";
 
 export const ContextTreeOperationRequestSchema = z
   .object({
+    alias: ContextTreeAliasSchema,
     operationId: z.string().uuid(),
     expectedRevision: z.number().int().positive(),
     expectedRuntimeConfigRevision: z.number().int().positive(),
@@ -17,6 +18,8 @@ export const ContextTreeOperationResponseSchema = z.discriminatedUnion("status",
     .object({
       status: z.literal("failed"),
       code: z.enum([
+        "alias_conflict",
+        "repository_conflict",
         "stale_configuration",
         "computer_unavailable",
         "capability_missing",

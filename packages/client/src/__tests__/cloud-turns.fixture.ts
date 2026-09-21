@@ -29,7 +29,7 @@ export function cloudDeliveryFixture(
     },
     runtime: {
       agentId,
-      contextTreeRepository: null,
+      contextTrees: [],
       instructions: { agent: "Agent.", platform: "Platform." },
       provider: "pi",
       model: "deepseek-v4.1-flash-expires-on-0910",

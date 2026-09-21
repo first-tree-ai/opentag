@@ -230,10 +230,10 @@ describe("createClientRuntime production composition", () => {
       await runtime.runtimeManager.ensureRuntime("session-1");
       expect(requestedSessions).toEqual(["session-1"]);
       expect(ensureAgent).toHaveBeenCalledTimes(1);
-      const [cwd, provider, repository, environment] = ensureAgent.mock.calls[0] ?? [];
+      const [cwd, provider, connections, environment] = ensureAgent.mock.calls[0] ?? [];
       expect(cwd).toBe(await runtime.workspace.cwd("agent-1"));
       expect(provider).toBe("pi");
-      expect(repository).toBeNull();
+      expect(connections).toEqual([]);
       expect(environment).toBe(trustedEnvironment);
       // The trusted host mapping must win before the proxy execution environment is consulted.
       expect(executionEnvironment).not.toHaveBeenCalled();
@@ -322,6 +322,7 @@ describe("createClientRuntime production composition", () => {
         computerId: connection.installationId,
         requireStopped: false,
         input: {
+          alias: "memory",
           operationId: randomUUID(),
           expectedRevision: 1,
           expectedRuntimeConfigRevision: 1,
@@ -2499,7 +2500,7 @@ function reconcileRequest(computerId: string, runtime: EffectiveRuntimeSnapshot)
 
 function snapshot(): EffectiveRuntimeSnapshot {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

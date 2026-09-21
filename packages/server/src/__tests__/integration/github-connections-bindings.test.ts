@@ -113,28 +113,32 @@ function proofFor(
 }
 
 describe("GitHub bindings configuration", () => {
-  it("serializes conflicting Tree assignments across two current App connections", async () => {
-    const accountId = await createAccount("one-tree@example.com");
-    const agentId = await createAgent(accountId, "assistant");
-    const first = await activeConnection(accountId);
-    const second = await activeConnection(accountId, "424242", "871236");
-    const grant = (connection: typeof first, repositoryId: string) => {
-      const bindings: GitHubRepositoryBinding[] = bindingFor(agentId).map((binding) => ({
-        ...binding,
-        repositoryId,
-        agentScopes: [{ agentId, role: "context_tree", access: "read", branch: "refs/heads/master" }],
-      }));
-      return bindingsService().updateBindings(accountId, connection.id, {
-        expectedAuthorizationVersion: BigInt(connection.authorizationVersion),
-        bindings,
-        admissionProof: proofFor(connection, bindings),
-      });
-    };
-    const outcomes = await Promise.allSettled([grant(first, "67890"), grant(second, "67891")]);
-    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
-    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
-    expect(rejected).toMatchObject({ status: "rejected", reason: { code: "GITHUB_INPUT_INVALID" } });
-  });
+  it.each([false, true])(
+    "allows distinct Trees but rejects duplicate repository grants across connections: duplicate=%s",
+    async (duplicate) => {
+      const accountId = await createAccount(`multiple-trees-${duplicate}@example.com`);
+      const agentId = await createAgent(accountId, "assistant");
+      const first = await activeConnection(accountId);
+      const second = await activeConnection(accountId, "424242", "871236");
+      const grant = (connection: typeof first, repositoryId: string) => {
+        const bindings: GitHubRepositoryBinding[] = bindingFor(agentId).map((binding) => ({
+          ...binding,
+          repositoryId,
+          agentScopes: [{ agentId, role: "context_tree", access: "read", branch: "refs/heads/master" }],
+        }));
+        return bindingsService().updateBindings(accountId, connection.id, {
+          expectedAuthorizationVersion: BigInt(connection.authorizationVersion),
+          bindings,
+          admissionProof: proofFor(connection, bindings),
+        });
+      };
+      const outcomes = await Promise.allSettled([grant(first, "67890"), grant(second, duplicate ? "67890" : "67891")]);
+      expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(duplicate ? 1 : 2);
+      const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+      if (duplicate) expect(rejected).toMatchObject({ status: "rejected", reason: { code: "GITHUB_INPUT_INVALID" } });
+      else expect(rejected).toBeUndefined();
+    },
+  );
   it("does not retarget an existing binding ID to a different repository", async () => {
     const accountId = await createAccount("stable-binding@example.com");
     const connection = await activeConnection(accountId);

@@ -344,7 +344,7 @@ describe("GitHubRepositoryBindingsSchema", () => {
     expect(GitHubRepositoryBindingsSchema.safeParse([binding]).success).toBe(false);
   });
 
-  it("allows one Agent both code and context_tree roles but only one Tree", () => {
+  it("allows one Agent code and context_tree roles across multiple Trees", () => {
     const ok = GitHubRepositoryBindingsSchema.safeParse([
       codeBinding(),
       {
@@ -367,7 +367,7 @@ describe("GitHubRepositoryBindingsSchema", () => {
         agentScopes: [treeScope(AGENT_ONE)],
       },
     ]);
-    expect(twoTrees.success).toBe(false);
+    expect(twoTrees.success).toBe(true);
 
     const otherAgentsTree = GitHubRepositoryBindingsSchema.safeParse([
       codeBinding({ agentScopes: [treeScope(AGENT_ONE)] }),

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { type ManagedSessionContext, renderManagedSystemPrompt } from "../runtime/managed-instructions.js";
 
 const snapshot: EffectiveRuntimeSnapshot = {
-  contextTreeRepository: null,
+  contextTrees: [],
   revision: {
     agent: { sequence: 1, id: "agent-revision-1" },
     session: { sequence: 1, id: "session-revision-1" },
@@ -96,4 +96,22 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("## Platform\n\nplatform");
     expect(prompt).toContain("## Agent\n\nagent");
   });
+});
+
+it("attributes partial memory results to aliases without disabling healthy trees", () => {
+  const prompt = renderManagedSystemPrompt(snapshot, {
+    ...session,
+    contextTree: {
+      status: "configured",
+      connections: [
+        { alias: "team", repository: "acme/team", status: "ready", treePath: "/trees/team" },
+        { alias: "product", repository: "acme/product", status: "unavailable", reason: "GITHUB_AUTH" },
+      ],
+    },
+  });
+  expect(prompt).toContain("Alias team — acme/team");
+  expect(prompt).toContain("Alias product — acme/product");
+  expect(prompt).toContain("Other ready trees remain usable");
+  expect(prompt).toContain("explicit alias for every write");
+  expect(prompt).not.toContain("Durable memory is not active for this Session");
 });

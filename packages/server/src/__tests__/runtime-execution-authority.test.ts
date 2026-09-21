@@ -227,7 +227,7 @@ describe("PostgresRuntimeExecutionAuthority Session message admission", () => {
         placementGeneration: PLACEMENT,
         content: { kind: "text", text: "do it" },
         runtime: {
-          contextTreeRepository: null,
+          contextTrees: [],
           revision: {
             agent: { sequence: 1, id: "revision-agent" },
             session: { sequence: 1, id: "revision-session" },

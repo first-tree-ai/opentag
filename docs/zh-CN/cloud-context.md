@@ -2,7 +2,7 @@
 
 [English](../cloud-context.md)
 
-同步日期：2026-09-19。
+同步日期：2026-09-21。
 
 Cloud Session 共享所属 Agent 的当前配置和已发布的 Context Tree 知识。每个 Session
 保留独立工作目录、Pi 历史和未发布工作。逻辑 Cloud Computer 不代表共享文件系统，也不代表
@@ -34,14 +34,17 @@ Agent 的规范 slug 来自当前 Server 指令，改名后也如此。写入 `m
 
 ## Context Tree
 
-Tree 按 Agent 显式选择，未选择是正常状态。Cloud 只支持连接已有授权仓库或断开，自动建库后续再做。设置入口在保存前校验 Account 归属、该 Agent 当前的
+Tree 按 Agent 显式保存为具名连接列表（`contextTrees`），空列表是正常状态。Cloud 只支持连接已有授权仓库或断开，自动建库后续再做。设置入口在保存前校验 Account 归属、该 Agent 当前的
 GitHub `context_tree` 授权、仓库准入和实际 Tree。逻辑 Cloud Computer 在线不能替代这些校验。
 Local 设置继续使用原有 Computer 通信。
 
-异步校验完成后，现有 Agent/runtime revision 保护最终写入。更换或断开已有选择仍要求暂停 Agent。
+异步校验完成后，现有 Agent/runtime revision 保护最终写入。修改非空连接列表仍要求暂停 Agent，每项操作明确指定别名。
 断开只移除选择，不删除远端仓库或先前保存的未发布工作。
 
-每个 Cloud Sandbox 独立 checkout。固定版本的 Context Tree CLI 和配套 skills 负责读取、同步、
+每个 Cloud Sandbox 有独立副本。暴露 CLI 前先断开已移除或撤权的别名，但保留副本和草稿。
+每个仓库单独检查当前授权。版本 2 CLI 响应按别名报告结果；部分失败或三十秒总预算超时仍保留
+已完成结果，明确标记过时或未完成的树。树之间没有隐含优先级。详见[具名 Context Tree 集成](./context-tree-integration.md)。
+固定版本的 Context Tree CLI 和配套 skills 负责读取、同步、
 准备写入、校验和发布。Cloud 准备使用当前执行的受管 GitHub 环境，并检查仓库授权；不得回退到宿主
 Git 配置或 `gh auth login`。
 

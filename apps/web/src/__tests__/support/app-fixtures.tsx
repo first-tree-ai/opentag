@@ -443,7 +443,7 @@ export function installApi(
     computerId,
     revision,
     runtimeConfig: {
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: 1,
       model: null,
       reasoningEffort: null,

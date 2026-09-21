@@ -201,7 +201,7 @@ export {
   requestsProviderReadinessV2,
   withComputerRuntimeProviderSupport,
 } from "./computer.js";
-export { ContextTreeRepositorySchema } from "./context-tree.js";
+export * from "./context-tree.js";
 export * from "./context-tree-operation.js";
 export {
   type ErrorCategory,

@@ -216,6 +216,22 @@ function renderCloudContextTree(
   status: CloudContextTreeStatus | undefined,
 ): readonly string[] {
   if (!status) return [];
+  if (status.status === "configured")
+    return [
+      "## Context Trees",
+      "Trees have no implied precedence. Use the upstream skills to select relevant trees, attribute disagreements to aliases, and choose an explicit write destination.",
+      ...status.connections.flatMap((entry) => [
+        `Alias ${entry.alias} — ${entry.repository}:`,
+        ...renderCloudContextTree(snapshot, entry),
+      ]),
+    ];
+  return renderCloudTreeStatus(snapshot, status);
+}
+
+function renderCloudTreeStatus(
+  snapshot: EffectiveRuntimeSnapshot,
+  status: Exclude<CloudContextTreeStatus, { status: "configured" }>,
+): readonly string[] {
   if (status.status === "ready") {
     const slug = cloudAgentSlug(snapshot.instructions.platform);
     const member = slug
@@ -227,7 +243,7 @@ function renderCloudContextTree(
       `Context Tree: ${status.treePath} — synchronized at the start of this Turn${
         status.branch && status.sha ? ` (branch ${status.branch}, commit ${status.sha.slice(0, 12)})` : ""
       }.`,
-      "This is the Context Tree selected in this Agent's settings. The checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session.",
+      "This Context Tree is connected in this Agent's settings. The checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session.",
       "Read the decisions that bear on a task before planning or changing code, and record durable decisions there. Use the context-tree-read and context-tree-write skills; the `context-tree` command is on PATH.",
       member,
       "",
@@ -266,7 +282,7 @@ function renderCloudContextTree(
     "## Context Tree",
     "",
     `Context Tree unavailable (${status.reason}).`,
-    "Durable memory is not active for this Turn; continue the task without it. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
+    "This tree is not active for this Turn; other ready trees remain usable. Continue the task without this tree. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
     ...(status.reason === "GITHUB_PERMISSION"
       ? [
           "The current execution does not grant this Session the selected repository, so the managed connection stays detached until the grant returns.",
@@ -397,7 +413,7 @@ function prepareTurnContextTree(
     agentSlug: cloudAgentSlug(cloudWorkerRuntime(request).instructions.platform),
     environment,
     path: `${request.executionDir}/bin:/usr/local/bin:/opt/opentag/tools/bin:/usr/bin:/bin`,
-    repository: cloudWorkerRuntime(request).contextTreeRepository,
+    contextTrees: cloudWorkerRuntime(request).contextTrees,
     scratch,
     signal: AbortSignal.any([execution.signal, budget]),
     workspace: options.workspace,

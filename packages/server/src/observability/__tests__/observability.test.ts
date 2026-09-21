@@ -1176,7 +1176,7 @@ function runtimeComputerService() {
 
 function runtimeSnapshot(agentId: string): EffectiveRuntimeSnapshot {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

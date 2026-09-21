@@ -19,7 +19,7 @@ function config(id = "agent-a", repository: string | null = null): AgentAdminCon
     revision: 2,
     runtimeConfig: {
       revision: 3,
-      contextTreeRepository: repository,
+      contextTrees: repository ? [{ alias: "memory", repository }] : [],
       model: null,
       reasoningEffort: null,
       instructions: "",
@@ -36,8 +36,9 @@ afterEach(() => {
 function enter(container: HTMLElement, repository: string) {
   const [owner, name] = repository.split("/");
   const inputs = container.querySelectorAll("input");
-  fireEvent.change(inputs[0] as HTMLInputElement, { target: { value: owner } });
-  fireEvent.change(inputs[1] as HTMLInputElement, { target: { value: name } });
+  fireEvent.change(inputs[0] as HTMLInputElement, { target: { value: "memory" } });
+  fireEvent.change(inputs[1] as HTMLInputElement, { target: { value: owner } });
+  fireEvent.change(inputs[2] as HTMLInputElement, { target: { value: name } });
 }
 function click(container: HTMLElement, name: string) {
   fireEvent.click(
@@ -63,8 +64,8 @@ it("resets cached form state on Agent switching and ignores the previous Agent r
       onChanged={onChanged}
     />,
   );
-  expect((screen.getByRole("textbox", { name: "GitHub owner" }) as HTMLInputElement).value).toBe("acme");
-  expect((screen.getByRole("textbox", { name: "Repository name" }) as HTMLInputElement).value).toBe("second");
+  expect((screen.getByRole("textbox", { name: "GitHub owner" }) as HTMLInputElement).value).toBe("");
+  expect((screen.getByRole("textbox", { name: "Repository name" }) as HTMLInputElement).value).toBe("");
   await act(async () => resolve({ status: "failed", code: "publication_uncertain" }));
   expect(screen.queryByRole("alert")).toBeNull();
   expect(onChanged).not.toHaveBeenCalled();
@@ -221,6 +222,9 @@ it("validates incomplete and invalid fields on submit and focuses the first erro
   expect(screen.getByText("Not connected")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
   click(view.container, "Connect");
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Alias" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Alias" }), { target: { value: "memory" } });
+  click(view.container, "Connect");
   expect(document.activeElement).toBe(owner);
   expect(owner.getAttribute("aria-invalid")).toBe("true");
   expect(document.getElementById("context-tree-agent-a-owner-error")?.textContent).toMatch(/Enter a valid/);
@@ -251,14 +255,14 @@ it("preserves separate drafts, clears mode errors and results, and composes trim
       onChanged={vi.fn()}
     />,
   );
-  expect(screen.getByText("Connected to acme/existing")).toBeTruthy();
+  expect(screen.getByText("memory: acme/existing")).toBeTruthy();
   click(view.container, "Create new");
   expect((screen.getByRole("textbox", { name: "GitHub owner" }) as HTMLInputElement).value).toBe("");
   click(view.container, "Create and connect");
-  expect(screen.getAllByRole("alert")).toHaveLength(2);
+  expect(screen.getAllByRole("alert")).toHaveLength(3);
   click(view.container, "Connect existing");
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(screen.getByText("github.com/acme/existing")).toBeTruthy();
+  expect(screen.queryByText("github.com/acme/existing")).toBeNull();
   click(view.container, "Create new");
   enter(view.container, "  Acme  /  New-Memory  ");
   expect(screen.getByText("github.com/Acme/New-Memory")).toBeTruthy();
@@ -309,4 +313,22 @@ it("ignores responses after the same Agent revision changes", async () => {
   await act(async () => resolve({ status: "completed", repository: "acme/tree" }));
   expect(screen.queryByText("Context Tree settings saved.")).toBeNull();
   expect(onChanged).not.toHaveBeenCalled();
+});
+
+it("renders each connected alias and disconnects only the requested row", async () => {
+  const operation = vi
+    .spyOn(browserApi, "contextTreeOperation")
+    .mockResolvedValue({ status: "completed", repository: null });
+  const current = config("agent-a", "acme/memory");
+  current.runtimeConfig.contextTrees.push({ alias: "product", repository: "acme/product" });
+  render(<ContextTreeSettings config={current} computerName="Computer" online={false} onChanged={vi.fn()} />);
+  expect(screen.getByText("memory: acme/memory")).toBeTruthy();
+  expect(screen.getByText("product: acme/product")).toBeTruthy();
+  fireEvent.click(screen.getAllByRole("button", { name: "Disconnect" })[1] as HTMLButtonElement);
+  await waitFor(() =>
+    expect(operation).toHaveBeenCalledWith(
+      "agent-a",
+      expect.objectContaining({ alias: "product", action: "disconnect", repository: null }),
+    ),
+  );
 });

@@ -1,12 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import type { AgentRuntimeProvider } from "@opentag/shared";
+import { type AgentRuntimeProvider, type ContextTreeConnection, normalizeContextTrees } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { collectDescendantPids, waitForProcessTreeGone } from "../runner/processes.js";
 import { resolveAccountHome } from "../storage/context-tree-home.js";
 import { ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { connectedTree, reconcileContextTreeConnections } from "./context-tree-connections.js";
 
 /** Context Tree commands are local and bounded; a hung CLI must not stall Session start. */
 const CLI_TIMEOUT_MS = 20_000;
@@ -30,9 +31,13 @@ export interface ContextTreePackage {
  * `unconfigured` is a normal state, not a fault: nobody has run `context-tree connect` here yet.
  */
 export type ContextTreeStatus =
-  | { status: "ready"; treePath: string }
+  | { status: "configured"; connections: readonly ContextTreeResult[] }
+  | { status: "ready"; treePath: string; branch?: string; sha?: string }
   | { status: "unconfigured" }
   | { status: "unavailable"; reason: string };
+
+export type ContextTreeResult = ContextTreeConnection &
+  Exclude<ContextTreeStatus, { status: "configured" } | { status: "unconfigured" }>;
 
 export type ContextTreeExecFile = (
   file: string,
@@ -315,9 +320,14 @@ export class ContextTreeManager {
   readonly #codexHome: string;
   readonly #sessionStartBudgetMs: number;
   readonly #failureCooldownMs: number;
-  readonly #ready = new Map<string, { target: string; status: ContextTreeStatus }>();
-  readonly #cooldown = new Map<string, { target: string; status: ContextTreeStatus; until: number }>();
-  readonly #inFlight = new Map<string, { target: string; promise: Promise<ContextTreeStatus> }>();
+  readonly #cache = new Map<
+    string,
+    { target: string; results: Map<string, { result: ContextTreeResult; retryAt: number }> }
+  >();
+  readonly #inFlight = new Map<
+    string,
+    { target: string; results: ContextTreeResult[]; promise: Promise<ContextTreeStatus> }
+  >();
   readonly #observedTarget = new Map<string, string>();
   #shimPreparation: Promise<boolean> | undefined;
   #shimRetryAt = 0;
@@ -355,131 +365,208 @@ export class ContextTreeManager {
   async ensureAgent(
     cwd: string,
     provider?: AgentRuntimeProvider,
-    repository: string | null = null,
+    connections: readonly ContextTreeConnection[] = [],
     environment?: Readonly<Record<string, string | undefined>>,
   ): Promise<ContextTreeStatus> {
-    return this.#withinSessionStartBudget(this.#prepareAgent(cwd, provider, repository, environment));
-  }
-
-  async #prepareAgent(
-    cwd: string,
-    provider: AgentRuntimeProvider | undefined,
-    repository: string | null,
-    environment: Readonly<Record<string, string | undefined>> | undefined,
-  ): Promise<ContextTreeStatus> {
-    const shimReady = await this.#prepareShim();
-    if (repository === null) {
-      this.#observedTarget.delete(cwd);
-      this.#ready.delete(cwd);
-      this.#cooldown.delete(cwd);
-      // Queue behind any preparation still completing after the session startup budget.
-      return this.#serialize(async () => {
-        if (!this.#package) return { status: "unconfigured" };
-        try {
-          await this.#run(["disconnect", "--project-path", cwd, "--json"], cwd, false);
-        } catch {
-          return { status: "unavailable", reason: "DISCONNECT_FAILED" };
-        }
-        return { status: "unconfigured" };
-      });
-    }
-    const executableFailure = !this.#package ? "PACKAGE_MISSING" : shimReady ? undefined : "SHIM_UNAVAILABLE";
-    const managedFailure = this.#managedFailure(repository, environment);
-    // Cached preparation never substitutes for the current execution grant.
-    if (managedFailure) return this.#unavailable(managedFailure, repository);
-
-    const target = `${repository}:${provider ?? "codex"}`;
+    const ordered = normalizeContextTrees(connections);
+    const target = JSON.stringify([provider ?? "codex", ordered]);
     if (this.#observedTarget.get(cwd) !== target) {
       this.#observedTarget.set(cwd, target);
-      this.#ready.delete(cwd);
-      this.#cooldown.delete(cwd);
+      this.#cache.delete(cwd);
     }
-    const cached = this.#ready.get(cwd);
-    if (cached?.target === target) return cached.status;
-    const cooling = this.#cooldown.get(cwd);
-    if (cooling?.target === target && cooling.until > Date.now()) return cooling.status;
-    if (cooling) this.#cooldown.delete(cwd);
-    return this.#joinPreparation(cwd, repository, target, executableFailure ?? managedFailure, provider, environment);
+    // Current authority is part of in-flight identity too: revoked grants cannot reuse work.
+    const identity = JSON.stringify([
+      target,
+      this.#managedCredentials ? (environment?.OPENTAG_GITHUB_REPOSITORIES ?? null) : null,
+    ]);
+    let active = this.#inFlight.get(cwd);
+    if (active?.target !== identity) {
+      const results = this.#initialResults(cwd, connections, environment);
+      const promise = this.#serialize(() =>
+        this.#prepareSafely(cwd, provider, connections, target, results, environment),
+      );
+      active = { target: identity, results, promise };
+      this.#inFlight.set(cwd, active);
+      void promise.finally(() => {
+        if (this.#inFlight.get(cwd)?.promise === promise) this.#inFlight.delete(cwd);
+      });
+    }
+    let timer: NodeJS.Timeout | undefined;
+    const pending = active;
+    const budget = new Promise<ContextTreeStatus>((resolveBudget) => {
+      timer = setTimeout(
+        () =>
+          resolveBudget(
+            connections.length
+              ? { status: "configured", connections: [...pending.results] }
+              : { status: "unavailable", reason: "PREPARING" },
+          ),
+        this.#sessionStartBudgetMs,
+      );
+      timer.unref();
+    });
+    try {
+      return await Promise.race([active.promise, budget]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
-  /**
-   * Managed credential mode only runs the CLI with an explicit execution-local environment and
-   * only for repositories in that execution's granted GitHub set. Legacy mode returns undefined
-   * and keeps the existing ambient-credential behavior.
-   */
+  #initialResults(
+    cwd: string,
+    connections: readonly ContextTreeConnection[],
+    environment?: Readonly<Record<string, string | undefined>>,
+  ): ContextTreeResult[] {
+    const cache = this.#cache.get(cwd);
+    return connections.map((connection) => {
+      const denied = this.#managedFailure(connection.repository, environment);
+      if (denied) return { ...connection, status: "unavailable", reason: denied };
+      const cached = cache?.results.get(connection.alias);
+      if (cached?.result.status === "ready") return cached.result;
+      if (cached && cached.retryAt > Date.now()) return cached.result;
+      return { ...connection, status: "unavailable", reason: "PREPARING" };
+    });
+  }
+
+  async #prepareSafely(
+    cwd: string,
+    provider: AgentRuntimeProvider | undefined,
+    connections: readonly ContextTreeConnection[],
+    target: string,
+    results: ContextTreeResult[],
+    environment?: Readonly<Record<string, string | undefined>>,
+  ): Promise<ContextTreeStatus> {
+    try {
+      return await this.#prepareConnections(cwd, provider, connections, target, results, environment);
+    } catch (error) {
+      const reason = error instanceof ContextTreeCliFailure ? error.reason : "CLI_FAILED";
+      connections.forEach((connection, index) => {
+        if (results[index]?.status !== "ready") results[index] = { ...connection, status: "unavailable", reason };
+      });
+      return connections.length
+        ? { status: "configured", connections: [...results] }
+        : { status: "unavailable", reason };
+    }
+  }
+
+  async #prepareConnections(
+    cwd: string,
+    provider: AgentRuntimeProvider | undefined,
+    connections: readonly ContextTreeConnection[],
+    target: string,
+    results: ContextTreeResult[],
+    environment?: Readonly<Record<string, string | undefined>>,
+  ): Promise<ContextTreeStatus> {
+    const failAll = (reason: string): ContextTreeStatus => {
+      connections.forEach((entry, index) => {
+        results[index] = { ...entry, status: "unavailable", reason };
+      });
+      return connections.length
+        ? { status: "configured", connections: [...results] }
+        : { status: "unavailable", reason };
+    };
+    const pack = this.#package;
+    if (!pack) return connections.length ? failAll("PACKAGE_MISSING") : { status: "unconfigured" };
+    const permitted = connections.filter((entry) => !this.#managedFailure(entry.repository, environment));
+    const run = (args: readonly string[], network: boolean) =>
+      runContextTreeCli(pack, args, {
+        cwd,
+        network,
+        nodePath: this.#nodePath,
+        env: mergeContextTreeEnvironment(this.#environment, environment),
+        ...(this.#execFile ? { execFile: this.#execFile } : {}),
+      });
+    const reconciliation = await reconcileContextTreeConnections(run, cwd, permitted);
+    if (reconciliation.failureCode) return failAll(reconciliation.failureCode);
+    const previousCache = this.#cache.get(cwd);
+    for (const [alias, cached] of previousCache?.results ?? []) {
+      if (cached.result.status === "ready" && !reconciliation.attachedAliases.has(alias))
+        previousCache?.results.delete(alias);
+    }
+    if (!(await this.#prepareShim())) return failAll("SHIM_UNAVAILABLE");
+    if (!connections.length) return { status: "unconfigured" };
+    const installFailure = await this.#installSkills(cwd, provider, environment);
+    if (installFailure) return failAll(installFailure);
+    return this.#connectAll(cwd, connections, target, results, environment);
+  }
+
+  async #installSkills(
+    cwd: string,
+    provider: AgentRuntimeProvider | undefined,
+    environment?: Readonly<Record<string, string | undefined>>,
+  ): Promise<string | undefined> {
+    if (provider === "pi") return undefined;
+    await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false, environment);
+    const installed = await this.#run(["install", "--host", "codex"], cwd, false, {
+      ...this.#environment,
+      HOME: resolveAccountHome(this.#environment),
+      CODEX_HOME: this.#codexHome,
+    });
+    return codexInstallSkipReason(installed);
+  }
+
+  async #connectAll(
+    cwd: string,
+    connections: readonly ContextTreeConnection[],
+    target: string,
+    results: ContextTreeResult[],
+    environment?: Readonly<Record<string, string | undefined>>,
+  ): Promise<ContextTreeStatus> {
+    let cache = this.#cache.get(cwd);
+    if (cache?.target !== target) {
+      cache = { target, results: new Map() };
+      if (this.#observedTarget.get(cwd) === target) this.#cache.set(cwd, cache);
+    }
+    for (const [index, connection] of connections.entries()) {
+      const denied = this.#managedFailure(connection.repository, environment);
+      if (denied) {
+        results[index] = { ...connection, status: "unavailable", reason: denied };
+        cache.results.delete(connection.alias);
+        continue;
+      }
+      const cached = cache.results.get(connection.alias);
+      if (cached && (cached.result.status === "ready" || cached.retryAt > Date.now())) {
+        results[index] = cached.result;
+        continue;
+      }
+      const result = await this.#connect(cwd, connection, environment);
+      results[index] = result;
+      cache.results.set(connection.alias, { result, retryAt: Date.now() + this.#failureCooldownMs });
+    }
+    return { status: "configured", connections: [...results] };
+  }
+
   #managedFailure(
-    repository: string | null,
+    repository: string,
     environment: Readonly<Record<string, string | undefined>> | undefined,
   ): string | undefined {
-    if (!this.#managedCredentials || repository === null) return undefined;
+    if (!this.#managedCredentials) return undefined;
     if (!environment) return "AUTHENTICATION_REQUIRED";
     return managedRepositoryAllowed(environment, repository) ? undefined : "GITHUB_PERMISSION";
   }
 
-  async #ensureAgentOnce(
+  async #connect(
     cwd: string,
-    repository: string,
-    provider: AgentRuntimeProvider | undefined,
-    environment: Readonly<Record<string, string | undefined>> | undefined,
-  ): Promise<ContextTreeStatus> {
-    if (!this.#package) return this.#unavailable("PACKAGE_MISSING", repository);
-    if (provider === "pi") return this.#ensurePiAgent(cwd, repository, environment);
-
+    connection: ContextTreeConnection,
+    environment?: Readonly<Record<string, string | undefined>>,
+  ): Promise<ContextTreeResult> {
     try {
-      // `connect` is idempotent for an identical connection and already returns the resolved
-      // tree, so it is both the ensure operation and the source of the tree path.
-      const connected = await this.#run(
-        ["connect", repository, "--project-path", cwd, "--json"],
+      const payload = await this.#run(
+        ["connect", connection.repository, "--as", connection.alias, "--project-path", cwd, "--json"],
         cwd,
         true,
         environment,
       );
-      const treePath = (connected as { tree?: { path?: unknown } }).tree?.path;
-      if (typeof treePath !== "string" || treePath.length === 0) return this.#unavailable("CONNECT_FAILED", repository);
-      // Claude Code loads skills from the workspace because OpenTag passes `--setting-sources
-      // project`; Codex loads them from the account home's `.agents/skills` directory.
-      await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false, environment);
-      const codexInstall = await this.#run(["install", "--host", "codex"], cwd, false, {
-        ...this.#environment,
-        HOME: resolveAccountHome(this.#environment),
-        CODEX_HOME: this.#codexHome,
-      });
-      // A skipped Codex host is a diagnosable state, never a silent `ready`.
-      const skipReason = codexInstallSkipReason(codexInstall);
-      if (skipReason !== undefined) return this.#unavailable(skipReason, repository);
-      this.#logger.info({ target: repository, treePath }, "Context Tree connected for an Agent workspace");
-      return { status: "ready", treePath };
+      const tree = connectedTree(payload, connection);
+      return tree
+        ? { ...connection, status: "ready", treePath: tree.path }
+        : { ...connection, status: "unavailable", reason: "CONNECT_FAILED" };
     } catch (error) {
-      if (error instanceof ContextTreeCliFailure) return this.#unavailable(error.reason, repository);
-      this.#logger.warn({ err: describe(error) }, "Context Tree preparation failed");
-      return { status: "unavailable", reason: "CLI_FAILED" };
-    }
-  }
-
-  /**
-   * Pi receives the packaged skills through explicit `--skill` arguments in Client composition.
-   * Connecting its workspace does not install or overwrite skills in the user's Pi home.
-   */
-  async #ensurePiAgent(
-    cwd: string,
-    repository: string,
-    environment: Readonly<Record<string, string | undefined>> | undefined,
-  ): Promise<ContextTreeStatus> {
-    try {
-      const connected = await this.#run(
-        ["connect", repository, "--project-path", cwd, "--json"],
-        cwd,
-        true,
-        environment,
-      );
-      const treePath = (connected as { tree?: { path?: unknown } }).tree?.path;
-      if (typeof treePath !== "string" || treePath.length === 0) return this.#unavailable("CONNECT_FAILED", repository);
-      this.#logger.info({ target: repository, treePath }, "Context Tree connected for a Pi Agent workspace");
-      return { status: "ready", treePath };
-    } catch (error) {
-      if (error instanceof ContextTreeCliFailure) return this.#unavailable(error.reason, repository);
-      this.#logger.warn({ err: describe(error) }, "Context Tree Pi preparation failed");
-      return { status: "unavailable", reason: "CLI_FAILED" };
+      return {
+        ...connection,
+        status: "unavailable",
+        reason: error instanceof ContextTreeCliFailure ? error.reason : "CLI_FAILED",
+      };
     }
   }
 
@@ -541,64 +628,6 @@ export class ContextTreeManager {
       0o700,
     );
     return true;
-  }
-
-  #unavailable(reason: string, repository: string): ContextTreeStatus {
-    this.#logger.warn({ reason, target: repository }, "Context Tree is unavailable for this Session");
-    return { status: "unavailable", reason };
-  }
-
-  #joinPreparation(
-    cwd: string,
-    repository: string,
-    target: string,
-    preparationFailure: string | undefined,
-    provider: AgentRuntimeProvider | undefined,
-    environment: Readonly<Record<string, string | undefined>> | undefined,
-  ): Promise<ContextTreeStatus> {
-    const current = this.#inFlight.get(cwd);
-    if (current?.target === target) return current.promise;
-    // The CLI's connection store has no cross-process lock, so background work remains serialized
-    // even though Session callers stop waiting after their short budget.
-    const prepared = this.#serialize(async () =>
-      preparationFailure
-        ? this.#unavailable(preparationFailure, repository)
-        : this.#ensureAgentOnce(cwd, repository, provider, environment),
-    ).catch((error: unknown) => {
-      this.#logger.error({ err: describe(error) }, "Context Tree preparation raised an unexpected failure");
-      return { status: "unavailable", reason: "CLI_FAILED" } as const;
-    });
-    let terminal: Promise<ContextTreeStatus>;
-    terminal = prepared
-      .then(async (status) => {
-        if (status.status === "ready" && this.#observedTarget.get(cwd) === target) {
-          this.#ready.set(cwd, { target, status });
-          this.#cooldown.delete(cwd);
-        } else if (status.status === "unavailable" && this.#observedTarget.get(cwd) === target) {
-          this.#cooldown.set(cwd, { target, status, until: Date.now() + this.#failureCooldownMs });
-        }
-        return status;
-      })
-      .then((status) => {
-        if (this.#inFlight.get(cwd)?.promise === terminal) this.#inFlight.delete(cwd);
-        return status;
-      });
-    this.#inFlight.set(cwd, { target, promise: terminal });
-    return terminal;
-  }
-
-  async #withinSessionStartBudget(preparation: Promise<ContextTreeStatus>): Promise<ContextTreeStatus> {
-    let timer: NodeJS.Timeout | undefined;
-    const budget = new Promise<ContextTreeStatus>((resolveBudget) => {
-      timer = setTimeout(
-        () => resolveBudget({ status: "unavailable", reason: "PREPARING" }),
-        this.#sessionStartBudgetMs,
-      );
-      timer.unref();
-    });
-    const status = await Promise.race([preparation, budget]);
-    if (timer) clearTimeout(timer);
-    return status;
   }
 
   runExclusive<T>(operation: () => Promise<T>): Promise<T> {

@@ -11,10 +11,13 @@ import {
   type AgentSummary,
   type AgentUsageDetail,
   type AgentUsageWindowDays,
+  type ContextTreeConnection,
+  ContextTreesSchema,
   type CreateAgentRequest,
   CreateAgentRequestSchema,
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
+  normalizeContextTrees,
   RUNTIME_MAX_DURATION_MS,
   runtimeUsageTotalTokens,
   type UpdateAgentRequest,
@@ -153,7 +156,7 @@ export interface AgentSessionStopTarget {
 function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
   return AgentRuntimeConfigSchema.parse({
     revision: row.revision,
-    contextTreeRepository: row.contextTreeRepository,
+    contextTrees: row.contextTrees,
     model: row.model,
     reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
@@ -277,7 +280,8 @@ function runtimeConfigsEqual(
   right: ReturnType<typeof resolveAgentRuntimeConfig>,
 ): boolean {
   return (
-    left.contextTreeRepository === right.contextTreeRepository &&
+    JSON.stringify(normalizeContextTrees(left.contextTrees)) ===
+      JSON.stringify(normalizeContextTrees(right.contextTrees)) &&
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.instructions === right.instructions &&
@@ -854,7 +858,7 @@ export class AgentService {
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
       const nextRuntimeConfig = resolveAgentRuntimeConfig({
-        contextTreeRepository: currentRuntimeProjection.contextTreeRepository,
+        contextTrees: currentRuntimeProjection.contextTrees,
         model: input.runtimeConfig?.model !== undefined ? input.runtimeConfig.model : currentRuntimeProjection.model,
         reasoningEffort:
           input.runtimeConfig?.reasoningEffort !== undefined
@@ -907,7 +911,7 @@ export class AgentService {
     callerUserId: string,
     agentId: string,
     expected: Pick<AgentAdminConfig, "revision" | "computerId" | "status"> & { runtimeConfigRevision: number },
-    repository: string | null,
+    connections: ContextTreeConnection[],
   ): Promise<AgentAdminConfig> {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
@@ -926,7 +930,7 @@ export class AgentService {
           409,
         );
       }
-      if (runtimeConfig.contextTreeRepository !== null && scope.agent.status !== "suspended") {
+      if (runtimeConfig.contextTrees.length > 0 && scope.agent.status !== "suspended") {
         throw this.#lifecycleConflict("Pause the Agent before changing its Context Tree");
       }
       const now = this.#now();
@@ -938,7 +942,7 @@ export class AgentService {
       const [updatedRuntimeConfig] = await transaction
         .update(agentRuntimeConfigs)
         .set({
-          contextTreeRepository: repository,
+          contextTrees: ContextTreesSchema.parse(connections),
           revision: sql`nextval('runtime_config_revision_sequence')`,
           updatedAt: now,
         })

@@ -31,6 +31,7 @@ function fingerprint(frame: ContextTreeOperationFrame): string {
   return JSON.stringify([
     frame.agentId,
     input.action,
+    input.alias,
     input.repository?.toLowerCase() ?? null,
     input.expectedRevision,
     input.expectedRuntimeConfigRevision,
@@ -183,7 +184,7 @@ export class ContextTreeSettings {
 
   async #cleanup(project: string[], result: Result, run: Run, signal: AbortSignal): Promise<Result> {
     try {
-      const cleanup = await run(["disconnect", ...project], signal);
+      const cleanup = await run(["disconnect", "--all", ...project], signal);
       return cleanup.failureCode && result.status === "completed" ? failed("failed") : result;
     } catch {
       return result.status === "completed" ? failed("failed") : result;
@@ -199,14 +200,20 @@ export class ContextTreeSettings {
     if (previous?.status === "completed") return undefined;
     if (previous?.status === "failed" && previous.code === "publication_uncertain") return previous;
     // A retry can reconnect the deterministic managed staging tree after the temporary connection was removed.
-    const staged = await run(["connect", `${contextTreeStagingName(repository)}-context-tree`, ...project]);
+    const staged = await run([
+      "connect",
+      `${contextTreeStagingName(repository)}-context-tree`,
+      "--as",
+      "settings",
+      ...project,
+    ]);
     if (staged.failureCode) {
-      const created = await run(["create", ...project]);
+      const created = await run(["create", "--as", "settings", ...project]);
       if (created.failureCode) return classify(created.failureCode);
     }
     await writeDurableFile(publicationFile, JSON.stringify(failed("publication_uncertain")));
     try {
-      const published = await run(["publish", repository, ...project]);
+      const published = await run(["publish", repository, "--tree", "settings", ...project]);
       const outcome: Result = published.failureCode
         ? classify(published.failureCode, true)
         : { status: "completed", repository };
@@ -220,7 +227,7 @@ export class ContextTreeSettings {
 }
 
 async function verifyRepository(repository: string, project: string[], run: Run): Promise<Result> {
-  const connected = await run(["connect", repository, ...project]);
+  const connected = await run(["connect", repository, "--as", "settings", ...project]);
   if (connected.failureCode) return classify(connected.failureCode);
   const payload = TREE_PATH.safeParse(connected.payload);
   if (!payload.success) return failed("invalid_tree");

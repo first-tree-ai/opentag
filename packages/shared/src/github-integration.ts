@@ -25,7 +25,7 @@ const PG_BIGINT_MAX = 9223372036854775807n;
 
 /**
  * UUIDs compare case-insensitively at the PostgreSQL boundary, so the contract normalizes them to
- * lowercase. Uniqueness rules (binding IDs, one Tree per Agent) then cannot be bypassed by
+ * lowercase. Uniqueness rules (binding IDs, Agent/repository/role grants) then cannot be bypassed by
  * letter-case aliases of the same UUID.
  */
 const UuidSchema = z
@@ -319,7 +319,6 @@ export const GitHubRepositoryBindingsSchema = z
   .superRefine((bindings, context) => {
     const bindingIds = new Set<string>();
     const repositoryPairs = new Set<string>();
-    const treeOwners = new Set<string>();
     const grantedRoles = new Set<string>();
     let agentScopeCount = 0;
     bindings.forEach((binding, bindingIndex) => {
@@ -351,16 +350,6 @@ export const GitHubRepositoryBindingsSchema = z
           });
         }
         grantedRoles.add(grantedRole);
-        if (scope.role === "context_tree") {
-          if (treeOwners.has(scope.agentId)) {
-            context.addIssue({
-              code: "custom",
-              path: [bindingIndex, "agentScopes", scopeIndex, "agentId"],
-              message: "One Agent keeps at most one current Context Tree",
-            });
-          }
-          treeOwners.add(scope.agentId);
-        }
       });
     });
     if (agentScopeCount > GITHUB_REPOSITORY_BINDINGS_MAX_AGENT_SCOPES) {

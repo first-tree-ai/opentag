@@ -18,7 +18,7 @@ const agent = {
   status: "active",
   revision: 1,
   runtimeConfig: {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: 1,
     model: null,
     reasoningEffort: null,

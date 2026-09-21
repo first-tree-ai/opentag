@@ -55,7 +55,7 @@ beforeEach(async () => unit.reset());
 function runtimeSnapshot(agentId: string): EffectiveRuntimeSnapshot {
   return {
     agentId,
-    contextTreeRepository: null,
+    contextTrees: [],
     instructions: { agent: "Agent instructions.", platform: "Platform instructions." },
     provider: "pi",
     model: MODEL,

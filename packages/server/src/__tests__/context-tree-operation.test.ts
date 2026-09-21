@@ -20,13 +20,14 @@ function fixture() {
     revision: 3,
     computerId,
     status: "suspended",
-    runtimeConfig: { revision: 7, contextTreeRepository: "acme/old" },
+    runtimeConfig: { revision: 7, contextTrees: [{ alias: "old", repository: "acme/old" }] },
   } as AgentAdminConfig;
   const agents = {
     getConfigById: vi.fn(async () => config),
     updateContextTreeSelection: vi.fn(async () => config),
   };
   const input: ContextTreeOperationRequest = {
+    alias: "memory",
     operationId: randomUUID(),
     expectedRevision: 3,
     expectedRuntimeConfigRevision: 7,
@@ -54,7 +55,9 @@ afterEach(() => vi.useRealTimers());
 it("disconnects offline and unbound without remote execution", async () => {
   const f = fixture();
   f.config.computerId = null;
-  expect(await f.service.run("user", f.config.id, { ...f.input, action: "disconnect", repository: null })).toEqual({
+  expect(
+    await f.service.run("user", f.config.id, { ...f.input, alias: "old", action: "disconnect", repository: null }),
+  ).toEqual({
     status: "completed",
     repository: null,
   });
@@ -63,7 +66,7 @@ it("disconnects offline and unbound without remote execution", async () => {
     "user",
     f.config.id,
     { revision: 3, runtimeConfigRevision: 7, computerId: null, status: "suspended" },
-    null,
+    [],
   );
 });
 it.each(["expectedRevision", "expectedRuntimeConfigRevision"] as const)(
@@ -95,7 +98,10 @@ it("accepts case-insensitive repository identity and passes every fence to the t
     "user",
     f.config.id,
     { revision: 3, runtimeConfigRevision: 7, computerId: f.config.computerId, status: "suspended" },
-    "Acme/Memory",
+    [
+      { alias: "old", repository: "acme/old" },
+      { alias: "memory", repository: "Acme/Memory" },
+    ],
   );
 });
 it("rejects mismatched repository results", async () => {
@@ -155,4 +161,34 @@ it.each(["create", "connect", "disconnect"] as const)("classifies shutdown durin
     status: "failed",
     code: action === "create" ? "publication_uncertain" : "computer_unavailable",
   });
+});
+
+it("rejects alias and repository collisions before remote work and treats identical attachments as idempotent", async () => {
+  const f = fixture();
+  expect(await f.service.run("user", f.config.id, { ...f.input, alias: "old" })).toEqual({
+    status: "failed",
+    code: "alias_conflict",
+  });
+  expect(await f.service.run("user", f.config.id, { ...f.input, repository: "ACME/OLD" })).toEqual({
+    status: "failed",
+    code: "repository_conflict",
+  });
+  f.config.status = "active";
+  expect(await f.service.run("user", f.config.id, { ...f.input, alias: "old", repository: "ACME/OLD" })).toEqual({
+    status: "completed",
+    repository: "acme/old",
+  });
+  expect(f.registry.send).not.toHaveBeenCalled();
+  expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+});
+it("disconnects one alias while retaining the other connection", async () => {
+  const f = fixture();
+  f.config.runtimeConfig.contextTrees.push({ alias: "memory", repository: "acme/memory" });
+  expect(await f.service.run("user", f.config.id, { ...f.input, action: "disconnect", repository: null })).toEqual({
+    status: "completed",
+    repository: null,
+  });
+  expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith("user", f.config.id, expect.any(Object), [
+    { alias: "old", repository: "acme/old" },
+  ]);
 });

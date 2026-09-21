@@ -75,7 +75,7 @@ function request(): DirectImMessageDeliveryRequest {
       ],
     },
     runtime: {
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: {
         agent: { sequence: 1, id: agentId },
         session: { sequence: 1, id: "session-1" },

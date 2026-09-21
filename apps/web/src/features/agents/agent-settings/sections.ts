@@ -89,7 +89,10 @@ export function agentSettingsSummary(
   section: AgentSettingsSection,
 ): string {
   if (section === "context-tree")
-    return config.runtimeConfig.contextTreeRepository ?? m.agent_settings_context_tree_disabled();
+    return (
+      config.runtimeConfig.contextTrees.map((entry) => `${entry.alias}: ${entry.repository}`).join(", ") ||
+      m.agent_settings_context_tree_disabled()
+    );
   if (section === "instructions") {
     return config.runtimeConfig.instructions.trim()
       ? m.agent_settings_custom_instructions()

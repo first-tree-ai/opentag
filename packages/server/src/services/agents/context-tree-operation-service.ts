@@ -24,8 +24,10 @@ export class ContextTreeOperationService {
       config.runtimeConfig.revision !== input.expectedRuntimeConfigRevision
     )
       return { status: "failed", code: "stale_configuration" };
-    if (config.runtimeConfig.contextTreeRepository !== null && config.status !== "suspended")
-      return { status: "failed", code: "pause_required" };
+    const connections = config.runtimeConfig.contextTrees;
+    const unchanged = attachmentOutcome(config, input);
+    if (unchanged) return unchanged;
+    if (connections.length > 0 && config.status !== "suspended") return { status: "failed", code: "pause_required" };
     const result: ContextTreeOperationResponse =
       input.action === "disconnect"
         ? { status: "completed", repository: null }
@@ -43,7 +45,9 @@ export class ContextTreeOperationService {
           computerId: config.computerId,
           status: config.status,
         },
-        input.repository,
+        input.action === "disconnect"
+          ? connections.filter((entry) => entry.alias !== input.alias)
+          : [...connections, { alias: input.alias, repository: input.repository as string }],
       );
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "AGENT_REVISION_CONFLICT")
@@ -70,14 +74,33 @@ export class ContextTreeOperationService {
         accountId: userId,
         agentId,
         action,
+        alias: input.alias,
         repository: input.repository ?? "",
       });
     }
     return this.owner.start({
       agentId,
       computerId: config.computerId,
-      requireStopped: config.runtimeConfig.contextTreeRepository !== null,
+      requireStopped: config.runtimeConfig.contextTrees.length > 0,
       input,
     });
   }
+}
+
+/** Idempotence and collisions are decided before any remote verification or publication. */
+function attachmentOutcome(
+  config: AgentAdminConfig,
+  input: ContextTreeOperationRequest,
+): ContextTreeOperationResponse | undefined {
+  const connections = config.runtimeConfig.contextTrees;
+  const existing = connections.find((entry) => entry.alias === input.alias);
+  if (input.action !== "disconnect") {
+    if (existing)
+      return existing.repository.toLowerCase() === input.repository?.toLowerCase()
+        ? { status: "completed", repository: existing.repository }
+        : { status: "failed", code: "alias_conflict" };
+    if (connections.some((entry) => entry.repository.toLowerCase() === input.repository?.toLowerCase()))
+      return { status: "failed", code: "repository_conflict" };
+  } else if (!existing) return { status: "completed", repository: null };
+  return undefined;
 }

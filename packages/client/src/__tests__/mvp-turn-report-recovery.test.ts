@@ -294,7 +294,7 @@ function reconcileRequest(agentId: string, sessionId: string): SessionReconcileR
     placementGeneration: 1,
     desired: "ready",
     runtime: {
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: {
         agent: { sequence: 1, id: `${agentId}-revision` },
         session: { sequence: 1, id: `${sessionId}-revision` },

@@ -919,7 +919,7 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
 
 function snapshot(revision = 1, provider: "codex" | "claude-code" = "codex"): EffectiveRuntimeSnapshot {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: {
       agent: { sequence: revision, id: `agent-revision-${revision}` },
       session: { sequence: revision, id: `session-revision-${revision}` },

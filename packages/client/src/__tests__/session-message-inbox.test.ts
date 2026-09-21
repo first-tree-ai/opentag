@@ -1203,7 +1203,7 @@ function delivery(
     agentId,
     placementGeneration: 1,
     runtime: {
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: { agent: { sequence: 1, id: "a".repeat(64) }, session: { sequence: 1, id: "b".repeat(64) } },
       agentId,
       provider: "codex",

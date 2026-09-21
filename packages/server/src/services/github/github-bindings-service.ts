@@ -215,24 +215,19 @@ async function assertDelegatedImBindingsOwned(
 
 /** Agent row locks serialize grants across connections; reauthorization retains its reserved scopes. */
 function assertUniqueCurrentScopes(next: GitHubRepositoryBinding[], other: GitHubRepositoryBinding[]): void {
-  const treeAgents = new Set<string>();
   const roles = new Set<string>();
   for (const binding of other) {
     for (const scope of binding.agentScopes) {
       roles.add(`${scope.agentId}:${binding.repositoryId}:${scope.role}`);
-      if (scope.role === "context_tree") treeAgents.add(scope.agentId);
     }
   }
   for (const binding of next) {
     for (const scope of binding.agentScopes) {
-      if (
-        roles.has(`${scope.agentId}:${binding.repositoryId}:${scope.role}`) ||
-        (scope.role === "context_tree" && treeAgents.has(scope.agentId))
-      ) {
+      if (roles.has(`${scope.agentId}:${binding.repositoryId}:${scope.role}`)) {
         throw new GitHubConnectionServiceError(
           GITHUB_CONNECTION_ERROR_CODES.INPUT_INVALID,
           409,
-          "An Agent's repository role or Context Tree is already assigned through another current connection",
+          "An Agent's repository role is already assigned through another current connection",
         );
       }
     }

@@ -852,7 +852,7 @@ describe("E7 automatic idle reclamation", () => {
           placementGeneration: 1,
           content: { kind: "text", text: "old work" },
           runtime: {
-            contextTreeRepository: null,
+            contextTrees: [],
             revision: { agent: { sequence: 1, id: "agent" }, session: { sequence: 1, id: "session" } },
             agentId: ready.owned.agent.id,
             provider: "codex",

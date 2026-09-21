@@ -38,13 +38,12 @@ export default defineConfig({
     coverage: {
       enabled: true,
       exclude: [...coverageConfigDefaults.exclude, "**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"],
-      include: [
-        "apps/cli/src/**/*.{ts,tsx}",
-        "apps/web/src/**/*.{ts,tsx}",
-        "packages/shared/src/**/*.{ts,tsx}",
-        "packages/client/src/**/*.{ts,tsx}",
-        "packages/server/src/**/*.{ts,tsx}",
-      ],
+      // Resolved against each project's own `root`, not against this file's directory, so the pattern
+      // is workspace-relative and covers all five projects at once. A repository-relative pattern such
+      // as `packages/shared/src/**` would be looked up under `packages/shared/packages/shared/src/**`
+      // and silently measure nothing. `scripts/unit-coverage.mjs` applies the same rule per project;
+      // its own repository-relative list there is the source-tree ownership manifest, not this include.
+      include: ["src/**/*.{ts,tsx}"],
       provider: "v8",
       reporter: ["text", "json", "json-summary", "html"],
       reportOnFailure: true,

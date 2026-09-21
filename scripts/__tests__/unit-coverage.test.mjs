@@ -10,6 +10,7 @@ import {
   COVERAGE_REPORTER_FLAGS,
   concatenateCoverageMaps,
   evaluateCoverageFloors,
+  projectCoverageInclude,
   ratchetCoverageFloors,
   summarizeTestResults,
   validateCoverageManifest,
@@ -203,4 +204,38 @@ test("test-result summaries report duration and retried-then-passed tests as fla
     testCount: 2,
     testFileCount: 1,
   });
+});
+
+const sharedProject = { name: "shared", root: "packages/shared", sources: "packages/shared/src" };
+
+test("coverage include is project-relative so Vitest resolves it against the project root", () => {
+  assert.equal(projectCoverageInclude(sharedProject, null), "src/**/*.{ts,tsx}");
+});
+
+test("a repository-relative scope has its workspace prefix stripped", () => {
+  assert.equal(projectCoverageInclude(sharedProject, "packages/shared/src/http-paths.ts"), "src/http-paths.ts");
+});
+
+test("an already project-relative scope is passed through untouched", () => {
+  assert.equal(projectCoverageInclude(sharedProject, "src/**/*.ts"), "src/**/*.ts");
+});
+
+test("a scope belonging to another workspace keeps its prefix rather than being mangled", () => {
+  assert.equal(projectCoverageInclude(sharedProject, "packages/server/src/**/*.ts"), "packages/server/src/**/*.ts");
+});
+
+test("no project's default include still carries its own workspace prefix", () => {
+  for (const project of [
+    { name: "cli", root: "apps/cli", sources: "apps/cli/src" },
+    { name: "web", root: "apps/web", sources: "apps/web/src" },
+    sharedProject,
+    { name: "client", root: "packages/client", sources: "packages/client/src" },
+    { name: "server", root: "packages/server", sources: "packages/server/src" },
+  ]) {
+    const include = projectCoverageInclude(project, null);
+    assert.ok(
+      !include.startsWith(`${project.root}/`),
+      `${project.name} include ${include} would resolve under ${project.root}/${project.root}`,
+    );
+  }
 });

@@ -265,7 +265,9 @@ function buildSummary({ mode, app, release, serverRevision, runnerHash, extra })
 
 /**
  * Bounded wait until CapRover reports a definite `false` build state. Unknown state or read errors
- * remain fatal through getAppBuildState; a build that never finishes fails at the deadline.
+ * remain fatal through getAppBuildState; a build that never finishes fails at the deadline. Every
+ * poll is authorized against the remaining budget and its request timeout is capped to that
+ * budget, so a slow poll can never extend the wait — or authorize an update — past its deadline.
  */
 export async function waitForAppIdle({
   server,
@@ -278,15 +280,23 @@ export async function waitForAppIdle({
   now = Date.now,
 }) {
   const deadline = now() + deadlineMs;
+  const deadlineError = () =>
+    new Error(`CapRover reports an ongoing app build that did not finish within ${Math.round(deadlineMs / 1000)}s`);
   for (;;) {
-    if (!(await getAppBuildState({ server, token, appName, fetchImpl }))) return;
     const remaining = deadline - now();
-    if (remaining <= 0) {
-      throw new Error(
-        `CapRover reports an ongoing app build that did not finish within ${Math.round(deadlineMs / 1000)}s`,
-      );
-    }
-    await sleep(Math.min(intervalMs, remaining));
+    if (remaining <= 0) throw deadlineError();
+    const stillBuilding = await getAppBuildState({
+      server,
+      token,
+      appName,
+      fetchImpl,
+      timeoutMs: Math.max(1, remaining),
+    });
+    // The request is budgeted to the remaining time, but a clock still cannot be trusted to have
+    // moved predictably: never report idle success after the deadline, even if the poll says so.
+    if (deadline - now() <= 0) throw deadlineError();
+    if (!stillBuilding) return;
+    await sleep(Math.min(intervalMs, deadline - now()));
   }
 }
 

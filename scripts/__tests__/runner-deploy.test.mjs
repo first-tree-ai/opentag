@@ -17,6 +17,7 @@ import {
   readDeployConfig,
   runDeploy,
   runnerTargetHash,
+  waitForAppIdle,
   waitForRunnerTarget,
 } from "../runner/deploy.mjs";
 import { formatReleaseRecord, parseReleaseRecord } from "../runner/release-record.mjs";
@@ -449,6 +450,60 @@ test("apply never waits through a build that starts at the pre-update check", as
   const fake = caproverFake({ isBuilding: [false, true] });
   await assert.rejects(runDeploy(deployDeps(fake, { mode: "apply" })), /ongoing app build/);
   assert.equal(fake.updates().length, 0, "the fresh pre-update check stays fail-fast");
+});
+
+test("idle wait never authorizes a poll beyond its deadline", async () => {
+  let time = 0;
+  let polls = 0;
+  const fake = caproverFake({ isBuilding: [true, false] });
+  await assert.rejects(
+    waitForAppIdle({
+      server: CONFIG.server,
+      token: "fixture-token",
+      appName: CONFIG.app,
+      deadlineMs: 30,
+      intervalMs: 10,
+      now: () => time,
+      sleep: async (ms) => {
+        time += ms;
+      },
+      fetchImpl: async (url, options) => {
+        polls += 1;
+        time += 25;
+        return fake.fetchImpl(url, options);
+      },
+    }),
+    /ongoing app build/,
+  );
+  assert.equal(polls, 1, "the poll that would start at the deadline is never sent");
+  assert.equal(time, 30);
+});
+
+test("idle wait fails closed when a poll reports idle only after its deadline", async () => {
+  let time = 0;
+  let polls = 0;
+  const fake = caproverFake({ isBuilding: false });
+  await assert.rejects(
+    waitForAppIdle({
+      server: CONFIG.server,
+      token: "fixture-token",
+      appName: CONFIG.app,
+      deadlineMs: 20,
+      intervalMs: 10,
+      now: () => time,
+      sleep: async (ms) => {
+        time += ms;
+      },
+      fetchImpl: async (url, options) => {
+        polls += 1;
+        time += 25;
+        return fake.fetchImpl(url, options);
+      },
+    }),
+    /ongoing app build/,
+  );
+  assert.equal(polls, 1, "a late idle answer must not authorize the update");
+  assert.equal(time, 25);
 });
 
 test("a failed update is never blindly retried and reports the observed state", async () => {

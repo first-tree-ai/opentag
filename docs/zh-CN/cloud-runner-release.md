@@ -1,6 +1,7 @@
 # Cloud Runner 发布
 
 [English](../cloud-runner-release.md)
+> Last synced with: 2026-09-21
 
 Runner 使用 CLI 的发布版本。现有 npm 发布流程先从同一份干净源码构建 linux/amd64 Runner、运行离线验收、
 发布到 Artifact Registry，再发布 npm 和 portable 产物。整次发布成功后，通过 GitHub Actions artifact 记录

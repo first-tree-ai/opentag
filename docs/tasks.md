@@ -31,16 +31,31 @@ them by the conversation they came from.
 
 ## Executions and status
 
-The Task detail lists the deliveries of the topic's messages as its executions. All Task timelines
-read oldest to newest, including private chats, group chats, and channel topics. Each inbound message
-appears before its Agent response, with the newest exchange at the bottom. **Load earlier activity**
-sits above the conversation and prepends earlier executions while keeping the visible message in
-place. The API still retrieves the newest page first; the Web reverses the full loaded collection
-for display. Task-list sorting is unchanged.
+The Task detail flattens the topic's messages and captured Agent replies into one oldest-to-newest
+conversation, including private chats, group chats, and channel topics. User follow-ups appear between
+replies according to their timestamps. Replies without a usable timestamp retain their captured
+position beside neighbouring replies, or at report time when none have timestamps; no send time is
+invented for display. Repeated delivery and reply identities across loaded pages appear once, while
+distinct messages with identical text and stored message revisions remain separate.
+
+**Load earlier activity** sits above the conversation. The API still retrieves the newest page first;
+the Web combines all loaded pages before ordering messages, and keeps the visible message in place
+when earlier history or a late report arrives. Task-list sorting is unchanged.
 
 Two kinds of delivery are left out: the channel Session's `ambient` observer copy of a message that a
 thread Session owns, and a delivery expired because a newer revision of its message superseded it.
-A message steered into a running Turn is shown as absorbed by that Turn and shares its report.
+A message steered into a running Turn gets a small annotation on the input; it does not create a
+second Agent response or report.
+
+Execution summaries remain separate from sent replies. When captured replies exist, the summary is
+collapsed by default, and expanding it survives background refresh and pagination. Without captured
+replies the summary stays visible and labelled. Execution failures, unavailable or incomplete reply
+history, and truncated content remain visible even when the summary is collapsed.
+
+Inbound attachments show their stored name, type, and any processing availability limitation. The
+Task API projects metadata from existing message resources, omitting provider resource keys. Older
+messages or Servers without attachment metadata still render normally. This adds no attachment
+preview or download endpoint, quoted-message expansion, or source-conversation link.
 
 The status is the topic's latest execution situation, read by precedence:
 

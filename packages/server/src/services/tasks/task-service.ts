@@ -89,7 +89,12 @@ interface TaskTurnRow extends Record<string, unknown> {
   operation: "created" | "edited" | "deleted";
   authorKind: "human" | "bot" | "system";
   authorDisplayName: string | null;
-  content: { fallbackText?: unknown; truncated?: unknown; blocks?: ImContentV1["blocks"] };
+  content: {
+    fallbackText?: unknown;
+    truncated?: unknown;
+    blocks?: ImContentV1["blocks"];
+    resources?: ImContentV1["resources"];
+  };
   occurredAt: Date | string;
 }
 
@@ -242,6 +247,14 @@ function toTurn(row: TaskTurnRow): TaskTurn {
       authorKind: row.authorKind,
       authorDisplayName: row.authorDisplayName,
       fallbackText: turnText(row.content),
+      attachments: (row.content.resources ?? []).map((resource, index) => ({
+        ordinal: resource.ordinal ?? index,
+        kind: resource.kind,
+        filename: resource.filename,
+        mediaType: resource.mediaType,
+        sizeBytes: resource.sizeBytes,
+        availability: resource.availability ?? "available",
+      })),
       truncated: row.content.truncated === true,
       occurredAt: toIso(row.occurredAt),
     },

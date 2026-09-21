@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@babel/parser": "8.0.5",
-    "@inlang/paraglide-js": "2.25.3",
+    "@inlang/paraglide-js": "2.25.4",
     "@inlang/plugin-message-format": "4.4.4",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/router-plugin": "^1.168.40",

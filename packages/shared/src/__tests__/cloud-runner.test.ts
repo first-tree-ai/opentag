@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   AccountSandboxRunnerAcceptanceRequestSchema,
   RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES,
+  RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES,
   RUNNER_PI_CONFIG_DOCUMENT_MAX_BYTES,
   RUNNER_SESSION_COLLABORATION_VERSION,
+  RUNNER_WS_MAX_FRAME_BYTES,
   RunnerAcceptanceRunFrameSchema,
   RunnerAuthFrameSchema,
   RunnerClientFrameSchema,
@@ -15,6 +17,8 @@ import {
   RunnerPiConfigInputSchema,
   RunnerServerFrameSchema,
   serializeRunnerAcceptanceWorkerStdin,
+  serializeRunnerCloudSessionWorkerStdin,
+  serializeRunnerCloudTurnWorkerStdin,
 } from "../cloud-runner.js";
 
 const utf8Bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
@@ -415,5 +419,241 @@ describe("E8 Session collaboration protocol", () => {
         sessionCliProof: proof,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("Runner wire-budget rejections", () => {
+  const uuid = "0b12b3c0-0000-4000-8000-000000000001";
+  const grant = {
+    baseUrl: "https://server.example.com/api/v1/cloud-model",
+    expiresAt: new Date(1_900_000_000_000).toISOString(),
+    model: "deepseek-v4.1-flash-expires-on-0910",
+    token: "unit-execution-token-0123456789abcdef",
+  };
+  const runtime = {
+    agentId: "0b12b3c0-0000-4000-8000-000000000004",
+    contextTreeRepository: null,
+    execution: { approvalPolicy: "never" as const, networkAccess: true },
+    instructions: { agent: "Agent.", platform: "Platform." },
+    model: "deepseek-v4.1-flash-expires-on-0910",
+    provider: "pi" as const,
+    revision: {
+      agent: { id: "0b12b3c0-0000-4000-8000-000000000005", sequence: 1 },
+      session: { id: "0b12b3c0-0000-4000-8000-000000000006", sequence: 1 },
+    },
+    workspace: {
+      mode: "empty_on_create" as const,
+      sharing: "agent" as const,
+      workspaceId: "0b12b3c0-0000-4000-8000-000000000007",
+    },
+  };
+  const sessionMessage = {
+    type: "session:message:deliver" as const,
+    requestId: uuid,
+    messageId: uuid,
+    sourceSessionId: "0b12b3c0-0000-4000-8000-000000000002",
+    targetSessionId: "0b12b3c0-0000-4000-8000-000000000003",
+    agentId: runtime.agentId,
+    placementGeneration: 1,
+    content: { kind: "text" as const, text: "continue the task" },
+    runtime,
+  };
+  const delivery = {
+    agentId: runtime.agentId,
+    attention: "direct" as const,
+    content: {
+      kind: "text" as const,
+      providerRef: {
+        appId: "app",
+        botOpenId: "bot",
+        chatId: "chat",
+        messageId: "msg",
+        provider: "feishu" as const,
+        teamBrand: "feishu" as const,
+      },
+      text: "hello",
+    },
+    deliveryId: uuid,
+    imMessageId: uuid,
+    placementGeneration: 1,
+    requestId: uuid,
+    runtime,
+    sessionId: sessionMessage.targetSessionId,
+    type: "im:deliver" as const,
+  };
+
+  /** Text whose JSON-serialized frame clears a 256 KiB budget on its own. */
+  const oversizedText = "x".repeat(300 * 1024);
+  /**
+   * Three documents that each stay inside the per-document bounds but expand sixfold when the frame
+   * is serialized (every NUL character becomes `\u0000`), clearing the aggregate frame budget.
+   */
+  const escapeAmplified = "\u0000".repeat(16_000);
+
+  it("refuses each acceptance request that cannot be dispatched", () => {
+    // `real` is meaningless without the Pi configuration it must run.
+    expect(AccountSandboxRunnerAcceptanceRequestSchema.safeParse({ mode: "real" }).success).toBe(false);
+    // `offline` is the mode that must never carry a credential-bearing config.
+    expect(
+      AccountSandboxRunnerAcceptanceRequestSchema.safeParse({
+        mode: "offline",
+        piConfig: { authJson: JSON.stringify({ token: "unit" }) },
+      }).success,
+    ).toBe(false);
+    expect(AccountSandboxRunnerAcceptanceRequestSchema.safeParse({ mode: "offline" }).success).toBe(true);
+  });
+
+  it("refuses an acceptance run frame that exceeds the control-channel budget", () => {
+    // Each 16K-char document passes the per-document bounds; the serialized frame triples them to
+    // 288 KiB because every NUL expands to `\u0000`.
+    const frame = {
+      type: "acceptance:run" as const,
+      requestId: uuid,
+      mode: "real" as const,
+      deadlineAtMs: 1_800_000_000_000,
+      piConfig: { authJson: escapeAmplified, modelsJson: escapeAmplified, settingsJson: escapeAmplified },
+    };
+    expect(RunnerPiConfigInputSchema.safeParse(frame.piConfig).success).toBe(true);
+    expect(utf8Bytes(JSON.stringify(frame))).toBeGreaterThan(RUNNER_WS_MAX_FRAME_BYTES);
+    expect(RunnerAcceptanceRunFrameSchema.safeParse(frame).success).toBe(false);
+  });
+
+  it("refuses a delivery run frame whose requestId disagrees with the delivery", () => {
+    const frame = { type: "delivery:run" as const, requestId: uuid, delivery };
+    expect(RunnerServerFrameSchema.safeParse(frame).success).toBe(true);
+    expect(
+      RunnerServerFrameSchema.safeParse({ ...frame, requestId: "0b12b3c0-0000-4000-8000-00000000000f" }).success,
+    ).toBe(false);
+  });
+
+  it("refuses a delivery run frame that exceeds the control-channel budget", () => {
+    const frame = {
+      type: "delivery:run" as const,
+      requestId: uuid,
+      delivery: {
+        ...delivery,
+        content: { ...delivery.content, text: oversizedText },
+      },
+    };
+    expect(RunnerServerFrameSchema.safeParse(frame).success).toBe(false);
+  });
+
+  it("refuses a session message run frame whose requestId disagrees with the message", () => {
+    const frame = {
+      type: "session:message:run" as const,
+      requestId: uuid,
+      message: sessionMessage,
+      sessionKind: "internal" as const,
+    };
+    expect(RunnerServerFrameSchema.safeParse(frame).success).toBe(true);
+    expect(
+      RunnerServerFrameSchema.safeParse({ ...frame, requestId: "0b12b3c0-0000-4000-8000-00000000000f" }).success,
+    ).toBe(false);
+  });
+
+  it("refuses a session message run frame that exceeds the control-channel budget", () => {
+    const frame = {
+      type: "session:message:run" as const,
+      requestId: uuid,
+      message: { ...sessionMessage, content: { kind: "text" as const, text: oversizedText } },
+      sessionKind: "internal" as const,
+    };
+    expect(RunnerServerFrameSchema.safeParse(frame).success).toBe(false);
+  });
+
+  it("refuses worker documents that exceed their stdin budget", () => {
+    const oversizedDelivery = { ...delivery, content: { ...delivery.content, text: oversizedText } };
+    expect(
+      RunnerCloudTurnWorkerRequestSchema.safeParse({ kind: "turn", delivery: oversizedDelivery, model: grant }).success,
+    ).toBe(false);
+    expect(
+      RunnerCloudSessionWorkerRequestSchema.safeParse({
+        kind: "session-message",
+        message: { ...sessionMessage, content: { kind: "text" as const, text: oversizedText } },
+        model: grant,
+        executionDir: "/run/opentag-execution/turn-1",
+        sessionKind: "internal",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("refuses a Turn worker document that only the serialized form makes oversized", () => {
+    // Every document field is individually inside its own bound, but JSON escaping expands each NUL
+    // character to six characters, so the worker stdin document clears the 256 KiB budget.
+    const nul = "\u0000";
+    const historyItem = {
+      imMessageId: "m".repeat(64),
+      occurredAt: "2024-01-01T00:00:00.000Z",
+      text: nul.repeat(5_000),
+      providerRef: delivery.content.providerRef,
+    };
+    const worker = {
+      kind: "turn" as const,
+      delivery: {
+        ...delivery,
+        content: { ...delivery.content, history: [historyItem], text: nul.repeat(16_384) },
+        runtime: {
+          ...runtime,
+          instructions: { agent: nul.repeat(12_288), platform: nul.repeat(12_288) },
+        },
+      },
+      model: grant,
+      executionDir: "/run/opentag-execution/turn-1",
+    };
+    expect(utf8Bytes(JSON.stringify(worker))).toBeGreaterThan(RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES);
+    expect(RunnerCloudTurnWorkerRequestSchema.safeParse(worker).success).toBe(false);
+  });
+
+  it("refuses a session worker document whose outbox context contradicts its role", () => {
+    const worker = {
+      kind: "session-message" as const,
+      message: sessionMessage,
+      model: grant,
+      executionDir: "/run/opentag-execution/turn-1",
+      outboxContext: { provider: "feishu" as const, sessionKind: "channel" as const, chatId: "oc_channel" },
+      sessionKind: "internal" as const,
+    };
+    expect(RunnerCloudSessionWorkerRequestSchema.safeParse(worker).success).toBe(false);
+    expect(RunnerCloudWorkerRequestSchema.safeParse(worker).success).toBe(false);
+  });
+
+  it("serializes both worker documents and refuses the oversized ones", () => {
+    const turn = serializeRunnerCloudTurnWorkerStdin({
+      delivery,
+      model: grant,
+      executionDir: "/run/opentag-execution/turn-1",
+    });
+    expect(JSON.parse(turn)).toMatchObject({ kind: "turn", executionDir: "/run/opentag-execution/turn-1" });
+    expect(() =>
+      serializeRunnerCloudTurnWorkerStdin({
+        delivery: { ...delivery, content: { ...delivery.content, text: oversizedText } },
+        model: grant,
+        executionDir: "/run/opentag-execution/turn-1",
+      }),
+    ).toThrow(/Turn worker document exceeds its stdin budget/);
+
+    const session = serializeRunnerCloudSessionWorkerStdin({
+      message: sessionMessage,
+      model: grant,
+      executionDir: "/run/opentag-execution/turn-1",
+      sessionKind: "internal",
+    });
+    expect(JSON.parse(session)).toMatchObject({ kind: "session-message", sessionKind: "internal" });
+    expect(() =>
+      serializeRunnerCloudSessionWorkerStdin({
+        message: { ...sessionMessage, content: { kind: "text" as const, text: oversizedText } },
+        model: grant,
+        executionDir: "/run/opentag-execution/turn-1",
+        sessionKind: "internal",
+      }),
+    ).toThrow(/Session worker document exceeds its stdin budget/);
+  });
+
+  it("requires an auth:renewed frame to carry at least one refreshed credential", () => {
+    expect(RunnerServerFrameSchema.safeParse({ type: "auth:renewed", token: "next" }).success).toBe(true);
+    expect(RunnerServerFrameSchema.safeParse({ type: "auth:renewed", controlToken: "next-control" }).success).toBe(
+      true,
+    );
+    expect(RunnerServerFrameSchema.safeParse({ type: "auth:renewed" }).success).toBe(false);
   });
 });

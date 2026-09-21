@@ -373,3 +373,102 @@ describe("parseSkillManifest", () => {
     if (result.ok) expect(SkillManifestSchema.safeParse(result.manifest).success).toBe(true);
   });
 });
+
+/*
+ * The remaining parser branches are the malformed-input paths. A hand-written YAML reader only earns
+ * its keep if it fails closed on every shape a real file can contain, so each case below is one such
+ * shape and asserts the specific typed reason rather than a generic failure.
+ */
+describe("parseSkillManifest malformed input", () => {
+  function expectManifest(markdown: string, manifest: { name: string; description: string }) {
+    const result = parseSkillManifest(markdown);
+    expect(result).toEqual({ ok: true, manifest });
+  }
+
+  function expectReason(markdown: string, fragment: string) {
+    const result = parseSkillManifest(markdown);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain(fragment);
+  }
+
+  it("rejects an escape inside a double-quoted scalar that YAML does not define", () => {
+    // `\q` is not in YAML's double-quote escape set, so the value cannot be unescaped faithfully.
+    expectReason('---\nname: demo\ndescription: "a\\qb"\n---\n', "must be one complete quoted string");
+    expectReason('---\nname: demo\ndescription: "trailing\\"\n---\n', "must be one complete quoted string");
+  });
+
+  it("rejects a line-folded double-quoted scalar whose backslash escapes the fold space", () => {
+    /*
+     * Folding joins the continuation lines with a space, so a line-ending backslash ends up escaping
+     * that space — which is not one of YAML's escapes and cannot be unescaped faithfully.
+     */
+    expectReason(
+      '---\nname: demo\ndescription: "backslash\\\n  ends the escape"\n---\n',
+      "must be one complete quoted string",
+    );
+  });
+
+  it("rejects a block scalar indicator with any chomping or indentation modifier", () => {
+    withTwoValues("description", "|x", "unsupported block scalar");
+    withTwoValues("description", ">0", "unsupported block scalar");
+    withTwoValues("description", "|1+", "unsupported block scalar");
+    withTwoValues("name", "|x", "unsupported block scalar");
+  });
+
+  it("keeps every supported block scalar indicator working", () => {
+    for (const indicator of ["|", "|-", "|+", ">", ">-", ">+"]) {
+      expectManifest(`---\nname: demo\ndescription: ${indicator}\n  Kept text\n---\n`, {
+        name: "demo",
+        description: "Kept text",
+      });
+    }
+  });
+
+  it("rejects a quoted scalar whose value is only an empty run", () => {
+    expectReason('---\nname: demo\ndescription: ""\n---\n', "Too small");
+    expectReason("---\nname: demo\ndescription:\n---\n", "Too small");
+  });
+
+  it("rejects a quoted scalar that is not one complete quoted string", () => {
+    expectReason('---\nname: demo\ndescription: ""\n  trailing\n---\n', "must be one complete quoted string");
+    expectReason("---\nname: demo\ndescription: '\n---\n", "must be one complete quoted string");
+    expectReason('---\nname: demo\ndescription: "\n---\n', "must be one complete quoted string");
+  });
+
+  it("skips blank and comment-only lines anywhere in the frontmatter", () => {
+    expectManifest("---\n# leading comment\nname: demo\n# between\ndescription: A demo skill\n# trailing\n---\n", {
+      name: "demo",
+      description: "A demo skill",
+    });
+    expectManifest("---\n\nname: demo\ndescription: A demo skill\n\n---\n", {
+      name: "demo",
+      description: "A demo skill",
+    });
+  });
+
+  it("rejects a non-string name through every plain-scalar path", () => {
+    // The `---` on the next line closes the frontmatter, so the description never arrives.
+    expectReason("---\nname: |\n---\ndescription: A demo skill\n", "missing the description field");
+    expectReason("---\nname: |x\n  a\ndescription: A demo skill\n---\n", "unsupported block scalar");
+  });
+
+  it("rejects a chomped block scalar that renders to whitespace only", () => {
+    expectReason("---\nname: demo\ndescription: |\n\n---\n", "Too small");
+    expectReason("---\nname: demo\ndescription: >\n\n\n---\n", "Too small");
+  });
+
+  it("rejects a plain scalar starting with a disallowed indicator on a continuation line", () => {
+    expectReason("---\nname: demo\ndescription:\n  ? x\n---\n", "must be a string, not a list or map");
+    expectReason("---\nname: demo\ndescription:\n  > a\n---\n", "must be a string, not a list or map");
+    expectReason("---\nname: demo\ndescription:\n  | a\n---\n", "must be a string, not a list or map");
+  });
+});
+
+/** Assert that a field whose block indicator carries a modifier is refused with `fragment`. */
+function withTwoValues(key: string, indicator: string, fragment: string): void {
+  const other = key === "name" ? "description: A demo skill" : "name: demo";
+  const markdown = `---\n${key}: ${indicator}\n  a\n${other}\n---\n`;
+  const result = parseSkillManifest(markdown);
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.reason).toContain(fragment);
+}

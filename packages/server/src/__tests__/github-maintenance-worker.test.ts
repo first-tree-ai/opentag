@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { GitHubRepositoryBinding } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubConnections } from "../db/schema/index.js";
 import {
   GITHUB_API_CLIENT_ERROR_CODES,
@@ -57,7 +57,19 @@ function stores() {
   };
 }
 
-function workerFor(api: GitHubApiClient, options: { batchLimit?: number } = {}) {
+function workerFor(
+  api: GitHubApiClient,
+  options: {
+    batchLimit?: number;
+    intervalMs?: number;
+    tickBudgetMs?: number;
+    refreshWithinMs?: number;
+    logger?: {
+      warn: (bindings: Record<string, unknown>, message: string) => void;
+      error: (bindings: Record<string, unknown>, message: string) => void;
+    };
+  } = {},
+) {
   const { refreshStore, recheckStore } = stores();
   return new GitHubMaintenanceWorker({
     refreshStore,
@@ -67,7 +79,31 @@ function workerFor(api: GitHubApiClient, options: { batchLimit?: number } = {}) 
     admission: new GitHubRepositoryAdmissionService({ api, appId: GITHUB_TEST_APP_ID, now: () => clock }),
     now: () => clock,
     ...(options.batchLimit !== undefined ? { batchLimit: options.batchLimit } : {}),
+    ...(options.intervalMs !== undefined ? { intervalMs: options.intervalMs } : {}),
+    ...(options.tickBudgetMs !== undefined ? { tickBudgetMs: options.tickBudgetMs } : {}),
+    ...(options.refreshWithinMs !== undefined ? { refreshWithinMs: options.refreshWithinMs } : {}),
+    ...(options.logger !== undefined ? { logger: options.logger } : {}),
   });
+}
+
+/**
+ * Builds a worker over stores the test owns, so individual store methods can be spied on. The
+ * `workerFor` helper above creates its own stores, which is right for behaviour tests and wrong
+ * for these.
+ */
+function workerWithStores(api: GitHubApiClient, options: { tickBudgetMs?: number; intervalMs?: number } = {}) {
+  const owned = stores();
+  const worker = new GitHubMaintenanceWorker({
+    refreshStore: owned.refreshStore,
+    recheckStore: owned.recheckStore,
+    cipher,
+    api,
+    admission: new GitHubRepositoryAdmissionService({ api, appId: GITHUB_TEST_APP_ID, now: () => clock }),
+    now: () => clock,
+    ...(options.tickBudgetMs !== undefined ? { tickBudgetMs: options.tickBudgetMs } : {}),
+    ...(options.intervalMs !== undefined ? { intervalMs: options.intervalMs } : {}),
+  });
+  return { worker, ...owned };
 }
 
 /** An active connection with a real cipher-sealed UAT pair. */
@@ -673,5 +709,406 @@ describe("GitHubMaintenanceWorker recheck pass", () => {
     expect(swept.deletedPending).toBe(1);
     const rows = await unit.database.select().from(githubConnections);
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe("GitHubMaintenanceWorker tick scheduling", () => {
+  it("runs the first tick immediately, reschedules, and is idempotent on start", async () => {
+    const api = stubGitHubApi();
+    const worker = workerFor(api.asClient(), { intervalMs: 30_000 });
+    const tick = vi.spyOn(worker, "runTickOnce");
+    worker.start();
+    // The first tick is scheduled with a zero delay, so it lands on the next macrotask.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(tick).toHaveBeenCalledTimes(1);
+    // A second start while running must not arm a second timer.
+    worker.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(tick).toHaveBeenCalledTimes(1);
+    await worker.stop();
+  });
+
+  it("logs a failed tick by error name and keeps the loop alive", async () => {
+    const failures: { bindings: Record<string, unknown>; message: string }[] = [];
+    const api = stubGitHubApi();
+    const worker = workerFor(api.asClient(), {
+      intervalMs: 1,
+      logger: { error: (bindings, message) => failures.push({ bindings, message }), warn: () => undefined },
+    });
+    vi.spyOn(worker, "runTickOnce")
+      .mockRejectedValueOnce(new TypeError("database is gone"))
+      .mockResolvedValueOnce({
+        sweptFlows: 0,
+        deletedPending: 0,
+        refresh: { claimed: 0, completed: 0, failed: 0, released: 0, skipped: 0 },
+        recheck: { scanned: 0, healthy: 0, permissionRevoked: 0, unauthorized: 0, transient: 0 },
+      });
+    worker.start();
+    await vi.waitFor(() => expect(failures).toHaveLength(1), { timeout: 2_000 });
+    await worker.stop();
+    expect(failures[0]?.bindings).toEqual({ errorName: "TypeError" });
+    expect(failures[0]?.message).toBe("GitHub maintenance tick failed");
+  });
+
+  it("records a non-Error tick failure by its type instead of a name", async () => {
+    const failures: { bindings: Record<string, unknown>; message: string }[] = [];
+    const api = stubGitHubApi();
+    const worker = workerFor(api.asClient(), {
+      intervalMs: 1,
+      logger: { error: (bindings, message) => failures.push({ bindings, message }), warn: () => undefined },
+    });
+    vi.spyOn(worker, "runTickOnce").mockRejectedValueOnce("plain string failure");
+    worker.start();
+    await vi.waitFor(() => expect(failures).toHaveLength(1), { timeout: 2_000 });
+    await worker.stop();
+    expect(failures[0]?.bindings).toEqual({ errorName: "string" });
+  });
+
+  it("stops scheduling and is safe to stop twice or before any start", async () => {
+    const api = stubGitHubApi();
+    const worker = workerFor(api.asClient(), { intervalMs: 2 });
+    const tick = vi.spyOn(worker, "runTickOnce");
+    worker.start();
+    await vi.waitFor(() => expect(tick).toHaveBeenCalled(), { timeout: 2_000 });
+    await worker.stop();
+    const settled = tick.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(tick.mock.calls.length).toBe(settled);
+    await expect(worker.stop()).resolves.toBeUndefined();
+    await expect(workerFor(api.asClient()).stop()).resolves.toBeUndefined();
+  });
+});
+
+describe("GitHubMaintenanceWorker guards and defaults", () => {
+  it("constructs with every documented default option omitted", async () => {
+    const api = stubGitHubApi();
+    const { refreshStore, recheckStore } = stores();
+    const worker = new GitHubMaintenanceWorker({
+      refreshStore,
+      recheckStore,
+      cipher,
+      api: api.asClient(),
+      admission: new GitHubRepositoryAdmissionService({
+        api: api.asClient(),
+        appId: GITHUB_TEST_APP_ID,
+        now: () => clock,
+      }),
+    });
+    // Defaults are live: a fresh construction still performs a real bounded pass.
+    await expect(worker.runTickOnce()).resolves.toEqual({
+      sweptFlows: 0,
+      deletedPending: 0,
+      refresh: { claimed: 0, completed: 0, failed: 0, released: 0, skipped: 0 },
+      recheck: { scanned: 0, healthy: 0, permissionRevoked: 0, unauthorized: 0, transient: 0 },
+    });
+  });
+
+  it("contains a rejected tick through the default logger and its own no-op sinks", async () => {
+    const api = stubGitHubApi();
+    // No logger option at all: the worker installs its own silent warning/error sinks.
+    const worker = workerFor(api.asClient(), { intervalMs: 1 });
+    vi.spyOn(worker, "runTickOnce").mockRejectedValueOnce(new TypeError("database is gone"));
+    worker.start();
+    // Nothing may escape the chained tick; the default sink swallows the failure and the loop
+    // keeps scheduling until it is explicitly stopped.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await expect(worker.stop()).resolves.toBeUndefined();
+  });
+
+  it("returns from the scheduler without arming a timer when stopped mid-tick", async () => {
+    const api = stubGitHubApi();
+    const worker = workerFor(api.asClient(), { intervalMs: 5 });
+    let started: () => void = () => undefined;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tick = vi.spyOn(worker, "runTickOnce").mockImplementation(async () => {
+      started();
+      await gate;
+      return {
+        sweptFlows: 0,
+        deletedPending: 0,
+        refresh: { claimed: 0, completed: 0, failed: 0, released: 0, skipped: 0 },
+        recheck: { scanned: 0, healthy: 0, permissionRevoked: 0, unauthorized: 0, transient: 0 },
+      };
+    });
+    worker.start();
+    await running;
+    // `stop()` clears the pending timer and flips `#stopped`; the in-flight tick then completes and
+    // its `finally` calls `#scheduleNext`, which must observe the stop and arm nothing.
+    const stopping = worker.stop();
+    release();
+    await stopping;
+    expect(tick).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(tick).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips a refresh candidate whose claim could not be taken", async () => {
+    const { connectionId } = await activeConnection();
+    const { refreshStore } = stores();
+    // Holding the claim elsewhere makes the worker's own claim fail, which counts as skipped.
+    expect((await refreshStore.claimRefresh(connectionId)).claimed).toBe(true);
+    const api = stubGitHubApi();
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.refresh.claimed).toBe(0);
+    expect(api.refreshUserToken).not.toHaveBeenCalled();
+  });
+
+  it("skips a candidate another worker claimed between the scan and the claim", async () => {
+    const { connectionId } = await activeConnection();
+    const api = stubGitHubApi();
+    const { worker, refreshStore } = workerWithStores(api.asClient());
+    // The due scan saw an idle row; a concurrent worker then took the claim. The worker's own
+    // claim therefore loses the CAS and the candidate is counted as skipped, never attempted.
+    const due = await refreshStore.listRefreshDue({ withinMs: 3_600_000, limit: 25 });
+    expect(due).toHaveLength(1);
+    const held = await refreshStore.claimRefresh(connectionId);
+    expect(held.claimed).toBe(true);
+    vi.spyOn(refreshStore, "listRefreshDue").mockResolvedValue(due);
+    const summary = await worker.runTickOnce();
+    expect(summary.refresh.claimed).toBe(0);
+    expect(summary.refresh.skipped).toBe(1);
+    expect(api.refreshUserToken).not.toHaveBeenCalled();
+  });
+
+  it("counts a refresh whose CAS lost the race as skipped, never as completed", async () => {
+    await activeConnection();
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockResolvedValue(tokenMaterial({ accessToken: "ghu_next", refreshToken: "ghr_next" }));
+    const { worker, refreshStore } = workerWithStores(api.asClient());
+    const complete = refreshStore.completeRefresh.bind(refreshStore);
+    // The claim is voided underneath the exchange, so the rotation can no longer apply.
+    vi.spyOn(refreshStore, "completeRefresh").mockImplementation(async (input) => {
+      await refreshStore.releaseRefresh({
+        connectionId: input.connectionId,
+        attemptId: input.attemptId,
+        expectedCredentialGeneration: input.expectedCredentialGeneration,
+      });
+      return complete(input);
+    });
+    const summary = await worker.runTickOnce();
+    expect(summary.refresh.skipped).toBe(1);
+    expect(summary.refresh.completed).toBe(0);
+  });
+
+  it("counts a failed refresh whose CAS lost the race as skipped", async () => {
+    await activeConnection();
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockRejectedValue(
+      new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID, "dead"),
+    );
+    const { worker, refreshStore } = workerWithStores(api.asClient());
+    const fail = refreshStore.failRefresh.bind(refreshStore);
+    // The claim was already released, so the fail-closed report has nothing left to write.
+    vi.spyOn(refreshStore, "failRefresh").mockImplementation(async (input) => {
+      await refreshStore.releaseRefresh({
+        connectionId: input.connectionId,
+        attemptId: input.attemptId,
+        expectedCredentialGeneration: input.expectedCredentialGeneration,
+      });
+      return fail(input);
+    });
+    const summary = await worker.runTickOnce();
+    expect(summary.refresh.skipped).toBe(1);
+    expect(summary.refresh.failed).toBe(0);
+  });
+
+  it("counts a released refresh whose CAS lost the race as skipped", async () => {
+    await activeConnection();
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockRejectedValue(
+      new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED, "slow down", { status: 429 }),
+    );
+    const { worker, refreshStore } = workerWithStores(api.asClient());
+    const release = refreshStore.releaseRefresh.bind(refreshStore);
+    // The release applies for real, then reports back as if another writer had already won.
+    vi.spyOn(refreshStore, "releaseRefresh").mockImplementation(async (input) => {
+      await release(input);
+      return { applied: false, reason: "stale" };
+    });
+    const summary = await worker.runTickOnce();
+    expect(summary.refresh.skipped).toBe(1);
+    expect(summary.refresh.released).toBe(0);
+  });
+
+  it("stops the refresh pass when the tick budget is already spent", async () => {
+    await activeConnection();
+    await activeConnection();
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockResolvedValue(tokenMaterial());
+    // A zero budget means the deadline has already passed when the loop starts.
+    const summary = await workerFor(api.asClient(), { tickBudgetMs: 0 }).runTickOnce();
+    expect(summary.refresh.claimed).toBe(0);
+    expect(api.refreshUserToken).not.toHaveBeenCalled();
+  });
+
+  it("stops the recheck pass when the tick budget is already spent", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    api.getAuthenticatedUser.mockResolvedValue({ id: "42", login: "octocat" });
+    const summary = await workerFor(api.asClient(), { tickBudgetMs: 0 }).runTickOnce();
+    expect(summary.recheck.scanned).toBe(0);
+    expect(api.getAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("narrows the refresh window so a healthy connection is not claimed", async () => {
+    await activeConnection();
+    const api = stubGitHubApi();
+    // The access token expires in 30 minutes; a one-minute window leaves it out of scope.
+    const summary = await workerFor(api.asClient(), { refreshWithinMs: 60_000 }).runTickOnce();
+    expect(summary.refresh.claimed).toBe(0);
+  });
+});
+
+describe("GitHubMaintenanceWorker recheck verdicts", () => {
+  it("reports a transient failure when the recheck snapshot cannot be read", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    const { worker, recheckStore } = workerWithStores(api.asClient());
+    // The row was removed between the due scan and the snapshot load.
+    vi.spyOn(recheckStore, "getActiveRecheckSnapshot").mockRejectedValue(new Error("row vanished"));
+    const summary = await worker.runTickOnce();
+    expect(summary.recheck.transient).toBe(1);
+    expect(api.getAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("reports an unauthorized outcome when the row is no longer active", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    const { worker, recheckStore } = workerWithStores(api.asClient());
+    vi.spyOn(recheckStore, "getActiveRecheckSnapshot").mockResolvedValue(null);
+    const summary = await worker.runTickOnce();
+    expect(summary.recheck.unauthorized).toBe(1);
+    expect(api.getAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("reports a transient failure when the sealed envelope cannot be opened for the read", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    const { worker, recheckStore } = workerWithStores(api.asClient());
+    const snapshot = await recheckStore.getActiveRecheckSnapshot(connectionId);
+    if (!snapshot) throw new Error("expected a snapshot");
+    // AAD mismatch: the sealed envelope no longer authenticates against this row's binding, so no
+    // credential verdict is possible and the row must stay active for a later retry.
+    vi.spyOn(recheckStore, "getActiveRecheckSnapshot").mockResolvedValue({
+      ...snapshot,
+      accountId: crypto.randomUUID(),
+    });
+    const summary = await worker.runTickOnce();
+    expect(summary.recheck.transient).toBe(1);
+    expect(api.getAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("reports a rate limit as its own transient code", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    api.getAuthenticatedUser.mockRejectedValue(
+      new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED, "slow down", { status: 429 }),
+    );
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.recheck.transient).toBe(1);
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("active");
+    expect(row?.lastErrorCode).toBe("GITHUB_RATE_LIMITED");
+  });
+
+  it("reports an unrecognized failure as an upstream error", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    api.getAuthenticatedUser.mockRejectedValue(new TypeError("socket hang up"));
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.recheck.transient).toBe(1);
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("active");
+    expect(row?.lastErrorCode).toBe("GITHUB_UPSTREAM_ERROR");
+  });
+
+  it("drops a recheck commit that lost the fencing race", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    api.getAuthenticatedUser.mockResolvedValue({ id: "42", login: "octocat" });
+    const { worker, recheckStore } = workerWithStores(api.asClient());
+    const commit = recheckStore.commitRecheckResult.bind(recheckStore);
+    // A concurrent invalidation bumps the authorization version before the commit lands.
+    vi.spyOn(recheckStore, "commitRecheckResult").mockImplementation(async (input) => {
+      await recheckStore.invalidateActiveConnections({
+        connectionIds: [input.connectionId],
+        errorCode: "GITHUB_CREDENTIAL_INVALID",
+      });
+      return commit(input);
+    });
+    const summary = await worker.runTickOnce();
+    expect(summary.recheck.scanned).toBe(0);
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("reauthorization_required");
+  });
+
+  it("verifies admission with no bindings without calling the admission service", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    api.getAuthenticatedUser.mockResolvedValue({ id: "42", login: "octocat" });
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.recheck.healthy).toBe(1);
+    expect(api.listUserInstallations).not.toHaveBeenCalled();
+  });
+});
+
+describe("GitHubMaintenanceWorker refresh failure classification", () => {
+  it.each([
+    ["an unsupported token lifetime", GITHUB_API_CLIENT_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED],
+    ["a dead credential", GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID],
+    ["a rejected grant", GITHUB_API_CLIENT_ERROR_CODES.OAUTH_EXCHANGE_REJECTED],
+  ] as const)("fails the row on %s with the credential-invalid code", async (_label, code) => {
+    const { connectionId } = await activeConnection();
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockRejectedValue(new GitHubApiClientError(code, "rejected"));
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.refresh.failed).toBe(1);
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("reauthorization_required");
+    expect(row?.lastErrorCode).toBe("GITHUB_CREDENTIAL_INVALID");
+  });
+
+  it.each([
+    ["a 5xx", new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_UNAVAILABLE, "down")],
+    ["a plain transport error", new TypeError("socket hang up")],
+  ])("fails the row on %s with the unconfirmed-outcome code", async (_label, error) => {
+    const { connectionId } = await activeConnection();
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockRejectedValue(error);
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.refresh.failed).toBe(1);
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("reauthorization_required");
+    expect(row?.lastErrorCode).toBe(GITHUB_REFRESH_OUTCOME_UNKNOWN_ERROR_CODE);
+  });
+
+  it("releases a claim whose connection carries an unsupported host", async () => {
+    const { connectionId } = await activeConnection();
+    await unit.database
+      .update(githubConnections)
+      .set({ githubHost: "github.example.com" })
+      .where(eq(githubConnections.id, connectionId));
+    const api = stubGitHubApi();
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    // The host is rejected before anything is presented to GitHub, so the claim is released intact.
+    expect(summary.refresh.released).toBe(1);
+    expect(api.refreshUserToken).not.toHaveBeenCalled();
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("active");
+    expect(row?.credentialCiphertext).toBeTruthy();
   });
 });

@@ -2,7 +2,11 @@ import { MCP_ERROR_CODES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   authorizationServerMetadataUrls,
+  MCP_OAUTH_STATE_TTL_MS,
   McpOAuthClient,
+  mcpCallbackRedirect,
+  newRefreshClaimId,
+  parseBearerChallenge,
   protectedResourceMetadataUrls,
 } from "../services/mcp/mcp-oauth.js";
 import { normalizeResource, orderIssuers } from "../services/mcp/mcp-oauth-flow-service.js";
@@ -86,6 +90,16 @@ describe("MCP OAuth discovery order", () => {
     expect(authorizationServerMetadataUrls("https://auth.example.com")).toEqual([
       "https://auth.example.com/.well-known/oauth-authorization-server",
       "https://auth.example.com/.well-known/openid-configuration",
+    ]);
+  });
+
+  it("uses only the bare form for a pathless endpoint", () => {
+    // The path-inserted spelling would be `/…/oauth-protected-resource/`, which names no resource.
+    expect(protectedResourceMetadataUrls("https://mcp.example.com")).toEqual([
+      "https://mcp.example.com/.well-known/oauth-protected-resource",
+    ]);
+    expect(protectedResourceMetadataUrls("https://mcp.example.com/")).toEqual([
+      "https://mcp.example.com/.well-known/oauth-protected-resource",
     ]);
   });
 
@@ -449,5 +463,527 @@ describe("MCP refresh lead", () => {
     const expiresAt = new Date("2026-09-16T12:00:00.000Z");
     expect(refreshAtFrom(expiresAt, 3600).toISOString()).toBe("2026-09-16T11:55:00.000Z");
     expect(refreshAtFrom(expiresAt, 60).toISOString()).toBe("2026-09-16T11:59:30.000Z");
+  });
+});
+
+/**
+ * Discovery, `parseBearerChallenge`, and the token requests, driven from a URL-routed stub.
+ *
+ * The tests above stub a fixed sequence because their subject is the order the candidates are tried
+ * in. These need to answer several distinct endpoints within one call — a Protected Resource
+ * document, an authorization server document, and a token endpoint — so they route by URL instead of
+ * by position.
+ */
+interface RoutedResponse {
+  status: number;
+  body?: string;
+  headers?: Record<string, string>;
+}
+
+type Routes = Record<string, RoutedResponse>;
+
+function stubRoutes(routes: Routes) {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fetchImpl = vi.fn(async (url: URL | string, init?: RequestInit) => {
+    const call = { url: String(url), init: init ?? {} };
+    calls.push(call);
+    const next = routes[call.url] ?? { status: 404 };
+    return new Response(next.body ?? "", {
+      status: next.status,
+      headers: { "content-type": "application/json", ...next.headers },
+    });
+  }) as unknown as typeof globalThis.fetch;
+  // Loopback is admitted for the fixture-server cases, and a stub resolver keeps every other host
+  // from needing real DNS.
+  const fetcher = new McpOutboundFetcher({
+    allowLoopback: true,
+    fetch: fetchImpl,
+    resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"],
+  });
+  return { calls, client: new McpOAuthClient({ fetcher, publicUrl: PUBLIC_URL }), fetcher };
+}
+
+const AS = "https://auth.example.com";
+const AS_METADATA = {
+  issuer: AS,
+  authorizationEndpoint: `${AS}/authorize`,
+  tokenEndpoint: `${AS}/token`,
+  scopesSupported: [] as string[],
+  clientIdMetadataDocumentSupported: false,
+  authorizationResponseIssParameterSupported: false,
+  tokenEndpointAuthMethodsSupported: [] as string[],
+};
+
+describe("MCP well-known discovery documents", () => {
+  it("tries every candidate in order and reports the ones that failed", async () => {
+    const issuer = `${AS}/tenant`;
+    const { calls, client } = stubRoutes({
+      // The path-inserted AS form answers 404 and the path-inserted OIDC form answers with an
+      // unreadable document; only the path-appended OIDC form publishes the metadata, whose own
+      // `issuer` must equal the string its URL was built from.
+      [`${issuer}/.well-known/openid-configuration`]: json({
+        ...AS_METADATA,
+        issuer,
+        authorization_endpoint: `${issuer}/authorize`,
+        token_endpoint: `${issuer}/token`,
+      }),
+      [`${AS}/.well-known/openid-configuration/tenant`]: { status: 200, body: "<html>not json</html>" },
+    });
+    await expect(client.authorizationServerMetadata(ACCOUNT, issuer)).resolves.toMatchObject({
+      issuer,
+      authorizationEndpoint: `${issuer}/authorize`,
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      `${AS}/.well-known/oauth-authorization-server/tenant`,
+      `${AS}/.well-known/openid-configuration/tenant`,
+      `${AS}/tenant/.well-known/openid-configuration`,
+    ]);
+    // A 404 is "not published" and an unreadable body is a failure; neither is fatal on its own.
+    expect(AS_METADATA.authorizationEndpoint).toBe(`${AS}/authorize`);
+  });
+
+  it("reports the candidates it tried when none of them published a document", async () => {
+    /*
+     * A 404 is "not published" and is not a failure; an unreadable body is, and that is what the
+     * bounded `tried` list carries. A Server that publishes nothing at all is simply unreachable-by
+     * -discovery, which is the same outcome with an empty list.
+     */
+    const { client } = stubRoutes({
+      [`${AS}/.well-known/oauth-authorization-server`]: { status: 200, body: "<html>not json</html>" },
+      [`${AS}/.well-known/openid-configuration`]: { status: 500 },
+    });
+    const error = await client.authorizationServerMetadata(ACCOUNT, AS).catch((caught: unknown) => caught);
+    expect((error as { code?: string }).code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+    const tried = (error as { detail?: { tried?: string[] } }).detail?.tried ?? [];
+    // Only the unreadable document is reported: a 500 is "this candidate did not work" and carries
+    // no thrown error for the list.
+    expect(tried).toHaveLength(1);
+    expect(tried[0]).toContain(`${AS}/.well-known/oauth-authorization-server`);
+    expect(tried[0]).toContain(":");
+
+    // Nothing published at all: the same error, with nothing to report.
+    const { client: empty } = stubRoutes({});
+    const nothing = await empty.authorizationServerMetadata(ACCOUNT, AS).catch((caught: unknown) => caught);
+    expect((nothing as { detail?: unknown }).detail).toEqual({ tried: [] });
+  });
+
+  it("tries the endpoint-path well-known first and reports both when neither is published", async () => {
+    const { calls, client } = stubRoutes({
+      "https://mcp.example.com/api/mcp": { status: 404 },
+    });
+    await expect(client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/api/mcp")).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://mcp.example.com/.well-known/oauth-protected-resource/api/mcp",
+      "https://mcp.example.com/.well-known/oauth-protected-resource",
+    ]);
+  });
+
+  it("refuses a protected-resource document that names no authorization server", async () => {
+    const { client } = stubRoutes({
+      "https://mcp.example.com/.well-known/oauth-protected-resource/mcp": json({
+        resource: "https://mcp.example.com/mcp",
+      }),
+    });
+    await expect(client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/mcp")).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+    });
+  });
+
+  it("refuses an unreadable JSON body as a failure of that candidate, not as a publication", async () => {
+    for (const body of ["<html>nope</html>", "[]", "null"]) {
+      const { client } = stubRoutes({
+        "https://mcp.example.com/.well-known/oauth-protected-resource/mcp": { status: 200, body },
+      });
+      await expect(
+        client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/mcp"),
+        body,
+      ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_ERROR });
+    }
+  });
+
+  it("falls back to the endpoint itself when the document advertises no resource", async () => {
+    const mcpEndpoint = "https://mcp.example.com/mcp";
+    const { client } = stubRoutes({
+      "https://mcp.example.com/.well-known/oauth-protected-resource/mcp": json({ authorization_servers: [AS] }),
+    });
+    await expect(client.protectedResourceMetadata(ACCOUNT, mcpEndpoint)).resolves.toEqual({
+      metadata: { resource: mcpEndpoint, authorizationServers: [AS], scopesSupported: [] },
+    });
+  });
+
+  it("carries the advertised scopes and resource out of a published document", async () => {
+    const mcpEndpoint = "https://mcp.example.com/mcp";
+    const { client } = stubRoutes({
+      "https://mcp.example.com/.well-known/oauth-protected-resource/mcp": json({
+        resource: mcpEndpoint,
+        authorization_servers: [AS],
+        scopes_supported: ["mcp.read", "mcp.write"],
+      }),
+    });
+    await expect(client.protectedResourceMetadata(ACCOUNT, mcpEndpoint)).resolves.toEqual({
+      metadata: {
+        resource: mcpEndpoint,
+        authorizationServers: [AS],
+        scopesSupported: ["mcp.read", "mcp.write"],
+      },
+    });
+  });
+});
+
+describe("MCP WWW-Authenticate challenge", () => {
+  it("reads resource_metadata and scope from a Bearer challenge", () => {
+    expect(
+      parseBearerChallenge(
+        'Bearer realm="mcp", resource_metadata="https://mcp.example.com/prm.json", scope="mcp.read"',
+      ),
+    ).toEqual({ resourceMetadata: "https://mcp.example.com/prm.json", scope: "mcp.read" });
+  });
+
+  it("keeps a quoted parameter together when its value contains a comma", () => {
+    /*
+     * A naive comma split truncates the URL, and the truncated URL is then dialed — which is why the
+     * split is parameter-aware.
+     */
+    expect(parseBearerChallenge('Bearer resource_metadata="https://mcp.example.com/a,b/prm.json"')).toEqual({
+      resourceMetadata: "https://mcp.example.com/a,b/prm.json",
+    });
+  });
+
+  it("accepts unquoted values and lowercases the parameter names", () => {
+    expect(parseBearerChallenge("Bearer Resource_Metadata=https://mcp.example.com/prm.json scope=mcp.read")).toEqual({
+      resourceMetadata: "https://mcp.example.com/prm.json",
+      scope: "mcp.read",
+    });
+  });
+
+  it("returns nothing for an absent, empty, or non-Bearer challenge", () => {
+    expect(parseBearerChallenge(null)).toEqual({});
+    expect(parseBearerChallenge("")).toEqual({});
+    expect(parseBearerChallenge("Basic realm=opentag")).toEqual({});
+    // `Bearer` with no parameters: the regex matches, but no parameter is ever captured.
+    expect(parseBearerChallenge("Bearer ")).toEqual({});
+  });
+
+  it("omits each parameter it did not find rather than spelling it as undefined", () => {
+    expect(parseBearerChallenge('Bearer realm="mcp"')).toEqual({});
+    expect(parseBearerChallenge('Bearer scope="mcp.read"')).toEqual({ scope: "mcp.read" });
+  });
+});
+
+describe("MCP endpoint URL policy", () => {
+  const invalidEndpoint = async (endpoint: string) => {
+    const { client } = stubRoutes({
+      [`${AS}/.well-known/oauth-authorization-server`]: json({
+        issuer: AS,
+        authorization_endpoint: endpoint,
+        token_endpoint: `${AS}/token`,
+      }),
+    });
+    return client.authorizationServerMetadata(ACCOUNT, AS).catch((caught: unknown) => caught);
+  };
+
+  it("refuses a document whose endpoint is not an absolute URL", async () => {
+    // `new URL("not a url")` throws, so the document is treated as having no usable metadata.
+    expect((await invalidEndpoint("not a url")) as { code?: string }).toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+    });
+  });
+
+  it("refuses a missing token endpoint even when the authorization endpoint is usable", async () => {
+    const { client } = stubRoutes({
+      [`${AS}/.well-known/oauth-authorization-server`]: json({
+        issuer: AS,
+        authorization_endpoint: `${AS}/authorize`,
+      }),
+    });
+    await expect(client.authorizationServerMetadata(ACCOUNT, AS)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+    });
+  });
+
+  it("drops a registration endpoint that fails the same policy without losing the document", async () => {
+    /*
+     * Registration is optional, so an unusable value for it means "no registration mechanism" rather
+     * than "no metadata" — the AS is still usable through whatever other mechanism it offers.
+     */
+    const { client } = stubRoutes({
+      [`${AS}/.well-known/oauth-authorization-server`]: json({
+        issuer: AS,
+        authorization_endpoint: `${AS}/authorize`,
+        token_endpoint: `${AS}/token`,
+        registration_endpoint: "javascript:alert(1)",
+      }),
+    });
+    const metadata = await client.authorizationServerMetadata(ACCOUNT, AS);
+    expect(metadata.registrationEndpoint).toBeUndefined();
+    await expect(client.registerDynamically(ACCOUNT, metadata)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.REGISTRATION_UNSUPPORTED,
+    });
+  });
+
+  it("admits a loopback registration endpoint only where the deployment opted in", async () => {
+    const document = json({
+      issuer: "http://127.0.0.1:9123",
+      authorization_endpoint: "http://127.0.0.1:9123/authorize",
+      token_endpoint: "http://127.0.0.1:9123/token",
+      registration_endpoint: "http://127.0.0.1:9123/register",
+    });
+    const { client } = stubRoutes({ "http://127.0.0.1:9123/.well-known/oauth-authorization-server": document });
+    const metadata = await client.authorizationServerMetadata(ACCOUNT, "http://127.0.0.1:9123");
+    expect(metadata.registrationEndpoint).toBe("http://127.0.0.1:9123/register");
+
+    // The same document read through a fetcher with the flag off never gets as far as parsing it.
+    const { client: strict } = stubOAuth([document]);
+    await expect(strict.authorizationServerMetadata(ACCOUNT, "http://127.0.0.1:9123")).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.URL_BLOCKED,
+    });
+  });
+});
+
+describe("MCP dynamic registration failures", () => {
+  const registrationMetadata = { ...AS_METADATA, registrationEndpoint: `${AS}/register` };
+
+  it("reports the status and callback when the AS refuses to register the client", async () => {
+    const { client } = stubRoutes({ [`${AS}/register`]: { status: 403, body: JSON.stringify({ error: "nope" }) } });
+    const error = await client.registerDynamically(ACCOUNT, registrationMetadata).catch((caught: unknown) => caught);
+    expect((error as { code?: string }).code).toBe(MCP_ERROR_CODES.REGISTRATION_FAILED);
+    expect((error as { detail?: unknown }).detail).toMatchObject({ status: 403 });
+  });
+
+  it("refuses a registration response that carries no client ID", async () => {
+    const { client } = stubRoutes({ [`${AS}/register`]: json({ client_secret: "cs_1" }) });
+    await expect(client.registerDynamically(ACCOUNT, registrationMetadata)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.REGISTRATION_FAILED,
+    });
+  });
+
+  it("reports a registration with no secret as a public client", async () => {
+    const { client } = stubRoutes({ [`${AS}/register`]: json({ client_id: "dcr_public" }) });
+    await expect(client.registerDynamically(ACCOUNT, registrationMetadata)).resolves.toEqual({
+      source: "dcr",
+      clientId: "dcr_public",
+      tokenEndpointAuthMethod: "client_secret_basic",
+    });
+  });
+});
+
+describe("MCP client metadata document rejection cases", () => {
+  const url = `${PUBLIC_URL}/oauth/client-metadata.json`;
+  const { client } = stubOAuth([]);
+
+  it("refuses a document with no client name", () => {
+    expect(() =>
+      client.validateClientMetadataDocument(url, {
+        client_id: url,
+        redirect_uris: [`${PUBLIC_URL}/api/v1/mcp-servers/oauth/callback`],
+      }),
+    ).toThrow();
+  });
+
+  it("refuses a document with no redirect URIs at all", () => {
+    for (const redirect_uris of [undefined, [], ["", 7]]) {
+      expect(() =>
+        client.validateClientMetadataDocument(url, { client_id: url, client_name: "OpenTag", redirect_uris }),
+      ).toThrow();
+    }
+  });
+
+  it("refuses a redirect URI that is not an absolute URL", () => {
+    expect(() =>
+      client.validateClientMetadataDocument(url, {
+        client_id: url,
+        client_name: "OpenTag",
+        redirect_uris: ["not a url"],
+      }),
+    ).toThrow();
+  });
+
+  it("accepts a redirect on the same host with a different path or scheme spelling", () => {
+    expect(() =>
+      client.validateClientMetadataDocument(url, {
+        client_id: url,
+        client_name: "OpenTag",
+        redirect_uris: [`${PUBLIC_URL}/some/other/callback`],
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("MCP authorization URL and scope parameter", () => {
+  const { client } = stubOAuth([]);
+
+  it("sets scope only when there is one, and joins the list with a space", () => {
+    const base = {
+      metadata: AS_METADATA,
+      clientId: "c1",
+      state: "s1",
+      codeChallenge: "challenge",
+      resource: "https://mcp.example.com/mcp",
+    };
+    expect(client.authorizationUrl({ ...base, scopes: [] })).not.toContain("scope=");
+    expect(
+      new URL(client.authorizationUrl({ ...base, scopes: ["mcp.read", "offline_access"] })).searchParams.get("scope"),
+    ).toBe("mcp.read offline_access");
+  });
+});
+
+describe("MCP token requests", () => {
+  const clientWithSecret = {
+    source: "dcr" as const,
+    clientId: "c1",
+    clientSecret: "cs_1",
+    tokenEndpointAuthMethod: "client_secret_basic",
+  };
+  const publicClient = { source: "cimd" as const, clientId: "c1", tokenEndpointAuthMethod: "none" };
+
+  it("sends client_secret_basic as a Basic header and no client_id in the body", async () => {
+    const { calls, client } = stubRoutes({ [`${AS}/token`]: json({ access_token: "at_1", expires_in: 60 }) });
+    await client.exchangeAuthorizationCode(ACCOUNT, AS_METADATA, {
+      code: "code-1",
+      codeVerifier: "verifier",
+      client: clientWithSecret,
+      resource: "https://mcp.example.com/mcp",
+    });
+    const init = calls[0]?.init as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get("authorization")).toBe(`Basic ${Buffer.from("c1:cs_1").toString("base64")}`);
+    expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+    expect(new URLSearchParams(String(init.body)).get("client_id")).toBeNull();
+  });
+
+  const bodyOf = (call: { init?: RequestInit } | undefined): string => String(call?.init?.body);
+
+  it("sends the refresh grant with the resource and hands back the whole token set", async () => {
+    const { calls, client } = stubRoutes({
+      [`${AS}/token`]: json({
+        access_token: "at_2",
+        refresh_token: "rt_2",
+        token_type: "Bearer",
+        scope: "mcp.read",
+        expires_in: 900,
+      }),
+    });
+    await expect(
+      client.refreshAccessToken(ACCOUNT, AS_METADATA, {
+        refreshToken: "rt_1",
+        client: publicClient,
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).resolves.toEqual({
+      accessToken: "at_2",
+      refreshToken: "rt_2",
+      tokenType: "Bearer",
+      scope: "mcp.read",
+      expiresIn: 900,
+    });
+    const body = new URLSearchParams(String(bodyOf(calls[0])));
+    expect(body.get("grant_type")).toBe("refresh_token");
+    expect(body.get("refresh_token")).toBe("rt_1");
+    expect(body.get("resource")).toBe("https://mcp.example.com/mcp");
+    // A client with no secret travels in the body.
+    expect(body.get("client_id")).toBe("c1");
+  });
+
+  it("reports a token endpoint refusal with its status and bounded error code", async () => {
+    const { client } = stubRoutes({
+      [`${AS}/token`]: { status: 400, body: JSON.stringify({ error: "invalid_grant", error_description: "expired" }) },
+    });
+    const error = await client
+      .refreshAccessToken(ACCOUNT, AS_METADATA, {
+        refreshToken: "rt_1",
+        client: publicClient,
+        resource: "https://mcp.example.com/mcp",
+      })
+      .catch((caught: unknown) => caught);
+    expect((error as { code?: string }).code).toBe(MCP_ERROR_CODES.OAUTH_FAILED);
+    expect((error as { detail?: unknown }).detail).toEqual({ status: 400, error: "invalid_grant" });
+    // The free-form description never reaches the message.
+    expect((error as Error).message).not.toContain("expired");
+  });
+
+  it("reports a refusal whose body carries no bounded error code", async () => {
+    /*
+     * The code is what the caller may show; a body that spells it as anything other than a string is
+     * refused without one rather than having the free-form value adopted.
+     */
+    const { client } = stubRoutes({
+      [`${AS}/token`]: { status: 502, body: JSON.stringify({ error: { code: "invalid_grant" }, detail: "upstream" }) },
+    });
+    const error = await client
+      .refreshAccessToken(ACCOUNT, AS_METADATA, {
+        refreshToken: "rt_1",
+        client: { source: "cimd", clientId: "c1", tokenEndpointAuthMethod: "none" },
+        resource: "https://mcp.example.com/mcp",
+      })
+      .catch((caught: unknown) => caught);
+    expect((error as { detail?: unknown }).detail).toEqual({ status: 502, error: undefined });
+    expect((error as Error).message).toBe("The token endpoint refused the request");
+  });
+
+  it("refuses a successful response that carries no access token", async () => {
+    const { client } = stubRoutes({ [`${AS}/token`]: json({ token_type: "Bearer" }) });
+    await expect(
+      client.exchangeAuthorizationCode(ACCOUNT, AS_METADATA, {
+        code: "code-1",
+        codeVerifier: "verifier",
+        client: publicClient,
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_ERROR });
+  });
+
+  it("treats an empty success body as a document with no access token", async () => {
+    // An empty 2xx body is read as an empty object rather than as an unreadable document, so the
+    // failure reported is the missing token rather than a JSON parse error.
+    const { client } = stubRoutes({ [`${AS}/token`]: { status: 200, body: "" } });
+    await expect(
+      client.refreshAccessToken(ACCOUNT, AS_METADATA, {
+        refreshToken: "rt_1",
+        client: publicClient,
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_ERROR });
+  });
+
+  it("omits a non-numeric expires_in rather than storing a guess", async () => {
+    const { client } = stubRoutes({ [`${AS}/token`]: json({ access_token: "at_1", expires_in: "soon" }) });
+    await expect(
+      client.refreshAccessToken(ACCOUNT, AS_METADATA, {
+        refreshToken: "rt_1",
+        client: publicClient,
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).resolves.toEqual({ accessToken: "at_1" });
+  });
+});
+
+describe("MCP callback redirect and refresh claim id", () => {
+  it("always names the Agent and the Server, and adds the outcome parameters only on failure", () => {
+    const success = new URL(mcpCallbackRedirect(PUBLIC_URL, "agent-1", "server-1"));
+    expect(success.origin + success.pathname).toBe(`${PUBLIC_URL}/agents/agent-1/mcp`);
+    expect(success.searchParams.get("server")).toBe("server-1");
+    expect(success.searchParams.get("mcp_oauth")).toBe("success");
+    expect(success.searchParams.get("mcp_oauth_error")).toBeNull();
+
+    const failure = new URL(mcpCallbackRedirect(PUBLIC_URL, "agent-1", "server-1", MCP_ERROR_CODES.OAUTH_DENIED));
+    expect(failure.searchParams.get("mcp_oauth")).toBe("error");
+    expect(failure.searchParams.get("mcp_oauth_error")).toBe(MCP_ERROR_CODES.OAUTH_DENIED);
+  });
+
+  it("percent-encodes an Agent id so it cannot escape its own path segment", () => {
+    expect(new URL(mcpCallbackRedirect(PUBLIC_URL, "a/b?c", "server-1")).pathname).toBe("/agents/a%2Fb%3Fc/mcp");
+  });
+
+  it("mints a distinct claim id per call", () => {
+    expect(newRefreshClaimId()).not.toBe(newRefreshClaimId());
+    expect(newRefreshClaimId()).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("expires the authorization state after ten minutes", () => {
+    // The window a callback has to land in: long enough for a consent screen, short enough that a
+    // leaked callback URL is not redeemable a day later.
+    expect(MCP_OAUTH_STATE_TTL_MS).toBe(10 * 60 * 1000);
   });
 });

@@ -6,6 +6,7 @@ import {
   AgentCreationRecoveryActionSchema,
   type AgentSetupAction,
   type AgentSetupBlocker,
+  AgentSetupBlockerSchema,
   type AgentSetupComputerState,
   type AgentSetupMessagingState,
   type AgentSetupRuntimeState,
@@ -832,5 +833,308 @@ describe("Agent setup Cloud contracts", () => {
         agent: { ...base.agent, requiresComputerRebind: true },
       }),
     ).toThrow("A Computer that requires rebind is not a usable Cloud Computer");
+  });
+});
+
+/*
+ * The remaining agent-setup branches are all refusals: each guard exists so a snapshot cannot claim a
+ * stage its own facts do not support. Every case below feeds the schema a snapshot that is internally
+ * consistent except for the one property under test, and asserts the guard's message.
+ */
+describe("Agent setup snapshot rejection paths", () => {
+  const unboundBase = () =>
+    canonical({
+      agent: agent(null),
+      stage: "needs-computer",
+      computer: { kind: "not-bound" },
+      runtime: { kind: "unavailable", provider: "codex", reason: "computer-not-bound" },
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "computer-not-bound" }],
+      actions: [{ kind: "bind-computer" }],
+      observedAt,
+    });
+
+  const readyBase = () =>
+    canonical({
+      agent: agent(computerIdentity),
+      stage: "ready",
+      computer: boundComputer(),
+      runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+      messaging: { kind: "ready", provider: "slack", bindingId, credentialGeneration: 3 },
+      blockers: [],
+      actions: [
+        { kind: "reauthorize-messaging", provider: "slack", bindingId, credentialGeneration: 3 },
+        { kind: "unbind-messaging", provider: "slack", bindingId },
+      ],
+      observedAt,
+    });
+
+  it("refuses a not-bound Computer that contradicts the Agent binding", () => {
+    // The Agent still names a Computer while setup reports none.
+    expect(
+      AgentSetupSnapshotSchema.safeParse({
+        ...unboundBase(),
+        agent: agent(computerIdentity),
+        runtime: { kind: "unavailable", provider: "codex", reason: "computer-not-bound" },
+      }).error?.issues,
+    ).toContainEqual(expect.objectContaining({ message: "A not-bound setup Computer must match the Agent" }));
+    // The Agent still requires a rebind, so it must retain its Computer identity.
+    expect(
+      AgentSetupSnapshotSchema.safeParse({ ...unboundBase(), agent: agent(null, true) }).error?.issues,
+    ).toContainEqual(expect.objectContaining({ message: "A Computer that requires rebind must retain its identity" }));
+  });
+
+  it("refuses a requires-rebind Computer that the Agent does not mark, and a bound one that it does", () => {
+    const requiresRebind = {
+      agent: agent(computerIdentity, false),
+      stage: "needs-computer" as const,
+      computer: { kind: "requires-rebind" as const, ...computerIdentity },
+      runtime: {
+        kind: "unavailable" as const,
+        provider: "codex" as const,
+        reason: "computer-rebind-required" as const,
+      },
+      messaging: { kind: "not-configured" as const },
+      blockers: [{ code: "computer-rebind-required" as const }],
+      actions: [{ kind: "refresh" as const }],
+      observedAt,
+    };
+    expect(AgentSetupSnapshotSchema.safeParse(canonical(requiresRebind)).error?.issues).toContainEqual(
+      expect.objectContaining({ message: "A requires-rebind setup Computer must be marked on the Agent" }),
+    );
+    expect(
+      AgentSetupSnapshotSchema.safeParse(
+        canonical({
+          ...requiresRebind,
+          agent: agent(computerIdentity, true),
+          computer: boundComputer(),
+          runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+        }),
+      ).error?.issues,
+    ).toContainEqual(
+      expect.objectContaining({ message: "A Computer that requires rebind is not a usable bound Computer" }),
+    );
+  });
+
+  it("refuses a runtime readiness that contradicts the Computer's own state", () => {
+    // Runtime readiness must describe the Agent's exact Provider.
+    expect(
+      AgentSetupSnapshotSchema.safeParse({
+        ...readyBase(),
+        runtime: { kind: "observed", provider: "pi", status: "ready", observedAt },
+      }).error?.issues,
+    ).toContainEqual(
+      expect.objectContaining({ message: "Runtime readiness must describe the Agent's exact Provider" }),
+    );
+
+    // An offline bound Computer cannot report an observed runtime readiness.
+    const offlineBound = canonical({
+      agent: agent(computerIdentity),
+      stage: "needs-computer",
+      computer: boundComputer("offline"),
+      runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "computer-offline", computerId }],
+      actions: [{ kind: "refresh" }],
+      observedAt,
+    });
+    expect(AgentSetupSnapshotSchema.safeParse(offlineBound).error?.issues).toContainEqual(
+      expect.objectContaining({ message: "Runtime state must preserve why the exact Computer cannot be observed" }),
+    );
+
+    // An online bound Computer cannot report an `unavailable` runtime readiness.
+    const onlineUnavailable = canonical({
+      agent: agent(computerIdentity),
+      stage: "needs-runtime",
+      computer: boundComputer(),
+      runtime: { kind: "unavailable", provider: "codex", reason: "computer-offline" },
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "runtime-not-ready", provider: "codex", status: "unavailable" }],
+      actions: [{ kind: "refresh" }],
+      observedAt,
+    });
+    expect(AgentSetupSnapshotSchema.safeParse(onlineUnavailable).error?.issues).toContainEqual(
+      expect.objectContaining({
+        message: "An online bound Computer must expose an observed, waiting, or observation-failed runtime readiness",
+      }),
+    );
+  });
+
+  it("refuses a ready or needs-* stage that retains blockers its facts contradict", () => {
+    // A ready stage cannot retain blockers, and the guard stops there.
+    expect(
+      AgentSetupSnapshotSchema.safeParse({
+        ...readyBase(),
+        blockers: [{ code: "messaging-not-configured" }],
+      }).error?.issues,
+    ).toContainEqual(expect.objectContaining({ message: "A ready Agent setup cannot retain blockers" }));
+
+    const needsRuntimeWithoutBlocker = canonical({
+      agent: agent(computerIdentity),
+      stage: "needs-runtime",
+      computer: boundComputer(),
+      runtime: { kind: "waiting", provider: "codex" },
+      messaging: { kind: "not-configured" },
+      blockers: [],
+      actions: [{ kind: "refresh" }],
+      observedAt,
+    });
+    expect(AgentSetupSnapshotSchema.safeParse(needsRuntimeWithoutBlocker).error?.issues).toContainEqual(
+      expect.objectContaining({ message: "A needs-runtime setup must name its runtime blocker" }),
+    );
+
+    const needsMessagingWithoutBlocker = canonical({
+      agent: agent(computerIdentity),
+      stage: "needs-messaging",
+      computer: boundComputer(),
+      runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+      messaging: { kind: "not-configured" },
+      blockers: [],
+      actions: [{ kind: "start-messaging", provider: "feishu" }],
+      observedAt,
+    });
+    expect(AgentSetupSnapshotSchema.safeParse(needsMessagingWithoutBlocker).error?.issues).toContainEqual(
+      expect.objectContaining({ message: "A needs-messaging setup must name its Messaging blocker" }),
+    );
+
+    const needsComputerWithoutBlocker = canonical({
+      agent: agent(null),
+      stage: "needs-computer",
+      computer: { kind: "not-bound" },
+      runtime: { kind: "unavailable", provider: "codex", reason: "computer-not-bound" },
+      messaging: { kind: "not-configured" },
+      blockers: [],
+      actions: [{ kind: "bind-computer" }],
+      observedAt,
+    });
+    expect(AgentSetupSnapshotSchema.safeParse(needsComputerWithoutBlocker).error?.issues).toContainEqual(
+      expect.objectContaining({ message: "A needs-computer setup must name its Computer blocker" }),
+    );
+  });
+
+  it("refuses a cancel action that does not name the live Feishu attempt", () => {
+    const authorizing = canonical({
+      agent: agent(computerIdentity),
+      stage: "needs-messaging",
+      computer: boundComputer(),
+      runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+      messaging: {
+        kind: "authorizing",
+        provider: "feishu",
+        attemptId,
+        qrUrl: null,
+        expiresAt: "2026-09-01T10:10:00.000Z",
+      },
+      blockers: [{ code: "messaging-not-ready", provider: "feishu", state: "authorizing" }],
+      actions: [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId }],
+      observedAt,
+    });
+    expect(AgentSetupSnapshotSchema.safeParse(authorizing).success).toBe(true);
+    expect(
+      AgentSetupSnapshotSchema.safeParse({
+        ...authorizing,
+        actions: [
+          {
+            kind: "cancel-messaging-attempt",
+            provider: "feishu",
+            attemptId: "66666666-6666-4666-8666-666666666666",
+          },
+        ],
+      }).error?.issues,
+    ).toContainEqual(expect.objectContaining({ message: "Cancel must name the current Feishu setup attempt" }));
+  });
+
+  it("refuses duplicate permitted actions", () => {
+    expect(
+      AgentSetupSnapshotSchema.safeParse({
+        ...readyBase(),
+        actions: [
+          { kind: "unbind-messaging", provider: "slack", bindingId },
+          { kind: "unbind-messaging", provider: "slack", bindingId },
+        ],
+      }).error?.issues,
+    ).toContainEqual(expect.objectContaining({ message: "Permitted actions must be unique" }));
+  });
+
+  it("refuses an unbind-required blocker for the Provider that is already current", () => {
+    expect(
+      AgentSetupBlockerSchema.safeParse({
+        code: "messaging-unbind-required",
+        currentProvider: "feishu",
+        currentBindingId: bindingId,
+        requestedProvider: "feishu",
+      }).error?.issues,
+    ).toContainEqual(
+      expect.objectContaining({
+        message: "Unbind is required only when the requested Provider differs from the current Provider",
+      }),
+    );
+  });
+
+  it("refuses a Slack reauthorization that does not name the exact current Slack binding", () => {
+    expect(
+      AgentSetupSlackOAuthContextSchema.safeParse({
+        agentId,
+        intent: "reauthorize",
+        returnSurface: "agent-setup",
+        expectedMessaging: { kind: "bound", provider: "feishu", bindingId, credentialGeneration: 3 },
+      }).error?.issues,
+    ).toContainEqual(
+      expect.objectContaining({ message: "Slack reauthorization requires the exact current Slack binding" }),
+    );
+  });
+
+  it("refuses to build the IM CLI components for a setup whose Computer is not bound", () => {
+    // `setupCliReadiness` has no Collection to read: a not-bound Computer contributes no CLI rows.
+    expect(
+      projectAgentSetupComponents({
+        computer: { kind: "not-bound" },
+        runtime: { kind: "unavailable", provider: "codex", reason: "computer-not-bound" },
+        messaging: { kind: "not-configured" },
+        requiredImCliProviders: [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS],
+      }),
+    ).toContainEqual(
+      expect.objectContaining({ kind: "im-cli", provider: "feishu", status: "waiting", observedAt: null }),
+    );
+  });
+
+  it("refuses an unbind-required blocker that does not name the current binding", () => {
+    const blockedState = canonical({
+      agent: agent(computerIdentity),
+      stage: "needs-messaging",
+      computer: boundComputer(),
+      runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+      messaging: { kind: "ready", provider: "slack", bindingId, credentialGeneration: 3 },
+      blockers: [
+        {
+          code: "messaging-unbind-required",
+          currentProvider: "slack",
+          currentBindingId: bindingId,
+          requestedProvider: "feishu",
+        },
+      ],
+      actions: [{ kind: "unbind-messaging", provider: "slack", bindingId }],
+      observedAt,
+    });
+    // The canonical shape is refused for its stage, but the blocker guard must not fire.
+    const canonicalIssues = AgentSetupSnapshotSchema.safeParse(blockedState).error?.issues ?? [];
+    expect(
+      canonicalIssues.some((issue) => issue.message === "An unbind-required blocker must name the current binding"),
+    ).toBe(false);
+
+    const staleBlocker = {
+      ...blockedState,
+      blockers: [
+        {
+          code: "messaging-unbind-required" as const,
+          currentProvider: "slack" as const,
+          currentBindingId: "66666666-6666-4666-8666-666666666666",
+          requestedProvider: "feishu" as const,
+        },
+      ],
+    };
+    expect(AgentSetupSnapshotSchema.safeParse(staleBlocker).error?.issues).toContainEqual(
+      expect.objectContaining({ message: "An unbind-required blocker must name the current binding" }),
+    );
   });
 });

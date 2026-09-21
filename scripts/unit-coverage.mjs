@@ -40,14 +40,40 @@ export {
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Each Vitest project alongside the workspace whose sources it is the only suite able to execute. */
+/**
+ * Each Vitest project alongside the workspace whose sources it is the only suite able to execute.
+ *
+ * `root` mirrors that project's own `root` in `vitest.coverage.config.ts`, because a `coverage.include`
+ * glob is resolved against it -- see `projectCoverageInclude` below.
+ */
 const PROJECTS = [
-  { name: "cli", sources: "apps/cli/src" },
-  { name: "web", sources: "apps/web/src" },
-  { name: "shared", sources: "packages/shared/src" },
-  { name: "client", sources: "packages/client/src" },
-  { name: "server", sources: "packages/server/src" },
+  { name: "cli", root: "apps/cli", sources: "apps/cli/src" },
+  { name: "web", root: "apps/web", sources: "apps/web/src" },
+  { name: "shared", root: "packages/shared", sources: "packages/shared/src" },
+  { name: "client", root: "packages/client", sources: "packages/client/src" },
+  { name: "server", root: "packages/server", sources: "packages/server/src" },
 ];
+
+/**
+ * Translate a repository-relative coverage glob into the project-relative form Vitest expects.
+ *
+ * Vitest resolves `coverage.include` against the running project's `root`, not against the directory
+ * holding the config. Handing the `shared` project `packages/shared/src/**`, when its root is already
+ * `packages/shared`, therefore makes it look under `packages/shared/packages/shared/src/**` and measure
+ * nothing at all: the summary comes back as a lone `total` of `{ total: 0, pct: "Unknown" }`, every
+ * `summaryMetric` reads `undefined`, and `assertCoverageFloors` then reports all four metrics of all five
+ * workspaces as `-Infinity` below their floor in one go -- a wall of breaches whose actual cause is that
+ * no file was measured. This is what the Vitest 5 upgrade turned into a hard failure of `pnpm
+ * test:coverage`, and it is why the fix belongs here rather than in the floors.
+ *
+ * A pattern that does not start with the workspace prefix is passed through untouched, so an already
+ * project-relative `--scope` keeps working alongside the documented repository-relative form.
+ */
+export function projectCoverageInclude(project, scope) {
+  const pattern = scope ?? `${project.sources}/**/*.{ts,tsx}`;
+  const prefix = `${project.root}/`;
+  return pattern.startsWith(prefix) ? pattern.slice(prefix.length) : pattern;
+}
 
 const COVERAGE_ROOT = resolve(repositoryRoot, "coverage/unit");
 export const COVERAGE_FLOORS_PATH = resolve(repositoryRoot, "scripts/coverage-floors.json");
@@ -418,7 +444,7 @@ function runProject(project, scope) {
   mkdirSync(reportsDirectory, { recursive: true });
   const testResultsPath = resolve(reportsDirectory, "test-results.json");
 
-  const include = scope ?? `${project.sources}/**/*.{ts,tsx}`;
+  const include = projectCoverageInclude(project, scope);
   const startedAt = performance.now();
   const result = spawnSync(
     "pnpm",

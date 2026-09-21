@@ -4,10 +4,11 @@ WORKDIR /app
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches patches
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY apps/web/package.json apps/web/package.json
-# The image build copies manifests only, so lifecycle scripts are skipped: the root `prepare` installs
+# Only install inputs are copied here, so lifecycle scripts are skipped: the root `prepare` installs
 # local Git hooks from `scripts/`, which the image neither ships nor needs.
 RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts --filter @opentag/server... --filter @opentag/web...
 
@@ -27,6 +28,7 @@ WORKDIR /app
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches patches
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/server/package.json packages/server/package.json
 RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts --prod --filter @opentag/server...

@@ -4,12 +4,13 @@ WORKDIR /src
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches patches
 COPY apps/cli/package.json apps/cli/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/client/package.json packages/client/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY packages/shared/package.json packages/shared/package.json
-# Manifests only, so lifecycle scripts stay off: the root `prepare` installs local Git hooks from
+# Only install inputs are copied here, so lifecycle scripts stay off: the root `prepare` installs local Git hooks from
 # `scripts/`, which this image neither ships nor needs.
 RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts
 

@@ -38,6 +38,7 @@ export const RUNNER_CONTEXT_ALLOWLIST = Object.freeze([
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
+  "patches",
   "tsconfig.json",
   "LICENSE",
   "packages/shared/package.json",

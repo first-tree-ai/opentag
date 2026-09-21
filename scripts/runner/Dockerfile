@@ -9,6 +9,7 @@ WORKDIR /src
 RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json LICENSE ./
+COPY patches patches
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/client/package.json packages/client/package.json
 COPY packages/server/package.json packages/server/package.json

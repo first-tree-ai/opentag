@@ -10,6 +10,7 @@ import {
   headerMap,
   IMAGE,
   OTHER_SHA,
+  PACKAGE,
   publishDeps,
   SHA,
   VERSION,
@@ -44,6 +45,47 @@ test("publish reuses a verified existing tag without overwriting it", async () =
       sourceSha: SHA,
       image: record.image,
     });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("publish fails a tag claimed by a different commit with the manual recovery steps", async () => {
+  const gar = garRouter({ labelOverrides: { [RUNNER_LABELS.revision]: OTHER_SHA } });
+  const recorder = commandRecorder();
+  const { deps, root, outDir } = await publishDeps({
+    fetchImpl: gar.fetchImpl,
+    runCommand: recorder.runCommand,
+  });
+  try {
+    await assert.rejects(
+      publishRunnerRelease(deps),
+      (error) => {
+        assert.match(
+          String(error?.message),
+          /does not match this release/,
+          "the identity mismatch is reported as a claimed-version collision",
+        );
+        assert.match(
+          String(error?.message),
+          new RegExp(`delete or retag ${IMAGE}:${VERSION} in Artifact Registry`),
+          "the message names the tag removal recovery step",
+        );
+        assert.match(
+          String(error?.message),
+          new RegExp(`placeholder ${PACKAGE}@${VERSION} to npm`),
+          "the message names the npm sequence-advance recovery step",
+        );
+        assert.match(String(error?.message), /Never overwrite the existing tag/);
+        return true;
+      },
+      "a claimed tag never falls through to an overwrite",
+    );
+    assert.ok(
+      !recorder.calls.some((call) => call[0] === "docker"),
+      "no docker pull/push happens for a mismatched existing tag",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outDir, { recursive: true, force: true });

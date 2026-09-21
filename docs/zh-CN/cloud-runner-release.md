@@ -39,6 +39,13 @@ gh api repos/first-tree-ai/opentag/actions/oidc/customization/sub
 受保护 tag 工作流。在合入、启用流程前配置权限和变量；缺少发布配置会在 npm 发布前失败。
 参考 Google 的[部署流水线直接身份联邦说明](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)。
 
+### 失败发布的恢复
+
+若某次发布已占用版本 tag（Runner 镜像已 push）但在 npm 发布前失败，会留下一个孤儿镜像 tag。staging 版本号派生自
+npm 已发布序列，因此后续每个提交都会重算出同一个版本号，流程在 tag 身份校验处失败而非覆盖它。恢复方式：在
+Artifact Registry 中删除或改 tag 掉该镜像 tag（重跑会从干净源码重建），或发布一个同号的 npm 占位版本让下一次发布
+推进序列。绝不用不同构建覆盖已有 tag。
+
 CapRover App Token 继续负责部署 Server 镜像，但不能修改环境变量。Runner 启用步骤因此通过工作负载身份读取已有
 管理员凭证，仅在内存中使用，只修改两个 Runner 目标配置，不往 GitHub Secrets 增加管理员密码。
 staging 使用已有的 `CAPROVER_STAGING_SERVER`、`CAPROVER_STAGING_APP`、`CAPROVER_STAGING_APP_TOKEN` secrets。

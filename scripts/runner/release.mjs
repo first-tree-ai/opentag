@@ -119,7 +119,20 @@ export async function publishRunnerRelease({
   const existing = await lookupRunnerTag({ repository, tag: version, accessToken, fetchImpl });
   let digest;
   if (existing.present) {
-    await verifyRunnerIdentity({ repository, root: existing, expected, accessToken, fetchImpl });
+    try {
+      await verifyRunnerIdentity({ repository, root: existing, expected, accessToken, fetchImpl });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `the existing Runner tag ${image}:${version} does not match this release (${detail}). ` +
+          "A previous publish run most likely claimed this version and failed before npm publication, " +
+          "so later source commits keep recomputing the same release version and this workflow cannot " +
+          `proceed. Manual recovery (choose one): delete or retag ${image}:${version} in Artifact ` +
+          "Registry, then re-run this workflow to rebuild it from this clean source; or publish a " +
+          `placeholder ${CHANNEL_CONFIG[channel].packageName}@${version} to npm so the next release ` +
+          "advances the sequence. Never overwrite the existing tag with a different build.",
+      );
+    }
     const pinned = `${image}@${existing.digest}`;
     await dockerTransfer({ verb: "pull", reference: pinned, runCommand });
     await smoke({ image: pinned, prefix: SMOKE_PREFIX });

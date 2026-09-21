@@ -16,7 +16,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -497,6 +497,61 @@ describe("createWorkspaceArchive validation", () => {
   });
 });
 
+describe("workspace archive limit validation", () => {
+  it("rejects a non-positive or non-integer injected limit", async () => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "a.txt"), "a");
+    for (const limits of [
+      { maxArchiveBytes: 0 },
+      { maxArchiveBytes: 1.5 },
+      { maxBytes: -1 },
+      { maxBytes: Number.NaN },
+      { maxEntries: 0 },
+      { maxEntries: 2.5 },
+    ]) {
+      await expectArchiveError(
+        () => createWorkspaceArchive(workspace, join(root, "limits.tar.gz"), limits),
+        "invalid-limits",
+      );
+    }
+    // A valid injection still archives normally.
+    const info = await createWorkspaceArchive(workspace, join(root, "ok.tar.gz"), { maxEntries: 8 });
+    expect(info.bytes).toBeGreaterThan(0);
+  });
+
+  it("rejects a workspace root that is missing and an archive path that cannot be canonicalized", async () => {
+    const root = await makeRoot();
+    // A workspace root that does not exist reports an invalid workspace rather than crashing.
+    await expectArchiveError(
+      () => createWorkspaceArchive(join(root, "missing"), join(root, "missing.tar.gz")),
+      "invalid-workspace",
+    );
+    // An archive destination whose deepest existing ancestor is a FILE cannot be canonicalized.
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "a.txt"), "a");
+    const blocker = join(root, "blocker");
+    await writeFile(blocker, "not a directory");
+    await expectArchiveError(() => createWorkspaceArchive(workspace, join(blocker, "nested", "a.tar.gz")), "io-failed");
+  });
+
+  it("fails closed when the archive publish step cannot complete", async () => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "a.txt"), "a");
+    // A directory already sitting at the final archive path makes the real rename fail after the
+    // temp archive was fully written and fsynced.
+    const archivePath = join(root, "blocked.tar.gz");
+    await mkdir(archivePath);
+    await expectArchiveError(() => createWorkspaceArchive(workspace, archivePath), "io-failed");
+    // The temp archive never leaks next to the blocked destination.
+    expect((await readdir(root)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+});
+
 describe("restoreWorkspaceArchive integrity", () => {
   it("rejects corrupted, truncated, and hash-mismatched archives without touching the destination", async () => {
     const root = await makeRoot();
@@ -638,6 +693,157 @@ describe("restoreWorkspaceArchive integrity", () => {
     expect(await stagingLeftovers(root)).toEqual([]);
   });
 
+  it("restores over an existing empty destination directory without failing", async () => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await populateWorkspace(workspace);
+    const archivePath = join(root, "workspace.tar.gz");
+    const info = await createWorkspaceArchive(workspace, archivePath);
+    // An EMPTY destination that already exists takes the hadDestination path: the validated
+    // workspace is swapped in without merging into the old tree.
+    const destination = join(root, "existing");
+    await mkdir(destination);
+    await restoreWorkspaceArchive(archivePath, destination, info);
+    expect(await readFile(join(destination, "README.md"), "utf8")).toBe("# workspace\n");
+    expect(await readFile(join(destination, ".env"), "utf8")).toBe("USER_DOTFILE_SECRET=kept\n");
+    expect(await stagingLeftovers(root)).toEqual([]);
+  });
+
+  it("rejects a symlinked or non-regular archive path before reading it", async () => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "a.txt"), "a");
+    const archivePath = join(root, "workspace.tar.gz");
+    const info = await createWorkspaceArchive(workspace, archivePath);
+
+    // A symlink pointing at the real archive is refused: only a regular file is accepted.
+    const linkPath = join(root, "link.tar.gz");
+    await symlink(archivePath, linkPath);
+    await expectArchiveError(() => restoreWorkspaceArchive(linkPath, join(root, "dest-link"), info), "invalid-archive");
+    await expect(lstat(join(root, "dest-link"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    // A directory at the archive path is not a regular file either.
+    const directoryPath = join(root, "directory.tar.gz");
+    await mkdir(directoryPath);
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(directoryPath, join(root, "dest-dir"), info),
+      "invalid-archive",
+    );
+  });
+
+  it("reports a missing archive file through the io-failed fallback", async () => {
+    const root = await makeRoot();
+    const missing = join(root, "absent.tar.gz");
+    await expectArchiveError(
+      () =>
+        restoreWorkspaceArchive(missing, join(root, "dest"), {
+          bytes: 1,
+          md5: "0000000000000000000000==",
+          sha256: "0".repeat(64),
+        }),
+      "io-failed",
+    );
+  });
+
+  it("reports a non-archive failure through the io-failed fallback", async () => {
+    const root = await makeRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "a.txt"), "a");
+    const archivePath = join(root, "workspace.tar.gz");
+    const info = await createWorkspaceArchive(workspace, archivePath);
+    const blocker = join(root, "dest-parent");
+    // A plain file where the destination's parent must be a directory makes staging fail with a
+    // real ENOTDIR that is not a WorkspaceArchiveError.
+    await writeFile(blocker, "not a directory");
+    await expectArchiveError(() => restoreWorkspaceArchive(archivePath, join(blocker, "child"), info), "io-failed");
+    expect(await readFile(blocker, "utf8")).toBe("not a directory");
+  });
+
+  it("creates implicit parents for nested members and applies declared directory modes last", async () => {
+    const root = await makeRoot();
+    // Nested members without explicit directory entries force the implicit-parent path, and a
+    // restrictive declared mode must be applied AFTER the children exist.
+    const archive = makeTarGz([
+      { content: "deep", name: "a/b/c/deep.txt" },
+      { mode: 0o500, name: "a/b/", type: "directory" },
+      { content: "top", name: "top.txt" },
+    ]);
+    const archivePath = await writeArchive(root, archive);
+    const destination = join(root, "restored");
+    await restoreWorkspaceArchive(archivePath, destination, infoOf(archive));
+    expect(await readFile(join(destination, "a", "b", "c", "deep.txt"), "utf8")).toBe("deep");
+    expect(await readFile(join(destination, "top.txt"), "utf8")).toBe("top");
+    // The declared 0500 mode was applied in finalize, after the child was written.
+    expect((await stat(join(destination, "a", "b"))).mode & 0o777).toBe(0o500);
+    await chmod(join(destination, "a", "b"), 0o700);
+    expect(await stagingLeftovers(root)).toEqual([]);
+  });
+
+  it("rejects a member nested beneath a non-directory and one colliding with a directory", async () => {
+    const root = await makeRoot();
+    // A file declared first, then a member beneath it, is a structural escape of the namespace.
+    const nestedUnderFile = makeTarGz([
+      { content: "file", name: "blocked" },
+      { content: "child", name: "blocked/child.txt" },
+    ]);
+    const nestedPath = await writeArchive(root, nestedUnderFile);
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(nestedPath, join(root, "dest-nested"), infoOf(nestedUnderFile)),
+      "unsafe-member",
+    );
+    await expect(lstat(join(root, "dest-nested"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await stagingLeftovers(root)).toEqual([]);
+
+    // An implicit directory created for an earlier member cannot later be redeclared as a FILE.
+    const collision = makeTarGz([
+      { content: "child", name: "implicit/child.txt" },
+      { content: "now a file", name: "implicit" },
+    ]);
+    const collisionPath = await writeArchive(root, collision);
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(collisionPath, join(root, "dest-collision"), infoOf(collision)),
+      "unsafe-member",
+    );
+    expect(await stagingLeftovers(root)).toEqual([]);
+  });
+
+  it("refuses a duplicated member and a NUL byte in a member or link name", async () => {
+    const root = await makeRoot();
+    const duplicated = makeTarGz([
+      { content: "one", name: "dup.txt" },
+      { content: "two", name: "dup.txt" },
+    ]);
+    const duplicatePath = await writeArchive(root, duplicated);
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(duplicatePath, join(root, "dest-dup"), infoOf(duplicated)),
+      "duplicate-member",
+    );
+
+    // A NUL byte inside a member name is refused: the name normalizer rejects it explicitly. The
+    // header is rewritten byte-for-byte with a literal NUL because ustar names are NUL-padded.
+    const withNul = makeTarGz([{ content: "x", name: "plain.txt" }]);
+    const nulVariant = Buffer.from(withNul);
+    const gunzipped = gunzipSync(nulVariant);
+    // The first 100 bytes of the first ustar header are the member name.
+    gunzipped.writeUInt8(0x00, 0);
+    gunzipped.write("a", 0, "utf8");
+    gunzipped.writeUInt8(0x00, 1);
+    gunzipped.write("b.txt", 2, "utf8");
+    const withNulAgain = gzipSync(gunzipped);
+    const nulPath = await writeArchive(root, withNulAgain);
+    // A NUL-bearing member name is refused by the archive reader itself (tar-stream sees a
+    // malformed header), which is still a fail-closed refusal before any destination work.
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(nulPath, join(root, "dest-nul"), infoOf(withNulAgain)),
+      "invalid-archive",
+    );
+    await expect(lstat(join(root, "dest-nul"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await stagingLeftovers(root)).toEqual([]);
+  });
+
   it("strips setuid/setgid/sticky bits and never restores unsafe ownership bits", async () => {
     const root = await makeRoot();
     const archive = makeTarGz([
@@ -675,10 +881,10 @@ describe("restoreWorkspaceArchive member validation", () => {
       [{ name: "link", type: "symlink", linkname: "../../outside/secret" }],
       "unsafe-member",
     ],
-    ["oversized UTF-8 path", [{ name: `${"界".repeat(80)}/`.repeat(5) + "file", content: "x" }], "unsafe-member"],
+    ["oversized UTF-8 path", [{ name: `${`${"界".repeat(80)}/`.repeat(5)}file`, content: "x" }], "unsafe-member"],
     [
       "oversized UTF-8 link",
-      [{ name: "link", type: "symlink", linkname: `${"界".repeat(80)}/`.repeat(5) + "file" }],
+      [{ name: "link", type: "symlink", linkname: `${`${"界".repeat(80)}/`.repeat(5)}file` }],
       "unsafe-member",
     ],
     ["absolute symlink", [{ name: "link", type: "symlink", linkname: "/etc/passwd" }], "unsafe-member"],

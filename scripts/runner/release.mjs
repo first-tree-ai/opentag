@@ -30,6 +30,7 @@ import { buildRunnerImage, resolveBuildVersion } from "./build-image.mjs";
 import {
   lookupRunnerTag,
   parseGarRepository,
+  RunnerIdentityMismatchError,
   readGcloudAccessToken,
   runLocalCommand,
   verifyRunnerIdentity,
@@ -119,7 +120,22 @@ export async function publishRunnerRelease({
   const existing = await lookupRunnerTag({ repository, tag: version, accessToken, fetchImpl });
   let digest;
   if (existing.present) {
-    await verifyRunnerIdentity({ repository, root: existing, expected, accessToken, fetchImpl });
+    try {
+      await verifyRunnerIdentity({ repository, root: existing, expected, accessToken, fetchImpl });
+    } catch (error) {
+      // Inconclusive registry reads (401/403/429/5xx, network, digest or JSON failures) stay
+      // unchanged: they must never invite a destructive recovery of what may be a valid tag.
+      if (!(error instanceof RunnerIdentityMismatchError)) throw error;
+      throw new Error(
+        `the existing Runner tag ${image}:${version} was claimed by a different release (${error.message}). ` +
+          "This version number is claimed by that earlier attempt, so this workflow cannot proceed " +
+          "until the tag is freed. Manual recovery: add a quarantine tag to the claimed image and " +
+          `then delete the exact ${image}:${version} tag in Artifact Registry, then re-run this ` +
+          "workflow to rebuild the version from this clean source. Never overwrite the existing tag " +
+          "with a different build.",
+        { cause: error },
+      );
+    }
     const pinned = `${image}@${existing.digest}`;
     await dockerTransfer({ verb: "pull", reference: pinned, runCommand });
     await smoke({ image: pinned, prefix: SMOKE_PREFIX });

@@ -59,6 +59,22 @@ describe("parseProviderCliTurnRunnerArgv", () => {
     });
   });
 
+  it("rejects a fence whose plan path is missing", () => {
+    expect(() =>
+      parseProviderCliTurnRunnerArgv([
+        "--plan",
+        undefined,
+        "--provider",
+        "feishu",
+        "--run-id",
+        "r-1",
+        "--",
+      ] as unknown as string[]),
+    ).toThrow(
+      expect.objectContaining({ code: "plan_invalid", message: "Provider CLI Turn runner fence is incomplete" }),
+    );
+  });
+
   it("rejects unknown flags, relative plan paths, and provider mismatches", () => {
     expect(() => parseProviderCliTurnRunnerArgv(["--plan", "/tmp/plan.json", "--"])).toThrow(ProviderCliTurnPlanError);
     expect(() =>

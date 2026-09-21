@@ -356,6 +356,127 @@ describe("CloudJournal", () => {
     await expect(reopened.read(delivery.deliveryId)).rejects.toMatchObject({ code: "store_failed" });
   });
 
+  it("refuses a journal key that changed entry kind and enforces both idempotent transitions", async () => {
+    const journal = await CloudJournal.open(directory);
+    const message = sessionFixture();
+    const scope = scopeFor(message.targetSessionId);
+    await journal.recordSessionReceived({
+      message,
+      sessionKind: "internal",
+      scope,
+      requestId: message.requestId,
+      turnId: "turn-s",
+    });
+    // The delivery API must refuse a key that names a Session entry, and vice versa.
+    const delivery = cloudDeliveryFixture({ deliveryId: message.messageId });
+    await expect(
+      journal.recordReceived({
+        delivery,
+        scope: scopeFor(delivery.sessionId),
+        deliveryId: delivery.deliveryId,
+        requestId: delivery.requestId,
+        turnId: "turn-d",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+
+    // `markSessionStarted` is idempotent once started and refuses a reported entry.
+    const startedFirst = await journal.markSessionStarted(message.messageId, scope);
+    expect(await journal.markSessionStarted(message.messageId, scope)).toMatchObject({
+      phase: startedFirst.phase,
+      turnId: startedFirst.turnId,
+    });
+    await journal.recordSessionSettled(message.messageId, scope, "cancelled");
+    await expect(journal.markSessionStarted(message.messageId, scope)).rejects.toMatchObject({
+      code: "invalid_transition",
+    });
+  });
+
+  it("keeps a reported Session settlement idempotent and refuses a different one", async () => {
+    const journal = await CloudJournal.open(directory);
+    const message = sessionFixture();
+    const scope = scopeFor(message.targetSessionId);
+    await journal.recordSessionReceived({
+      message,
+      sessionKind: "internal",
+      scope,
+      requestId: message.requestId,
+      turnId: "turn-s",
+    });
+    await journal.markSessionStarted(message.messageId, scope);
+    const reported = await journal.recordSessionSettled(message.messageId, scope, "failed");
+    // Repeating the SAME settlement is idempotent; a different one is a conflict.
+    expect(await journal.recordSessionSettled(message.messageId, scope, "failed")).toMatchObject({
+      settlement: { outcome: "failed" },
+      turnId: reported.turnId,
+    });
+    await expect(journal.recordSessionSettled(message.messageId, scope, "cancelled")).rejects.toMatchObject({
+      code: "conflict",
+    });
+    // A settlement ack for an unknown or never-started entry is refused.
+    await expect(
+      journal.clearSessionAcknowledged(randomUUID(), scope, {
+        status: "recorded",
+        turnId: "turn-s",
+      }),
+    ).rejects.toMatchObject({ code: "unknown_entry" });
+  });
+
+  it("refuses to replace or re-correlate a Session entry that already started", async () => {
+    const journal = await CloudJournal.open(directory);
+    const message = sessionFixture();
+    const scope = scopeFor(message.targetSessionId);
+    await journal.recordSessionReceived({
+      message,
+      sessionKind: "internal",
+      scope,
+      requestId: message.requestId,
+      turnId: "turn-s",
+    });
+    await journal.markSessionStarted(message.messageId, scope);
+    await expect(
+      journal.replaceSessionReceived({
+        message,
+        sessionKind: "internal",
+        scope,
+        requestId: randomUUID(),
+        turnId: "turn-new",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_transition" });
+    await expect(journal.updateSessionRequestId(message.messageId, scope, randomUUID())).rejects.toMatchObject({
+      code: "invalid_transition",
+    });
+    // Re-correlating to the SAME request id is a no-op that keeps the entry.
+    expect(await journal.updateSessionRequestId(message.messageId, scope, message.requestId)).toMatchObject({
+      phase: "started",
+    });
+    // Retiring a started entry as rejected is refused.
+    await expect(journal.clearSessionRejected(message.messageId, scope)).rejects.toMatchObject({
+      code: "invalid_transition",
+    });
+  });
+
+  it("refuses the shared-surface reads and unsafe journal paths", async () => {
+    const journal = await CloudJournal.open(directory);
+    const delivery = cloudDeliveryFixture();
+    const scope = scopeFor(delivery.sessionId);
+    // A missing entry and a wrong-kind entry both fail closed on the scoped delivery read.
+    await expect(journal.markStarted(randomUUID(), scope)).rejects.toMatchObject({ code: "unknown_entry" });
+    const message = sessionFixture({ messageId: delivery.deliveryId });
+    await journal.recordSessionReceived({
+      message,
+      sessionKind: "internal",
+      scope,
+      requestId: message.requestId,
+      turnId: "turn-s",
+    });
+    await expect(journal.markStarted(delivery.deliveryId, scope)).rejects.toMatchObject({ code: "unknown_entry" });
+    await expect(journal.markSessionStarted(randomUUID(), scope)).rejects.toMatchObject({ code: "unknown_entry" });
+    // An unsafe entry name that could escape the journal directory is refused on read.
+    await writeFile(join(directory, "..escape.json"), "{}\n");
+    await expect(journal.read("..escape")).rejects.toMatchObject({ code: "store_failed" });
+    await expect(journal.read("../escape")).rejects.toMatchObject({ code: "store_failed" });
+  });
+
   it("fails visibly when a reopened entry has an unreadable scope", async () => {
     const { delivery } = await received();
     await writeFile(

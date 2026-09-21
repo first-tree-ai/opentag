@@ -609,6 +609,169 @@ describe("ProviderCliManager ensure", () => {
   });
 });
 
+describe("ProviderCliManager selection-invalid and layout paths", () => {
+  it("reports selection_invalid when the persisted selection record is unreadable", async () => {
+    const accountHome = await makeTempDir("opentag-manager-");
+    const layout = resolveProviderCliAccountLayout(accountHome);
+    await mkdir(layout.state, { recursive: true });
+    // A corrupt selection file is a real read failure the inspect path must survive.
+    await writeFile(join(layout.state, "feishu.json"), "{not json at all");
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: "" } });
+    const inspection = await manager.inspect("feishu");
+    expect(inspection.state).toBe("unavailable");
+    expect(inspection.diagnostic?.code).toBe("selection_invalid");
+    expect(inspection.launcher.status).toBe("missing");
+  });
+
+  it("exposes the account layout resolved from the account home", async () => {
+    const accountHome = await makeTempDir("opentag-manager-");
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher });
+    expect(manager.layout.root).toBe(join(manager.layout.root, ""));
+    expect(manager.layout.bin).toBe(join(manager.layout.root, "bin"));
+    expect(manager.layout.root).toContain("provider-cli");
+    expect(manager.layout.root).toContain(canon(accountHome).split("/").at(-1) as string);
+  });
+
+  it("fails ensure with selection_invalid when the persisted selection record is unreadable", async () => {
+    const accountHome = await makeTempDir("opentag-manager-");
+    const layout = resolveProviderCliAccountLayout(accountHome);
+    await mkdir(layout.state, { recursive: true });
+    await writeFile(join(layout.state, "feishu.json"), "{not json at all");
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: "" } });
+    const result = await manager.ensure("feishu", {});
+    expect(result.ok).toBe(false);
+    expect(result.diagnostic?.code).toBe("selection_invalid");
+    expect(result.phases.some((phase) => phase.phase === "detect" && phase.status === "failed")).toBe(true);
+  });
+
+  it("reports global_bin_unavailable when the account bin directory cannot be created", async () => {
+    const accountHome = await makeTempDir("opentag-manager-");
+    const external = join(accountHome, "external");
+    await writeFakeCli(external, "feishu", { version: "1.0.92" });
+    // A regular FILE where the account bin directory must be makes the real reconcile fail with
+    // ENOTDIR, which the ensure path classifies as an unavailable global bin.
+    const layout = resolveProviderCliAccountLayout(accountHome);
+    await mkdir(layout.root, { recursive: true });
+    await writeFile(layout.bin, "not a directory");
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: external } });
+    const result = await manager.ensure("feishu", {});
+    expect(result.ok).toBe(false);
+    expect(["global_bin_unavailable", "install_incomplete"]).toContain(result.diagnostic?.code);
+  });
+
+  it("reports the shadowed-global-command warning without failing readiness", async () => {
+    const { accountHome } = await makeManager({});
+    const external = join(accountHome, "external");
+    const shadow = join(accountHome, "shadow");
+    // A real unmanaged `lark-cli` earlier in PATH shadows the account shim, so the global command
+    // resolves to a foreign binary: a warning, never a readiness failure.
+    await writeFakeCli(external, "feishu", { version: "1.0.92" });
+    await writeFakeCli(shadow, "feishu", { version: "1.0.91" });
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: external } });
+    await manager.ensure("feishu", {});
+    const shadowed = new ProviderCliManager({
+      accountHome,
+      fetcher: loopbackFetcher,
+      env: { PATH: [shadow, external].join(delimiter) },
+    });
+    const inspection = await shadowed.inspect("feishu");
+    expect(inspection.state).toBe("ready");
+    expect(inspection.readiness).toBe("ready");
+    expect(inspection.globalCommand.active).toBe(false);
+    expect(inspection.warnings.map((item) => item.code)).toContain("global_command_shadowed");
+  });
+
+  it("reports an unverified external candidate warning when trust cannot be catalog-verified", async () => {
+    const { accountHome } = await makeManager({});
+    const external = join(accountHome, "external");
+    await writeFakeCli(external, "feishu", { version: "1.0.92" });
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: external } });
+    await manager.ensure("feishu", {});
+    const inspection = await manager.inspect("feishu");
+    expect(inspection.selection?.trust).toBe("compatible-unverified");
+    expect(inspection.warnings.map((item) => item.code)).toContain("external_candidate_unverified");
+  });
+
+  it("fails a probe-through-launcher failure as probe_failed", async () => {
+    const { accountHome } = await makeManager({});
+    const external = join(accountHome, "external");
+    await writeFakeCli(external, "feishu", { version: "1.0.92" });
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: external } });
+    await manager.ensure("feishu", {});
+    // Replace the launcher with one that fails the real probe: the selection stays intact and the
+    // inspection reports the exact probe failure instead of a launcher error.
+    const layout = resolveProviderCliAccountLayout(accountHome);
+    const launcher = join(layout.bin, "lark-cli");
+    await writeFile(launcher, `#!/bin/sh\nexit 7\n`, { mode: 0o755 });
+    const inspection = await manager.inspect("feishu");
+    expect(inspection.state).toBe("unavailable");
+    expect(["launcher_invalid", "probe_failed"]).toContain(inspection.diagnostic?.code);
+  });
+
+  it("dry-run reports the managed-noop case and the incompatible managed incumbent", async () => {
+    const { server, catalog } = await makeManagedCatalog("feishu", "1.0.92");
+    try {
+      const { accountHome } = await makeManager({});
+      const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: "" }, catalog });
+      await manager.ensure("feishu", {});
+      // A dry-run over an installed managed selection is a noop with the review phase recorded.
+      const noop = await manager.ensure("feishu", { dryRun: true });
+      expect(noop.action).toBe("noop");
+      expect(noop.ok).toBe(true);
+      expect(noop.phases.some((phase) => phase.phase === "select" && phase.detail?.includes("dry-run"))).toBe(true);
+
+      // A narrower catalog blocks the dry-run with version_incompatible.
+      const base = catalog[0] as ProviderCliCatalogEntry;
+      const narrowed = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: "" },
+        catalog: [{ ...base, compatibility: ">=1.1.0 <2.0.0" }],
+      });
+      const blocked = await narrowed.ensure("feishu", { dryRun: true });
+      expect(blocked.ok).toBe(false);
+      expect(blocked.diagnostic?.code).toBe("version_incompatible");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("dry-run reports unsupported_platform when the catalog has no artifact for this platform", async () => {
+    const { accountHome } = await makeManager({});
+    // `makeManagedCatalog` starts a real loopback HTTP server, so its handle is closed in `finally`
+    // even though only the catalog entry is read here -- otherwise the listener outlives the test and
+    // accumulates across in-process runs.
+    const { server, catalog } = await makeManagedCatalog("feishu", "1.0.92");
+    try {
+      const base = catalog[0] as ProviderCliCatalogEntry;
+      // A catalog whose only artifact targets the OTHER supported platform is unsupported here for
+      // real: `findCatalogArtifact` matches on this process's platform.
+      const otherPlatform = process.platform === "darwin" ? "linux" : "darwin";
+      const foreign = {
+        ...base,
+        artifacts: [
+          {
+            ...(base.artifacts[0] as (typeof base.artifacts)[number]),
+            platform: otherPlatform,
+            arch: "x64",
+          },
+        ],
+      } satisfies ProviderCliCatalogEntry;
+      const manager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: "" },
+        catalog: [foreign],
+      });
+      const result = await manager.ensure("feishu", { dryRun: true });
+      expect(result.ok).toBe(false);
+      expect(result.diagnostic?.code).toBe("unsupported_platform");
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe("ProviderCliManager drift and repair", () => {
   it("reports artifact_drifted when the selected external executable changes", async () => {
     const { accountHome } = await makeManager({});

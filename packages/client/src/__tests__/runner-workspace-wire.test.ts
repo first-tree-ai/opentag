@@ -1204,6 +1204,58 @@ it("requires the welcomed credential on a control first bind even with no local 
   }
 });
 
+it("fails closed for an unmarked new assignment when stale local state exists", { timeout: 20_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-unmarked-"));
+  let httpToken = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController();
+  const state = { destroyed: 0, launched: 0 };
+  const { workspace, running } = await runRebindScenario({ root, peer, stop, state });
+  expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+  // The workspace is sealed, then the trusted marker is removed: the local bytes still exist but
+  // nothing proves they belong to a settled assignment, so the new one must be refused.
+  const requestId = randomUUID();
+  peer.send({ type: "workspace:seal", requestId });
+  expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+  await writeFile(join(workspace, "unsaved.txt"), "bytes with no marker");
+  stop.abort();
+  await running;
+  // Restart on the same state root with the marker gone but the workspace still populated.
+  await rm(join(root, "private", "assignment.json"), { force: true });
+  const secondStop = new AbortController();
+  const secondState = { destroyed: 0, launched: 0 };
+  const second = await runRebindScenario({
+    root,
+    peer,
+    stop: secondStop,
+    state: secondState,
+    sleep: async () => undefined,
+  });
+  try {
+    peer.advance();
+    await vi.waitFor(
+      () => {
+        expect(second.stderr.join("")).toContain("refusing a new assignment: unmarked local workspace state exists");
+      },
+      { timeout: 5_000, interval: 25 },
+    );
+    expect(peer.count("runner:ready")).toBe(0);
+    expect(await readFile(join(root, "workspace", "unsaved.txt"), "utf8")).toBe("bytes with no marker");
+  } finally {
+    secondStop.abort();
+    await second.running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("drains an in-flight rebind cleanup before the next connection can start", { timeout: 20_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "opentag-e7-drain-"));
   let httpToken = "fixture-a";

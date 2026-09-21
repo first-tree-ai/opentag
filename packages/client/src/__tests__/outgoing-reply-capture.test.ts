@@ -1,14 +1,17 @@
-import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.setConfig({ testTimeout: 30_000 });
 
-import { executeProviderCliTurnPlan } from "../index.js";
+import { deriveProviderCliRunKey, executeProviderCliTurnPlan } from "../index.js";
 import {
+  captureFeishuOutgoingReply,
   classifyLarkOutgoingMutation,
+  parseLarkCliSuccessEnvelope,
   postToPlainText,
   spawnCapturedProcess,
+  withOutgoingReplyInflight,
 } from "../runtime/provider-cli/outgoing-reply-capture.js";
 import { cleanupOutgoingReplyRun, collectOutgoingReplyReceipts } from "../runtime/provider-cli/outgoing-reply-store.js";
 import {
@@ -74,6 +77,78 @@ describe("classifyLarkOutgoingMutation", () => {
     expect(classifyLarkOutgoingMutation(["im", "+messages-mget"])).toBeUndefined();
     expect(classifyLarkOutgoingMutation(["im", "send", "hello"])).toBeUndefined();
     expect(classifyLarkOutgoingMutation(["api", "POST", "/open-apis/im/v1/messages/mget"])).toBeUndefined();
+  });
+
+  it("normalizes absolute, relative, and trailing-slash raw API paths", () => {
+    expect(classifyLarkOutgoingMutation(["api", "POST", "https://open.feishu.cn/open-apis/im/v1/messages"])).toBe(
+      "send",
+    );
+    expect(classifyLarkOutgoingMutation(["api", "POST", "im/v1/messages"])).toBe("send");
+    expect(classifyLarkOutgoingMutation(["api", "POST", "/open-apis/im/v1/messages/"])).toBe("send");
+    expect(
+      classifyLarkOutgoingMutation(["api", "POST", "https://open.feishu.cn/open-apis/im/v1/messages/om_1/reply"]),
+    ).toBe("reply");
+  });
+});
+
+describe("parseLarkCliSuccessEnvelope", () => {
+  it("rejects non-success envelopes and recovers the last JSON object from noisy stdout", () => {
+    expect(parseLarkCliSuccessEnvelope(Buffer.from("not-json\n"))).toBeUndefined();
+    expect(parseLarkCliSuccessEnvelope(Buffer.from(JSON.stringify({ ok: false, identity: "bot" })))).toBeUndefined();
+    expect(
+      parseLarkCliSuccessEnvelope(
+        'update available\n{"ok":false,"identity":"bot"}\n{"ok":true,"identity":"bot","data":{"message_id":"om_log"}}\n',
+      ),
+    ).toEqual({ ok: true, identity: "bot", data: { message_id: "om_log" } });
+  });
+});
+
+describe("withOutgoingReplyInflight", () => {
+  it("runs the turn unchanged when capture is disabled or the inflight marker cannot start", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
+    const disabled = vi.fn(async () => "ran-disabled");
+    await expect(
+      withOutgoingReplyInflight({
+        plansRoot: layout.plans,
+        planPath: prepared.planPath,
+        runId: "run-1",
+        enabled: false,
+        run: disabled,
+      }),
+    ).resolves.toBe("ran-disabled");
+    expect(disabled).toHaveBeenCalledTimes(1);
+
+    // A non-directory inflight path fails the marker write; the turn still runs, but the
+    // run is permanently marked unavailable instead of silently complete-zero.
+    const runDir = join(prepared.sessionDir, "runs", deriveProviderCliRunKey("run-1"));
+    await mkdir(runDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(runDir, "inflight"), "not a directory\n");
+    const enabled = vi.fn(async () => "ran-enabled");
+    await expect(
+      withOutgoingReplyInflight({
+        plansRoot: layout.plans,
+        planPath: prepared.planPath,
+        runId: "run-1",
+        enabled: true,
+        run: enabled,
+      }),
+    ).resolves.toBe("ran-enabled");
+    expect(enabled).toHaveBeenCalledTimes(1);
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: prepared.sessionDir,
+      runId: "run-1",
+      waitMs: 0,
+    });
+    expect(collected).toEqual({ status: "unavailable", receipts: [] });
   });
 });
 
@@ -209,18 +284,19 @@ describe("Provider CLI outgoing reply capture", () => {
       sessionId: "s-1",
       runId: "run-1",
     });
-    const code = await executeProviderCliTurnPlan({
-      planPath: prepared.planPath,
-      provider: "feishu",
-      runId: "run-1",
-      argv: ["im", "+messages-send", "--text", "x"],
-      env: {
-        ...process.env,
-        OPENTAG_TEST_TARGET_MODE: "lark-cli",
-        OPENTAG_TEST_LARK_ENVELOPE: "not-json",
-      },
-      plansRoot: layout.plans,
-    });
+    let code = 1;
+    // Empty stdout, non-JSON stdout, and a success envelope whose payload carries no message
+    // identity all mean the same thing: no accepted send can be reported.
+    for (const envelope of ["", "not-json", JSON.stringify({ ok: true, identity: "bot", data: {} })]) {
+      code = await executeProviderCliTurnPlan({
+        planPath: prepared.planPath,
+        provider: "feishu",
+        runId: "run-1",
+        argv: ["im", "+messages-send", "--text", "x"],
+        env: { ...process.env, OPENTAG_TEST_TARGET_MODE: "lark-cli", OPENTAG_TEST_LARK_ENVELOPE: envelope },
+        plansRoot: layout.plans,
+      });
+    }
     expect(code).toBe(0);
     const collected = await collectOutgoingReplyReceipts({
       plansRoot: layout.plans,
@@ -561,7 +637,8 @@ describe("Provider CLI outgoing reply capture", () => {
       ok: true,
       data: { message_id: "om_noid", chat_id: "oc_chat", create_time: "1000" },
     });
-    for (const envelope of [legacy, missingIdentity]) {
+    const unusableData = JSON.stringify({ ok: true, identity: "bot", data: null });
+    for (const envelope of [legacy, missingIdentity, unusableData]) {
       await executeProviderCliTurnPlan({
         planPath: prepared.planPath,
         provider: "feishu",
@@ -611,6 +688,176 @@ describe("Provider CLI outgoing reply capture", () => {
     });
     expect(collected.status).toBe("complete");
     expect(collected.receipts).toEqual([]);
+  });
+
+  it("derives the managed argument prefix from the launcher argv", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
+    const userArgv = ["im", "+messages-send", "--text", "hi"];
+    const env = {
+      ...process.env,
+      OPENTAG_TEST_TARGET_MODE: "lark-cli",
+      OPENTAG_TEST_LARK_ENVELOPE: sendEnvelope(),
+      OPENTAG_TEST_LARK_GET_ENVELOPE: getEnvelope(),
+    };
+    const base = {
+      plan: prepared.plan,
+      planPath: prepared.planPath,
+      plansRoot: layout.plans,
+      userArgv,
+      env,
+      code: 0,
+      stdout: Buffer.from(sendEnvelope()),
+    };
+    // The launcher argv ends with the caller argv: the managed prefix is trimmed away.
+    await expect(captureFeishuOutgoingReply({ ...base, spawnArgs: userArgv })).resolves.toBe("recorded");
+    // The launcher argv does not end with the caller argv: the prefix is dropped entirely.
+    await expect(
+      captureFeishuOutgoingReply({ ...base, spawnArgs: ["--skip-update", "im", "+messages-send"] }),
+    ).resolves.toBe("recorded");
+  });
+
+  it("fails closed when the receipt cannot be written at all", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
+    const argv = ["im", "+messages-send", "--text", "hi"];
+    // A plans root that does not contain the Session cannot accept a receipt: the write is
+    // refused and capture must report incomplete rather than claim a complete empty run.
+    await expect(
+      captureFeishuOutgoingReply({
+        plan: prepared.plan,
+        planPath: prepared.planPath,
+        plansRoot: join(accountHome, "detached-plans"),
+        userArgv: argv,
+        spawnArgs: argv,
+        env: process.env,
+        code: 0,
+        stdout: Buffer.from(sendEnvelope()),
+      }),
+    ).resolves.toBe("incomplete");
+  });
+
+  it("keeps the send recorded when the enriched receipt cannot be rewritten", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
+    const receiptsDir = join(prepared.sessionDir, "runs", deriveProviderCliRunKey("run-1"), "outgoing-replies");
+    const argv = ["im", "+messages-send", "--text", "hi"];
+    const captured = captureFeishuOutgoingReply({
+      plan: prepared.plan,
+      planPath: prepared.planPath,
+      plansRoot: layout.plans,
+      userArgv: argv,
+      spawnArgs: argv,
+      env: {
+        ...process.env,
+        OPENTAG_TEST_TARGET_MODE: "lark-cli",
+        OPENTAG_TEST_LARK_ENVELOPE: sendEnvelope(),
+        OPENTAG_TEST_LARK_GET_ENVELOPE: getEnvelope(),
+        OPENTAG_TEST_LARK_GET_DELAY_om_sent: "1000",
+      },
+      code: 0,
+      stdout: Buffer.from(sendEnvelope()),
+    });
+    // The accepted receipt is durable first; break the directory while the content read is
+    // still in flight so the enrichment rewrite is the write that fails.
+    await expect
+      .poll(async () => (await readdir(receiptsDir).catch(() => [])).length, { timeout: 5_000 })
+      .toBeGreaterThan(0);
+    await rm(receiptsDir, { recursive: true, force: true });
+    await writeFile(receiptsDir, "not a directory\n");
+    await expect(captured).resolves.toBe("recorded");
+    const statusPath = join(prepared.sessionDir, "runs", deriveProviderCliRunKey("run-1"), "capture-status.json");
+    expect(JSON.parse(await readFile(statusPath, "utf8"))).toEqual({ schemaVersion: 1, status: "incomplete" });
+  });
+
+  it("marks a send incomplete when the content read cannot be parsed", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
+    await executeProviderCliTurnPlan({
+      planPath: prepared.planPath,
+      provider: "feishu",
+      runId: "run-1",
+      argv: ["im", "+messages-send", "--text", "hi"],
+      env: {
+        ...process.env,
+        OPENTAG_TEST_TARGET_MODE: "lark-cli",
+        OPENTAG_TEST_LARK_ENVELOPE: sendEnvelope(),
+        OPENTAG_TEST_LARK_GET_ENVELOPE: "no-json-envelope",
+      },
+      plansRoot: layout.plans,
+    });
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: prepared.sessionDir,
+      runId: "run-1",
+      waitMs: 0,
+    });
+    expect(collected.receipts[0]?.messageId).toBe("om_sent");
+    expect(collected.receipts[0]?.contentStatus).toBe("unavailable");
+    expect(collected.receipts[0]?.content?.text).toBeUndefined();
+  });
+
+  it("discards content read for a different message identity", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
+    await executeProviderCliTurnPlan({
+      planPath: prepared.planPath,
+      provider: "feishu",
+      runId: "run-1",
+      argv: ["im", "+messages-send", "--text", "hi"],
+      env: {
+        ...process.env,
+        OPENTAG_TEST_TARGET_MODE: "lark-cli",
+        OPENTAG_TEST_LARK_ENVELOPE: sendEnvelope(),
+        OPENTAG_TEST_LARK_GET_ENVELOPE: getEnvelope({ message_id: "om_other" }),
+      },
+      plansRoot: layout.plans,
+    });
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: prepared.sessionDir,
+      runId: "run-1",
+      waitMs: 0,
+    });
+    expect(collected.receipts[0]?.messageId).toBe("om_sent");
+    expect(collected.receipts[0]?.contentStatus).toBe("unavailable");
+    expect(collected.receipts[0]?.content?.text).toBeUndefined();
+    expect(collected.receipts[0]?.threadId).toBeUndefined();
   });
 
   it("does not persist receipts unless captureOutgoingReplies is true", async () => {

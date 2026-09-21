@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentPromptRequest,
@@ -324,6 +325,341 @@ describe("runner acceptance cancel contract", () => {
     },
     30_000,
   );
+});
+
+/** A minimal supplied factory whose per-run behaviour the test selects, so failure paths are real. */
+function scriptedFailureFactory(
+  behaviour: {
+    readonly fixture?: () => Promise<unknown>;
+    readonly resume?: () => Promise<unknown>;
+    readonly runtimeClose?: () => Promise<void>;
+    readonly ready?: boolean;
+    readonly binding?: unknown;
+    /** Suppress the fixture turn's tool evidence (the default emits one successful Read). */
+    readonly silentTools?: boolean;
+    /** The workspace the resume turn reads its expected sum from. */
+    readonly workspace?: string;
+  } = {},
+): AgentRuntimeFactory {
+  const binding = { providerId: "pi", schemaVersion: 1, payload: { sessionId: "s" } };
+  let eventSink: (event: AgentRuntimeEvent) => void = () => undefined;
+  const runtime = {
+    get binding() {
+      return behaviour.binding === undefined ? binding : behaviour.binding;
+    },
+    close: async () => {
+      await behaviour.runtimeClose?.();
+    },
+    prompt: async (request: { runId: string }) => {
+      if (request.runId === "runner-fixture") {
+        // A successful fixture turn must carry its real tool evidence unless the case suppresses it.
+        if (!behaviour.silentTools) {
+          eventSink({ type: "tool_started", runId: request.runId, toolCallId: "t1", name: "Read" });
+          eventSink({
+            type: "tool_completed",
+            runId: request.runId,
+            toolCallId: "t1",
+            name: "Read",
+            status: "completed",
+          });
+        }
+        if (behaviour.fixture) return (await behaviour.fixture()) as never;
+      }
+      // The resume turn replays the sum the fixture actually wrote.
+      try {
+        return completed(request.runId, (await readFile(join(behaviour.workspace ?? "", "sum.txt"), "utf8")).trim());
+      } catch {
+        return completed(request.runId, "42");
+      }
+    },
+  };
+  return {
+    manifest: { providerId: "pi", displayName: "Pi", contractVersion: 2, bindingSchemaVersion: 1 },
+    async probe() {
+      const ready = behaviour.ready !== false;
+      return {
+        issues: ready ? [] : [{ code: "artifact_missing", message: "Pi is not installed" }],
+        ready,
+        version: "0.84.2",
+      };
+    },
+    async create(request: { eventSink: (event: AgentRuntimeEvent) => void }) {
+      eventSink = request.eventSink;
+      return runtime as unknown as AgentRuntime;
+    },
+    async resume(request: { eventSink: (event: AgentRuntimeEvent) => void }) {
+      eventSink = request.eventSink;
+      if (behaviour.resume) return (await behaviour.resume()) as unknown as AgentRuntime;
+      return runtime as unknown as AgentRuntime;
+    },
+  } as AgentRuntimeFactory;
+}
+
+async function acceptanceWorkspace(prefix: string): Promise<string> {
+  const workspace = await mkdtemp(join(tmpdir(), prefix));
+  directories.push(workspace);
+  return workspace;
+}
+
+function runWithFactory(workspace: string, factory: AgentRuntimeFactory) {
+  return runRunnerAcceptance({
+    mode: "real",
+    piHome: workspace,
+    runtimeHome: workspace,
+    sessionDirectory: join(workspace, "sessions"),
+    workspace,
+    factory,
+    probeTools: async () => [{ name: "git", ok: true }],
+    assembleSkills: async () => fakeAssembledSkills(workspace),
+  });
+}
+
+describe("runner acceptance real Pi skill evidence", () => {
+  /** The checked-in hermetic Pi RPC fixture: it answers `get_commands` with one skill + one builtin. */
+  const piRpcFixture = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "pi-rpc.mjs");
+
+  /**
+   * A `pi` stand-in answering the REAL probe contract (version/help/list-models) and forwarding
+   * RPC stdin/stdout to the shared hermetic fixture, so `createTrackedFactory` accepts it.
+   */
+  async function installPiStub(workspace: string): Promise<string> {
+    const bin = join(workspace, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(
+      join(bin, "pi"),
+      `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --version) echo "0.84.2"; exit 0 ;;
+    --help) echo "${RUNNER_PROBE_HELP}"; exit 0 ;;
+    --list-models) printf 'provider model context max-out thinking images\nfixture fixture-model 128000 8192 max no\n'; exit 0 ;;
+  esac
+done
+exec '${process.execPath}' '${piRpcFixture}' normal
+`,
+      { mode: 0o755 },
+    );
+    return bin;
+  }
+
+  function assembledSkills(workspace: string, names: readonly string[]) {
+    return {
+      ...fakeAssembledSkills(workspace),
+      skills: names.map((name) => ({
+        directory: join(workspace, "skills", name),
+        name,
+        skillFile: join(workspace, "skills", name, "SKILL.md"),
+      })),
+    };
+  }
+
+  it("fails the real skill-list comparison with the exact expected/loaded diagnostic", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-real-skills-"));
+    directories.push(workspace);
+    const path = await installPiStub(workspace);
+    const report = await runRunnerAcceptance({
+      mode: "real",
+      piHome: workspace,
+      runtimeHome: workspace,
+      sessionDirectory: join(workspace, "sessions"),
+      workspace,
+      path,
+      probeTools: async () => [{ name: "git", ok: true }],
+      // A real factory is used here so the real `loadPiSkillNames` RPC path runs; the assembled set
+      // deliberately does not match the fixture's single `skill:fixture-skill` command.
+      assembleSkills: async () => assembledSkills(workspace, ["something-else"]),
+    });
+    expect(report.model).toBe("failed");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("skill list mismatch");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("fixture-skill");
+  }, 60_000);
+
+  it("fails closed when Pi answers the skill listing without a command list", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-real-skills-empty-"));
+    directories.push(workspace);
+    const bin = join(workspace, "bin");
+    await mkdir(bin, { recursive: true });
+    // The same real probe contract, but the RPC backend answers without a `commands` payload.
+    // A standalone script avoids nested shell/JS quoting entirely.
+    const backend = join(workspace, "empty-commands.mjs");
+    await writeFile(
+      backend,
+      `import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const frame = JSON.parse(line);
+  process.stdout.write(JSON.stringify({ type: "response", id: frame.id, command: frame.type, success: true, data: {} }) + "\\n");
+});
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(bin, "pi"),
+      `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --version) echo "0.84.2"; exit 0 ;;
+    --help) echo "${RUNNER_PROBE_HELP}"; exit 0 ;;
+    --list-models) printf 'provider model context max-out thinking images\nfixture fixture-model 128000 8192 max no\n'; exit 0 ;;
+  esac
+done
+exec '${process.execPath}' '${backend}'
+`,
+      { mode: 0o755 },
+    );
+    const report = await runRunnerAcceptance({
+      mode: "real",
+      piHome: workspace,
+      runtimeHome: workspace,
+      sessionDirectory: join(workspace, "sessions"),
+      workspace,
+      path: bin,
+      probeTools: async () => [{ name: "git", ok: true }],
+      assembleSkills: async () => fakeAssembledSkills(workspace),
+    });
+    expect(report.model).toBe("failed");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("no command list");
+  }, 60_000);
+});
+
+describe("runner acceptance model failure evidence", () => {
+  it("fails when the fixture turn does not complete", async () => {
+    const workspace = await acceptanceWorkspace("opentag-runner-fixture-status-");
+    const report = await runWithFactory(
+      workspace,
+      scriptedFailureFactory({
+        fixture: async () => ({ error: { code: "provider_failed", message: "boom" }, output: [], status: "failed" }),
+      }),
+    );
+    expect(report.model).toBe("failed");
+    expect(report.events.some((item) => item.name === "model" && item.detail?.includes("fixture run failed"))).toBe(
+      true,
+    );
+  }, 30_000);
+
+  it("fails when the fixture turn reports the wrong sum", async () => {
+    const workspace = await acceptanceWorkspace("opentag-runner-fixture-sum-");
+    const report = await runWithFactory(
+      workspace,
+      scriptedFailureFactory({ fixture: async () => completed("runner-fixture", "not-the-sum") }),
+    );
+    expect(report.model).toBe("failed");
+    expect(report.events.some((item) => item.name === "model" && item.detail?.includes("expected"))).toBe(true);
+  }, 30_000);
+
+  it("fails when the fixture turn emits no successful tool events", async () => {
+    const workspace = await acceptanceWorkspace("opentag-runner-fixture-tools-");
+    const report = await runWithFactory(
+      workspace,
+      scriptedFailureFactory({
+        fixture: async () => {
+          // Compute the real sum so the earlier checks pass and only the tool evidence is missing.
+          const [left = 0, right = 0] = (await readFile(join(workspace, "fixture.txt"), "utf8"))
+            .trim()
+            .split(/\s+/)
+            .map(Number);
+          const sum = String(left + right);
+          await writeFile(join(workspace, "sum.txt"), `${sum}\n`, "utf8");
+          return completed("runner-fixture", sum);
+        },
+        silentTools: true,
+        workspace,
+      }),
+    );
+    expect(report.model).toBe("failed");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("tool events");
+  }, 30_000);
+
+  it("fails when the created runtime has no binding", async () => {
+    const workspace = await acceptanceWorkspace("opentag-runner-binding-");
+    const report = await runWithFactory(
+      workspace,
+      scriptedFailureFactory({
+        binding: null,
+        fixture: async () => {
+          const [left = 0, right = 0] = (await readFile(join(workspace, "fixture.txt"), "utf8"))
+            .trim()
+            .split(/\s+/)
+            .map(Number);
+          const sum = String(left + right);
+          await writeFile(join(workspace, "sum.txt"), `${sum}\n`, "utf8");
+          return completed("runner-fixture", sum);
+        },
+      }),
+    );
+    expect(report.model).toBe("failed");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("did not produce a binding");
+  }, 30_000);
+
+  it("fails when the provider probe is not ready", async () => {
+    const workspace = await acceptanceWorkspace("opentag-runner-probe-notready-");
+    const report = await runWithFactory(workspace, scriptedFailureFactory({ ready: false }));
+    expect(report.model).toBe("failed");
+    expect(report.events.some((item) => item.name === "model" && item.detail?.includes("Pi probe failed"))).toBe(true);
+  }, 30_000);
+
+  it("fails the model turn when the resumed runtime reports a different sum", async () => {
+    const workspace = await acceptanceWorkspace("opentag-runner-resume-sum-");
+    const report = await runWithFactory(
+      workspace,
+      scriptedFailureFactory({
+        fixture: async () => {
+          const [left = 0, right = 0] = (await readFile(join(workspace, "fixture.txt"), "utf8"))
+            .trim()
+            .split(/\s+/)
+            .map(Number);
+          const sum = String(left + right);
+          await writeFile(join(workspace, "sum.txt"), `${sum}\n`, "utf8");
+          return completed("runner-fixture", sum);
+        },
+        resume: async () =>
+          ({
+            binding: { providerId: "pi", schemaVersion: 1, payload: { sessionId: "s" } },
+            close: async () => undefined,
+            prompt: async (request: { runId: string }) => completed(request.runId, "wrong"),
+          }) as unknown as AgentRuntime,
+      }),
+    );
+    expect(report.model).toBe("failed");
+    expect(report.events.find((item) => item.name === "model")?.detail).toContain("resume expected");
+  }, 30_000);
+
+  it("fails the model turn when a runtime close throws during the failure path", async () => {
+    const workspace = await acceptanceWorkspace("opentag-runner-close-failure-");
+    const report = await runWithFactory(
+      workspace,
+      scriptedFailureFactory({
+        fixture: async () => {
+          throw new Error("fixture turn exploded");
+        },
+        runtimeClose: async () => {
+          throw new Error("close also failed");
+        },
+      }),
+    );
+    expect(report.model).toBe("failed");
+    expect(
+      report.events.some((item) => item.name === "model" && item.detail?.includes("runtime cleanup close also failed")),
+    ).toBe(true);
+  }, 30_000);
+
+  it("records a skills failure when the offline assembly throws", async () => {
+    const workspace = await acceptanceWorkspace("opentag-runner-skills-throw-");
+    const report = await runRunnerAcceptance({
+      mode: "offline",
+      piHome: workspace,
+      runtimeHome: workspace,
+      sessionDirectory: join(workspace, "sessions"),
+      workspace,
+      probeTools: async () => [{ name: "git", ok: true }],
+      assembleSkills: async () => {
+        throw new Error("skills assembly failed");
+      },
+    });
+    expect(report.offline).toBe("failed");
+    expect(report.events.some((item) => item.name === "skills" && item.status === "failed")).toBe(true);
+    expect(report.failed).toBe(true);
+  }, 30_000);
 });
 
 describe("runner acceptance disposable Context Tree", () => {

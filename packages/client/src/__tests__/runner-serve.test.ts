@@ -25,6 +25,7 @@ import {
   runRunnerServe,
 } from "../runner/serve.js";
 import type { RunnerAcceptanceReport } from "../runner/types.js";
+import { NativeSandboxWebGateway } from "../runner/web-gateway.js";
 import { runRunnerWorker, WORKER_STDIN_MAX_BYTES } from "../runner/worker.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
@@ -105,6 +106,26 @@ describe("loadRunnerServeConfig", () => {
     expect(loadRunnerServeConfig({ ...base, PORT: "65535" }).healthPort).toBe(65535);
     for (const PORT of ["0", "-1", "65536", "1.5", "abc", "", " 8080", "08080"]) {
       expect(() => loadRunnerServeConfig({ ...base, PORT }), `PORT=${JSON.stringify(PORT)}`).toThrow(/PORT/);
+    }
+  });
+
+  it("rejects an invalid workspace-persistence flag and control token", () => {
+    for (const value of ["true", "0x1", "yes", "", "2"]) {
+      expect(() => loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WORKSPACE_PERSISTENCE: value })).toThrow(
+        /WORKSPACE_PERSISTENCE must be 1 or 0/,
+      );
+    }
+    expect(loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WORKSPACE_PERSISTENCE: "1" }).workspacePersistence).toBe(
+      true,
+    );
+    expect(
+      loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WORKSPACE_PERSISTENCE: "0" }).workspacePersistence,
+    ).toBeUndefined();
+    expect(loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_CONTROL_TOKEN: "control" }).controlToken).toBe("control");
+    for (const value of ["", "x".repeat(8193)]) {
+      expect(() => loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_CONTROL_TOKEN: value })).toThrow(
+        /CONTROL_TOKEN is not a valid credential/,
+      );
     }
   });
 
@@ -654,6 +675,114 @@ async function waitFor(check: () => boolean | Promise<boolean>, description: str
 }
 
 describe("runRunnerServe", () => {
+  it("settles a live acceptance run before deleting the sandbox on shutdown", async () => {
+    const wss = await startWss();
+    const stop = new AbortController();
+    const output = io();
+    let workerStarted = false;
+    let aborted = false;
+    const sandbox = fakeSandboxFactory()("probe", "/tmp/probe");
+    sandbox.exec = vi.fn(
+      async (_command, _args, options) =>
+        new Promise<Awaited<ReturnType<NativeSandbox["exec"]>>>((_resolve, reject) => {
+          workerStarted = true;
+          options.signal?.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(new Error("cancelled by shutdown"));
+            },
+            { once: true },
+          );
+        }),
+    );
+    const running = runRunnerServe(serveConfig(wss.url), {
+      installSignalHandlers: false,
+      randomJitter: () => 0,
+      sandboxFactory: () => sandbox,
+      signal: stop.signal,
+      sleep: async () => undefined,
+      stderr: output.stderr,
+    });
+    await wss.waitFor("runner:ready");
+    wss.send({ type: "acceptance:run", requestId: "live", mode: "offline", deadlineAtMs: Date.now() + 60_000 });
+    await vi.waitFor(() => expect(workerStarted).toBe(true));
+    stop.abort();
+    expect(await running).toBe(143);
+    // The in-flight worker was aborted and the namespace was deleted exactly once.
+    expect(aborted).toBe(true);
+    expect(sandbox.destroy).toHaveBeenCalledOnce();
+  }, 30_000);
+
+  it("classifies a non-unavailable sandbox startup failure as a generic startup failure", async () => {
+    const output = io();
+    // A failed launch that is NOT the missing-binary case reports the generic startup exit code.
+    const sandbox = fakeSandboxFactory()("probe", "/tmp/probe");
+    sandbox.launch = vi.fn(async () => {
+      throw new NativeSandboxError("delete_failed", "the sandbox supervisor refused to launch");
+    });
+    const code = await runRunnerServe(serveConfig("ws://127.0.0.1:1/ws"), {
+      installSignalHandlers: false,
+      sandboxFactory: () => sandbox,
+      stderr: output.stderr,
+    });
+    expect(code).toBe(4);
+    expect(output.chunks.stderr.join("")).toMatch(/delete_failed/);
+    // Cleanup still runs for the failed launch so a half-created namespace never leaks.
+    expect(sandbox.destroy).toHaveBeenCalledOnce();
+  }, 20_000);
+
+  it("builds the production native sandbox when no factory is injected", async () => {
+    const output = io();
+    // No sandboxFactory: the serve path constructs the real NativeSandbox, which classifies the
+    // missing sandbox binary as `unavailable` on a non-sandbox host and fails closed.
+    const code = await runRunnerServe(serveConfig("ws://127.0.0.1:1/ws"), {
+      installSignalHandlers: false,
+      stderr: output.stderr,
+    });
+    expect([3, 4]).toContain(code);
+    expect(output.chunks.stderr.join("")).toMatch(/Runner unavailable/);
+  }, 20_000);
+
+  it("returns the web gateway startup exit code when the gateway cannot start", async () => {
+    const output = io();
+    // A real gateway startup failure is the only path that returns 4 before any sandbox work.
+    const start = vi.spyOn(NativeSandboxWebGateway, "start").mockRejectedValue(new Error("web gateway unavailable"));
+    const launched: string[] = [];
+    const code = await runRunnerServe(
+      { ...serveConfig("ws://127.0.0.1:1/ws"), webTools: true },
+      {
+        installSignalHandlers: false,
+        sandboxFactory: () => {
+          launched.push("sandbox");
+          return fakeSandboxFactory()("probe", "/tmp/probe");
+        },
+        stderr: output.stderr,
+      },
+    );
+    expect(code).toBe(4);
+    // The gateway failure short-circuits before any native sandbox is built.
+    expect(launched).toEqual([]);
+    // The gateway failure is reported through the existing startup-error path.
+    expect(output.chunks.stderr.join("")).toMatch(/Runner unavailable/);
+    start.mockRestore();
+  }, 20_000);
+
+  it("stops before launching when the stop signal arrives during workspace setup", async () => {
+    const stop = new AbortController();
+    const output = io();
+    const sandbox = fakeSandboxFactory()("probe", "/tmp/probe");
+    stop.abort();
+    const code = await runRunnerServe(serveConfig("ws://127.0.0.1:1/ws"), {
+      installSignalHandlers: false,
+      sandboxFactory: () => sandbox,
+      signal: stop.signal,
+      stderr: output.stderr,
+    });
+    expect(code).toBe(143);
+    expect(sandbox.launch).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("fails closed when the native sandbox binary is absent (never pretends local is native Cloud)", async () => {
     const output = io();
     const code = await runRunnerServe(serveConfig("ws://127.0.0.1:1/ws"), {

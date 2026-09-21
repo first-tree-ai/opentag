@@ -1,9 +1,19 @@
-import { computeTurnResultHash, RUNTIME_MAX_FRAME_BYTES, type TurnReportHashInput } from "@opentag/shared";
+import {
+  computeTurnResultHash,
+  RUNTIME_MAX_FRAME_BYTES,
+  RUNTIME_OUTGOING_REPLY_SNAPSHOT_MAX_BYTES,
+  type RuntimeProviderMessageRef,
+  type TurnOutgoingReplySnapshot,
+  type TurnReportHashInput,
+} from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import {
   budgetTurnReportHashInput,
+  emptyCompleteOutgoingReplies,
+  feishuOutgoingReplyScope,
   isOutgoingReplyInScope,
   snapshotOutgoingReplies,
+  unavailableOutgoingReplies,
 } from "../runtime/provider-cli/outgoing-reply-report.js";
 import type { ProviderCliOutgoingReplyReceipt } from "../runtime/provider-cli/outgoing-reply-store.js";
 
@@ -19,6 +29,30 @@ function receipt(overrides: Partial<ProviderCliOutgoingReplyReceipt> = {}): Prov
     contentStatus: "available",
     content: { msgType: "text", text: "Actual sent body" },
     ...overrides,
+  };
+}
+
+function reportInput(overrides: Partial<TurnReportHashInput> = {}): TurnReportHashInput {
+  return {
+    deliveryId: "delivery",
+    turnId: "turn",
+    sessionId: "session",
+    agentId: "agent",
+    placementGeneration: 1,
+    outcome: "completed",
+    executionEffects: "completed",
+    traceSummary: { lastSequence: 0, droppedEvents: 0 },
+    ...overrides,
+  };
+}
+
+function wireReply(index: number): TurnOutgoingReplySnapshot["replies"][number] {
+  return {
+    provider: "feishu",
+    teamBrand: "lark",
+    messageId: `om_${index}`,
+    chatId: "oc_chat",
+    content: { msgType: "text", text: "x" },
   };
 }
 
@@ -113,5 +147,113 @@ describe("outgoing reply reporting boundaries", () => {
     expect(result.status).toBe("incomplete");
     expect(result.replies[0]?.content.text).toBe("x".repeat(8 * 1024));
     expect(result.replies.length + (result.omittedCount ?? 0)).toBe(20);
+  });
+
+  it("derives the Feishu reply scope and ignores other providers", () => {
+    const reference: RuntimeProviderMessageRef = {
+      provider: "feishu",
+      teamBrand: "lark",
+      appId: "cli_app",
+      botOpenId: "ou_bot",
+      chatId: "oc_chat",
+      chatType: "group",
+      messageId: "om_root",
+      threadId: "omt_topic",
+      rootId: "om_root",
+      parentId: "om_parent",
+    };
+    expect(feishuOutgoingReplyScope(reference)).toEqual({
+      appId: "cli_app",
+      botOpenId: "ou_bot",
+      chatId: "oc_chat",
+      messageId: "om_root",
+      threadId: "omt_topic",
+      rootId: "om_root",
+      parentId: "om_parent",
+      chatType: "group",
+      teamBrand: "lark",
+    });
+    const slack: RuntimeProviderMessageRef = {
+      provider: "slack",
+      appId: "A0",
+      teamId: "T0",
+      botUserId: "U0",
+      channelId: "C0",
+      messageTs: "1.0",
+    };
+    expect(feishuOutgoingReplyScope(slack)).toBeUndefined();
+  });
+
+  it("exposes the empty complete and unavailable snapshots", () => {
+    expect(emptyCompleteOutgoingReplies()).toEqual({ status: "complete", replies: [] });
+    expect(unavailableOutgoingReplies()).toEqual({ status: "unavailable", replies: [] });
+  });
+
+  it("reports an unavailable capture without inventing replies", () => {
+    expect(snapshotOutgoingReplies({ status: "unavailable", receipts: [] }, scope)).toEqual({
+      status: "unavailable",
+      replies: [],
+    });
+  });
+
+  it("drops a receipt whose message reference cannot fit the wire contract", () => {
+    const result = snapshotOutgoingReplies(
+      { status: "complete", receipts: [receipt({ messageId: "m".repeat(513) })] },
+      scope,
+    );
+    expect(result).toEqual({ status: "incomplete", replies: [], omittedCount: 1 });
+  });
+
+  it("returns an already budgeted report untouched", () => {
+    const fitted = budgetTurnReportHashInput(
+      reportInput({ finalText: "short reply", outgoingReplies: { status: "complete", replies: [] } }),
+    );
+    expect(fitted.finalText).toBe("short reply");
+    expect(fitted.outgoingReplies).toEqual({ status: "complete", replies: [] });
+  });
+
+  it("bounds the snapshot when the surrounding report fields alone exhaust the frame budget", () => {
+    // The frame budget covers the whole report, so a report whose other fields already
+    // exceed it must still terminate with a parsed, bounded snapshot.
+    const fitted = budgetTurnReportHashInput(
+      reportInput({
+        deliveryId: "d".repeat(80 * 1024),
+        finalText: "reply text",
+        outgoingReplies: { status: "complete", replies: [wireReply(1), wireReply(2)] },
+      }),
+    );
+    expect(fitted.finalText).toBeUndefined();
+    expect(fitted.outgoingReplies).toEqual({
+      status: "incomplete",
+      replies: [],
+      omittedCount: 2,
+      runtimeSummaryTruncated: true,
+    });
+  });
+
+  it("omits message identities only once their metadata alone exceeds the snapshot limit", () => {
+    const large = (pad: string, index: number) => `${pad.repeat(500)}${index}`;
+    const result = snapshotOutgoingReplies(
+      {
+        status: "complete",
+        receipts: Array.from({ length: 16 }, (_, index) =>
+          receipt({
+            messageId: large("m", index),
+            chatId: scope.chatId,
+            threadId: large("t", index),
+            rootId: large("r", index),
+            parentId: large("p", index),
+            contentStatus: "unavailable",
+            content: undefined,
+          }),
+        ),
+      },
+      scope,
+    );
+    expect(result.status).toBe("incomplete");
+    expect(result.replies.length).toBeLessThan(16);
+    expect(result.replies.length + (result.omittedCount ?? 0)).toBe(16);
+    expect(result.replies[0]?.messageId).toBe(large("m", 0));
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(RUNTIME_OUTGOING_REPLY_SNAPSHOT_MAX_BYTES);
   });
 });

@@ -14,7 +14,7 @@ import type {
   SessionCliProofGrant,
   SessionMessageDeliveryRequest,
 } from "@opentag/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudJournal } from "../runner/cloud-journal.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
@@ -32,6 +32,18 @@ interface ExecResult {
   code: number;
   stdout: string;
   stderr: string;
+}
+
+/** A real cancelled completion from a nonzero worker exit (the wrapper ended, children may remain). */
+function cancelledExec(): ExecResult {
+  return {
+    code: 1,
+    stderr: "",
+    stdout: `${JSON.stringify({
+      kind: "result",
+      completion: { outcome: "cancelled", executionEffects: "may_have_occurred", errorReason: "client_shutdown" },
+    })}\n`,
+  };
 }
 
 function completedExec(text = "done"): ExecResult {
@@ -177,7 +189,7 @@ describe("CloudTurnRunner Session collaboration", () => {
       stateDirectory: join(directory, "private"),
       ...options.runnerOptions,
     });
-    return { message, runner, scope, sent, workerInputs };
+    return { journal, message, runner, scope, sent, workerInputs };
   }
 
   it("journals, executes, and settles a Session message, forwarding the open proof via stdin", async () => {
@@ -526,6 +538,598 @@ describe("CloudTurnRunner Session collaboration", () => {
       status: "recorded",
     });
     expect(await journal.read(h.message.messageId)).toBeUndefined();
+    await h.runner.close();
+  });
+
+  it("refuses a Session re-dispatch whose journal key belongs to an IM delivery", async () => {
+    const delivery = cloudDeliveryFixture();
+    // The journal scope contract needs a non-nullable resource uid.
+    const scope = {
+      environmentGeneration: 1,
+      resourceName: "projects/p/locations/r/instances/ots-s-x-1",
+      resourceUid: "uid-1" as string,
+      sandboxId: randomUUID(),
+      sessionId: delivery.sessionId,
+    };
+    const h = harness({
+      message: sessionMessage({ messageId: delivery.deliveryId, targetSessionId: delivery.sessionId }),
+      runnerOptions: { scope: () => scope },
+    });
+    await journal.recordReceived({
+      delivery,
+      deliveryId: delivery.deliveryId,
+      requestId: delivery.requestId,
+      scope,
+      turnId: randomUUID(),
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    expect(sessionReceiptsOf(h.sent)).toHaveLength(0);
+    expect((await journal.list())[0]?.kind).toBe("delivery");
+    await h.runner.close();
+  });
+
+  it("refuses a Session re-dispatch that was journaled under another allocation", async () => {
+    const h = harness();
+    const scope = {
+      environmentGeneration: h.scope.environmentGeneration,
+      resourceName: h.scope.resourceName,
+      resourceUid: h.scope.resourceUid ?? "",
+      sandboxId: h.scope.sandboxId,
+      sessionId: h.scope.sessionId,
+    };
+    await journal.recordSessionReceived({
+      message: h.message,
+      scope: { ...scope, resourceUid: "another-allocation-uid" },
+      sessionKind: "internal",
+      requestId: h.message.requestId,
+      turnId: randomUUID(),
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    expect(sessionReceiptsOf(h.sent)).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("refuses a Session re-dispatch whose input changed under the same attempt identity", async () => {
+    const h = harness();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    const changed: SessionMessageDeliveryRequest = {
+      ...h.message,
+      content: { kind: "text", text: "replaced content" },
+    };
+    await h.runner.handleSessionMessageRun(sessionRunFrame(changed));
+    // Only the original attempt was acknowledged; nothing else was journaled or started.
+    expect(sessionReceiptsOf(h.sent)).toHaveLength(1);
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("leaves verified Session work at the received boundary when the queue is full", async () => {
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<ExecResult>();
+    const h = harness({
+      worker: async () => {
+        if (h.workerInputs.length === 1) {
+          firstStarted.resolve();
+          return releaseFirst.promise;
+        }
+        return completedExec();
+      },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await firstStarted.promise;
+    const queued = Array.from({ length: 64 }, () => sessionMessage({ targetSessionId: h.message.targetSessionId }));
+    for (const message of queued) {
+      await h.runner.handleSessionMessageRun(sessionRunFrame(message));
+      await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(message.requestId));
+    }
+    const overflow = sessionMessage({ targetSessionId: h.message.targetSessionId });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(overflow));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(overflow.requestId));
+    expect((await journal.read(overflow.messageId))?.phase).toBe("received");
+    releaseFirst.resolve(cancelledExec());
+    await h.runner.waitForActive();
+    await h.runner.close();
+  });
+
+  it("cancels a queued Session message without ever starting a worker", async () => {
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<ExecResult>();
+    const h = harness({
+      worker: async () => {
+        if (h.workerInputs.length === 1) {
+          firstStarted.resolve();
+          return releaseFirst.promise;
+        }
+        return completedExec();
+      },
+    });
+    const queued = sessionMessage({ targetSessionId: h.message.targetSessionId });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await firstStarted.promise;
+    await h.runner.handleSessionMessageRun(sessionRunFrame(queued));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(queued.requestId));
+    h.runner.handleSessionMessageCancel(queued.messageId);
+    releaseFirst.resolve(cancelledExec());
+    await waitFor(() => settledOf(h.sent).some((frame) => frame.messageId === queued.messageId), "queued cancellation");
+    expect(settledOf(h.sent).find((frame) => frame.messageId === queued.messageId)?.outcome).toBe("cancelled");
+    expect(h.workerInputs).toHaveLength(1);
+    await h.runner.close();
+  });
+
+  it("never starts a Session grant minted by a connection that closed while it waited", async () => {
+    const deliveryStarted = deferred<void>();
+    const releaseDelivery = deferred<ExecResult>();
+    const h = harness({
+      worker: async () => {
+        if (h.workerInputs.length === 1) {
+          deliveryStarted.resolve();
+          return releaseDelivery.promise;
+        }
+        throw new Error("the queued Session grant must never reach the worker");
+      },
+      runnerOptions: {
+        openExecution: async () => ({
+          close: async () => undefined,
+          executionDir: "/run/opentag-execution/turn-im",
+        }),
+      },
+    });
+    const delivery = cloudDeliveryFixture({ sessionId: h.message.targetSessionId });
+    await h.runner.handleDeliveryRun(deliveryRunFrame(delivery));
+    await h.runner.handleVerified(deliveryVerifiedFrame(delivery.requestId));
+    await deliveryStarted.promise;
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    // The grant is queued on the current connection generation; that connection now drops.
+    h.runner.onChannelClosed();
+    releaseDelivery.resolve(completedExec("im"));
+    await h.runner.waitForActive();
+    // The queued grant from the dead connection must never start; the entry stays received.
+    expect(h.workerInputs).toHaveLength(1);
+    expect(await journal.read(h.message.messageId)).toMatchObject({ phase: "received" });
+    // Fresh verification on the new generation starts it.
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent)).toHaveLength(1);
+    await h.runner.close();
+  });
+
+  it("ignores a rejected Session receipt once the Turn already started", async () => {
+    const started = deferred<void>();
+    const release = deferred<ExecResult>();
+    const h = harness({
+      worker: async () => {
+        started.resolve();
+        return release.promise;
+      },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await started.promise;
+    // A late rejection must never erase real durable started state.
+    await h.runner.handleSessionMessageVerified({
+      type: "session:message:verified",
+      requestId: h.message.requestId,
+      status: "rejected",
+      code: "conflict",
+    });
+    expect((await journal.read(h.message.messageId))?.phase).toBe("started");
+    release.resolve(completedExec());
+    await h.runner.waitForActive();
+    await h.runner.close();
+  });
+
+  it("retires a rejected Session receipt and answers a settled entry from the journal", async () => {
+    const h = harness();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified({
+      type: "session:message:verified",
+      requestId: h.message.requestId,
+      status: "rejected",
+      code: "scope_inactive",
+    });
+    // The never-started entry left the journal; a later run frame journals it fresh.
+    expect(await journal.read(h.message.messageId)).toBeUndefined();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    expect(sessionReceiptsOf(h.sent)).toHaveLength(2);
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    const [settled] = settledOf(h.sent);
+    if (!settled) throw new Error("missing settlement");
+    // A redispatch of completed custody is answered from the immutable settlement.
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    const settledFrames = settledOf(h.sent);
+    expect(settledFrames).toHaveLength(2);
+    expect(settledFrames[1]?.turnId).toBe(settled.turnId);
+    await h.runner.close();
+  });
+
+  it("retains a settlement when the Server ack does not match the journaled identity", async () => {
+    const h = harness();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    const [settled] = settledOf(h.sent);
+    if (!settled) throw new Error("missing settlement");
+    await h.runner.handleSessionMessageSettledAck({
+      type: "session:message:settled:ack",
+      requestId: h.message.requestId,
+      messageId: randomUUID(),
+      status: "recorded",
+      turnId: settled.turnId,
+    });
+    expect(await journal.read(h.message.messageId)).toBeDefined();
+    // A settlement for an entry that never reached the reported boundary is a no-op.
+    await h.runner.handleSessionMessageSettledAck({
+      type: "session:message:settled:ack",
+      requestId: randomUUID(),
+      messageId: h.message.messageId,
+      status: "recorded",
+      turnId: settled.turnId,
+    });
+    expect(await journal.read(h.message.messageId)).toBeDefined();
+    await h.runner.close();
+  });
+
+  it("refuses a Session execution whose persisted runtime deadline already passed", async () => {
+    const h = harness({
+      runnerOptions: {
+        openSessionExecution: async () => {
+          throw new Error("the bridge must never open without a live model grant");
+        },
+      },
+      worker: async () => {
+        throw new Error("the worker must never run without a live model grant");
+      },
+    });
+    const expired = new Date(Date.now() - 1).toISOString();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(
+      sessionVerifiedFrame(h.message.requestId, { ...MODEL_GRANT, expiresAt: expired }),
+    );
+    await h.runner.waitForActive();
+    // The expired grant settles as a not-started failure with zero sandbox work.
+    expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("fails a Session turn whose worker exits nonzero while claiming completion", async () => {
+    const h = harness({
+      worker: async () => ({ code: 1, stderr: "", stdout: completedExec("forged").stdout }),
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    // A nonzero exit can never be a completed Turn, even when stdout claims one.
+    expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+    await h.runner.close();
+  });
+
+  it("settles a Session turn whose worker reports malformed output as unknown", async () => {
+    const h = harness({ worker: async () => ({ code: 0, stderr: "", stdout: "not json at all\n" }) });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent)[0]?.outcome).toBe("unknown");
+    await h.runner.close();
+  });
+
+  it("settles a Session turn cancelled before its started boundary", async () => {
+    const h = harness({
+      worker: async () => {
+        throw new Error("the worker must not run after a pre-start cancellation");
+      },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    h.runner.handleSessionMessageCancel(h.message.messageId);
+    await h.runner.waitForActive();
+    await waitFor(async () => (await journal.read(h.message.messageId))?.phase === "reported", "cancel settlement");
+    expect(settledOf(h.sent)[0]?.outcome).toBe("cancelled");
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("keeps every acquired bridge resource closed and reports a failing close step", async () => {
+    const h = harness({
+      runnerOptions: {
+        openSessionExecution: async () => ({
+          close: async () => {
+            throw new Error("adapter close failed");
+          },
+          executionDir: "/run/opentag-execution/turn-session",
+        }),
+      },
+    });
+    const failures: unknown[] = [];
+    const runner = new CloudTurnRunner({
+      credentialChannel: () => {
+        throw new Error("unused");
+      },
+      journal: h.journal,
+      onPersistenceError: (error) => failures.push(error),
+      openSessionExecution: async () => ({
+        close: async () => {
+          throw new Error("adapter close failed");
+        },
+        executionDir: "/run/opentag-execution/turn-session",
+      }),
+      runWorker: async () => completedExec(),
+      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      scope: () => h.scope,
+      send: () => undefined,
+      serverUrl: "https://server.example.com",
+      stateDirectory: join(h.journal.directory, "private"),
+    });
+    await runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await runner.waitForActive();
+    // The original close failure is surfaced through the existing failure hook, and the turn
+    // still settles honestly.
+    expect(failures.map((error) => String(error))).toEqual([expect.stringContaining("adapter close failed")]);
+    await runner.close();
+  });
+
+  it("announces a queued Session receipt while releasing and settles a started one unknown", async () => {
+    const h = harness();
+    const scope = {
+      environmentGeneration: h.scope.environmentGeneration,
+      resourceName: h.scope.resourceName,
+      resourceUid: h.scope.resourceUid ?? "",
+      sandboxId: h.scope.sandboxId,
+      sessionId: h.scope.sessionId,
+    };
+    const startedMessage = sessionMessage({ targetSessionId: h.message.targetSessionId });
+    await journal.recordSessionReceived({
+      message: h.message,
+      scope,
+      sessionKind: "internal",
+      requestId: h.message.requestId,
+      turnId: randomUUID(),
+    });
+    const startedEntry = await journal.recordSessionReceived({
+      message: startedMessage,
+      scope,
+      sessionKind: "internal",
+      requestId: startedMessage.requestId,
+      turnId: randomUUID(),
+    });
+    await journal.markSessionStarted(startedEntry.messageId, scope);
+    h.sent.length = 0;
+    const draining = h.runner.drainForRelease(2_000);
+    await waitFor(
+      () =>
+        h.sent.some((frame) => frame.type === "session:message:received" && frame.messageId === h.message.messageId) &&
+        h.sent.some(
+          (frame) => frame.type === "session:message:settled" && frame.messageId === startedMessage.messageId,
+        ),
+      "release announcement",
+    );
+    await waitFor(
+      async () => (await journal.read(startedMessage.messageId))?.phase === "reported",
+      "unknown release settlement",
+    );
+    // The queued receipt is re-announced and the started entry is settled unknown while releasing.
+    expect(
+      h.sent.some((frame) => frame.type === "session:message:received" && frame.messageId === h.message.messageId),
+    ).toBe(true);
+    const startedSettlement = (await journal.read(startedMessage.messageId)) as { settlement?: { outcome: string } };
+    expect(startedSettlement.settlement?.outcome).toBe("unknown");
+    await h.runner.handleSessionMessageSettledAck({
+      type: "session:message:settled:ack",
+      requestId: startedMessage.requestId,
+      messageId: startedMessage.messageId,
+      status: "recorded",
+      turnId: startedEntry.turnId,
+    });
+    await h.runner.close();
+    // The queued receipt never produced a settlement and never started a worker.
+    expect(await journal.read(h.message.messageId)).toMatchObject({ phase: "received" });
+    await draining.catch(() => undefined);
+  });
+
+  it("re-announces a durable Session receipt while releasing instead of manufacturing a settlement", async () => {
+    const h = harness();
+    const scope = {
+      environmentGeneration: h.scope.environmentGeneration,
+      resourceName: h.scope.resourceName,
+      resourceUid: h.scope.resourceUid ?? "",
+      sandboxId: h.scope.sandboxId,
+      sessionId: h.scope.sessionId,
+    };
+    await journal.recordSessionReceived({
+      message: h.message,
+      scope,
+      sessionKind: "internal",
+      requestId: h.message.requestId,
+      turnId: randomUUID(),
+    });
+    // A `started` entry whose worker is gone settles unknown before the release can finish.
+    const startedEntry = await journal.recordSessionReceived({
+      message: sessionMessage({ targetSessionId: h.message.targetSessionId }),
+      scope,
+      sessionKind: "internal",
+      requestId: randomUUID(),
+      turnId: randomUUID(),
+    });
+    await journal.markSessionStarted(startedEntry.messageId, scope);
+    const draining = h.runner.drainForRelease(2_000);
+    await waitFor(async () => (await journal.read(startedEntry.messageId))?.phase === "reported", "release settlement");
+    await h.runner.handleSessionMessageSettledAck({
+      type: "session:message:settled:ack",
+      requestId: startedEntry.requestId,
+      messageId: startedEntry.messageId,
+      status: "recorded",
+      turnId: startedEntry.turnId,
+    });
+    // The still-received entry keeps the release open until its rejection retires it.
+    await draining.catch(() => undefined);
+    await h.runner.close();
+  });
+
+  it("settles a Session cancel whose entry left the received boundary first", async () => {
+    const h = harness();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    const scope = {
+      environmentGeneration: h.scope.environmentGeneration,
+      resourceName: h.scope.resourceName,
+      resourceUid: h.scope.resourceUid ?? "",
+      sandboxId: h.scope.sandboxId,
+      sessionId: h.scope.sessionId,
+    };
+    // The entry already started, so a cancel can neither retire nor re-settle it — and a cancel
+    // for an id the journal never held is a bounded no-op rather than an error.
+    await h.runner.handleSessionMessageCancel(randomUUID());
+    await h.runner.handleSessionMessageCancel(h.message.messageId);
+    await journal.markSessionStarted(h.message.messageId, scope);
+    await h.runner.handleSessionMessageCancel(h.message.messageId);
+    expect((await journal.read(h.message.messageId))?.phase).toBe("started");
+    expect(settledOf(h.sent)).toHaveLength(0);
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("ignores a Session verification whose entry settled while it waited in the queue", async () => {
+    const h = harness();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    const scope = {
+      environmentGeneration: h.scope.environmentGeneration,
+      resourceName: h.scope.resourceName,
+      resourceUid: h.scope.resourceUid ?? "",
+      sandboxId: h.scope.sandboxId,
+      sessionId: h.scope.sessionId,
+    };
+    // The Session turn is already settled when the late verified frame is processed.
+    await h.runner.handleSessionMessageVerified({
+      type: "session:message:verified",
+      requestId: h.message.requestId,
+      status: "rejected",
+      code: "scope_inactive",
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    expect(settledOf(h.sent)).toHaveLength(1);
+    expect(h.workerInputs).toHaveLength(1);
+    void scope;
+    await h.runner.close();
+  });
+
+  it("ignores a Session grant that arrived before its entry was journaled", async () => {
+    const h = harness();
+    // No entry exists for this request id: the verified frame authorizes nothing.
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(randomUUID()));
+    expect(h.workerInputs).toHaveLength(0);
+    expect(settledOf(h.sent)).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("drops a queued Session grant denied the model grant while the drain waited", async () => {
+    const deliveryStarted = deferred<void>();
+    const releaseDelivery = deferred<ExecResult>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const h = harness({
+      worker: async () => {
+        if (h.workerInputs.length === 1) {
+          deliveryStarted.resolve();
+          return releaseDelivery.promise;
+        }
+        return completedExec("session");
+      },
+      runnerOptions: {
+        openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-im" }),
+      },
+    });
+    const delivery = cloudDeliveryFixture({ sessionId: h.message.targetSessionId });
+    const realList = h.journal.list.bind(h.journal);
+    let armed = false;
+    let consumed = false;
+    vi.spyOn(h.journal, "list").mockImplementation(async () => {
+      if (armed && !consumed) {
+        consumed = true;
+        gateEntered.resolve();
+        await gate.promise;
+      }
+      return realList();
+    });
+    await h.runner.handleDeliveryRun(deliveryRunFrame(delivery));
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleVerified(deliveryVerifiedFrame(delivery.requestId));
+    await deliveryStarted.promise;
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    armed = true;
+    releaseDelivery.resolve(completedExec("im"));
+    await gateEntered.promise;
+    // The queue overflow is not the point here: the queued Session grant is denied by a dead
+    // generation while the drain is inside its own journal lookup, so it never starts.
+    h.runner.onChannelClosed();
+    gate.resolve();
+    await waitFor(() => h.runner.activeMessageId === undefined, "session drain");
+    expect(await journal.read(h.message.messageId)).toMatchObject({ phase: "received" });
+    expect(h.workerInputs).toHaveLength(1);
+    vi.restoreAllMocks();
+    await h.runner.close();
+  });
+
+  it("ignores a Session run frame whose target is another Session scope", async () => {
+    const h = harness({ runnerOptions: { scope: () => ({ ...h.scope, sessionId: randomUUID() }) } });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    expect(sessionReceiptsOf(h.sent)).toHaveLength(0);
+    expect(await journal.list()).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("settles a Session turn cancelled before its worker was ever opened", async () => {
+    const opened = deferred<void>();
+    const h = harness({
+      worker: async () => {
+        throw new Error("the worker must not run after a pre-open cancellation");
+      },
+      runnerOptions: {
+        openSessionExecution: async () => {
+          opened.resolve();
+          return { close: async () => undefined, executionDir: "/run/opentag-execution/turn-session" };
+        },
+      },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    // The cancel lands as soon as the credential bridge is open, before the worker document is
+    // built: the turn settles as a not-started cancellation with no worker execution.
+    await opened.promise;
+    h.runner.handleSessionMessageCancel(h.message.messageId);
+    await waitFor(
+      () => settledOf(h.sent).some((frame) => frame.messageId === h.message.messageId),
+      "pre-worker cancellation",
+    );
+    expect(settledOf(h.sent)[0]?.outcome).toBe("cancelled");
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("marks a Session settlement as failed when its workspace checkpoint throws", async () => {
+    const h = harness({
+      runnerOptions: {
+        checkpoint: async () => {
+          throw new Error("session workspace save failed");
+        },
+        onPersistenceError: () => undefined,
+      },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    // The save failure is recorded honestly as a failed settlement, never as a completion.
+    expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+    expect(await journal.read(h.message.messageId)).toMatchObject({
+      phase: "reported",
+      settlement: { outcome: "failed" },
+    });
     await h.runner.close();
   });
 

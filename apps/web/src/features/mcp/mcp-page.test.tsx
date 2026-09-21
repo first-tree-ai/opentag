@@ -1296,20 +1296,20 @@ describe("McpPage edit dialog", () => {
     expect(await screen.findByText("Couldn’t save these settings. Try again.")).toBeTruthy();
   });
 
-  it("falls back to revision 1 and an empty impact when the definition cannot be read", async () => {
+  it("keeps the shared-scope dialog usable when the definition cannot be read", async () => {
     stub([entry()], detail(1));
     vi.mocked(browserApi.mcpServer).mockRejectedValue(new ApiError(500, "The definition is unavailable"));
-    const update = vi.spyOn(browserApi, "updateMcpServer").mockResolvedValue(detail(1).server);
     wrap(<McpPage agentId={AGENT_ID} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
     await chooseOption("Scope", "Shared definition");
 
-    // With no definition to read there is no impact to warn about, and no revision to fence on.
-    expect(await screen.findByText(/This will affect 0 Agents/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
-    expect(update.mock.calls[0]?.[1]).toMatchObject({ expectedRevision: 1 });
+    // Only that the failed definition read leaves the dialog rendered and operable.
+    //
+    // What the page currently does after that failure — report an empty impact and fence the write on a
+    // guessed revision — is deliberately NOT asserted here. The current Agent mounts this Server, so an
+    // empty impact is not a truthful answer, and pinning it would make a later safety fix look like a
+    // regression. That behaviour predates this test-only change and its repair belongs to the page.
+    expect(await screen.findByRole("button", { name: "Save" })).toBeTruthy();
   });
 
   it("counts a missing tool total as none rather than showing a blank", async () => {

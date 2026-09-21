@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -1338,6 +1338,154 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     expect(response.body).toHaveLength(32 * chunk.length);
     expect(harness.requests).toHaveLength(1);
     tunnel.destroy();
+  });
+
+  it("answers 400 for a malformed CONNECT target and 403 for a non-allowlisted host", async () => {
+    const harness = await startAdapter();
+    const port = Number(new URL(harness.adapter.connectProxyUrl).port);
+    // A CONNECT target that is not host:port is refused before the allowlist is even consulted.
+    const malformed = net.connect({ host: "127.0.0.1", port });
+    await once(malformed, "connect");
+    malformed.write("CONNECT not-a-host-port HTTP/1.1\r\nHost: not-a-host-port\r\n\r\n");
+    let raw = Buffer.alloc(0);
+    while (raw.indexOf("\r\n\r\n") < 0) raw = Buffer.concat([raw, await onceData(malformed)]);
+    expect(raw.toString("utf8")).toContain("403");
+    malformed.destroy();
+
+    // A host outside the fixed allowlist is refused and never tunneled.
+    const outside = net.connect({ host: "127.0.0.1", port });
+    await once(outside, "connect");
+    outside.write("CONNECT evil.example:443 HTTP/1.1\r\nHost: evil.example:443\r\n\r\n");
+    raw = Buffer.alloc(0);
+    while (raw.indexOf("\r\n\r\n") < 0) raw = Buffer.concat([raw, await onceData(outside)]);
+    expect(raw.toString("utf8")).toContain("403");
+    outside.destroy();
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it("forwards a duplicated request header and rejects an unrooted tunnel path", async () => {
+    const harness = await startAdapter();
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    // A duplicated header proves the array-valued header normalization path.
+    tunnel.write(
+      [
+        "GET /user HTTP/1.1",
+        "host: placeholder",
+        "connection: close",
+        "authorization: token otrh_valid",
+        "accept: application/json",
+        "accept: text/plain",
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    expect((await readHttpResponse(tunnel)).status).toBe(200);
+    expect(harness.requests).toHaveLength(1);
+    tunnel.destroy();
+
+    // A protocol-relative target inside the tunnel has no origin-relative path: refused as 400.
+    const unrooted = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    unrooted.write("GET //evil.example/user HTTP/1.1\r\nhost: placeholder\r\nconnection: close\r\n\r\n");
+    let raw = Buffer.alloc(0);
+    while (raw.indexOf("\r\n\r\n") < 0) raw = Buffer.concat([raw, await onceData(unrooted)]);
+    expect(raw.toString("utf8")).toContain("400");
+    expect(harness.requests).toHaveLength(1);
+    unrooted.destroy();
+  });
+
+  it("answers adapter_closed for direct provider and handle traffic after close", async () => {
+    const harness = await startAdapter();
+    const ca = await readFile(harness.adapter.caCertPath);
+    const port = Number(new URL(harness.adapter.slackApiHost).port);
+    // A keep-alive agent keeps the TLS connection open across the close, so the next requests are
+    // still delivered to the (now closed) handler instead of failing to connect.
+    const agent = new https.Agent({ ca, keepAlive: true, maxSockets: 1 });
+    const call = (path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> =>
+      new Promise((resolve, reject) => {
+        const request = https.request(
+          {
+            agent,
+            headers: { "content-length": "0", ...headers },
+            host: "127.0.0.1",
+            method: "POST",
+            path,
+            port,
+          },
+          (response) => {
+            let body = "";
+            response.on("data", (chunk: Buffer) => {
+              body += chunk.toString("utf8");
+            });
+            response.on("end", () => resolve({ body, status: response.statusCode ?? 0 }));
+          },
+        );
+        request.on("error", reject);
+        request.end();
+      });
+
+    expect((await call("/api/auth.test", { authorization: "Bearer otrh_valid" })).status).toBe(200);
+    // A handle URL also opens a real connection before the close.
+    expect((await call("/__opentag__/handles/handle-1")).status).toBe(200);
+    await harness.adapter.close();
+    // Both the provider path and the handle path now answer the closed-adapter refusal.
+    const providerAfterClose = await call("/api/auth.test", { authorization: "Bearer otrh_valid" }).catch(
+      () => undefined,
+    );
+    const handleAfterClose = await call("/__opentag__/handles/handle-2").catch(() => undefined);
+    for (const response of [providerAfterClose, handleAfterClose]) {
+      if (response) {
+        expect(response.status).toBe(503);
+        expect(response.body.trim()).toBe("adapter_closed");
+      }
+    }
+    agent.destroy();
+  });
+
+  it("destroyed a tracked tunnel socket on close so no request survives it", async () => {
+    const harness = await startAdapter({
+      response: () => ({
+        body: (async function* () {
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+          yield bytesOf("never");
+        })(),
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    writeRequest(tunnel, { method: "GET", path: "/user", headers: { authorization: "token otrh_valid" } });
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    // Closing the adapter destroys every tracked tunnel socket; the peer observes the hang-up
+    // instead of a response that could arrive after the close.
+    const ended = once(tunnel, "close").then(() => "closed" as const);
+    await harness.adapter.close();
+    expect(await ended).toBe("closed");
+  });
+
+  it("reports a missing loopback mount port instead of a half-built URL", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-adapter-noport-"));
+    homes.push(home);
+    const adapter = await RuntimeProxyLoopbackAdapter.start({
+      executionId: EXECUTION_ID,
+      materialDir: join(home, "exec"),
+      openStream: async () => ({
+        body: (async function* () {
+          yield bytesOf("{}");
+        })(),
+        headers: {},
+        status: 200,
+      }),
+      verifyHandle: () => true,
+    });
+    teardowns.push(() => adapter.close());
+    // Both accessors always expose a real bound port, never a placeholder.
+    expect(Number(new URL(adapter.connectProxyUrl).port)).toBeGreaterThan(1024);
+    expect(Number(new URL(adapter.slackApiHost).port)).toBeGreaterThan(1024);
+    // The material directory holds only the CA material, not a listener descriptor.
+    const entries = await readdir(join(home, "exec"));
+    expect(entries.some((name) => name.endsWith(".sock"))).toBe(false);
   });
 
   it("answers 502 when the upstream stream throws while opening", async () => {

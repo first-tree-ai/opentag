@@ -17,7 +17,7 @@ import {
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -761,6 +761,88 @@ describe("restoreWorkspaceArchive integrity", () => {
     await writeFile(blocker, "not a directory");
     await expectArchiveError(() => restoreWorkspaceArchive(archivePath, join(blocker, "child"), info), "io-failed");
     expect(await readFile(blocker, "utf8")).toBe("not a directory");
+  });
+
+  it("creates implicit parents for nested members and applies declared directory modes last", async () => {
+    const root = await makeRoot();
+    // Nested members without explicit directory entries force the implicit-parent path, and a
+    // restrictive declared mode must be applied AFTER the children exist.
+    const archive = makeTarGz([
+      { content: "deep", name: "a/b/c/deep.txt" },
+      { mode: 0o500, name: "a/b/", type: "directory" },
+      { content: "top", name: "top.txt" },
+    ]);
+    const archivePath = await writeArchive(root, archive);
+    const destination = join(root, "restored");
+    await restoreWorkspaceArchive(archivePath, destination, infoOf(archive));
+    expect(await readFile(join(destination, "a", "b", "c", "deep.txt"), "utf8")).toBe("deep");
+    expect(await readFile(join(destination, "top.txt"), "utf8")).toBe("top");
+    // The declared 0500 mode was applied in finalize, after the child was written.
+    expect((await stat(join(destination, "a", "b"))).mode & 0o777).toBe(0o500);
+    await chmod(join(destination, "a", "b"), 0o700);
+    expect(await stagingLeftovers(root)).toEqual([]);
+  });
+
+  it("rejects a member nested beneath a non-directory and one colliding with a directory", async () => {
+    const root = await makeRoot();
+    // A file declared first, then a member beneath it, is a structural escape of the namespace.
+    const nestedUnderFile = makeTarGz([
+      { content: "file", name: "blocked" },
+      { content: "child", name: "blocked/child.txt" },
+    ]);
+    const nestedPath = await writeArchive(root, nestedUnderFile);
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(nestedPath, join(root, "dest-nested"), infoOf(nestedUnderFile)),
+      "unsafe-member",
+    );
+    await expect(lstat(join(root, "dest-nested"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await stagingLeftovers(root)).toEqual([]);
+
+    // An implicit directory created for an earlier member cannot later be redeclared as a FILE.
+    const collision = makeTarGz([
+      { content: "child", name: "implicit/child.txt" },
+      { content: "now a file", name: "implicit" },
+    ]);
+    const collisionPath = await writeArchive(root, collision);
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(collisionPath, join(root, "dest-collision"), infoOf(collision)),
+      "unsafe-member",
+    );
+    expect(await stagingLeftovers(root)).toEqual([]);
+  });
+
+  it("refuses a duplicated member and a NUL byte in a member or link name", async () => {
+    const root = await makeRoot();
+    const duplicated = makeTarGz([
+      { content: "one", name: "dup.txt" },
+      { content: "two", name: "dup.txt" },
+    ]);
+    const duplicatePath = await writeArchive(root, duplicated);
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(duplicatePath, join(root, "dest-dup"), infoOf(duplicated)),
+      "duplicate-member",
+    );
+
+    // A NUL byte inside a member name is refused: the name normalizer rejects it explicitly. The
+    // header is rewritten byte-for-byte with a literal NUL because ustar names are NUL-padded.
+    const withNul = makeTarGz([{ content: "x", name: "plain.txt" }]);
+    const nulVariant = Buffer.from(withNul);
+    const gunzipped = gunzipSync(nulVariant);
+    // The first 100 bytes of the first ustar header are the member name.
+    gunzipped.writeUInt8(0x00, 0);
+    gunzipped.write("a", 0, "utf8");
+    gunzipped.writeUInt8(0x00, 1);
+    gunzipped.write("b.txt", 2, "utf8");
+    const withNulAgain = gzipSync(gunzipped);
+    const nulPath = await writeArchive(root, withNulAgain);
+    // A NUL-bearing member name is refused by the archive reader itself (tar-stream sees a
+    // malformed header), which is still a fail-closed refusal before any destination work.
+    await expectArchiveError(
+      () => restoreWorkspaceArchive(nulPath, join(root, "dest-nul"), infoOf(withNulAgain)),
+      "invalid-archive",
+    );
+    await expect(lstat(join(root, "dest-nul"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await stagingLeftovers(root)).toEqual([]);
   });
 
   it("strips setuid/setgid/sticky bits and never restores unsafe ownership bits", async () => {

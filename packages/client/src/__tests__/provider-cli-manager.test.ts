@@ -738,29 +738,37 @@ describe("ProviderCliManager selection-invalid and layout paths", () => {
 
   it("dry-run reports unsupported_platform when the catalog has no artifact for this platform", async () => {
     const { accountHome } = await makeManager({});
-    const base = (await makeManagedCatalog("feishu", "1.0.92")).catalog[0] as ProviderCliCatalogEntry;
-    // A catalog whose only artifact targets the OTHER supported platform is unsupported here for
-    // real: `findCatalogArtifact` matches on this process's platform.
-    const otherPlatform = process.platform === "darwin" ? "linux" : "darwin";
-    const foreign = {
-      ...base,
-      artifacts: [
-        {
-          ...(base.artifacts[0] as (typeof base.artifacts)[number]),
-          platform: otherPlatform,
-          arch: "x64",
-        },
-      ],
-    } satisfies ProviderCliCatalogEntry;
-    const manager = new ProviderCliManager({
-      accountHome,
-      fetcher: loopbackFetcher,
-      env: { PATH: "" },
-      catalog: [foreign],
-    });
-    const result = await manager.ensure("feishu", { dryRun: true });
-    expect(result.ok).toBe(false);
-    expect(result.diagnostic?.code).toBe("unsupported_platform");
+    // `makeManagedCatalog` starts a real loopback HTTP server, so its handle is closed in `finally`
+    // even though only the catalog entry is read here -- otherwise the listener outlives the test and
+    // accumulates across in-process runs.
+    const { server, catalog } = await makeManagedCatalog("feishu", "1.0.92");
+    try {
+      const base = catalog[0] as ProviderCliCatalogEntry;
+      // A catalog whose only artifact targets the OTHER supported platform is unsupported here for
+      // real: `findCatalogArtifact` matches on this process's platform.
+      const otherPlatform = process.platform === "darwin" ? "linux" : "darwin";
+      const foreign = {
+        ...base,
+        artifacts: [
+          {
+            ...(base.artifacts[0] as (typeof base.artifacts)[number]),
+            platform: otherPlatform,
+            arch: "x64",
+          },
+        ],
+      } satisfies ProviderCliCatalogEntry;
+      const manager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: "" },
+        catalog: [foreign],
+      });
+      const result = await manager.ensure("feishu", { dryRun: true });
+      expect(result.ok).toBe(false);
+      expect(result.diagnostic?.code).toBe("unsupported_platform");
+    } finally {
+      await server.close();
+    }
   });
 });
 

@@ -167,3 +167,79 @@ describe("Claude Code hosted tool bridge", () => {
     await bridge.close();
   });
 });
+
+describe("Claude Code MCP gateway entry", () => {
+  const gateway = { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" };
+
+  /*
+   * The gateway entry is independent of the loopback bridge: an execution may hold an MCP bearer
+   * while the run has no hosted tools at all, and it must still reach its bound MCP Servers.
+   */
+  it("writes the remote entry with no hosted tools and starts no local server", async () => {
+    const bridge = await startClaudeCodeHostedToolBridge(
+      undefined,
+      "run-mcp-only",
+      new AbortController().signal,
+      gateway,
+    );
+    try {
+      const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
+        mcpServers: Record<string, { type: string; url: string; headers: Record<string, string> }>;
+      };
+      expect(Object.keys(configuration.mcpServers)).toEqual(["opentag-mcp"]);
+      expect(configuration.mcpServers["opentag-mcp"]).toEqual({
+        type: "http",
+        url: gateway.url,
+        headers: { Authorization: `Bearer ${gateway.token}` },
+      });
+      expect((await stat(bridge.configPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  /*
+   * A whole-server rule rather than one per tool: the catalogue is resolved by the Server at
+   * `tools/list` time, so its tool names are not known when this file is written.
+   */
+  it("allows the gateway as a whole server", async () => {
+    const bridge = await startClaudeCodeHostedToolBridge(
+      undefined,
+      "run-mcp-allow",
+      new AbortController().signal,
+      gateway,
+    );
+    try {
+      expect(bridge.allowedTools).toEqual(["mcp__opentag-mcp"]);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("carries both entries when the run also has hosted tools", async () => {
+    const bridge = await startClaudeCodeHostedToolBridge(
+      { definitions: [{ name: "example", inputSchema: { type: "object" } }], handler: vi.fn() },
+      "run-both",
+      new AbortController().signal,
+      gateway,
+    );
+    try {
+      const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
+        mcpServers: Record<string, unknown>;
+      };
+      expect(Object.keys(configuration.mcpServers).sort()).toEqual(["opentag", "opentag-mcp"]);
+      expect(bridge.allowedTools).toEqual(["mcp__opentag__example", "mcp__opentag-mcp"]);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("writes no remote entry when the execution holds no bearer", async () => {
+    const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-none", new AbortController().signal);
+    try {
+      await expect(readFile(bridge.configPath, "utf8")).resolves.toBe('{"mcpServers":{}}\n');
+    } finally {
+      await bridge.close();
+    }
+  });
+});

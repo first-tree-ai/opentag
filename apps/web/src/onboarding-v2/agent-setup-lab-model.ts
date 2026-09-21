@@ -332,6 +332,7 @@ export type LabPendingEvent =
   | "reconnect-computer"
   | "finish-readiness"
   | "scan-feishu"
+  | "activate-feishu"
   | "finish-slack"
   | "finish-handoff";
 
@@ -354,6 +355,7 @@ export function pendingLabEvent(memory: MemorySetupAdapter): LabPendingEvent | u
     return "finish-readiness";
   }
   if (snapshot.messaging.kind === "authorizing") {
+    if (snapshot.messaging.provider === "feishu" && snapshot.messaging.activation) return "activate-feishu";
     return snapshot.messaging.provider === "feishu" ? "scan-feishu" : "finish-slack";
   }
   if (snapshot.messaging.kind === "waiting-handoff") return "finish-handoff";
@@ -367,6 +369,7 @@ export function runPendingLabEvent(memory: MemorySetupAdapter): void {
   else if (event === "reconnect-computer") memory.controls.setComputerOnline(true);
   else if (event === "finish-readiness") memory.controls.runDoctor();
   else if (event === "scan-feishu") memory.controls.scanFeishuCode();
+  else if (event === "activate-feishu") memory.controls.scanFeishuCode();
   else if (event === "finish-slack") memory.controls.completeSlackInstall();
   else if (event === "finish-handoff") memory.controls.completeHandoff();
 }

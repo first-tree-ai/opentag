@@ -195,10 +195,13 @@ function failureLabel(failure: LabObservationFailure): string {
 }
 
 function runtimeLabel(runtime: AgentRuntimeProvider): string {
-  return runtime === "codex" ? m.onboarding_v2_runtime_codex_title() : m.onboarding_v2_runtime_claude_code_title();
+  if (runtime === "codex") return m.onboarding_v2_runtime_codex_title();
+  if (runtime === "claude-code") return m.onboarding_v2_runtime_claude_code_title();
+  return m.onboarding_v2_runtime_pi_title();
 }
 
 function pendingLabel(event: LabPendingEvent | undefined): string {
+  if (event === "activate-feishu") return m.onboarding_v2_lab_activate_feishu();
   if (event === "complete-admission") return m.onboarding_v2_lab_event_complete_admission();
   if (event === "connect-computer") return m.onboarding_v2_lab_event_connect_computer();
   if (event === "reconnect-computer") return m.onboarding_v2_lab_event_reconnect_computer();
@@ -249,6 +252,7 @@ function FlowProgressControl({
   onAutomationChange,
   onFailPending,
   onRunPending,
+  onWaitForActivation,
   pending,
 }: {
   readonly automation: LabAutomation;
@@ -257,6 +261,7 @@ function FlowProgressControl({
   readonly onAutomationChange: (automation: LabAutomation) => void;
   readonly onFailPending: () => void;
   readonly onRunPending: () => void;
+  readonly onWaitForActivation?: () => void;
   readonly pending: LabPendingEvent;
 }) {
   return (
@@ -295,6 +300,11 @@ function FlowProgressControl({
           </Button>
         ) : null}
       </div>
+      {onWaitForActivation ? (
+        <Button onClick={onWaitForActivation} size="compact" variant="outline">
+          {m.onboarding_v2_lab_wait_feishu_activation()}
+        </Button>
+      ) : null}
     </section>
   );
 }
@@ -492,6 +502,9 @@ export function AgentSetupLabControls({
               onAutomationChange={onAutomationChange}
               onFailPending={onFailPending}
               onRunPending={onRunPending}
+              onWaitForActivation={
+                pending === "scan-feishu" ? () => memory.controls.awaitFeishuActivation() : undefined
+              }
               pending={pending}
             />
           ) : null}

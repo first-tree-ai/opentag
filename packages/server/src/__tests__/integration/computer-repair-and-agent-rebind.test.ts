@@ -171,6 +171,7 @@ async function pendingDelivery(
           },
         },
         runtime: {
+          contextTreeRepository: null,
           revision: {
             agent: { sequence: 1, id: "a".repeat(64) },
             session: { sequence: 1, id: "b".repeat(64) },

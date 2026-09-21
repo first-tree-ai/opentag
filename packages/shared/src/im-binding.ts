@@ -85,6 +85,8 @@ export function hasRequiredFeishuTenantScopes(scopes: readonly string[]): boolea
   return FEISHU_REQUIRED_TENANT_SCOPES.every((scope) => granted.has(scope));
 }
 
+const REQUIRED_TENANT_SCOPE_SET = new Set<string>(FEISHU_REQUIRED_TENANT_SCOPES);
+
 export const SLACK_REQUIRED_BOT_SCOPES = [
   "app_mentions:read",
   "channels:history",
@@ -245,12 +247,48 @@ export const ImBindingAdminDetailSchema = ImBindingSummarySchema.extend({
 export const FeishuSetupIntentSchema = z.enum(["create", "reauthorize", "replace"]);
 export const FeishuSetupStateSchema = z.enum([
   "awaiting_user",
+  "pending_activation",
   "validating",
   "succeeded",
   "failed",
   "expired",
   "canceled",
 ]);
+
+/**
+ * Why a durable authorization candidate is not activated yet. `checking` means no completed
+ * observation is available — a check is in flight or the candidate was just saved. The remaining
+ * reasons are the bounded classification of one completed upstream observation, never a guess at
+ * an approval event.
+ */
+export const FEISHU_SETUP_ACTIVATION_REASONS = [
+  "checking",
+  "permissions_pending",
+  "app_unavailable",
+  "runtime_unavailable",
+  "temporary_failure",
+] as const;
+export const FeishuSetupActivationReasonSchema = z.enum(FEISHU_SETUP_ACTIVATION_REASONS);
+
+export const FeishuSetupActivationSchema = z
+  .object({
+    appId: z.string().min(1).max(255),
+    reason: FeishuSetupActivationReasonSchema,
+    /** Only members of the canonical required tenant scope list; the app secret is never exposed. */
+    missingScopes: z
+      .array(z.string().min(1).max(160))
+      .max(FEISHU_REQUIRED_TENANT_SCOPES.length)
+      .refine(
+        (scopes) =>
+          scopes.every((scope) => REQUIRED_TENANT_SCOPE_SET.has(scope)) && new Set(scopes).size === scopes.length,
+        {
+          message: "missingScopes must be unique canonical required tenant scopes",
+        },
+      ),
+    lastCheckedAt: z.string().datetime().nullable(),
+    nextCheckAt: z.string().datetime(),
+  })
+  .strict();
 
 export const FeishuSetupAttemptSchema = z
   .object({
@@ -263,8 +301,29 @@ export const FeishuSetupAttemptSchema = z
     errorCode: z.string().min(1).max(120).nullable(),
     completedAt: z.string().datetime().nullable(),
     createdAt: z.string().datetime(),
+    /** Present for a durable `pending_activation`/`validating` candidate; absent for legacy QR attempts. */
+    activation: FeishuSetupActivationSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((attempt, context) => {
+    if (attempt.state === "pending_activation" && !attempt.activation) {
+      context.addIssue({
+        code: "custom",
+        path: ["activation"],
+        message: "A saved candidate requires activation details",
+      });
+    }
+    if (
+      attempt.activation &&
+      (attempt.qrUrl !== null || !["pending_activation", "validating"].includes(attempt.state))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["activation"],
+        message: "Activation details belong only to an open candidate without a QR",
+      });
+    }
+  });
 
 export const CreateFeishuSetupAttemptRequestSchema = z
   .object({
@@ -355,7 +414,7 @@ export const ImBindingDiagnosticsSchema = z
     provider: ImProviderSchema,
     ready: z.boolean(),
     agentRuntimeReadiness: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
-    providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable"]),
+    providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable", "not_applicable"]),
     providerCliReason: ProviderCliArtifactPublicReasonSchema.optional(),
     credentialExecutionReadiness: IntegrationCredentialExecutionStatusSchema,
     credentialExecutionReason: IntegrationCredentialExecutionReasonSchema.optional(),
@@ -415,6 +474,8 @@ export type ProviderCliHandoffProgress = z.infer<typeof ProviderCliHandoffProgre
 export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;
 export type FeishuSetupState = z.infer<typeof FeishuSetupStateSchema>;
+export type FeishuSetupActivationReason = z.infer<typeof FeishuSetupActivationReasonSchema>;
+export type FeishuSetupActivation = z.infer<typeof FeishuSetupActivationSchema>;
 export type FeishuSetupAttempt = z.infer<typeof FeishuSetupAttemptSchema>;
 export type SlackConfigurationIntent = z.infer<typeof SlackConfigurationIntentSchema>;
 export type UnbindAgentMessagingRequest = z.infer<typeof UnbindAgentMessagingRequestSchema>;

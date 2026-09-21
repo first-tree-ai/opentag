@@ -6,6 +6,7 @@ import { generateSecret } from "./security.js";
 export const BROWSER_COOKIE_NAMES = {
   csrf: "opentag_csrf",
   slackOAuthContext: "opentag_slack_oauth_context",
+  mcpOAuthContext: "opentag_mcp_oauth_context",
 } as const;
 
 export function parseCookies(header: string | undefined): Record<string, string> {
@@ -75,6 +76,39 @@ export function setSlackOAuthContextCookie(
 export function clearSlackOAuthContextCookie(reply: FastifyReply, path: string, secure: boolean): void {
   appendSetCookies(reply, [
     cookie(BROWSER_COOKIE_NAMES.slackOAuthContext, "", {
+      httpOnly: true,
+      maxAge: 0,
+      path,
+      secure,
+    }),
+  ]);
+}
+
+/**
+ * Binds an MCP authorization flow to the browser that started it.
+ *
+ * Scoped to the callback path rather than `/`, following the Slack context cookie: the value is only
+ * ever needed on the way back from the authorization server, so it should not accompany every other
+ * request the browser makes.
+ */
+export function setMcpOAuthContextCookie(
+  reply: FastifyReply,
+  value: string,
+  options: { path: string; secure: boolean; maxAge?: number },
+): void {
+  appendSetCookies(reply, [
+    cookie(BROWSER_COOKIE_NAMES.mcpOAuthContext, value, {
+      httpOnly: true,
+      maxAge: options.maxAge ?? 600,
+      path: options.path,
+      secure: options.secure,
+    }),
+  ]);
+}
+
+export function clearMcpOAuthContextCookie(reply: FastifyReply, path: string, secure: boolean): void {
+  appendSetCookies(reply, [
+    cookie(BROWSER_COOKIE_NAMES.mcpOAuthContext, "", {
       httpOnly: true,
       maxAge: 0,
       path,

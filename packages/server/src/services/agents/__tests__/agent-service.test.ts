@@ -1,4 +1,9 @@
-import { FEISHU_REQUIRED_TENANT_SCOPES, RUNTIME_MAX_DURATION_MS, type TurnReportRequest } from "@opentag/shared";
+import {
+  type AgentRuntimeProvider,
+  FEISHU_REQUIRED_TENANT_SCOPES,
+  RUNTIME_MAX_DURATION_MS,
+  type TurnReportRequest,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
@@ -64,7 +69,7 @@ async function createAgent(
   userId: string,
   computerId: string,
   name = "code-reviewer",
-  runtimeProvider: "codex" | "claude-code" = "codex",
+  runtimeProvider: AgentRuntimeProvider = "codex",
 ) {
   return service.createForAccount(userId, { computerId, displayName: name, name, runtimeProvider });
 }
@@ -394,6 +399,7 @@ describe("AgentService", () => {
   it.each([
     ["codex", 15, { inputTokens: 10, cachedInputTokens: 20, outputTokens: 5 }],
     ["claude-code", 35, { inputTokens: 10, cachedInputTokens: 20, outputTokens: 5 }],
+    ["pi", 35, { inputTokens: 10, cachedInputTokens: 20, outputTokens: 5 }],
   ] as const)("aggregates %s usage and current activity", async (runtimeProvider, tokens, usageFields) => {
     const { bootstrap, computer, service } = await fixture();
     const created = await createAgent(
@@ -424,7 +430,7 @@ describe("AgentService", () => {
       tasks: 2,
       measuredTasks: 1,
       failed: 1,
-      inputTokens: runtimeProvider === "claude-code" ? 30 : 10,
+      inputTokens: runtimeProvider === "codex" ? 10 : 30,
       cachedInputTokens: 20,
       outputTokens: 5,
       tokens,
@@ -543,7 +549,7 @@ describe("AgentService", () => {
     expect(profile).toMatchObject({
       displayName: "Renamed",
       revision: 2,
-      runtimeConfig: { revision: created.runtimeConfig.revision },
+      runtimeConfig: { contextTreeRepository: null, revision: created.runtimeConfig.revision },
     });
     const changed = await service.updateById(bootstrap.userId, created.id, {
       expectedRevision: 2,

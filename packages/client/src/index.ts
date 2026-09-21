@@ -75,6 +75,11 @@ export {
 } from "./auth/machine-credentials.js";
 export { type AccessTokenLease, AccessTokenProvider, type TokenProviderOptions } from "./auth/token-provider.js";
 export {
+  type CloudSandboxCommandOptions,
+  CloudSandboxCredentialBridge,
+  type CloudSandboxCredentialBridgeOpenOptions,
+} from "./cloud-runtime/sandbox-credential-bridge.js";
+export {
   checkServerHealth,
   SERVER_HEALTH_TIMEOUT_MS,
   ServerHealthConfigurationError,
@@ -147,6 +152,21 @@ export {
   type PiRpcSpawnOptions,
 } from "./providers/pi/rpc-wire.js";
 export {
+  assembleContextTreeSkills,
+  CONTEXT_TREE_PACKAGED_SKILL_DIRECTORIES,
+  copyIsolatedPiConfig,
+  createRunnerIdentity,
+  linuxAmd64ProviderCliPlans,
+  parseRunnerCliArgv,
+  parseRunnerIdentity,
+  probeRunnerTools,
+  RUNNER_CLI_NAME,
+  RUNNER_IDENTITY_SCHEMA_VERSION,
+  redactAcceptanceRecord,
+  runRunnerAcceptance,
+  runRunnerCli,
+} from "./runner/index.js";
+export {
   AdmissionController,
   type AdmissionDecision,
   type AdmissionLimits,
@@ -192,9 +212,12 @@ export {
   providerReadiness,
   type ResolvedClaudeCodeFactoryOptions,
   type ResolvedCodexFactoryOptions,
+  type ResolvedPiFactoryOptions,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
+  resolvedPiFactory,
+  resolvePiHome,
 } from "./runtime/client-runtime-composition.js";
 export {
   allocateComputerIdentity,
@@ -211,7 +234,6 @@ export {
   type ContextTreeManagerOptions,
   type ContextTreePackage,
   type ContextTreeStatus,
-  readContextTreePreparation,
   resolveContextTreePackage,
   runContextTreeCli,
 } from "./runtime/context-tree.js";
@@ -406,6 +428,53 @@ export {
   type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
 export {
+  type PreparedRuntimeCredentialEnvironment,
+  type PreparedWebToolsLaunch,
+  RuntimeCredentialEnvironmentManager,
+  type RuntimeCredentialEnvironmentManagerOptions,
+  type RuntimeCredentialMode,
+  type RuntimeCredentialPrepareSubject,
+  type RuntimeCredentialRunSubject,
+} from "./runtime/runtime-credential-environment-manager.js";
+export {
+  parseRuntimeCredentialServerFrame,
+  RUNTIME_CREDENTIAL_CAPABILITY,
+  RUNTIME_EXECUTION_MAX_LIFETIME_MS,
+  RUNTIME_PROVIDER_PROXY_CAPABILITY,
+  RUNTIME_PROVIDER_PROXY_PATH,
+  RUNTIME_PROXY_DATA_BINARY_FRAME_MAX_BYTES,
+  RUNTIME_PROXY_DATA_CHUNK_BYTES,
+  RUNTIME_PROXY_DATA_HEADER_MAX_BYTES,
+  RUNTIME_PROXY_DATA_INITIAL_CREDIT_BYTES,
+  RUNTIME_PROXY_DATA_MAX_STREAMS,
+  RUNTIME_PROXY_PROVIDERS,
+  RUNTIME_PROXY_TICKET_TTL_MS,
+  RUNTIME_WEB_TOOLS_CAPABILITY,
+  type RuntimeCredentialGrant,
+  type RuntimeCredentialResult,
+  type RuntimeCredentialRevoked,
+  type RuntimeCredentialServerFrame,
+  type RuntimeExecutionOpenRequest,
+  type RuntimeExecutionOpenResult,
+  type RuntimeExecutionProvider,
+  type RuntimeExecutionSandbox,
+  type RuntimeExecutionService,
+  type RuntimeExecutionSource,
+  type RuntimeProxyCliMetadata,
+  type RuntimeProxyProvider,
+} from "./runtime/runtime-credential-frames.js";
+export {
+  defaultRuntimeProxyDataConnectionFactory,
+  RuntimeCredentialRelay,
+  RuntimeCredentialRelayError,
+  type RuntimeCredentialRelayErrorCode,
+  type RuntimeCredentialRelayOptions,
+  type RuntimeProxyDataConnectInput,
+  type RuntimeProxyDataConnectionFactory,
+  type RuntimeProxyDataConnectionLike,
+  type RuntimeRelayScheduler,
+} from "./runtime/runtime-credential-relay.js";
+export {
   DEFAULT_RUNTIME_RETRY_POLICY,
   type DurableFailure,
   type DurableRetryability,
@@ -431,6 +500,36 @@ export {
   sessionBindingPath,
   snapshotPath,
 } from "./runtime/runtime-paths.js";
+export {
+  RuntimeProxyDataConnection,
+  type RuntimeProxyDataConnectionOptions,
+  RuntimeProxyDataError,
+  type RuntimeProxyDataErrorCode,
+  type RuntimeProxyOpenStreamRequest,
+  type RuntimeProxyStreamResponse,
+} from "./runtime/runtime-proxy-data-client.js";
+export {
+  generateExecutionCa,
+  RUNTIME_PROVIDER_ORIGIN_HEADER,
+  RUNTIME_PROXY_ALLOWED_CONNECT_HOSTS,
+  RUNTIME_PROXY_HANDLE_PATH_PREFIX,
+  type RuntimeProxyAdapterStreamRequest,
+  RuntimeProxyLoopbackAdapter,
+  type RuntimeProxyLoopbackAdapterOptions,
+  type RuntimeProxyLoopbackCaMaterial,
+  RuntimeProxyLoopbackError,
+} from "./runtime/runtime-proxy-loopback-adapter.js";
+export {
+  buildRuntimeProxyEnvironment,
+  RUNTIME_PROXY_GIT_HELPER_MARKER,
+  RUNTIME_PROXY_SHIM_MARKER,
+  type RuntimeProxyEnvironment,
+  type RuntimeProxyEnvironmentInput,
+  type RuntimeProxyExecutionLayout,
+  RuntimeProxyMaterialStore,
+  renderRuntimeProxyGitCredentialHelper,
+  renderRuntimeProxyShim,
+} from "./runtime/runtime-proxy-material.js";
 export {
   ServerRuntimeDurabilityStore,
   type ServerRuntimeDurabilityStoreOptions,
@@ -506,6 +605,49 @@ export {
   type UpdaterStateName,
   type UpdaterStateSnapshot,
 } from "./runtime/update-manager.js";
+export { resolveWebToolsExtensionPath } from "./runtime/web-tools-artifact.js";
+export {
+  WebToolsClientError,
+  WebToolsServerClient,
+  type WebToolsServerClientOptions,
+} from "./runtime/web-tools-client.js";
+export {
+  type WebGatewayDispatch,
+  WebGatewayDispatchError,
+  WebToolsGatewayServer,
+  type WebToolsGatewayServerOptions,
+} from "./runtime/web-tools-gateway.js";
+export {
+  extractSkillArchive,
+  type PackedSkillDirectory,
+  packSkillDirectory,
+  SkillArchiveError,
+  type SkillArchiveErrorCode,
+} from "./skills/skill-archive.js";
+export { type ExpectedSkillBundle, verifySkillBundle } from "./skills/skill-bundle.js";
+export {
+  type ReadBundleBodyOptions,
+  readBundleBody,
+  SKILL_PULL_BUNDLE_TIMEOUT_MS,
+} from "./skills/skill-bundle-body.js";
+export {
+  hashSkillDirectory,
+  isSkillMaterializationTarget,
+  isSyncedWorkspace,
+  markSkillDirectoryManaged,
+  resolveMaterializationWorkspace,
+  SKILL_CONTENT_SIDECAR_FILE,
+  SKILL_SYNC_DEFAULT_BUDGET_MS,
+  type SkillDirectoryMarkerInput,
+  type SkillSyncAgentInput,
+  type SkillSyncApi,
+  SkillSyncManager,
+  type SkillSyncManagerOptions,
+  type SkillSyncResult,
+  type SkillSyncStatus,
+  skillRootForProvider,
+} from "./skills/skill-sync.js";
+export { prepareContextTreeHome, resolveContextTreeHome } from "./storage/context-tree-home.js";
 export {
   assertRealDirectory,
   assertWithin,

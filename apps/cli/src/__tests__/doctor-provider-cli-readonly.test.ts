@@ -128,5 +128,6 @@ function installedCodex() {
       status: "installed" as const,
     },
     { displayName: "Claude Code CLI", provider: "claude-code" as const, status: "not-installed" as const },
+    { displayName: "Pi CLI", provider: "pi" as const, status: "not-installed" as const },
   ];
 }

@@ -3,11 +3,20 @@ import type {
   AgentDetail,
   AgentListItem as AgentListApiItem,
   AgentSummary,
+  CloudAvailability,
   ImBindingHandoffStatus,
   ImBindingSummary,
   ProviderCliHandoffProgress,
   ProviderReadinessStatus,
 } from "@opentag/shared/browser";
+
+/**
+ * The evidence a Cloud-bound Agent's runtime leg is judged by: the deployment's Cloud availability
+ * answer, read through the setup/availability source. It is deliberately not optional-to-mean-local:
+ * when it is absent or unreadable the Agent is unconfirmed, and the Local `providerReady` array of a
+ * Cloud Computer is never consulted — a managed Computer has no machine reports to borrow.
+ */
+export type AgentCloudRuntimeEvidence = { kind: "ready"; value: CloudAvailability } | { kind: "unconfirmed" };
 
 export type AgentAvailability = {
   state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended" | "unconfirmed";
@@ -24,16 +33,25 @@ export type AgentAvailability = {
     | "im_error"
     | "im_disabled"
     | "handoff_unavailable"
+    | "handoff_checking"
     | "computer_unconfirmed"
     | "handoff_unconfirmed"
     | null;
   lastConfirmedAt: string | null;
   dependencies: {
     computer: { state: "ready" | "action_required" | "not_bound" | "unconfirmed"; lastConfirmedAt: string | null };
-    /** Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from this. */
-    runtime: { provider: AgentSummary["runtimeProvider"]; status: ProviderReadinessStatus | null };
+    /**
+     * Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from
+     * this. For a Cloud-bound Agent the status is the managed-service verdict (with `cloud`
+     * carrying its provenance); it is never a machine probe, because there is no machine.
+     */
+    runtime: {
+      provider: AgentSummary["runtimeProvider"];
+      status: ProviderReadinessStatus | null;
+      cloud?: { available: boolean; reason: CloudAvailability["reason"] };
+    };
     handoff: {
-      state: "ready" | "action_required" | "setting_up" | "not_connected" | "unconfirmed";
+      state: "ready" | "action_required" | "checking" | "setting_up" | "not_connected" | "unconfirmed";
       lastConfirmedAt: string | null;
       providerCli?: ProviderCliHandoffProgress;
     };
@@ -61,10 +79,40 @@ export type DetailEvidence<T> = { kind: "ready"; value: T | undefined } | { kind
 export type AgentDetailView = AgentDetail & {
   availability: AgentAvailability;
   messaging: DetailEvidence<ImBindingSummary>;
+  /** The bound Computer's exact kind when the Account read confirmed it; Cloud-only settings rely on it. */
+  computerKind?: "local" | "cloud";
 };
 
+/**
+ * A handoff the Server is re-verifying rather than one it found broken. The Server answers
+ * `handoffReady: false` for both, and tells them apart only through the progress phase: the CLI
+ * being prepared and the credentials being checked both settle on their own within seconds, while
+ * `needs_attention` and an absent phase (the channel connection itself) do not.
+ */
+export function isHandoffChecking(handoff: ImBindingHandoffStatus | null | undefined): boolean {
+  if (handoff?.bindingState !== "active" || handoff.handoffReady) return false;
+  const phase = handoff.providerCli?.phase;
+  return phase === "preparing_cli" || phase === "checking_credentials";
+}
+
+type HandoffDependencyState = AgentAvailability["dependencies"]["handoff"]["state"];
+
+function handoffDependencyState(
+  binding: ImBindingSummary | undefined,
+  handoff: ImBindingHandoffStatus | undefined,
+  bindingEvidenceConfirmed: boolean,
+  handoffEvidenceConfirmed: boolean,
+): HandoffDependencyState {
+  if (!bindingEvidenceConfirmed || !handoffEvidenceConfirmed) return "unconfirmed";
+  if (!binding) return "not_connected";
+  if (binding.bindingState === "provisioning") return "setting_up";
+  if (binding.bindingState !== "active") return "action_required";
+  if (handoff?.handoffReady) return "ready";
+  return isHandoffChecking(handoff) ? "checking" : "action_required";
+}
+
 function handoffDependency(
-  state: AgentAvailability["dependencies"]["handoff"]["state"],
+  state: HandoffDependencyState,
   binding: ImBindingSummary | undefined,
   handoff: ImBindingHandoffStatus | undefined,
 ): AgentAvailability["dependencies"]["handoff"] {
@@ -78,6 +126,32 @@ function handoffDependency(
   return dependency;
 }
 
+function agentRuntimeDependency(
+  agent: AgentSummary,
+  computer: AccountComputerSummary | undefined,
+  cloudRuntime?: AgentCloudRuntimeEvidence,
+): AgentAvailability["dependencies"]["runtime"] {
+  if (computer?.kind === "cloud") {
+    if (cloudRuntime?.kind !== "ready") return { provider: agent.runtimeProvider, status: null };
+    return {
+      provider: agent.runtimeProvider,
+      status: cloudRuntime.value.available ? "ready" : "unavailable",
+      cloud: { available: cloudRuntime.value.available, reason: cloudRuntime.value.reason },
+    };
+  }
+  const observation = computer?.providerReadiness?.find((item) => item.provider === agent.runtimeProvider);
+  return { provider: agent.runtimeProvider, status: observation?.status ?? null };
+}
+
+function computerDependencyState(
+  agent: AgentSummary,
+  computer: AccountComputerSummary | undefined,
+): AgentAvailability["dependencies"]["computer"]["state"] {
+  if (agent.computer === null) return "not_bound";
+  if (!computer) return "unconfirmed";
+  return computer.connectionStatus === "online" ? "ready" : "action_required";
+}
+
 export function projectAgentAvailability(
   agent: AgentSummary,
   computer: AccountComputerSummary | undefined,
@@ -85,36 +159,20 @@ export function projectAgentAvailability(
   handoff: ImBindingHandoffStatus | undefined,
   bindingEvidenceConfirmed: boolean,
   handoffEvidenceConfirmed: boolean,
+  cloudRuntime?: AgentCloudRuntimeEvidence,
 ): AgentAvailability {
+  const cloudComputer = computer?.kind === "cloud";
   const computerReady = computer?.connectionStatus === "online";
-  const providerReadiness = computer?.providerReadiness?.find(
-    (observation) => observation.provider === agent.runtimeProvider,
-  );
-  const handoffState =
-    !bindingEvidenceConfirmed || !handoffEvidenceConfirmed
-      ? ("unconfirmed" as const)
-      : !binding
-        ? ("not_connected" as const)
-        : binding.bindingState === "provisioning"
-          ? ("setting_up" as const)
-          : binding.bindingState === "active" && handoff?.handoffReady
-            ? ("ready" as const)
-            : ("action_required" as const);
+  const runtimeDependency = agentRuntimeDependency(agent, computer, cloudRuntime);
+  const handoffState = handoffDependencyState(binding, handoff, bindingEvidenceConfirmed, handoffEvidenceConfirmed);
   const dependencies: AgentAvailability["dependencies"] = {
     computer: {
       // Not bound is a fact the Server states, so it is never reported as evidence we could not read:
       // one is answered by binding a Computer and the other by waiting for a read to succeed.
-      state:
-        agent.computer === null
-          ? "not_bound"
-          : computer
-            ? computerReady
-              ? "ready"
-              : "action_required"
-            : "unconfirmed",
+      state: computerDependencyState(agent, computer),
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
-    runtime: { provider: agent.runtimeProvider, status: providerReadiness?.status ?? null },
+    runtime: runtimeDependency,
     handoff: handoffDependency(handoffState, binding, handoff),
     channel: {
       state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",
@@ -139,56 +197,53 @@ export function projectAgentAvailability(
       dependencies,
     };
   }
-  const runtimeReadiness = providerReadiness;
-  if (!runtimeReadiness) {
+  if (runtimeDependency.status === null) {
     return { state: "unconfirmed", reason: "runtime_unconfirmed", lastConfirmedAt: null, dependencies };
   }
-  if (runtimeReadiness.status !== "ready") {
-    return { state: "action_required", reason: "runtime_unavailable", lastConfirmedAt: null, dependencies };
+  if (runtimeDependency.status !== "ready") {
+    return {
+      state: "action_required",
+      reason: "runtime_unavailable",
+      lastConfirmedAt: cloudComputer && cloudRuntime?.kind === "ready" ? cloudRuntime.value.observedAt : null,
+      dependencies,
+    };
   }
   if (!bindingEvidenceConfirmed || !handoffEvidenceConfirmed) {
     return { state: "unconfirmed", reason: "handoff_unconfirmed", lastConfirmedAt: null, dependencies };
   }
   if (!binding) return { state: "not_connected", reason: "im_not_connected", lastConfirmedAt: null, dependencies };
+  return messagingAvailability(binding, handoff, dependencies);
+}
+
+/** The Agent-wide verdict once every dependency up to the messaging binding has confirmed. */
+function messagingAvailability(
+  binding: ImBindingSummary,
+  handoff: ImBindingHandoffStatus | undefined,
+  dependencies: AgentAvailability["dependencies"],
+): AgentAvailability {
+  const lastConfirmedAt = binding.lastRuntimeObservationAt ?? binding.lastValidatedAt;
   if (binding.bindingState === "provisioning") {
-    return {
-      state: "setting_up",
-      reason: "im_provisioning",
-      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
-      dependencies,
-    };
+    return { state: "setting_up", reason: "im_provisioning", lastConfirmedAt, dependencies };
   }
   if (binding.bindingState === "reauthorization_required") {
-    return {
-      state: "action_required",
-      reason: "im_reauthorization_required",
-      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
-      dependencies,
-    };
+    return { state: "action_required", reason: "im_reauthorization_required", lastConfirmedAt, dependencies };
   }
   if (binding.bindingState === "error" || binding.bindingState === "disabled") {
     return {
       state: "action_required",
       // A binding that was turned off has no connection failure to report, so it does not borrow one.
       reason: binding.bindingState === "disabled" ? "im_disabled" : "im_error",
-      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
+      lastConfirmedAt,
       dependencies,
     };
+  }
+  if (isHandoffChecking(handoff)) {
+    return { state: "setting_up", reason: "handoff_checking", lastConfirmedAt, dependencies };
   }
   if (!handoff?.handoffReady) {
-    return {
-      state: "action_required",
-      reason: "handoff_unavailable",
-      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
-      dependencies,
-    };
+    return { state: "action_required", reason: "handoff_unavailable", lastConfirmedAt, dependencies };
   }
-  return {
-    state: "ready",
-    reason: null,
-    lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
-    dependencies,
-  };
+  return { state: "ready", reason: null, lastConfirmedAt, dependencies };
 }
 
 export function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents: AgentListItem[] } {

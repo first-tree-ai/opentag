@@ -1,5 +1,6 @@
-import { mkdir } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import type {
+  AgentRuntimeProvider,
   EffectiveRuntimeSnapshot,
   InputRejectReason,
   RuntimeSnapshotHashes,
@@ -7,7 +8,8 @@ import type {
 } from "@opentag/shared";
 import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
-import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import type { SkillSyncManager } from "../skills/skill-sync.js";
+import { prepareContextTreeHome } from "../storage/context-tree-home.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
@@ -64,10 +66,26 @@ export interface SessionRuntimeManagerOptions {
   readonly cliCommand?: string;
   readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
   readonly contextTree?: Pick<ContextTreeManager, "ensureAgent">;
+  /**
+   * Optional. Materializes the Agent's enabled Skills before the provider starts; a failure only
+   * changes what is on disk and never stops the runtime.
+   */
+  readonly skills?: Pick<SkillSyncManager, "ensureAgent">;
   readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
   readonly providers: AgentRuntimeProviderRegistry;
   readonly home?: string;
+  readonly environment?: NodeJS.ProcessEnv;
   readonly providerEnvironmentPath: (sessionId: string) => string;
+  /**
+   * Optional. Current CLI environment for automatic injection into the provider spawn
+   * environment (visible Sessions). Proxy mode returns the execution env map.
+   */
+  readonly providerEnvironment?: (sessionId: string) => Readonly<Record<string, string>> | undefined;
+  /**
+   * Optional. Managed Context Tree environment for the trusted CLI child. `undefined` entries
+   * unset inherited variables; legacy mode leaves it undefined and keeps ambient Local behavior.
+   */
+  readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
   readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   /**
    * Optional. Visible Sessions may receive the currently active Slack config leaf as one extra
@@ -76,6 +94,8 @@ export interface SessionRuntimeManagerOptions {
   readonly slackConfigWritableRoot?: (sessionId: string) => string | undefined;
   /** Absolute Session launch-bin directory prepended to the Agent Runtime PATH. Visible only. */
   readonly providerCliLaunchPath?: (sessionId: string) => string | undefined;
+  /** Prepare only this visible Session's reply evidence directory, never its trusted plan directory. */
+  readonly providerCliReplyWritableRoot?: (sessionId: string) => Promise<string>;
   readonly workspace: AgentWorkspaceManager;
 }
 
@@ -84,13 +104,18 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #cliCommand: string;
   readonly #cleanupProviderEnvironment?: SessionRuntimeManagerOptions["cleanupProviderEnvironment"];
   readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
+  readonly #skills?: SessionRuntimeManagerOptions["skills"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
+  readonly #environment: NodeJS.ProcessEnv;
   readonly #home: string | undefined;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
+  readonly #providerEnvironment?: SessionRuntimeManagerOptions["providerEnvironment"];
+  readonly #contextTreeEnvironment?: SessionRuntimeManagerOptions["contextTreeEnvironment"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
   readonly #providerCliLaunchPath?: SessionRuntimeManagerOptions["providerCliLaunchPath"];
+  readonly #providerCliReplyWritableRoot?: SessionRuntimeManagerOptions["providerCliReplyWritableRoot"];
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -103,13 +128,18 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#bindingStore = options.bindingStore;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
+    this.#environment = { ...(options.environment ?? process.env) };
     if (options.contextTree) this.#contextTree = options.contextTree;
+    if (options.skills) this.#skills = options.skills;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
     this.#home = options.home;
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
+    this.#providerEnvironment = options.providerEnvironment;
+    this.#contextTreeEnvironment = options.contextTreeEnvironment;
     this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
     this.#providerCliLaunchPath = options.providerCliLaunchPath;
+    this.#providerCliReplyWritableRoot = options.providerCliReplyWritableRoot;
     this.#proofManager =
       options.proofManager ??
       ({
@@ -249,6 +279,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return managed.sessionKind;
   }
 
+  /** The prepared Session's Agent Runtime provider id; undefined when not prepared. */
+  providerId(sessionId: string): string | undefined {
+    return this.#sessions.get(sessionId)?.providerId;
+  }
+
   async #startRuntime(managed: ManagedSessionRuntime): Promise<AgentRuntime> {
     const provider = this.#providers.registration(managed.providerId);
     /* v8 ignore next -- registrations are immutable for the lifetime of a managed Session. */
@@ -272,11 +307,23 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     // Context Tree is prepared here rather than in workspace preparation because `verifyAgent`
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
-    // caches per workspace, revalidates that entry against the Computer's recorded target, and
+    // caches per workspace, snapshot repository, and Provider, and
     // never throws, so a failure only changes what the prompt reports.
-    const contextTree = await prepareContextTree(this.#contextTree, managed.cwd);
-    const homeLayout = resolveOpenTagHomeLayout(this.#home);
-    const configurationRoots = await prepareConfigurationRoots(homeLayout);
+    const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId);
+    const contextTree = await prepareContextTree(
+      this.#contextTree,
+      managed.cwd,
+      managed.snapshot.provider,
+      managed.snapshot.contextTreeRepository,
+      contextTreeEnvironment,
+    );
+    const configurationRoots = await prepareConfigurationRoots(this.#environment);
+    const skills = await prepareAgentSkills(this.#skills, {
+      agentId: managed.agentId,
+      cwd: managed.cwd,
+      provider: managed.snapshot.provider,
+    });
+    const replyRoots = await visibleReplyWritableRoots(managed, this.#providerCliReplyWritableRoot);
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
@@ -297,10 +344,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           ...(managed.sessionKind === "visible"
             ? {
                 OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId),
+                ...this.#providerEnvironment?.(managed.binding.sessionId),
               }
             : {}),
         },
         writableRoots: [
+          ...replyRoots,
           ...visibleSlackWritableRoots(
             managed.sessionKind,
             managed.cwd,
@@ -308,7 +357,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             this.#slackConfigWritableRoot,
           ),
           ...configurationRoots,
-          ...contextTree.writableRoots,
+          ...dropCoveredRoots(contextTree.writableRoots, configurationRoots),
         ],
       },
       policy: provider.policy(managed.snapshot),
@@ -316,6 +365,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         ...(managed.snapshot.model ? { model: managed.snapshot.model } : {}),
         ...(managed.snapshot.reasoningEffort ? { reasoningEffort: managed.snapshot.reasoningEffort } : {}),
       },
+      ...skills,
     } as const;
     let runtime: AgentRuntime | undefined;
     try {
@@ -374,13 +424,17 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     }
   }
 
+  hasAgentSessions(agentId: string): boolean {
+    return [...this.#sessions.values()].some((session) => session.agentId === agentId);
+  }
+
   async stopSession(sessionId: string, placementGeneration: number): Promise<void> {
     const sessionKind = this.#sessions.get(sessionId)?.sessionKind;
     try {
       const current = this.#sessions.get(sessionId);
       if (current) {
-        this.#sessions.delete(sessionId);
         await this.#closeManaged(current);
+        this.#sessions.delete(sessionId);
       }
       await this.#workspace.stopSession(sessionId, placementGeneration);
     } finally {
@@ -476,13 +530,51 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 async function prepareContextTree(
   manager: Pick<ContextTreeManager, "ensureAgent"> | undefined,
   cwd: string,
+  provider: EffectiveRuntimeSnapshot["provider"],
+  repository: string | null,
+  environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<{ promptContext: { contextTree?: ContextTreeStatus }; writableRoots: readonly string[] }> {
-  const status = await manager?.ensureAgent(cwd);
+  // Keep the legacy call shape when no managed environment exists so existing tests and prompts
+  // observe identical arguments.
+  const status = environment
+    ? await manager?.ensureAgent(cwd, provider, repository, environment)
+    : await manager?.ensureAgent(cwd, provider, repository);
   if (!status) return { promptContext: {}, writableRoots: [] };
   return {
     promptContext: { contextTree: status },
     writableRoots: status.status === "ready" ? [status.treePath] : [],
   };
+}
+
+/**
+ * Resolve the Agent's synced Skill directories for the provider start request.
+ *
+ * `SkillSyncManager` already swallows its own failures, but this guard is the hard boundary that
+ * keeps a rejecting or stalled sync from ever failing runtime start: the worst case is no paths.
+ */
+async function prepareAgentSkills(
+  manager: Pick<SkillSyncManager, "ensureAgent"> | undefined,
+  input: { agentId: string; cwd: string; provider: AgentRuntimeProvider },
+): Promise<{ skillPaths?: readonly string[] }> {
+  if (!manager) return {};
+  try {
+    const result = await manager.ensureAgent(input);
+    return result.skillPaths.length > 0 ? { skillPaths: result.skillPaths } : {};
+  } catch (error) {
+    logger.warn(
+      { code: "skill_sync_failed", reason: String(error) },
+      "Agent Skill sync failed; continuing without synced Skills",
+    );
+    return {};
+  }
+}
+
+/**
+ * Drop a Context Tree root already covered by the shared account directory grant. A managed
+ * checkout lives under `~/.context-tree`, so re-listing it would grant the same subtree twice.
+ */
+function dropCoveredRoots(roots: readonly string[], parents: readonly string[]): string[] {
+  return roots.filter((root) => !parents.some((parent) => resolve(root).startsWith(`${resolve(parent)}${sep}`)));
 }
 
 function visibleSlackWritableRoots(
@@ -522,10 +614,17 @@ function visibleProviderCliPath(
   return managed.sessionKind === "visible" ? { pathPrepend: resolveLaunchPath?.(managed.binding.sessionId) } : {};
 }
 
-async function prepareConfigurationRoots(layout: ReturnType<typeof resolveOpenTagHomeLayout>): Promise<string[]> {
+async function visibleReplyWritableRoots(
+  managed: ManagedSessionRuntime,
+  prepareRoot: SessionRuntimeManagerOptions["providerCliReplyWritableRoot"],
+): Promise<string[]> {
+  if (managed.sessionKind !== "visible" || !prepareRoot) return [];
+  return [await prepareRoot(managed.binding.sessionId)];
+}
+
+async function prepareConfigurationRoots(environment: NodeJS.ProcessEnv): Promise<string[]> {
   try {
-    await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
-    return [layout.contextTreeConfigDir];
+    return [await prepareContextTreeHome(environment)];
   } catch (error) {
     logger.warn(
       { code: (error as NodeJS.ErrnoException).code },

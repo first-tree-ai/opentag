@@ -1,0 +1,98 @@
+name: Deploy Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Environment to update (new Instances only)
+        required: true
+        type: choice
+        options:
+          - staging
+          - prod
+      version:
+        description: Exact published CLI/Runner version, including for rollback
+        required: true
+        type: string
+      server_revision:
+        description: Full source SHA of the compatible Server already deployed in this environment
+        required: true
+        type: string
+      mode:
+        description: Check without changes, or apply and verify the target
+        required: true
+        default: check
+        type: choice
+        options:
+          - check
+          - apply
+
+permissions:
+  contents: read
+  id-token: write
+
+# Share the staging deployment lock; a manual rollback must not race an automatic rollout.
+concurrency:
+  group: deploy-${{ inputs.channel == 'staging' && 'staging' || 'prod' }}
+  cancel-in-progress: false
+
+jobs:
+  runner:
+    if: github.repository == 'first-tree-ai/opentag' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # The helper's bounded waits (build idle, pre-update and post-update readyz) can legitimately
+    # spend up to ~15 minutes combined; keep explicit headroom for checkout, auth, release
+    # resolution, and the update itself, mirroring the staging rollout's job budget.
+    timeout-minutes: 45
+    environment: ${{ inputs.channel == 'staging' && 'staging' || 'production' }}
+    env:
+      RUNNER_IMAGE: ${{ vars[format('OPENTAG_RUNNER_{0}_IMAGE_REPOSITORY', inputs.channel == 'staging' && 'STAGING' || 'PROD')] }}
+      CAPROVER_SERVER: ${{ secrets[format('CAPROVER_{0}_SERVER', inputs.channel == 'staging' && 'STAGING' || 'PROD')] }}
+      CAPROVER_APP: ${{ secrets[format('CAPROVER_{0}_APP', inputs.channel == 'staging' && 'STAGING' || 'PROD')] }}
+      CAPROVER_PASSWORD_SECRET: ${{ vars[format('CAPROVER_{0}_PASSWORD_SECRET', inputs.channel == 'staging' && 'STAGING' || 'PROD')] }}
+      OPENTAG_PUBLIC_URL: ${{ inputs.channel == 'staging' && 'https://dev.opentag.build' || 'https://app.opentag.build' }}
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      SERVER_REVISION: ${{ inputs.server_revision }}
+      DEPLOY_MODE: ${{ inputs.mode }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # Direct federation keeps administrator-secret access on this deployment Environment,
+      # rather than granting it to the CLI build/publish service account.
+      - name: Authenticate deployment identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          project_id: ${{ vars.OPENTAG_PORTABLE_GCS_PROJECT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Verify the published Runner
+        id: release
+        run: >-
+          node scripts/runner/release.mjs resolve
+          --channel "$RELEASE_CHANNEL" --image "$RUNNER_IMAGE" --version "$RELEASE_VERSION"
+          --output "$RUNNER_TEMP/runner-target.json"
+
+      - name: Verify reviewed source ordering
+        env:
+          RUNNER_REVISION: ${{ steps.release.outputs.source_sha }}
+        run: |
+          printf '%s' "$SERVER_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          git merge-base --is-ancestor "$SERVER_REVISION" origin/main
+          git merge-base --is-ancestor "$RUNNER_REVISION" "$SERVER_REVISION"
+
+      - name: Check or activate the Runner target
+        run: >-
+          node scripts/runner/deploy.mjs "$DEPLOY_MODE"
+          --release "$RUNNER_TEMP/runner-target.json" --server-revision "$SERVER_REVISION"

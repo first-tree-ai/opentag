@@ -29,6 +29,7 @@ import { Route as AuthenticatedResourcesShellTasksTaskIdRouteImport } from './ro
 import { Route as AuthenticatedResourcesShellAgentsAgentIdIndexRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.index'
 import { Route as AuthenticatedResourcesShellAgentsAgentIdLegacySectionRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.$legacySection'
 import { Route as AuthenticatedResourcesShellAgentsAgentIdIntegrationsRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.integrations'
+import { Route as AuthenticatedResourcesShellAgentsAgentIdMcpRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.mcp'
 import { Route as AuthenticatedResourcesShellAgentsAgentIdSkillsRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.skills'
 import { Route as AuthenticatedResourcesShellAgentsAgentIdUsageRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.usage'
 import { Route as AuthenticatedResourcesShellAgentsAgentIdSettingsIndexRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.settings.index'
@@ -149,6 +150,12 @@ const AuthenticatedResourcesShellAgentsAgentIdIntegrationsRoute =
     path: '/agents/$agentId/integrations',
     getParentRoute: () => AuthenticatedResourcesShellRoute,
   } as any)
+const AuthenticatedResourcesShellAgentsAgentIdMcpRoute =
+  AuthenticatedResourcesShellAgentsAgentIdMcpRouteImport.update({
+    id: '/agents/$agentId/mcp',
+    path: '/agents/$agentId/mcp',
+    getParentRoute: () => AuthenticatedResourcesShellRoute,
+  } as any)
 const AuthenticatedResourcesShellAgentsAgentIdSkillsRoute =
   AuthenticatedResourcesShellAgentsAgentIdSkillsRouteImport.update({
     id: '/agents/$agentId/skills',
@@ -203,6 +210,7 @@ export interface FileRoutesByFullPath {
   '/tasks/': typeof AuthenticatedResourcesShellTasksIndexRoute
   '/agents/$agentId/$legacySection': typeof AuthenticatedResourcesShellAgentsAgentIdLegacySectionRoute
   '/agents/$agentId/integrations': typeof AuthenticatedResourcesShellAgentsAgentIdIntegrationsRoute
+  '/agents/$agentId/mcp': typeof AuthenticatedResourcesShellAgentsAgentIdMcpRoute
   '/agents/$agentId/skills': typeof AuthenticatedResourcesShellAgentsAgentIdSkillsRoute
   '/agents/$agentId/usage': typeof AuthenticatedResourcesShellAgentsAgentIdUsageRoute
   '/agents/$agentId/': typeof AuthenticatedResourcesShellAgentsAgentIdIndexRoute
@@ -228,6 +236,7 @@ export interface FileRoutesByTo {
   '/tasks': typeof AuthenticatedResourcesShellTasksIndexRoute
   '/agents/$agentId/$legacySection': typeof AuthenticatedResourcesShellAgentsAgentIdLegacySectionRoute
   '/agents/$agentId/integrations': typeof AuthenticatedResourcesShellAgentsAgentIdIntegrationsRoute
+  '/agents/$agentId/mcp': typeof AuthenticatedResourcesShellAgentsAgentIdMcpRoute
   '/agents/$agentId/skills': typeof AuthenticatedResourcesShellAgentsAgentIdSkillsRoute
   '/agents/$agentId/usage': typeof AuthenticatedResourcesShellAgentsAgentIdUsageRoute
   '/agents/$agentId': typeof AuthenticatedResourcesShellAgentsAgentIdIndexRoute
@@ -257,6 +266,7 @@ export interface FileRoutesById {
   '/_authenticated/_resources/_shell/tasks/': typeof AuthenticatedResourcesShellTasksIndexRoute
   '/_authenticated/_resources/_shell/agents/$agentId/$legacySection': typeof AuthenticatedResourcesShellAgentsAgentIdLegacySectionRoute
   '/_authenticated/_resources/_shell/agents/$agentId/integrations': typeof AuthenticatedResourcesShellAgentsAgentIdIntegrationsRoute
+  '/_authenticated/_resources/_shell/agents/$agentId/mcp': typeof AuthenticatedResourcesShellAgentsAgentIdMcpRoute
   '/_authenticated/_resources/_shell/agents/$agentId/skills': typeof AuthenticatedResourcesShellAgentsAgentIdSkillsRoute
   '/_authenticated/_resources/_shell/agents/$agentId/usage': typeof AuthenticatedResourcesShellAgentsAgentIdUsageRoute
   '/_authenticated/_resources/_shell/agents/$agentId/': typeof AuthenticatedResourcesShellAgentsAgentIdIndexRoute
@@ -284,6 +294,7 @@ export interface FileRouteTypes {
     | '/tasks/'
     | '/agents/$agentId/$legacySection'
     | '/agents/$agentId/integrations'
+    | '/agents/$agentId/mcp'
     | '/agents/$agentId/skills'
     | '/agents/$agentId/usage'
     | '/agents/$agentId/'
@@ -309,6 +320,7 @@ export interface FileRouteTypes {
     | '/tasks'
     | '/agents/$agentId/$legacySection'
     | '/agents/$agentId/integrations'
+    | '/agents/$agentId/mcp'
     | '/agents/$agentId/skills'
     | '/agents/$agentId/usage'
     | '/agents/$agentId'
@@ -337,6 +349,7 @@ export interface FileRouteTypes {
     | '/_authenticated/_resources/_shell/tasks/'
     | '/_authenticated/_resources/_shell/agents/$agentId/$legacySection'
     | '/_authenticated/_resources/_shell/agents/$agentId/integrations'
+    | '/_authenticated/_resources/_shell/agents/$agentId/mcp'
     | '/_authenticated/_resources/_shell/agents/$agentId/skills'
     | '/_authenticated/_resources/_shell/agents/$agentId/usage'
     | '/_authenticated/_resources/_shell/agents/$agentId/'
@@ -494,6 +507,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedResourcesShellAgentsAgentIdIntegrationsRouteImport
       parentRoute: typeof AuthenticatedResourcesShellRoute
     }
+    '/_authenticated/_resources/_shell/agents/$agentId/mcp': {
+      id: '/_authenticated/_resources/_shell/agents/$agentId/mcp'
+      path: '/agents/$agentId/mcp'
+      fullPath: '/agents/$agentId/mcp'
+      preLoaderRoute: typeof AuthenticatedResourcesShellAgentsAgentIdMcpRouteImport
+      parentRoute: typeof AuthenticatedResourcesShellRoute
+    }
     '/_authenticated/_resources/_shell/agents/$agentId/skills': {
       id: '/_authenticated/_resources/_shell/agents/$agentId/skills'
       path: '/agents/$agentId/skills'
@@ -552,6 +572,7 @@ interface AuthenticatedResourcesShellRouteChildren {
   AuthenticatedResourcesShellTasksIndexRoute: typeof AuthenticatedResourcesShellTasksIndexRoute
   AuthenticatedResourcesShellAgentsAgentIdLegacySectionRoute: typeof AuthenticatedResourcesShellAgentsAgentIdLegacySectionRoute
   AuthenticatedResourcesShellAgentsAgentIdIntegrationsRoute: typeof AuthenticatedResourcesShellAgentsAgentIdIntegrationsRoute
+  AuthenticatedResourcesShellAgentsAgentIdMcpRoute: typeof AuthenticatedResourcesShellAgentsAgentIdMcpRoute
   AuthenticatedResourcesShellAgentsAgentIdSkillsRoute: typeof AuthenticatedResourcesShellAgentsAgentIdSkillsRoute
   AuthenticatedResourcesShellAgentsAgentIdUsageRoute: typeof AuthenticatedResourcesShellAgentsAgentIdUsageRoute
   AuthenticatedResourcesShellAgentsAgentIdIndexRoute: typeof AuthenticatedResourcesShellAgentsAgentIdIndexRoute
@@ -587,6 +608,8 @@ const AuthenticatedResourcesShellRouteChildren: AuthenticatedResourcesShellRoute
       AuthenticatedResourcesShellAgentsAgentIdLegacySectionRoute,
     AuthenticatedResourcesShellAgentsAgentIdIntegrationsRoute:
       AuthenticatedResourcesShellAgentsAgentIdIntegrationsRoute,
+    AuthenticatedResourcesShellAgentsAgentIdMcpRoute:
+      AuthenticatedResourcesShellAgentsAgentIdMcpRoute,
     AuthenticatedResourcesShellAgentsAgentIdSkillsRoute:
       AuthenticatedResourcesShellAgentsAgentIdSkillsRoute,
     AuthenticatedResourcesShellAgentsAgentIdUsageRoute:

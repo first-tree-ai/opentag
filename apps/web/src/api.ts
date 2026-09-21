@@ -1,10 +1,17 @@
 import {
+  type AccountCloudComputerEnsureResponse,
+  AccountCloudComputerEnsureResponseSchema,
   type AccountComputerConnectCodeIssueRequest,
+  type AccountSandboxRunnerStatusResponse,
+  AccountSandboxRunnerStatusResponseSchema,
+  type AccountSandboxRunnerStopRequest,
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
+  type AgentCloudOverview,
+  AgentCloudOverviewSchema,
   type AgentDetail,
   AgentDetailSchema,
   type AgentRuntimeTestRequest,
@@ -15,36 +22,69 @@ import {
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
+  type AttachMCPServerRequest,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   accountComputerConnectCodePath,
+  accountSandboxRunnerStopPath,
   agentByIdPath,
+  agentCloudPath,
   agentComputerRebindPath,
   agentConfigPath,
+  agentContextTreePath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentImBindingUnbindPath,
+  agentMcpAuthorizationOAuthPath,
+  agentMcpAuthorizationPath,
+  agentMcpProbePath,
+  agentMcpServerPath,
+  agentMcpServersPath,
   agentReactivatePath,
   agentRuntimeTestPath,
   agentSetupPath,
   agentSetupRefreshPath,
+  agentSkillBundlePath,
+  agentSkillPath,
+  agentSkillsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
+  CLOUD_IDENTITY_CAPABILITY_HEADER,
+  type CloudAvailability,
+  CloudAvailabilitySchema,
+  type CloudModelOptions,
+  CloudModelOptionsSchema,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
   ComputerConnectCodeStatusSchema,
+  type ContextTreeOperationRequest,
+  type ContextTreeOperationResponse,
+  ContextTreeOperationResponseSchema,
   type CreateAgentRequest,
+  type CreateMCPServerRequest,
   type EmailSignInRequest,
   type EmailSignUpRequest,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptCancelPath,
+  feishuSetupAttemptCheckPath,
   feishuSetupAttemptPath,
+  GITHUB_INTEGRATION_AUTHORIZATION_PATH,
+  GITHUB_INTEGRATION_BINDINGS_PATH,
+  GITHUB_INTEGRATION_DISCONNECT_PATH,
+  GITHUB_INTEGRATION_PATH,
+  type GitHubConnectionStatus,
+  GitHubConnectionStatusSchema,
+  type GitHubIntegrationOverview,
+  GitHubIntegrationOverviewSchema,
+  type GitHubRepositoryDiscoveryPage,
+  GitHubRepositoryDiscoveryPageSchema,
+  githubIntegrationRepositoriesPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
   ImBindingAdminDetailSchema,
@@ -62,15 +102,48 @@ import {
   imBindingDisablePath,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
+  type ListAgentMCPServersResponse,
+  ListAgentMCPServersResponseSchema,
+  type ListAgentSkillsResponse,
+  ListAgentSkillsResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  type ListAvailableMCPServersResponse,
+  ListAvailableMCPServersResponseSchema,
+  type ListMCPServersResponse,
+  ListMCPServersResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
+  type MCPAgentServer,
+  MCPAgentServerSchema,
+  type MCPProbeResponse,
+  MCPProbeResponseSchema,
+  type MCPServer,
+  type MCPServerDetail,
+  MCPServerDetailSchema,
+  MCPServerSchema,
   type MeResponse,
   MeResponseSchema,
+  mcpServerPath,
+  mcpServersPath,
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   type RebindAgentComputerRequest,
+  type SetMCPAuthorizationRequest,
+  SKILL_FORMAT_HEADER,
+  SKILL_REPLACE_HEADER,
+  SKILL_SHA256_HEADER,
+  SKILL_UPLOAD_CONTENT_TYPE,
+  type SkillArchiveFormat,
+  type SkillDetail,
+  SkillDetailSchema,
+  type StartGitHubAuthorizationRequest,
+  type StartGitHubAuthorizationResponse,
+  StartGitHubAuthorizationResponseSchema,
+  type StartMCPOAuthRequest,
+  type StartMCPOAuthResponse,
+  StartMCPOAuthResponseSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
@@ -83,6 +156,10 @@ import {
   taskCancelPath,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
+  type UpdateGitHubConnectionBindingsRequest,
+  type UpdateMCPBindingRequest,
+  type UpdateMCPServerRequest,
+  type UpdateSkillRequest,
   type UpdateUserProfileRequest,
   type UserProfile,
   UserProfileSchema,
@@ -126,6 +203,7 @@ export class CancelledRequestError extends Error {
 
 /** Covers one Agent setup snapshot read: fetch, body, and diagnostic clones. */
 export const AGENT_SETUP_READ_TIMEOUT_MS = 10_000;
+export const CLOUD_CONTROL_TIMEOUT_MS = 30_000;
 
 /**
  * Bounds `run` in elapsed time even when the AbortSignal is ignored. Fetch cancellation is
@@ -287,6 +365,14 @@ export class BrowserApi {
     });
   }
 
+  contextTreeOperation(agentId: string, input: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
+    return this.request(agentContextTreePath(agentId), ContextTreeOperationResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
   testAgentRuntime(
     agentId: string,
     input: AgentRuntimeTestRequest,
@@ -367,6 +453,17 @@ export class BrowserApi {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
   }
 
+  currentFeishuSetupAttempt(agentId: string): Promise<FeishuSetupAttempt | undefined> {
+    return this.requestOptional(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema);
+  }
+
+  checkFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.request(feishuSetupAttemptCheckPath(attemptId), FeishuSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
   cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
     return this.request(feishuSetupAttemptCancelPath(attemptId), FeishuSetupAttemptSchema, {
       method: "POST",
@@ -397,8 +494,56 @@ export class BrowserApi {
 
   computers(): Promise<ListAccountComputersResponse> {
     return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
-      headers: { [PROVIDER_READINESS_V1_HEADER]: "1", [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+      headers: {
+        [CLOUD_IDENTITY_CAPABILITY_HEADER]: "1",
+        [PROVIDER_READINESS_V1_HEADER]: "1",
+        [PROVIDER_READINESS_V2_HEADER]: "2",
+        [PROVIDER_CLI_REASON_V2_HEADER]: "2",
+      },
     });
+  }
+
+  cloudAvailability(): Promise<CloudAvailability> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(HTTP_PATHS.accountCloudComputer, CloudAvailabilitySchema, { signal }),
+    );
+  }
+
+  cloudModelOptions(): Promise<CloudModelOptions> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(HTTP_PATHS.accountCloudModels, CloudModelOptionsSchema, { signal }),
+    );
+  }
+
+  ensureCloudComputer(): Promise<AccountCloudComputerEnsureResponse> {
+    return this.request(HTTP_PATHS.accountCloudComputer, AccountCloudComputerEnsureResponseSchema, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      body: JSON.stringify({}),
+    });
+  }
+
+  agentCloudOverview(
+    agentId: string,
+    options: { cursor?: string; limit?: number; sessionId?: string } = {},
+  ): Promise<AgentCloudOverview> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(agentCloudPath(agentId, options), AgentCloudOverviewSchema, { signal }),
+    );
+  }
+
+  stopCloudSandbox(
+    sandboxId: string,
+    input: AccountSandboxRunnerStopRequest,
+  ): Promise<AccountSandboxRunnerStatusResponse> {
+    return withDeadline(CLOUD_CONTROL_TIMEOUT_MS, (signal) =>
+      this.request(accountSandboxRunnerStopPath(sandboxId), AccountSandboxRunnerStatusResponseSchema, {
+        signal,
+        method: "POST",
+        headers: { "content-type": "application/json", ...this.csrfHeaders() },
+        body: JSON.stringify(input),
+      }),
+    );
   }
 
   /**
@@ -444,6 +589,206 @@ export class BrowserApi {
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
+  }
+
+  /*
+   * Account GitHub integration. These are the only GitHub management calls the browser makes: the
+   * Server authors every authorize URL and admission proof, and the browser never sees a token,
+   * an OAuth state, or a PKCE value. `undefined` means there is no current connection to disconnect.
+   */
+  githubIntegration(): Promise<GitHubIntegrationOverview> {
+    return this.request(GITHUB_INTEGRATION_PATH, GitHubIntegrationOverviewSchema);
+  }
+
+  startGitHubAuthorization(input: StartGitHubAuthorizationRequest): Promise<StartGitHubAuthorizationResponse> {
+    return this.request(GITHUB_INTEGRATION_AUTHORIZATION_PATH, StartGitHubAuthorizationResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  githubRepositories(cursor?: string): Promise<GitHubRepositoryDiscoveryPage> {
+    return this.request(githubIntegrationRepositoriesPath(cursor), GitHubRepositoryDiscoveryPageSchema);
+  }
+
+  updateGitHubBindings(input: UpdateGitHubConnectionBindingsRequest): Promise<GitHubConnectionStatus> {
+    return this.request(GITHUB_INTEGRATION_BINDINGS_PATH, GitHubConnectionStatusSchema, {
+      method: "PUT",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  disconnectGitHub(): Promise<GitHubConnectionStatus | undefined> {
+    return this.requestOptional(GITHUB_INTEGRATION_DISCONNECT_PATH, GitHubConnectionStatusSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  /*
+   * MCP management. The browser reads Server definitions and one Agent's mounts with their
+   * authorizations, and it writes definitions, overrides, Bearer keys, and OAuth starts. No response
+   * ever carries a credential — only `hasCredential` — so a Bearer key travels one way and is never
+   * readable again; the Server authors the authorize URL, and the broker's redirect_uri is
+   * deployment-fixed rather than chosen here.
+   */
+  mcpServers(): Promise<ListMCPServersResponse> {
+    return this.request(mcpServersPath(), ListMCPServersResponseSchema);
+  }
+
+  mcpServer(mcpServerId: string): Promise<MCPServerDetail> {
+    return this.request(mcpServerPath(mcpServerId), MCPServerDetailSchema);
+  }
+
+  createMcpServer(input: CreateMCPServerRequest): Promise<MCPServer> {
+    return this.request(mcpServersPath(), MCPServerSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  updateMcpServer(mcpServerId: string, input: UpdateMCPServerRequest): Promise<MCPServer> {
+    return this.request(mcpServerPath(mcpServerId), MCPServerSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  removeMcpServer(mcpServerId: string): Promise<void> {
+    return this.requestNoContent(mcpServerPath(mcpServerId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  agentMcpServers(agentId: string): Promise<ListAgentMCPServersResponse> {
+    return this.request(agentMcpServersPath(agentId), ListAgentMCPServersResponseSchema);
+  }
+
+  availableMcpServers(agentId: string): Promise<ListAvailableMCPServersResponse> {
+    return this.request(`${agentMcpServersPath(agentId)}/available`, ListAvailableMCPServersResponseSchema);
+  }
+
+  attachMcpServer(agentId: string, input: AttachMCPServerRequest): Promise<MCPAgentServer> {
+    return this.request(agentMcpServersPath(agentId), MCPAgentServerSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  updateAgentMcpServer(agentId: string, mcpServerId: string, input: UpdateMCPBindingRequest): Promise<MCPAgentServer> {
+    return this.request(agentMcpServerPath(agentId, mcpServerId), MCPAgentServerSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  detachMcpServer(agentId: string, mcpServerId: string): Promise<void> {
+    return this.requestNoContent(agentMcpServerPath(agentId, mcpServerId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  setMcpAuthorization(
+    agentId: string,
+    mcpServerId: string,
+    input: SetMCPAuthorizationRequest,
+  ): Promise<MCPAgentServer> {
+    return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
+      method: "PUT",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  revokeMcpAuthorization(agentId: string, mcpServerId: string): Promise<MCPAgentServer> {
+    return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  startMcpOAuth(
+    agentId: string,
+    mcpServerId: string,
+    input: StartMCPOAuthRequest = {},
+  ): Promise<StartMCPOAuthResponse> {
+    return this.request(agentMcpAuthorizationOAuthPath(agentId, mcpServerId), StartMCPOAuthResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  probeMcpServer(agentId: string, mcpServerId: string): Promise<MCPProbeResponse> {
+    return this.request(agentMcpProbePath(agentId, mcpServerId), MCPProbeResponseSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  /*
+   * Agent Skills. A Skill belongs to exactly one Agent, so every read and write is addressed under
+   * that Agent; the list response is also the single source of the deployment's storage status, so
+   * the page never has to probe for it. The bundle download is a same-origin GET link, not a fetch:
+   * the browser's own navigation carries the session cookie and the Server's `Content-Disposition`.
+   */
+  agentSkills(agentId: string): Promise<ListAgentSkillsResponse> {
+    return this.request(agentSkillsPath(agentId), ListAgentSkillsResponseSchema);
+  }
+
+  agentSkill(agentId: string, skillId: string): Promise<SkillDetail> {
+    return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema);
+  }
+
+  /**
+   * Uploads one archive. The Server re-packs and re-hashes what it stores, so the sha256 header is
+   * an integrity check on the transfer rather than a value copied into the row; the format header
+   * tells the Server how to unpack it. Replacing a name-identical Skill is explicit and only ever
+   * happens after the user confirms it, hence the header is set only when `replace` is true.
+   */
+  uploadAgentSkill(
+    agentId: string,
+    input: { file: Blob; sha256: string; format: SkillArchiveFormat; replace: boolean },
+  ): Promise<SkillDetail> {
+    return this.request(agentSkillsPath(agentId), SkillDetailSchema, {
+      method: "POST",
+      body: input.file,
+      headers: {
+        "content-type": SKILL_UPLOAD_CONTENT_TYPE,
+        [SKILL_SHA256_HEADER]: input.sha256,
+        [SKILL_FORMAT_HEADER]: input.format,
+        ...(input.replace ? { [SKILL_REPLACE_HEADER]: "true" } : {}),
+        ...this.csrfHeaders(),
+      },
+    });
+  }
+
+  updateAgentSkill(agentId: string, skillId: string, input: UpdateSkillRequest): Promise<SkillDetail> {
+    return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  removeAgentSkill(agentId: string, skillId: string): Promise<void> {
+    return this.requestNoContent(agentSkillPath(agentId, skillId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  /** The same-origin bundle download path, built from the shared template rather than a string. */
+  agentSkillBundleUrl(agentId: string, skillId: string): string {
+    return agentSkillBundlePath(agentId, skillId);
   }
 
   /**

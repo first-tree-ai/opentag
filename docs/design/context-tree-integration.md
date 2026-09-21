@@ -2,16 +2,17 @@
 
 Status: implemented
 
-Last updated: 2026-09-03
+Last updated: 2026-09-15
 
 ## Purpose
 
 OpenTag gives Agent Sessions durable memory through `@first-tree-ai/context-tree` without
 requiring the user to install or connect it per project.
 
-After one setup step per Computer, every Agent Session on that Computer:
+Each Agent optionally selects one GitHub Context Tree in **Agent settings → Context Tree**, and
+every Session for that Agent:
 
-- resolves to the same Context Tree, so Agents share durable memory;
+- resolves to the selected repository, so Agents that select the same repository share durable memory;
 - can read and write it through the packaged skills and CLI;
 - knows its own Agent slug, so `members/<agent-slug>/` is unambiguous.
 
@@ -34,7 +35,8 @@ Two consequences shape everything below:
 
 ## Shipping the pinned package
 
-`@first-tree-ai/context-tree` is a pinned runtime `dependency` of `apps/cli` — its first. What
+`@first-tree-ai/context-tree` is a pinned runtime `dependency` of `apps/cli` and
+`packages/client`. What
 OpenTag needs from it is on-disk assets rather than JavaScript exports, so nothing is bundled:
 resolution is `createRequire(import.meta.url).resolve("@first-tree-ai/context-tree/package.json")`,
 with no static import anywhere. tsdown therefore emits no reference to it, no source map names it,
@@ -57,58 +59,70 @@ itself by walking up from its entry file — the manifest and `templates/` had t
 for a version string the CLI reads on every invocation. Fixing the hazard upstream removed all of
 it.
 
-## One tree per Computer
+## Per-Agent Context Tree
 
-### Setup is explicit, once
+### Selection is explicit, per Agent
 
-OpenTag never creates a Context Tree. A user creates or connects one with the Context Tree CLI
-(`context-tree create`, or `publish` for a GitHub-backed tree) and names it to OpenTag:
+OpenTag never creates a Context Tree implicitly. Each Agent carries a nullable
+`contextTreeRepository` in its runtime configuration — database column, API contract, runtime
+snapshot, and configuration hash — which defaults to `null`, meaning durable memory is off.
 
-```bash
-opentag context-tree connect <managed-name>
-opentag context-tree connect OWNER/REPO
-opentag context-tree connect --tree-path /srv/trees/shared
-```
+The **Agent settings → Context Tree** section owns the selection:
 
-There is deliberately no `inspect` subcommand. `opentag doctor` already owns diagnostics and has
-the injectable-inspector seam, and two surfaces over one piece of state means every future reason
-code has to be rendered twice.
+- an `OWNER/REPO` field with **Connect**, which validates an existing tree and saves it only after
+  it resolves;
+- **Create private repository**, which creates and publishes a new private repository;
+- **Disconnect**, which removes the selection without deleting the repository or its memory.
 
-The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree/config.json`, mode
-`0600`, credential-free. The Server is not involved. The three target kinds mirror
-`context-tree connect`'s own argument shape, so OpenTag passes the target through rather than
-reinterpreting it.
+Only GitHub repositories are selectable. The former Computer-wide `opentag context-tree connect`
+command is removed; existing trees, connections, and memory are preserved. Context Tree
+selection is visible in Agent settings, and preparation status is reported in Session prompts.
+`opentag doctor` does not report Context Tree diagnostics.
 
-**Upgrade requires reconnecting.** Existing `<OPENTAG_HOME>/config/context-tree.json` files are
-ignored, so previously configured installations report unconfigured until reconnected. Run
-`opentag context-tree connect <managed-name>`, `opentag context-tree connect OWNER/REPO`, or
-`opentag context-tree connect --tree-path <path>` using the previous target. Restart the daemon
-and affected Sessions to pick up the Runtime changes, then verify the connection with
-`opentag doctor`. The old configuration and existing tree data remain on disk; there is no
-fallback or automatic migration.
+**Upgrade requires re-selecting.** A previously configured Computer reports disabled until the
+user selects a repository again for each Agent. A Session prepared with no selection runs
+`context-tree disconnect` for its workspace, so a stale project record cannot silently attach the
+workspace to the old tree. The old `~/.context-tree/opentag.json` target is ignored, and there is
+no fallback or automatic migration.
 
-Visible and internal Agents can change this Computer-wide configuration directly. Schema validation
-still applies when reading it, but direct edits bypass command-level target validation. Later
-Provider Runtime starts consume the changed target.
+**A disabled Context Tree is a normal state, not an error.** Sessions start, the managed prompt
+says durable memory is inactive, and Agent settings shows no repository selected. Auto-creating a tree
+outside the settings action is deferred.
 
-`connect` validates without side effects: `list` for a managed name, `verify` for an exact path.
-It deliberately does not connect a throwaway project directory to test a target, because that
-would leave a stale record in the CLI's connection store and write instruction files into it.
+### Settings operations
 
-**An unconfigured Computer is a normal state, not an error.** Sessions start, the managed prompt
-says durable memory is inactive, and `opentag doctor` reports the exact command. Auto-creating a
-tree when none is configured is deferred.
+Connect, create, and disconnect run as remote settings operations rather than Computer-wide
+commands. They reuse the runtime-test transport pattern: the Server sends a
+`context-tree:operation` frame carrying the operation id, both expected revisions, the action, and
+the repository, and the bound Computer answers with a `context-tree:operation:result` frame. An
+operation needs an online Computer whose client advertises the new capability; older Computers
+report `capability_missing` and the settings page asks the user to update OpenTag there.
+
+The Server validates revisions before dispatch and again inside the Agent update transaction
+before applying an asynchronous result, so a concurrent edit or a changed Computer fails as
+`stale_configuration` and preserves the repository. Switching or removing an existing selection
+requires the Agent to be paused: the operation reports `pause_required` unless the Agent is
+suspended, and the Computer verifies its runtimes have stopped before changing the connection they
+share.
+
+`create` runs in an isolated setup project, so publication cannot disturb the Agent's current
+connection. A durable local operation record makes duplicate requests idempotent and records
+publication intent before publishing, so a lost response is never permission to publish again; an
+uncertain creation is reported as `publication_uncertain` and never repeated automatically.
+Authentication failures tell the user to run `gh auth login` on the named Computer and retry;
+repository-exists, permission, and invalid-tree failures are reported separately. The tree is
+verified before the selection is saved.
 
 ### Per-Agent resolution
 
 `ContextTreeManager` (`packages/client/src/runtime/context-tree.ts`) prepares each Agent
-workspace once per recorded target, cached in memory:
+workspace once per repository and provider, cached in memory:
 
 ```text
 cwd = await workspace.cwd(agentId)
-connect <target> --project-path <cwd> --json  # clones on first use when the kind is github
+connect OWNER/REPO --project-path <cwd> --json  # clones on first use
 install --host claude --project <cwd>     # -> <cwd>/.claude/skills/context-tree-*
-install --host codex                      # -> $CODEX_HOME/skills/context-tree-*
+install --host codex                      # -> $HOME/.agents/skills/context-tree-*
 ```
 
 `connect` is idempotent for an identical connection, so this is the ensure operation. It also
@@ -116,8 +130,8 @@ returns the resolved tree under the same schema `resolve` does, so there is no s
 an earlier revision of this design ran `resolve` afterwards and compared the two, which only
 guarded a race that a single call makes impossible.
 
-Every workspace pointing at one target resolves to the same checkout, which is what makes the
-tree shared across Agents.
+Every workspace selecting the same repository resolves to the same checkout, which is what
+makes the tree shared across the Agents that select it.
 
 The path always comes from `AgentWorkspaceManager.cwd(agentId)`, which refuses to return a path
 until the workspace layout state is schema-v3 `complete`. That ordering is load-bearing: it is
@@ -132,10 +146,10 @@ admission, so work placed there would run per Turn.
 The CLI replaces its connection store atomically but without a cross-process lock, so concurrent
 read-modify-write can lose unrelated records. OpenTag serializes its own invocations behind one
 in-process mutex. Concurrent starts for the same workspace join one in-flight preparation.
-Session start races the full pipeline, including shim preparation and configuration reads, against a 5-second budget: if preparation is still running, the
+Session start races the full pipeline, including shim preparation, against a 5-second budget: if preparation is still running, the
 Session receives `PREPARING` and starts without durable memory while the serialized work continues
-in the background. A completed success is cached per workspace and target. A failure is held in a
-one-minute cooldown, limiting an unreachable target to one attempt per minute per workspace while
+in the background. A completed success is cached per workspace, repository, and provider. A failure is held in a
+one-minute cooldown, limiting an unreachable repository to one attempt per minute per workspace while
 preserving retry after a transient fault.
 
 The Turn's `AbortSignal` is deliberately not threaded into preparation. Once work is backgrounded,
@@ -147,23 +161,25 @@ cross-process advisory lock upstream remains a worthwhile follow-up, not a prere
 
 ## Sharing one tree across Computers
 
-A `github` target gives several Computers the same logical tree using the CLI's existing Git
+A GitHub selection gives several Computers the same logical tree using the CLI's existing Git
 paths: `connect OWNER/REPO` clones into the managed namespace, `sync` is one `git pull --ff-only`,
 and `finish-write` is one `git push`. No new synchronization mechanism exists.
 
 What this costs, stated rather than left implicit:
 
 - Each Computer needs its own GitHub credentials. The failure surfaces as `GITHUB_AUTH`.
-- **"Startup performs no network access" holds only for local trees.** A GitHub target clones on
-  first use and reaches the network on every `sync` and `finish-write`. All of it degrades to
-  unavailable; none of it blocks Session start.
+- **Every selection reaches the network.** A GitHub selection clones on first use and reaches the
+  network on every `sync` and `finish-write`. All of it degrades to unavailable; none of it blocks
+  Session start.
 - Concurrent writes, whether from two Agents on one Computer or across Computers, collide as
   `WRITE_OUTDATED` on a non-fast-forward push. The write skill retries once and then stops;
   OpenTag adds no retry loop.
-- Agents on one Computer share one checkout, so one dirty checkout blocks all of them with
-  `DIRTY_TREE`. Doctor names it distinctly; it is repaired by the user, never by discarding their
+- Agents that select the same repository share one checkout, so one dirty checkout blocks all of
+  them with `DIRTY_TREE`. The preparation result names it distinctly; it is repaired by the user, never by discarding their
   edits.
-- The target is machine-local, so it is set once per Computer. Server propagation is deferred.
+- The selection lives on the Agent, so any OpenTag channel (`dev`, `staging`, `prod`) that serves
+  that Agent sees the same repository. Agents that select the same repository share the tree;
+  Agents that select nothing, or a different repository, do not.
 
 ## Reaching the Session
 
@@ -178,10 +194,10 @@ not exist yet is inert on `PATH`.
 Shim preparation is shared across workspaces and cached after success for the manager's lifetime;
 restart the daemon to refresh it. Failed preparation retries after the one-minute cooldown.
 Configured package and shim failures replace the durable preparation record and use the workspace
-cooldown. Without a target they remain unavailable statuses without creating a preparation record;
-they are distinct from ordinary unconfigured state.
+cooldown. Without a selection they remain unavailable statuses without creating a preparation record;
+they are distinct from ordinary disabled state.
 
-The shim is prepared before checking Computer configuration, so an unconfigured Computer can run
+The shim is prepared before the repository is consulted, so a disabled Context Tree can run
 the bundled command without creating or connecting a tree. Preparation failures retain the existing
 unavailable statuses. Managed instructions identify command availability failures as runtime setup
 problems; a global install is unnecessary.
@@ -193,7 +209,7 @@ resolve whatever `node` the Session's `PATH` happens to find.
 
 It is prepended at composition rather than through per-Session workspace environment because a
 Session-level `PATH` would replace the value the factory composes, including the discovered
-executable directory that lets `codex` and `claude` resolve at all.
+executable directory that lets `codex`, `claude`, and `pi` resolve at all.
 
 Visible Sessions supply their tool directory through workspace `pathPrepend`. Every Provider factory
 prepends it after composing its environment, preserving the Context Tree and executable directories.
@@ -204,6 +220,19 @@ as described in the upgrade instructions above.
 
 OpenTag's own invocations never rely on the shim: they exec the resolved CLI path directly, so a
 broken or shadowed shim cannot change what OpenTag executes.
+
+### Pi
+
+The production Pi factory passes each packaged Context Tree skill directory explicitly with
+`--skill <path>`. Automatic skill and context-file discovery remain disabled with `--no-skills`
+and `--no-context-files`; supplying the packaged skills does not enable user extensions, hooks,
+or ambient workspace instructions. When package assets are unavailable, the factory receives no
+skill arguments and memory preparation reports its existing unavailable state.
+
+Pi uses the same Context Tree CLI shim and managed Agent-slug/repository instructions. No host skill
+installation into the user's Pi home is needed. Local Pi runs unrestricted, so access to the shared
+Tree is governed by the CLI's workflow and the user's OS permissions; this is not per-Session OS
+isolation. Cloud distribution and synchronization remain separate Cloud design work.
 
 ### Claude Code
 
@@ -231,14 +260,12 @@ Two consequences to hold in view:
 
 ### Codex
 
-Codex reads skills from `$CODEX_HOME/skills`, independently of the `plugins` and `hooks` features
+Codex reads skills from `$HOME/.agents/skills`, independently of the `plugins` and `hooks` features
 OpenTag disables, so no marketplace or feature change is required. For `install --host codex`,
-OpenTag sets `HOME` to the parent of the resolved Codex home, making the package install into the
-same `.codex/skills` directory from which the spawned Runtime reads. That mapping is exact only
-when the Codex home's basename is `.codex`. A home with any other name (for example
-`CODEX_HOME=/opt/opentag/codex-home`) cannot be expressed by the redirect, so preparation reports
-`unavailable: CODEX_HOME_UNSUPPORTED` before any CLI work rather than risking a misplaced
-install; a Codex host the CLI reports as `skipped` is likewise reported as `unavailable` with the
+OpenTag passes the account `HOME` and resolved `CODEX_HOME` used by the Codex runtime.
+The package detects Codex at `CODEX_HOME` and installs skills into `$HOME/.agents/skills`,
+including when the Codex home has a custom location or name.
+A Codex host the CLI reports as `skipped` is reported as `unavailable` with the
 CLI's own reason instead of a reassuring `ready`. OpenTag writes only
 `context-tree-*` directories there; the operation is idempotent and reversible.
 
@@ -247,12 +274,25 @@ a managed `CODEX_HOME`. That option was dropped because it changes provider arti
 invalidating existing bindings, and forces a visible one-time `codex login` in the managed home.
 Writing one owned, reversible skill directory is the smaller intrusion.
 
-OpenTag creates the Context Tree config leaf — `<OPENTAG_HOME>/config/context-tree/` — before
-granting access, on both platforms. The grant is that leaf directory, which contains exactly one
-file, so it carries no more authority on Linux than the macOS file grant and never touches
-`<OPENTAG_HOME>/config`, where the Computer's identity and machine credential live. If directory
-creation fails, OpenTag logs the failure and starts the provider without that grant, preserving
-workspace, Slack, and tree grants.
+OpenTag creates `~/.context-tree` with mode `0700` before granting read/write access to visible
+and internal Sessions, including when no default is selected. The account home is canonicalized,
+and a symlink at the managed directory is rejected, matching the standalone CLI. Changing
+`OPENTAG_HOME` does not change the selected default; the shim and preparation diagnostics remain
+under `OPENTAG_HOME`. If directory preparation fails, OpenTag logs the failure and starts the
+provider without that grant, preserving workspace, Slack, and resolved external-tree grants.
+
+The grant is the whole account directory, which is wider than the minimal tree grant it replaces.
+It holds every Agent's connection record, every checkout under `trees/`, `connections.json` (which maps every
+project on the account to a tree), and the standalone CLI's cleanup state. That last part includes
+the launcher executable at `cleanup/launchers/<schedule-id>/context-tree-cleanup`, which the user's
+own LaunchAgent or systemd user timer later runs **outside** the provider sandbox. `writableRoots`
+cannot express exclusions, and the in-session `context-tree` CLI has to write trees and connection
+records, so a Session that can use Context Tree can also rewrite an existing launcher. It cannot
+register a *new* schedule, because the plist or unit file lives outside this directory. This is the
+accepted trade: without the account directory the CLI's first in-session write fails. The grant is
+unconditional — OpenTag issues it for every Session whether or not the Agent has selected a
+Context Tree, because Context Tree is a built-in part of OpenTag rather than an optional add-on. No
+configuration withholds it today; an explicit opt-out may be added later.
 
 Codex runs `workspace-write`, so a shared tree outside the workspace would be read-only to it.
 The resolved tree path is appended to `writableRoots`, composing with the Slack config root rather
@@ -310,12 +350,12 @@ product decision rather than a detail of this design.
 
 Every failure carries a reason, is logged once, and is reported to the Session through the
 managed prompt. The reason is the Context Tree CLI's own error code wherever there is one —
-`DIRTY_TREE`, `GITHUB_AUTH`, `INVALID_TREE`, `STALE_CONNECTION`, `CORRUPT_CONNECTION`, and so on —
+`DIRTY_TREE`, `GITHUB_AUTH`, `GITHUB_PERMISSION`, `INVALID_TREE`, `STALE_CONNECTION`, `CORRUPT_CONNECTION`, and so on —
 plus OpenTag's own `PACKAGE_MISSING`, `SHIM_UNAVAILABLE`, `CONNECT_FAILED`, `TIMEOUT`, `CLI_FAILED`
 as the fallback, and `PREPARING` when the Session-start budget expires before background work.
 
 Passing the CLI's codes through rather than mapping them onto an OpenTag enum is deliberate.
-Nothing switches on the reason — it is rendered into a prompt line and a doctor detail — so a
+Nothing switches on the reason — it is rendered into a prompt line — so a
 translation layer could only lose information, and an earlier revision of this design did exactly
 that, collapsing a dirty shared checkout into a generic failure. The cost is that an upstream
 rename changes OpenTag's output text; that is worth less than naming the real fault.
@@ -326,73 +366,60 @@ particular reports an unusable tree as `ok: false` with `findings` and no `error
 which is why the failure reader honours both shapes.
 
 - Nothing in the Context Tree path throws into Session start.
-- The configuration is read before the cache is consulted, and a cached entry is only reused while
-  it was recorded under the Computer's current target. `opentag context-tree connect` writes the
-  file and nothing else, so this is what makes a newly configured or retargeted Computer take
-  effect without restarting the daemon.
-- A success is cached per workspace. A failure is cached for a one-minute cooldown, after which a
-  later Session retries; changing the configured target invalidates both caches immediately.
+- The repository comes from the Agent runtime snapshot, and a cached entry is only reused while it
+  was recorded under the workspace's current repository and provider. Changing the selection
+  invalidates both caches immediately, so a settings change takes effect at the next Session
+  without restarting the daemon.
+- A success is cached per workspace, repository, and provider. A failure is cached for a one-minute
+  cooldown, after which a later Session retries; changing the selection invalidates both caches
+  immediately.
 - Session start waits at most five seconds. On budget expiry it reports `PREPARING`, starts without
   durable memory, and leaves the joined, serialized preparation running in the background.
 - The managed prompt tells the Agent durable memory is inactive and not to repair the tree or
   create one itself.
-- `opentag doctor` reports the configured target and the tree's state under a `context-tree`
-  scope. Both checks are non-blocking, so neither can change the doctor exit code. There is no
-  separate package check: with a real dependency, a missing package is a broken installation that
-  fails far louder elsewhere.
+- `opentag doctor` excludes Context Tree checks; selection and preparation status belong to
+  Agent settings and Session prompts.
 - Tree contents, credentials, and full command output are never logged.
 
 ## Verification
 
-Both delivery mechanisms were confirmed against the real CLIs before the surrounding work landed:
+The earlier host-install delivery mechanisms were confirmed against the real CLIs:
 
 - Claude Code under `--print --input-format stream-json --setting-sources project` discovers
   `<workspace>/.claude/skills/context-tree-*`; under `--setting-sources ""` it does not.
-- Codex discovers `~/.codex/skills/context-tree-*` with `plugins` and `hooks` disabled. Its
+- Codex discovers `~/.agents/skills/context-tree-*` with `plugins` and `hooks` disabled. Its
   `skip_host_skill_discovery` feature is separate from both.
 
-Automated coverage: target routing and config round-trip; rendered platform string, revision
+Pi production-composition tests cover explicit skill-present and skill-absent paths, inspect the
+actual spawned RPC arguments, and preserve disabled automatic discovery.
+
+Automated coverage: repository routing and snapshot round-trip; rendered platform string, revision
 identity, snapshot hash, and instruction budget; per-provider argv and `PATH` composition; the
 failure reader against every CLI shape, including a zero-exit `ok: false` payload; shim contents
 and mode; joined background preparation, Session-start budgeting, failure cooldown, and durable
 outcome records; prompt rendering for ready, unconfigured, preparing, and unavailable;
-`writableRoots` composition alongside the Slack config root; and doctor's non-blocking behaviour
+`writableRoots` composition alongside the Slack config root; and non-blocking preparation failures
 in every state.
 
-Four end-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
-and `OPENTAG_HOME` redirected: two Agent workspaces on one Computer resolving to the same checkout
-and invoking `context-tree` by name through the shim; Codex skills landing in a custom `.codex`
-home while the account home stays untouched; one Agent writing `members/<slug>/memory.md` through
+End-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
+and `OPENTAG_HOME` redirected: two Agent workspaces selecting the same repository resolving to the same checkout
+and invoking `context-tree` by name through the shim; Codex skills landing in the account
+home's `.agents/skills` independently of a custom Codex configuration home; one Agent writing `members/<slug>/memory.md` through
 the real isolated-worktree protocol while a second Agent in a different workspace reads it back;
 and a Session still starting after the configured tree is deleted from underneath it.
 
-Beyond the repository gates, the packaged CLI was installed from its own tarball into a throwaway
-consumer and driven through `connect`, `doctor` on a configured Computer, an unconfigured
-Computer, a deleted tree, and a usage error — confirming that ordinary Node.js resolution finds
-the dependency from the published bundle.
-
 ## Deferred
 
-- Auto-creating a tree when none is configured.
-- A typed reason for a corrupt or unreadable configuration. A Session is told `unconfigured` today,
-  although doctor does distinguish it as invalid. This is worth doing now that a repaired
-  configuration is actually observed rather than masked by a stale cache.
+- Auto-creating a tree outside the Agent settings action.
 - Revalidating a cached `ready` entry against the tree itself, so that deleting the tree or editing
   the CLI's connection store by hand is noticed within a daemon's lifetime. Honouring OpenTag's own
-  configuration changes is separate and is not deferred.
+  selection changes is separate and is not deferred.
 - A cross-process advisory lock around the CLI's connection store.
-- Validating a GitHub target during `opentag context-tree connect`, for example with a cheap
-  `git ls-remote` probe. That adds network work to a command deliberately kept read-only;
-  background preparation plus durable doctor visibility removes the Session-start harm meanwhile.
-- Supporting an arbitrary `CODEX_HOME` whose basename is not `.codex`; the Context Tree CLI needs
-  an explicit skills-root flag because its host install can target only `<HOME>/.codex/skills`.
-  Until then the two guards above report the unsupported home and a skipped host as `unavailable`
-  with a specific reason, so the state is diagnosable through the prompt and `opentag doctor`.
+- A cheap connectivity probe before an operation dispatches, for example `git ls-remote`.
+  Background preparation bounds the Session-start delay; the prompt reports inactive memory meanwhile.
 - Sanitizing Claude project inputs (`settings.json`, `settings.local.json`, `hooks/`, `agents/`,
   `commands/`, and `CLAUDE.md`) on every `prepareAgent`, so project settings contribute only
   OpenTag-written content.
-- Server-propagated target, so a Computer inherits it when it connects.
-- Project-scoped trees, so several Agents share a tree without sharing all Computer memory.
 - Windows support, which needs Provider lifecycle, path, lock, and isolated-home CI coverage
   first. The shim is POSIX and reports `shim_unavailable` elsewhere.
-- Any Provider beyond Codex and Claude Code.
+- Any Provider beyond Codex, Claude Code, and Pi.

@@ -1,0 +1,9 @@
+{
+  "name": "opentag-runner-pi",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Locked Pi coding-agent closure for the OpenTag Cloud Runner image. Not a workspace package.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2"
+  }
+}

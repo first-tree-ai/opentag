@@ -26,6 +26,15 @@ const bundledPackages = [
   { name: "ws", consumerManifest: "apps/cli/package.json" },
   { name: "zod", consumerManifest: "packages/shared/package.json" },
   { name: "semver", consumerManifest: "packages/client/package.json" },
+  {
+    name: "tar-stream",
+    consumerManifest: "packages/client/package.json",
+    bundledDependencies: [
+      "b4a",
+      "fast-fifo",
+      { name: "streamx", bundledDependencies: ["events-universal", "text-decoder"] },
+    ],
+  },
 ];
 
 async function readLicense(packageDirectory) {
@@ -73,15 +82,20 @@ export async function generateThirdPartyNotices() {
   for (const bundledPackage of bundledPackages) {
     const consumerPath = resolve(projectRoot, bundledPackage.consumerManifest);
     const packageRequire = createRequire(pathToFileURL(consumerPath));
-    const rootPackage = await findPackageManifest(packageRequire, bundledPackage.name);
-    await appendNotice(sections, rootPackage);
-    const dependencyRequire = createRequire(pathToFileURL(rootPackage.manifestPath));
-    for (const dependency of bundledPackage.bundledDependencies ?? []) {
-      await appendNotice(sections, await findPackageManifest(dependencyRequire, dependency));
-    }
+    await appendBundledNotices(sections, packageRequire, bundledPackage);
   }
 
   return `OpenTag Third-Party Notices\n\nThis distribution includes source code from the following packages.\n\n${sections.join("\n\n---\n\n")}\n`;
+}
+
+async function appendBundledNotices(sections, packageRequire, entry) {
+  const item = typeof entry === "string" ? { name: entry } : entry;
+  const rootPackage = await findPackageManifest(packageRequire, item.name);
+  await appendNotice(sections, rootPackage);
+  const dependencyRequire = createRequire(pathToFileURL(rootPackage.manifestPath));
+  for (const dependency of item.bundledDependencies ?? []) {
+    await appendBundledNotices(sections, dependencyRequire, dependency);
+  }
 }
 
 async function appendNotice(sections, { manifest, manifestPath }) {

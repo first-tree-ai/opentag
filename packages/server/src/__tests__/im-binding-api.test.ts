@@ -6,6 +6,7 @@ import {
   agentImBindingUnbindPath,
   agentSlackOAuthStartPath,
   FEISHU_REQUIRED_TENANT_SCOPES,
+  feishuSetupAttemptCheckPath,
   feishuSetupAttemptPath,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
@@ -209,7 +210,21 @@ function services() {
   const feishu = {
     createOrReuse: vi.fn().mockResolvedValue(feishuAttempt),
     get: vi.fn().mockResolvedValue(feishuAttempt),
+    getForAgent: vi.fn().mockResolvedValue(feishuAttempt),
     cancel: vi.fn().mockResolvedValue({ ...feishuAttempt, state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" }),
+    check: vi.fn().mockResolvedValue({
+      ...feishuAttempt,
+      state: "pending_activation",
+      qrUrl: null,
+      expiresAt: "2026-09-10T01:00:00.000Z",
+      activation: {
+        appId: "cli_durable",
+        reason: "permissions_pending",
+        missingScopes: ["im:message"],
+        lastCheckedAt: "2026-09-10T00:00:00.000Z",
+        nextCheckAt: "2026-09-10T00:01:00.000Z",
+      },
+    }),
   };
   return { imBindings, feishu };
 }
@@ -238,6 +253,20 @@ describe("ImBinding HTTP API", () => {
     });
     expect(handoff.json()).toEqual({ bindingState: "active", handoffReady: false });
 
+    const current = await app.inject({
+      method: "GET",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+    });
+    expect(current.statusCode).toBe(200);
+    expect(current.json()).toEqual(feishuAttempt);
+    expect(service.feishu.getForAgent).toHaveBeenCalledWith(userId, agentId);
+    expect(service.feishu.createOrReuse).not.toHaveBeenCalled();
+    service.feishu.getForAgent.mockResolvedValueOnce(undefined);
+    expect(
+      (await app.inject({ method: "GET", url: agentFeishuSetupAttemptsPath(agentId), headers: authorization }))
+        .statusCode,
+    ).toBe(204);
     const createFeishu = await app.inject({
       method: "POST",
       url: agentFeishuSetupAttemptsPath(agentId),
@@ -257,6 +286,19 @@ describe("ImBinding HTTP API", () => {
     expect(canceled.statusCode).toBe(200);
     expect(canceled.json()).toMatchObject({ state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" });
     expect(service.feishu.cancel).toHaveBeenCalledWith(userId, attemptId);
+    const checked = await app.inject({
+      method: "POST",
+      url: feishuSetupAttemptCheckPath(attemptId),
+      headers: authorization,
+    });
+    expect(checked.statusCode).toBe(200);
+    expect(checked.json()).toMatchObject({
+      state: "pending_activation",
+      qrUrl: null,
+      activation: { appId: "cli_durable", reason: "permissions_pending", missingScopes: ["im:message"] },
+    });
+    expect(checked.json()).not.toHaveProperty("activation.appSecret");
+    expect(service.feishu.check).toHaveBeenCalledWith(userId, attemptId);
     expect(
       (await app.inject({ method: "GET", url: imBindingDiagnosticsPath(imBindingId), headers: authorization })).json(),
     ).toMatchObject({ provider: "feishu", ready: false, slackAppId: null });
@@ -671,7 +713,10 @@ describe("ImBindingService persistence", () => {
     expect(await value.service.recordSlackIdentityClosure(activated.imBindingId, 99)).toBe(false);
     expect(await value.service.requireReauthorization(activated.imBindingId, 1, "SLACK_TOKEN_REVOKED")).toBe(true);
     expect(await value.service.requireReauthorization(activated.imBindingId, 1, "ignored")).toBe(false);
-    expect(await value.service.disableFromProvider(activated.imBindingId, 1)).toBe(true);
+    // The reauthorization transition advanced the authorization epoch: generation 1 is stale.
+    expect(await value.service.disableFromProvider(activated.imBindingId, 1)).toBe(false);
+    expect(await value.service.disableFromProvider(activated.imBindingId, 2)).toBe(true);
+    expect(await value.service.disableFromProvider(activated.imBindingId, 2)).toBe(false);
     expect(await value.service.findSlackInstallationIngress("A1", "T1")).toBeUndefined();
   });
 
@@ -1115,6 +1160,88 @@ describe("ImBindingService persistence", () => {
     await expect(value.service.diagnostics(value.bootstrap.userId, crypto.randomUUID())).rejects.toMatchObject({
       code: "IM_BINDING_NOT_FOUND",
     });
+  });
+
+  it("advances the authorization epoch on every Slack authorization mutation but not on observations", async () => {
+    const value = await persistedFixture();
+    const activated = await value.service.activateSlack(slackInput(value.agent.id), "B1");
+    const ingress = await value.service.findSlackInstallationIngress("A1", "T1");
+    const installationId = ingress?.installationId ?? "";
+    const rows = async () => {
+      const [installation] = await unitDatabase.database
+        .select()
+        .from(slackInstallations)
+        .where(eq(slackInstallations.id, installationId));
+      const [route] = await unitDatabase.database
+        .select()
+        .from(imBindings)
+        .where(eq(imBindings.id, activated.imBindingId));
+      return { installation, route };
+    };
+
+    // Heartbeats and identity observations are not authorization mutations and never bump.
+    expect(await value.service.recordSlackObservation(activated.imBindingId, 1)).toBe(true);
+    expect(await value.service.recordSlackIdentityClosure(activated.imBindingId, 1)).toBe(true);
+    expect(await rows()).toMatchObject({
+      installation: { status: "active", credentialGeneration: 1 },
+      route: { status: "active", credentialGeneration: 1 },
+    });
+
+    // active -> reauthorization bumps the installation and its route in the same transaction.
+    expect(await value.service.requireReauthorization(activated.imBindingId, 1, "SLACK_TOKEN_REVOKED")).toBe(true);
+    expect(await rows()).toMatchObject({
+      installation: { status: "reauthorization_required", credentialGeneration: 2 },
+      route: { status: "reauthorization_required", credentialGeneration: 2 },
+    });
+    // Terminal repeated operations are idempotent: no second bump, no error.
+    expect(await value.service.requireReauthorization(activated.imBindingId, 1, "SLACK_TOKEN_REVOKED")).toBe(false);
+    expect(await rows()).toMatchObject({
+      installation: { status: "reauthorization_required", credentialGeneration: 2 },
+      route: { status: "reauthorization_required", credentialGeneration: 2 },
+    });
+
+    // Restoration through reauthorization bumps again and returns the pair to active.
+    const restored = await value.service.activateSlack(slackInput(value.agent.id, { intent: "reauthorize" }), "B1");
+    expect(restored.credentialGeneration).toBe(3);
+    expect(await rows()).toMatchObject({
+      installation: { status: "active", credentialGeneration: 3 },
+      route: { status: "active", credentialGeneration: 3 },
+    });
+
+    // Disable is an epoch mutation even though the credential is erased; repeats are no-ops.
+    expect(await value.service.disableFromProvider(activated.imBindingId, 3)).toBe(true);
+    expect(await rows()).toMatchObject({
+      installation: { status: "disabled", credentialGeneration: 4, encryptedCredential: null },
+      route: { status: "disabled", credentialGeneration: 4, encryptedCredential: null },
+    });
+    expect(await value.service.disableFromProvider(activated.imBindingId, 3)).toBe(false);
+    expect(await rows()).toMatchObject({
+      installation: { status: "disabled", credentialGeneration: 4 },
+      route: { status: "disabled", credentialGeneration: 4 },
+    });
+  });
+
+  it("advances the Feishu binding epoch on replacement and disable with idempotent terminal operations", async () => {
+    const value = await persistedFixture();
+    const first = await value.service.activateFeishu(feishuInput(value.agent.id));
+    const generationOf = async (id: string) => {
+      const [row] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, id));
+      return { status: row?.status, credentialGeneration: row?.credentialGeneration };
+    };
+    expect(await generationOf(first)).toEqual({ status: "active", credentialGeneration: 1 });
+    // Credential rotation on the same identity bumps the epoch.
+    await value.service.activateFeishu(feishuInput(value.agent.id, { appSecret: "rotated-secret" }));
+    expect(await generationOf(first)).toEqual({ status: "active", credentialGeneration: 2 });
+    // Replacement with a different App disables the old row (epoch bump) and starts a new epoch.
+    const replacement = await value.service.activateFeishu(feishuInput(value.agent.id, { appId: "cli_2" }));
+    expect(replacement).not.toBe(first);
+    expect(await generationOf(first)).toEqual({ status: "disabled", credentialGeneration: 3 });
+    expect(await generationOf(replacement)).toEqual({ status: "active", credentialGeneration: 1 });
+    // Account-owned disable bumps once and stays idempotent.
+    await value.service.disable(value.bootstrap.userId, replacement);
+    expect(await generationOf(replacement)).toEqual({ status: "disabled", credentialGeneration: 2 });
+    await value.service.disable(value.bootstrap.userId, replacement);
+    expect(await generationOf(replacement)).toEqual({ status: "disabled", credentialGeneration: 2 });
   });
 
   it("handles Slack reauthorization replacement and orphan installation cleanup", async () => {

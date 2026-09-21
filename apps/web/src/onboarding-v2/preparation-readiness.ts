@@ -54,6 +54,8 @@ function runtimeTitle(provider: AgentRuntimeProvider): string {
       return m.onboarding_v2_runtime_codex_title();
     case "claude-code":
       return m.onboarding_v2_runtime_claude_code_title();
+    case "pi":
+      return m.onboarding_v2_runtime_pi_title();
   }
 }
 

@@ -88,6 +88,21 @@ function handle(command) {
     send({ id: command.id, type: "response", command: command.type, success: false, error: "rejected" });
     return;
   }
+  if (command.type === "get_commands") {
+    send({
+      id: command.id,
+      type: "response",
+      command: "get_commands",
+      success: true,
+      data: {
+        commands: [
+          { name: `skill:${process.env.PI_RPC_FIXTURE_SKILL ?? "fixture-skill"}`, source: "skill" },
+          { name: "help", source: "builtin" },
+        ],
+      },
+    });
+    return;
+  }
   if (command.type === "get_state") {
     send({
       id: command.id,

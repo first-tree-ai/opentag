@@ -46,7 +46,7 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it.each([
-    ["integrations", "Integrations"],
+    ["integrations", "GitHub repositories"],
     ["skills", "Skills"],
   ])("keeps a direct Agent %s URL available without exposing its navigation preview", async (section, heading) => {
     installApi();

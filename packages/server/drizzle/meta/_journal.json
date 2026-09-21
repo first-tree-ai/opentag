@@ -288,6 +288,62 @@
       "when": 1788658011768,
       "tag": "0040_watery_electro",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789395510958,
+      "tag": "0041_colossal_magdalene",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1789456123559,
+      "tag": "0042_outgoing_jasper_sitwell",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1789458012558,
+      "tag": "0043_cultured_dark_beast",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1789544780443,
+      "tag": "0044_wet_xorn",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1789653588431,
+      "tag": "0045_abandoned_rocket_raccoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1789740973036,
+      "tag": "0046_wild_skullbuster",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1789741456611,
+      "tag": "0047_feishu_pending_activation",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1789826339017,
+      "tag": "0048_known_gertrude_yorkes",
+      "breakpoints": true
     }
   ]
 }

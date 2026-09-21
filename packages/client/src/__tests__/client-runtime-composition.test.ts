@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -6,30 +6,41 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type ContextTreeOperationFrame,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type WebSocket, WebSocketServer } from "ws";
+import { WebSocketServer } from "ws";
 import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
+import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
+import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import {
   ComposedClientRuntime,
   codexProviderReadiness,
+  composeProviderCliLaunchPath,
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
+  createCredentialEnvironment,
   createLoginShellDiscovery,
+  createProxyValidationOpener,
   createRuntimeProviderReadinessRefresher,
+  createSkillSyncManager,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
+  resolvePiHome,
+  resolveProxyValidationOpener,
 } from "../runtime/client-runtime-composition.js";
+import * as contextTreeModule from "../runtime/context-tree.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import {
   collectOutgoingReplyReceipts,
@@ -39,10 +50,20 @@ import { ProviderCliTurnPlanManager } from "../runtime/provider-cli/turn-plan-ma
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
+import { completeAuth, heartbeatResult, registrationResult } from "./support/runtime-server.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
 const cleanup: Array<() => Promise<void>> = [];
+/**
+ * Shared-owner tests assert which caller owns a readiness probe, never the probe deadline itself.
+ * The deadline must therefore stay far out of reach of the test's own wall clock: a saturated CI
+ * runner can stall a single step for several seconds, and an elapsed deadline aborts the live owner
+ * so the next caller legitimately starts another refresh. Deadline behaviour has its own cases,
+ * which pin their own small values.
+ */
+const SHARED_OWNERSHIP_PROBE_DEADLINE_MS = 600_000;
 
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((close) => close()));
@@ -50,6 +71,433 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it.each([undefined, "legacy", "proxy"] as const)(
+    "negotiates credential proxy support only when the composed mode is %s",
+    async (credentialMode) => {
+      const home = await temporaryDirectory("opentag-credential-mode-negotiation-");
+      const server = await runtimeServer();
+      cleanup.push(server.close);
+      const connection = runtimeConnection(server.url);
+      server.wss.on("connection", (socket) => {
+        socket.on("message", (data) => {
+          const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+          if (frame.type === "auth") completeAuth(socket, frame);
+          if (frame.type === "computer:register") socket.send(JSON.stringify(registrationResult(frame)));
+          if (frame.type === "heartbeat") socket.send(JSON.stringify(heartbeatResult(frame)));
+        });
+      });
+      const runtime = await createClientRuntime(connection, {
+        clientVersion: "0.0.1",
+        credentialMode,
+        environment: { HOME: home, PATH: process.env.PATH },
+        factory: readyFactory(),
+        home,
+      });
+      const running = runtime.run();
+      try {
+        await connection.whenRegistered();
+        const proxyVersion = credentialMode === "proxy" ? 1 : undefined;
+        expect(connection.capabilityVersion(RUNTIME_CAPABILITY.runtimeCredential)).toBe(proxyVersion);
+        expect(connection.capabilityVersion(RUNTIME_CAPABILITY.providerProxy)).toBe(proxyVersion);
+        expect(connection.capabilityVersion(RUNTIME_CAPABILITY.imCredentialGrant)).toBe(2);
+        expect(() => connection.setCredentialProxyEnabled(credentialMode !== "proxy")).toThrow(
+          "Credential proxy mode must be configured before connecting",
+        );
+      } finally {
+        runtime.stop();
+        await running;
+      }
+    },
+  );
+
+  it("can initialize Pi without the optional packaged Context Tree skills", async () => {
+    const packageResolver = vi.spyOn(contextTreeModule, "resolveContextTreePackage").mockReturnValue(undefined);
+    cleanup.push(async () => {
+      packageResolver.mockRestore();
+    });
+    const home = await temporaryDirectory("opentag-pi-no-context-package-");
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+    });
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      expect((await runtime.runtimeManager.ensureRuntime("session-1")).binding?.providerId).toBe("pi");
+    } finally {
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it("resolves the trusted web tools extension only for the proxy-mode opt-in", async () => {
+    const home = await temporaryDirectory("opentag-web-tools-optin-");
+    const extension = resolve(home, "web-tools.mjs");
+    await writeFile(extension, "export default function register() {}\n");
+    const logs: RecordedLog[] = [];
+    const enabled = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      logger: recordingLogger(logs),
+      machineToken: "machine-token",
+      webTools: { enabled: true, extensionPath: extension, fetchImpl: fetch },
+    });
+    enabled.stop();
+    expect(logs.some((entry) => entry.fields.code === "web_tools_artifact_missing")).toBe(false);
+
+    const missing = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      logger: recordingLogger(logs),
+      machineToken: "machine-token",
+      webTools: { enabled: true, extensionPath: resolve(home, "missing.mjs") },
+    });
+    missing.stop();
+    expect(logs.some((entry) => entry.fields.code === "web_tools_artifact_missing")).toBe(true);
+
+    // No explicit path: the default built/source artifact candidate must resolve.
+    logs.length = 0;
+    const defaultResolution = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      logger: recordingLogger(logs),
+      machineToken: "machine-token",
+      webTools: { enabled: true },
+    });
+    defaultResolution.stop();
+    expect(logs.some((entry) => entry.fields.code === "web_tools_artifact_missing")).toBe(false);
+
+    // Legacy mode never opens executions, so the flag must not even resolve an artifact.
+    const legacy = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      factory: readyFactory(),
+      home,
+      machineToken: "machine-token",
+      webTools: { enabled: true, extensionPath: resolve(home, "missing-legacy.mjs") },
+    });
+    legacy.stop();
+  });
+
+  it("passes a caller-supplied host Context Tree environment into runtime preparation", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-host-environment-");
+    const ensureAgent = vi
+      .spyOn(contextTreeModule.ContextTreeManager.prototype, "ensureAgent")
+      .mockResolvedValue({ status: "unconfigured" });
+    cleanup.push(async () => {
+      ensureAgent.mockRestore();
+    });
+    const trustedEnvironment: Readonly<Record<string, string | undefined>> = {
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/context-tree", role: "context_tree" }]),
+      HTTPS_PROXY: "http://127.0.0.1:43119",
+    };
+    const requestedSessions: string[] = [];
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+      runtimeCredentials: {
+        contextTreeEnvironment: (sessionId) => {
+          requestedSessions.push(sessionId);
+          return trustedEnvironment;
+        },
+      },
+    });
+    const executionEnvironment = vi.spyOn(runtime.credentialEnvironment, "executionEnvironmentForSession");
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      await runtime.runtimeManager.ensureRuntime("session-1");
+      expect(requestedSessions).toEqual(["session-1"]);
+      expect(ensureAgent).toHaveBeenCalledTimes(1);
+      const [cwd, provider, repository, environment] = ensureAgent.mock.calls[0] ?? [];
+      expect(cwd).toBe(await runtime.workspace.cwd("agent-1"));
+      expect(provider).toBe("pi");
+      expect(repository).toBeNull();
+      expect(environment).toBe(trustedEnvironment);
+      // The trusted host mapping must win before the proxy execution environment is consulted.
+      expect(executionEnvironment).not.toHaveBeenCalled();
+    } finally {
+      executionEnvironment.mockRestore();
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it("does not reuse the Sandbox execution environment when Cloud has no host Context Tree mapping", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-cloud-absent-mapping-");
+    const ensureAgent = vi
+      .spyOn(contextTreeModule.ContextTreeManager.prototype, "ensureAgent")
+      .mockResolvedValue({ status: "unconfigured" });
+    cleanup.push(async () => {
+      ensureAgent.mockRestore();
+    });
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+      runtimeCredentials: {
+        sandboxForSession: () => ({
+          sandboxId: randomUUID(),
+          resourceUid: "runtime-sandbox-resource",
+          environmentGeneration: 1,
+        }),
+      },
+    });
+    const executionEnvironment = vi.spyOn(runtime.credentialEnvironment, "executionEnvironmentForSession");
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      await runtime.runtimeManager.ensureRuntime("session-1");
+      expect(ensureAgent).toHaveBeenCalledTimes(1);
+      // Cloud keeps the Sandbox loopback out of Context Tree preparation until a trusted
+      // Runner-side mapping exists, so no execution environment argument is passed.
+      expect(ensureAgent.mock.calls[0]).toHaveLength(3);
+      expect(executionEnvironment).not.toHaveBeenCalled();
+    } finally {
+      executionEnvironment.mockRestore();
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it("dispatches the caller-supplied managed environment to Context Tree settings operations", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-management-environment-");
+    const connection = runtimeConnection();
+    const listeners: Array<Parameters<RuntimeConnection["subscribeBusinessFrames"]>[0]> = [];
+    const subscribe = connection.subscribeBusinessFrames.bind(connection);
+    const businessFrames = vi.spyOn(connection, "subscribeBusinessFrames").mockImplementation((listener) => {
+      listeners.push(listener);
+      return subscribe(listener);
+    });
+    const sent: Array<Record<string, unknown>> = [];
+    const send = vi.spyOn(connection, "send").mockImplementation(async (frame) => {
+      sent.push(frame as Record<string, unknown>);
+    });
+    const managementEnvironments = vi.fn(() => ({
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/other", role: "context_tree" }]),
+      HTTPS_PROXY: "http://127.0.0.1:43119",
+    }));
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      runtimeCredentials: { contextTreeManagementEnvironment: managementEnvironments },
+    });
+    let running: Promise<void> | undefined;
+    try {
+      running = runtime.run().catch(() => undefined);
+      const frame: ContextTreeOperationFrame = {
+        type: "context-tree:operation",
+        requestId: randomUUID(),
+        agentId: randomUUID(),
+        computerId: connection.installationId,
+        requireStopped: false,
+        input: {
+          operationId: randomUUID(),
+          expectedRevision: 1,
+          expectedRuntimeConfigRevision: 1,
+          action: "connect",
+          repository: "acme/trusted",
+        },
+      };
+      for (const listener of listeners) await listener(frame);
+      // `permission_denied` proves the managed environment reached the settings gate: without the
+      // composition injection the managed operation would fail `authentication_required` instead.
+      expect(managementEnvironments).toHaveBeenCalled();
+      expect(sent).toContainEqual({
+        type: "context-tree:operation:result",
+        requestId: frame.requestId,
+        result: { status: "failed", code: "permission_denied" },
+      });
+      runtime.stop();
+      await running;
+    } finally {
+      runtime.stop();
+      await running;
+      send.mockRestore();
+      businessFrames.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "forwards packaged Context Tree skills onto the default Pi RPC spawn",
+    async () => {
+      const home = await temporaryDirectory("opentag-pi-packaged-skills-");
+      const skillsPath = resolve(home, "context-tree-package", "skills");
+      const { connection, logPath, runtime } = await composePiRuntimeWithPackagedSkills({
+        home,
+        skillsPath,
+      });
+      try {
+        await expect(
+          runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+        ).resolves.toMatchObject({ status: "ready" });
+        const agent = await runtime.runtimeManager.ensureRuntime("session-1");
+        // The recording executable exits after capturing argv; it never runs a model.
+        await expect(
+          agent.prompt({ runId: "packaged-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+        expect(rpcLaunchArgs(await readJsonlArgs(logPath))?.slice(0, 2)).toEqual(["--skill", skillsPath]);
+      } finally {
+        runtime.stop();
+        await runtime.run();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not pass --skill when the packaged Context Tree is absent",
+    async () => {
+      const home = await temporaryDirectory("opentag-pi-absent-package-skills-");
+      const { connection, logPath, runtime } = await composePiRuntimeWithPackagedSkills({ home });
+      try {
+        await expect(
+          runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+        ).resolves.toMatchObject({ status: "ready" });
+        const agent = await runtime.runtimeManager.ensureRuntime("session-1");
+        // The recording executable exits after capturing argv; it never runs a model.
+        await expect(
+          agent.prompt({ runId: "absent-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+        const rpcArgs = rpcLaunchArgs(await readJsonlArgs(logPath));
+        expect(rpcArgs).toEqual(expect.arrayContaining(["--mode", "rpc"]));
+        expect(rpcArgs?.includes("--skill")).toBe(false);
+      } finally {
+        runtime.stop();
+        await runtime.run();
+      }
+    },
+  );
+
+  it("recovers a Pi binding when Client restarts before the first prompt", async () => {
+    const home = await temporaryDirectory("opentag-pi-unmaterialized-");
+    const connection = runtimeConnection();
+    const factory = new PiAgentRuntimeFactory({
+      probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+    });
+    const options = { clientVersion: "0.0.1", environment: { HOME: home, PATH: process.env.PATH }, factory, home };
+    const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
+    const first = await createClientRuntime(connection, options);
+    let originalBinding: AgentRuntime["binding"];
+    try {
+      await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      originalBinding = (await first.runtimeManager.ensureRuntime("session-1")).binding;
+      expect(originalBinding?.providerId).toBe("pi");
+    } finally {
+      first.stop();
+      await first.run();
+    }
+    const restartedConnection = runtimeConnection(undefined, undefined, connection.installationId);
+    const restarted = await createClientRuntime(restartedConnection, options);
+    try {
+      await restarted.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
+      expect(recovered.binding?.providerId).toBe("pi");
+      expect(recovered.binding).toEqual(originalBinding);
+    } finally {
+      restarted.stop();
+      await restarted.run();
+    }
+  });
+
+  it("resumes the same Pi UUID after Client restarts mid-first-prompt before an assistant", async () => {
+    const home = await temporaryDirectory("opentag-pi-interrupt-restart-");
+    const connection = runtimeConnection();
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const firstPath = `/sessions/${sessionId}-first.jsonl`;
+    const secondPath = `/sessions/${sessionId}-second.jsonl`;
+    const secondHash = createHash("sha256").update(secondPath).digest("hex");
+    let launches = 0;
+    const factory = new PiAgentRuntimeFactory({
+      createSessionId: () => sessionId,
+      probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      createClient: () => {
+        launches += 1;
+        return launches === 1
+          ? new CompositionPiRpcClient(sessionId, firstPath, "interrupt")
+          : new CompositionPiRpcClient(sessionId, secondPath, "complete");
+      },
+    });
+    const options = { clientVersion: "0.0.1", environment: { HOME: home, PATH: process.env.PATH }, factory, home };
+    const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
+
+    const first = await createClientRuntime(connection, options);
+    try {
+      await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const agent = await first.runtimeManager.ensureRuntime("session-1");
+      await expect(
+        agent.prompt({ runId: "interrupted", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      expect((await first.bindingStore.read("agent-1", "session-1"))?.runtimeBinding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId },
+      });
+    } finally {
+      first.stop();
+      await first.run();
+    }
+
+    const restarted = await createClientRuntime(
+      runtimeConnection(undefined, undefined, connection.installationId),
+      options,
+    );
+    try {
+      await restarted.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
+      expect(recovered.binding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId },
+      });
+      await expect(
+        recovered.prompt({ runId: "recovered", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(recovered.binding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId, sessionFileHash: secondHash },
+      });
+      expect((await restarted.bindingStore.read("agent-1", "session-1"))?.runtimeBinding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId, sessionFileHash: secondHash },
+      });
+    } finally {
+      restarted.stop();
+      await restarted.run();
+    }
+  });
+
   it("hands managed Lark receipts into durable reporting before cleaning the run", async () => {
     const home = await temporaryDirectory("opentag-client-outgoing-composition-");
     const connection = runtimeConnection();
@@ -273,7 +721,13 @@ describe("createClientRuntime production composition", () => {
     expect(launches).toContain("--version");
     expect(launches).toContain("app-server --help");
     expect(launches).toContain("login status");
-    expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(4);
+    expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(3);
+    const managedSessionArgs = [
+      ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`,
+    ];
+    expect(launches.filter((line) => line === managedSessionArgs.join(" "))).toHaveLength(1);
     await expect(
       runtime.reconciler.reconcile({
         ...reconcileRequest(connection.installationId, snapshot()),
@@ -337,6 +791,15 @@ describe("createClientRuntime production composition", () => {
     expect(resolveCodexHome({})).toBe(resolve(homedir(), ".codex"));
   });
 
+  it("uses HOME when PI_CODING_AGENT_DIR is absent", () => {
+    expect(resolvePiHome({ HOME: "/provider-home" })).toBe(resolve("/provider-home/.pi/agent"));
+    expect(resolvePiHome({ PI_CODING_AGENT_DIR: "/explicit-pi-home", HOME: "/ignored" })).toBe(
+      resolve("/explicit-pi-home"),
+    );
+    expect(resolvePiHome()).toEqual(expect.any(String));
+    expect(resolvePiHome({})).toBe(resolve(homedir(), ".pi", "agent"));
+  });
+
   it("fails closed for unregistered providers and caller cancellation during initial readiness", async () => {
     const home = await temporaryDirectory("opentag-client-composition-fences-");
     await expect(
@@ -344,7 +807,7 @@ describe("createClientRuntime production composition", () => {
         clientVersion: "0.0.1",
         codexHome: resolve(home, "wrong-provider-home"),
         environment: {},
-        factory: readyFactory("pi"),
+        factory: readyFactory("unreviewed"),
         home,
       }),
     ).rejects.toThrow("does not register the unreviewed provider");
@@ -839,24 +1302,17 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
           observed.push((frame.capabilities as { imCredentialGrant: number }).imCredentialGrant);
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           observed.push((frame.capabilities as { imCredentialGrant: number }).imCredentialGrant);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -875,14 +1331,19 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     await running;
   });
 
-  it("publishes delivery-triggered Provider recovery before the next periodic refresh", async () => {
+  it("accepts a delivery while the Provider artifact is missing and republishes its recovery", async () => {
     const home = await temporaryDirectory("opentag-client-delivery-readiness-");
     const server = await runtimeServer();
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
     const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
     const observed: string[] = [];
-    let probeCount = 0;
+    // The periodic refresher probes on its own cadence, so how many probes land before the delivery
+    // arrives is wall-clock dependent: a script keyed on the probe index, or an absolute probe
+    // count, turns a slow runner into a failure. Drive the Provider state through a flag and assert
+    // only monotonic facts. Which refresh observes the recovery is deliberately not asserted — the
+    // delivery joins whichever shared probe is live, so it is not attributable here.
+    let providerReady = true;
     const binding = { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } };
     const state = { phase: "idle" as "idle" | "closed", queuedRunCount: 0 };
     const agentRuntime: AgentRuntime = {
@@ -902,12 +1363,11 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     };
     const factory = {
       manifest: agentRuntime.manifest,
-      probe: vi.fn(async () => {
-        probeCount += 1;
-        return probeCount === 2
-          ? { ready: false, issues: [{ code: "artifact_missing" as const, message: "temporarily missing" }] }
-          : { ready: true, issues: [] };
-      }),
+      probe: vi.fn(async () =>
+        providerReady
+          ? { ready: true, issues: [] }
+          : { ready: false, issues: [{ code: "artifact_missing" as const, message: "temporarily missing" }] },
+      ),
       create: async () => agentRuntime,
       resume: async () => agentRuntime,
     } satisfies AgentRuntimeFactory;
@@ -915,28 +1375,21 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, true);
+          completeAuth(socket, frame, true);
           return;
         }
         if (frame.type === "computer:register") {
           for (const item of (frame.providerReadiness as Array<{ status: string }> | undefined) ?? []) {
             observed.push(item.status);
           }
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           for (const item of (frame.providerReadiness as Array<{ status: string }> | undefined) ?? []) {
             observed.push(item.status);
           }
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -951,17 +1404,24 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       status: "ready",
     });
     const running = runtime.run();
-    await vi.waitFor(() => expect(observed).toContain("install"), { timeout: 1_000 });
+    providerReady = false;
+    await vi.waitFor(() => expect(observed).toContain("install"), { timeout: 2_000 });
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "install" });
 
+    // The artifact returns while the Provider is still published as missing, so the delivery below
+    // is admitted during the gap and readiness has to be republished from a fresh observation.
+    providerReady = true;
+    const probesBeforeDelivery = factory.probe.mock.calls.length;
+    const unavailableIndex = observed.lastIndexOf("install");
     const accepted = await runtime.custody.accept(delivery(snapshot()));
 
     expect(accepted.result).toMatchObject({ status: "accepted" });
     await accepted.onAcceptedSent?.();
-    await vi.waitFor(() => expect(factory.probe).toHaveBeenCalledTimes(3));
-    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
-    const unavailableIndex = observed.lastIndexOf("install");
+    await vi.waitFor(() => expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" }));
+    // A stale ready flag must not stand in for a fresh observation: recovery required at least one
+    // probe started after the delivery arrived.
+    expect(factory.probe.mock.calls.length).toBeGreaterThan(probesBeforeDelivery);
     await vi.waitFor(() => expect(observed.slice(unavailableIndex + 1)).toContain("ready"));
-    expect(factory.probe).toHaveBeenCalledTimes(3);
     runtime.stop();
     await running;
   });
@@ -1019,22 +1479,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1075,11 +1528,11 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           registered();
         }
       });
@@ -1202,23 +1655,16 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex", "claude-code"]);
+          completeAuth(socket, frame, ["codex", "claude-code"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           heartbeats.push(frame);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1320,22 +1766,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1389,22 +1828,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1470,29 +1902,22 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           heartbeats.push(frame);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex", probe),
@@ -1572,7 +1997,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex", probe),
@@ -1736,7 +2161,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       environment: { HOME: home, PATH: process.env.PATH },
       factory,
       home,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
     });
     expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
@@ -1773,7 +2198,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex"),
@@ -1843,7 +2268,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex"),
@@ -1917,7 +2342,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex", probe),
@@ -1996,13 +2421,17 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
   });
 });
 
-function runtimeConnection(serverUrl = "http://127.0.0.1:3000", now?: () => number): RuntimeConnection {
+function runtimeConnection(
+  serverUrl = "http://127.0.0.1:3000",
+  now?: () => number,
+  computerId: string = randomUUID(),
+): RuntimeConnection {
   return new RuntimeConnection({
     arch: "arm64",
     clientVersion: "0.0.1",
     computer: {
       version: 2,
-      computerId: randomUUID(),
+      computerId,
       serverUrl,
     },
     displayName: "test",
@@ -2011,45 +2440,6 @@ function runtimeConnection(serverUrl = "http://127.0.0.1:3000", now?: () => numb
     platform: "darwin",
     machineToken: "machine-token",
   });
-}
-
-function completeLegacyAuth(
-  socket: WebSocket,
-  frame: Record<string, unknown>,
-  providerReadiness: boolean | readonly string[] = false,
-): void {
-  if (frame.protocolVersion !== 1) {
-    socket.send(
-      JSON.stringify({
-        type: "error",
-        requestId: frame.requestId,
-        code: "PROTOCOL_VERSION_UNSUPPORTED",
-        message: "The test Server supports runtime protocol v1 only",
-      }),
-    );
-    socket.close(4400, "Protocol version unsupported");
-    return;
-  }
-  socket.send(
-    JSON.stringify({
-      type: "auth:result",
-      requestId: frame.requestId,
-      ok: true,
-      computerId: randomUUID(),
-      installationId: randomUUID(),
-    }),
-  );
-  const providers = Array.isArray(providerReadiness) ? providerReadiness : providerReadiness ? ["codex"] : undefined;
-  socket.send(
-    JSON.stringify({
-      type: "server:welcome",
-      protocolVersion: 1,
-      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
-      ...(providers ? { providerReadiness: { version: 1, providers } } : {}),
-      heartbeatIntervalMs: 10,
-      heartbeatTimeoutMs: 100,
-    }),
-  );
 }
 
 async function writeReadyImClis(home: string): Promise<{ lark: string; slack: string }> {
@@ -2109,6 +2499,7 @@ function reconcileRequest(computerId: string, runtime: EffectiveRuntimeSnapshot)
 
 function snapshot(): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },
@@ -2175,6 +2566,274 @@ async function composeClaudeCodeRuntime(options: {
     runtime,
   };
 }
+
+const PI_HELP_TOKENS =
+  "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name";
+const PI_LIST_MODELS_TABLE = [
+  "provider  model            context  max-out  thinking  images",
+  "fixture   configured-model  128K     8K       no        no",
+].join("\n");
+
+async function writeRecordingPiCommand(home: string, logPath: string): Promise<string> {
+  const command = resolve(home, "pi-fixture");
+  await writeFile(
+    command,
+    `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + ${JSON.stringify("\n")});
+if (args[0] === "--version") {
+  console.log("0.84.2");
+  process.exit(0);
+}
+if (args.includes("--help")) {
+  console.log(${JSON.stringify(PI_HELP_TOKENS)});
+  process.exit(0);
+}
+if (args.includes("--list-models")) {
+  console.log(${JSON.stringify(PI_LIST_MODELS_TABLE)});
+  process.exit(0);
+}
+process.exit(0);
+`,
+    "utf8",
+  );
+  await chmod(command, 0o755);
+  return command;
+}
+
+async function readJsonlArgs(logPath: string): Promise<string[][]> {
+  try {
+    return (await readFile(logPath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+function rpcLaunchArgs(launches: readonly (readonly string[])[]): string[] | undefined {
+  const match = launches.find((args) => args.includes("--mode") && args.includes("rpc"));
+  return match ? [...match] : undefined;
+}
+
+async function composePiRuntimeWithPackagedSkills(options: {
+  readonly home: string;
+  readonly skillsPath?: string;
+}): Promise<{
+  readonly connection: ReturnType<typeof runtimeConnection>;
+  readonly logPath: string;
+  readonly runtime: ComposedClientRuntime;
+}> {
+  const logPath = resolve(options.home, "pi-args.jsonl");
+  const command = await writeRecordingPiCommand(options.home, logPath);
+  const packageResolver = vi.spyOn(contextTreeModule, "resolveContextTreePackage").mockReturnValue(
+    options.skillsPath === undefined
+      ? undefined
+      : {
+          cliPath: resolve(options.home, "context-tree-package", "dist", "cli", "index.mjs"),
+          root: resolve(options.home, "context-tree-package"),
+          skillsPath: options.skillsPath,
+        },
+  );
+  cleanup.push(async () => {
+    packageResolver.mockRestore();
+  });
+  const connection = runtimeConnection();
+  const runtime = await createClientRuntime(connection, {
+    clientVersion: "0.0.1",
+    claudeCodeCommand: resolve(options.home, "missing-claude"),
+    codexCommand: resolve(options.home, "missing-codex"),
+    environment: { HOME: options.home, PATH: process.env.PATH },
+    home: options.home,
+    piCommand: command,
+  });
+  return { connection, logPath, runtime };
+}
+
+class CompositionPiRpcClient implements PiRpcClient {
+  readonly #sessionId: string;
+  readonly #sessionFile: string;
+  readonly #mode: "complete" | "interrupt";
+  readonly #listeners = new Set<(message: Readonly<Record<string, unknown>>) => void>();
+
+  constructor(sessionId: string, sessionFile: string, mode: "complete" | "interrupt") {
+    this.#sessionId = sessionId;
+    this.#sessionFile = sessionFile;
+    this.#mode = mode;
+  }
+
+  async request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+    if (command.type === "get_state") {
+      return {
+        sessionId: this.#sessionId,
+        sessionFile: this.#sessionFile,
+        messageCount: 0,
+        model: { id: "fixture-model", provider: "fixture" },
+      };
+    }
+    if (command.type !== "prompt") return undefined;
+    if (this.#mode === "interrupt") throw new PiRpcError("command", "interrupted before assistant");
+    const assistant = {
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      stopReason: "stop",
+    };
+    for (const message of [
+      { type: "agent_start" },
+      { type: "turn_start" },
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      { type: "message_end", message: assistant },
+      { type: "turn_end" },
+      { type: "agent_end", willRetry: false },
+      { type: "agent_settled" },
+    ]) {
+      for (const listener of this.#listeners) listener(message);
+    }
+    return undefined;
+  }
+
+  subscribe(listener: (message: Readonly<Record<string, unknown>>) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  async close(): Promise<void> {}
+}
+
+describe("proxy CLI launch path composition", () => {
+  it("prepends the execution shim directory only when proxy material is active", () => {
+    expect(composeProviderCliLaunchPath("/execution/session-1/bin", "/plans/session-1")).toBe(
+      `/execution/session-1/bin${delimiter}/plans/session-1`,
+    );
+    expect(composeProviderCliLaunchPath(undefined, "/plans/session-1")).toBe("/plans/session-1");
+  });
+});
+
+describe("proxy validation opener", () => {
+  it("opens the Server-issued validation execution and exposes only execution-local material", async () => {
+    const cleanup = vi.fn(async () => undefined);
+    const prepareValidationSession = vi.fn(async () => ({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: { SLACK_BOT_TOKEN: "otrh_handle" },
+      executionId: "exec-1",
+      signal: new AbortController().signal,
+      cleanup,
+    }));
+    const open = createProxyValidationOpener({ prepareValidationSession } as never);
+    await expect(
+      open({
+        agentId: "agent-1",
+        requestId: "11111111-1111-4111-8111-111111111111",
+        validationRunId: "77777777-7777-4777-8777-777777777777",
+      } as never),
+    ).resolves.toMatchObject({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: { SLACK_BOT_TOKEN: "otrh_handle" },
+    });
+    expect(prepareValidationSession).toHaveBeenCalledWith(
+      { agentId: "agent-1", placementGeneration: 1, validationRunId: "77777777-7777-4777-8777-777777777777" },
+      undefined,
+    );
+    // No Server-issued validation run or Agent fence: explicit rejection, never raw material.
+    await expect(open({ requestId: "x" } as never)).resolves.toBeUndefined();
+    await expect(open({ agentId: "agent-1" } as never)).resolves.toBeUndefined();
+    expect(prepareValidationSession).toHaveBeenCalledTimes(1);
+
+    const session = await open({
+      agentId: "agent-1",
+      validationRunId: "77777777-7777-4777-8777-777777777777",
+    } as never);
+    await session?.cleanup();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("prefers an explicit opener and disables proxy readiness outside proxy mode", () => {
+    const injected = vi.fn(async () => undefined);
+    expect(resolveProxyValidationOpener({ credentialMode: "legacy", openProxyValidation: injected }, {} as never)).toBe(
+      injected,
+    );
+    const prepareValidationSession = vi.fn(async () => undefined);
+    expect(
+      resolveProxyValidationOpener({ credentialMode: "legacy" }, { prepareValidationSession } as never),
+    ).toBeUndefined();
+    const opener = resolveProxyValidationOpener({ credentialMode: "proxy" }, { prepareValidationSession } as never);
+    expect(opener).toBeTypeOf("function");
+  });
+});
+
+describe("credential environment composition", () => {
+  it("keeps legacy mode by default and forwards the Cloud injection seam in proxy mode", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-credential-mode-"));
+    directories.push(home);
+    const legacy = createCredentialEnvironment(
+      { clientVersion: "0.0.0", home } as never,
+      {
+        send: async () => undefined,
+        subscribeBusinessFrames: () => () => undefined,
+      } as never,
+      createLogger("test"),
+    );
+    expect(legacy.mode).toBe("legacy");
+    await legacy.close();
+
+    const proxy = createCredentialEnvironment(
+      {
+        clientVersion: "0.0.0",
+        credentialMode: "proxy",
+        home,
+        runtimeCredentials: {
+          dataConnectionFactory: async () =>
+            ({
+              closed: false,
+              close: async () => undefined,
+              openStream: async () => ({ status: 200, headers: {}, body: (async function* () {})() }),
+              settled: async () => undefined,
+            }) as never,
+          generateCa: async () => ({ certPath: resolve(home, "ca.pem"), keyPath: resolve(home, "ca-key.pem") }),
+          now: () => 0,
+          openBudgetMs: 100,
+          sandboxForSession: () => undefined,
+          scheduler: { schedule: () => ({ cancel: () => undefined }) },
+        },
+      } as never,
+      { serverUrl: "https://runtime.example" } as never,
+      createLogger("test"),
+    );
+    expect(proxy.mode).toBe("proxy");
+    await proxy.close();
+  });
+});
+
+describe("createSkillSyncManager", () => {
+  const api = {
+    getComputerSkillManifest: vi.fn(async () => ({ skills: [] })),
+    openComputerSkillBundle: vi.fn(async () => new Response()),
+  };
+
+  it("returns undefined unless both the API and the machine token are present", () => {
+    const logger = createLogger("skills-composition-test");
+    expect(createSkillSyncManager({}, logger)).toBeUndefined();
+    expect(createSkillSyncManager({ machineToken: "machine-token" }, logger)).toBeUndefined();
+    expect(createSkillSyncManager({ api: api as never }, logger)).toBeUndefined();
+  });
+
+  it("builds a SkillSyncManager when the composition is fully configured", async () => {
+    const workspace = await temporaryDirectory("opentag-skill-sync-workspace-");
+    const manager = createSkillSyncManager(
+      { api: api as never, machineToken: "machine-token" },
+      createLogger("skills-composition-test"),
+    );
+    expect(manager).toBeDefined();
+    await expect(manager?.ensureAgent({ agentId: randomUUID(), cwd: workspace, provider: "pi" })).resolves.toEqual({
+      skillPaths: [],
+      status: "synced",
+    });
+    expect(api.getComputerSkillManifest).toHaveBeenCalledWith("machine-token", expect.any(String), expect.anything());
+  });
+});
 
 function readyFactory(
   providerId = "codex",

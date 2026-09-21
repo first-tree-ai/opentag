@@ -2,9 +2,21 @@ import type { AgentAdminConfig } from "@opentag/shared/browser";
 import * as m from "../../../paraglide/messages.js";
 import type { IconName } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
-import { messagingChannelLabel, messagingConnectionLabel, platformLabel } from "../agent-presentation.js";
+import {
+  messagingChannelLabel,
+  messagingConnectionLabel,
+  platformLabel,
+  runtimeProviderName,
+} from "../agent-presentation.js";
 
-export type AgentSettingsSection = "instructions" | "execution" | "messaging" | "identity" | "computer" | "manage";
+export type AgentSettingsSection =
+  | "context-tree"
+  | "instructions"
+  | "execution"
+  | "messaging"
+  | "identity"
+  | "computer"
+  | "manage";
 
 export type AgentSettingsGroup = "setup" | "danger";
 
@@ -36,6 +48,7 @@ export const agentSettingsSections: ReadonlyArray<{
     group: "setup",
     icon: "laptop",
   },
+  { key: "context-tree", label: () => m.agent_settings_context_tree_title(), group: "setup", icon: "instructions" },
   {
     key: "instructions",
     label: () => m.agent_settings_instructions_title(),
@@ -75,13 +88,15 @@ export function agentSettingsSummary(
   config: AgentAdminConfig,
   section: AgentSettingsSection,
 ): string {
+  if (section === "context-tree")
+    return config.runtimeConfig.contextTreeRepository ?? m.agent_settings_context_tree_disabled();
   if (section === "instructions") {
     return config.runtimeConfig.instructions.trim()
       ? m.agent_settings_custom_instructions()
       : m.agent_settings_no_custom_instructions();
   }
   if (section === "execution") {
-    const provider = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+    const provider = runtimeProviderName(config.runtimeProvider);
     if (!config.runtimeConfig.model && !config.runtimeConfig.reasoningEffort) {
       return m.agent_settings_provider_defaults_summary({ providerName: provider });
     }

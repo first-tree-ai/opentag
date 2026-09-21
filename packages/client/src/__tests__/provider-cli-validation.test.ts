@@ -9,10 +9,13 @@ vi.setConfig({ testTimeout: 30_000 });
 import {
   classifyLarkAuthStatus,
   classifySlackAuthTest,
+  computeFileIdentity,
+  computeTargetFingerprint,
   deriveProviderCliValidationRequestKey,
   exchangeFeishuTenantToken,
   extractBoundedJson,
   FeishuTokenExchangeError,
+  type ProviderCliValidationRequest,
   ProviderCliValidationRunner,
 } from "../index.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
@@ -216,6 +219,13 @@ describe("Feishu tenant token exchange", () => {
         (async () => new Response("not-json", { status: 503 })) as typeof fetch,
       ),
     ).rejects.toMatchObject({ kind: "provider_unreachable" });
+    await expect(
+      exchangeFeishuTenantToken(
+        grant,
+        undefined,
+        (async () => new Response("not-json", { status: 400 })) as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ kind: "invalid" });
     await expect(
       exchangeFeishuTenantToken(
         grant,
@@ -590,5 +600,360 @@ exit 1
       status: "retrying",
       reason: "provider_unreachable",
     });
+  });
+
+  it("runs proxy readiness through the Server-authorized validation session and always cleans it up", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-proxy-"));
+    const cleaned: string[] = [];
+    const execFile = vi.fn(async (_file, args, options) => {
+      expect(args).toEqual([
+        "--skip-update",
+        "--config-dir",
+        expect.any(String),
+        "--apihost",
+        "https://127.0.0.1:9",
+        "api",
+        "auth.test",
+      ]);
+      expect(options.env.SLACK_BOT_TOKEN).toBe("otrh_local_handle");
+      expect(options.env.SLACK_BOT_TOKEN).not.toContain("secret");
+      return { stdout: '{"ok":true,"team_id":"T1","user_id":"U1","bot_id":"B1"}', stderr: "" };
+    });
+    const openProxyValidation = vi.fn(async (_request: ProviderCliValidationRequest) => ({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: { SLACK_BOT_TOKEN: "otrh_local_handle", SLACK_USER_TOKEN: undefined },
+      cleanup: async () => {
+        cleaned.push("cleanup");
+      },
+    }));
+    const runner = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      openProxyValidation,
+      proxyCredentialMode: true,
+      verifyTarget: async () => true,
+    });
+    await expect(
+      runner.run(
+        {
+          expectedFingerprint: "v1:test",
+          expectedIdentity: slackIdentity,
+          expiresAt: new Date(Date.now() + 15_000).toISOString(),
+          requestId: fence.requestId,
+          targetPath: "/bin/true",
+          version: "4.7.0",
+          agentId: fence.agentId,
+          validationRunId: "77777777-7777-4777-8777-777777777777",
+        },
+        fence,
+      ),
+    ).resolves.toEqual({ ...fence, status: "ready" });
+    expect(openProxyValidation.mock.calls[0]?.[0]).toMatchObject({
+      agentId: fence.agentId,
+      validationRunId: "77777777-7777-4777-8777-777777777777",
+    });
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(cleaned).toEqual(["cleanup"]);
+  });
+
+  it("clearly rejects proxy readiness without a validation run instead of using raw material", async () => {
+    const execFile = vi.fn();
+    const runner = new ProviderCliValidationRunner({
+      home: await mkdtemp(join(tmpdir(), "opentag-validation-proxy-none-")),
+      execFile,
+      proxyCredentialMode: true,
+      verifyTarget: async () => true,
+    });
+    await expect(
+      runner.run(
+        {
+          expectedFingerprint: "v1:test",
+          expectedIdentity: slackIdentity,
+          expiresAt: new Date(Date.now() + 15_000).toISOString(),
+          grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
+          requestId: fence.requestId,
+          targetPath: "/bin/true",
+          version: "4.7.0",
+        },
+        fence,
+      ),
+    ).resolves.toEqual({ ...fence, status: "needs_attention" });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("runs proxy Feishu readiness and rejects every pre-open proxy state", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-proxy-feishu-"));
+    const targetPath = await fakeCli(home, "#!/bin/sh\nexit 0\n");
+    const identity = await computeFileIdentity(targetPath);
+    const request = {
+      expectedFingerprint: computeTargetFingerprint(identity, "1.0.92"),
+      expectedIdentity: feishuIdentity,
+      expiresAt: new Date(Date.now() + 15_000).toISOString(),
+      requestId: fence.requestId,
+      targetPath,
+      version: "1.0.92",
+      agentId: fence.agentId,
+      validationRunId: "77777777-7777-4777-8777-777777777777",
+    };
+    const execFile = vi.fn(async (_file, args, options) => {
+      expect(args).toEqual([
+        "api",
+        "GET",
+        "/open-apis/bot/v3/info",
+        "--as",
+        "bot",
+        "--format",
+        "ndjson",
+        "--apihost",
+        "https://127.0.0.1:9",
+      ]);
+      expect(options.env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("otrh_tenant_handle");
+      expect(options.env.LARKSUITE_CLI_USER_ACCESS_TOKEN).toBeUndefined();
+      expect(options.env.LARKSUITE_CLI_APP_SECRET).toBeUndefined();
+      return { stdout: '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}', stderr: "" };
+    });
+    const cleaned: string[] = [];
+    const sessionAbort = new AbortController();
+    const openProxyValidation = vi.fn(async () => ({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: {
+        LARKSUITE_CLI_TENANT_ACCESS_TOKEN: "otrh_tenant_handle",
+        LARKSUITE_CLI_USER_ACCESS_TOKEN: undefined,
+      },
+      signal: sessionAbort.signal,
+      cleanup: async () => {
+        cleaned.push("cleanup");
+      },
+    }));
+    const runner = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      openProxyValidation,
+      proxyCredentialMode: true,
+    });
+    const runAbort = new AbortController();
+    await expect(runner.run(request, feishuFence, runAbort.signal)).resolves.toEqual({
+      ...feishuFence,
+      status: "ready",
+    });
+    expect(cleaned).toEqual(["cleanup"]);
+    expect(execFile).toHaveBeenCalledTimes(1);
+
+    const withoutRun = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      openProxyValidation,
+      proxyCredentialMode: true,
+    });
+    await expect(withoutRun.run({ ...request, validationRunId: undefined }, feishuFence)).resolves.toEqual({
+      ...feishuFence,
+      status: "needs_attention",
+    });
+
+    const expired = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      openProxyValidation,
+      proxyCredentialMode: true,
+      now: () => Date.parse("2026-08-31T00:00:16.000Z"),
+    });
+    await expect(
+      expired.run({ ...request, expiresAt: "2026-08-31T00:00:15.000Z" }, feishuFence),
+    ).resolves.toMatchObject({ status: "retrying", reason: "validation_expired" });
+
+    const drifted = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      openProxyValidation,
+      proxyCredentialMode: true,
+      verifyTarget: async () => false,
+    });
+    await expect(drifted.run(request, feishuFence)).resolves.toMatchObject({
+      status: "retrying",
+      reason: "artifact_changed",
+    });
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const busyOpen = vi.fn(async () => ({ environment: {}, cleanup: async () => undefined }));
+    const busy = new ProviderCliValidationRunner({
+      home,
+      execFile: vi.fn(async () => {
+        await gate;
+        return { stdout: '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}', stderr: "" };
+      }),
+      openProxyValidation: busyOpen,
+      proxyCredentialMode: true,
+    });
+    const pending = busy.run(request, feishuFence);
+    await vi.waitFor(() => expect(busyOpen).toHaveBeenCalledTimes(1));
+    await expect(busy.run(request, feishuFence)).resolves.toMatchObject({
+      status: "retrying",
+      reason: "validation_busy",
+    });
+    release();
+    await expect(pending).resolves.toEqual({ ...feishuFence, status: "ready" });
+  });
+
+  it("releases a failing proxy Feishu session and reports the pre-probe mismatch", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-proxy-feishu-failure-"));
+    const targetPath = await fakeCli(home, "#!/bin/sh\nexit 1\n");
+    const identity = await computeFileIdentity(targetPath);
+    const request = {
+      expectedFingerprint: computeTargetFingerprint(identity, "1.0.92"),
+      expectedIdentity: feishuIdentity,
+      expiresAt: new Date(Date.now() + 15_000).toISOString(),
+      requestId: fence.requestId,
+      targetPath,
+      version: "1.0.92",
+      agentId: fence.agentId,
+      validationRunId: "77777777-7777-4777-8777-777777777777",
+    };
+    const cleaned: string[] = [];
+    const exploding = new ProviderCliValidationRunner({
+      home,
+      execFile: vi.fn(async () => {
+        throw new Error("probe exploded");
+      }),
+      openProxyValidation: async () => ({
+        environment: {},
+        cleanup: async () => {
+          cleaned.push("attempted");
+          throw new Error("release failed");
+        },
+      }),
+      proxyCredentialMode: true,
+    });
+    await expect(exploding.run(request, feishuFence)).resolves.toMatchObject({ status: "needs_attention" });
+    expect(cleaned).toEqual(["attempted"]);
+
+    const execFile = vi.fn();
+    const mismatched = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      openProxyValidation: async () => ({ environment: {}, cleanup: async () => undefined }),
+      proxyCredentialMode: true,
+    });
+    await expect(mismatched.run({ ...request, expectedIdentity: slackIdentity }, feishuFence)).resolves.toEqual({
+      ...feishuFence,
+      status: "needs_attention",
+    });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("reports a Feishu grant that faces a non-Feishu identity, and re-checks expiry after the token exchange", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-feishu-late-expiry-"));
+    const execFile = vi.fn();
+    const mismatched = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      exchangeFeishuToken: async () => "tenant-token",
+      verifyTarget: async () => true,
+    });
+    await expect(
+      mismatched.run({ ...feishuValidationRequest(), expectedIdentity: slackIdentity }, feishuFence),
+    ).resolves.toMatchObject({ status: "needs_attention", reason: "identity_mismatch" });
+    expect(execFile).not.toHaveBeenCalled();
+
+    let nowMs = Date.parse("2026-08-31T00:00:10.000Z");
+    const expiring = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      exchangeFeishuToken: async () => {
+        nowMs = Date.parse("2026-08-31T00:00:16.000Z");
+        return "tenant-token";
+      },
+      now: () => nowMs,
+      verifyTarget: async () => true,
+    });
+    await expect(
+      expiring.run({ ...feishuValidationRequest(), expiresAt: "2026-08-31T00:00:15.000Z" }, feishuFence),
+    ).resolves.toMatchObject({ status: "retrying", reason: "validation_expired" });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-proxy readiness request that carries no grant instead of falling back", async () => {
+    const execFile = vi.fn();
+    const runner = new ProviderCliValidationRunner({
+      home: await mkdtemp(join(tmpdir(), "opentag-validation-no-grant-")),
+      execFile,
+      verifyTarget: async () => true,
+    });
+    await expect(
+      runner.run(
+        {
+          expectedFingerprint: "v1:test",
+          expectedIdentity: slackIdentity,
+          expiresAt: new Date(Date.now() + 15_000).toISOString(),
+          requestId: fence.requestId,
+          targetPath: "/bin/true",
+          version: "4.7.0",
+        },
+        fence,
+      ),
+    ).resolves.toEqual({ ...fence, status: "needs_attention" });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when validation cleanup cannot scan or remove work", async () => {
+    const slackRequest = {
+      expectedFingerprint: "v1:test",
+      expectedIdentity: slackIdentity,
+      expiresAt: new Date(Date.now() + 15_000).toISOString(),
+      grant: { provider: "slack" as const, botAccessToken: "xoxb-secret-token" },
+      requestId: fence.requestId,
+      targetPath: "/bin/true",
+      version: "4.7.0",
+    };
+    const removeHome = await mkdtemp(join(tmpdir(), "opentag-validation-cleanup-remove-"));
+    const removeRunner = new ProviderCliValidationRunner({ home: removeHome });
+    const root = join(removeHome, "data", "runtime", "provider-cli-validation");
+    await mkdir(join(root, "leftover"), { recursive: true, mode: 0o700 });
+    await writeFile(join(root, "leftover", "work.log"), "stale\n", { mode: 0o600 });
+    await chmod(join(root, "leftover"), 0o000);
+    try {
+      await expect(removeRunner.cleanupAll()).rejects.toThrow("Provider CLI validation cleanup failed");
+    } finally {
+      await chmod(join(root, "leftover"), 0o700).catch(() => undefined);
+    }
+
+    const scanHome = await mkdtemp(join(tmpdir(), "opentag-validation-cleanup-scan-"));
+    const scanRoot = join(scanHome, "data", "runtime", "provider-cli-validation");
+    await mkdir(scanRoot, { recursive: true, mode: 0o700 });
+    await chmod(scanRoot, 0o000);
+    try {
+      const scanRunner = new ProviderCliValidationRunner({ home: scanHome, verifyTarget: async () => true });
+      await expect(scanRunner.run(slackRequest, fence)).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      await chmod(scanRoot, 0o700).catch(() => undefined);
+    }
+  });
+
+  it("uses the injected fetch for the default Feishu tenant token exchange", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-fetch-"));
+    const targetPath = await fakeCli(home, "#!/bin/sh\nexit 1\n");
+    const identity = await computeFileIdentity(targetPath);
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-from-fetch" }), { status: 200 }),
+    );
+    const execFile = vi.fn(async (_file, _args, options) => {
+      expect(options.env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("tenant-from-fetch");
+      return { stdout: '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}', stderr: "" };
+    });
+    const runner = new ProviderCliValidationRunner({
+      home,
+      fetch: fetchMock as unknown as typeof fetch,
+      execFile,
+      verifyTarget: async () => true,
+    });
+    await expect(
+      runner.run(
+        { ...feishuValidationRequest(), targetPath, expectedFingerprint: computeTargetFingerprint(identity, "1.0.92") },
+        feishuFence,
+      ),
+    ).resolves.toEqual({ ...feishuFence, status: "ready" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

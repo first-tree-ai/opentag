@@ -1,11 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
-import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
 import Fastify, { type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
-import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
+import {
+  type AccountRoutesOptions,
+  type InternalNavigationVisibilityService,
+  registerAccountRoutes,
+} from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import {
@@ -13,23 +16,35 @@ import {
   rateLimitFailureMetadata,
   registerBrowserAuthRoutes,
 } from "./api/browser-auth.js";
+import { type CloudModelProxyRouteOptions, registerCloudModelProxyRoutes } from "./api/cloud-model-proxy.js";
+import { registerComputerSkillRoutes } from "./api/computer-skills.js";
 import { registerComputerRoutes } from "./api/computers.js";
+import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
+import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
+import { type McpGatewayRoutesOptions, registerMcpGatewayRoutes } from "./api/mcp-gateway.js";
+import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
+import { registerMcpServerRoutes } from "./api/mcp-servers.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
-import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
+import { registerRunnerWorkspaceRoutes } from "./api/runner-workspace.js";
+import type { RuntimeRoutesOptions } from "./api/runtime.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
+import type { RuntimeProviderProxyRoutesOptions } from "./api/runtime-provider-proxy.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
+import { registerRuntimeSkillRoutes } from "./api/runtime-skills.js";
+import { type RuntimeWebRoutesOptions, registerRuntimeWebRoutes } from "./api/runtime-web.js";
+import { registerSkillRoutes } from "./api/skills.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWebsiteSessionRoutes } from "./api/website-session.js";
-
 import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
+import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
   type AgentRuntimeTestService,
   type AgentService,
@@ -37,7 +52,8 @@ import {
   type AgentSetupService,
 } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
-import type { ComputerService, MachineAuthService } from "./services/computers/index.js";
+import type { ComputerAuthVerifier, ComputerService, MachineAuthService } from "./services/computers/index.js";
+import { GitHubConnectionServiceError } from "./services/github/index.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import {
@@ -46,9 +62,22 @@ import {
   ImBindingUnbindRequiredError,
 } from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
+import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } from "./services/mcp/index.js";
+import { McpServiceError } from "./services/mcp/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
-import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
+import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
+import type { CloudModelCatalog } from "./services/sandboxes/cloud-model-catalog.js";
+import { CloudOverviewService } from "./services/sandboxes/cloud-overview-service.js";
+import type { CloudSessionCollaborationOwner } from "./services/sandboxes/cloud-session-collaboration-owner.js";
+import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
+import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
+import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
+import type { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-service.js";
+import { DEFAULT_CLOUD_CAPACITY_LIMITS } from "./services/sandboxes/sandbox-capacity.js";
+import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
+import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
+import { type SkillService, SkillServiceError } from "./services/skills/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
 
@@ -62,7 +91,30 @@ export interface CreateAppOptions {
   agentService?: AgentService;
   agentSetupService?: AgentSetupService;
   agentRuntimeTestService?: AgentRuntimeTestService;
+  contextTreeOperationService?: ContextTreeOperationService;
   computerService?: ComputerService;
+  sandboxService?: SandboxService;
+  sandboxRunnerService?: SandboxRunnerService;
+  cloudAvailability?: AccountRoutesOptions["cloudAvailability"];
+  /** The one shared Router model catalog; backs the authenticated account Cloud model list route. */
+  cloudModelCatalog?: CloudModelCatalog;
+  cloudOverviewService?: CloudOverviewService;
+  /** E3 Runner control channel; present exactly when Cloud Runner allocation is enabled. */
+  runnerChannel?: {
+    tokens: RunnerBootstrapTokenService;
+    hub: RunnerHub;
+    /** E4 Session-scoped Cloud IM delivery over the Runner channel. */
+    cloudDelivery?: CloudDeliveryOwner;
+    cloudSession?: CloudSessionCollaborationOwner;
+  };
+  /** E4 controlled model path; present exactly when the deployment model proxy is enabled. */
+  cloudModel?: CloudModelProxyRouteOptions;
+  /**
+   * E5 Runner workspace persistence HTTP routes; present exactly when the Runner runtime
+   * configured the object store. Authenticates the Runner bootstrap bearer token only — never
+   * the account session surface.
+   */
+  runnerWorkspace?: RunnerWorkspaceService;
   machineAuthService?: MachineAuthService;
   connectCode?: {
     issuer: ConnectCodeIssuer;
@@ -77,14 +129,58 @@ export interface CreateAppOptions {
   browserAuth?: BrowserAuthRoutesOptions;
   imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
+  /** MCP management plane: definitions, per-Agent mounts/overrides, authorization, probing. */
+  mcp?: {
+    authorization: McpAuthorizationService;
+    flows: McpOAuthFlowService;
+    servers: McpServerService;
+    /**
+     * The origin the OAuth callback and the client-metadata document are published on.
+     *
+     * Carried here rather than read from `browserAuth`: those two routes are the public half of the
+     * MCP OAuth flow and need an origin, not a browser session. Deriving them from `browserAuth`
+     * would silently drop the callback — and so break every OAuth authorization — on any deployment
+     * that wires MCP without the browser sign-in surface.
+     */
+    publicOrigin: string;
+    /**
+     * Whether the flow-binding cookie is marked Secure. Explicit for the same reason `publicOrigin`
+     * is: the callback is reachable without a browser session, so it cannot read this off the
+     * browser sign-in surface it deliberately does not depend on.
+     */
+    secureCookies: boolean;
+  };
   feishuSetupService?: FeishuSetupService;
+  /**
+   * Agent Skills. Always wired by the production bootstrap: the service is built whether or not the
+   * deployment configured object storage, because listing still works without it. `proofs` enables
+   * the Agent CLI surface and is absent when the Session proof runtime is not available.
+   */
+  skills?: {
+    service: SkillService;
+    proofs?: Pick<SessionCliProofService, "authenticate">;
+  };
   slackOAuth?: SlackOAuthRouteOptions;
+  /** GitHub integration management; always registered so the UI can read availability. */
+  githubIntegrations?: Omit<GitHubIntegrationsRouteOptions, "authService" | "authOptions">;
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
   readiness?: BootstrapReadiness;
+  /** Non-secret deployment proof from the responding process, independent of control-plane state. */
+  deployment?: { revision?: string; runner?: { image: string; version: string } };
   runtime?: RuntimeRoutesOptions;
+  runtimeAuthService?: ComputerAuthVerifier;
+  runtimeProviderProxy?: RuntimeProviderProxyRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
   runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
+  /** Fixed runtime web routes; present only when the deployment enabled the web service. */
+  runtimeWeb?: RuntimeWebRoutesOptions;
+  /**
+   * The inbound MCP gateway; present only when the gateway is wired. It sits with the runtime routes
+   * rather than the authenticated management block because its caller is a provider CLI holding an
+   * execution-scoped bearer, not a signed-in Account.
+   */
+  mcpGateway?: McpGatewayRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
   /**
    * Undoing setup so onboarding can be walked again. Any staging deployment supplies it, and every
@@ -100,6 +196,17 @@ export function sanitizeRequestUrl(url: string): string {
   return url.split("?", 1)[0] ?? "/";
 }
 
+function deploymentHeaders(deployment: CreateAppOptions["deployment"]): Record<string, string> {
+  const headers: Record<string, string> = { "cache-control": "no-store" };
+  if (deployment?.revision) headers["x-opentag-revision"] = deployment.revision;
+  if (deployment?.runner) {
+    headers["x-opentag-runner-target"] = createHash("sha256")
+      .update(JSON.stringify([deployment.runner.image, deployment.runner.version]))
+      .digest("hex");
+  }
+  return headers;
+}
+
 type AccountFacingError =
   | AuthServiceError
   | AgentServiceError
@@ -107,7 +214,11 @@ type AccountFacingError =
   | OnboardingResetError
   | TaskQueryError
   | SlackConfigurationServiceError
-  | AccountSetupServiceError;
+  | AccountSetupServiceError
+  | SandboxServiceError
+  | McpServiceError
+  | GitHubConnectionServiceError
+  | SkillServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
   return (
@@ -117,7 +228,11 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof OnboardingResetError ||
     error instanceof TaskQueryError ||
     error instanceof SlackConfigurationServiceError ||
-    error instanceof AccountSetupServiceError
+    error instanceof AccountSetupServiceError ||
+    error instanceof SandboxServiceError ||
+    error instanceof McpServiceError ||
+    error instanceof GitHubConnectionServiceError ||
+    error instanceof SkillServiceError
   );
 }
 
@@ -145,6 +260,7 @@ export function ignoreHttpTraceRoute(path: string): boolean {
     pathname === "/healthz" ||
     pathname === "/readyz" ||
     pathname === HTTP_PATHS.computerRuntimeWebSocket ||
+    pathname === HTTP_PATHS.sandboxRunnerWebSocket ||
     pathname.startsWith("/assets/") ||
     pathname.startsWith("/fonts/")
   );
@@ -367,6 +483,8 @@ export function createApp(options: CreateAppOptions = {}) {
 
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
+  if (options.runtimeWeb) registerRuntimeWebRoutes(app, options.runtimeWeb);
+  if (options.mcpGateway) registerMcpGatewayRoutes(app, options.mcpGateway);
 
   app.register(fastifyOpenTelemetry, {
     wrapRoutes: true,
@@ -406,7 +524,9 @@ export function createApp(options: CreateAppOptions = {}) {
     return reply.code(200).send(health);
   });
 
+  const readinessHeaders = deploymentHeaders(options.deployment);
   app.get("/readyz", async (request, reply) => {
+    reply.headers(readinessHeaders);
     const snapshot = readiness.snapshot();
     if (!snapshot.ready) {
       return reply.code(503).send({ status: "not_ready", ...snapshot });
@@ -479,44 +599,71 @@ export function createApp(options: CreateAppOptions = {}) {
         authOptions,
         options.agentRuntimeTestService,
         options.agentSetupService,
+        options.contextTreeOperationService,
+        options.cloudOverviewService ??
+          (healthDatabase
+            ? new CloudOverviewService(healthDatabase, {
+                ...(options.runnerChannel ? { hub: options.runnerChannel.hub } : {}),
+                accountLimit:
+                  options.sandboxRunnerService?.capacityLimits?.accountLimit ??
+                  DEFAULT_CLOUD_CAPACITY_LIMITS.accountLimit,
+                controlsEnabled: !!options.sandboxRunnerService,
+              })
+            : undefined),
       );
     }
-    if (
-      options.agentService ||
-      options.taskService ||
-      options.computerService ||
-      options.setupResetService ||
-      options.accountSetupService ||
-      (options.machineAuthService && options.computerConnectCode)
-    ) {
-      registerAccountRoutes(app, authService, {
-        ...(options.agentService ? { agentService: options.agentService } : {}),
-        ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
-        ...(options.computerService ? { computerService: options.computerService } : {}),
-        ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
-        ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
-        ...(options.taskService ? { taskService: options.taskService } : {}),
-        ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
-        internalNavigationService: options.internalNavigationService,
-        authOptions,
-      });
-    }
+    registerAvailableAccountRoutes(app, authService, options, authOptions);
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
     if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
+    if (options.githubIntegrations) {
+      registerGitHubIntegrationsRoutes(app, { ...options.githubIntegrations, authService, authOptions });
+    }
+    if (options.mcp) {
+      registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
+      registerMcpOAuthRoutes(app, {
+        flows: options.mcp.flows,
+        /*
+         * The callback cannot probe cheaply itself, so the probe is fired here and not awaited. The
+         * route has no Account context of its own to pass — the flow already proved which pair it
+         * belongs to — so the id pair travels straight through from the callback.
+         */
+        onCredentialStored: (accountId, agentId, mcpServerId) => {
+          void options.mcp?.authorization.probe(accountId, agentId, mcpServerId).catch(() => undefined);
+        },
+        publicOrigin: options.mcp.publicOrigin,
+        secureCookies: options.mcp.secureCookies,
+      });
+    }
+    if (options.skills) {
+      registerSkillRoutes(app, options.skills.service, authService, authOptions);
+      if (options.machineAuthService) {
+        registerComputerSkillRoutes(app, options.machineAuthService, options.skills.service);
+      }
+      if (options.skills.proofs) {
+        registerRuntimeSkillRoutes(app, options.skills.service, options.skills.proofs);
+      }
+    }
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);
     }
     if (options.computerService && options.machineAuthService) {
-      const computerService = options.computerService;
-      const machineAuthService = options.machineAuthService;
-      registerComputerRoutes(app, machineAuthService);
-      app.register(async (runtimeApp) => {
-        await runtimeApp.register(websocket, { options: { maxPayload: 64 * 1024 } });
-        registerRuntimeRoutes(runtimeApp, machineAuthService, computerService, options.runtime);
-      });
+      registerComputerRoutes(app, options.machineAuthService);
     }
+    registerExecutionWebSocketRoutes(app, options);
+  }
+
+  // The controlled Cloud model path authenticates with its own execution-scoped bearer token and
+  // never needs the account auth surface, so it registers whenever the deployment configured it.
+  if (options.cloudModel) {
+    registerCloudModelProxyRoutes(app, options.cloudModel);
+  }
+
+  // The E5 Runner workspace path likewise authenticates the Runner's own allocation-scoped
+  // bootstrap token and is independent of the account auth surface.
+  if (options.runnerWorkspace) {
+    registerRunnerWorkspaceRoutes(app, options.runnerWorkspace);
   }
 
   if (options.webAppRoot) registerWebApp(app, options.webAppRoot);
@@ -617,4 +764,43 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   return app;
+}
+
+function registerAvailableAccountRoutes(
+  app: Parameters<typeof registerAccountRoutes>[0],
+  authService: UserAuthService,
+  options: CreateAppOptions,
+  authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
+): void {
+  if (
+    !(
+      options.agentService ||
+      options.cloudAvailability ||
+      options.cloudModelCatalog ||
+      options.taskService ||
+      options.computerService ||
+      options.sandboxService ||
+      options.sandboxRunnerService ||
+      options.setupResetService ||
+      options.accountSetupService ||
+      (options.machineAuthService && options.computerConnectCode)
+    )
+  )
+    return;
+  const cloudModelCatalog = options.cloudModelCatalog;
+  registerAccountRoutes(app, authService, {
+    ...(options.cloudAvailability ? { cloudAvailability: options.cloudAvailability } : {}),
+    ...(cloudModelCatalog ? { cloudModelOptions: () => cloudModelCatalog.list() } : {}),
+    ...(options.agentService ? { agentService: options.agentService } : {}),
+    ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
+    ...(options.computerService ? { computerService: options.computerService } : {}),
+    ...(options.sandboxService ? { sandboxService: options.sandboxService } : {}),
+    ...(options.sandboxRunnerService ? { sandboxRunnerService: options.sandboxRunnerService } : {}),
+    ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
+    ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
+    ...(options.taskService ? { taskService: options.taskService } : {}),
+    ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
+    internalNavigationService: options.internalNavigationService,
+    authOptions,
+  });
 }

@@ -33,6 +33,9 @@ RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts 
 
 FROM node:24-alpine AS runtime
 
+ARG OPENTAG_BUILD_REVISION
+ENV OPENTAG_BUILD_REVISION=${OPENTAG_BUILD_REVISION}
+
 WORKDIR /app
 COPY --from=prod-deps /app ./
 COPY --from=build /app/packages/shared/dist packages/shared/dist
@@ -41,7 +44,8 @@ COPY --from=build /app/packages/server/drizzle packages/server/drizzle
 COPY --from=build /app/apps/web/dist apps/web/dist
 COPY LICENSE /app/LICENSE
 
-RUN addgroup -S opentag && adduser -S -G opentag opentag
+RUN apk add --no-cache git openssh-client ca-certificates \
+  && addgroup -S opentag && adduser -S -G opentag opentag
 
 ENV NODE_ENV=production
 ENV OPENTAG_ENV=prod

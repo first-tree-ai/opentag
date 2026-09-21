@@ -483,6 +483,124 @@ describe("AgentTurnRunner", () => {
     expect(onRuntimeEvent).toHaveBeenCalledTimes(2);
   });
 
+  it("passes prepared web tools launch facts only to the Pi provider", async () => {
+    const runWith = async (providerId: string | undefined) => {
+      const prompt = vi.fn(
+        async (_request: unknown): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }),
+      );
+      const runner = new AgentTurnRunner({
+        bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+        connection: { send: vi.fn(async () => undefined) },
+        custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+        reportOwner: {
+          create: vi.fn((input) => ({
+            ...input,
+            type: "turn:report",
+            requestId: randomUUID(),
+            resultHash: "a".repeat(64),
+          })),
+          submit: vi.fn(async () => undefined),
+        } as unknown as TurnReportOwner,
+        runtimeManager: {
+          sessionKind: () => "visible",
+          ensureRuntime: async () => ({ prompt }),
+          providerId: () => providerId,
+          cwd: () => "/workspace",
+          observe: () => () => undefined,
+        } as unknown as SessionRuntimeManager,
+        credentialEnvironment: {
+          prepare: vi.fn(async () => ({
+            path: "/tmp/provider-env.sh",
+            provider: "slack" as const,
+            web: {
+              extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
+              socketPath: "/tmp/opentag-web-test/web.sock",
+            },
+          })),
+          cleanup: vi.fn(async () => undefined),
+        },
+      });
+      runner.start(liveOwner(delivery()));
+      await runner.settled();
+      return prompt;
+    };
+
+    const piPrompt = await runWith("pi");
+    expect(piPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configuration: {
+          provider: {
+            webTools: {
+              extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
+              socketPath: "/tmp/opentag-web-test/web.sock",
+            },
+          },
+        },
+      }),
+    );
+    for (const providerId of ["codex", undefined]) {
+      const other = await runWith(providerId);
+      expect(other.mock.calls[0]?.[0]).not.toHaveProperty("configuration");
+    }
+  });
+
+  it("passes the prepared MCP gateway only to the Claude Code provider", async () => {
+    const runWith = async (providerId: string | undefined) => {
+      const prompt = vi.fn(
+        async (_request: unknown): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }),
+      );
+      const runner = new AgentTurnRunner({
+        bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+        connection: { send: vi.fn(async () => undefined) },
+        custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+        reportOwner: {
+          create: vi.fn((input) => ({
+            ...input,
+            type: "turn:report",
+            requestId: randomUUID(),
+            resultHash: "a".repeat(64),
+          })),
+          submit: vi.fn(async () => undefined),
+        } as unknown as TurnReportOwner,
+        runtimeManager: {
+          sessionKind: () => "visible",
+          ensureRuntime: async () => ({ prompt }),
+          providerId: () => providerId,
+          cwd: () => "/workspace",
+          observe: () => () => undefined,
+        } as unknown as SessionRuntimeManager,
+        credentialEnvironment: {
+          prepare: vi.fn(async () => ({
+            path: "/tmp/provider-env.sh",
+            provider: "slack" as const,
+            mcp: { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" },
+          })),
+          cleanup: vi.fn(async () => undefined),
+        },
+      });
+      runner.start(liveOwner(delivery()));
+      await runner.settled();
+      return prompt;
+    };
+
+    const claudePrompt = await runWith("claude-code");
+    expect(claudePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configuration: {
+          provider: { mcpGateway: { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" } },
+        },
+      }),
+    );
+    /*
+     * Codex spawns its app-server once per Session runtime from a frozen argument vector, so a
+     * per-execution bearer cannot reach it; handing it one would be a descriptor it silently drops.
+     */
+    for (const providerId of ["pi", "codex", undefined]) {
+      const other = await runWith(providerId);
+      expect(other.mock.calls[0]?.[0]).not.toHaveProperty("configuration");
+    }
+  });
+
   it("reports unavailable credentials as a recoverable typed failure before Provider execution", async () => {
     const create = vi.fn((input) => ({
       ...input,
@@ -658,6 +776,10 @@ describe("AgentTurnRunner", () => {
           path: "/tmp/provider-env.sh",
           provider: "slack" as const,
           slackConfigDir: "/tmp/slack-config",
+          executionId: "exec-1",
+          environmentManifest: "/tmp/execution-manifest.json",
+          slackApiHost: "https://127.0.0.1:18443",
+          signal: new AbortController().signal,
         };
       }),
       cleanup: vi.fn(async () => {
@@ -696,9 +818,12 @@ describe("AgentTurnRunner", () => {
         sessionId: "session-1",
         runId: "turn-1",
         configDir: "/tmp/slack-config",
+        environmentManifest: "/tmp/execution-manifest.json",
+        slackApiHost: "https://127.0.0.1:18443",
       },
       expect.any(AbortSignal),
     );
+    expect(credentials.cleanup).toHaveBeenCalledWith("session-1", "exec-1");
 
     const driftedEnsure = vi.fn();
     const drifted = new AgentTurnRunner({
@@ -727,6 +852,46 @@ describe("AgentTurnRunner", () => {
     drifted.start(liveOwner({ ...delivery(), deliveryId: "delivery-drift" }));
     await drifted.settled();
     expect(driftedEnsure).not.toHaveBeenCalled();
+    expect(create).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        executionEffects: "not_started",
+        errorReason: "credential_unavailable",
+      }),
+    );
+  });
+
+  it("fails closed when a visible Turn has no IM provider credential", async () => {
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "e".repeat(64),
+    }));
+    const ensureRuntime = vi.fn();
+    const turnPlan = { prepare: vi.fn(async () => undefined), cleanup: vi.fn(async () => undefined) };
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: {
+        markReporting: vi.fn(async () => undefined),
+        recordResult: vi.fn(),
+      } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime,
+        sessionKind: () => "visible",
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh" })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      turnPlan,
+    });
+    runner.start(liveOwner({ ...delivery(), deliveryId: "delivery-no-provider" }));
+    await runner.settled();
+    expect(turnPlan.prepare).not.toHaveBeenCalled();
+    expect(ensureRuntime).not.toHaveBeenCalled();
     expect(create).toHaveBeenLastCalledWith(
       expect.objectContaining({
         outcome: "failed",
@@ -1164,6 +1329,7 @@ function delivery(): DirectImMessageDeliveryRequest {
     attention: "direct",
     content: { kind: "text", text: "hello", providerRef: providerRef("1710000000.000001") },
     runtime: {
+      contextTreeRepository: null,
       revision: {
         agent: { sequence: 1, id: "agent-revision" },
         session: { sequence: 1, id: "session-revision" },

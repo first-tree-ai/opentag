@@ -1,11 +1,13 @@
 import {
   AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS,
   type AgentListItem,
+  type AgentRuntimeProvider,
   type AgentSetupComputerState,
   type AgentSetupMessagingState,
   type AgentSetupRuntimeState,
   type AgentSummary,
   type AgentUsageDetail,
+  type GitHubIntegrationOverview,
   projectAgentSetupComponents,
 } from "@opentag/shared/browser";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -89,6 +91,27 @@ export function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 }
 
+function feishuSetupAttemptResponse(init: RequestInit | undefined, failureCode: string | undefined): Response {
+  const method = init?.method ?? "GET";
+  if (method === "GET") return new Response(null, { status: 204 });
+  if (method !== "POST") throw new Error(`Unexpected Feishu setup request: ${method}`);
+  const body = JSON.parse(String(init?.body)) as { intent: "create" | "reauthorize" | "replace" };
+  return json(
+    {
+      id: crypto.randomUUID(),
+      agentId,
+      intent: body.intent,
+      state: failureCode ? "failed" : "awaiting_user",
+      qrUrl: failureCode ? null : "https://open.feishu.cn/setup",
+      expiresAt: "2026-08-20T00:15:00.000Z",
+      errorCode: failureCode ?? null,
+      completedAt: failureCode ? "2026-08-20T00:01:00.000Z" : null,
+      createdAt: "2026-08-20T00:00:00.000Z",
+    },
+    201,
+  );
+}
+
 const setupBindingId = "9d4e1378-8ff2-4e41-a6dd-e8bf59ed775b";
 const setupCredentialGeneration = 1;
 
@@ -109,7 +132,7 @@ function setupProjectionOrThrow(
     readonly bound: boolean;
     readonly handoffReady: boolean;
     readonly provider: "feishu" | "slack";
-    readonly runtimeProvider: "codex" | "claude-code";
+    readonly runtimeProvider: AgentRuntimeProvider;
   },
 ): Response {
   const targetAgentId = setupTargetIdOrThrow(path, method);
@@ -308,6 +331,7 @@ function setupProjectionOrThrow(
 
 function internalToolsFixtureResponse(input: {
   body: BodyInit | null | undefined;
+  githubIntegration: GitHubIntegrationOverview | undefined;
   method: string | undefined;
   offered: boolean | undefined;
   path: string;
@@ -315,6 +339,15 @@ function internalToolsFixtureResponse(input: {
   resetSetup: () => void;
   writeNavigation: (value: { integrations: boolean; skills: boolean }) => void;
 }): Response | undefined {
+  // The Account GitHub overview: unavailable unless a test installs a real one.
+  if (input.path === "/api/v1/integrations/github") {
+    return json(
+      input.githubIntegration ?? {
+        availability: { available: false, githubHost: "github.com", appId: null },
+        connection: null,
+      },
+    );
+  }
   if (input.path === "/api/v1/me/setup/reset" && input.method === undefined) {
     return input.offered ? new Response(null, { status: 204 }) : new Response(null, { status: 404 });
   }
@@ -357,11 +390,13 @@ export function installApi(
     computerEvidenceFails?: boolean;
     computerProviderReadiness?: readonly {
       observedAt: string | null;
-      provider: "codex" | "claude-code";
+      provider: AgentRuntimeProvider;
       status: "checking" | "install" | "sign-in" | "ready" | "unavailable";
     }[];
     computerStatus?: () => "online" | "offline";
     computerReadStatus?: (connected: boolean) => number | undefined;
+    /** The Account GitHub overview the management endpoint answers with; unavailable by default. */
+    githubIntegration?: GitHubIntegrationOverview;
     handoffReady?: boolean;
     /** Fails only the handoff read, so the binding stays readable and `handoff_unconfirmed` is reachable. */
     handoffEvidenceFails?: boolean;
@@ -369,7 +404,7 @@ export function installApi(
     internalNavigationVisibility?: { integrations: boolean; skills: boolean };
     internalToolsOffered?: boolean;
     provider?: "feishu" | "slack";
-    runtimeProvider?: "codex" | "claude-code";
+    runtimeProvider?: AgentRuntimeProvider;
     /*
      * Holds the post-save `/api/v1/me` refresh in flight until the test resolves it. This used to be
      * a wall-clock delay, which made the assertions a race: on a loaded machine the delay could
@@ -408,6 +443,7 @@ export function installApi(
     computerId,
     revision,
     runtimeConfig: {
+      contextTreeRepository: null,
       revision: 1,
       model: null,
       reasoningEffort: null,
@@ -512,6 +548,7 @@ export function installApi(
     }
     const internalToolsResponse = internalToolsFixtureResponse({
       body: init?.body,
+      githubIntegration: options.githubIntegration,
       method: init?.method,
       offered: options.internalToolsOffered,
       path,
@@ -807,22 +844,8 @@ export function installApi(
         lastRuntimeObservationAt: null,
       });
     }
-    if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts` && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
-      return json(
-        {
-          id: crypto.randomUUID(),
-          agentId,
-          intent: body.intent,
-          state: options.setupFailureCode ? "failed" : "awaiting_user",
-          qrUrl: options.setupFailureCode ? null : "https://open.feishu.cn/setup",
-          expiresAt: "2026-08-20T00:15:00.000Z",
-          errorCode: options.setupFailureCode ?? null,
-          completedAt: options.setupFailureCode ? "2026-08-20T00:01:00.000Z" : null,
-          createdAt: "2026-08-20T00:00:00.000Z",
-        },
-        201,
-      );
+    if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts`) {
+      return feishuSetupAttemptResponse(init, options.setupFailureCode);
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/slack/oauth/start` && init?.method === "POST") {
       return json({

@@ -1,6 +1,9 @@
-export const RUNTIMES = ["codex", "claude-code"] as const;
+export const RUNTIMES = ["codex", "claude-code", "pi"] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 export type Destination = "local" | "cloud";
+
+/** Cloud Agents always run the managed Pi runtime; the reader never picks a runtime for Cloud. */
+export const CLOUD_RUNTIME: Runtime = "pi";
 
 export const AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 export const AGENT_NAME_MAX_LENGTH = 64;
@@ -56,5 +59,8 @@ export function validateAgentName(value: string): AgentNameError | undefined {
 }
 
 export function draftIsSubmittable(draft: AgentDraft): boolean {
-  return draft.destination === "local" && draft.runtime !== undefined && validateAgentName(draft.name) === undefined;
+  if (validateAgentName(draft.name) !== undefined) return false;
+  // Cloud fixes the runtime, so only the name stands between the draft and submission.
+  if (draft.destination === "cloud") return true;
+  return draft.destination === "local" && draft.runtime !== undefined;
 }

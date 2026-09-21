@@ -129,8 +129,17 @@ describe("SessionService with the unit database", () => {
       session: { kind: "internal", runtimeModel: "gpt" },
     });
     expect(await db.database.select().from(sessionDescendants)).toHaveLength(1);
+    expect(
+      await service.recordMessageOutcome({
+        messageId,
+        attemptCount: 1,
+        outcome: "unreachable",
+        errorCode: "cloud_capacity_exceeded",
+      }),
+    ).toBe(true);
     const retry = await service.createInternalSessionWithMessage(input);
     expect(retry).toMatchObject({ deduplicated: false, attemptCount: 2, session: { id: created.session.id } });
+    expect(await db.database.select().from(sessionDescendants)).toHaveLength(1);
     expect(await service.recordMessageOutcome({ messageId, attemptCount: 2, outcome: "accepted" })).toBe(true);
     const dedup = await service.createInternalSessionWithMessage(input);
     expect(dedup).toMatchObject({ deduplicated: true, attemptCount: null, message: { lastOutcome: "accepted" } });
@@ -277,6 +286,7 @@ describe("SessionService with the unit database", () => {
       targetSessionId: target.session.id,
       targetInstallationId: fixture.installationId,
       targetComputerId: fixture.computerId,
+      targetComputerKind: "local" as const,
       targetPlacementGeneration: 1,
       targetSessionKind: "internal" as const,
       targetCreatorSessionId: source.session.id,
@@ -309,6 +319,7 @@ describe("SessionService with the unit database", () => {
         sourceComputerId: route.sourceComputerId,
         sourceSessionId: route.sourceSessionId,
         targetComputerId: route.targetComputerId,
+        targetComputerKind: "local" as const,
         targetSessionId: route.targetSessionId,
       }),
       "Session collaboration dispatch admission rejected",
@@ -1186,6 +1197,7 @@ describe("SessionCollaborationService response mapping", () => {
         targetSessionId: "target",
         targetInstallationId: "installation",
         targetComputerId: "computer",
+        targetComputerKind: "local" as const,
         targetPlacementGeneration: 1,
         targetSessionKind: "internal" as const,
         targetCreatorSessionId: "source",

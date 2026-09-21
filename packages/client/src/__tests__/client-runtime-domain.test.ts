@@ -9,15 +9,47 @@ import type {
   SessionReconcileResult,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type WebSocket, WebSocketServer } from "ws";
+import { WebSocketServer } from "ws";
 import { ClientRuntime } from "../runtime/client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
+import { completeAuth, heartbeatResult, registrationResult } from "./support/runtime-server.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
 
 describe("ClientRuntime domain dispatch", () => {
+  it("returns failed when the Context Tree settings handler throws before publishing", async () => {
+    const request = {
+      type: "context-tree:operation",
+      requestId: randomUUID(),
+      computerId: randomUUID(),
+      agentId: randomUUID(),
+      requireStopped: false,
+      input: {
+        action: "create",
+        operationId: randomUUID(),
+        repository: "acme/memory",
+        expectedRevision: 1,
+        expectedRuntimeConfigRevision: 1,
+      },
+    };
+    const connection = new FrameConnection([request]);
+    const run = vi.fn().mockRejectedValue(new Error("initialization failed"));
+    const runtime = new ClientRuntime(connection as unknown as RuntimeConnection, {
+      contextTreeSettings: { run },
+    });
+    await runtime.run();
+    expect(run).toHaveBeenCalledOnce();
+    expect(connection.sent).toEqual([
+      {
+        type: "context-tree:operation:result",
+        requestId: request.requestId,
+        result: { status: "failed", code: "failed" },
+      },
+    ]);
+  });
+
   it("B-07 dispatches per-session reconcile before accepting delivery", async () => {
     const server = await runtimeServer();
     cleanup.push(server.close);
@@ -25,26 +57,30 @@ describe("ClientRuntime domain dispatch", () => {
     const reconcileRequestId = randomUUID();
     const earlyDeliveryId = randomUUID();
     const readyDeliveryId = randomUUID();
+    const connectionId = randomUUID();
     const results: Array<Record<string, unknown>> = [];
     let runtime: ClientRuntime;
 
     server.wss.on("connection", (socket) => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
-        if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
-          return;
-        }
-        if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
-          socket.send(JSON.stringify(delivery(earlyDeliveryId, randomUUID(), computerId)));
-          return;
+        switch (frame.type) {
+          case "auth":
+            completeAuth(socket, frame);
+            return;
+          case "computer:register":
+            socket.send(JSON.stringify(registrationResult(frame, connectionId)));
+            socket.send(JSON.stringify({ ...delivery(earlyDeliveryId, randomUUID(), computerId), connectionId }));
+            return;
+          case "heartbeat":
+            socket.send(JSON.stringify(heartbeatResult(frame)));
+            return;
         }
         results.push(frame);
         if (frame.type === "im:deliver:result" && frame.deliveryId === earlyDeliveryId) {
-          socket.send(JSON.stringify(reconcile(computerId, reconcileRequestId)));
+          socket.send(JSON.stringify({ ...reconcile(computerId, reconcileRequestId), connectionId }));
         } else if (frame.type === "session:reconcile:result") {
-          socket.send(JSON.stringify(delivery(readyDeliveryId, randomUUID(), computerId)));
+          socket.send(JSON.stringify({ ...delivery(readyDeliveryId, randomUUID(), computerId), connectionId }));
         } else if (frame.type === "im:deliver:result" && frame.deliveryId === readyDeliveryId) {
           runtime.stop();
         }
@@ -479,6 +515,7 @@ function delivery(deliveryId: string, requestId: string, _computerId: string) {
 
 function snapshot(): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },
@@ -489,39 +526,6 @@ function snapshot(): EffectiveRuntimeSnapshot {
     execution: { approvalPolicy: "never", networkAccess: true },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
-}
-
-function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>): void {
-  if (frame.protocolVersion !== 1) {
-    socket.send(
-      JSON.stringify({
-        type: "error",
-        requestId: frame.requestId,
-        code: "PROTOCOL_VERSION_UNSUPPORTED",
-        message: "The test Server supports runtime protocol v1 only",
-      }),
-    );
-    socket.close(4400, "Protocol version unsupported");
-    return;
-  }
-  socket.send(
-    JSON.stringify({
-      type: "auth:result",
-      requestId: frame.requestId,
-      ok: true,
-      computerId: randomUUID(),
-      installationId: randomUUID(),
-    }),
-  );
-  socket.send(
-    JSON.stringify({
-      type: "server:welcome",
-      protocolVersion: 1,
-      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
-      heartbeatIntervalMs: 1_000,
-      heartbeatTimeoutMs: 2_000,
-    }),
-  );
 }
 
 async function runtimeServer(): Promise<{ close(): Promise<void>; url: string; wss: WebSocketServer }> {

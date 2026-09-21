@@ -16,9 +16,11 @@ import {
   agentStatusPresentation,
   messagingChannelLabel,
   platformLabel,
+  runtimeProviderName,
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
+import { AgentCloudOverviewPanel } from "./cloud/cloud-environment.js";
 
 export function AgentDetailPage({ agentId }: { agentId: string }) {
   const { me } = useAccount();
@@ -38,6 +40,8 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               <AgentUsageOverview accountId={me.user.id} agentId={agent.id} />
               <AgentStatusCard agent={agent} />
             </div>
+            {/* The Cloud board is the Agent page's environment truth; a Local Agent never renders it. */}
+            {agent.computerKind === "cloud" ? <AgentCloudOverviewPanel agentId={agent.id} /> : null}
             <AgentTasksSection agentId={agent.id} />
           </div>
         </section>
@@ -120,7 +124,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const computer = agentComputerStatus(agent);
   const messaging = agentMessagingStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
-  const runtimeName = agent.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+  const runtimeName = runtimeProviderName(agent.runtimeProvider);
   return (
     <section
       className="grid rounded-lg bg-kumo-base p-4 ring ring-kumo-line"

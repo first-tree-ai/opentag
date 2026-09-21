@@ -1,16 +1,22 @@
 import {
   accountComputerConnectCodePath,
+  accountSandboxPath,
+  agentCloudPath,
+  CLOUD_IDENTITY_CAPABILITY_HEADER,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   taskCancelPath,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
 import { OnboardingResetError } from "../services/onboarding-reset/index.js";
+import type { CloudOverviewService } from "../services/sandboxes/cloud-overview-service.js";
+import type { SandboxService } from "../services/sandboxes/index.js";
 import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
 
@@ -30,6 +36,7 @@ const agent = {
   status: "active" as const,
   revision: 1,
   runtimeConfig: {
+    contextTreeRepository: null,
     revision: 1,
     model: null,
     reasoningEffort: null,
@@ -152,6 +159,42 @@ function services() {
     },
     computerService: {
       listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
+      ensureCloudComputerForAccount: vi.fn().mockResolvedValue({
+        computerId,
+        kind: "cloud" as const,
+        displayName: "Cloud",
+        platform: "linux" as const,
+        connectionStatus: "online" as const,
+        createdAt: "2026-09-15T00:00:00.000Z",
+      }),
+    },
+    sandboxService: {
+      ensureForAccount: vi.fn().mockResolvedValue({
+        sandboxId: "2b63a21e-f6c7-4474-91ea-4dabf0566a24",
+        sessionId: "3c63a21e-f6c7-4474-91ea-4dabf0566a24",
+        computerId,
+        storageUri: "gs://opentag-sandbox/2b63a21e-f6c7-4474-91ea-4dabf0566a24",
+        lifecycle: "unallocated" as const,
+        environmentGeneration: 0,
+        currentResourceName: null,
+        currentResourceUid: null,
+        currentOperationName: null,
+        createdAt: "2026-09-15T00:00:00.000Z",
+        updatedAt: "2026-09-15T00:00:00.000Z",
+      }),
+      getForAccount: vi.fn().mockResolvedValue({
+        sandboxId: "2b63a21e-f6c7-4474-91ea-4dabf0566a24",
+        sessionId: "3c63a21e-f6c7-4474-91ea-4dabf0566a24",
+        computerId,
+        storageUri: "gs://opentag-sandbox/2b63a21e-f6c7-4474-91ea-4dabf0566a24",
+        lifecycle: "unallocated" as const,
+        environmentGeneration: 0,
+        currentResourceName: null,
+        currentResourceUid: null,
+        currentOperationName: null,
+        createdAt: "2026-09-15T00:00:00.000Z",
+        updatedAt: "2026-09-15T00:00:00.000Z",
+      }),
     },
     accountSetupService: {
       complete: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
@@ -177,6 +220,7 @@ function appWith(
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
     taskService: service.taskService as unknown as TaskService,
     computerService: service.computerService as unknown as ComputerService,
+    sandboxService: service.sandboxService as unknown as SandboxService,
     accountSetupService: service.accountSetupService as unknown as AccountSetupService,
     computerConnectCode: {
       downloadBaseUrl: "https://dl.opentag.build/releases",
@@ -554,10 +598,96 @@ describe("Account-native management collections", () => {
       url: HTTP_PATHS.accountComputers,
       headers: { ...authorization, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
-    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, true);
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, true, false);
 
     await app.inject({ method: "GET", url: HTTP_PATHS.accountComputers, headers: authorization });
-    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false);
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false, false);
+  });
+
+  it("projects Account Computer provider readiness by HTTP v1/v2 opt-in", async () => {
+    const observedAt = "2026-08-19T00:00:00.000Z";
+    const fullReadiness = [
+      { provider: "codex" as const, status: "ready" as const, observedAt },
+      { provider: "claude-code" as const, status: "ready" as const, observedAt },
+      { provider: "pi" as const, status: "ready" as const, observedAt },
+    ];
+    const listed = { computers: [{ ...computerSummary, providerReadiness: fullReadiness }] };
+    const FrozenBaseProviderReadinessSchema = z.array(
+      z
+        .object({
+          provider: z.enum(["codex", "claude-code"]),
+          status: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
+          observedAt: z.string().datetime().nullable(),
+        })
+        .strict(),
+    );
+    const { app, service } = appWith({
+      computerService: { ...services().computerService, listAccountComputers: vi.fn().mockResolvedValue(listed) },
+    });
+
+    const v1 = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, [PROVIDER_READINESS_V1_HEADER]: "1" },
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, true, false);
+    expect(v1.json().computers[0].providerReadiness.map((row: { provider: string }) => row.provider)).toEqual([
+      "codex",
+      "claude-code",
+    ]);
+    expect(FrozenBaseProviderReadinessSchema.parse(v1.json().computers[0].providerReadiness)).toHaveLength(2);
+
+    const v2 = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, "x-opentag-provider-readiness-v2": "2" },
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, true, false);
+    expect(v2.json().computers[0].providerReadiness.map((row: { provider: string }) => row.provider)).toEqual([
+      "codex",
+      "claude-code",
+      "pi",
+    ]);
+    expect(() => FrozenBaseProviderReadinessSchema.parse(v2.json().computers[0].providerReadiness)).toThrow();
+
+    const both = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: {
+        ...authorization,
+        [PROVIDER_READINESS_V1_HEADER]: "1",
+        "x-opentag-provider-readiness-v2": "2",
+      },
+    });
+    expect(both.json().computers[0].providerReadiness.map((row: { provider: string }) => row.provider)).toContain("pi");
+
+    const absent = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: authorization,
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false, false);
+    expect(absent.json().computers[0].providerReadiness).toBeUndefined();
+
+    const unsupported = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, "x-opentag-provider-readiness-v2": "1" },
+    });
+    expect(unsupported.json().computers[0].providerReadiness).toBeUndefined();
+
+    const v1WithBogusV2 = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: {
+        ...authorization,
+        [PROVIDER_READINESS_V1_HEADER]: "1",
+        "x-opentag-provider-readiness-v2": "bogus",
+      },
+    });
+    expect(
+      v1WithBogusV2.json().computers[0].providerReadiness.map((row: { provider: string }) => row.provider),
+    ).toEqual(["codex", "claude-code"]);
   });
 
   it("rejects a client-selected scope on every creation route", async () => {
@@ -567,6 +697,15 @@ describe("Account-native management collections", () => {
       { url: HTTP_PATHS.accountAgents, base: createAgentPayload },
       { url: HTTP_PATHS.accountComputerConnectCodes, base: {} },
       { url: HTTP_PATHS.accountSetupComplete, base: { agentId } },
+      {
+        url: HTTP_PATHS.accountSandboxes,
+        base: {
+          imBindingId: agentId,
+          channelId: "oc_channel",
+          conversationKind: "dm" as const,
+          kind: "channel" as const,
+        },
+      },
     ];
     for (const route of routes) {
       for (const selector of [{ accountId: userId }]) {
@@ -649,7 +788,7 @@ describe("Account-native management collections", () => {
     });
     expect(setup.statusCode).toBe(200);
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
-    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, false);
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, false, false);
     expect(service.taskService.list).toHaveBeenCalledWith(userId, { limit: 50 });
     expect(service.accountSetupService.completeForAccount).toHaveBeenCalledWith(userId, agentId);
   });
@@ -661,6 +800,9 @@ describe("Account-native management collections", () => {
       ["GET", HTTP_PATHS.accountAgents],
       ["POST", HTTP_PATHS.accountAgents],
       ["GET", HTTP_PATHS.accountComputers],
+      ["PUT", HTTP_PATHS.accountCloudComputer],
+      ["POST", HTTP_PATHS.accountSandboxes],
+      ["GET", accountSandboxPath("2b63a21e-f6c7-4474-91ea-4dabf0566a24")],
       ["POST", HTTP_PATHS.accountComputerConnectCodes],
       ["POST", HTTP_PATHS.accountSetupComplete],
     ] as const) {
@@ -764,5 +906,207 @@ describe("the connect-code redemption status read", () => {
     const anonymous = await app.inject({ method: "GET", url: accountComputerConnectCodePath(connectCodeId) });
     expect(anonymous.statusCode).toBe(401);
     expect(service.machineAuthService.getConnectCodeStatusForAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("Account Cloud identity routes", () => {
+  it("serves the Router model choices through the shared catalog, sanitized", async () => {
+    const catalog = {
+      defaultModel: vi.fn(),
+      isModelAllowed: vi.fn(),
+      list: vi.fn().mockResolvedValue({
+        available: true,
+        defaultModel: "router-model-a",
+        models: ["router-model-a", "router-model-b"],
+      }),
+    };
+    const app = createApp({ authService: authService(), cloudModelCatalog: catalog });
+    apps.push(app);
+
+    const anonymous = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudModels });
+    expect(anonymous.statusCode).toBe(401);
+    expect(catalog.list).not.toHaveBeenCalled();
+
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudModels, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      available: true,
+      defaultModel: "router-model-a",
+      models: ["router-model-a", "router-model-b"],
+    });
+    expect(catalog.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers a fixed unavailable payload while the model path is disabled", async () => {
+    const app = createApp({
+      authService: authService(),
+      cloudAvailability: () => ({
+        enabled: true,
+        available: false,
+        reason: "model_unavailable",
+        observedAt: "2026-09-20T00:00:00Z",
+      }),
+    });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudModels, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ available: false, defaultModel: null, models: [] });
+  });
+
+  it("answers a sanitized 503 when the Router list cannot be confirmed", async () => {
+    const catalog = {
+      defaultModel: vi.fn(),
+      isModelAllowed: vi.fn(),
+      list: vi.fn().mockResolvedValue({ available: false, defaultModel: null, models: [] }),
+    };
+    const app = createApp({ authService: authService(), cloudModelCatalog: catalog });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudModels, headers: authorization });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      error: { code: "CLOUD_MODEL_UNAVAILABLE", category: "transient" },
+    });
+    expect(JSON.stringify(response.json())).not.toContain("master");
+  });
+
+  it("registers availability even when no other Account service is wired", async () => {
+    const availability = {
+      enabled: false,
+      available: false,
+      reason: "disabled",
+      observedAt: "2026-09-21T00:00:00Z",
+    } as const;
+    const app = createApp({ authService: authService(), cloudAvailability: () => availability });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudComputer, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(availability);
+  });
+
+  it("reads deployment availability without creating an identity or environment", async () => {
+    const service = services();
+    const cloudAvailability = vi.fn().mockReturnValue({
+      enabled: true,
+      available: false,
+      reason: "model_unavailable",
+      observedAt: "2026-09-20T00:00:00Z",
+    });
+    const app = createApp({
+      authService: authService(),
+      cloudAvailability,
+      computerService: service.computerService as unknown as ComputerService,
+    });
+    apps.push(app);
+    const anonymous = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudComputer });
+    expect(anonymous.statusCode).toBe(401);
+    expect(cloudAvailability).not.toHaveBeenCalled();
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudComputer, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ available: false, reason: "model_unavailable" });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(service.computerService.ensureCloudComputerForAccount).not.toHaveBeenCalled();
+  });
+
+  it("authorizes and validates the paginated Agent overview before reading it", async () => {
+    const read = vi.fn().mockResolvedValue({
+      agentId,
+      observedAt: "2026-09-20T00:00:00Z",
+      capacity: { accountUsed: 0, accountLimit: 3 },
+      counts: { allocated: 0, queued: 0, running: 0, attention: 0 },
+      sessions: [],
+      nextCursor: null,
+    });
+    const app = createApp({
+      authService: authService(),
+      agentService: services().agentService as unknown as AgentService,
+      cloudOverviewService: { read } as unknown as CloudOverviewService,
+    });
+    apps.push(app);
+    expect((await app.inject({ method: "GET", url: agentCloudPath(agentId) })).statusCode).toBe(401);
+    for (const suffix of ["?limit=101", `?cursor=${computerId}&sessionId=${computerId}`, "?accountId=other"]) {
+      expect(
+        (await app.inject({ method: "GET", url: agentCloudPath(agentId) + suffix, headers: authorization })).statusCode,
+      ).toBe(400);
+    }
+    expect(read).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: "GET",
+      url: agentCloudPath(agentId, { limit: 3, sessionId: computerId }),
+      headers: authorization,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(read).toHaveBeenCalledWith(userId, agentId, { limit: 3, sessionId: computerId });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    read.mockRejectedValue(new Error("database temporarily unavailable"));
+    const failed = await app.inject({ method: "GET", url: agentCloudPath(agentId), headers: authorization });
+    expect(failed.statusCode).toBe(500);
+    expect(failed.json()).not.toHaveProperty("counts");
+  });
+
+  const sandboxBody = {
+    imBindingId: "4d63a21e-f6c7-4474-91ea-4dabf0566a24",
+    channelId: "oc_channel",
+    conversationKind: "dm" as const,
+    kind: "channel" as const,
+  };
+
+  it("forwards the Cloud identity header independently of readiness v2", async () => {
+    const { app, service } = appWith();
+    await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, [CLOUD_IDENTITY_CAPABILITY_HEADER]: "1" },
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, false, true);
+
+    await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, "x-opentag-provider-readiness-v2": "2" },
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, true, false);
+  });
+
+  it("ensures the Account Cloud Computer without a client-selected authority", async () => {
+    const { app, service } = appWith();
+    const created = await app.inject({
+      method: "PUT",
+      url: HTTP_PATHS.accountCloudComputer,
+      headers: authorization,
+    });
+    const withAccount = await app.inject({
+      method: "PUT",
+      url: HTTP_PATHS.accountCloudComputer,
+      headers: authorization,
+      payload: { accountId: userId },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({ kind: "cloud", connectionStatus: "online" });
+    expect(created.headers["cache-control"]).toBe("no-store");
+    expect(withAccount.statusCode).toBe(400);
+    expect(service.computerService.ensureCloudComputerForAccount).toHaveBeenCalledOnce();
+    expect(service.computerService.ensureCloudComputerForAccount).toHaveBeenCalledWith(userId);
+  });
+
+  it("ensures and reads a Sandbox from binding/channel/thread scope only", async () => {
+    const { app, service } = appWith();
+    const sandboxId = "2b63a21e-f6c7-4474-91ea-4dabf0566a24";
+    const created = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSandboxes,
+      headers: authorization,
+      payload: sandboxBody,
+    });
+    const read = await app.inject({
+      method: "GET",
+      url: accountSandboxPath(sandboxId),
+      headers: authorization,
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().lifecycle).toBe("unallocated");
+    expect(read.statusCode).toBe(200);
+    expect(service.sandboxService.ensureForAccount).toHaveBeenCalledWith(userId, sandboxBody);
+    expect(service.sandboxService.getForAccount).toHaveBeenCalledWith(userId, sandboxId);
   });
 });

@@ -1,6 +1,7 @@
 import type {
   AccountComputerSummary,
   AgentSummary,
+  CloudAvailability,
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
@@ -256,6 +257,56 @@ describe("projectAgentAvailability", () => {
     expect(availability.dependencies.handoff.state).toBe("action_required");
   });
 
+  /*
+   * The Server answers `handoffReady: false` for two different situations: delivery is broken, and
+   * delivery is being re-verified right now. The second one resolves by itself within seconds, so
+   * it is reported as a check in progress rather than as something the viewer must fix.
+   */
+  it.each(["preparing_cli", "checking_credentials"] as const)(
+    "reports a check in progress, not a failure, while the handoff is %s",
+    (phase) => {
+      const availability = projectAgentAvailability(
+        agent(),
+        computer(),
+        binding(),
+        { bindingState: "active", handoffReady: false, providerCli: { phase } },
+        true,
+        true,
+      );
+      expect(availability).toMatchObject({
+        state: "setting_up",
+        reason: "handoff_checking",
+        lastConfirmedAt: "2026-08-20T00:00:45.000Z",
+      });
+      expect(availability.dependencies.handoff).toEqual({
+        state: "checking",
+        lastConfirmedAt: "2026-08-20T00:00:45.000Z",
+        providerCli: { phase },
+      });
+    },
+  );
+
+  it("still asks for action once the handoff check ended in needs_attention", () => {
+    const availability = projectAgentAvailability(
+      agent(),
+      computer(),
+      binding(),
+      {
+        bindingState: "active",
+        handoffReady: false,
+        providerCli: { phase: "needs_attention", reason: "credential_rejected" },
+      },
+      true,
+      true,
+    );
+    expect(availability).toMatchObject({ state: "action_required", reason: "handoff_unavailable" });
+    expect(availability.dependencies.handoff).toEqual({
+      state: "action_required",
+      lastConfirmedAt: "2026-08-20T00:00:45.000Z",
+      providerCli: { phase: "needs_attention", reason: "credential_rejected" },
+    });
+  });
+
   it("falls back to the last validation when no runtime observation was recorded", () => {
     const availability = projectAgentAvailability(
       agent(),
@@ -317,5 +368,118 @@ describe("markAgentDetailUnconfirmed", () => {
       handoff: { state: "unconfirmed", lastConfirmedAt: null },
       channel: { state: "unconfirmed", provider: "feishu", botDisplayName: "Reviewer" },
     });
+  });
+});
+
+describe("projectAgentAvailability for a Cloud-bound Agent", () => {
+  const cloudNow = "2026-08-20T00:02:00.000Z";
+
+  function cloudAgent(): AgentSummary {
+    return agent({ runtimeProvider: "pi", computer: { computerId, displayName: "Cloud", platform: "linux" } });
+  }
+
+  /**
+   * The Server's own summary of a Cloud Computer: logically online, no heartbeat, and a
+   * provider-readiness collection fenced unavailable because no daemon ever reported. A Local
+   * reader that fell back to those rows would block the Agent forever.
+   */
+  function cloudComputer(): AccountComputerSummary {
+    return {
+      computerId,
+      kind: "cloud",
+      displayName: "Cloud",
+      platform: "linux",
+      connectionStatus: "online",
+      providerReadiness: [{ provider: "pi", status: "unavailable", observedAt: null }],
+      connectedAt: null,
+      lastSeenAt: null,
+      observedAt: cloudNow,
+      createdAt: "2026-08-19T00:00:00.000Z",
+      agentIds: [agentId],
+    };
+  }
+
+  function cloudAvailability(overrides: Partial<CloudAvailability> = {}): CloudAvailability {
+    return { enabled: true, available: true, reason: null, observedAt: cloudNow, ...overrides };
+  }
+
+  it("reports ready once the managed service and the messaging handoff confirm", () => {
+    const availability = projectAgentAvailability(cloudAgent(), cloudComputer(), binding(), handoffReady, true, true, {
+      kind: "ready",
+      value: cloudAvailability(),
+    });
+    expect(availability.state).toBe("ready");
+    expect(availability.reason).toBeNull();
+    expect(availability.dependencies.computer).toEqual({ state: "ready", lastConfirmedAt: null });
+    expect(availability.dependencies.runtime).toEqual({
+      provider: "pi",
+      status: "ready",
+      cloud: { available: true, reason: null },
+    });
+    expect(availability.dependencies.handoff.state).toBe("ready");
+  });
+
+  it("blocks on the managed service, with its reason, never on a machine observation", () => {
+    const availability = projectAgentAvailability(cloudAgent(), cloudComputer(), binding(), handoffReady, true, true, {
+      kind: "ready",
+      value: cloudAvailability({ available: false, reason: "model_unavailable" }),
+    });
+    expect(availability).toMatchObject({
+      state: "action_required",
+      reason: "runtime_unavailable",
+      lastConfirmedAt: cloudNow,
+    });
+    expect(availability.dependencies.runtime).toEqual({
+      provider: "pi",
+      status: "unavailable",
+      cloud: { available: false, reason: "model_unavailable" },
+    });
+  });
+
+  it("stays unconfirmed while the availability answer has not arrived, ignoring fenced probe rows", () => {
+    // Even a stale summary claiming a ready Pi row must not substitute for the availability answer.
+    const staleReady = cloudComputer();
+    staleReady.providerReadiness = [{ provider: "pi", status: "ready", observedAt: cloudNow }];
+    const availability = projectAgentAvailability(cloudAgent(), staleReady, binding(), handoffReady, true, true);
+    expect(availability).toMatchObject({ state: "unconfirmed", reason: "runtime_unconfirmed" });
+    expect(availability.dependencies.runtime).toEqual({ provider: "pi", status: null });
+  });
+
+  it("reads the messaging legs exactly like any other Agent once the service is available", () => {
+    const noConnection = projectAgentAvailability(
+      cloudAgent(),
+      cloudComputer(),
+      binding(),
+      handoffNotReady,
+      true,
+      true,
+      { kind: "ready", value: cloudAvailability() },
+    );
+    expect(noConnection).toMatchObject({ state: "action_required", reason: "handoff_unavailable" });
+
+    const unbound = projectAgentAvailability(cloudAgent(), cloudComputer(), undefined, undefined, true, true, {
+      kind: "ready",
+      value: cloudAvailability(),
+    });
+    expect(unbound).toMatchObject({ state: "not_connected", reason: "im_not_connected" });
+
+    const reauth = projectAgentAvailability(
+      cloudAgent(),
+      cloudComputer(),
+      binding("reauthorization_required"),
+      { bindingState: "reauthorization_required", handoffReady: false },
+      true,
+      true,
+      { kind: "ready", value: cloudAvailability() },
+    );
+    expect(reauth).toMatchObject({ state: "action_required", reason: "im_reauthorization_required" });
+  });
+
+  it("ignores a stray Cloud answer for a Local Agent", () => {
+    const availability = projectAgentAvailability(agent(), computer(), binding(), handoffReady, true, true, {
+      kind: "unconfirmed",
+    });
+    expect(availability.state).toBe("ready");
+    expect(availability.dependencies.runtime).toEqual({ provider: "codex", status: "ready" });
   });
 });

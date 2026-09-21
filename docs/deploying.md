@@ -3,24 +3,26 @@
 [简体中文](./zh-CN/deploying.md)
 
 OpenTag runs its Staging environment on [CapRover](https://caprover.com/). Every revision that lands on `main` and
-passes CI is deployed automatically from the container image the `Docker` workflow already published to GHCR. Nothing is
+passes CI and completes CLI/Runner publication is deployed automatically from the container image the `Docker` workflow already published to GHCR. Nothing is
 built on the CapRover host and no source tarball is uploaded; the deployment is a pointer change to an immutable image.
 
 | Environment | Trigger | Image | Workflow |
 | --- | --- | --- | --- |
-| Staging | Successful `CI` on `main`, or an intentional manual run | `ghcr.io/first-tree-ai/opentag:<commit-sha>` | `deploy-staging.yml` |
+| Staging | Successful CLI/Runner publication on `main`, or an intentional manual run | `ghcr.io/first-tree-ai/opentag:<commit-sha>` | `deploy-staging.yml` |
 
-Production is not deployed by this repository. See [releasing.md](./releasing.md) for the published production
-artifacts.
+The production Server is deployed through the existing operator procedure. The manual **Deploy Runner** workflow
+activates a published Runner after that compatible Server is ready; see [Cloud Runner releases](./cloud-runner-release.md).
 
 ## How a push reaches Staging
 
 1. A revision lands on `main`. `CI` and `Docker` start in parallel.
 2. `Docker` builds and pushes the immutable commit coordinate `ghcr.io/first-tree-ai/opentag:<commit-sha>`.
-3. `CI` succeeds, which starts `Deploy Staging`.
+3. `CI` succeeds, starting CLI/Runner publication; successful publication starts `Deploy Staging`.
 4. `Deploy Staging` proves the revision belongs to `main` history, waits for the commit coordinate to be published, and
    confirms the revision is still the tip of `main`.
 5. The CapRover App is pointed at that exact image tag and CapRover pulls and rolls it out.
+6. The verified Runner image/version is activated after the matching Server is ready, then the responding Server target
+   is verified. Existing ready Instances remain on their original compatible images until normal reclamation.
 
 The deployment always uses the per-commit tag, never `edge` or `latest`. A moving tag would leave CapRover with an
 unchanged image reference and nothing to roll forward to, and it would make the running revision unidentifiable.
@@ -114,6 +116,41 @@ The GHCR package is public, so CapRover pulls the image anonymously. If the pack
 registry credential in **CapRover → Cluster → Docker Registries** using a GitHub token with `read:packages`, otherwise
 every deployment fails at the pull step.
 
+## Object storage for Agent Skills
+
+Agent Skills are stored as one `tar.gz` object per Skill in S3-compatible object storage. Storage is
+optional: without the group below, Skill listing and the enable, disable, and remove operations still
+work, but every bundle upload or download fails with `SKILL_STORAGE_UNAVAILABLE` and the UI disables
+those actions instead of offering a dead button. The five material values must be configured together
+or not at all; the server refuses to start on a partially configured group.
+
+| Variable | Value |
+| --- | --- |
+| `OPENTAG_SKILL_STORAGE_ENDPOINT` | HTTP(S) origin of the S3-compatible service, without credentials, query, or fragment |
+| `OPENTAG_SKILL_STORAGE_REGION` | Region the client signs for, for example `us-east-1` |
+| `OPENTAG_SKILL_STORAGE_BUCKET` | Bucket that holds Skill archives; it must stay private |
+| `OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID` | Access key with read and write access to that bucket |
+| `OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY` | Secret for that access key; never logged |
+| `OPENTAG_SKILL_STORAGE_PREFIX` | Optional object-key prefix, normalized (empty slash segments dropped); defaults to `skills`; an empty or traversal segment is rejected at startup |
+| `OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE` | Optional; defaults to `true`, which MinIO and several other services require |
+| `OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS` | Optional collection interval for orphaned Skill objects; defaults to `3600`, and `0` disables collection |
+| `OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS` | Optional minimum object age before collection; defaults to `86400` with a floor of `300` |
+
+Bundles stream through the server under the caller's own credential — the Account session, a Computer
+machine token, or a Session CLI proof — so the bucket never needs presigned or public URLs and can be
+fully private. Object keys are derived server-side from the Account, Agent, Skill, and content hash;
+a caller never supplies a path. `docker-compose.yml` starts a local MinIO and a one-shot init
+container that creates the `opentag-skills` bucket, and the commented block in `.env.example` points
+the server at it.
+
+Replacing a Skill writes a new object and leaves the previous one in place; a background collector
+sweeps objects that are older than the grace period and are not referenced by any Skill row. The
+collector only ever considers keys directly under this deployment's own normalized prefix, so several
+deployments may share one bucket — including with nested prefixes such as `skills` and
+`skills/staging` — and none will collect another's objects. `skills/` and `/skills` mean the same
+prefix as `skills`: the configured value is normalized once and used identically for writes and for
+collection. The two `GC_` values are only meaningful when the storage group is configured.
+
 ## Official website session indicator
 
 When `OPENTAG_PUBLIC_URL` is `https://app.opentag.build`, the Server exposes
@@ -130,7 +167,8 @@ the ordinary login entry; the application still verifies the session after navig
 Run the **Deploy Staging** workflow from the Actions tab on `main`. Leaving the `revision` input empty deploys the
 current tip; supplying a commit SHA deploys that revision instead, which is how a rollback is performed. A manual run is
 treated as an explicit decision and is never skipped as stale, but the revision must still belong to `main` history and
-must already have a published image.
+must already have published Server and matching CLI/Runner images. For a Runner-only rollback, use **Deploy Runner**
+with the current compatible Server revision instead; see [Cloud Runner releases](./cloud-runner-release.md).
 
 Rolling back only reverts application code. It does not revert database migrations that a later revision applied, so a
 rollback across a destructive migration needs a deliberate database plan.

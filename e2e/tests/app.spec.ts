@@ -446,9 +446,14 @@ test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", as
 
   await page.goto(`/agents/${agentId}/skills`, { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: "Skills", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Upload skill:/ })).toHaveAttribute("aria-disabled", "true");
-  await page.getByRole("button", { name: "Preview" }).first().click();
-  await expect(page.getByRole("heading", { name: "Instructions preview" })).toBeVisible();
+  /*
+   * The E2E deployment has no object storage, so the list still renders and reports it: this Agent
+   * has no Skills, and uploading is disabled because the Server could not store one. The page works
+   * from the list response alone, which is what keeps it free of a failing request.
+   */
+  await expect(page.getByText(/No Skills yet/)).toBeVisible();
+  await expect(page.getByText(/Skill storage is not configured/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Upload skill" })).toBeDisabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
     await page.evaluate(() => document.documentElement.clientWidth),
   );
@@ -563,7 +568,8 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     },
     { file: "usage", route: `/agents/${agentId}/usage`, heading: "Usage" },
     { file: "skills", route: `/agents/${agentId}/skills`, heading: "Skills" },
-    { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "Integrations" },
+    // The navigation calls the page "Integrations"; its own heading is the GitHub repositories block.
+    { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "GitHub repositories" },
     { file: "account", route: "/account", heading: "Account" },
     {
       file: "internal-agent-setup",

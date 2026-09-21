@@ -237,12 +237,15 @@ function newerConfig(current: AgentAdminConfig | undefined, candidate: AgentAdmi
 }
 
 function runtimeProviderName(provider: AgentAdminConfig["runtimeProvider"]): string {
-  return provider === "codex" ? m.agent_settings_codex() : m.agent_settings_claude_code();
+  if (provider === "codex") return m.agent_settings_codex();
+  if (provider === "claude-code") return m.agent_settings_claude_code();
+  return m.agent_settings_pi();
 }
 
 function reasoningLabel(value: string | null): string {
   if (!value) return m.agent_settings_provider_default();
   const labels: Record<string, string> = {
+    off: m.agent_settings_reasoning_off(),
     minimal: m.agent_settings_reasoning_minimal(),
     low: m.agent_settings_reasoning_low(),
     medium: m.agent_settings_reasoning_medium(),

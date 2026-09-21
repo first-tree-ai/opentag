@@ -8,10 +8,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // Real child-process probes need headroom under parallel CI load.
 vi.setConfig({ testTimeout: 30_000 });
 
-import type { AgentRuntimeProbeResult, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
+import type {
+  AgentRuntimeProbeResult,
+  CreateAgentRuntimeRequest,
+  ResumeAgentRuntimeRequest,
+} from "../agent-runtime/types.js";
 import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
 import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
-import { resolvedClaudeCodeFactory, resolvedCodexFactory } from "../runtime/client-runtime-composition.js";
+import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
+import {
+  resolvedClaudeCodeFactory,
+  resolvedCodexFactory,
+  resolvedPiFactory,
+} from "../runtime/client-runtime-composition.js";
 
 const temporaryRoots: string[] = [];
 
@@ -516,6 +525,234 @@ describe("resolved provider factories candidate fallback", () => {
     await expect(factory.probe({})).rejects.toThrow("well-known failed");
   });
 
+  it("rejects Pi create and resume before successful readiness without invoking a candidate runtime", async () => {
+    const root = await temporaryRoot();
+    const caller = join(root, "caller");
+    await executable(caller, "pi");
+    const probed: string[] = [];
+    const created: unknown[] = [];
+    const resumed: unknown[] = [];
+    const factory = resolvedPiFactory({
+      command: "pi",
+      environment: {},
+      piHome: root,
+      sessionDirectory: root,
+      sourceEnvironment: { PATH: caller },
+      discovery: {
+        candidateAllowed: () => true,
+        home: root,
+        includeLoginShell: false,
+        platform: "linux",
+        wellKnownDirs: () => [],
+      },
+      createCandidateFactory: (command) => {
+        probed.push(command);
+        return {
+          manifest: new PiAgentRuntimeFactory().manifest,
+          probe: async () => ({ ready: true, version: "unused", issues: [] }),
+          create: async (request: CreateAgentRuntimeRequest) => {
+            created.push(request);
+            throw new Error("unused create");
+          },
+          resume: async (request: ResumeAgentRuntimeRequest) => {
+            resumed.push(request);
+            throw new Error("unused resume");
+          },
+        } as unknown as PiAgentRuntimeFactory;
+      },
+    });
+    const request: CreateAgentRuntimeRequest = {
+      eventSink: async () => undefined,
+      systemPrompt: "OpenTag managed system prompt",
+      workspace: { cwd: root },
+      policy: {
+        approvals: "never",
+        fileSystem: "unrestricted",
+        network: "enabled",
+        tools: { mode: "provider-default" },
+      },
+    };
+    expect(() => factory.create(request)).toThrow("Pi provider readiness has not been established");
+    expect(() =>
+      factory.resume({
+        ...request,
+        binding: { providerId: "pi", schemaVersion: 1, payload: { session: "unused" } },
+      }),
+    ).toThrow("Pi provider readiness has not been established");
+    expect(probed).toEqual([]);
+    expect(created).toEqual([]);
+    expect(resumed).toEqual([]);
+  });
+
+  it("pins the ready Pi candidate after same-provider fallback and forwards create and resume", async () => {
+    const root = await temporaryRoot();
+    const caller = join(root, "caller");
+    const wellKnown = join(root, "well-known");
+    const stale = await realpath(await executable(caller, "pi"));
+    const working = await realpath(await executable(wellKnown, "pi"));
+    const probed: string[] = [];
+    const created: CreateAgentRuntimeRequest[] = [];
+    const resumed: ResumeAgentRuntimeRequest[] = [];
+    const createdRuntime = { kind: "created-pi" };
+    const resumedRuntime = { kind: "resumed-pi" };
+    const factory = resolvedPiFactory({
+      command: "pi",
+      environment: {},
+      piHome: root,
+      sessionDirectory: root,
+      sourceEnvironment: { PATH: caller },
+      discovery: {
+        candidateAllowed: () => true,
+        home: root,
+        includeLoginShell: false,
+        platform: "linux",
+        wellKnownDirs: () => [wellKnown],
+      },
+      createCandidateFactory: (command) => {
+        probed.push(command);
+        if (command === stale) {
+          return new PiAgentRuntimeFactory({
+            probeRunner: async () => ({ credential: true, rpc: false, version: "old" }),
+          });
+        }
+        return {
+          manifest: new PiAgentRuntimeFactory().manifest,
+          probe: async () => ({ ready: true, version: "new", issues: [] }),
+          create: async (request: CreateAgentRuntimeRequest) => {
+            created.push(request);
+            return createdRuntime as never;
+          },
+          resume: async (request: ResumeAgentRuntimeRequest) => {
+            resumed.push(request);
+            return resumedRuntime as never;
+          },
+        } as unknown as PiAgentRuntimeFactory;
+      },
+    });
+    await expect(factory.probe({})).resolves.toMatchObject({ ready: true, version: "new" });
+    expect(probed).toEqual([stale, working]);
+    const createRequest: CreateAgentRuntimeRequest = {
+      eventSink: async () => undefined,
+      systemPrompt: "create-pi",
+      workspace: { cwd: root },
+      policy: {
+        approvals: "never",
+        fileSystem: "unrestricted",
+        network: "enabled",
+        tools: { mode: "provider-default" },
+      },
+    };
+    const resumeRequest: ResumeAgentRuntimeRequest = {
+      ...createRequest,
+      systemPrompt: "resume-pi",
+      binding: { providerId: "pi", schemaVersion: 1, payload: { session: "fixture" } },
+    };
+    await expect(factory.create(createRequest)).resolves.toBe(createdRuntime);
+    await expect(factory.resume(resumeRequest)).resolves.toBe(resumedRuntime);
+    expect(created).toEqual([createRequest]);
+    expect(resumed).toEqual([resumeRequest]);
+  });
+
+  it("does not advance Pi on credential_missing", async () => {
+    const root = await temporaryRoot();
+    const caller = join(root, "caller");
+    const wellKnown = join(root, "well-known");
+    const first = await realpath(await executable(caller, "pi"));
+    await executable(wellKnown, "pi");
+    const probed: string[] = [];
+    const factory = resolvedPiFactory({
+      command: "pi",
+      environment: {},
+      piHome: root,
+      sessionDirectory: root,
+      sourceEnvironment: { PATH: caller },
+      discovery: {
+        candidateAllowed: () => true,
+        home: root,
+        includeLoginShell: false,
+        platform: "linux",
+        wellKnownDirs: () => [wellKnown],
+      },
+      createCandidateFactory: (command) => {
+        probed.push(command);
+        return new PiAgentRuntimeFactory({
+          probeRunner: async () => ({ credential: false, rpc: true, version: "new" }),
+        });
+      },
+    });
+    const result = await factory.probe({});
+    expect(issues(result)).toContain("credential_missing");
+    expect(probed).toEqual([first]);
+    expect(() => factory.create({} as never)).toThrow("Pi provider readiness has not been established");
+    expect(() => factory.resume({} as never)).toThrow("Pi provider readiness has not been established");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "forwards explicit packaged skill paths onto the Pi RPC spawn prefix",
+    async () => {
+      const root = await temporaryRoot();
+      const logPath = join(root, "pi-args.jsonl");
+      const command = await writeRecordingPiCommand(root, logPath);
+      const skillPath = join(root, "packaged-skills");
+      const factory = resolvedPiFactory({
+        command,
+        environment: {},
+        piHome: root,
+        sessionDirectory: root,
+        skillPaths: [skillPath],
+        sourceEnvironment: { PATH: root },
+        discovery: {
+          candidateAllowed: () => true,
+          home: root,
+          includeLoginShell: false,
+          platform: "linux",
+          wellKnownDirs: () => [],
+        },
+      });
+      await expect(factory.probe({})).resolves.toMatchObject({ ready: true, version: "0.84.2" });
+      const runtime = await factory.create(piCreateRequest(root));
+      // The recording executable exits after capturing argv; it never runs a model.
+      await expect(
+        runtime.prompt({ runId: "packaged-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      await runtime.close();
+      expect(rpcLaunchArgs(await readJsonlArgs(logPath))?.slice(0, 2)).toEqual(["--skill", skillPath]);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "omits --skill from Pi RPC spawn when packaged skill paths are absent",
+    async () => {
+      const root = await temporaryRoot();
+      const logPath = join(root, "pi-args.jsonl");
+      const command = await writeRecordingPiCommand(root, logPath);
+      const factory = resolvedPiFactory({
+        command,
+        environment: {},
+        piHome: root,
+        sessionDirectory: root,
+        sourceEnvironment: { PATH: root },
+        discovery: {
+          candidateAllowed: () => true,
+          home: root,
+          includeLoginShell: false,
+          platform: "linux",
+          wellKnownDirs: () => [],
+        },
+      });
+      await expect(factory.probe({})).resolves.toMatchObject({ ready: true, version: "0.84.2" });
+      const runtime = await factory.create(piCreateRequest(root));
+      // The recording executable exits after capturing argv; it never runs a model.
+      await expect(
+        runtime.prompt({ runId: "no-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      await runtime.close();
+      const rpcArgs = rpcLaunchArgs(await readJsonlArgs(logPath));
+      expect(rpcArgs).toEqual(expect.arrayContaining(["--mode", "rpc"]));
+      expect(rpcArgs?.includes("--skill")).toBe(false);
+    },
+  );
+
   it("does not prepend a search bin for an explicit command", async () => {
     const root = await temporaryRoot();
     const empty = join(root, "empty");
@@ -695,3 +932,69 @@ describe("resolved provider factories candidate fallback", () => {
     },
   );
 });
+
+const PI_HELP_TOKENS =
+  "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name";
+const PI_LIST_MODELS_TABLE = [
+  "provider  model            context  max-out  thinking  images",
+  "fixture   configured-model  128K     8K       no        no",
+].join("\n");
+
+async function writeRecordingPiCommand(root: string, logPath: string): Promise<string> {
+  const command = join(root, "pi");
+  await writeFile(
+    command,
+    `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + ${JSON.stringify("\n")});
+if (args[0] === "--version") {
+  console.log("0.84.2");
+  process.exit(0);
+}
+if (args.includes("--help")) {
+  console.log(${JSON.stringify(PI_HELP_TOKENS)});
+  process.exit(0);
+}
+if (args.includes("--list-models")) {
+  console.log(${JSON.stringify(PI_LIST_MODELS_TABLE)});
+  process.exit(0);
+}
+process.exit(0);
+`,
+    "utf8",
+  );
+  await chmod(command, 0o755);
+  return command;
+}
+
+async function readJsonlArgs(logPath: string): Promise<string[][]> {
+  try {
+    return (await readFile(logPath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+function rpcLaunchArgs(launches: readonly (readonly string[])[]): string[] | undefined {
+  const match = launches.find((args) => args.includes("--mode") && args.includes("rpc"));
+  return match ? [...match] : undefined;
+}
+
+function piCreateRequest(cwd: string): CreateAgentRuntimeRequest {
+  return {
+    eventSink: async () => undefined,
+    systemPrompt: "OpenTag managed system prompt",
+    workspace: { cwd },
+    policy: {
+      approvals: "never",
+      fileSystem: "unrestricted",
+      network: "enabled",
+      tools: { mode: "provider-default" },
+    },
+  };
+}

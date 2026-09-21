@@ -18,6 +18,7 @@ const agent = {
   status: "active",
   revision: 1,
   runtimeConfig: {
+    contextTreeRepository: null,
     revision: 1,
     model: null,
     reasoningEffort: null,
@@ -498,6 +499,7 @@ describe("OpenTagApi Agent methods", () => {
     await api.listAccountComputers("access-token");
     await api.getImBindingDiagnostics("access-token", diagnostics.imBindingId);
     expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get(PROVIDER_READINESS_V1_HEADER)).toBe("1");
+    expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get("x-opentag-provider-readiness-v2")).toBe("2");
     expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get(PROVIDER_CLI_REASON_V2_HEADER)).toBe("2");
     expect(new Headers(fetchImpl.mock.calls[1]?.[1]?.headers).get(PROVIDER_CLI_REASON_V2_HEADER)).toBe("2");
   });

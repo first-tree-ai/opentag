@@ -2,11 +2,13 @@ import type { ChannelName } from "@opentag/shared";
 import { and, count, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
+  agentMcpServers,
   agents,
   computerConnectCodes,
   computerCredentials,
   computers,
   imBindings,
+  mcpServerAuthorizations,
   users,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
@@ -126,6 +128,32 @@ export class OnboardingResetService {
       if (agent.status === "active") await this.#agents.suspendById(accountId, agent.id);
       await this.#agents.deleteById(accountId, agent.id);
     }
+    await this.#deleteOwnedMcpRows(accountId);
+  }
+
+  /**
+   * Remove every MCP mount and authorization belonging to this Account's Agents.
+   *
+   * The tables declare `on delete cascade` on `agents`, but an Agent's deletion is a status change,
+   * so that cascade never fires on this path — it is dead code the schema keeps only as a safety net
+   * for a hypothetical hard delete. Without this explicit pass the rows would survive the reset
+   * forever, and a mount left pointing at a `status='deleted'` Agent would make its Server
+   * definition undeletable, since the delete guard counts mounts.
+   *
+   * Server definitions are deliberately kept, matching how the reset already keeps GitHub
+   * connections: they hold no credential and are the Account's own configuration.
+   */
+  async #deleteOwnedMcpRows(accountId: string): Promise<void> {
+    const owned = await this.#database
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.createdByUserId, accountId));
+    const agentIds = owned.map((agent) => agent.id);
+    if (agentIds.length === 0) return;
+    await this.#database.transaction(async (transaction) => {
+      await transaction.delete(mcpServerAuthorizations).where(inArray(mcpServerAuthorizations.agentId, agentIds));
+      await transaction.delete(agentMcpServers).where(inArray(agentMcpServers.agentId, agentIds));
+    });
   }
 
   async #revokeComputerAccess(accountId: string): Promise<readonly string[]> {
@@ -211,7 +239,19 @@ export class OnboardingResetService {
           ),
         ),
     );
-    if (remainingAgents + activeBindings + activeCredentials + usableCodes > 0) {
+    /*
+     * MCP mounts must be gone no matter what the Agent's status is. A mount survives a soft delete
+     * by design, so counting only non-deleted Agents here would let a residual mount on a deleted
+     * Agent pass verification and then block its Server definition from ever being deleted.
+     */
+    const mcpMounts = await this.#count(
+      executor
+        .select({ value: count() })
+        .from(agentMcpServers)
+        .innerJoin(agents, eq(agents.id, agentMcpServers.agentId))
+        .where(eq(agents.createdByUserId, accountId)),
+    );
+    if (remainingAgents + activeBindings + activeCredentials + usableCodes + mcpMounts > 0) {
       throw new OnboardingResetError(
         "ONBOARDING_RESET_UNVERIFIED",
         409,

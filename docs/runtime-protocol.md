@@ -43,9 +43,40 @@ For each capability, selection is `min(local.max, remote.max)` when that value i
 
 Roll out Server v2 before Client v2. A v2 Client never falls back after a timeout, transport failure, TLS failure, malformed response, unmatched error, or incompatible welcome. Once an old Server explicitly selects the fallback, that Client process stays on v1 until restart; this avoids a rejection loop while allowing a later restart to probe v2 again.
 
+## Provider-readiness vocabulary
+
+Provider-readiness versioning is independent of transport protocol v1/v2. Its v1
+vocabulary is frozen to `codex` and `claude-code`; v2 adds `pi`. Both vocabularies
+are explicit lists, so adding a product provider cannot silently expand a wire version.
+
+A new Client sends both `x-opentag-provider-readiness: 1` and
+`x-opentag-provider-readiness-v2: 2`. A new Server selects v2 only after that explicit
+opt-in and acknowledges `{version: 2, providers: [...]}` in its welcome. An old
+Server sees its original v1 header and returns only its original vocabulary.
+The Client reports only the providers acknowledged by that connection, and the
+Server rejects unnegotiated observations on registration and heartbeat.
+
+| Client offer | New Server response |
+| --- | --- |
+| No recognized readiness header | Readiness omitted |
+| v1 only | v1, Codex and Claude Code |
+| v1 plus v2, or v2 only | v2, Codex, Claude Code, and Pi |
+| Unsupported v2 value plus valid v1 | v1, Codex and Claude Code |
+
+The same headers control the Account Computer-list HTTP projection. Legacy callers
+retain the v1 provider list, explicit v2 callers may receive Pi, and callers without
+a recognized opt-in receive no readiness extension. The stored/live observations
+remain complete; HTTP compatibility filtering does not change provider admission.
+
+The Computer projection also respects the active daemon's negotiated provider set.
+A provider outside that set is `unavailable` with no probe timestamp; a negotiated
+provider awaiting a fresh observation remains `checking`. Thus a new Web/CLI caller
+can see that Pi is unavailable on a v1-only daemon instead of waiting indefinitely.
+Replacing the connection replaces this support boundary as well.
+
 ## Parsing and fencing
 
-- The base v1 handshake and control schemas remain strict and byte-compatible. A Client offers the optional Provider-readiness v1 extension in the WebSocket header; only an acknowledging Server may add its welcome field and accept readiness on register or heartbeat frames.
+- The base v1 handshake and control schemas remain strict and byte-compatible. A Client offers the optional, separately versioned Provider-readiness extension through its WebSocket headers; only an acknowledging Server may add its welcome field and accept readiness on register or heartbeat frames.
 - v2 authentication, registration, required capabilities, and fence fields are strict and fail closed.
 - v2 welcome fields and capability offers are additive. Unknown optional fields and offers do not activate behavior.
 - Unknown required capabilities, unknown control frames, malformed known frames, binary frames, oversized frames, and unknown business frames fail closed.

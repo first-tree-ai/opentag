@@ -10,6 +10,7 @@
  * being exercised here or being named as an exemption.
  */
 
+import { agentSkillBundlePath } from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
 import { BrowserApi } from "./api.js";
 
@@ -33,6 +34,13 @@ const INTERNAL = new Set([
  * none to send. The Server fences those two on the request origin instead.
  */
 const NO_TOKEN_BY_DESIGN = new Set(["signUpWithPassword", "signInWithPassword"]);
+
+/*
+ * URL helpers rather than requests: `agentSkillBundleUrl` builds the same-origin download link from
+ * the shared path template, so there is no request that could carry a CSRF header. It is exempt from
+ * the "made a request" assertion below and asserted on its returned value instead.
+ */
+const NO_REQUEST_BY_DESIGN = new Set(["agentSkillBundleUrl"]);
 
 const ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
@@ -64,12 +72,19 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   imBindingConfig: [ID],
   unbindAgentMessaging: [ID, { provider: "slack", bindingId: ID }],
   createFeishuSetupAttempt: [ID, "create", "lark"],
+  currentFeishuSetupAttempt: [ID],
   feishuSetupAttempt: [ID],
   cancelFeishuSetupAttempt: [ID],
+  checkFeishuSetupAttempt: [ID],
   startSlackOAuth: [ID, { intent: "create" }],
   imBindingDiagnostics: [ID],
   disableImBinding: [ID],
   computers: [],
+  cloudAvailability: [],
+  cloudModelOptions: [],
+  ensureCloudComputer: [],
+  agentCloudOverview: [ID],
+  stopCloudSandbox: [ID, { discardUnsavedChanges: true, environmentGeneration: 1 }],
   internalNavigationVisibility: [],
   updateInternalNavigationVisibility: [{ tasks: true }],
   updateTaskTitle: [ID, { title: "A task" }],
@@ -77,7 +92,36 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   computerConnectCodeStatus: [ID],
   rebindAgentComputer: [ID, ID],
   testAgentRuntime: [ID, { provider: "codex" }],
+  contextTreeOperation: [
+    ID,
+    { action: "disconnect", operationId: ID, expectedRevision: 1, expectedRuntimeConfigRevision: 1, repository: null },
+  ],
   internalToolsOffered: [],
+  githubIntegration: [],
+  startGitHubAuthorization: [{ intent: "create", returnSurface: "account-integrations", agentId: null }],
+  githubRepositories: [],
+  updateGitHubBindings: [{ expectedAuthorizationVersion: "1", bindings: [] }],
+  disconnectGitHub: [],
+  mcpServers: [],
+  mcpServer: [ID],
+  createMcpServer: [{ name: "linear", url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" }],
+  updateMcpServer: [ID, { expectedRevision: 1, description: "Issue tracking" }],
+  removeMcpServer: [ID],
+  agentMcpServers: [ID],
+  availableMcpServers: [ID],
+  attachMcpServer: [ID, { mcpServerId: ID, enabled: true }],
+  updateAgentMcpServer: [ID, ID, { enabled: false }],
+  detachMcpServer: [ID, ID],
+  setMcpAuthorization: [ID, ID, { kind: "bearer", bearerKey: "k" }],
+  revokeMcpAuthorization: [ID, ID],
+  startMcpOAuth: [ID, ID, {}],
+  probeMcpServer: [ID, ID],
+  agentSkills: [ID],
+  agentSkill: [ID, ID],
+  uploadAgentSkill: [ID, { file: new Blob(["bundle"]), sha256: "a".repeat(64), format: "zip", replace: false }],
+  updateAgentSkill: [ID, ID, { enabled: false }],
+  removeAgentSkill: [ID, ID],
+  agentSkillBundleUrl: [ID, ID],
   resetAccountSetup: ["reboard"],
   issueComputerConnectCode: [],
   health: ["/healthz"],
@@ -90,6 +134,13 @@ function headerValue(init: RequestInit | undefined): string | undefined {
   return new Headers(init?.headers).get("x-opentag-csrf") ?? undefined;
 }
 
+/** jsdom exposes no Cookie Store API here; the platform setter writes the probe token. */
+function setDocumentCookie(value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(Document.prototype, "cookie")?.set;
+  if (!setter) throw new Error("The test DOM does not expose a cookie setter");
+  setter.call(document, value);
+}
+
 describe("BrowserApi mutations", () => {
   it("exercises every method the class exposes", () => {
     const exposed = Object.getOwnPropertyNames(BrowserApi.prototype).filter((name) => !INTERNAL.has(name));
@@ -97,10 +148,11 @@ describe("BrowserApi mutations", () => {
   });
 
   it("sends the double-submit token on every non-safe request", async () => {
-    document.cookie = "opentag_csrf=probe-token";
+    setDocumentCookie("opentag_csrf=probe-token");
     const missing: string[] = [];
 
-    for (const [name, args] of Object.entries(INVOCATIONS)) {
+    const requests = Object.entries(INVOCATIONS).filter(([name]) => !NO_REQUEST_BY_DESIGN.has(name));
+    for (const [name, args] of requests) {
       const calls: [string, RequestInit | undefined][] = [];
       const fetchImpl = vi.fn(async (input: unknown, init?: RequestInit) => {
         calls.push([String(input), init]);
@@ -133,5 +185,11 @@ describe("BrowserApi mutations", () => {
     }
 
     expect(missing).toEqual([]);
+  });
+
+  it("builds the skill bundle download URL from the shared path template", () => {
+    const api = new BrowserApi();
+
+    expect(api.agentSkillBundleUrl(ID, ID)).toBe(agentSkillBundlePath(ID, ID));
   });
 });

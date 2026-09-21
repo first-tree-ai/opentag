@@ -153,6 +153,75 @@ describe("Runtime durable work persistence on PostgreSQL", () => {
     });
   });
 
+  it("retains active custody past the retention window while aged terminal rows prune", async () => {
+    let now = 10_000;
+    const store = new PostgresRuntimeDurableWorkStore(database.database, {
+      now: () => now,
+      retentionMs: 100,
+      maxTerminalRecords: 1,
+    });
+    // Accepted custody far older than the retention window must survive: deleting it would strand
+    // a still-running Turn's settlement (no record, no ack, a journal entry replaying forever).
+    const ancient = { ...sessionRecord("ancient-active"), updatedAt: 0 };
+    const oldTerminal = { ...sessionRecord("old-terminal"), status: "succeeded" as const, updatedAt: 0 };
+    await store.write(computerId, ancient);
+    await store.write(computerId, oldTerminal);
+
+    now = 10_000;
+    await store.write(computerId, { ...sessionRecord("trigger"), updatedAt: 9_990 });
+    await expect(store.list(computerId, "session-message")).resolves.toMatchObject({
+      items: [{ key: expect.stringContaining("ancient-active") }, { key: expect.stringContaining("trigger") }],
+    });
+    // The terminal count cap still bounds fresh terminal rows on the real engine.
+    await store.write(computerId, { ...sessionRecord("terminal-new"), status: "failed", updatedAt: 10_001 });
+    await store.write(computerId, { ...sessionRecord("terminal-newer"), status: "failed", updatedAt: 10_002 });
+    await expect(store.list(computerId, "session-message")).resolves.toMatchObject({
+      items: [
+        { key: expect.stringContaining("ancient-active") },
+        { key: expect.stringContaining("trigger") },
+        { key: expect.stringContaining("terminal-newer") },
+      ],
+    });
+  });
+
+  it("compare-and-set replacement loses deterministically to a concurrent terminal settlement", async () => {
+    const first = new PostgresRuntimeDurableWorkStore(database.database, { now: () => 1_000 });
+    const original = { ...sessionRecord("cas-race"), updatedAt: 1_000 };
+    await first.write(computerId, original);
+    const expected = await first.read(computerId, "session-message", original.key);
+    if (!expected) throw new Error("missing record");
+
+    // A second writer (another in-flight Server path) terminalizes the record first — on a real
+    // second connection — and only then does the replacement attempt its compare-and-set.
+    const secondClient = createDatabaseClient(testDatabase.databaseUrl);
+    try {
+      const second = new PostgresRuntimeDurableWorkStore(secondClient.database, { now: () => 1_001 });
+      await second.write(computerId, { ...expected, status: "failed", updatedAt: 1_001 });
+      const replaced = await first.replaceSessionMessageRecord(computerId, expected, {
+        ...sessionRecord("cas-race"),
+        key: original.key,
+        updatedAt: 1_002,
+      });
+      expect(replaced).toBeUndefined();
+      const stored = await first.read(computerId, "session-message", original.key);
+      expect(stored).toMatchObject({ status: "failed", updatedAt: 1_001 });
+      expect(stored?.payload).toEqual(expected.payload);
+
+      // The exact current record compares equal and is replaced atomically.
+      if (!stored) throw new Error("missing record");
+      const written = await first.replaceSessionMessageRecord(computerId, stored, {
+        ...sessionRecord("cas-race"),
+        key: original.key,
+        status: "accepted" as const,
+        updatedAt: 1_002,
+      });
+      expect(written).toMatchObject({ status: "accepted", updatedAt: 1_002 });
+      await expect(first.read(computerId, "session-message", original.key)).resolves.toEqual(written);
+    } finally {
+      await secondClient.sql.end();
+    }
+  });
+
   it("pages a dataset larger than 1024 records to completion", async () => {
     const records = Array.from({ length: 1_025 }, (_, index) => sessionRecord(`page-${index}`));
     await database.database.insert(runtimeDurableWork).values(
@@ -192,6 +261,7 @@ function sessionRecord(keySuffix: string = randomUUID()): RuntimeDurableWorkReco
     placementGeneration: 1,
     content: { kind: "text", text: "hello" },
     runtime: {
+      contextTreeRepository: null,
       revision: { agent: { sequence: 1, id: "agent" }, session: { sequence: 1, id: "session" } },
       agentId,
       provider: "codex",

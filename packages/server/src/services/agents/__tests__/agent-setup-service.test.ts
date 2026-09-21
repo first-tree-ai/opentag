@@ -25,11 +25,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type WebSocket from "ws";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
-import { computers, imBindings, slackInstallations, users } from "../../../db/schema/index.js";
+import { computers, imBindings, sandboxes, slackInstallations, users } from "../../../db/schema/index.js";
 import { ConnectionRegistry } from "../../../runtime/connection-registry.js";
 import type { ProviderReadinessSource } from "../../computers/index.js";
 import { ApplicationCipher } from "../../crypto.js";
-import type { FeishuRegistration, FeishuRegistrationGateway } from "../../im-bindings/feishu/index.js";
+import type {
+  FeishuBindingActivation,
+  FeishuCandidateCheckOutcome,
+  FeishuRegistration,
+  FeishuRegistrationGateway,
+} from "../../im-bindings/feishu/index.js";
 import { FeishuSetupService } from "../../im-bindings/feishu/index.js";
 import { ImBindingService } from "../../im-bindings/index.js";
 import { AgentSetupService, type AgentSetupServiceOptions } from "../agent-setup-service.js";
@@ -115,8 +120,10 @@ interface HarnessOptions {
   imCliReadiness?: ImCliReadinessStatus;
   credentialExecutionReadiness?: { status: IntegrationCredentialExecutionStatus };
   registrations?: FeishuRegistrationGateway;
+  activation?: FeishuBindingActivation;
   slackOAuthAvailable?: boolean;
   prepareComputer?: NonNullable<AgentSetupServiceOptions["prepareComputer"]>;
+  cloudAvailability?: AgentSetupServiceOptions["cloudAvailability"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -137,7 +144,7 @@ function harness(options: HarnessOptions = {}) {
         throw new Error("The scenario did not expect a Feishu registration");
       },
     },
-    activation: { activateAtomicAttempt: vi.fn() },
+    activation: options.activation ?? { activateAtomicAttempt: vi.fn() },
   });
   const agentService = new AgentService(unitDatabase.database, { now: () => NOW });
   const setupReadiness: ProviderReadinessSource | undefined =
@@ -154,6 +161,7 @@ function harness(options: HarnessOptions = {}) {
     prepareComputer: options.prepareComputer,
     providerReadiness: options.providerReadiness ?? setupReadiness,
     slackOAuthAvailable: options.slackOAuthAvailable,
+    cloudAvailability: options.cloudAvailability,
   });
   return { agentService, feishuSetup, imBindingService, service };
 }
@@ -183,6 +191,60 @@ async function boundAgent(
     computerId: computer.id,
   });
   return { agentId: created.id, computerId: computer.id };
+}
+
+/** The Account's logical Cloud Computer row: no installation, no heartbeat, no daemon. */
+async function createCloudComputer(ownerAccountId: string) {
+  const [computer] = await unitDatabase.database
+    .insert(computers)
+    .values({
+      ownerAccountId,
+      kind: "cloud" as const,
+      currentInstallationId: crypto.randomUUID(),
+      displayName: "Cloud",
+      platform: "linux" as const,
+      arch: "x64",
+      clientVersion: "1.2.3",
+    })
+    .returning();
+  if (!computer) throw new Error("Cloud Computer fixture was not created");
+  return computer;
+}
+
+/** A Pi Agent bound to the Account's Cloud Computer, created without any Local machinery. */
+async function cloudBoundAgent(
+  userId: string,
+  options: { name?: string } = {},
+): Promise<{ agentId: string; computerId: string }> {
+  const computer = await createCloudComputer(userId);
+  const created = await new AgentService(unitDatabase.database, {
+    now: () => NOW,
+    cloudIdentitiesEnabled: true,
+  }).createForAccount(userId, {
+    name: options.name ?? "cloud-reviewer",
+    displayName: "Cloud Reviewer",
+    runtimeProvider: "pi",
+    computerId: computer.id,
+  });
+  return { agentId: created.id, computerId: computer.id };
+}
+
+const CLOUD_AVAILABLE: NonNullable<AgentSetupServiceOptions["cloudAvailability"]> = () => ({
+  enabled: true,
+  available: true,
+  reason: null,
+  observedAt: NOW_ISO,
+});
+
+function cloudUnavailable(
+  reason: "disabled" | "execution_unavailable" | "model_unavailable",
+): NonNullable<AgentSetupServiceOptions["cloudAvailability"]> {
+  return () => ({
+    enabled: reason !== "disabled",
+    available: false,
+    reason,
+    observedAt: NOW_ISO,
+  });
 }
 
 async function activateSlackBinding(
@@ -645,10 +707,93 @@ describe("Agent setup projection Messaging states", () => {
     });
   });
 
+  it.each([false, true])("preserves a healthy route (%s) while durable reauthorization waits", async (healthy) => {
+    const bootstrap = await account("durable-setup@example.com");
+    let resolveResult: (result: { appId: string; appSecret: string; teamBrand: "feishu" }) => void = () => undefined;
+    const result = new Promise<{ appId: string; appSecret: string; teamBrand: "feishu" }>((resolve) => {
+      resolveResult = resolve;
+    });
+    const activation: FeishuBindingActivation = {
+      checkCandidate: vi.fn(
+        async (): Promise<FeishuCandidateCheckOutcome> => ({
+          status: "waiting",
+          reason: "permissions_pending",
+          missingScopes: ["im:message"],
+        }),
+      ),
+      activateAtomicAttempt: vi.fn(),
+    };
+    const { feishuSetup, imBindingService, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReadiness: healthy ? "ready" : "checking",
+      credentialExecutionReadiness: { status: healthy ? "ready" : "unconfirmed" },
+      registrations: {
+        start: vi.fn(
+          (): FeishuRegistration => ({
+            qrReady: Promise.resolve({
+              url: "https://accounts.feishu.cn/device",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result,
+            abort: vi.fn(),
+          }),
+        ),
+      },
+      activation,
+    });
+    const { agentId } = await messagingReadyAgent(bootstrap.userId);
+    const { imBindingId } = await activateFeishuBinding(imBindingService, agentId);
+    if (healthy) await observeFeishuConnection(imBindingId);
+    const config = await imBindingService.getConfigForAgent(bootstrap.userId, agentId);
+    if (!config) throw new Error("Feishu binding fixture was not activated");
+    const attempt = await feishuSetup.createOrReuse(bootstrap.userId, agentId, "reauthorize", {
+      kind: "bound",
+      provider: "feishu",
+      bindingId: imBindingId,
+      credentialGeneration: config.credentialGeneration,
+    });
+    resolveResult({ appId: "cli_app", appSecret: "candidate-secret", teamBrand: "feishu" });
+
+    await vi.waitFor(async () => {
+      expect((await feishuSetup.get(bootstrap.userId, attempt.id)).activation?.reason).toBe("permissions_pending");
+    });
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    if (healthy) {
+      expect(snapshot.messaging).toEqual({
+        kind: "ready",
+        provider: "feishu",
+        bindingId: imBindingId,
+        credentialGeneration: config.credentialGeneration,
+      });
+    } else {
+      expect(snapshot.actions).toContainEqual({ kind: "refresh" });
+      expect(snapshot.messaging).toEqual({
+        kind: "authorizing",
+        provider: "feishu",
+        attemptId: attempt.id,
+        qrUrl: null,
+        expiresAt: expect.any(String),
+        activation: {
+          appId: "cli_app",
+          reason: "permissions_pending",
+          missingScopes: ["im:message"],
+          lastCheckedAt: expect.any(String),
+          nextCheckAt: expect.any(String),
+        },
+      });
+    }
+    // The existing working connection keeps its real ready projection while the new authorization waits.
+    const summary = await imBindingService.getForAgent(bootstrap.userId, agentId);
+    expect(summary?.bindingState).toBe("active");
+    expect(JSON.stringify(snapshot)).not.toContain("candidate-secret");
+  });
+
   it("fails an attempt whose QR expired instead of projecting it as authorizing", async () => {
     const bootstrap = await account();
     const { feishuSetup, service } = harness({
       runtimeReadiness: runtimeReadiness("ready"),
+      imCliReports: { feishu: "ready", slack: "ready" },
       registrations: registrationGateway(new Date(Date.now() - 5_000)),
     });
     const { agentId } = await messagingReadyAgent(bootstrap.userId);
@@ -671,8 +816,11 @@ describe("Agent setup projection Messaging states", () => {
         errorCode: "FEISHU_SETUP_EXPIRED",
       },
       blockers: [{ code: "messaging-not-ready", provider: "feishu", bindingId: binding.id, state: "blocked" }],
-      // A terminal attempt keeps its binding: the Account unbinds it before any Provider can start again.
-      actions: [{ kind: "unbind-messaging", provider: "feishu", bindingId: binding.id }],
+      // A terminal initial attempt retains its slot and offers same-Provider retry.
+      actions: [
+        { kind: "start-messaging", provider: "feishu" },
+        { kind: "unbind-messaging", provider: "feishu", bindingId: binding.id },
+      ],
     });
   });
 
@@ -1206,3 +1354,204 @@ async function registerRuntimeConnection(
   );
   return { instanceId };
 }
+
+describe("Agent setup projection for a Cloud-bound Agent", () => {
+  it("projects the managed Cloud setup without any Local Computer, daemon, or CLI report", async () => {
+    const bootstrap = await account();
+    // No providerReadiness source at all: nothing Local exists to observe, and the Cloud
+    // projection must not consult one.
+    const { service } = harness({ cloudAvailability: CLOUD_AVAILABLE });
+    const { agentId, computerId } = await cloudBoundAgent(bootstrap.userId);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-messaging",
+      computer: { kind: "cloud", computerId, displayName: "Cloud", platform: "linux", observedAt: NOW_ISO },
+      runtime: {
+        kind: "cloud-managed",
+        provider: "pi",
+        availability: { enabled: true, available: true, reason: null, observedAt: NOW_ISO },
+      },
+      messaging: { kind: "not-configured" },
+      requiredImCliProviders: [],
+      blockers: [{ code: "messaging-not-configured" }],
+      actions: [
+        { kind: "start-messaging", provider: "slack" },
+        { kind: "start-messaging", provider: "feishu" },
+      ],
+      observedAt: NOW_ISO,
+    });
+    expect(snapshot.components).toEqual([
+      {
+        kind: "cloud",
+        status: "available",
+        blocking: false,
+        computerId,
+        displayName: "Cloud",
+        platform: "linux",
+        observedAt: NOW_ISO,
+      },
+    ]);
+  });
+
+  it.each([
+    { reason: "execution_unavailable" as const, projected: "execution-unavailable" as const, enabled: true },
+    { reason: "model_unavailable" as const, projected: "model-unavailable" as const, enabled: true },
+    { reason: "disabled" as const, projected: "disabled" as const, enabled: false },
+  ])("keeps Messaging closed while the managed service answers $reason", async ({ reason, projected, enabled }) => {
+    const bootstrap = await account();
+    const { service } = harness({ cloudAvailability: cloudUnavailable(reason) });
+    const { agentId } = await cloudBoundAgent(bootstrap.userId);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-runtime",
+      runtime: {
+        kind: "cloud-managed",
+        provider: "pi",
+        availability: { enabled, available: false, reason, observedAt: NOW_ISO },
+      },
+      blockers: [{ code: "cloud-service-unavailable", reason: projected }],
+      actions: [{ kind: "refresh" }],
+    });
+    expect(snapshot.components).toEqual([
+      expect.objectContaining({ kind: "cloud", status: projected, blocking: true }),
+    ]);
+    expect(snapshot.actions).not.toContainEqual(expect.objectContaining({ kind: "start-messaging" }));
+  });
+
+  it("fails closed as disabled when no Cloud availability projection is wired", async () => {
+    const bootstrap = await account();
+    const { service } = harness();
+    const { agentId } = await cloudBoundAgent(bootstrap.userId);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-runtime",
+      runtime: {
+        kind: "cloud-managed",
+        availability: { enabled: false, available: false, reason: "disabled" },
+      },
+      blockers: [{ code: "cloud-service-unavailable", reason: "disabled" }],
+      actions: [{ kind: "refresh" }],
+    });
+  });
+
+  it("never starts a Local preparation for a Cloud Agent", async () => {
+    const bootstrap = await account();
+    const prepareComputer = vi.fn(async () => undefined);
+    const { service } = harness({ cloudAvailability: CLOUD_AVAILABLE, prepareComputer });
+    const { agentId } = await cloudBoundAgent(bootstrap.userId);
+
+    await service.refreshPreparationById(bootstrap.userId, agentId);
+    expect(prepareComputer).not.toHaveBeenCalled();
+  });
+
+  it("carries a ready Cloud Messaging binding to ready without any Local CLI handoff", async () => {
+    const bootstrap = await account();
+    // The Local readiness readers answer with their unset defaults ("checking" / unconfirmed): a
+    // Cloud handoff that consulted them could never become ready, so reaching ready proves the
+    // Server-owned path is the one that answered.
+    const { imBindingService, service } = harness({ cloudAvailability: CLOUD_AVAILABLE });
+    const { agentId } = await cloudBoundAgent(bootstrap.userId);
+    const { imBindingId } = await activateSlackBinding(imBindingService, agentId);
+    await observeSlackConnection(agentId);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "ready",
+      messaging: { kind: "ready", provider: "slack", bindingId: imBindingId },
+      blockers: [],
+      actions: [
+        { kind: "reauthorize-messaging", provider: "slack", bindingId: imBindingId },
+        { kind: "unbind-messaging", provider: "slack", bindingId: imBindingId },
+      ],
+    });
+  });
+
+  it("keeps a Cloud binding waiting for its channel connection until the Server observes it", async () => {
+    const bootstrap = await account();
+    const { imBindingService, service } = harness({ cloudAvailability: CLOUD_AVAILABLE });
+    const { agentId } = await cloudBoundAgent(bootstrap.userId);
+    const { imBindingId } = await activateSlackBinding(imBindingService, agentId);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-messaging",
+      messaging: { kind: "waiting-handoff", provider: "slack", bindingId: imBindingId },
+      blockers: [{ code: "messaging-not-ready", provider: "slack", bindingId: imBindingId, state: "waiting-handoff" }],
+    });
+    // No provider-CLI progress is synthesized for a Cloud binding.
+    expect(snapshot.messaging).not.toHaveProperty("progress");
+  });
+
+  it("keeps a Cloud Feishu authorization in progress visible", async () => {
+    const bootstrap = await account();
+    const qrExpiresAt = new Date(Date.now() + 60_000);
+    const { feishuSetup, service } = harness({
+      cloudAvailability: CLOUD_AVAILABLE,
+      registrations: registrationGateway(qrExpiresAt),
+    });
+    const { agentId } = await cloudBoundAgent(bootstrap.userId);
+    const attempt = await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-messaging",
+      messaging: {
+        kind: "authorizing",
+        provider: "feishu",
+        attemptId: attempt.id,
+        qrUrl: "https://accounts.feishu.cn/device",
+        expiresAt: qrExpiresAt.toISOString(),
+      },
+      blockers: [{ code: "messaging-not-ready", provider: "feishu", state: "authorizing" }],
+      actions: [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId: attempt.id }],
+    });
+  });
+
+  it("blocks a Cloud binding that requires reauthorization, with the recorded error code", async () => {
+    const bootstrap = await account();
+    const { imBindingService, service } = harness({ cloudAvailability: CLOUD_AVAILABLE });
+    const { agentId } = await cloudBoundAgent(bootstrap.userId);
+    const { imBindingId } = await activateSlackBinding(imBindingService, agentId);
+    expect(await imBindingService.requireReauthorization(imBindingId, 1, "SLACK_AUTH_INVALID")).toBe(true);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-messaging",
+      messaging: {
+        kind: "blocked",
+        provider: "slack",
+        bindingId: imBindingId,
+        code: "reauthorization-required",
+        errorCode: "SLACK_AUTH_INVALID",
+      },
+      actions: [
+        { kind: "reauthorize-messaging", provider: "slack", bindingId: imBindingId },
+        { kind: "unbind-messaging", provider: "slack", bindingId: imBindingId },
+      ],
+    });
+  });
+
+  it("does not allocate any Cloud resource while observing or refreshing setup", async () => {
+    const bootstrap = await account();
+    const prepareComputer = vi.fn(async () => undefined);
+    const { service } = harness({ cloudAvailability: CLOUD_AVAILABLE, prepareComputer });
+    const { agentId } = await cloudBoundAgent(bootstrap.userId);
+
+    await service.getSetupById(bootstrap.userId, agentId);
+    await service.refreshPreparationById(bootstrap.userId, agentId);
+
+    const allocated = await unitDatabase.database.select({ id: sandboxes.id }).from(sandboxes).limit(5);
+    expect(allocated).toEqual([]);
+    expect(prepareComputer).not.toHaveBeenCalled();
+  });
+});

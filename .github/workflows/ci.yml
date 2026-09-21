@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.12.1
 
@@ -139,7 +139,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.12.1
 
@@ -198,7 +198,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.12.1
 
@@ -222,7 +222,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.12.1
 
@@ -323,7 +323,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.12.1
 
@@ -620,16 +620,68 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # The image the trufflesecurity/trufflehog action would run, invoked directly so the
+      # results pass through scripts/secret-scan-gate.mjs before they decide the build. The
+      # action always runs `trufflehog git --fail`, which leaves no seam for that. Dependabot
+      # does not see an image referenced this way, so bump the tag and digest together by hand.
+      TRUFFLEHOG_IMAGE: "ghcr.io/trufflesecurity/trufflehog:3.97.1@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08"
     steps:
       - name: Check out repository history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Scan repository with TruffleHog
-        uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          version: "3.97.1"
+          node-version-file: .node-version
+
+      - name: Scan repository with TruffleHog
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          #
+          # The scan runs over the commit range, not the tree, so a literal that a later
+          # commit removed still counts — and a negative test for a credential-handling
+          # path has to contain something that looks like a credential. The exclusion
+          # covers test files only; see the file for what that does and does not reach.
+          #
+          base_sha=""
+          head_sha="$GITHUB_SHA"
+          case "$EVENT_NAME" in
+            pull_request)
+              base_sha="$PR_BASE_SHA"
+              head_sha="$PR_HEAD_SHA"
+              ;;
+            push) base_sha="$PUSH_BEFORE" ;;
+          esac
+          # A branch's first push and a force push both leave a base that is not reachable
+          # here; scanning the full history of the head is the safe reading of that range.
+          if [ -n "$base_sha" ] && ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            echo "Base commit ${base_sha} is unreachable; scanning the full history of ${head_sha}."
+            base_sha=""
+          fi
+          echo "Scanning ${base_sha:-<root>}..${head_sha}"
+          scan_args=(
+            git "file:///repo"
+            --branch "$head_sha"
+            --json
+            --no-update
+            --exclude-paths=.github/trufflehog-exclude-paths.txt
+          )
+          if [ -n "$base_sha" ]; then
+            scan_args+=(--since-commit "$base_sha")
+          fi
+          results="$RUNNER_TEMP/trufflehog.jsonl"
+          docker run --rm --volume "$PWD:/repo" --workdir /repo "$TRUFFLEHOG_IMAGE" \
+            "${scan_args[@]}" > "$results"
+          node scripts/secret-scan-gate.mjs "$results" --github-actions
 
   ci:
     name: CI

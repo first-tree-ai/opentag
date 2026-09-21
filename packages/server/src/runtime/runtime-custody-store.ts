@@ -14,6 +14,7 @@ import {
   imBindings,
   imMessageDeliveries,
   imMessages,
+  sandboxes,
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
@@ -39,7 +40,7 @@ export interface RecordedTurnRecord {
 }
 
 export type DeliveryCustodyStatus = "accepted" | "already_accepted" | "conflict" | "stale_generation";
-export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation";
+export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation" | "claimed";
 export type DeliveryReleaseStatus = "released" | "already_released" | "conflict";
 export type SteerCustodyStatus = "steered" | "already_steered" | "conflict" | "stale_generation";
 export type SteerReleaseStatus = "released" | "already_released" | "conflict";
@@ -132,11 +133,18 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.state !== "pending") return "conflict";
-      if (scope.delivery.dispatchRequestId !== null) {
-        return scope.delivery.dispatchRequestId === request.requestId && scope.delivery.dispatchInputHash === inputHash
-          ? "already_dispatched"
-          : "conflict";
-      }
+      // E7 authority boundary: automatic idle reclamation and dispatch custody serialize on the
+      // Sandbox row lock. A ready Cloud environment claimed for reclamation can never accept new
+      // dispatch columns, so the idle claim and the pending delivery cannot both commit.
+      const [sandbox] = await transaction
+        .select({ lifecycle: sandboxes.lifecycle, idleReclaimAt: sandboxes.idleReclaimAt })
+        .from(sandboxes)
+        .where(eq(sandboxes.sessionId, scope.session.id))
+        .limit(1)
+        .for("update");
+      if (sandbox && (sandbox.lifecycle !== "ready" || sandbox.idleReclaimAt !== null)) return "claimed";
+      const existing = existingDispatchStatus(scope.delivery, request.requestId, inputHash);
+      if (existing) return existing;
       const [dispatched] = await transaction
         .update(imMessageDeliveries)
         .set({
@@ -207,14 +215,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!scope || !steerRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.state !== "pending") return "conflict";
-      if (scope.delivery.dispatchRequestId !== null) {
-        return scope.delivery.dispatchRequestId === request.requestId && scope.delivery.dispatchInputHash === inputHash
-          ? "already_dispatched"
-          : "conflict";
-      }
+      const existing = existingDispatchStatus(scope.delivery, request.requestId, inputHash);
+      if (existing) return existing;
       if (scope.delivery.steerTargetDeliveryId !== null) return "conflict";
-      const target = await this.#deliveryScope(transaction, request.rootDeliveryId);
-      if (!target || !steerTargetMatches(scope, target, request, context)) return "conflict";
+      if (!(await this.#steerTargetMatches(transaction, scope, request, context))) return "conflict";
       const [dispatched] = await transaction
         .update(imMessageDeliveries)
         .set({
@@ -246,22 +250,15 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !steerRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
-      if (scope.delivery.state === "steered") {
-        return scope.delivery.inputHash === semanticHash &&
-          scope.delivery.steerTargetDeliveryId === request.rootDeliveryId
-          ? "already_steered"
-          : "conflict";
-      }
+      const replay = steeredReplayStatus(scope.delivery, semanticHash, request.rootDeliveryId);
+      if (replay) return replay;
       if (
-        !["pending", "expired"].includes(scope.delivery.state) ||
-        scope.delivery.dispatchRequestId !== request.requestId ||
-        scope.delivery.dispatchInputHash !== inputHash ||
+        !steerTransitionMatches(scope.delivery, request.requestId, inputHash) ||
         scope.delivery.steerTargetDeliveryId !== request.rootDeliveryId
       ) {
         return "conflict";
       }
-      const target = await this.#deliveryScope(transaction, request.rootDeliveryId);
-      if (!target || !steerTargetMatches(scope, target, request, context, true)) return "conflict";
+      if (!(await this.#steerTargetMatches(transaction, scope, request, context, true))) return "conflict";
       return (await this.#writeSteered(transaction, request.deliveryId, semanticHash, request.rootDeliveryId))
         ? "steered"
         : "conflict";
@@ -280,20 +277,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
-      if (scope.delivery.state === "steered") {
-        return scope.delivery.inputHash === semanticHash && scope.delivery.steerTargetDeliveryId === rootDeliveryId
-          ? "already_steered"
-          : "conflict";
-      }
-      if (
-        !["pending", "expired"].includes(scope.delivery.state) ||
-        scope.delivery.dispatchRequestId !== request.requestId ||
-        scope.delivery.dispatchInputHash !== inputHash
-      ) {
-        return "conflict";
-      }
-      const target = await this.#deliveryScope(transaction, rootDeliveryId);
-      if (!target || !absorbedTargetMatches(scope, target, turnId, context)) return "conflict";
+      const replay = steeredReplayStatus(scope.delivery, semanticHash, rootDeliveryId);
+      if (replay) return replay;
+      if (!steerTransitionMatches(scope.delivery, request.requestId, inputHash)) return "conflict";
+      if (!(await this.#absorbedTargetMatches(transaction, scope, rootDeliveryId, turnId, context))) return "conflict";
       return (await this.#writeSteered(transaction, request.deliveryId, semanticHash, rootDeliveryId))
         ? "steered"
         : "conflict";
@@ -309,17 +296,9 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !steerRequestMatches(scope, request) || scope.delivery.state !== "pending") return "conflict";
       if (scope.delivery.dispatchRequestId === null) {
-        const targetMatches =
-          disposition === "retry"
-            ? scope.delivery.steerTargetDeliveryId === null
-            : scope.delivery.steerTargetDeliveryId === request.rootDeliveryId;
-        return targetMatches ? "already_released" : "conflict";
+        return releasedSteerTargetMatches(scope.delivery, request, disposition) ? "already_released" : "conflict";
       }
-      if (
-        scope.delivery.dispatchRequestId !== request.requestId ||
-        scope.delivery.dispatchInputHash !== inputHash ||
-        scope.delivery.steerTargetDeliveryId !== request.rootDeliveryId
-      ) {
+      if (!steerReleaseCorrelationMatches(scope.delivery, request.requestId, inputHash, request.rootDeliveryId)) {
         return "conflict";
       }
       const [released] = await transaction
@@ -357,12 +336,11 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (scope.delivery.dispatchRequestId !== request.requestId || scope.delivery.dispatchInputHash !== inputHash) {
         return "conflict";
       }
-      if (scope.delivery.state === "accepted") {
-        return scope.delivery.inputHash === inputHash && scope.delivery.turnId === turnId
-          ? "already_accepted"
-          : "conflict";
-      }
-      if (scope.delivery.state !== "pending" && scope.delivery.state !== "expired") return "conflict";
+      // An accepted turn belongs to exactly ONE allocation. A replay from a different allocation
+      // (new environment generation / replaced resource) is never a duplicate receipt and must
+      // never receive execution permission for the prior allocation's turn.
+      const replay = acceptedReplayStatus(scope.delivery, inputHash, turnId, context.instanceId);
+      if (replay !== "accept") return replay;
       const [accepted] = await transaction
         .update(imMessageDeliveries)
         .set({
@@ -412,18 +390,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!placement) return;
       for (const claim of claims) {
         const scope = await this.#deliveryScope(transaction, claim.deliveryId);
-        if (
-          !scope ||
-          scope.delivery.sessionId !== request.sessionId ||
-          scope.agentId !== request.agentId ||
-          scope.delivery.placementGeneration !== claim.placementGeneration ||
-          !placementMatches(scope, context.computerId, request.placementGeneration) ||
-          scope.delivery.dispatchRequestId !== claim.dispatchRequestId ||
-          scope.delivery.dispatchInputHash !== claim.inputHash ||
-          (scope.delivery.resultHash !== null && scope.delivery.resultHash !== claim.resultHash)
-        ) {
-          continue;
-        }
+        if (!scope || !retainedClaimMatches(scope, claim, request, context)) continue;
         if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
           await transaction
             .update(imMessageDeliveries)
@@ -518,26 +485,11 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, report.deliveryId);
       if (!scope) return undefined;
-      if (
-        scope.delivery.turnId !== report.turnId ||
-        scope.delivery.sessionId !== report.sessionId ||
-        scope.agentId !== report.agentId
-      ) {
-        return "conflict";
-      }
+      if (!recordTurnIdentityMatches(scope, report)) return "conflict";
       if (!placementMatches(scope, context.computerId, report.placementGeneration)) return "stale_generation";
-      if (scope.delivery.turnReport) {
-        return scope.delivery.resultHash === report.resultHash && sameReport(scope.delivery.turnReport, report)
-          ? "already_recorded"
-          : "conflict";
-      }
-      if (
-        scope.delivery.state !== "accepted" ||
-        scope.delivery.reportOwnerInstanceId !== context.instanceId ||
-        (scope.delivery.resultHash !== null && scope.delivery.resultHash !== report.resultHash)
-      ) {
-        return undefined;
-      }
+      const replay = recordedReportStatus(scope.delivery, report);
+      if (replay) return replay;
+      if (!recordTurnFenceMatches(scope, context, report)) return undefined;
       await transaction
         .update(imMessageDeliveries)
         .set({
@@ -550,6 +502,28 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .where(eq(imMessageDeliveries.id, report.deliveryId));
       return "recorded";
     });
+  }
+
+  async #steerTargetMatches(
+    transaction: DatabaseTransaction,
+    scope: DeliveryScope,
+    request: RuntimeImSteerRequest,
+    context: DeliveryDispatchContext,
+    allowReported = false,
+  ): Promise<boolean> {
+    const target = await this.#deliveryScope(transaction, request.rootDeliveryId);
+    return Boolean(target && steerTargetMatches(scope, target, request, context, allowReported));
+  }
+
+  async #absorbedTargetMatches(
+    transaction: DatabaseTransaction,
+    scope: DeliveryScope,
+    rootDeliveryId: string,
+    turnId: string,
+    context: RuntimeBusinessContext,
+  ): Promise<boolean> {
+    const target = await this.#deliveryScope(transaction, rootDeliveryId);
+    return Boolean(target && absorbedTargetMatches(scope, target, turnId, context));
   }
 
   async #deliveryScope(transaction: DatabaseTransaction, deliveryId: string): Promise<DeliveryScope | undefined> {
@@ -627,6 +601,137 @@ function acceptedRecord(
         turnId: delivery.turnId,
       }
     : undefined;
+}
+
+/** Existing dispatch correlation: the identical frame was already persisted, or it conflicts. */
+function existingDispatchStatus(
+  delivery: { dispatchRequestId: string | null; dispatchInputHash: string | null },
+  requestId: string,
+  inputHash: string,
+): "already_dispatched" | "conflict" | undefined {
+  if (delivery.dispatchRequestId === null) return undefined;
+  return delivery.dispatchRequestId === requestId && delivery.dispatchInputHash === inputHash
+    ? "already_dispatched"
+    : "conflict";
+}
+
+/** Replay classification for a row that already recorded the steered/absorbed disposition. */
+function steeredReplayStatus(
+  delivery: { state: string; inputHash: string | null; steerTargetDeliveryId: string | null },
+  semanticHash: string,
+  rootDeliveryId: string,
+): "already_steered" | "conflict" | undefined {
+  if (delivery.state !== "steered") return undefined;
+  return delivery.inputHash === semanticHash && delivery.steerTargetDeliveryId === rootDeliveryId
+    ? "already_steered"
+    : "conflict";
+}
+
+/** A steered/absorbed transition requires the exact frozen dispatch correlation on an open row. */
+function steerTransitionMatches(
+  delivery: { state: string; dispatchRequestId: string | null; dispatchInputHash: string | null },
+  requestId: string,
+  inputHash: string,
+): boolean {
+  return (
+    (delivery.state === "pending" || delivery.state === "expired") &&
+    delivery.dispatchRequestId === requestId &&
+    delivery.dispatchInputHash === inputHash
+  );
+}
+
+function steerReleaseCorrelationMatches(
+  delivery: {
+    dispatchRequestId: string | null;
+    dispatchInputHash: string | null;
+    steerTargetDeliveryId: string | null;
+  },
+  requestId: string,
+  inputHash: string,
+  rootDeliveryId: string,
+): boolean {
+  return (
+    delivery.dispatchRequestId === requestId &&
+    delivery.dispatchInputHash === inputHash &&
+    delivery.steerTargetDeliveryId === rootDeliveryId
+  );
+}
+
+function releasedSteerTargetMatches(
+  delivery: { steerTargetDeliveryId: string | null },
+  request: RuntimeImSteerRequest,
+  disposition: "retry" | "deferred",
+): boolean {
+  return disposition === "retry"
+    ? delivery.steerTargetDeliveryId === null
+    : delivery.steerTargetDeliveryId === request.rootDeliveryId;
+}
+
+/** Accepted re-receipt classification: only the SAME allocation may replay as already accepted. */
+function acceptedReplayStatus(
+  delivery: {
+    state: string;
+    reportOwnerInstanceId: string | null;
+    inputHash: string | null;
+    turnId: string | null;
+  },
+  inputHash: string,
+  turnId: string,
+  instanceId: string,
+): "already_accepted" | "conflict" | "accept" {
+  if (delivery.state === "accepted") {
+    if (delivery.reportOwnerInstanceId !== instanceId) return "conflict";
+    return delivery.inputHash === inputHash && delivery.turnId === turnId ? "already_accepted" : "conflict";
+  }
+  return delivery.state === "pending" || delivery.state === "expired" ? "accept" : "conflict";
+}
+
+/** Retained-report claim validity against the locked placement and exact dispatch correlation. */
+function retainedClaimMatches(
+  scope: DeliveryScope,
+  claim: NonNullable<SessionReconcileResult["retainedReports"]>[number],
+  request: SessionReconcileRequest,
+  context: RuntimeBusinessContext,
+): boolean {
+  return (
+    scope.delivery.sessionId === request.sessionId &&
+    scope.agentId === request.agentId &&
+    scope.delivery.placementGeneration === claim.placementGeneration &&
+    placementMatches(scope, context.computerId, request.placementGeneration) &&
+    scope.delivery.dispatchRequestId === claim.dispatchRequestId &&
+    scope.delivery.dispatchInputHash === claim.inputHash &&
+    (scope.delivery.resultHash === null || scope.delivery.resultHash === claim.resultHash)
+  );
+}
+
+function recordTurnIdentityMatches(scope: DeliveryScope, report: TurnReportRequest): boolean {
+  return (
+    scope.delivery.turnId === report.turnId &&
+    scope.delivery.sessionId === report.sessionId &&
+    scope.agentId === report.agentId
+  );
+}
+
+function recordedReportStatus(
+  delivery: { turnReport: unknown; resultHash: string | null },
+  report: TurnReportRequest,
+): "already_recorded" | "conflict" | undefined {
+  if (!delivery.turnReport) return undefined;
+  return delivery.resultHash === report.resultHash && sameReport(delivery.turnReport as TurnReportRequest, report)
+    ? "already_recorded"
+    : "conflict";
+}
+
+function recordTurnFenceMatches(
+  scope: DeliveryScope,
+  context: RuntimeBusinessContext,
+  report: TurnReportRequest,
+): boolean {
+  return (
+    scope.delivery.state === "accepted" &&
+    scope.delivery.reportOwnerInstanceId === context.instanceId &&
+    (scope.delivery.resultHash === null || scope.delivery.resultHash === report.resultHash)
+  );
 }
 
 function deliveryRequestMatches(scope: DeliveryScope, request: DirectImMessageDeliveryRequest): boolean {

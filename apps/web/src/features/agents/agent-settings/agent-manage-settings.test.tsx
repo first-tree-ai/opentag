@@ -72,7 +72,14 @@ const config: AgentAdminConfig = {
   createdByUserId: agentDetail.createdBy.userId,
   computerId,
   revision: 2,
-  runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
+  runtimeConfig: {
+    contextTreeRepository: null,
+    revision: 1,
+    model: null,
+    reasoningEffort: null,
+    instructions: "",
+    maxDurationMs: null,
+  },
 };
 
 const activeConfig: AgentAdminConfig = { ...config, status: "active" };

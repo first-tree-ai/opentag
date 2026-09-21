@@ -33,12 +33,24 @@ export class SessionCommandRequestError extends Error {
   }
 }
 
-async function context(environment: NodeJS.ProcessEnv = process.env): Promise<{ api: OpenTagApi; proof: string }> {
+export async function resolveSessionProofContext(
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<{ api: OpenTagApi; proof: string }> {
   const proofPath = environment.OPENTAG_SESSION_PROOF_FILE;
   if (!proofPath) {
     throw new Error(
       "Session commands are available only inside an OpenTag-managed Agent Session (runtime context missing)",
     );
+  }
+  const serverUrl = environment.OPENTAG_SESSION_SERVER_URL;
+  if (serverUrl) {
+    // E8 Cloud Session: the trusted Runner publishes the exact Server endpoint alongside the
+    // managed proof, and no Computer identity file exists inside the Sandbox. There is no login
+    // or Computer-binding step; the proof alone authorizes the call.
+    const proof = await readSessionCliProofFile(proofPath);
+    const cloudContext = await resolveCommandContext({ environment, serverUrl });
+    if (!cloudContext.api) throw new Error("Command context did not resolve an API");
+    return { api: cloudContext.api, proof: proof.token };
   }
   const context = await resolveCommandContext({ environment });
   const home = context.home;
@@ -65,7 +77,7 @@ export async function runSessionCreate(
     reasoningEffort: options.reasoningEffort,
     maxDurationMs: options.maxDurationMs,
   });
-  const runtime = await context();
+  const runtime = await resolveSessionProofContext();
   return requestWithRetryKey(input.messageId, () => runtime.api.createInternalSession(runtime.proof, input));
 }
 
@@ -79,7 +91,7 @@ export async function runSessionSend(
     targetSessionId,
     message,
   });
-  const runtime = await context();
+  const runtime = await resolveSessionProofContext();
   return requestWithRetryKey(input.messageId, () => runtime.api.sendSessionMessage(runtime.proof, input));
 }
 
@@ -103,7 +115,7 @@ export async function runSessionList(options: {
     cursor: options.cursor,
     since: options.since,
   });
-  const runtime = await context();
+  const runtime = await resolveSessionProofContext();
   return runtime.api.listInternalSessions(runtime.proof, input);
 }
 

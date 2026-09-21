@@ -38,7 +38,7 @@ export const SLACK_NATIVE_CLI_GUIDANCE = [
   "Open or resume a 1:1 DM with conversations.open `{users}` containing exactly one user ID. Do not use it to create an MPIM; read or write an existing MPIM only when the bot already has access.",
   "For not_in_channel, first confirm with conversations.info or conversations.list that the target is a public channel and relevant to the current task. Then call conversations.join `{channel}` once and retry the original action once. Joining enrolls future messages in normal OpenTag ingress: they are persisted, then mention_only or all_message controls delivery. Do not join merely to explore. For private channels, MPIMs, channel_not_found, or an unknown type, ask the user to invite the bot; do not guess or retry.",
   "Add, read, or remove emoji with reactions.add, reactions.get, and reactions.remove using channel, timestamp, and name.",
-  "Upload files with Slack's current external flow only: files.getUploadURLExternal `{filename,length}` → HTTP POST the raw bytes to upload_url (not via slack api) → files.completeUploadExternal `{files:[{id,title}],channel_id,thread_ts?}`. Do not call the deprecated files.upload method.",
+  "Upload files with Slack's current external flow only: files.getUploadURLExternal `{filename,length}` → HTTP POST the raw bytes to upload_url (not via slack api) → files.completeUploadExternal `{files:[{id,title}],channel_id,thread_ts?}`. Do not call the deprecated files.upload method. Load $OPENTAG_PROVIDER_ENV_FILE in the same shell before any raw upload_url, url_private, or url_private_download request: only the provider proxy scope in that file can route and trust those URLs.",
   "Never print credentials, tokens, or the environment file. CLI argv and command output are visible on the OpenTag runtime console.",
 ] as const;
 
@@ -69,3 +69,7 @@ function providerBodyInstructions(provider: ProviderOutboxProvider): readonly st
     "Replace `...` with the version-specific lark-cli subcommand and provider-native target options before running it.",
   ];
 }
+
+/** Non-secret execution metadata is discovered without changing native CLI authentication. */
+export const GITHUB_NATIVE_CLI_INSTRUCTIONS =
+  "GitHub integration, when enabled, preconfigures native git and gh. Read OPENTAG_GITHUB_REPOSITORIES for granted repositories, role, branch, publish mode and workBranchPrefix. Create task branches under the supplied workBranchPrefix; Context Tree direct mode targets its configured branch. Authentication and renewal are automatic; do not run interactive login or replace managed credentials.";

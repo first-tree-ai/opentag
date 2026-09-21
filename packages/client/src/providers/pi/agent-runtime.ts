@@ -52,6 +52,11 @@ const PI_RESOURCE_DISABLE_ARGUMENTS = [
   "--no-context-files",
   "--no-approve",
 ] as const;
+const PI_LIST_MODELS_COLUMNS = ["provider", "model", "context", "max-out", "thinking", "images"] as const;
+/** Local Pi probes have always allowed 5s; native Cloud Run Pi startup measured ~6s. */
+const PI_PROBE_DEFAULT_TIMEOUT_MS = 5_000;
+/** Upper bound on a configured probe budget so no caller can wait unbounded. */
+const PI_PROBE_MAX_TIMEOUT_MS = 60_000;
 
 export const PI_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
   providerId: PI_PROVIDER_ID,
@@ -62,16 +67,34 @@ export const PI_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
 
 interface PiProviderConfiguration {
   readonly sessionName?: string;
+  /**
+   * Trusted web tools launch (runtime opt-in, negotiated, execution-authorized). When present,
+   * the fixed trusted extension artifact is loaded explicitly with `-e` for this run (implicit
+   * discovery stays disabled via `--no-extensions`), and the nonsecret gateway endpoint is
+   * injected into the process environment. Never read from Server content; the trusted Turn
+   * runner sets it from the prepared execution.
+   */
+  readonly webTools?: PiWebToolsConfiguration;
 }
+
+// Type aliases (not interfaces) so the shapes stay assignable to JsonValue configuration.
+type PiWebToolsConfiguration = {
+  readonly extensionPath: string;
+  readonly socketPath: string;
+};
+
+/** Nonsecret endpoint descriptor consumed by the trusted extension artifact. */
+const PI_WEB_TOOLS_SOCKET_ENV = "OPENTAG_WEB_TOOLS_SOCKET";
 
 interface PiRuntimeOptions {
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
-  readonly createClient: (args: readonly string[]) => PiRpcClient;
+  readonly createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
   readonly eventSink: AgentRuntimeEventSink;
   readonly policy: AgentRuntimePolicy;
   readonly resume: boolean;
   readonly sessionDirectory?: string;
+  readonly skillPaths?: readonly string[];
   readonly systemPrompt: string;
 }
 
@@ -82,6 +105,7 @@ export interface PiAgentRuntimeFactoryOptions {
     readonly env?: NodeJS.ProcessEnv;
     readonly maxLineBytes?: number;
     readonly maxStderrBytes?: number;
+    readonly probeTimeoutMs?: number;
     readonly requestTimeoutMs?: number;
     readonly sessionDirectory?: string;
     readonly spawnProcess?: (
@@ -135,8 +159,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
   readonly #sessionDirectory?: string;
+  readonly #skillArgs: readonly string[];
   readonly #systemPrompt: string;
-  readonly #createClient: (args: readonly string[]) => PiRpcClient;
+  readonly #createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
   readonly #tools = new Map<string, PiTool>();
   #client?: PiRpcClient;
   #unsubscribe?: () => void;
@@ -156,6 +181,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #usage: AgentUsage = {};
   #sessionExists: boolean;
   #sessionFileHash?: string;
+  #pendingSessionFileHash = "";
   #terminalClaimed = false;
 
   constructor(options: PiRuntimeOptions) {
@@ -171,6 +197,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#sessionDirectory = options.sessionDirectory;
+    this.#skillArgs = (options.skillPaths ?? []).flatMap((path) => ["--skill", path]);
     this.#systemPrompt = options.systemPrompt;
     this.#createClient = options.createClient;
     this.#sessionExists = options.resume;
@@ -182,31 +209,17 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   ): Promise<AgentProviderRunResult> {
     this.#resetRun(context);
     let client: PiRpcClient | undefined;
+    let cleanupFailure: Error | undefined;
+    let result: AgentProviderRunResult;
     try {
-      client = this.#createClient(this.#arguments(request));
+      client = this.#createClient(this.#arguments(request), piWebToolsEnvironment(request, this.#configuration));
       this.#client = client;
       this.#unsubscribe = client.subscribe((message) => this.#enqueue(message));
       const state = requireRecord(
         await client.request({ type: "get_state" }, context.signal),
         "Pi get_state returned invalid data",
       );
-      const sessionId = requireUuid(state.sessionId, "Pi get_state sessionId");
-      if (sessionId !== this.#sessionId) throw protocolError("Pi opened another session");
-      const sessionFile = requireAbsolutePath(state.sessionFile, "Pi get_state sessionFile is not absolute");
-      const messageCount = requireNonNegativeSafeInteger(state.messageCount, "Pi get_state messageCount is invalid");
-      const sessionFileHash = fingerprint(sessionFile);
-      if (!this.#sessionExists && messageCount !== 0) {
-        throw protocolError("Pi create opened an existing conversation");
-      }
-      if (this.#sessionFileHash && this.#sessionFileHash !== sessionFileHash) {
-        throw protocolError("Pi opened another session file");
-      }
-      if (!this.#sessionFileHash) {
-        this.#sessionFileHash = sessionFileHash;
-        await context.updateBinding(piBinding(this.#sessionId, sessionFileHash));
-      }
-      this.#sessionExists = true;
-      this.#model = parseModel(state.model);
+      await this.#restoreSessionState(state, context);
       await client.request({ type: "prompt", message: piInput(request) }, context.signal);
       this.#promptAccepted?.resolve();
       const terminal = await this.#terminal?.promise;
@@ -214,7 +227,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       if (!terminal) throw protocolError("Pi run has no terminal state");
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
-      return this.#runResult(terminal);
+      result = this.#runResult(terminal);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Pi run failed");
       logger.debug({ code: "provider_run_failed", error: failure.message }, "Pi provider run failed");
@@ -229,22 +242,69 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         causalFailure.message,
         { cause: causalFailure },
       );
-      /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
-      this.#unsubscribe?.();
-      this.#unsubscribe = undefined;
-      /* v8 ignore next -- client teardown in finally is best-effort. */
-      await client?.close().catch((error: unknown) => {
-        logger.debug({ code: "provider_close_failed", error: String(error) }, "Pi provider close failed");
-      });
-      this.#client = undefined;
-      this.#context = undefined;
-      this.#terminal = undefined;
-      this.#promptAccepted = undefined;
-      this.#currentTurnId = undefined;
-      this.#currentAssistant = undefined;
-      this.#tools.clear();
+      cleanupFailure = await this.#cleanupRun(client);
     }
+    if (cleanupFailure && result.status !== "failed") {
+      throw new AgentProviderError("provider_error", cleanupFailure.message, { cause: cleanupFailure });
+    }
+    return result;
+  }
+
+  async #restoreSessionState(
+    state: Readonly<Record<string, unknown>>,
+    context: AgentProviderRunContext,
+  ): Promise<void> {
+    const sessionId = requireUuid(state.sessionId, "Pi get_state sessionId");
+    if (sessionId !== this.#sessionId) throw protocolError("Pi opened another session");
+    const sessionFile = requireAbsolutePath(state.sessionFile, "Pi get_state sessionFile is not absolute");
+    const messageCount = requireNonNegativeSafeInteger(state.messageCount, "Pi get_state messageCount is invalid");
+    const sessionFileHash = fingerprint(sessionFile);
+    if (!this.#sessionExists && messageCount !== 0) {
+      throw protocolError("Pi create opened an existing conversation");
+    }
+    if (this.#sessionFileHash && this.#sessionFileHash !== sessionFileHash) {
+      throw protocolError("Pi opened another session file");
+    }
+    if (this.#sessionFileHash && messageCount === 0) {
+      throw protocolError("Pi session has no conversation history");
+    }
+    this.#pendingSessionFileHash = sessionFileHash;
+    this.#sessionExists = true;
+    this.#model = parseModel(state.model);
+    if (!this.#sessionFileHash && messageCount !== 0) {
+      await this.#materializeSession(context, sessionFileHash);
+    }
+  }
+
+  // Pi 0.84.2 writes JSONL only after the first assistant message. --session-id
+  // keeps the UUID even when that file does not exist yet, so unmaterialized
+  // resume can recover history written before the binding hash is stored.
+  async #materializeSession(context: AgentProviderRunContext, sessionFileHash: string): Promise<void> {
+    if (this.#sessionFileHash) return;
+    await context.updateBinding(piBinding(this.#sessionId, sessionFileHash));
+    this.#sessionFileHash = sessionFileHash;
+  }
+
+  async #cleanupRun(client: PiRpcClient | undefined): Promise<Error | undefined> {
+    this.#unsubscribe?.();
+    this.#unsubscribe = undefined;
+    let failure: Error | undefined;
+    try {
+      await client?.close();
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error("Pi provider close failed");
+      logger.debug({ code: "provider_close_failed", error: failure.message }, "Pi provider close failed");
+    }
+    this.#client = undefined;
+    this.#context = undefined;
+    this.#terminal = undefined;
+    this.#promptAccepted = undefined;
+    this.#currentTurnId = undefined;
+    this.#currentAssistant = undefined;
+    this.#tools.clear();
+    if (failure) this.closeForProviderFailure();
+    return failure;
   }
 
   protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
@@ -294,12 +354,16 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       "--mode",
       "rpc",
       ...PI_RESOURCE_DISABLE_ARGUMENTS,
+      ...this.#skillArgs,
       "--session-id",
       this.#sessionId,
       ...(this.#sessionDirectory ? ["--session-dir", this.#sessionDirectory] : []),
       ...piPolicyArguments(this.#policy),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--thinking", configuration.reasoningEffort] : []),
+      // Explicit `-e` extension load for actual execution only; probes/help never receive it and
+      // `--no-extensions` (in PI_RESOURCE_DISABLE_ARGUMENTS) keeps implicit discovery disabled.
+      ...(provider.webTools ? ["--extension", provider.webTools.extensionPath] : []),
       "--append-system-prompt",
       this.#systemPrompt,
       ...(provider.sessionName ? ["--name", provider.sessionName] : []),
@@ -511,6 +575,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       await this.#requireContext().emit({ type: "usage_updated", usage: this.#usage });
     }
     this.#currentAssistant = undefined;
+    await this.#materializeSession(this.#requireContext(), this.#pendingSessionFileHash);
   }
 
   async #startTool(message: Readonly<Record<string, unknown>>): Promise<void> {
@@ -556,7 +621,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
     const stopReason = this.#lastStopReason;
     if (!stopReason) throw protocolError("Pi settled without an assistant result");
-    const status = stopReason === "aborted" ? "aborted" : stopReason === "error" ? "failed" : "completed";
+    const status = stopReason === "stop" ? "completed" : stopReason === "aborted" ? "aborted" : "failed";
     this.#terminal?.resolve({
       status,
       stopReason,
@@ -588,7 +653,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       status: "failed",
       output,
       ...(usage ? { usage } : {}),
-      error: { code: "provider_error", message: terminal.error ?? "Pi model request failed" },
+      error: { code: "provider_error", message: terminal.error ?? piFailedStopMessage(terminal.stopReason) },
       diagnostics,
     };
   }
@@ -648,6 +713,16 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       throw new AgentRuntimeError("configuration_invalid", "Pi sessionDirectory must be absolute");
     }
     this.#sessionDirectory = sessionDirectory;
+    const probeTimeoutMs = options.process?.probeTimeoutMs;
+    if (
+      probeTimeoutMs !== undefined &&
+      (!Number.isInteger(probeTimeoutMs) || probeTimeoutMs < 1 || probeTimeoutMs > PI_PROBE_MAX_TIMEOUT_MS)
+    ) {
+      throw new AgentRuntimeError(
+        "configuration_invalid",
+        `Pi probeTimeoutMs must be an integer between 1 and ${PI_PROBE_MAX_TIMEOUT_MS}`,
+      );
+    }
     this.#createClient =
       options.createClient ??
       ((cwd, args, workspaceEnvironment, pathPrepend) =>
@@ -661,7 +736,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
           requestTimeoutMs: options.process?.requestTimeoutMs,
           spawnProcess: options.process?.spawnProcess,
         }));
-    this.#probeRunner = options.probeRunner ?? ((signal) => probePi(command, environment, signal));
+    this.#probeRunner = options.probeRunner ?? ((signal) => probePi(command, environment, signal, probeTimeoutMs));
   }
 
   async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
@@ -705,21 +780,26 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
         ? request.binding
         : piBinding(requireUuid(this.#createSessionId(), "generated Pi session id"));
     assertBinding(binding, this.manifest);
-    const parsedBinding = parsePiBinding(binding);
-    if (mode === "resume" && !parsedBinding.sessionFileHash) {
-      throw new AgentRuntimeError("binding_incompatible", "Pi binding does not identify a materialized session");
-    }
+    parsePiBinding(binding);
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new PiAgentRuntime({
         binding,
         configuration: request.configuration,
-        createClient: (args) =>
-          this.#createClient(request.workspace.cwd, args, request.workspace.environment, request.workspace.pathPrepend),
+        createClient: (args, extraEnvironment) =>
+          this.#createClient(
+            request.workspace.cwd,
+            args,
+            extraEnvironment
+              ? { ...request.workspace.environment, ...extraEnvironment }
+              : request.workspace.environment,
+            request.workspace.pathPrepend,
+          ),
         eventSink: request.eventSink,
         policy: request.policy,
         resume: mode === "resume",
         sessionDirectory: this.#sessionDirectory,
+        skillPaths: request.skillPaths,
         systemPrompt: request.systemPrompt,
       });
     } catch (error) {
@@ -815,13 +895,15 @@ async function probePi(
   command: string,
   environment: NodeJS.ProcessEnv,
   signal?: AbortSignal,
+  timeoutMs = PI_PROBE_DEFAULT_TIMEOUT_MS,
 ): Promise<{ readonly credential: boolean; readonly rpc: boolean; readonly version: string }> {
-  const execution = { encoding: "utf8" as const, env: environment, signal, timeout: 5_000, windowsHide: true };
+  const execution = { encoding: "utf8" as const, env: environment, signal, timeout: timeoutMs, windowsHide: true };
   const versionResult = await execFileAsync(command, ["--version"], execution);
   const version = versionResult.stdout.trim();
   let help = "";
   try {
-    help = (await execFileAsync(command, ["--help"], execution)).stdout;
+    // Pi constructs resourceLoader before printing help, so disable resource discovery here too.
+    help = (await execFileAsync(command, [...PI_RESOURCE_DISABLE_ARGUMENTS, "--help"], execution)).stdout;
   } catch (error) {
     if (signal?.aborted) throw error;
     logger.debug({ code: "probe_help_failed", error: String(error) }, "Pi help probe failed");
@@ -843,13 +925,33 @@ async function probePi(
   let credential = false;
   try {
     const models = await execFileAsync(command, [...PI_RESOURCE_DISABLE_ARGUMENTS, "--list-models"], execution);
-    credential = models.stdout.trim().split(/\r?\n/).length > 1;
+    credential = piListModelsHaveAvailableRows(models.stdout);
   } catch (error) {
     if (signal?.aborted) throw error;
     logger.debug({ code: "probe_models_failed", error: String(error) }, "Pi model probe failed");
     credential = false;
   }
   return { credential, rpc, version };
+}
+
+function piListModelsHaveAvailableRows(stdout: string): boolean {
+  const [headerLine, ...rows] = stdout.trim().split(/\r?\n/);
+  if (!headerLine || rows.length === 0) return false;
+  const header = piListModelsColumns(headerLine);
+  if (
+    header.length !== PI_LIST_MODELS_COLUMNS.length ||
+    PI_LIST_MODELS_COLUMNS.some((column, index) => header[index] !== column)
+  ) {
+    return false;
+  }
+  return rows.every((line) => piListModelsColumns(line).length === PI_LIST_MODELS_COLUMNS.length);
+}
+
+function piListModelsColumns(line: string): readonly string[] {
+  return line
+    .trim()
+    .split(/\s+/)
+    .filter((column) => column.length > 0);
 }
 
 function supportsPiProtocol(version: string): boolean {
@@ -927,7 +1029,7 @@ function parseProviderConfiguration(value: JsonValue | undefined): PiProviderCon
   assertJsonValue(value, "configuration.provider");
   const object = record(value);
   if (!object) throw new AgentRuntimeError("configuration_invalid", "Pi provider configuration must be an object");
-  const allowed = new Set(["sessionName"]);
+  const allowed = new Set(["sessionName", "webTools"]);
   for (const key of Object.keys(object)) {
     if (!allowed.has(key))
       throw new AgentRuntimeError("configuration_invalid", `unknown Pi configuration field: ${key}`);
@@ -935,7 +1037,38 @@ function parseProviderConfiguration(value: JsonValue | undefined): PiProviderCon
   const sessionName = boundedConfigurationString(object.sessionName, "sessionName", 4_096);
   return {
     ...(sessionName ? { sessionName } : {}),
+    ...(object.webTools !== undefined ? { webTools: parseWebToolsConfiguration(object.webTools) } : {}),
   };
+}
+
+/** Strict trusted launch facts; both are absolute trusted-local paths with hard byte bounds. */
+function parseWebToolsConfiguration(value: unknown): PiWebToolsConfiguration {
+  assertJsonValue(value, "configuration.provider.webTools");
+  const object = record(value);
+  if (!object) throw new AgentRuntimeError("configuration_invalid", "Pi webTools must be an object");
+  const allowed = new Set(["extensionPath", "socketPath"]);
+  for (const key of Object.keys(object)) {
+    if (!allowed.has(key)) throw new AgentRuntimeError("configuration_invalid", `unknown Pi webTools field: ${key}`);
+  }
+  const extensionPath = boundedConfigurationString(object.extensionPath, "webTools.extensionPath", 512);
+  const socketPath = boundedConfigurationString(object.socketPath, "webTools.socketPath", 200);
+  if (!extensionPath || !isAbsolute(extensionPath)) {
+    throw new AgentRuntimeError("configuration_invalid", "Pi webTools.extensionPath must be an absolute path");
+  }
+  if (!socketPath || !isAbsolute(socketPath)) {
+    throw new AgentRuntimeError("configuration_invalid", "Pi webTools.socketPath must be an absolute path");
+  }
+  return { extensionPath, socketPath };
+}
+
+/** Per-run process environment for the trusted extension: only the nonsecret endpoint descriptor. */
+function piWebToolsEnvironment(
+  request: AgentPromptRequest,
+  base: AgentRunConfiguration | undefined,
+): Readonly<Record<string, string>> | undefined {
+  const configuration = mergeConfiguration(base, request.configuration);
+  const provider = parseProviderConfiguration(configuration?.provider);
+  return provider.webTools ? { [PI_WEB_TOOLS_SOCKET_ENV]: provider.webTools.socketPath } : undefined;
 }
 
 function boundedConfigurationString(
@@ -1034,7 +1167,11 @@ function parseUsage(value: unknown): AgentUsage | undefined {
   const usage = record(value);
   if (!usage) return undefined;
   const result: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } = {};
-  if (isNonNegativeNumber(usage.input)) result.inputTokens = usage.input;
+  const input = isNonNegativeNumber(usage.input) ? usage.input : undefined;
+  const cacheWrite = isNonNegativeNumber(usage.cacheWrite) ? usage.cacheWrite : undefined;
+  if (input !== undefined || cacheWrite !== undefined) {
+    result.inputTokens = addTokenCounts(input, cacheWrite, "input");
+  }
   if (isNonNegativeNumber(usage.cacheRead)) result.cachedInputTokens = usage.cacheRead;
   if (isNonNegativeNumber(usage.output)) result.outputTokens = usage.output;
   return hasUsage(result) ? result : undefined;
@@ -1126,6 +1263,12 @@ function toJsonValue(value: unknown): JsonValue {
 
 function protocolError(message: string): AgentProviderError {
   return new AgentProviderError("provider_protocol_error", message);
+}
+
+function piFailedStopMessage(stopReason: string): string {
+  if (stopReason === "length") return "Pi stopped because the model reached its output limit";
+  if (stopReason === "toolUse") return "Pi stopped with unfinished tool use";
+  return "Pi model request failed";
 }
 
 function isNonNegativeNumber(value: unknown): value is number {

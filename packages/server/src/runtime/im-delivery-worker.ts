@@ -5,35 +5,13 @@ import {
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
-  type ProviderInboundContext,
   RUNTIME_CAPABILITY,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
-  RUNTIME_IM_HISTORY_MAX_BYTES,
-  RUNTIME_MAX_FRAME_BYTES,
   type RuntimeImDeliveryContent,
   type RuntimeImSteerRequest,
   RuntimeImSteerRequestSchema,
-  type RuntimeProviderMessageRef,
-  runtimeFrameByteLength,
 } from "@opentag/shared";
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  exists,
-  gt,
-  inArray,
-  isNotNull,
-  isNull,
-  like,
-  lt,
-  lte,
-  ne,
-  notExists,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNotNull, isNull, like, lte, ne, notExists, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
@@ -53,13 +31,27 @@ import {
   setActiveSpanAttributes,
   traceDeliveryClaim,
 } from "../observability/index.js";
-import { threadRootExternalId } from "../services/im/provider-thread-context.js";
 import {
   type EffectiveRuntimeSnapshotAssembler,
   EffectiveRuntimeSnapshotAssemblerError,
 } from "../services/runtime-config/index.js";
+import type { CloudDeliveryOwner } from "../services/sandboxes/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import { DISPATCH_CLAIM_PREFIX, dispatchClaimToken } from "./im-delivery-claim.js";
+import { CloudDeliveryCoordinator, readPersistedDeliveryRequest } from "./im-delivery-cloud.js";
+import {
+  type ClaimLease,
+  deliveryOccupancyScope,
+  findOtherCustody,
+  fitDeliveryFrame,
+  hasOtherCustody,
+  loadDirectHistory,
+  messageOrderBefore,
+  occupancyConflict,
+  occupancyScopeKey,
+  truncateUtf8,
+  uncertainAgentCustody,
+} from "./im-delivery-custody.js";
 import { withOperationDeadline } from "./im-delivery-deadline.js";
 import {
   createImDeliveryMaintenanceSchedulers,
@@ -69,7 +61,12 @@ import {
   runImDeliveryJanitor,
   runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
-import type { ImDeliveryWorkerInput, RuntimeDeliveryWorkerMetric, WorkerClaim } from "./im-delivery-worker.types.js";
+import type {
+  CloudSessionAllocationPort,
+  ImDeliveryWorkerInput,
+  RuntimeDeliveryWorkerMetric,
+  WorkerClaim,
+} from "./im-delivery-worker.types.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
 import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
@@ -79,17 +76,70 @@ const RETRY_DELAY_MS = 2_000;
 const CLAIM_LEASE_MS = 15_000;
 const CLAIM_RENEW_MS = 5_000;
 // Replica model: persisted recoverable ownership. The durable marker bridges the
-// transaction-to-runtime gap. Advisory locks serialize competing claims; the
-// marker keeps later transactions fenced after commit.
+// transaction-to-runtime gap. An Agent-scoped advisory lock serializes competing
+// claim decisions; the marker and the occupancy fence then keep later transactions
+// out of a Session or Agent that is already owned.
 const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries");
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
 const acceptedImBindings = alias(imBindings, "agent_accepted_im_bindings");
 const acceptedAgents = alias(agents, "agent_accepted_agents");
-const newerHistoryRevisions = alias(imMessages, "newer_history_revisions");
+const acceptedPlacements = alias(sessionPlacements, "agent_accepted_placements");
+const acceptedComputers = alias(computers, "agent_accepted_computers");
+const earlierPendingDeliveries = alias(imMessageDeliveries, "pending_earlier_deliveries");
+const earlierPendingMessages = alias(imMessages, "pending_earlier_messages");
 
 function positiveWorkerLimit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
   return value;
+}
+
+/** A claim deferred by another occupant: Local rows are declined steers, Cloud rows are custody races. */
+function custodyDeferralCode(computerKind: "local" | "cloud"): string {
+  return computerKind === "cloud" ? "IM_DELIVERY_CUSTODY_DEFERRED" : "IM_DELIVERY_STEER_DEFERRED";
+}
+
+/**
+ * E6 ordering guard for undispatched Cloud inputs: an input never overtakes an earlier live input
+ * of the same Session. The earlier row's own retry backoff and another Worker's in-flight
+ * (skip-locked) claim are exactly the cases the durable custody fence cannot see, so ingress order
+ * is enforced here on the committed rows. The predicate is scoped to the Session, so it never
+ * blocks another Session's claim. A prior claim or frozen dispatch already occupies the Session:
+ * keep its recovery path open if an earlier provider event arrives late. Otherwise that new input
+ * and the expired claim would fence each other forever. The outer query still checks the lease.
+ */
+function cloudPendingOrderingGuard(transaction: DatabaseTransaction) {
+  return or(
+    ne(imMessageDeliveries.state, "pending"),
+    ne(computers.kind, "cloud"),
+    isNotNull(imMessageDeliveries.dispatchRequestId),
+    like(imMessageDeliveries.lastErrorCode, `${DISPATCH_CLAIM_PREFIX}%`),
+    notExists(
+      transaction
+        .select({ id: earlierPendingDeliveries.id })
+        .from(earlierPendingDeliveries)
+        .innerJoin(earlierPendingMessages, eq(earlierPendingMessages.id, earlierPendingDeliveries.messageId))
+        .where(
+          and(
+            eq(earlierPendingDeliveries.sessionId, imMessageDeliveries.sessionId),
+            ne(earlierPendingDeliveries.id, imMessageDeliveries.id),
+            eq(earlierPendingDeliveries.state, "pending"),
+            isNull(earlierPendingDeliveries.reason),
+            messageOrderBefore(
+              {
+                occurredAt: earlierPendingMessages.occurredAt,
+                providerRevisionKey: earlierPendingMessages.providerRevisionKey,
+                id: earlierPendingMessages.id,
+              },
+              {
+                occurredAt: imMessages.occurredAt,
+                providerRevisionKey: imMessages.providerRevisionKey,
+                id: imMessages.id,
+              },
+            ),
+          ),
+        ),
+    ),
+  );
 }
 
 export class ImDeliveryWorker {
@@ -97,6 +147,9 @@ export class ImDeliveryWorker {
   readonly #domain: RuntimeDomainOwner;
   readonly #assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
   readonly #registry: ConnectionRegistry;
+  readonly #cloudDelivery?: CloudDeliveryOwner;
+  readonly #cloudAllocation?: CloudSessionAllocationPort;
+  readonly #cloudCoordinator: CloudDeliveryCoordinator;
   readonly #intervalMs: number;
   readonly #janitorConfig: ImDeliveryJanitorConfig;
   readonly #claimLeaseMs: number;
@@ -122,6 +175,8 @@ export class ImDeliveryWorker {
     this.#domain = input.domain;
     this.#assembler = input.assembler;
     this.#registry = input.registry;
+    this.#cloudDelivery = input.cloudDelivery;
+    this.#cloudAllocation = input.cloudAllocation;
     this.#intervalMs = input.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.#janitorConfig = resolveImDeliveryJanitorConfig(input);
     this.#claimLeaseMs = input.claimLeaseMs ?? CLAIM_LEASE_MS;
@@ -143,8 +198,31 @@ export class ImDeliveryWorker {
       supervisor: this.#supervisor,
     });
     this.#onMetric = input.onMetric ?? (() => undefined);
+    this.#cloudCoordinator = new CloudDeliveryCoordinator({
+      database: this.#database,
+      ...(this.#cloudDelivery ? { cloudDelivery: this.#cloudDelivery } : {}),
+      ...(this.#cloudAllocation ? { cloudAllocation: this.#cloudAllocation } : {}),
+      now: this.#now,
+      onDiagnostic: this.#onDiagnostic,
+      ...(this.#beforeDeliveryAdmission ? { beforeDeliveryAdmission: this.#beforeDeliveryAdmission } : {}),
+      assembleRuntime: (deliveryId, sessionId, mode, claimToken) =>
+        this.#assembleRuntime(deliveryId, sessionId, mode, claimToken),
+      replyRole: (messageId, sessionKind, threadKey) => this.#replyRole(messageId, sessionKind, threadKey),
+      buildDeliveryContent: (contentInput) => this.#buildDeliveryContent(contentInput),
+      hasOtherCustody: (subject) => hasOtherCustody(this.#database, subject),
+      recordFailure: (deliveryId, code, claimToken, retryDelayMs) =>
+        this.#recordFailure(deliveryId, code, claimToken, retryDelayMs),
+      releaseDispatch: (deliveryId, requestId, code, claimToken) =>
+        this.#releaseDispatch(deliveryId, requestId, code, claimToken),
+      rejectInput: (deliveryId, reason, claimToken) => this.#reject(deliveryId, reason, claimToken),
+      withActiveAgentAdmission: (expected, operation, signal) =>
+        this.#withActiveAgentAdmission(expected, operation, signal),
+    });
     const schedulers = createImDeliveryMaintenanceSchedulers({
-      expiryRun: () => runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      expiryRun: async () => {
+        await runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock });
+        await this.#cloudCoordinator.reconcileStoppedWork();
+      },
       retentionRun: () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
       supervisor: this.#supervisor,
       onDiagnostic: this.#onDiagnostic,
@@ -176,6 +254,7 @@ export class ImDeliveryWorker {
 
   async runJanitorOnce(): Promise<void> {
     await runImDeliveryJanitor(this.#database, { ...this.#janitorConfig, clock: this.#clock });
+    await this.#cloudCoordinator.reconcileStoppedWork();
   }
 
   async runOnce(): Promise<void> {
@@ -234,7 +313,7 @@ export class ImDeliveryWorker {
         if (!failed) resolve();
       }
     };
-    const enqueued = this.#scheduler.enqueue(`agent:${claimed.agentId}`, run, () => {
+    const enqueued = this.#scheduler.enqueue(claimed.laneKey, run, () => {
       this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
       void this.#recordFailure(
         claimed.id,
@@ -292,12 +371,15 @@ export class ImDeliveryWorker {
           sessionId: imMessageDeliveries.sessionId,
           computerId: sessionPlacements.computerId,
           steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
+          computerKind: computers.kind,
         })
         .from(imMessageDeliveries)
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
         .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
         .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
         .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+        .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
         .where(
           and(
             isNull(sessions.endedAt),
@@ -311,7 +393,14 @@ export class ImDeliveryWorker {
                     eq(imMessageDeliveries.state, "pending"),
                     isNull(imMessageDeliveries.reason),
                     lte(imMessageDeliveries.nextAttemptAt, now),
-                    sql`${imMessageDeliveries.expiresAt} > now()`,
+                    // The ingress deadline bounds pending input. An UNDISPATCHED Cloud row is not
+                    // claimed past it (the janitor expires it as ttl). A DISPATCHED Cloud row is
+                    // owned by its frozen execution window instead: the worker still claims it to
+                    // release stale dispatches, and the janitor expires it afterwards.
+                    or(
+                      sql`${imMessageDeliveries.expiresAt} > now()`,
+                      and(eq(computers.kind, "cloud"), isNotNull(imMessageDeliveries.dispatchRequestId)),
+                    ),
                   ),
                   and(
                     eq(imMessageDeliveries.state, "expired"),
@@ -327,18 +416,41 @@ export class ImDeliveryWorker {
                       .innerJoin(acceptedSessions, eq(acceptedSessions.id, acceptedDeliveries.sessionId))
                       .innerJoin(acceptedImBindings, eq(acceptedImBindings.id, acceptedSessions.imBindingId))
                       .innerJoin(acceptedAgents, eq(acceptedAgents.id, acceptedImBindings.agentId))
+                      .leftJoin(acceptedPlacements, eq(acceptedPlacements.sessionId, acceptedDeliveries.sessionId))
+                      .leftJoin(acceptedComputers, eq(acceptedComputers.id, acceptedPlacements.computerId))
                       .where(
                         and(
-                          eq(acceptedImBindings.agentId, imBindings.agentId),
-                          ne(acceptedDeliveries.id, imMessageDeliveries.id),
                           isNull(acceptedSessions.endedAt),
                           eq(acceptedImBindings.status, "active"),
                           ne(acceptedAgents.status, "deleted"),
                           uncertainAgentCustody(acceptedDeliveries),
+                          // E6 occupancy: a Cloud delivery is fenced only by its own Session (or by
+                          // an Agent-scoped Local occupancy of the same Agent); a Local delivery
+                          // keeps the Agent-wide fence. The left joins keep Local semantics exact:
+                          // an Agent-scoped candidate conflicts regardless of the other row's
+                          // placement row, exactly as before.
+                          occupancyConflict(
+                            {
+                              deliveryId: imMessageDeliveries.id,
+                              sessionId: imMessageDeliveries.sessionId,
+                              agentId: imBindings.agentId,
+                              local: eq(computers.kind, "local"),
+                            },
+                            {
+                              deliveryId: acceptedDeliveries.id,
+                              sessionId: acceptedDeliveries.sessionId,
+                              agentId: acceptedImBindings.agentId,
+                              local: eq(acceptedComputers.kind, "local"),
+                            },
+                          ),
                         ),
                       ),
                   ),
                   and(
+                    // Cloud follow-ups never enter the Local steer path: the E4 protocol has no
+                    // steer frame, and selecting them here only to decline would re-select the
+                    // same row every tick and starve every other tenant.
+                    eq(computers.kind, "local"),
                     eq(imMessageDeliveries.state, "pending"),
                     isNull(imMessageDeliveries.dispatchRequestId),
                     isNull(imMessageDeliveries.steerTargetDeliveryId),
@@ -360,6 +472,8 @@ export class ImDeliveryWorker {
                     ),
                   ),
                 ),
+                // E6 ordering: see `cloudPendingOrderingGuard`.
+                cloudPendingOrderingGuard(transaction),
               ),
               and(
                 eq(imMessageDeliveries.state, "accepted"),
@@ -373,11 +487,21 @@ export class ImDeliveryWorker {
         .limit(1)
         .for("update", { of: imMessageDeliveries, skipLocked: true });
       if (!row) return undefined;
+      // The advisory lock stays Agent-scoped on purpose. It serializes only this claim decision,
+      // never execution: a claimed Cloud Turn runs after commit in its own Session lane. The Agent
+      // key also orders the cross-scope Local/Cloud conflict exactly as the fence does, so two
+      // claims of one Agent can never both pass on a snapshot that predates the other's commit.
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${row.agentId}`}, 0))`,
       );
-      const otherCustody =
-        row.state === "accepted" ? undefined : await findOtherAgentCustody(transaction, row.agentId, row.id);
+      const subject = {
+        deliveryId: row.id,
+        agentId: row.agentId,
+        sessionId: row.sessionId,
+        computerKind: row.computerKind,
+      };
+      const otherCustody = row.state === "accepted" ? undefined : await findOtherCustody(transaction, subject);
+      const laneKey = occupancyScopeKey(deliveryOccupancyScope(subject));
       let steerTarget: { id: string; turnId: string } | undefined;
       if (otherCustody) {
         const instanceId = this.#registry.currentInstanceId(row.computerId);
@@ -393,6 +517,17 @@ export class ImDeliveryWorker {
           otherCustody.reportOwnerInstanceId !== instanceId ||
           !this.#registry.supportsCapability(row.computerId, instanceId, RUNTIME_CAPABILITY.imSteer)
         ) {
+          // A declined steer must be deferred, not skipped: returning without advancing the row
+          // makes the same earliest row win every tick and block all other tenants' deliveries.
+          // A Cloud row defers the same way when a competing claim took its Session first; there
+          // is no steer frame, so it waits for its turn instead of re-selecting every tick.
+          await transaction
+            .update(imMessageDeliveries)
+            .set({
+              nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
+              lastErrorCode: custodyDeferralCode(row.computerKind),
+            })
+            .where(eq(imMessageDeliveries.id, row.id));
           return undefined;
         }
         steerTarget = { id: otherCustody.id, turnId: otherCustody.turnId };
@@ -406,7 +541,13 @@ export class ImDeliveryWorker {
             lastErrorCode: null,
           })
           .where(and(eq(imMessageDeliveries.id, row.id), eq(imMessageDeliveries.state, "accepted")));
-        return { id: row.id, agentId: row.agentId, queuedAt: row.nextAttemptAt.getTime(), kind: "recovery" as const };
+        return {
+          id: row.id,
+          agentId: row.agentId,
+          laneKey,
+          queuedAt: row.nextAttemptAt.getTime(),
+          kind: "recovery" as const,
+        };
       }
       const persistedRequest = row.dispatchPayload
         ? DirectImMessageDeliveryRequestSchema.safeParse(row.dispatchPayload)
@@ -476,6 +617,7 @@ export class ImDeliveryWorker {
         ? {
             id: row.id,
             agentId: row.agentId,
+            laneKey,
             queuedAt: row.nextAttemptAt.getTime(),
             kind: "steer" as const,
             claimToken,
@@ -485,6 +627,7 @@ export class ImDeliveryWorker {
         : {
             id: row.id,
             agentId: row.agentId,
+            laneKey,
             queuedAt: row.nextAttemptAt.getTime(),
             kind: "pending" as const,
             claimToken,
@@ -716,29 +859,42 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE", claimToken);
       return;
     }
+    /*
+     * E4 Cloud branch: a Cloud Computer is a logical identity with one Sandbox Runner per Agent
+     * Session, so deliveries route through the per-Sandbox Cloud dispatch owner, never the Local
+     * runtime registry (`computer.currentInstanceId`/`registry.currentInstanceId` are Local-only
+     * facts). Cloud pending-deadline discipline, deliberately reusing Local bounds:
+     * - the claim lease (claimLeaseMs) and operation deadline (operationTimeoutMs) are unchanged:
+     *   Cloud dispatch is a short custody write + control-frame send, never a wait for cold start;
+     * - an unready environment/Runner is a TRANSIENT failure retried on RETRY_DELAY_MS, so long
+     *   allocations are absorbed by repeated short attempts instead of one long in-operation wait;
+     * - no Local admission/queue-age TTL applies (maxQueueAgeMs is unset in production wiring);
+     *   the delivery's own expiresAt — set at ingress and protected by the Cloud-aware
+     *   inbox/janitor retention — is the bounded deadline for the UNDISPATCHED pending input;
+     *   once a dispatch window is frozen, its runtime-budget deadline (separate from the short
+     *   operationTimeoutMs and ingress TTL) bounds it; accepted-unreported custody is never expired.
+     */
+    if (row.computer.kind === "cloud") {
+      await this.#deliverCloud(row, claimToken, lease, signal);
+      return;
+    }
     const instanceId = this.#registry.currentInstanceId(row.computer.id);
     if (!instanceId || row.computer.currentInstanceId !== instanceId) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE", claimToken);
       return;
     }
-    const parsedPersistedRequest = row.delivery.dispatchPayload
-      ? DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload)
-      : undefined;
-    if (
-      parsedPersistedRequest &&
-      (!parsedPersistedRequest.success ||
-        parsedPersistedRequest.data.deliveryId !== row.delivery.id ||
-        parsedPersistedRequest.data.imMessageId !== row.message.id ||
-        parsedPersistedRequest.data.sessionId !== row.session.id ||
-        parsedPersistedRequest.data.agentId !== row.agent.id ||
-        parsedPersistedRequest.data.placementGeneration !== row.placement.generation ||
-        parsedPersistedRequest.data.requestId !== row.delivery.dispatchRequestId ||
-        computeDirectInputHash(parsedPersistedRequest.data) !== row.delivery.dispatchInputHash)
-    ) {
+    const persisted = readPersistedDeliveryRequest({
+      delivery: row.delivery,
+      message: row.message,
+      session: row.session,
+      agent: row.agent,
+      placementGeneration: row.placement.generation,
+    });
+    if (persisted.status === "invalid") {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_DISPATCH_PAYLOAD_INVALID", claimToken);
       return;
     }
-    const persistedRequest = parsedPersistedRequest?.data;
+    const persistedRequest = persisted.status === "valid" ? persisted.request : undefined;
     const replyRole = persistedRequest
       ? persistedRequest.replyRole
       : await this.#replyRole(row.message.id, row.session.kind, row.message.threadKey);
@@ -754,7 +910,16 @@ export class ImDeliveryWorker {
     if (!runtime) return;
     // A late acceptance may commit after this delivery was claimed. Recheck at
     // the last boundary before any reconcile or delivery frame reaches runtime.
-    if (await hasOtherAgentCustody(this.#database, row.agent.id, deliveryId)) {
+    // The subject is Local here (the Cloud branch returned above), so this is the
+    // unchanged Agent-wide fence.
+    if (
+      await hasOtherCustody(this.#database, {
+        deliveryId,
+        agentId: row.agent.id,
+        sessionId: row.session.id,
+        computerKind: row.computer.kind,
+      })
+    ) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_AGENT_CUSTODY_FENCED", claimToken);
       return;
     }
@@ -875,6 +1040,24 @@ export class ImDeliveryWorker {
     }
   }
 
+  /** One claimed Cloud delivery: delegated to the cohesive Cloud coordinator. */
+  async #deliverCloud(
+    row: {
+      delivery: typeof imMessageDeliveries.$inferSelect;
+      message: typeof imMessages.$inferSelect;
+      session: typeof sessions.$inferSelect;
+      placement: typeof sessionPlacements.$inferSelect;
+      imBinding: typeof imBindings.$inferSelect;
+      agent: typeof agents.$inferSelect;
+      computer: typeof computers.$inferSelect;
+    },
+    claimToken: string,
+    lease: ClaimLease,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.#cloudCoordinator.deliver(row, claimToken, lease, signal);
+  }
+
   async #recover(deliveryId: string): Promise<void> {
     const [row] = await this.#database
       .select({
@@ -925,34 +1108,24 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE");
       return;
     }
+    /*
+     * E4 Cloud recovery: an accepted Cloud delivery owes a Turn Report from its Sandbox Runner.
+     * While the allocation still owns the report, recovery waits for the Runner's journal-driven
+     * re-report (transient retry); once the allocation is superseded or released, the owner
+     * settles the delivery exactly once as unknown/turn_state_unknown — never a blind replay.
+     */
+    if (row.computer.kind === "cloud") {
+      await this.#cloudCoordinator.recover(deliveryId);
+      return;
+    }
     const instanceId = this.#registry.currentInstanceId(row.computer.id);
     if (!instanceId || row.computer.currentInstanceId !== instanceId) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
       return;
     }
-    let runtime: EffectiveRuntimeSnapshot | undefined;
-    if (row.delivery.dispatchPayload !== null) {
-      const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
-      const pinnedInputHash = pinned.success ? computeDirectInputHash(pinned.data) : undefined;
-      if (
-        !pinned.success ||
-        pinned.data.deliveryId !== row.delivery.id ||
-        pinned.data.imMessageId !== row.delivery.messageId ||
-        pinned.data.sessionId !== row.session.id ||
-        pinned.data.agentId !== row.agent.id ||
-        pinned.data.placementGeneration !== row.placement.generation ||
-        pinned.data.requestId !== row.delivery.dispatchRequestId ||
-        pinnedInputHash !== row.delivery.dispatchInputHash ||
-        pinnedInputHash !== row.delivery.inputHash
-      ) {
-        await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
-        return;
-      }
-      runtime = row.agent.status === "active" ? pinned.data.runtime : undefined;
-    } else if (row.agent.status === "active") {
-      this.#onDiagnostic("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
-      runtime = await this.#assembleRuntime(deliveryId, row.session.id, "recovery");
-    }
+    const recovery = await this.#resolveRecoveryRuntime(row, deliveryId);
+    if ("invalid" in recovery) return;
+    const runtime = recovery.runtime;
     if (row.agent.status === "active" && !runtime) return;
     try {
       await this.#domain.requestReconcile(row.computer.id, instanceId, {
@@ -969,6 +1142,43 @@ export class ImDeliveryWorker {
     } catch {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_FAILED");
     }
+  }
+
+  /**
+   * The Local recovery runtime: a pinned dispatch payload is validated exactly, a legacy row may
+   * fall back to the assembled snapshot only while the Agent is still active.
+   */
+  async #resolveRecoveryRuntime(
+    row: {
+      delivery: typeof imMessageDeliveries.$inferSelect;
+      session: typeof sessions.$inferSelect;
+      agent: typeof agents.$inferSelect;
+      placement: typeof sessionPlacements.$inferSelect;
+    },
+    deliveryId: string,
+  ): Promise<{ invalid: true } | { runtime: EffectiveRuntimeSnapshot | undefined }> {
+    if (row.delivery.dispatchPayload === null) {
+      if (row.agent.status !== "active") return { runtime: undefined };
+      this.#onDiagnostic("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
+      return { runtime: await this.#assembleRuntime(deliveryId, row.session.id, "recovery") };
+    }
+    const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
+    const pinnedInputHash = pinned.success ? computeDirectInputHash(pinned.data) : undefined;
+    if (
+      !pinned.success ||
+      pinned.data.deliveryId !== row.delivery.id ||
+      pinned.data.imMessageId !== row.delivery.messageId ||
+      pinned.data.sessionId !== row.session.id ||
+      pinned.data.agentId !== row.agent.id ||
+      pinned.data.placementGeneration !== row.placement.generation ||
+      pinned.data.requestId !== row.delivery.dispatchRequestId ||
+      pinnedInputHash !== row.delivery.dispatchInputHash ||
+      pinnedInputHash !== row.delivery.inputHash
+    ) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+      return { invalid: true };
+    }
+    return { runtime: row.agent.status === "active" ? pinned.data.runtime : undefined };
   }
 
   async #assembleRuntime(
@@ -1054,12 +1264,17 @@ export class ImDeliveryWorker {
     return { admitted: true, result };
   }
 
-  async #recordFailure(deliveryId: string, code: string, claimToken?: string): Promise<void> {
+  async #recordFailure(
+    deliveryId: string,
+    code: string,
+    claimToken?: string,
+    retryDelayMs: number = RETRY_DELAY_MS,
+  ): Promise<void> {
     const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
     setActiveSpanAttributes(outcomeAttrs("failed", bounded));
     const [updated] = await this.#database
       .update(imMessageDeliveries)
-      .set({ lastErrorCode: bounded, nextAttemptAt: new Date(this.#now() + RETRY_DELAY_MS) })
+      .set({ lastErrorCode: bounded, nextAttemptAt: new Date(this.#now() + retryDelayMs) })
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
@@ -1179,176 +1394,6 @@ export class ImDeliveryWorker {
     return renewed !== undefined;
   }
 
-  async #history(
-    session: typeof sessions.$inferSelect,
-    providerContext: ProviderInboundContext,
-    externalMessageId: string,
-    occurredAt: Date,
-    providerRevisionKey: string,
-    messageId: string,
-  ): Promise<{
-    items: Array<{
-      imMessageId: string;
-      occurredAt: string;
-      text: string;
-      providerRef: RuntimeProviderMessageRef;
-    }>;
-    truncated: boolean;
-  }> {
-    const rootExternalId = threadRootExternalId(providerContext);
-    const [lastAccepted] = await this.#database
-      .select({
-        id: imMessages.id,
-        occurredAt: imMessages.occurredAt,
-        providerRevisionKey: imMessages.providerRevisionKey,
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
-      .where(
-        and(
-          eq(imMessageDeliveries.sessionId, session.id),
-          inArray(imMessageDeliveries.state, ["accepted", "steered"]),
-          messageBefore(occurredAt, providerRevisionKey, messageId),
-        ),
-      )
-      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
-      .limit(1);
-    const historyBoundary = and(
-      messageBefore(occurredAt, providerRevisionKey, messageId),
-      ...(lastAccepted
-        ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]
-        : []),
-      notExists(
-        this.#database
-          .select({ id: newerHistoryRevisions.id })
-          .from(newerHistoryRevisions)
-          .where(
-            and(
-              eq(newerHistoryRevisions.imBindingId, imMessages.imBindingId),
-              eq(newerHistoryRevisions.channelId, imMessages.channelId),
-              eq(newerHistoryRevisions.externalMessageId, imMessages.externalMessageId),
-              eq(newerHistoryRevisions.direction, "inbound"),
-              or(
-                gt(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
-                and(
-                  eq(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
-                  or(
-                    gt(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
-                    and(
-                      eq(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
-                      gt(newerHistoryRevisions.id, imMessages.id),
-                    ),
-                  ),
-                ),
-              ),
-              or(
-                lt(newerHistoryRevisions.occurredAt, occurredAt),
-                and(
-                  eq(newerHistoryRevisions.occurredAt, occurredAt),
-                  or(
-                    lt(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
-                    and(
-                      eq(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
-                      lt(newerHistoryRevisions.id, messageId),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-      ),
-    );
-    const selection = {
-      id: imMessages.id,
-      operation: imMessages.operation,
-      occurredAt: imMessages.occurredAt,
-      content: imMessages.content,
-      channelId: imMessages.channelId,
-      externalMessageId: imMessages.externalMessageId,
-      authorKind: imMessages.authorKind,
-      authorExternalId: imMessages.authorExternalId,
-      providerContext: imMessages.providerContext,
-      imBinding: imBindings,
-    };
-    const [root] =
-      session.kind === "thread" && rootExternalId
-        ? await this.#database
-            .select(selection)
-            .from(imMessages)
-            .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
-            .where(
-              and(
-                eq(imMessages.imBindingId, session.imBindingId),
-                eq(imMessages.channelId, session.channelId),
-                eq(imMessages.direction, "inbound"),
-                eq(imMessages.externalMessageId, rootExternalId),
-                ne(imMessages.externalMessageId, externalMessageId),
-                historyBoundary,
-              ),
-            )
-            .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
-            .limit(1)
-        : [];
-    const rows = await this.#database
-      .select({
-        ...selection,
-      })
-      .from(imMessages)
-      .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
-      .where(
-        and(
-          eq(imMessages.imBindingId, session.imBindingId),
-          eq(imMessages.channelId, session.channelId),
-          eq(imMessages.direction, "inbound"),
-          ne(imMessages.externalMessageId, externalMessageId),
-          ...(session.kind === "thread" && session.threadKey ? [eq(imMessages.threadKey, session.threadKey)] : []),
-          historyBoundary,
-        ),
-      )
-      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
-      .limit(101);
-    const selected = rows.slice(0, root ? 99 : 100);
-    const items: Array<{
-      imMessageId: string;
-      occurredAt: string;
-      text: string;
-      providerRef: RuntimeProviderMessageRef;
-    }> = [];
-    let bytes = 2;
-    let truncated = rows.length > selected.length;
-    const rootItem = root
-      ? {
-          imMessageId: root.id,
-          occurredAt: root.occurredAt.toISOString(),
-          text:
-            root.operation === "deleted"
-              ? "[deleted]"
-              : truncateUtf8(root.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
-          providerRef: runtimeProviderMessageRef(root, root.imBinding),
-        }
-      : undefined;
-    if (rootItem) bytes += Buffer.byteLength(JSON.stringify(rootItem), "utf8");
-    for (const row of selected) {
-      const item = {
-        imMessageId: row.id,
-        occurredAt: row.occurredAt.toISOString(),
-        text:
-          row.operation === "deleted"
-            ? "[deleted]"
-            : truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
-        providerRef: runtimeProviderMessageRef(row, row.imBinding),
-      };
-      const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + (items.length > 0 || rootItem ? 1 : 0);
-      if (bytes + itemBytes > RUNTIME_IM_HISTORY_MAX_BYTES) {
-        truncated = true;
-        break;
-      }
-      items.push(item);
-      bytes += itemBytes;
-    }
-    return { items: [...(rootItem ? [rootItem] : []), ...items.reverse()], truncated };
-  }
-
   async #buildDeliveryContent(input: {
     delivery: Pick<typeof imMessageDeliveries.$inferSelect, "attention">;
     message: typeof imMessages.$inferSelect;
@@ -1359,14 +1404,14 @@ export class ImDeliveryWorker {
     const resources = input.message.content.resources ?? [];
     const history =
       input.delivery.attention === "direct" && (input.receiveMode === "mention_only" || input.session.kind === "thread")
-        ? await this.#history(
-            input.session,
-            input.message.providerContext,
-            input.message.externalMessageId,
-            input.message.occurredAt,
-            input.message.providerRevisionKey,
-            input.message.id,
-          )
+        ? await loadDirectHistory(this.#database, {
+            session: input.session,
+            providerContext: input.message.providerContext,
+            externalMessageId: input.message.externalMessageId,
+            occurredAt: input.message.occurredAt,
+            providerRevisionKey: input.message.providerRevisionKey,
+            messageId: input.message.id,
+          })
         : { items: [], truncated: false };
     return {
       kind: "text",
@@ -1412,94 +1457,4 @@ export class ImDeliveryWorker {
       .limit(1);
     return threadDelivery ? "observer" : undefined;
   }
-}
-
-type CustodyQuery = Pick<DatabaseClient | DatabaseTransaction, "select">;
-
-interface ClaimLease {
-  assertOwned(): Promise<boolean>;
-  stop(): Promise<void>;
-}
-
-async function hasOtherAgentCustody(database: CustodyQuery, agentId: string, deliveryId: string): Promise<boolean> {
-  return (await findOtherAgentCustody(database, agentId, deliveryId)) !== undefined;
-}
-
-async function findOtherAgentCustody(database: CustodyQuery, agentId: string, deliveryId: string) {
-  const [row] = await database
-    .select({
-      id: imMessageDeliveries.id,
-      sessionId: imMessageDeliveries.sessionId,
-      state: imMessageDeliveries.state,
-      reportedAt: imMessageDeliveries.reportedAt,
-      turnId: imMessageDeliveries.turnId,
-      reportOwnerInstanceId: imMessageDeliveries.reportOwnerInstanceId,
-    })
-    .from(imMessageDeliveries)
-    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-    .innerJoin(agents, eq(agents.id, imBindings.agentId))
-    .where(
-      and(
-        eq(imBindings.agentId, agentId),
-        ne(imMessageDeliveries.id, deliveryId),
-        isNull(sessions.endedAt),
-        eq(imBindings.status, "active"),
-        ne(agents.status, "deleted"),
-        uncertainAgentCustody(imMessageDeliveries),
-      ),
-    )
-    .limit(1);
-  return row;
-}
-
-function uncertainAgentCustody(delivery: typeof imMessageDeliveries | typeof acceptedDeliveries) {
-  return or(
-    and(eq(delivery.state, "accepted"), isNull(delivery.reportedAt)),
-    and(inArray(delivery.state, ["pending", "expired"]), isNotNull(delivery.dispatchRequestId)),
-    and(eq(delivery.state, "pending"), like(delivery.lastErrorCode, `${DISPATCH_CLAIM_PREFIX}%`)),
-  );
-}
-
-function messageBefore(occurredAt: Date, providerRevisionKey: string, messageId: string) {
-  return or(
-    lt(imMessages.occurredAt, occurredAt),
-    and(
-      eq(imMessages.occurredAt, occurredAt),
-      or(
-        lt(imMessages.providerRevisionKey, providerRevisionKey),
-        and(eq(imMessages.providerRevisionKey, providerRevisionKey), lt(imMessages.id, messageId)),
-      ),
-    ),
-  );
-}
-
-function messageAfter(occurredAt: Date, providerRevisionKey: string, messageId: string) {
-  return or(
-    gt(imMessages.occurredAt, occurredAt),
-    and(
-      eq(imMessages.occurredAt, occurredAt),
-      or(
-        gt(imMessages.providerRevisionKey, providerRevisionKey),
-        and(eq(imMessages.providerRevisionKey, providerRevisionKey), gt(imMessages.id, messageId)),
-      ),
-    ),
-  );
-}
-
-function truncateUtf8(value: string, maxBytes: number): string {
-  const encoded = Buffer.from(value, "utf8");
-  return encoded.byteLength <= maxBytes ? value : encoded.subarray(0, maxBytes).toString("utf8");
-}
-
-function fitDeliveryFrame(request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest): void {
-  const fits = () => runtimeFrameByteLength(JSON.stringify(request)) <= RUNTIME_MAX_FRAME_BYTES;
-  while (!fits() && request.content.history && request.content.history.length > 0) {
-    request.content.history.shift();
-    request.content.historyTruncated = true;
-  }
-  while (!fits() && request.content.resources && request.content.resources.length > 0) {
-    request.content.resources.pop();
-  }
-  if (!fits()) throw new Error("IM_DELIVERY_FRAME_TOO_LARGE");
 }

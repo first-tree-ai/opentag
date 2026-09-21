@@ -1,12 +1,16 @@
 import { z } from "zod";
-import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js";
+import { AGENT_RUNTIME_PROVIDERS, type AgentRuntimeProvider, AgentRuntimeProviderSchema } from "./agent.js";
 import { ChannelNameSchema } from "./channel-name.js";
 import {
   ComputerPlatformSchema,
   IM_CLI_PROVIDERS,
   ImCliProviderSchema,
   ImCliReadinessStatusSchema,
+  PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   ProviderReadinessStatusSchema,
+  requestsProviderReadinessV1,
+  requestsProviderReadinessV2,
 } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 import { SemVerStringSchema } from "./semver.js";
@@ -14,7 +18,13 @@ import { SemVerStringSchema } from "./semver.js";
 export const RUNTIME_PROTOCOL_V1 = 1 as const;
 export const RUNTIME_PROTOCOL_V2 = 2 as const;
 export const RUNTIME_PROTOCOL_VERSION = RUNTIME_PROTOCOL_V2;
-export const RUNTIME_SUPPORTED_PROTOCOL_VERSIONS = { min: RUNTIME_PROTOCOL_V1, max: RUNTIME_PROTOCOL_V2 } as const;
+export const RUNTIME_SUPPORTED_PROTOCOL_VERSIONS = { min: RUNTIME_PROTOCOL_V2, max: RUNTIME_PROTOCOL_V2 } as const;
+export const RUNTIME_PROVIDER_READINESS_V1 = 1 as const;
+export const RUNTIME_PROVIDER_READINESS_V2 = 2 as const;
+/** Frozen v1 wire vocabulary. Pi must never appear under version 1. */
+export const RUNTIME_PROVIDER_READINESS_V1_PROVIDERS = ["codex", "claude-code"] as const;
+/** Explicit v2 wire vocabulary. Opt-in only; never derived into v1. */
+export const RUNTIME_PROVIDER_READINESS_V2_PROVIDERS = ["codex", "claude-code", "pi"] as const;
 
 export const RUNTIME_V0_CAPABILITIES = {
   sessionReconcile: 1,
@@ -25,6 +35,7 @@ export const RUNTIME_V0_CAPABILITIES = {
 } as const;
 
 export const RUNTIME_CAPABILITY = {
+  contextTreeSettings: "runtime.contextTreeSettings",
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
   channelTarget: "runtime.channelTarget",
@@ -33,12 +44,17 @@ export const RUNTIME_CAPABILITY = {
   imCredentialGrant: "runtime.imCredentialGrant",
   providerCliPrewarm: "runtime.providerCliPrewarm",
   providerCliReconcile: "runtime.providerCliReconcile",
+  providerProxy: "runtime.providerProxy",
+  runtimeCredential: "runtime.runtimeCredential",
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
+  webTools: "runtime.webTools",
+  mcpGateway: "runtime.mcpGateway",
 } as const;
 
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
+  [RUNTIME_CAPABILITY.contextTreeSettings]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },
@@ -47,14 +63,18 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.providerCliPrewarm]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.providerProxy]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.runtimeCredential]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.mcpGateway]: { min: 1, max: 1 },
 } as const;
 
 export const RUNTIME_CLIENT_CAPABILITY_OFFERS = RUNTIME_SERVER_CAPABILITY_OFFERS;
-export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [];
-export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [];
+export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [RUNTIME_CAPABILITY.contextTreeSettings];
+export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [RUNTIME_CAPABILITY.contextTreeSettings];
 
 export const RUNTIME_MAX_FRAME_BYTES = 64 * 1024;
 export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;
@@ -190,13 +210,33 @@ export const RuntimeImCliReadinessCollectionSchema = z
     ),
   );
 
-export const RuntimeProviderReadinessNegotiationSchema = z
+export const RuntimeProviderReadinessV1ProviderSchema = z.enum(RUNTIME_PROVIDER_READINESS_V1_PROVIDERS);
+export const RuntimeProviderReadinessV2ProviderSchema = z.enum(RUNTIME_PROVIDER_READINESS_V2_PROVIDERS);
+
+export const RuntimeProviderReadinessNegotiationV1Schema = z
   .object({
-    version: z.literal(1),
-    providers: z.array(AgentRuntimeProviderSchema).max(AGENT_RUNTIME_PROVIDERS.length),
+    version: z.literal(RUNTIME_PROVIDER_READINESS_V1),
+    providers: z.array(RuntimeProviderReadinessV1ProviderSchema).max(RUNTIME_PROVIDER_READINESS_V1_PROVIDERS.length),
   })
   .strict()
-  .superRefine((negotiation, context) => validateCanonicalProviderIds(negotiation.providers, context));
+  .superRefine((negotiation, context) =>
+    validateCanonicalProviderIds(negotiation.providers, context, RUNTIME_PROVIDER_READINESS_V1_PROVIDERS),
+  );
+
+export const RuntimeProviderReadinessNegotiationV2Schema = z
+  .object({
+    version: z.literal(RUNTIME_PROVIDER_READINESS_V2),
+    providers: z.array(RuntimeProviderReadinessV2ProviderSchema).max(RUNTIME_PROVIDER_READINESS_V2_PROVIDERS.length),
+  })
+  .strict()
+  .superRefine((negotiation, context) =>
+    validateCanonicalProviderIds(negotiation.providers, context, RUNTIME_PROVIDER_READINESS_V2_PROVIDERS),
+  );
+
+export const RuntimeProviderReadinessNegotiationSchema = z.discriminatedUnion("version", [
+  RuntimeProviderReadinessNegotiationV1Schema,
+  RuntimeProviderReadinessNegotiationV2Schema,
+]);
 
 const heartbeatPolicyShape = {
   heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
@@ -438,6 +478,11 @@ export const ServerRuntimeFrameSchema = z.union([
   RuntimeErrorFrameSchema,
 ]);
 
+export type RuntimeProviderReadinessVersion =
+  | typeof RUNTIME_PROVIDER_READINESS_V1
+  | typeof RUNTIME_PROVIDER_READINESS_V2;
+export type RuntimeProviderReadinessV1Provider = (typeof RUNTIME_PROVIDER_READINESS_V1_PROVIDERS)[number];
+export type RuntimeProviderReadinessV2Provider = (typeof RUNTIME_PROVIDER_READINESS_V2_PROVIDERS)[number];
 export type RuntimeProtocolVersion = typeof RUNTIME_PROTOCOL_V1 | typeof RUNTIME_PROTOCOL_V2;
 export type RuntimeProtocolRange = z.infer<typeof RuntimeProtocolRangeSchema>;
 export type RuntimeCapabilityRange = z.infer<typeof RuntimeCapabilityRangeSchema>;
@@ -464,6 +509,31 @@ export type RuntimeChannelTarget = z.infer<typeof RuntimeChannelTargetSchema>;
 export type RuntimeErrorFrame = z.infer<typeof RuntimeErrorFrameSchema>;
 export type ClientRuntimeFrame = z.infer<typeof ClientRuntimeFrameSchema>;
 export type ServerRuntimeFrame = z.infer<typeof ServerRuntimeFrameSchema>;
+
+export function advertisedProviderReadiness(
+  version: RuntimeProviderReadinessVersion,
+  admitted: readonly AgentRuntimeProvider[],
+): RuntimeProviderReadinessNegotiation | undefined {
+  if (version === RUNTIME_PROVIDER_READINESS_V2) {
+    const providers = RUNTIME_PROVIDER_READINESS_V2_PROVIDERS.filter((provider) => admitted.includes(provider));
+    return providers.length === 0 ? undefined : { version: RUNTIME_PROVIDER_READINESS_V2, providers };
+  }
+  const providers = RUNTIME_PROVIDER_READINESS_V1_PROVIDERS.filter((provider) => admitted.includes(provider));
+  return providers.length === 0 ? undefined : { version: RUNTIME_PROVIDER_READINESS_V1, providers };
+}
+
+export function negotiateProviderReadinessFromHeaders(
+  headers: { readonly [header: string]: string | string[] | undefined },
+  admitted: readonly AgentRuntimeProvider[],
+): RuntimeProviderReadinessNegotiation | undefined {
+  if (requestsProviderReadinessV2(headers[PROVIDER_READINESS_V2_HEADER])) {
+    return advertisedProviderReadiness(RUNTIME_PROVIDER_READINESS_V2, admitted);
+  }
+  if (requestsProviderReadinessV1(headers[PROVIDER_READINESS_V1_HEADER])) {
+    return advertisedProviderReadiness(RUNTIME_PROVIDER_READINESS_V1, admitted);
+  }
+  return undefined;
+}
 
 export function negotiateRuntimeCapabilities(
   local: RuntimeCapabilityOffers,
@@ -523,10 +593,11 @@ function validateCanonicalProviders(
 }
 
 function validateCanonicalProviderIds(
-  providers: readonly (typeof AGENT_RUNTIME_PROVIDERS)[number][],
+  providers: readonly AgentRuntimeProvider[],
   context: z.RefinementCtx,
+  canonical: readonly AgentRuntimeProvider[] = AGENT_RUNTIME_PROVIDERS,
 ): void {
-  validateCanonicalIds(providers, AGENT_RUNTIME_PROVIDERS, "Provider readiness", context);
+  validateCanonicalIds(providers, canonical, "Provider readiness", context);
 }
 
 function validateCanonicalIds<T extends string>(

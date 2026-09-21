@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ContextTreeRepositorySchema } from "./context-tree.js";
 import {
   AGENT_SLUG_MAX_LENGTH,
   RuntimeInstructionSchema,
@@ -20,7 +21,7 @@ export const AgentNameSchema = z
   );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 export const AgentCreationIntentIdSchema = z.string().uuid();
-export const AGENT_RUNTIME_PROVIDERS = ["codex", "claude-code"] as const;
+export const AGENT_RUNTIME_PROVIDERS = ["codex", "claude-code", "pi"] as const;
 export const AgentRuntimeProviderSchema = z.enum(AGENT_RUNTIME_PROVIDERS);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 export const AgentStatusSchema = z.enum(["active", "suspended"]);
@@ -47,6 +48,7 @@ export const AgentRuntimeConfigSchema = z
     reasoningEffort: RuntimeReasoningEffortSchema.nullable(),
     instructions: AgentInstructionsSchema,
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable(),
+    contextTreeRepository: ContextTreeRepositorySchema.nullable(),
   })
   .strict();
 

@@ -106,6 +106,107 @@ describe("structured error redaction", () => {
     expect(() => redactSensitive(cyclic)).not.toThrow();
   });
 
+  /*
+   * Two failure modes found by running the CLI against a live Server, both of which made the
+   * redactor lie about what it was given:
+   *
+   * 1. Substring matching on "authorization" blanked MCP's whole authorization *summary*, so the CLI
+   *    printed `authKind none` for a stored Bearer key.
+   * 2. `normalizedKey` only folded `-` to `_`, never camelCase, so `bearerKey`, `privateKey`, and
+   *    `refreshKey` were emitted verbatim — the names a credential DTO is most likely to use.
+   */
+  it("keeps a credential-free structural field whose name only resembles a secret", () => {
+    // The real MCP authorization summary: no secret anywhere, and the CLI cannot render a row
+    // without it.
+    const summary = {
+      authorization: {
+        kind: "bearer",
+        status: "active",
+        hasCredential: true,
+        authorizationServer: "https://auth.example.com",
+        accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    expect(redactSensitive(summary)).toEqual(summary);
+  });
+
+  it("redacts camelCase credential names as well as the separated spellings", () => {
+    const redacted = redactSensitive({
+      bearerKey: "b",
+      privateKey: "p",
+      refreshKey: "r",
+      apiKey: "a",
+      accessKey: "ac",
+      clientSecret: "cs",
+      password: "pw",
+      "refresh-token": "rt",
+      credential_ciphertext: "cc",
+    }) as Record<string, unknown>;
+    for (const value of Object.values(redacted)) expect(value).toBe("[REDACTED]");
+  });
+
+  it("does not exempt a name that could actually carry a secret", () => {
+    // The exemption is exact-name, so a real header or ciphertext under a similar name is still cut.
+    expect(redactSensitive({ authorizationHeader: "Bearer x", credentialCiphertext: "v2.a.b" })).toEqual({
+      authorizationHeader: "[REDACTED]",
+      credentialCiphertext: "[REDACTED]",
+    });
+  });
+
+  it("redacts a credential carried as a string under an exempted structural name", () => {
+    /*
+     * `authorization` is exempted because MCP's summary is an object. A string under the same name
+     * is an HTTP header value or a raw key — and with `authScheme: ""` this feature sends a key
+     * verbatim, so this is a shape it really produces, not a hypothetical one.
+     */
+    expect(redactSensitive({ authorization: "token ghp_abc" })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ headers: { authorization: "sk-live-raw" } })).toEqual({
+      headers: { authorization: "[REDACTED]" },
+    });
+    expect(redactSensitive({ Authorization: "sk-live-raw" })).toEqual({ Authorization: "[REDACTED]" });
+  });
+
+  it("redacts a credential wrapped in an array or object under an exempted name", () => {
+    /*
+     * The exemption cannot rest on the value merely being a container: a secret rides along just as
+     * easily one level down, and undici's raw headers can present an array. Only a value carrying the
+     * summary's own fields is the DTO the exemption exists for.
+     */
+    expect(redactSensitive({ authorization: ["sk-live"] })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ authorization: { value: "sk-live" } })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ authorization: { a: { b: "sk-live" } } })).toEqual({
+      authorization: "[REDACTED]",
+    });
+    expect(redactSensitive({ authorization: [] })).toEqual({ authorization: "[REDACTED]" });
+  });
+
+  it("keeps exempting the structural names that are safe in any spelling", () => {
+    // A URL, a timestamp, and a flag: none of the three can be a credential however it is spelled.
+    expect(
+      redactSensitive({
+        authorizationServer: "https://auth.example.com",
+        accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+        hasCredential: true,
+      }),
+    ).toEqual({
+      authorizationServer: "https://auth.example.com",
+      accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+      hasCredential: true,
+    });
+  });
+
+  it("redacts unusual casing that the camelCase split would otherwise lose", () => {
+    /*
+     * Splitting camelCase is lossy: `PassWord` becomes `pass_word` and `payLoad` becomes `pay_load`,
+     * neither of which contains the entry it should match. Both spellings are checked for this.
+     */
+    expect(redactSensitive({ PassWord: "pw", payLoad: "body", Authorization: "raw" })).toEqual({
+      PassWord: "[REDACTED]",
+      payLoad: "[REDACTED]",
+      Authorization: "[REDACTED]",
+    });
+  });
+
   it("redacts Error causes and preserves safe primitive representations", () => {
     const nested = new Error("nested password=nested-secret");
     Object.assign(nested, { code: "NESTED_FAILURE" });
@@ -146,13 +247,33 @@ describe("structured error redaction", () => {
     expect(JSON.stringify(redacted)).not.toContain("nested-secret");
   });
 
-  it("bounds nested arrays and objects and truncates deep values", () => {
+  it("redacts a command's whole output rather than a log-sized slice of it", () => {
+    /*
+     * `redactSensitive` is what the CLI presents `--json` results through, so the log serializer's
+     * caps must not apply here: `agent mcp list --json` was dropping every tool past the 32nd and
+     * rendering nested `inputSchema` as `[TRUNCATED]`, silently, because the array and depth caps
+     * lived in the redactor instead of the log path.
+     */
+    const values = Array.from({ length: 40 }, (_, index) => index);
+    const entries = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`safe${index}`, index]));
+    let nested: Record<string, unknown> = { value: "deep" };
+    for (let depth = 0; depth < 12; depth += 1) nested = { nested };
+
+    const redacted = redactSensitive({ values, entries, nested }) as Record<string, unknown>;
+    expect(redacted.values).toHaveLength(40);
+    expect(Object.keys(redacted.entries as object)).toHaveLength(70);
+    expect(JSON.stringify(redacted)).not.toContain("[TRUNCATED]");
+    // Redaction still happens: that is the security property, and it is not negotiable.
+    expect(redactSensitive({ authorization: "sk-live" })).toEqual({ authorization: "[REDACTED]" });
+  });
+
+  it("bounds nested arrays and objects and truncates deep values for the log", () => {
     const values = Array.from({ length: 40 }, (_, index) => index);
     const entries = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`safe${index}`, index]));
     let nested: Record<string, unknown> = { value: "deep" };
     for (let depth = 0; depth < 10; depth += 1) nested = { nested };
 
-    const redacted = redactSensitive({ values, entries, nested }) as Record<string, unknown>;
+    const redacted = redactForLog({ values, entries, nested }) as Record<string, unknown>;
     expect(redacted.values).toHaveLength(32);
     expect(Object.keys(redacted.entries as object)).toHaveLength(64);
     expect(JSON.stringify(redacted)).toContain("[TRUNCATED]");
@@ -457,5 +578,125 @@ second-secret\",\"other\":\"keep\"} suffix`,
     expect(new TextEncoder().encode(redactForLog("x".repeat(20_000))).byteLength).toBeLessThanOrEqual(
       STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
     );
+  });
+});
+
+/*
+ * Every case below drives one physical branch of the redaction scanner: the scanners exist for
+ * malformed or adversarial command output, so the inputs are the shapes a real CLI sees (CR-only
+ * line endings, escaped quotes inside a header value, unterminated serialized values, invalid JSON
+ * escapes). Assertions stay on the safety property — the secret is gone — plus the exact output where
+ * the surrounding text must survive.
+ */
+describe("structured error redaction scanners", () => {
+  it("treats a lone carriage return as the end of a credential header line", () => {
+    expect(redactForLog("Cookie: sk-live-secret\rX-Safe: ok")).toBe("Cookie: [REDACTED]\rX-Safe: ok");
+  });
+
+  it("skips escaped quotes before deciding whether a header match is inline", () => {
+    // The backslash escapes the quote, so the scanner must step over it while tracking an opening
+    // quote, and the match is therefore treated as an inline (not line-anchored) credential.
+    const redacted = redactForLog('x" y \\"Cookie: sk-live-secret\\"');
+    expect(redacted).not.toContain("sk-live-secret");
+    expect(redacted).toContain("[REDACTED]");
+  });
+
+  it("ends an enclosing-quoted credential value at a line break", () => {
+    const redacted = redactForLog('x" y \\"cookie: sk-live-secret\nX-Safe: ok');
+    expect(redacted).not.toContain("sk-live-secret");
+    expect(redacted).toContain("X-Safe: ok");
+  });
+
+  it("runs an inline quoted credential value to the end when the closing quote is escaped", () => {
+    const redacted = redactForLog('x {Cookie: "sk-live-secret\\"');
+    expect(redacted).not.toContain("sk-live-secret");
+    expect(redacted).toContain("[REDACTED]");
+  });
+
+  it("runs an inline unquoted credential value to the end when no delimiter follows", () => {
+    const redacted = redactForLog("x {cookie: sk-live-secret");
+    expect(redacted).not.toContain("sk-live-secret");
+  });
+
+  it("consumes an inline structural credential value and runs to the end when it never closes", () => {
+    const closed = redactForLog('x {set-cookie: ["sk-live-secret", "second-secret"], other: keep');
+    expect(closed).not.toContain("sk-live-secret");
+    expect(closed).not.toContain("second-secret");
+    expect(closed).toContain("other: keep");
+
+    // An escaped quote inside the structural value keeps the scanner inside the string.
+    const escapedQuote = redactForLog('x {cookie: ["sk-live-secret\\"tail"], other: keep');
+    expect(escapedQuote).not.toContain("sk-live-secret");
+    expect(escapedQuote).toContain("other: keep");
+
+    const unterminated = redactForLog('x {set-cookie: ["sk-live-secret');
+    expect(unterminated).not.toContain("sk-live-secret");
+  });
+
+  it("fails closed when a serialized credential field carries no value at all", () => {
+    const redacted = redactForLog(String.raw`prefix {\"cookie\":`);
+    expect(redacted).toContain("prefix");
+    expect(redacted).toContain("[REDACTED]");
+  });
+
+  it("decodes a serialized unicode escape and rejects a malformed one", () => {
+    // A `\u0041` escape inside a serialized credential value decodes before the value ends...
+    const unicode = redactForLog(String.raw`{\"cookie\":\"\u0041secret-value\",\"other\":\"keep\"}`);
+    expect(unicode).not.toContain("secret-value");
+    expect(unicode).toContain("keep");
+
+    // ...while `\u` followed by non-hexadecimal digits is not a decodable escape.
+    const malformedUnicode = redactForLog(String.raw`{\"cookie\":\"\uZZZZsecret-value\",\"other\":\"keep\"}`);
+    expect(malformedUnicode).not.toContain("secret-value");
+    expect(malformedUnicode).toContain("keep");
+  });
+
+  it("fails closed when a serialized value ends inside an escape", () => {
+    expect(redactForLog('{"cookie":"sk-live-secret\\')).not.toContain("sk-live-secret");
+    expect(redactForLog(String.raw`{\"cookie\":\"sk-live-secret\uZZ`)).not.toContain("sk-live-secret");
+  });
+
+  it("fails closed when a serialized quoted value is never closed", () => {
+    const redacted = redactForLog(String.raw`prefix {\"cookie\":\"sk-live-secret`);
+    expect(redacted).not.toContain("sk-live-secret");
+    expect(redacted).toContain("prefix");
+  });
+
+  it("fails closed when a serialized structural value is never closed", () => {
+    const redacted = redactForLog(String.raw`prefix {\"set-cookie\":[\"sk-live-secret`);
+    expect(redacted).not.toContain("sk-live-secret");
+    expect(redacted).toContain("prefix");
+  });
+
+  it("fails closed when a serialized structural value carries an invalid escape", () => {
+    const redacted = redactForLog(String.raw`prefix {\"set-cookie\":[\"a\qsk-live-secret\",\"other\":\"keep\"}`);
+    expect(redacted).not.toContain("sk-live-secret");
+    expect(redacted).toContain("keep");
+  });
+
+  it("fails closed when a serialized unquoted value carries an invalid escape or runs to the end", () => {
+    const invalid = redactForLog(String.raw`prefix {\"cookie\":sk-live\qsecret,\"other\":\"keep\"}`);
+    expect(invalid).not.toContain("sk-live");
+    expect(invalid).toContain("keep");
+
+    const toEnd = redactForLog(String.raw`prefix {\"cookie\":sk-live-secret`);
+    expect(toEnd).not.toContain("sk-live-secret");
+  });
+
+  it("falls back to the sibling-field boundary when a serialized value cannot be delimited", () => {
+    // A value that is only an escape sequence cannot be scanned, so the fallback stops at the next
+    // serialized sibling field rather than swallowing it.
+    const sibling = redactForLog(String.raw`prefix {\"cookie\":\\,\"other\":\"keep\"}`);
+    expect(sibling).toContain("keep");
+
+    // Without a sibling field the fallback stops at the closing brace.
+    const closingBrace = redactForLog(String.raw`prefix {\"cookie\":\\,other}`);
+    expect(closingBrace).toContain("prefix");
+  });
+
+  it("keeps object-structure redaction stable for values it cannot delimit", () => {
+    // The same shapes reached through a real object rather than a serialized string.
+    expect(redactForLog({ cookie: '\\,"other":"keep"' })).toEqual({ cookie: "[REDACTED]" });
+    expect(redactForLog({ nested: { cookie: "a\\,b" } })).toEqual({ nested: { cookie: "[REDACTED]" } });
   });
 });

@@ -18,6 +18,7 @@ function authority(overrides: Record<string, unknown> = {}) {
     agentName,
     imBindingStatus: "active",
     runtimeConfig: {
+      contextTreeRepository: null,
       revision: 7,
       model: "gpt-5",
       reasoningEffort: "high",
@@ -55,6 +56,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
       reasoningEffort: "high",
       instructions: { platform: renderPlatformInstructions({ agentSlug: agentName }), agent: "Review the change." },
       budget: { maxDurationMs: 30_000 },
+      contextTreeRepository: null,
       revision: {
         agent: { sequence: 7, id: expect.stringMatching(/^[a-f0-9]{64}$/) },
         session: { sequence: 7, id: expect.stringMatching(/^[a-f0-9]{64}$/) },
@@ -169,6 +171,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
       model: "internal-model",
       reasoningEffort: "medium",
       budget: { maxDurationMs: 5_000 },
+      contextTreeRepository: null,
       revision: { agent: { sequence: 7 }, session: { sequence: 7 } },
     });
     expect(internal.revision.agent).toEqual(visible.revision.agent);
@@ -228,7 +231,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     ["suspended Agent", async () => authority({ agentStatus: "suspended" }), "AUTHORITY_INACTIVE"],
     ["deleted Agent", async () => authority({ agentStatus: "deleted" }), "AUTHORITY_INACTIVE"],
     ["missing config", async () => authority({ runtimeConfig: null }), "RUNTIME_CONFIG_MISSING"],
-    ["unsupported provider", async () => authority({ runtimeProvider: "pi" }), "UNSUPPORTED_PROVIDER"],
+    ["unsupported provider", async () => authority({ runtimeProvider: "unknown" as never }), "UNSUPPORTED_PROVIDER"],
     [
       "invalid stored config",
       async () =>

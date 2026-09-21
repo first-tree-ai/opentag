@@ -1,4 +1,5 @@
 import type { AccountComputerSummary, AgentAdminConfig } from "@opentag/shared/browser";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../../__tests__/support/router.js";
@@ -68,18 +69,22 @@ describe("AgentComputerSettings repair disclosure", () => {
   });
 
   it("requires a fresh repair action after evidence becomes unconfirmed or the Computer changes", async () => {
-    const view = render(
-      <AgentComputerSettings agent={agent(COMPUTER_ID, "action_required")} onAgentChanged={vi.fn()} />,
+    const queryClient = new QueryClient();
+    const renderPanel = (computerId: string, computerState: "action_required" | "unconfirmed") => (
+      <QueryClientProvider client={queryClient}>
+        <AgentComputerSettings agent={agent(computerId, computerState)} onAgentChanged={vi.fn()} />
+      </QueryClientProvider>
     );
+    const view = render(renderPanel(COMPUTER_ID, "action_required"));
 
     fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledTimes(1);
 
-    view.rerender(<AgentComputerSettings agent={agent(COMPUTER_ID, "unconfirmed")} onAgentChanged={vi.fn()} />);
+    view.rerender(renderPanel(COMPUTER_ID, "unconfirmed"));
     expect(screen.queryByRole("button", { name: /install command/i })).toBeNull();
 
-    view.rerender(<AgentComputerSettings agent={agent(COMPUTER_ID, "action_required")} onAgentChanged={vi.fn()} />);
+    view.rerender(renderPanel(COMPUTER_ID, "action_required"));
     expect(screen.getByRole("button", { name: "Generate an install command" })).toBeTruthy();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledTimes(1);
 
@@ -87,9 +92,7 @@ describe("AgentComputerSettings repair disclosure", () => {
     await flushAsync();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledTimes(2);
 
-    view.rerender(
-      <AgentComputerSettings agent={agent(OTHER_COMPUTER_ID, "action_required")} onAgentChanged={vi.fn()} />,
-    );
+    view.rerender(renderPanel(OTHER_COMPUTER_ID, "action_required"));
     expect(screen.getByRole("button", { name: "Generate an install command" })).toBeTruthy();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledTimes(2);
 
@@ -128,7 +131,14 @@ const boundConfig: AgentAdminConfig = {
   receiveMode: "mention_only",
   status: "active",
   revision: 2,
-  runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
+  runtimeConfig: {
+    contextTreeRepository: null,
+    revision: 1,
+    model: null,
+    reasoningEffort: null,
+    instructions: "",
+    maxDurationMs: null,
+  },
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };

@@ -5,7 +5,6 @@ import {
   type AgentUsageWindowDays,
 } from "@opentag/shared/browser";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { type ComponentProps, lazy, Suspense, useCallback, useState } from "react";
 import { browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
@@ -25,7 +24,6 @@ import {
   Banner,
   ChartPalette,
   Empty,
-  Icon,
   LayerCard,
   Loader,
   Select,
@@ -103,14 +101,7 @@ export function AgentUsageOverview({ accountId, agentId }: { accountId?: string;
         <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </div>
       <UsageSummaryState state={state} compact onRetry={retry} />
-      <Link
-        className="inline-flex items-center justify-self-end gap-1 text-sm text-kumo-link"
-        params={{ agentId }}
-        to="/agents/$agentId/usage"
-      >
-        {m.usage_view_usage()}
-        <Icon className="size-3.5" name="chevron-right" />
-      </Link>
+      <Text variant="secondary">{m.usage_description()}</Text>
     </LayerCard>
   );
 }

@@ -17,6 +17,8 @@ COPY tsconfig.json ./
 COPY apps/cli apps/cli
 COPY packages/client packages/client
 COPY packages/shared packages/shared
+# apps/cli's build invokes this repo-level script; the image build fails without it.
+COPY scripts/copy-web-tools-extension.mjs scripts/copy-web-tools-extension.mjs
 RUN pnpm --filter @opentag/shared build \
   && pnpm --filter @opentag/client build \
   && pnpm --filter open-tag build

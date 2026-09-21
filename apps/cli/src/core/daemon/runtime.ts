@@ -21,11 +21,13 @@ import { resolveChannelEnvironment } from "../channel/environment.js";
 import { resolveCommandContext } from "../command/context.js";
 import { createPortableAutoUpdater } from "../update/auto-update.js";
 import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
+import { resolveRuntimeCredentialMode } from "./credential-mode.js";
 import { applyDaemonEnvironment, buildDaemonChildEnvironment } from "./environment.js";
 import { SUPERVISOR_RESTART_EXIT_CODE } from "./handoff.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
 import { DaemonServiceError } from "./service/types.js";
+import { resolveWebToolsOptIn } from "./web-tools.js";
 
 export interface DaemonAutoUpdateOverrides {
   /** Force attaching or skipping the updater; defaults to portable installs on non-dev channels. */
@@ -224,12 +226,14 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
   const runtime = await createClientRuntime(connection, {
     home: context.home,
     environment: context.daemonEnvironment,
+    credentialMode: resolveRuntimeCredentialMode(context.daemonEnvironment),
     clientVersion: CLI_VERSION,
     cliCommand: channelConfig.binName,
     logger: runtimeLogger,
     signal,
     api: apiContext.api,
     machineToken: credential.machineToken,
+    webTools: resolveWebToolsOptIn(context.daemonEnvironment),
   });
   context.state.updater = await attachAutoUpdater(context, runtime, runtimeLogger);
   void connection.whenRegistered(signal).then(

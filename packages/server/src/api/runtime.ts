@@ -1,8 +1,9 @@
-import { HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
+import { HTTP_PATHS, negotiateProviderReadinessFromHeaders } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createServiceLoggerPort } from "../observability/index.js";
 import type { AgentRuntimeTestOwner } from "../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import type { ContextTreeOperationOwner } from "../runtime/context-tree-operation-owner.js";
 import type { ProviderCliReconcileOwner } from "../runtime/provider-cli-reconcile-owner.js";
 import type { RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
 import { type RuntimeBusinessOptions, RuntimeSession, type RuntimeSessionOptions } from "../runtime/runtime-session.js";
@@ -11,9 +12,11 @@ import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-con
 
 export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;
+  contextTreeOperationOwner?: ContextTreeOperationOwner;
   domainOwner?: RuntimeDomainOwner;
   providerCliReconcileOwner?: ProviderCliReconcileOwner;
   registry?: ConnectionRegistry;
+  runtimeCredentialOwner?: { businessOptions(): RuntimeBusinessOptions };
 }
 
 export function composeRuntimeBusinessOptions(
@@ -79,7 +82,9 @@ export function registerRuntimeRoutes(
       composeRuntimeBusinessOptions(
         providerCliReconcileOwner?.businessOptions(),
         agentRuntimeTestOwner?.businessOptions(),
+        options.contextTreeOperationOwner?.businessOptions(),
         domainOwner?.businessOptions(),
+        options.runtimeCredentialOwner?.businessOptions(),
       ),
     channelTarget: options.channelTarget,
     heartbeatIntervalMs: options.heartbeatIntervalMs,
@@ -93,10 +98,14 @@ export function registerRuntimeRoutes(
     registerTimeoutMs: options.registerTimeoutMs,
   };
   app.get(HTTP_PATHS.computerRuntimeWebSocket, { websocket: true }, (socket, request) => {
+    const providerReadiness = negotiateProviderReadinessFromHeaders(
+      request.headers,
+      SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS,
+    );
     new RuntimeSession(socket, machineAuth, computerService, registry, {
       ...sessionOptions,
-      providerReadiness:
-        request.headers[PROVIDER_READINESS_V1_HEADER] === "1" ? SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS : undefined,
+      providerReadiness: providerReadiness?.providers,
+      providerReadinessVersion: providerReadiness?.version,
     }).start();
   });
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 90_000;
@@ -110,6 +119,7 @@ export function registerRuntimeRoutes(
   app.addHook("onClose", async () => {
     clearInterval(sweep);
     agentRuntimeTestOwner?.close();
+    options.contextTreeOperationOwner?.close();
     providerCliReconcileOwner?.close();
     domainOwner?.close();
     registry.closeAll();

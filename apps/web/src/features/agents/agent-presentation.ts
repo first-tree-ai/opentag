@@ -33,6 +33,10 @@ export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
   if (agent.availability.state === "ready") {
     return readyAgentCardStatus(agent);
   }
+  // A delivery check the Computer is still running resolves by itself, like a runtime check does.
+  if (agent.availability.reason === "handoff_checking") {
+    return { label: m.agents_card_status_checking_messaging(), tone: "info" };
+  }
   if (agent.availability.state === "setting_up") {
     return { label: m.agents_card_status_setting_up_messaging(), tone: "info" };
   }
@@ -105,7 +109,7 @@ export function computerRecoveryMessage(agent: AgentDetailView): string {
   const computerName = agent.computer.displayName;
   if (agent.availability.reason === "runtime_unavailable") {
     const { provider, status } = agent.availability.dependencies.runtime;
-    const providerName = provider === "codex" ? "Codex" : "Claude Code";
+    const providerName = runtimeProviderName(provider);
     if (status === "install") {
       return m.agent_settings_computer_recovery_provider_not_installed({ computerName, providerName });
     }
@@ -166,7 +170,9 @@ export function platformLabel(platform: NonNullable<AgentSummary["computer"]>["p
 }
 
 export function runtimeProviderName(provider: AgentSummary["runtimeProvider"]): string {
-  return provider === "codex" ? "Codex" : "Claude Code";
+  if (provider === "codex") return "Codex";
+  if (provider === "claude-code") return "Claude Code";
+  return "Pi";
 }
 
 /**
@@ -199,19 +205,16 @@ export function agentStatusPresentation(agent: AgentStatusSource): { label: stri
   }
   if (availability.reason === "computer_offline") return { label: "Computer offline", tone: "warning" };
   if (availability.reason === "runtime_unavailable") {
-    // The Provider-specific wording tells a viewer what to do; a single "runtime not available" does not.
-    const { provider, status } = availability.dependencies.runtime;
-    const providerName = runtimeProviderName(provider);
-    if (status === "checking") return { label: `Checking ${providerName}`, tone: "info" };
-    if (status === "install") return { label: `${providerName} not installed`, tone: "warning" };
-    if (status === "sign-in") return { label: `${providerName} sign-in required`, tone: "warning" };
-    return { label: `${providerName} unavailable`, tone: "warning" };
+    return runtimeStatusPresentation(availability.dependencies.runtime);
   }
   /*
    * Messaging failures are collapsed to as few labels as stay true. "Disconnected" covers the states
    * where no usable binding exists; a binding still being created, and one that is connected while
    * its delivery is not, each get the label that matches what the messaging page says about them.
    */
+  if (availability.reason === "handoff_checking") {
+    return { label: m.agents_card_status_checking_messaging(), tone: "info" };
+  }
   if (availability.reason === "im_provisioning" || availability.state === "setting_up") {
     return { label: "Messaging setting up", tone: "info" };
   }
@@ -223,6 +226,18 @@ export function agentStatusPresentation(agent: AgentStatusSource): { label: stri
   }
   if (availability.state === "not_connected") return { label: "Messaging disconnected", tone: "neutral" };
   return { label: "Messaging disconnected", tone: "warning" };
+}
+
+/** The Provider-specific wording tells a viewer what to do; a single "runtime not available" does not. */
+function runtimeStatusPresentation({ provider, status }: AgentAvailability["dependencies"]["runtime"]): {
+  label: string;
+  tone: StatusTone;
+} {
+  const providerName = runtimeProviderName(provider);
+  if (status === "checking") return { label: `Checking ${providerName}`, tone: "info" };
+  if (status === "install") return { label: `${providerName} not installed`, tone: "warning" };
+  if (status === "sign-in") return { label: `${providerName} sign-in required`, tone: "warning" };
+  return { label: `${providerName} unavailable`, tone: "warning" };
 }
 
 export function sharedConversationLabel(provider: ImBindingSummary["provider"]): string {
@@ -276,6 +291,7 @@ export function agentAvailabilitySummary(agent: AgentDetailView): string {
       ? spaceScriptBoundary(m.agents_available_in_channel({ provider: messagingProviderLabel(provider) }))
       : m.agents_ready_for_new_work();
   }
+  if (agent.availability.reason === "handoff_checking") return m.agents_card_status_checking_messaging();
   return {
     action_required: m.agents_cannot_receive_new_work(),
     setting_up: m.agents_messaging_setup_in_progress(),
@@ -304,6 +320,8 @@ export function agentAvailabilityRecovery(
   if (agent.availability.reason === "handoff_unavailable") {
     return { label: "View messaging", link: agentSettingsSectionLink(agent.id, "messaging") };
   }
+  // Nothing to recover from: the check finishes on its own.
+  if (agent.availability.reason === "handoff_checking") return undefined;
   if (agent.availability.state === "unconfirmed") return undefined;
   // Naming the action for the state it exits: there is no Computer here to view.
   if (agent.availability.reason === "computer_not_bound") {
@@ -348,10 +366,12 @@ function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus
  * The reasons Agent Setup still owns, and so the ones it can still answer for. They are the same
  * set the Agent page routes to setup rather than to Settings: a Computer, the chosen runtime on
  * that Computer, and a messaging app that is connected but not yet finished — a connect left
- * mid-scan, or a provider CLI the Computer has not made ready.
+ * mid-scan, or a provider CLI the Computer could not make ready.
  *
  * `computer_offline` is deliberately absent. Its subject is the machine rather than the flow, and
  * repeating setup does not reach it; the Agent page sends it to Settings, and so does the list.
+ * `handoff_checking` is absent for the opposite reason: the Computer is still working on it, and
+ * the answer arrives on its own within seconds, so there is nothing for the reader to continue.
  */
 const SETUP_REASONS: ReadonlySet<AgentAvailability["reason"]> = new Set([
   "computer_not_bound",
@@ -509,6 +529,19 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
     };
   }
   const handoff = agent.availability.dependencies.handoff;
+  /*
+   * The Computer is re-verifying delivery on a connected channel. The phase names what it is doing
+   * so the row reads as progress rather than as a verdict; there is no action because none is asked.
+   */
+  if (binding.bindingState === "active" && handoff.state === "checking") {
+    return {
+      label:
+        handoff.providerCli?.phase === "preparing_cli"
+          ? m.agents_status_channel_preparing_cli()
+          : m.agents_status_channel_checking_credentials(),
+      tone: "info",
+    };
+  }
   if (binding.bindingState === "active" && handoff.state === "action_required") {
     return {
       action: setupOrMaintenanceAction(

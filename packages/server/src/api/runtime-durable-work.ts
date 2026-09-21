@@ -9,6 +9,7 @@ import { z } from "zod";
 import { createComputerAuthPreHandler } from "../plugins/computer-auth.js";
 import {
   type PostgresRuntimeDurableWorkStore,
+  parseCloudSessionWorkEnvelope,
   RuntimeDurableWorkConflictError,
   RuntimeDurableWorkCursorError,
   RuntimeDurableWorkPayloadTooLargeError,
@@ -69,6 +70,19 @@ export function registerRuntimeDurableWorkRoutes(app: FastifyInstance, options: 
           code: "VALIDATION_ERROR",
           category: "deterministic",
           message: "The durable Runtime record identity does not match the path",
+          requestId: request.id,
+        },
+      });
+    }
+    if (record.kind === "session-message" && parseCloudSessionWorkEnvelope(record.payload) !== undefined) {
+      // The Cloud allocation envelope is written ONLY by the Server's collaboration owner over the
+      // durable store; a Local runtime's machine-authenticated HTTP write must never be able to
+      // forge allocation provenance for a Session it does not own.
+      return reply.code(409).send({
+        error: {
+          code: "VALIDATION_ERROR",
+          category: "deterministic",
+          message: "Cloud Session work envelopes are Server-owned",
           requestId: request.id,
         },
       });

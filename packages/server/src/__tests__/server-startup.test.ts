@@ -14,6 +14,10 @@ const state = vi.hoisted(() => ({
   verifyDatabaseMigrations: vi.fn(),
   createDatabaseClient: vi.fn(),
   createApp: vi.fn(),
+  platformAuth: { verifyMachineToken: vi.fn() },
+  credentialOwner: { issueValidationRun: vi.fn() },
+  proxyTransport: { attach: vi.fn() },
+  platformRuntimeOptions: undefined as unknown,
   registryCurrentInstanceId: vi.fn(),
   registrySupportsProvider: vi.fn(),
   registryProviderReadiness: vi.fn(),
@@ -41,6 +45,19 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../app.js", () => ({ createApp: state.createApp }));
+vi.mock("../platform-runtime.js", () => ({
+  createPlatformRuntime: async (options: unknown) => {
+    state.platformRuntimeOptions = options;
+    return {
+      auth: state.platformAuth,
+      credentials: { owner: state.credentialOwner, transport: state.proxyTransport },
+      assertCloudControlCredential: vi.fn(),
+      close: async () => {
+        state.events.push("platform:close");
+      },
+    };
+  },
+}));
 vi.mock("../admin/bootstrap.js", () => ({ bootstrapInitialAdmin: vi.fn() }));
 vi.mock("../bootstrap-readiness.js", () => ({
   BootstrapReadiness: class {
@@ -276,14 +293,19 @@ const originalSecrets = {
   jwt: process.env.OPENTAG_JWT_SECRET,
   google: process.env.OPENTAG_GOOGLE_CLIENT_SECRET,
   encryption: process.env.OPENTAG_ENCRYPTION_KEY,
+  encryptionKeyRing: process.env.OPENTAG_ENCRYPTION_KEY_RING,
   slackClient: process.env.OPENTAG_SLACK_CLIENT_SECRET,
   slackSigning: process.env.OPENTAG_SLACK_SIGNING_SECRET,
+  cloudRunnerToken: process.env.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN,
 };
 const originalExitCode = process.exitCode;
 
 function defaultConfig() {
   return {
     autoMigrate: true,
+    cloudIdentities: { enabled: false },
+    cloudRunner: { enabled: false },
+    skillStorage: { enabled: false },
     channelTarget: {
       downloadBaseUrl: "https://download.test/releases",
       pollIntervalMs: 300_000,
@@ -380,8 +402,10 @@ beforeEach(() => {
   process.env.OPENTAG_JWT_SECRET = "jwt-secret";
   process.env.OPENTAG_GOOGLE_CLIENT_SECRET = "google-secret";
   process.env.OPENTAG_ENCRYPTION_KEY = "encryption-secret";
+  process.env.OPENTAG_ENCRYPTION_KEY_RING = "encryption-key-ring-secret";
   process.env.OPENTAG_SLACK_CLIENT_SECRET = "slack-client-secret";
   process.env.OPENTAG_SLACK_SIGNING_SECRET = "slack-signing-secret";
+  process.env.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN = "cloud-runner-static-token";
   process.exitCode = undefined;
 });
 
@@ -394,8 +418,10 @@ afterEach(() => {
   restore("OPENTAG_JWT_SECRET", originalSecrets.jwt);
   restore("OPENTAG_GOOGLE_CLIENT_SECRET", originalSecrets.google);
   restore("OPENTAG_ENCRYPTION_KEY", originalSecrets.encryption);
+  restore("OPENTAG_ENCRYPTION_KEY_RING", originalSecrets.encryptionKeyRing);
   restore("OPENTAG_SLACK_CLIENT_SECRET", originalSecrets.slackClient);
   restore("OPENTAG_SLACK_SIGNING_SECRET", originalSecrets.slackSigning);
+  restore("OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN", originalSecrets.cloudRunnerToken);
   process.exitCode = originalExitCode;
 });
 
@@ -426,6 +452,12 @@ describe("Server startup", () => {
     // Google sign-in is a flag now: the whole flow lives in Better Auth, so there is no service to hand a route.
     expect(appOptions.browserAuth.googleSignIn).toBe(true);
     expect(state.devAuthArgs).toEqual(expect.arrayContaining(["dev@example.com"]));
+    expect(state.appOptions).toMatchObject({
+      runtimeAuthService: state.platformAuth,
+      runtimeProviderProxy: { transport: state.proxyTransport },
+      runtime: { runtimeCredentialOwner: state.credentialOwner },
+    });
+    expect(state.platformRuntimeOptions).toMatchObject({ database: state.database, config: state.config });
 
     const slackBinding = {
       botAccessToken: "xoxb-current",
@@ -527,9 +559,10 @@ describe("Server startup", () => {
     const app = state.app as { addHook: ReturnType<typeof vi.fn>; close(): Promise<void> };
     expect(app.addHook).toHaveBeenCalledWith("onClose", expect.any(Function));
     await app.close();
-    expect(state.events.slice(-5)).toEqual([
+    expect(state.events.slice(-6)).toEqual([
       "app:close",
       "worker:stop",
+      "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
       "sql:end",
@@ -602,7 +635,7 @@ describe("Server startup", () => {
     async (failureStage, expectedEvents) => {
       const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const failure = new Error(
-        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret slack-client-secret slack-signing-secret",
+        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret slack-client-secret slack-signing-secret cloud-runner-static-token",
       );
       if (failureStage === "configuration")
         state.parseServerConfig.mockImplementation(() => {
@@ -624,6 +657,7 @@ describe("Server startup", () => {
         "encryption-secret",
         "slack-client-secret",
         "slack-signing-secret",
+        "cloud-runner-static-token",
       ]) {
         expect(output).not.toContain(secret);
       }
@@ -639,7 +673,7 @@ describe("Server startup", () => {
     };
     app.listen.mockRejectedValue(
       new Error(
-        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret slack-client-secret slack-signing-secret",
+        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret encryption-key-ring-secret slack-client-secret slack-signing-secret cloud-runner-static-token",
       ),
     );
 
@@ -648,9 +682,10 @@ describe("Server startup", () => {
     expect(process.exitCode).toBe(1);
     expect(app.close).toHaveBeenCalledTimes(1);
     expect(state.events).not.toContain("ready:listen");
-    expect(state.events.slice(-5)).toEqual([
+    expect(state.events.slice(-6)).toEqual([
       "app:close",
       "worker:stop",
+      "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
       "sql:end",
@@ -662,8 +697,10 @@ describe("Server startup", () => {
       "jwt-secret",
       "google-secret",
       "encryption-secret",
+      "encryption-key-ring-secret",
       "slack-client-secret",
       "slack-signing-secret",
+      "cloud-runner-static-token",
     ]) {
       expect(logged).not.toContain(secret);
     }

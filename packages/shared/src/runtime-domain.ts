@@ -9,6 +9,8 @@ import {
   ProviderCliValidationResultReasonSchema,
   ProviderReadinessStatusSchema,
 } from "./computer.js";
+import { ContextTreeRepositorySchema } from "./context-tree.js";
+import { ContextTreeOperationFrameSchema, ContextTreeOperationResultFrameSchema } from "./context-tree-operation.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -132,6 +134,7 @@ export const RuntimeUsageSchema = z
 
 export const EffectiveRuntimeSnapshotSchema = z
   .object({
+    contextTreeRepository: ContextTreeRepositorySchema.nullable(),
     revision: z
       .object({
         agent: RuntimeRevisionSchema,
@@ -984,6 +987,26 @@ export const ProviderCliValidationGrantFrameSchema = z
     }
   });
 
+export const ProviderCliValidationRunFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:validation:run"),
+    ...providerCliFenceShape,
+    requirementRequestId: RuntimeRequestIdSchema,
+    expiresAt: z.string().datetime({ offset: true }),
+    expectedIdentity: ProviderCliExpectedIdentitySchema,
+    validationRunId: z.string().uuid(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.expectedIdentity.provider !== frame.provider) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedIdentity", "provider"],
+        message: "The expected identity provider must match the run provider",
+      });
+    }
+  });
+
 export const ProviderCliCancelFrameSchema = z
   .object({
     type: z.literal("provider-cli:cancel"),
@@ -1049,6 +1072,7 @@ export const ProviderCliValidationResultFrameSchema = z
   });
 
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
+  ContextTreeOperationFrameSchema,
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
   RuntimeImSteerRequestSchema,
@@ -1060,10 +1084,12 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   ProviderCliPrewarmFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
+  ProviderCliValidationRunFrameSchema,
   ProviderCliCancelFrameSchema,
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
+  ContextTreeOperationResultFrameSchema,
   SessionReconcileResultSchema,
   ImMessageDeliveryResultSchema,
   RuntimeImSteerResultSchema,
@@ -1117,6 +1143,7 @@ export type ProviderCliRequirementFrame = z.infer<typeof ProviderCliRequirementF
 export type ProviderCliArtifactStatusFrame = z.infer<typeof ProviderCliArtifactStatusFrameSchema>;
 export type ProviderCliCancelFrame = z.infer<typeof ProviderCliCancelFrameSchema>;
 export type ProviderCliValidationGrantFrame = z.infer<typeof ProviderCliValidationGrantFrameSchema>;
+export type ProviderCliValidationRunFrame = z.infer<typeof ProviderCliValidationRunFrameSchema>;
 export type ProviderCliValidationResultFrame = z.infer<typeof ProviderCliValidationResultFrameSchema>;
 export type ServerRuntimeBusinessFrame = z.infer<typeof ServerRuntimeBusinessFrameSchema>;
 export type ClientRuntimeBusinessFrame = z.infer<typeof ClientRuntimeBusinessFrameSchema>;
@@ -1125,6 +1152,7 @@ export function runtimeUsageTotalTokens(provider: AgentRuntimeProvider, usage: R
   const cachedInputTokens = {
     codex: 0,
     "claude-code": usage.cachedInputTokens ?? 0,
+    pi: usage.cachedInputTokens ?? 0,
   } satisfies Record<AgentRuntimeProvider, number>;
   const total = (usage.inputTokens ?? 0) + cachedInputTokens[provider] + (usage.outputTokens ?? 0);
   if (!Number.isSafeInteger(total)) throw new Error("Runtime usage token total exceeds the safe integer range");
@@ -1150,6 +1178,7 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
     snapshot.workspace.workspaceId,
     snapshot.workspace.mode,
     snapshot.workspace.sharing,
+    snapshot.contextTreeRepository?.toLowerCase() ?? null,
   ]);
   const sessionConfigHash = hashTuple([
     1,

@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import type { EffectiveRuntimeSnapshot, SessionReconcileRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +16,6 @@ import {
 } from "../runtime/context-tree.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
-import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
 /**
  * Offline regression of the shared Agent Home / Context Tree filesystem and CLI contract.
@@ -59,30 +58,56 @@ describe("shared Agent Home and Context Tree", () => {
     await mkdir(treeSeed);
     const created = await runCli(["create", "--project-path", treeSeed, "--json"]);
     expect(created.failureCode).toBeUndefined();
-    const treePath = readTreePath(created.payload);
+    let treePath = readTreePath(created.payload);
     expect(treePath.startsWith(`${fixture.accountHome}/`)).toBe(true);
 
-    const layout = resolveOpenTagHomeLayout(openTagHome);
-    await mkdir(layout.contextTreeConfigDir, { recursive: true });
+    await git(environment, treePath, "config", "receive.denyCurrentBranch", "updateInstead");
+    // Rewrite transport operations only: remote get-url must retain the GitHub identity.
+    const gitBin = join(runRoot, "git-bin");
+    await mkdir(gitBin);
+    const gitShim = join(gitBin, "git");
     await writeFile(
-      layout.contextTreeConfigFile,
-      `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,
+      gitShim,
+      `#!/bin/sh
+case " $* " in
+  *" clone "*|*" fetch "*|*" push "*|*" pull "*)
+    exec /usr/bin/git -c 'url.file://${treePath}.insteadOf=https://github.com/acme/memory.git' "$@"
+    ;;
+esac
+exec /usr/bin/git "$@"
+`,
     );
+    await chmod(gitShim, 0o700);
+    environment.PATH = `${gitBin}${delimiter}${environment.PATH}`;
+    await isolatedExecFile("git", ["config", "--global", "protocol.file.allow", "always"], {
+      cwd: runRoot,
+      timeout: 20_000,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+      env: environment,
+    });
+    const connected = await runCli(["connect", "acme/memory", "--project-path", treeSeed, "--json"]);
+    expect(connected.failureCode).toBeUndefined();
+    treePath = readTreePath(connected.payload);
     const treeManager = new ContextTreeManager({
+      environment,
       home: openTagHome,
       codexHome: join(fixture.accountHome, ".codex"),
       contextTreePackage,
       sessionStartBudgetMs: 30_000,
       execFile: isolatedExecFile,
     });
-    const statuses = await Promise.all([treeManager.ensureAgent(agentHome), treeManager.ensureAgent(agentHome)]);
+    const statuses = await Promise.all([
+      treeManager.ensureAgent(agentHome, "codex", "acme/memory"),
+      treeManager.ensureAgent(agentHome, "codex", "acme/memory"),
+    ]);
     for (const status of statuses) expect(status).toEqual({ status: "ready", treePath });
     expect(await readFile(join(agentHome, "AGENTS.md"), "utf8")).toBe(userInstructions);
     await expect(
       readFile(join(agentHome, ".claude", "skills", "context-tree-read", "SKILL.md"), "utf8"),
     ).resolves.toContain("context-tree sync");
     await expect(
-      readFile(join(fixture.accountHome, ".codex", "skills", "context-tree-write", "SKILL.md"), "utf8"),
+      readFile(join(fixture.accountHome, ".agents", "skills", "context-tree-write", "SKILL.md"), "utf8"),
     ).resolves.toContain("context-tree prepare-write");
 
     const unanchored = await runCli(["resolve", "--project-path", taskA, "--json"], taskA);
@@ -268,6 +293,7 @@ function createManagers(home: string, installationId: string) {
 
 function runtime(agentId: string): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

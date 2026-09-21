@@ -13,7 +13,6 @@ import {
   type AgentUsageWindowDays,
   type CreateAgentRequest,
   CreateAgentRequestSchema,
-  type CreateAgentRuntimeConfig,
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
   RUNTIME_MAX_DURATION_MS,
@@ -25,17 +24,20 @@ import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, sql } from "driz
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
+  agentMcpServers,
   agentRuntimeConfigs,
   agents,
   computers,
   imBindings,
   imMessageDeliveries,
+  mcpServerAuthorizations,
   sessionPlacements,
   sessions,
   users,
 } from "../../db/schema/index.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
+import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
@@ -76,7 +78,7 @@ interface AgentSafeRow {
   computer: AgentComputer | null;
   name: string;
   displayName: string;
-  runtimeProvider: "codex" | "claude-code";
+  runtimeProvider: AgentRuntimeProvider;
   receiveMode: "all_message" | "mention_only";
   status: AgentRow["status"];
   createdAt: Date;
@@ -152,6 +154,7 @@ export interface AgentSessionStopTarget {
 function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
   return AgentRuntimeConfigSchema.parse({
     revision: row.revision,
+    contextTreeRepository: row.contextTreeRepository,
     model: row.model,
     reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
@@ -231,8 +234,7 @@ function deliveryUsageTokenCounts(
     cachedInputTokens: parse(cachedInputTokens),
     outputTokens: parse(outputTokens),
   };
-  const normalizedInputTokens =
-    (usage.inputTokens ?? 0) + (provider === "claude-code" ? (usage.cachedInputTokens ?? 0) : 0);
+  const normalizedInputTokens = (usage.inputTokens ?? 0) + (provider === "codex" ? 0 : (usage.cachedInputTokens ?? 0));
   return {
     inputTokens: normalizedInputTokens,
     cachedInputTokens: usage.cachedInputTokens ?? 0,
@@ -273,9 +275,10 @@ function addUsageTokenCounts(
 
 function runtimeConfigsEqual(
   left: AgentRuntimeConfigRow,
-  right: Readonly<Required<CreateAgentRuntimeConfig>>,
+  right: ReturnType<typeof resolveAgentRuntimeConfig>,
 ): boolean {
   return (
+    left.contextTreeRepository === right.contextTreeRepository &&
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.instructions === right.instructions &&
@@ -335,12 +338,21 @@ export class AgentService {
       }) => Promise<void> | void)
     | undefined;
   readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
+  readonly #cloudIdentitiesEnabled: boolean;
+  readonly #cloudModelCatalog?: CloudModelCatalog;
 
   constructor(
     database: DatabaseClient,
     options: {
       afterAgentLocked?: () => Promise<void>;
       afterMembershipLocked?: () => Promise<void>;
+      cloudIdentitiesEnabled?: boolean;
+      /**
+       * The one Server-owned Router model catalog; present exactly when the deployment's Cloud
+       * model path is enabled. Consulted only by explicit non-null model choices targeting a
+       * Cloud Computer, never by Local or unrelated writes.
+       */
+      cloudModelCatalog?: CloudModelCatalog;
       now?: () => Date;
       onDiagnostic?: (code: string) => void;
       onProviderCliPlacementChanged?: (input: {
@@ -354,6 +366,8 @@ export class AgentService {
   ) {
     this.#afterAgentLocked = options.afterAgentLocked;
     this.#afterMembershipLocked = options.afterMembershipLocked;
+    this.#cloudIdentitiesEnabled = options.cloudIdentitiesEnabled ?? false;
+    this.#cloudModelCatalog = options.cloudModelCatalog;
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
@@ -363,6 +377,19 @@ export class AgentService {
 
   async createForAccount(callerUserId: string, rawInput: CreateAgentRequest): Promise<AgentAdminConfig> {
     const input = CreateAgentRequestSchema.parse(rawInput);
+    // A replayed creation intent returns its recorded result without re-validating the model: the
+    // choice was admitted when the intent first succeeded, and a Router outage must not turn an
+    // idempotent replay into a failure. The in-transaction replay check stays for race safety.
+    if (input.creationIntentId) {
+      const replay = await this.#findCreationIntent(
+        this.#database,
+        callerUserId,
+        input.creationIntentId,
+        creationIntentFingerprint(input),
+      );
+      if (replay) return replay;
+    }
+    await this.#assertExplicitCloudModelChoice(callerUserId, input.computerId, input.runtimeConfig?.model);
     return this.#create(callerUserId, input);
   }
 
@@ -392,6 +419,7 @@ export class AgentService {
         const computer = input.computerId
           ? await this.#lockOwnedComputer(transaction, callerUserId, input.computerId)
           : undefined;
+        assertCloudAgentBinding(this.#cloudIdentitiesEnabled, input.runtimeProvider, computer?.kind);
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${callerUserId}:${input.name}`}, 0))`,
         );
@@ -799,6 +827,58 @@ export class AgentService {
     return result;
   }
 
+  /**
+   * Authoritative Cloud model admission for a create, BEFORE any write. Only an explicit non-null
+   * model targeting a Cloud Computer consults the Router catalog: `null` (the platform default),
+   * an absent Computer, and every Local Computer pass without a network read, so unrelated writes
+   * never block on a Router outage or on a historical model the Router no longer offers. The
+   * ownership-scoped kind read is unlocked; the create transaction re-locks the Computer and
+   * re-checks ownership, and the kind itself is immutable.
+   */
+  async #assertExplicitCloudModelChoice(
+    callerUserId: string,
+    computerId: string | undefined,
+    model: string | null | undefined,
+  ): Promise<void> {
+    if (model === undefined || model === null || computerId === undefined) return;
+    const catalog = this.#cloudModelCatalog;
+    const kind = await this.#ownedComputerKind(callerUserId, computerId);
+    if (kind !== "cloud") return;
+    await requireRouterCatalogModel(catalog, model);
+  }
+
+  /**
+   * The same admission for an update, keyed by the Agent's current binding. An Agent the caller
+   * cannot see (or one without a Computer) resolves no row and skips validation; the mutation
+   * transaction then reports the authoritative not-found/conflict as before.
+   */
+  async #assertExplicitCloudModelChoiceForAgent(
+    callerUserId: string,
+    agentId: string,
+    model: string | null | undefined,
+  ): Promise<void> {
+    if (model === undefined || model === null) return;
+    const catalog = this.#cloudModelCatalog;
+    const [row] = await this.#database
+      .select({ computerKind: computers.kind })
+      .from(agents)
+      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .limit(1);
+    if (row?.computerKind !== "cloud") return;
+    await requireRouterCatalogModel(catalog, model);
+  }
+
+  /** Unlocked ownership-scoped kind read; foreign or missing Computers resolve undefined. */
+  async #ownedComputerKind(accountId: string, computerId: string): Promise<"local" | "cloud" | undefined> {
+    const [computer] = await this.#database
+      .select({ kind: computers.kind })
+      .from(computers)
+      .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId)))
+      .limit(1);
+    return computer?.kind;
+  }
+
   async getConfigById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {
     const scope = await this.#resolveAgentDetailScope(this.#database, callerUserId, agentId);
     this.#requireManagePermission(scope);
@@ -807,6 +887,9 @@ export class AgentService {
 
   async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
+    // Validate an explicit Cloud model choice BEFORE the mutation transaction: no Agent row lock is
+    // held across the catalog's network read, and a rejected choice leaves no revision writes.
+    await this.#assertExplicitCloudModelChoiceForAgent(callerUserId, agentId, input.runtimeConfig?.model);
     const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
@@ -848,6 +931,7 @@ export class AgentService {
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
       const nextRuntimeConfig = resolveAgentRuntimeConfig({
+        contextTreeRepository: currentRuntimeProjection.contextTreeRepository,
         model: input.runtimeConfig?.model !== undefined ? input.runtimeConfig.model : currentRuntimeProjection.model,
         reasoningEffort:
           input.runtimeConfig?.reasoningEffort !== undefined
@@ -894,6 +978,52 @@ export class AgentService {
       );
     });
     return result.config;
+  }
+
+  async updateContextTreeSelection(
+    callerUserId: string,
+    agentId: string,
+    expected: Pick<AgentAdminConfig, "revision" | "computerId" | "status"> & { runtimeConfigRevision: number },
+    repository: string | null,
+  ): Promise<AgentAdminConfig> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
+      this.#requireManagePermission(scope);
+      const runtimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
+      if (
+        scope.agent.revision !== expected.revision ||
+        runtimeConfig.revision !== expected.runtimeConfigRevision ||
+        scope.computerId !== expected.computerId ||
+        scope.agent.status !== expected.status
+      ) {
+        throw new AgentServiceError(
+          "AGENT_REVISION_CONFLICT",
+          "deterministic",
+          "The Agent changed since it was read",
+          409,
+        );
+      }
+      if (runtimeConfig.contextTreeRepository !== null && scope.agent.status !== "suspended") {
+        throw this.#lifecycleConflict("Pause the Agent before changing its Context Tree");
+      }
+      const now = this.#now();
+      const [updated] = await transaction
+        .update(agents)
+        .set({ revision: sql`${agents.revision} + 1`, updatedAt: now })
+        .where(eq(agents.id, agentId))
+        .returning();
+      const [updatedRuntimeConfig] = await transaction
+        .update(agentRuntimeConfigs)
+        .set({
+          contextTreeRepository: repository,
+          revision: sql`nextval('runtime_config_revision_sequence')`,
+          updatedAt: now,
+        })
+        .where(eq(agentRuntimeConfigs.agentId, agentId))
+        .returning();
+      if (!updated || !updatedRuntimeConfig) throw new Error("Context Tree selection update did not return a row");
+      return toAgentAdminConfig(updated, updatedRuntimeConfig, scope.computerId);
+    });
   }
 
   async suspendById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {
@@ -957,6 +1087,7 @@ export class AgentService {
         throw this.#lifecycleConflict("Only an active Agent can be rebound to a Computer");
       }
       const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
+      await this.#assertRebindMode(transaction, scope.computerId, target, scope.agent.runtimeProvider);
       const active = await transaction
         .select({
           endedAt: sessions.endedAt,
@@ -1080,6 +1211,16 @@ export class AgentService {
         .for("update");
       if (imBinding) await disableImBindingInTransaction(transaction, imBinding.id, now);
       await transaction.delete(agentRuntimeConfigs).where(eq(agentRuntimeConfigs.agentId, agentId));
+      /*
+       * The Agent's MCP mounts and credentials go with it.
+       *
+       * Deleting an Agent is a soft delete, so the `on delete cascade` on those tables never fires on
+       * this path — without this the rows survived forever, holding a credential the Account can no
+       * longer see, reach, or revoke through any route. Onboarding reset already cleaned them up
+       * explicitly for the same reason; this is the other deletion path.
+       */
+      await transaction.delete(mcpServerAuthorizations).where(eq(mcpServerAuthorizations.agentId, agentId));
+      await transaction.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
       const [deleted] = await transaction
         .update(agents)
         .set({ status: "deleted", updatedAt: now, revision: sql`${agents.revision} + 1` })
@@ -1126,9 +1267,9 @@ export class AgentService {
     transaction: DatabaseTransaction,
     accountId: string,
     computerId: string,
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; kind: "local" | "cloud" }> {
     const [computer] = await transaction
-      .select({ id: computers.id })
+      .select({ id: computers.id, kind: computers.kind })
       .from(computers)
       .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId)))
       .limit(1)
@@ -1137,6 +1278,44 @@ export class AgentService {
       throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
     }
     return computer;
+  }
+
+  async #assertRebindMode(
+    transaction: DatabaseTransaction,
+    currentComputerId: string | null,
+    target: { id: string; kind: "local" | "cloud" },
+    runtimeProvider: AgentRuntimeProvider,
+  ): Promise<void> {
+    const currentKind =
+      currentComputerId === null
+        ? "local"
+        : currentComputerId === target.id
+          ? target.kind
+          : await this.#computerKind(transaction, currentComputerId);
+    if (currentKind === target.kind) {
+      if (target.kind === "cloud") {
+        assertCloudAgentBinding(this.#cloudIdentitiesEnabled, runtimeProvider, "cloud");
+      }
+      return;
+    }
+    throw new AgentServiceError(
+      "AGENT_LIFECYCLE_CONFLICT",
+      "deterministic",
+      "The Agent cannot switch between Local and Cloud Computers",
+      409,
+    );
+  }
+
+  async #computerKind(executor: QueryExecutor, computerId: string): Promise<"local" | "cloud"> {
+    const [computer] = await executor
+      .select({ kind: computers.kind })
+      .from(computers)
+      .where(eq(computers.id, computerId))
+      .limit(1);
+    if (!computer) {
+      throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+    }
+    return computer.kind;
   }
 
   async #resolveAgentScope(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentScope> {
@@ -1212,9 +1391,58 @@ export class AgentService {
   }): Promise<void> {
     if (!this.#onProviderCliPlacementChanged) return;
     try {
+      // A Cloud Computer has no Local registry connection to prepare, so notifying a placement
+      // targeting one would only fail spuriously; retirement-only inputs still notify.
+      if (input.computerId !== undefined && (await this.#computerKind(this.#database, input.computerId)) === "cloud") {
+        return;
+      }
       await this.#onProviderCliPlacementChanged(input);
     } catch {
       this.#onDiagnostic("PROVIDER_CLI_PLACEMENT_NOTIFY_FAILED");
     }
+  }
+}
+
+/**
+ * Admit one explicit Cloud model choice against the Router catalog: an unavailable catalog (the
+ * Router list could not be confirmed) is a transient 503, and a model the Router does not
+ * currently offer is a deterministic conflict the caller resolves by picking an offered model.
+ */
+async function requireRouterCatalogModel(catalog: CloudModelCatalog | undefined, model: string): Promise<void> {
+  const snapshot = await catalog?.list();
+  if (!snapshot?.available) {
+    throw new AgentServiceError(
+      "CLOUD_MODEL_UNAVAILABLE",
+      "transient",
+      "The Cloud model list could not be confirmed; retry shortly",
+      503,
+    );
+  }
+  if (!snapshot.models.includes(model)) {
+    throw new AgentServiceError(
+      "CLOUD_MODEL_NOT_ALLOWED",
+      "deterministic",
+      "The model is not offered by the Cloud model Router",
+      409,
+    );
+  }
+}
+
+function assertCloudAgentBinding(
+  enabled: boolean,
+  runtimeProvider: AgentRuntimeProvider,
+  kind: "local" | "cloud" = "local",
+): void {
+  if (kind !== "cloud") return;
+  if (!enabled) {
+    throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+  }
+  if (runtimeProvider !== "pi") {
+    throw new AgentServiceError(
+      "AGENT_LIFECYCLE_CONFLICT",
+      "deterministic",
+      "Cloud Computers only support the Pi runtime",
+      409,
+    );
   }
 }

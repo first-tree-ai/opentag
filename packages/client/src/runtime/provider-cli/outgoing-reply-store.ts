@@ -77,8 +77,7 @@ export async function beginOutgoingReplyInflight(options: {
   readonly runId: string;
 }): Promise<{ release(): Promise<void> }> {
   const inflightDir = providerCliOutgoingReplyInflightDir(options.sessionDir, options.runId);
-  await ensurePrivateDirectory(options.plansRoot, inflightDir);
-  await assertPrivateAncestry(options.plansRoot, inflightDir);
+  await ensureOutgoingReplyDirectory(options, inflightDir);
   const path = join(inflightDir, `${process.pid}-${randomUUID()}`);
   await writeDurableJson(path, { pid: process.pid });
   return {
@@ -96,7 +95,7 @@ export async function markOutgoingReplyCaptureStatus(options: {
 }): Promise<void> {
   const runDir = providerCliOutgoingReplyRunDir(options.sessionDir, options.runId);
   try {
-    await ensurePrivateDirectory(options.plansRoot, runDir);
+    await ensureOutgoingReplyDirectory(options, runDir);
     const path = captureStatusPath(options.sessionDir, options.runId);
     const existing = await readCaptureStatusFile(path);
     const next = worseCaptureStatus(existing, options.status);
@@ -113,8 +112,7 @@ export async function writeOutgoingReplyReceipt(options: {
   readonly receipt: Omit<ProviderCliOutgoingReplyReceipt, "schemaVersion">;
 }): Promise<void> {
   const receiptsDir = providerCliOutgoingReplyReceiptsDir(options.sessionDir, options.runId);
-  await ensurePrivateDirectory(options.plansRoot, receiptsDir);
-  await assertPrivateAncestry(options.plansRoot, receiptsDir);
+  await ensureOutgoingReplyDirectory(options, receiptsDir);
   const receipt: ProviderCliOutgoingReplyReceipt = OutgoingReplyReceiptSchema.parse({
     schemaVersion: PROVIDER_CLI_OUTGOING_REPLY_RECEIPT_SCHEMA_VERSION,
     ...options.receipt,
@@ -131,6 +129,20 @@ export async function writeOutgoingReplyReceipt(options: {
     content: boundReceiptContent(receipt.content, true),
   });
   await writeDurableFile(path, `${JSON.stringify(reduced)}\n`);
+}
+
+async function ensureOutgoingReplyDirectory(
+  options: { readonly plansRoot: string; readonly sessionDir: string },
+  target: string,
+): Promise<void> {
+  // The daemon prepares the Session before sandboxed execution. Standalone callers may create it,
+  // but existing plan ancestors must only be read: chmod there is outside the reply write grant.
+  if (!(await validatePrivateDirectory(options.plansRoot, options.sessionDir))) {
+    await ensurePrivateDirectory(options.plansRoot, options.sessionDir);
+  }
+  await assertPrivateAncestry(options.plansRoot, options.sessionDir);
+  await ensurePrivateDirectory(join(options.sessionDir, "runs"), target);
+  await assertPrivateAncestry(options.plansRoot, target);
 }
 
 export async function collectOutgoingReplyReceipts(options: {

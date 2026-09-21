@@ -121,26 +121,33 @@ describe("Agent Setup route boundary", () => {
     expect(agentCreationPosts()).toHaveLength(0);
   });
 
-  it("starts explicit creation with an available default name, then canonicalizes to the created Agent", async () => {
-    installAgentSetupApi();
-    window.history.replaceState({}, "", "/agents/setup?action=create");
-    render(<App />);
+  it.each([
+    ["codex", /Codex/],
+    ["claude-code", /Claude Code/],
+    ["pi", /^Pi/],
+  ])(
+    "creates a %s Agent with an available default name and canonicalizes the route",
+    async (runtimeProvider, label) => {
+      installAgentSetupApi();
+      window.history.replaceState({}, "", "/agents/setup?action=create");
+      render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+      fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      fireEvent.click(screen.getByRole("button", { name: label }));
+      fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
-    await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
-    expect(window.location.pathname).toBe("/agents/setup");
-    const posts = agentCreationPosts();
-    expect(posts).toHaveLength(1);
-    const body = JSON.parse(String(posts[0]?.[1]?.body)) as Record<string, unknown>;
-    expect(body.runtimeProvider).toBe("codex");
-    expect(body.name).toBe("opentag");
-    expect(body).not.toHaveProperty("creationIntentId");
-    expect(body).not.toHaveProperty("computerId");
-  });
+      await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
+      expect(window.location.pathname).toBe("/agents/setup");
+      const posts = agentCreationPosts();
+      expect(posts).toHaveLength(1);
+      const body = JSON.parse(String(posts[0]?.[1]?.body)) as Record<string, unknown>;
+      expect(body.runtimeProvider).toBe(runtimeProvider);
+      expect(body.name).toBe("opentag");
+      expect(body).not.toHaveProperty("creationIntentId");
+      expect(body).not.toHaveProperty("computerId");
+    },
+  );
 
   it("suggests the first available numbered name for an additional Agent", async () => {
     installAgentSetupApi();

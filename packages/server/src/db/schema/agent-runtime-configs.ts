@@ -17,6 +17,7 @@ export const agentRuntimeConfigs = pgTable(
     revision: bigint("revision", { mode: "number" })
       .notNull()
       .default(sql`nextval('runtime_config_revision_sequence')`),
+    contextTreeRepository: text("context_tree_repository"),
     model: text("model"),
     reasoningEffort: text("reasoning_effort"),
     instructions: text("instructions").notNull(),

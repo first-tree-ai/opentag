@@ -131,6 +131,38 @@ describe("createHttpSetupAdapter", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("checks the saved candidate with CSRF without creating a new application", async () => {
+    setDocumentCookie("opentag_csrf=approval-csrf; Path=/");
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/im-bindings/feishu/setup-attempts/${ATTEMPT_ID}/check`);
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBeUndefined();
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("approval-csrf");
+      return jsonResponse({
+        id: ATTEMPT_ID,
+        agentId: SETUP_AGENT_ID,
+        intent: "create",
+        state: "pending_activation",
+        qrUrl: null,
+        expiresAt: "2026-09-25T10:00:00.000Z",
+        errorCode: null,
+        completedAt: null,
+        createdAt: "2026-09-18T10:00:00.000Z",
+        activation: {
+          appId: "cli_pending",
+          reason: "permissions_pending",
+          nextCheckAt: "2026-09-18T10:02:00.000Z",
+          missingScopes: ["im:message"],
+          lastCheckedAt: "2026-09-18T10:01:00.000Z",
+        },
+      });
+    });
+    await expect(
+      createHttpSetupAdapter(new BrowserApi(fetchImpl)).checkFeishuAttempt(ATTEMPT_ID),
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels the exact open Feishu attempt", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(`/api/v1/im-bindings/feishu/setup-attempts/${ATTEMPT_ID}/cancel`);

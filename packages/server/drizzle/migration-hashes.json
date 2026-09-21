@@ -205,6 +205,46 @@
       "idx": 40,
       "tag": "0040_watery_electro",
       "sha256": "9f0e919374569a7f309184c5e950a9cee9c2fd85052b60d7ca6f01fede69cb39"
+    },
+    {
+      "idx": 41,
+      "tag": "0041_colossal_magdalene",
+      "sha256": "31af6ccfbe9ffc88182ba3480e0775b3fb71a9bfd3d4555ff4d90d52c3e6267e"
+    },
+    {
+      "idx": 42,
+      "tag": "0042_outgoing_jasper_sitwell",
+      "sha256": "56517add5bc0daee07c86506aa4098518b2805548a848fb4deae4f36a6bb0418"
+    },
+    {
+      "idx": 43,
+      "tag": "0043_cultured_dark_beast",
+      "sha256": "04c7fd339804a28ec4844aeb1ea85fe449c691e6f81134ac2df82032dfdf37d8"
+    },
+    {
+      "idx": 44,
+      "tag": "0044_wet_xorn",
+      "sha256": "c9a72fc1ac64d504466bf2994af4e9323e0f2f101589c01c65e4b8f0ce268fe6"
+    },
+    {
+      "idx": 45,
+      "tag": "0045_abandoned_rocket_raccoon",
+      "sha256": "454cdf4714d670ba8e87799a3db8fecddcfa13b23484cea0d47cf256b0644885"
+    },
+    {
+      "idx": 46,
+      "tag": "0046_wild_skullbuster",
+      "sha256": "b1c5af12dbb7d5b377bd9a3eba6de29e68781c1cb079c53e1c14ae55e7866506"
+    },
+    {
+      "idx": 47,
+      "tag": "0047_feishu_pending_activation",
+      "sha256": "72db458dfcc32cadd5c560faecf0fcf0b44d802fa2f890be84b92e12024b6a29"
+    },
+    {
+      "idx": 48,
+      "tag": "0048_known_gertrude_yorkes",
+      "sha256": "be69e95f8f635e2a1323d912dcf8831009c5379d4ed2acfa84cdf4b04dd08fd5"
     }
   ]
 }

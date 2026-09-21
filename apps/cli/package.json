@@ -1,6 +1,6 @@
 {
   "name": "open-tag",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "private": true,
   "description": "OpenTag command-line interface for connecting team messaging with AI coding agents.",
   "keywords": [
@@ -45,19 +45,19 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/cli/index.ts --format esm --dts",
+    "build": "tsdown src/index.ts src/cli/index.ts --format esm --dts && node ../../scripts/copy-web-tools-extension.mjs",
     "start": "node dist/cli/index.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1"
   },
   "dependencies": {
-    "@first-tree-ai/context-tree": "0.1.12"
+    "@first-tree-ai/context-tree": "0.1.15"
   },
   "devDependencies": {
     "@opentag/client": "workspace:*",
     "@opentag/shared": "workspace:*",
     "commander": "^15.0.0",
-    "vitest": "^4.1.11",
+    "vitest": "^5.0.1",
     "ws": "^8.21.3"
   }
 }

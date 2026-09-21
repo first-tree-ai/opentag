@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
@@ -12,6 +12,27 @@ import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_FILE = `/sessions/${SESSION_ID}.jsonl`;
 const SESSION_FILE_HASH = createHash("sha256").update(SESSION_FILE).digest("hex");
+const PI_RESOURCE_DISABLE_ARGUMENTS = [
+  "--offline",
+  "--no-extensions",
+  "--no-skills",
+  "--no-prompt-templates",
+  "--no-themes",
+  "--no-context-files",
+  "--no-approve",
+] as const;
+const PI_HELP_TOKENS =
+  "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name";
+const PI_LIST_MODELS_TABLE = [
+  "provider  model            context  max-out  thinking  images",
+  "fixture   configured-model  128K     8K       no        no",
+].join("\n");
+const PI_LIST_MODELS_HEADER = "provider  model  context  max-out  thinking  images";
+const PI_NO_MODELS_MESSAGE = [
+  "No models available. Use /login to log into a provider via OAuth or API key. See:",
+  "  /docs/providers.md",
+  "  /docs/models.md",
+].join("\n");
 const fixture = fileURLToPath(new URL("./fixtures/pi-rpc.mjs", import.meta.url));
 const directories: string[] = [];
 const PI_TURN_CHILD_EVENTS = new Set([
@@ -126,7 +147,7 @@ describe("PiAgentRuntime exhaustive behavior", () => {
     client.emit({ type: "message_update", assistantMessageEvent: { type: "done", reason: "stop" } });
     client.emit({
       type: "message_end",
-      message: assistant({ content: [{ type: "text", text: "" }], usage: { input: -1 } }),
+      message: assistant({ content: [{ type: "text", text: "" }], usage: { input: -1, cacheWrite: -1 } }),
     });
     client.emit({ type: "turn_end" });
     client.emit({ type: "turn_start" });
@@ -190,6 +211,42 @@ describe("PiAgentRuntime exhaustive behavior", () => {
         expect.objectContaining({ type: "tool_updated", update: {} }),
       ]),
     );
+    await runtime.close();
+  });
+
+  it("folds cacheWrite into inputTokens across assistant turns", async () => {
+    const client = new ManualPiClient();
+    const runtime = await factory(client).create(request(() => undefined));
+    const run = runtime.prompt({ runId: "cache-write", input: input("usage") });
+    await client.called("prompt");
+    client.emit({ type: "agent_start" });
+    client.emit({ type: "turn_start" });
+    client.emit({ type: "message_start", message: { role: "assistant", content: [] } });
+    client.emit({
+      type: "message_end",
+      message: assistant({
+        content: [{ type: "text", text: "one" }],
+        usage: { input: 10, cacheRead: 2, cacheWrite: 4, output: 3 },
+      }),
+    });
+    client.emit({ type: "turn_end" });
+    client.emit({ type: "turn_start" });
+    client.emit({ type: "message_start", message: { role: "assistant", content: [] } });
+    client.emit({
+      type: "message_end",
+      message: assistant({
+        content: [{ type: "text", text: "two" }],
+        usage: { input: 5, cacheRead: 1, cacheWrite: 7, output: 2 },
+      }),
+    });
+    client.emit({ type: "turn_end" });
+    client.emit({ type: "agent_end", willRetry: false });
+    client.emit({ type: "agent_settled" });
+    await expect(run).resolves.toMatchObject({
+      status: "completed",
+      output: [{ text: "two" }],
+      usage: { inputTokens: 26, cachedInputTokens: 3, outputTokens: 5 },
+    });
     await runtime.close();
   });
 
@@ -330,6 +387,25 @@ describe("PiAgentRuntime exhaustive behavior", () => {
         },
         { type: "message_start", message: { role: "assistant" } },
         { type: "message_end", message: assistant({ content: [], usage: { input: 1 } }) },
+      ],
+      [
+        { type: "message_start", message: { role: "assistant" } },
+        {
+          type: "message_end",
+          message: assistant({
+            content: [],
+            usage: { input: Number.MAX_SAFE_INTEGER, cacheWrite: 1 },
+          }),
+        },
+      ],
+      [
+        { type: "message_start", message: { role: "assistant" } },
+        {
+          type: "message_end",
+          message: assistant({ content: [], usage: { cacheWrite: Number.MAX_SAFE_INTEGER } }),
+        },
+        { type: "message_start", message: { role: "assistant" } },
+        { type: "message_end", message: assistant({ content: [], usage: { cacheWrite: 1 } }) },
       ],
       [{ type: "tool_execution_start" }],
       [
@@ -493,6 +569,10 @@ describe("PiAgentRuntime exhaustive behavior", () => {
     }
 
     expect(() => new PiAgentRuntimeFactory({ process: { sessionDirectory: "relative" } })).toThrow("sessionDirectory");
+    for (const probeTimeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 60_001]) {
+      expect(() => new PiAgentRuntimeFactory({ process: { probeTimeoutMs } })).toThrow("probeTimeoutMs");
+    }
+    expect(() => new PiAgentRuntimeFactory({ process: { probeTimeoutMs: 30_000 } })).not.toThrow();
     await expect(
       new PiAgentRuntimeFactory({ createSessionId: () => "not-a-uuid" }).create(request(() => undefined)),
     ).rejects.toMatchObject({ code: "provider_protocol_error" });
@@ -508,12 +588,16 @@ describe("PiAgentRuntime exhaustive behavior", () => {
         binding: { providerId: "pi", schemaVersion: 1, payload: { sessionId: "bad" } },
       }),
     ).rejects.toMatchObject({ code: "binding_incompatible" });
-    await expect(
-      piFactory.resume({
-        ...request(() => undefined),
-        binding: { providerId: "pi", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
-      }),
-    ).rejects.toMatchObject({ code: "binding_incompatible" });
+    const unmaterialized = await piFactory.resume({
+      ...request(() => undefined),
+      binding: { providerId: "pi", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
+    });
+    expect(unmaterialized.binding).toEqual({
+      providerId: "pi",
+      schemaVersion: 1,
+      payload: { sessionId: SESSION_ID },
+    });
+    await unmaterialized.close();
     await expect(
       piFactory.resume({
         ...request(() => undefined),
@@ -575,15 +659,239 @@ describe("PiAgentRuntime exhaustive behavior", () => {
       error: { code: "provider_protocol_error", message: "Pi opened another session file" },
     });
     await vi.waitFor(() => expect(resumed.state.phase).toBe("closed"));
+
+    const emptyResumeEvents: AgentRuntimeEvent[] = [];
+    const emptyResumeClient = new ManualPiClient();
+    const emptyResume = await factory(emptyResumeClient).resume({
+      ...request((event) => {
+        emptyResumeEvents.push(event);
+      }),
+      binding: materializedBinding(),
+    });
+    await expect(emptyResume.prompt({ runId: "empty-resume", input: input("x") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Pi session has no conversation history" },
+    });
+    expect(emptyResumeClient.commands.some((command) => command.type === "prompt")).toBe(false);
+    expect(emptyResumeEvents.some((event) => event.type === "run_completed")).toBe(false);
+    await vi.waitFor(() => expect(emptyResume.state.phase).toBe("closed"));
+  });
+
+  it("fails length, toolUse, and error terminals without emitting completed", async () => {
+    const cases = [
+      {
+        stopReason: "stop",
+        status: "completed",
+        event: "run_completed",
+        error: undefined,
+      },
+      {
+        stopReason: "aborted",
+        status: "aborted",
+        event: "run_aborted",
+        error: { code: "run_aborted", message: "Pi run was aborted" },
+      },
+      {
+        stopReason: "error",
+        status: "failed",
+        event: "run_failed",
+        error: { code: "provider_error", message: "Pi model request failed" },
+      },
+      {
+        stopReason: "length",
+        status: "failed",
+        event: "run_failed",
+        error: { code: "provider_error", message: "Pi stopped because the model reached its output limit" },
+      },
+      {
+        stopReason: "toolUse",
+        status: "failed",
+        event: "run_failed",
+        error: { code: "provider_error", message: "Pi stopped with unfinished tool use" },
+      },
+    ] as const;
+
+    for (const item of cases) {
+      const events: AgentRuntimeEvent[] = [];
+      const client = new ManualPiClient();
+      const runtime = await factory(client).create(
+        request((event) => {
+          events.push(event);
+        }),
+      );
+      const run = runtime.prompt({ runId: `stop-${item.stopReason}`, input: input("partial") });
+      await client.called("prompt");
+      client.complete({
+        stopReason: item.stopReason,
+        content: [{ type: "text", text: "partial" }],
+        usage: { output: 1 },
+      });
+      await expect(run).resolves.toMatchObject({
+        status: item.status,
+        output: [{ type: "text", text: "partial" }],
+        ...(item.error ? { error: item.error } : {}),
+        providerDiagnostics: { stopReason: item.stopReason },
+      });
+      expect(events.some((event) => event.type === "run_completed")).toBe(item.event === "run_completed");
+      expect(events.some((event) => event.type === item.event)).toBe(true);
+      await runtime.close();
+    }
+  });
+
+  it("fails the run when process-tree cleanup rejects", async () => {
+    const successfulEvents: AgentRuntimeEvent[] = [];
+    const successfulClient = new ManualPiClient({ closeError: new Error("process tree still running") });
+    const successfulRuntime = await factory(successfulClient).create(
+      request((event) => {
+        successfulEvents.push(event);
+      }),
+    );
+    const successfulRun = successfulRuntime.prompt({ runId: "cleanup-after-stop", input: input("done") });
+    await successfulClient.called("prompt");
+    successfulClient.complete({ content: [{ type: "text", text: "ok" }] });
+    await expect(successfulRun).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "process tree still running" },
+    });
+    expect(successfulEvents.some((event) => event.type === "run_completed")).toBe(false);
+    expect(successfulEvents.some((event) => event.type === "run_failed")).toBe(true);
+    await expect(
+      successfulRuntime.prompt({ runId: "cleanup-after-stop-next", input: input("again") }),
+    ).rejects.toMatchObject({ code: "closed" });
+    await vi.waitFor(() => expect(successfulRuntime.state.phase).toBe("closed"));
+
+    const protocolEvents: AgentRuntimeEvent[] = [];
+    const protocolClient = new ManualPiClient({ closeError: new Error("process tree still running") });
+    const protocolRuntime = await factory(protocolClient).create(
+      request((event) => {
+        protocolEvents.push(event);
+      }),
+    );
+    const protocolRun = protocolRuntime.prompt({ runId: "cleanup-after-protocol", input: input("bad") });
+    await protocolClient.called("prompt");
+    protocolClient.emit({ type: "agent_settled" });
+    await expect(protocolRun).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Pi settled without an assistant result" },
+    });
+    expect(protocolEvents.some((event) => event.type === "run_completed")).toBe(false);
+    await expect(
+      protocolRuntime.prompt({ runId: "cleanup-after-protocol-next", input: input("again") }),
+    ).rejects.toMatchObject({ code: "closed" });
+    await vi.waitFor(() => expect(protocolRuntime.state.phase).toBe("closed"));
+  });
+
+  it("preserves a model failure and partial output when cleanup also fails", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const client = new ManualPiClient({ closeError: new Error("cleanup unavailable") });
+    const runtime = await factory(client).create(
+      request((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "model-and-cleanup-failure", input: input("work") });
+    await client.called("prompt");
+    client.complete({ stopReason: "length", content: [{ type: "text", text: "partial answer" }] });
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      output: [{ type: "text", text: "partial answer" }],
+      error: { code: "provider_error", message: "Pi stopped because the model reached its output limit" },
+      providerDiagnostics: { stopReason: "length" },
+    });
+    expect(events.some((event) => event.type === "run_completed")).toBe(false);
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+  });
+
+  it("normalizes non-Error cleanup rejection and rejects further work", async () => {
+    const client = new ManualPiClient({ closeError: "untyped cleanup rejection" });
+    const runtime = await factory(client).create(request(() => undefined));
+    const run = runtime.prompt({ runId: "untyped-cleanup-failure", input: input("work") });
+    await client.called("prompt");
+    client.complete();
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "Pi provider close failed" },
+    });
+    await expect(runtime.prompt({ runId: "next-after-cleanup-failure", input: input("again") })).rejects.toMatchObject({
+      code: "closed",
+    });
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+  });
+
+  it("settles a synchronous process spawn failure without a client to clean up", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await new PiAgentRuntimeFactory({
+      createClient: () => {
+        throw new PiRpcError("spawn", "fixture process could not start");
+      },
+    }).create(
+      request((event) => {
+        events.push(event);
+      }),
+    );
+    await expect(runtime.prompt({ runId: "spawn-failure", input: input("work") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "fixture process could not start" },
+    });
+    expect(events.some((event) => event.type === "run_completed")).toBe(false);
+    await runtime.close();
   });
 
   it("runs the local probe against controlled CLI artifacts", async () => {
+    const recordedDirectory = await temporaryDirectory("opentag-pi-probe-record-");
+    const recordedCommand = join(recordedDirectory, "pi");
+    const recordedLog = join(recordedDirectory, "invocations.jsonl");
+    await writeFile(
+      recordedCommand,
+      `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(recordedLog)}, JSON.stringify(args) + "\\n");
+const disable = ${JSON.stringify([...PI_RESOURCE_DISABLE_ARGUMENTS])};
+const hasDisable = disable.every((flag) => args.includes(flag));
+if (args[0] === "--version") {
+  console.log("0.84.2");
+  process.exit(0);
+}
+if (args.includes("--help")) {
+  if (!hasDisable) process.exit(1);
+  console.log(${JSON.stringify(PI_HELP_TOKENS)});
+  process.exit(0);
+}
+if (args.includes("--list-models")) {
+  if (!hasDisable) process.exit(1);
+  console.log(${JSON.stringify(PI_LIST_MODELS_TABLE)});
+  process.exit(0);
+}
+process.exit(1);
+`,
+      "utf8",
+    );
+    await chmod(recordedCommand, 0o755);
+    await expect(localProbe(recordedCommand).probe({})).resolves.toEqual({
+      ready: true,
+      version: "0.84.2",
+      issues: [],
+    });
+    expect(
+      (await readFile(recordedLog, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as string[]),
+    ).toEqual([
+      ["--version"],
+      [...PI_RESOURCE_DISABLE_ARGUMENTS, "--help"],
+      [...PI_RESOURCE_DISABLE_ARGUMENTS, "--list-models"],
+    ]);
+
     const readyCli = await probeCli(`
 if [ "$1" = "--version" ]; then echo "0.80.6"; exit 0; fi
-if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
-printf 'provider model\\nfixture configured\\n'
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+cat <<'EOF'
+${PI_LIST_MODELS_TABLE}
+EOF
 `);
-    await expect(new PiAgentRuntimeFactory({ process: { command: readyCli, env: {} } }).probe({})).resolves.toEqual({
+    await expect(localProbe(readyCli).probe({})).resolves.toEqual({
       ready: true,
       version: "0.80.6",
       issues: [],
@@ -592,12 +900,12 @@ printf 'provider model\\nfixture configured\\n'
     for (const version of ["0.80.3", "0.80.5"]) {
       const oldCli = await probeCli(`
 if [ "$1" = "--version" ]; then echo "${version}"; exit 0; fi
-if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
-printf 'provider model\\nfixture configured\\n'
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+cat <<'EOF'
+${PI_LIST_MODELS_TABLE}
+EOF
 `);
-      await expect(
-        new PiAgentRuntimeFactory({ process: { command: oldCli, env: {} } }).probe({}),
-      ).resolves.toMatchObject({
+      await expect(localProbe(oldCli).probe({})).resolves.toMatchObject({
         ready: false,
         version,
         issues: [{ code: "version_incompatible" }],
@@ -606,41 +914,114 @@ printf 'provider model\\nfixture configured\\n'
 
     const extensionOnlyCli = await probeCli(`
 if [ "$1" = "--version" ]; then echo "1.2.3"; exit 0; fi
-if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
-case " $* " in *" --no-extensions "*) printf 'provider model\\n' ;; *) printf 'provider model\\nextension only\\n' ;; esac
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+if has_flag --no-extensions "$@"; then
+cat <<'EOF'
+${PI_LIST_MODELS_HEADER}
+EOF
+else
+cat <<'EOF'
+${PI_LIST_MODELS_TABLE}
+EOF
+fi
 `);
-    await expect(
-      new PiAgentRuntimeFactory({ process: { command: extensionOnlyCli, env: {} } }).probe({}),
-    ).resolves.toMatchObject({ ready: false, version: "1.2.3", issues: [{ code: "credential_missing" }] });
+    await expect(localProbe(extensionOnlyCli).probe({})).resolves.toMatchObject({
+      ready: false,
+      version: "1.2.3",
+      issues: [{ code: "credential_missing" }],
+    });
+
+    const emptyModelsCli = await probeCli(`
+if [ "$1" = "--version" ]; then echo "0.84.2"; exit 0; fi
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+exit 0
+`);
+    await expect(localProbe(emptyModelsCli).probe({})).resolves.toMatchObject({
+      ready: false,
+      version: "0.84.2",
+      issues: [{ code: "credential_missing" }],
+    });
+
+    const noModelMessageCli = await probeCli(`
+if [ "$1" = "--version" ]; then echo "0.84.2"; exit 0; fi
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+cat <<'EOF'
+${PI_NO_MODELS_MESSAGE}
+EOF
+`);
+    await expect(localProbe(noModelMessageCli).probe({})).resolves.toMatchObject({
+      ready: false,
+      version: "0.84.2",
+      issues: [{ code: "credential_missing" }],
+    });
+
+    const headerOnlyCli = await probeCli(`
+if [ "$1" = "--version" ]; then echo "0.84.2"; exit 0; fi
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+cat <<'EOF'
+${PI_LIST_MODELS_HEADER}
+EOF
+`);
+    await expect(localProbe(headerOnlyCli).probe({})).resolves.toMatchObject({
+      ready: false,
+      version: "0.84.2",
+      issues: [{ code: "credential_missing" }],
+    });
+
+    const malformedModelsCli = await probeCli(`
+if [ "$1" = "--version" ]; then echo "0.84.2"; exit 0; fi
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+printf 'not a model table\\nstill not a table\\nand a third line\\n'
+`);
+    await expect(localProbe(malformedModelsCli).probe({})).resolves.toMatchObject({
+      ready: false,
+      version: "0.84.2",
+      issues: [{ code: "credential_missing" }],
+    });
+
+    const headerWithBadRowCli = await probeCli(`
+if [ "$1" = "--version" ]; then echo "0.84.2"; exit 0; fi
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+cat <<'EOF'
+${PI_LIST_MODELS_HEADER}
+five columns only a b
+EOF
+`);
+    await expect(localProbe(headerWithBadRowCli).probe({})).resolves.toMatchObject({
+      ready: false,
+      version: "0.84.2",
+      issues: [{ code: "credential_missing" }],
+    });
 
     const unsafeVersionCli = await probeCli(`
 if [ "$1" = "--version" ]; then echo "999999999999999999999999.0.0"; exit 0; fi
-if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
-printf 'provider model\\nfixture configured\\n'
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+cat <<'EOF'
+${PI_LIST_MODELS_TABLE}
+EOF
 `);
-    await expect(
-      new PiAgentRuntimeFactory({ process: { command: unsafeVersionCli, env: {} } }).probe({}),
-    ).resolves.toMatchObject({ ready: false, issues: [{ code: "version_incompatible" }] });
+    await expect(localProbe(unsafeVersionCli).probe({})).resolves.toMatchObject({
+      ready: false,
+      issues: [{ code: "version_incompatible" }],
+    });
 
     const limitedCli = await probeCli(`
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "--help" ]; then echo "no rpc"; exit 0; fi
+if has_flag --help "$@"; then echo "no rpc"; exit 0; fi
 exit 1
 `);
-    await expect(
-      new PiAgentRuntimeFactory({ process: { command: limitedCli, env: {} } }).probe({}),
-    ).resolves.toMatchObject({
+    await expect(localProbe(limitedCli).probe({})).resolves.toMatchObject({
       ready: false,
       issues: [{ code: "version_incompatible" }, { code: "credential_missing" }],
     });
 
     const noModelsCli = await probeCli(`
 if [ "$1" = "--version" ]; then echo "1"; exit 0; fi
-if [ "$1" = "--help" ]; then echo "none"; exit 0; fi
+if has_flag --help "$@"; then echo "none"; exit 0; fi
 exit 1
 `);
     await expect(
-      new PiAgentRuntimeFactory({ process: { command: noModelsCli, env: {} } }).probe({
+      localProbe(noModelsCli).probe({
         configuration: { reasoningEffort: "bad" },
       }),
     ).resolves.toMatchObject({
@@ -651,12 +1032,16 @@ exit 1
 
     const brokenHelpCli = await probeCli(`
 if [ "$1" = "--version" ]; then echo "1"; exit 0; fi
-if [ "$1" = "--help" ]; then exit 1; fi
-printf 'provider model\\nfixture configured\\n'
+if has_flag --help "$@"; then exit 1; fi
+cat <<'EOF'
+${PI_LIST_MODELS_TABLE}
+EOF
 `);
-    await expect(
-      new PiAgentRuntimeFactory({ process: { command: brokenHelpCli, env: {} } }).probe({}),
-    ).resolves.toMatchObject({ ready: false, version: "1", issues: [{ code: "version_incompatible" }] });
+    await expect(localProbe(brokenHelpCli).probe({})).resolves.toMatchObject({
+      ready: false,
+      version: "1",
+      issues: [{ code: "version_incompatible" }],
+    });
 
     await expect(
       new PiAgentRuntimeFactory({
@@ -670,11 +1055,11 @@ printf 'provider model\\nfixture configured\\n'
     const helpStarted = join(directory, "help-started");
     const hangingHelp = await probeCli(`
 if [ "$1" = "--version" ]; then echo "0.80.6"; exit 0; fi
-if [ "$1" = "--help" ]; then printf started > '${helpStarted}'; exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'; fi
+if has_flag --help "$@"; then printf started > '${helpStarted}'; exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'; fi
 exit 1
 `);
     const helpAbort = new AbortController();
-    const helpProbe = new PiAgentRuntimeFactory({ process: { command: hangingHelp, env: {} } }).probe({
+    const helpProbe = localProbe(hangingHelp, 30_000).probe({
       signal: helpAbort.signal,
     });
     await vi.waitFor(async () => expect(await readFile(helpStarted, "utf8")).toBe("started"));
@@ -684,18 +1069,33 @@ exit 1
     const modelsStarted = join(directory, "models-started");
     const hangingModels = await probeCli(`
 if [ "$1" = "--version" ]; then echo "0.80.6"; exit 0; fi
-if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
 printf started > '${modelsStarted}'
 exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
 `);
     const modelsAbort = new AbortController();
-    const modelsProbe = new PiAgentRuntimeFactory({ process: { command: hangingModels, env: {} } }).probe({
+    const modelsProbe = localProbe(hangingModels).probe({
       signal: modelsAbort.signal,
     });
     await vi.waitFor(async () => expect(await readFile(modelsStarted, "utf8")).toBe("started"));
     modelsAbort.abort(new Error("stop"));
     await expect(modelsProbe).rejects.toBeDefined();
-  }, 10_000);
+  }, 15_000);
+
+  it("bounds probe commands by the 5s default and a configured budget", async () => {
+    const slowCli = await delayedProbeCli(5_200);
+    const [defaultProbe, boundedProbe, tightProbe] = await Promise.all([
+      localProbe(slowCli).probe({}),
+      localProbe(slowCli, 30_000).probe({}),
+      localProbe(slowCli, 2_000).probe({}),
+    ]);
+    // Default stays 5s: a 5.2s startup times out and fails closed as a missing artifact.
+    expect(defaultProbe).toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    // A validated 30s budget accepts the same delayed startup without skipping probes.
+    expect(boundedProbe).toEqual({ ready: true, version: "0.84.2", issues: [] });
+    // The budget still governs: 2s kills the 5.2s startup.
+    expect(tightProbe).toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+  }, 20_000);
 
   it("uses the default local Pi process boundary without adding a package dependency", async () => {
     const dependencyFields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
@@ -788,16 +1188,24 @@ class ManualPiClient implements PiRpcClient {
   readonly #requestFailure?: unknown;
   readonly #sessionId: string;
   readonly #sessionFile: string;
-  readonly #messageCount: number;
+  readonly #closeError?: unknown;
+  messageCount: number;
   model: unknown = { id: "fixture", provider: "fixture" };
 
   constructor(
-    options: { messageCount?: number; requestFailure?: unknown; sessionFile?: string; sessionId?: string } = {},
+    options: {
+      closeError?: unknown;
+      messageCount?: number;
+      requestFailure?: unknown;
+      sessionFile?: string;
+      sessionId?: string;
+    } = {},
   ) {
     this.#requestFailure = options.requestFailure;
     this.#sessionId = options.sessionId ?? SESSION_ID;
     this.#sessionFile = options.sessionFile ?? SESSION_FILE;
-    this.#messageCount = options.messageCount ?? 0;
+    this.#closeError = options.closeError;
+    this.messageCount = options.messageCount ?? 0;
   }
 
   async request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
@@ -807,7 +1215,7 @@ class ManualPiClient implements PiRpcClient {
       return {
         sessionId: this.#sessionId,
         sessionFile: this.#sessionFile,
-        messageCount: this.#messageCount,
+        messageCount: this.messageCount,
         model: this.model,
       };
     }
@@ -819,7 +1227,9 @@ class ManualPiClient implements PiRpcClient {
     return () => this.#listeners.delete(listener);
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    if (this.#closeError !== undefined) throw this.#closeError;
+  }
 
   emit(message: Readonly<Record<string, unknown>>): void {
     for (const listener of this.#listeners) listener(message);
@@ -904,9 +1314,49 @@ function assistant(
 async function probeCli(body: string): Promise<string> {
   const directory = await temporaryDirectory("opentag-pi-probe-");
   const path = join(directory, "pi");
-  await writeFile(path, `#!/bin/sh\n${body}`, "utf8");
+  await writeFile(
+    path,
+    `#!/bin/sh
+has_flag() {
+  needle=$1
+  shift
+  for arg in "$@"; do
+    [ "$arg" = "$needle" ] && return 0
+  done
+  return 1
+}
+${body}`,
+    "utf8",
+  );
   await chmod(path, 0o755);
   return path;
+}
+
+/** A probe CLI whose `--version` startup is delayed, like native Cloud Run Pi startup. */
+async function delayedProbeCli(delayMs: number): Promise<string> {
+  return probeCli(`
+if [ "$1" = "--version" ]; then
+  exec '${process.execPath}' -e 'setTimeout(() => { console.log("0.84.2"); }, ${delayMs})'
+fi
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+cat <<'EOF'
+${PI_LIST_MODELS_TABLE}
+EOF
+`);
+}
+
+function probeHome(command: string): string {
+  return dirname(command);
+}
+
+function localProbe(command: string, probeTimeoutMs?: number): PiAgentRuntimeFactory {
+  return new PiAgentRuntimeFactory({
+    process: {
+      command,
+      env: { HOME: probeHome(command) },
+      ...(probeTimeoutMs === undefined ? {} : { probeTimeoutMs }),
+    },
+  });
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {

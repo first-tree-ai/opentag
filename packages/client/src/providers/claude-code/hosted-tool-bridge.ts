@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MCP_GATEWAY_ALLOWED_TOOL_RULE, MCP_GATEWAY_SERVER_NAME } from "@opentag/shared";
 import type { AgentHostedTools, JsonValue } from "../../agent-runtime/types.js";
 import { assertJsonValue } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
@@ -10,6 +11,14 @@ import { createLogger } from "../../observability/logger.js";
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const logger = createLogger("provider-claude-mcp");
+/** The loopback server carrying OpenTag's own hosted tools. */
+const LOCAL_SERVER_NAME = "opentag";
+
+/** The remote MCP gateway for this execution; both fields are opaque to this module. */
+export interface ClaudeCodeMcpGatewayEndpoint {
+  readonly url: string;
+  readonly token: string;
+}
 
 export interface ClaudeCodeHostedToolBridge {
   readonly allowedTools: readonly string[];
@@ -21,6 +30,7 @@ export async function startClaudeCodeHostedToolBridge(
   hostedTools: AgentHostedTools | undefined,
   runId: string,
   signal: AbortSignal,
+  mcpGateway?: ClaudeCodeMcpGatewayEndpoint,
 ): Promise<ClaudeCodeHostedToolBridge> {
   signal.throwIfAborted();
   const definitions = new Map((hostedTools?.definitions ?? []).map((definition) => [definition.name, definition]));
@@ -32,7 +42,13 @@ export async function startClaudeCodeHostedToolBridge(
   const configPath = join(directory, "mcp.json");
   let server: Server | undefined;
   try {
-    let configuration: Record<string, unknown> = { mcpServers: {} };
+    /*
+     * The two entries are independent. The loopback bridge exists only when this run has hosted
+     * tools; the remote gateway only when the execution holds a bearer. An MCP-only run must still
+     * get its `mcpServers` entry, which is why the map is built up rather than assigned inside the
+     * hosted-tools branch.
+     */
+    const mcpServers: Record<string, unknown> = {};
     if (hostedTools && definitions.size > 0) {
       const token = randomBytes(32).toString("base64url");
       server = createServer((request, response) => {
@@ -59,17 +75,20 @@ export async function startClaudeCodeHostedToolBridge(
         throw new Error("Claude Code hosted tool bridge did not bind a TCP port");
       }
       /* v8 ignore stop */
-      configuration = {
-        mcpServers: {
-          opentag: {
-            type: "http",
-            url: `http://127.0.0.1:${address.port}/mcp`,
-            headers: { Authorization: `Bearer ${token}` },
-          },
-        },
+      mcpServers[LOCAL_SERVER_NAME] = {
+        type: "http",
+        url: `http://127.0.0.1:${address.port}/mcp`,
+        headers: { Authorization: `Bearer ${token}` },
       };
     }
-    await writeFile(configPath, `${JSON.stringify(configuration)}\n`, { encoding: "utf8", mode: 0o600 });
+    if (mcpGateway) {
+      mcpServers[MCP_GATEWAY_SERVER_NAME] = {
+        type: "http",
+        url: mcpGateway.url,
+        headers: { Authorization: `Bearer ${mcpGateway.token}` },
+      };
+    }
+    await writeFile(configPath, `${JSON.stringify({ mcpServers })}\n`, { encoding: "utf8", mode: 0o600 });
     /* v8 ignore start -- deterministic setup tests cannot induce an owned 0600 temp-file write failure. */
   } catch (error) {
     logger.debug(
@@ -86,7 +105,16 @@ export async function startClaudeCodeHostedToolBridge(
 
   let closePromise: Promise<void> | undefined;
   return {
-    allowedTools: [...definitions.keys()].map((name) => `mcp__opentag__${name}`),
+    /*
+     * The gateway is allowed as a whole server rather than tool by tool: its catalogue is resolved
+     * by the Server at `tools/list` time and is not known when this config is written. Claude Code's
+     * rule parser makes the tool half optional precisely so `mcp__<server>` matches every tool of
+     * that server.
+     */
+    allowedTools: [
+      ...[...definitions.keys()].map((name) => `mcp__${LOCAL_SERVER_NAME}__${name}`),
+      ...(mcpGateway ? [MCP_GATEWAY_ALLOWED_TOOL_RULE] : []),
+    ],
     configPath,
     close() {
       closePromise ??= Promise.allSettled([

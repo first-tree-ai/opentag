@@ -11,6 +11,7 @@ import type {
   CreateAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
 import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
+import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import {
   AgentRuntimeAvailabilityTester,
   agentRuntimeAvailabilityPolicy,
@@ -22,6 +23,19 @@ afterEach(async () => {
 });
 
 describe("AgentRuntimeAvailabilityTester", () => {
+  it("uses a Pi-compatible availability policy without granting write or shell tools", async () => {
+    const policy = agentRuntimeAvailabilityPolicy("pi");
+    expect(policy.fileSystem).toBe("read-only");
+    expect(policy.network).toBe("disabled");
+    const runtime = await new PiAgentRuntimeFactory().create({
+      eventSink: () => undefined,
+      systemPrompt: "Reply with the requested token.",
+      workspace: { cwd: tmpdir() },
+      policy,
+    });
+    await runtime.close();
+  });
+
   it("fails closed before creating a runtime when cancelled or when the provider is unknown", async () => {
     const factories = new Map<string, AgentRuntimeFactory>();
     const tester = new AgentRuntimeAvailabilityTester({ factories });

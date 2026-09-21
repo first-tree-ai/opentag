@@ -7,7 +7,7 @@ import {
   type TaskSummary,
 } from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
-import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi } from "../api.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, CLOUD_CONTROL_TIMEOUT_MS } from "../api.js";
 import { DiagnosticReporter } from "../observability/diagnostics.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -60,6 +60,63 @@ async function expectAgentSetupDeadline(fetchImpl: typeof fetch): Promise<void> 
 }
 
 describe("BrowserApi", () => {
+  it("reads Router model choices through the Server without changing the Cloud availability contract", async () => {
+    const models = { available: true, models: ["router-model"], defaultModel: "router-model" };
+    const availability = { enabled: true, available: true, reason: null, observedAt: "2026-09-21T00:00:00.000Z" };
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === "/api/v1/computers/cloud/models") return jsonResponse(models);
+      if (String(input) === "/api/v1/computers/cloud") return jsonResponse(availability);
+      throw new Error("Unexpected request");
+    });
+    const api = new BrowserApi(fetchImpl);
+    expect(await api.cloudModelOptions()).toEqual(models);
+    expect(await api.cloudAvailability()).toEqual(availability);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds an uncertain Cloud discard without replaying the mutation", async () => {
+    setDocumentCookie("opentag_csrf=cloud-csrf; Path=/");
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+        expect(String(input)).toBe(`/api/v1/sandboxes/${SETUP_AGENT_ID}/runner/stop`);
+        expect(init?.method).toBe("POST");
+        expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("cloud-csrf");
+        expect(JSON.parse(String(init?.body))).toEqual({ discardUnsavedChanges: true, environmentGeneration: 7 });
+        return hangingJsonResponse(200);
+      });
+      const pending = new BrowserApi(fetchImpl).stopCloudSandbox(SETUP_AGENT_ID, {
+        discardUnsavedChanges: true,
+        environmentGeneration: 7,
+      });
+      const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError", code: "cancelled" });
+      await vi.advanceTimersByTimeAsync(CLOUD_CONTROL_TIMEOUT_MS);
+      await assertion;
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+      setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+    }
+  });
+
+  it("reads the scoped Cloud overview without leaking an Account selector", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/cloud?limit=20&sessionId=${taskSummary.id}`);
+      expect(init?.method ?? "GET").toBe("GET");
+      return jsonResponse({
+        agentId: SETUP_AGENT_ID,
+        observedAt: "2026-09-20T00:00:00Z",
+        capacity: { accountUsed: 0, accountLimit: 3 },
+        counts: { allocated: 0, queued: 0, running: 0, attention: 0 },
+        sessions: [],
+        nextCursor: null,
+      });
+    });
+    await expect(
+      new BrowserApi(fetchImpl).agentCloudOverview(SETUP_AGENT_ID, { limit: 20, sessionId: taskSummary.id }),
+    ).resolves.toMatchObject({ sessions: [] });
+  });
+
   it("updates a Task title with the Account PATCH contract and CSRF header", async () => {
     setDocumentCookie("opentag_csrf=task-csrf; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
@@ -111,6 +168,7 @@ describe("BrowserApi", () => {
       status: "suspended",
       revision: 2,
       runtimeConfig: {
+        contextTreeRepository: null,
         revision: 1,
         model: null,
         reasoningEffort: null,
@@ -330,7 +388,9 @@ describe("BrowserApi", () => {
     };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       if (String(input) === "/api/v1/computers") {
+        expect(new Headers(init?.headers).get("x-opentag-cloud-identity")).toBe("1");
         expect(new Headers(init?.headers).get("x-opentag-provider-readiness")).toBe("1");
+        expect(new Headers(init?.headers).get("x-opentag-provider-readiness-v2")).toBe("2");
         expect(new Headers(init?.headers).get("x-opentag-provider-cli-reason")).toBe("2");
         return new Response(JSON.stringify({ computers: [computer] }), {
           status: 200,

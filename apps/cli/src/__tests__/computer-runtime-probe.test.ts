@@ -30,7 +30,10 @@ function mockFactories(
   const claude = vi
     .spyOn(client, "resolvedClaudeCodeFactory")
     .mockReturnValue({ probe } as unknown as ReturnType<typeof client.resolvedClaudeCodeFactory>);
-  return { codex, claude, probe };
+  const pi = vi
+    .spyOn(client, "resolvedPiFactory")
+    .mockReturnValue({ probe } as unknown as ReturnType<typeof client.resolvedPiFactory>);
+  return { codex, claude, pi, probe };
 }
 
 describe("selected Runtime full-probe adapter", () => {
@@ -71,20 +74,22 @@ describe("selected Runtime full-probe adapter", () => {
     expect(stdout).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(3);
   });
-  it.each(["codex", "claude-code"] as const)(
+  it.each(["codex", "claude-code", "pi"] as const)(
     "reuses only the %s factory and does not create a Runtime Home or install anything",
     async (provider) => {
       const home = await isolatedHome();
-      const { codex, claude, probe } = mockFactories();
+      const { codex, claude, pi, probe } = mockFactories();
       const ensure = vi.spyOn(client.ProviderCliManager.prototype, "ensure");
       const result = await probeRuntimeComponent({ provider, environment: { HOME: home, PATH: "/test/bin" } });
       expect(result).toMatchObject({ id: `runtime:${provider}`, status: "ready", blocking: false });
-      expect(provider === "codex" ? codex : claude).toHaveBeenCalledOnce();
-      expect(provider === "codex" ? claude : codex).not.toHaveBeenCalled();
+      expect(codex).toHaveBeenCalledTimes(provider === "codex" ? 1 : 0);
+      expect(claude).toHaveBeenCalledTimes(provider === "claude-code" ? 1 : 0);
+      expect(pi).toHaveBeenCalledTimes(provider === "pi" ? 1 : 0);
       expect(probe).toHaveBeenCalledExactlyOnceWith({ signal: expect.any(AbortSignal) });
       expect(ensure).not.toHaveBeenCalled();
       await expect(access(join(home, ".codex"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(access(join(home, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(home, ".pi"))).rejects.toMatchObject({ code: "ENOENT" });
     },
   );
 
@@ -106,6 +111,19 @@ describe("selected Runtime full-probe adapter", () => {
     });
     expect(customEnvironment.home).toBe(custom);
     expect(customEnvironment.environment.CLAUDE_CONFIG_DIR).toBe(custom);
+  });
+
+  it("preserves exact custom Pi home through the daemon's canonical environment filter", async () => {
+    const home = await isolatedHome();
+    const custom = join(home, "pi-config");
+    const environment = await resolveRuntimeProbeEnvironment("pi", {
+      HOME: home,
+      PI_CODING_AGENT_DIR: custom,
+      OPENTAG_SERVER_URL: "https://private.example",
+    });
+    expect(environment.home).toBe(custom);
+    expect(environment.environment.PI_CODING_AGENT_DIR).toBe(custom);
+    expect(environment.environment.OPENTAG_SERVER_URL).toBeUndefined();
   });
 
   it("preserves exact custom Codex home through the daemon's canonical environment filter", async () => {
@@ -131,16 +149,17 @@ describe("selected Runtime full-probe adapter", () => {
   });
 
   it("honors caller cancellation before any selected factory starts", async () => {
-    const { codex, claude } = mockFactories();
+    const { codex, claude, pi } = mockFactories();
     await expect(
       probeRuntimeComponent({ provider: "codex", signal: AbortSignal.abort(new Error("cancelled")) }),
     ).rejects.toThrow("cancelled");
     expect(codex).not.toHaveBeenCalled();
     expect(claude).not.toHaveBeenCalled();
+    expect(pi).not.toHaveBeenCalled();
   });
 
   it("makes the emitted verify command a real full-probe command with no implicit Runtime", async () => {
-    const { codex, claude } = mockFactories();
+    const { codex, claude, pi } = mockFactories();
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     await createProgram().parseAsync([
@@ -154,6 +173,7 @@ describe("selected Runtime full-probe adapter", () => {
     ]);
     expect(claude).toHaveBeenCalledOnce();
     expect(codex).not.toHaveBeenCalled();
+    expect(pi).not.toHaveBeenCalled();
     expect(JSON.parse(String(stdout.mock.calls[0]?.[0]))).toMatchObject({
       ok: true,
       result: { id: "runtime:claude-code", status: "ready" },

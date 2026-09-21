@@ -44,15 +44,17 @@ const computerProfile = {
   clientVersion: "0.0.2",
 };
 
-async function connectComputer(database: DatabaseClient, ownerAccountId: string) {
+async function connectComputer(database: DatabaseClient, ownerAccountId: string, kind: "local" | "cloud" = "local") {
   const installationId = crypto.randomUUID();
   const [computer] = await database
     .insert(computers)
     .values({
       id: crypto.randomUUID(),
       ownerAccountId,
+      kind,
       currentInstallationId: installationId,
       ...computerProfile,
+      ...(kind === "cloud" ? { displayName: "Cloud", platform: "linux" as const, arch: "x64" } : {}),
     })
     .returning();
   if (!computer) throw new Error("Computer fixture was not created");
@@ -222,5 +224,87 @@ describe("Messaging for an Agent that has no Computer", () => {
       "B_BOT",
     );
     expect(activated.imBindingId).toMatch(/^[0-9a-f-]{36}$/u);
+  });
+});
+
+describe("Cloud Computer Agent binding", () => {
+  it("creates a Cloud Agent only when the gate is on and the runtime is Pi", async () => {
+    const bootstrap = await account();
+    const cloud = await connectComputer(unitDatabase.database, bootstrap.userId, "cloud");
+    const closed = new AgentService(unitDatabase.database);
+    await expect(
+      closed.createForAccount(bootstrap.userId, {
+        name: "cloud-closed",
+        displayName: "Cloud Closed",
+        runtimeProvider: "pi",
+        computerId: cloud.id,
+      }),
+    ).rejects.toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
+
+    const open = new AgentService(unitDatabase.database, { cloudIdentitiesEnabled: true });
+    await expect(
+      open.createForAccount(bootstrap.userId, {
+        name: "cloud-codex",
+        displayName: "Cloud Codex",
+        runtimeProvider: "codex",
+        computerId: cloud.id,
+      }),
+    ).rejects.toMatchObject({ code: "AGENT_LIFECYCLE_CONFLICT", statusCode: 409 });
+
+    const created = await open.createForAccount(bootstrap.userId, {
+      name: "cloud-pi",
+      displayName: "Cloud Pi",
+      runtimeProvider: "pi",
+      computerId: cloud.id,
+    });
+    expect(created).toMatchObject({ computerId: cloud.id, runtimeProvider: "pi" });
+    await expect(
+      open.updateById(bootstrap.userId, created.id, {
+        expectedRevision: created.revision,
+        runtimeConfig: { model: "pi" },
+        runtimeProvider: "codex",
+      } as never),
+    ).rejects.toThrow();
+  });
+
+  it("rejects Local to Cloud, Cloud to Local, and unbound Local to Cloud rebind", async () => {
+    const bootstrap = await account();
+    const local = await connectComputer(unitDatabase.database, bootstrap.userId);
+    const cloud = await connectComputer(unitDatabase.database, bootstrap.userId, "cloud");
+    const open = new AgentService(unitDatabase.database, { cloudIdentitiesEnabled: true });
+    const unbound = await open.createForAccount(bootstrap.userId, unboundInput("unbound-local"));
+    const localAgent = await open.createForAccount(bootstrap.userId, {
+      ...unboundInput("local-bound"),
+      computerId: local.id,
+    });
+    const cloudAgent = await open.createForAccount(bootstrap.userId, {
+      name: "cloud-bound",
+      displayName: "Cloud Bound",
+      runtimeProvider: "pi",
+      computerId: cloud.id,
+    });
+
+    await expect(open.rebindById(bootstrap.userId, unbound.id, cloud.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+    });
+    await expect(open.rebindById(bootstrap.userId, localAgent.id, cloud.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+    });
+    await expect(open.rebindById(bootstrap.userId, cloudAgent.id, local.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+    });
+    const same = await open.rebindById(bootstrap.userId, cloudAgent.id, cloud.id);
+    expect(same.computerId).toBe(cloud.id);
+    const reboundLocal = await open.rebindById(
+      bootstrap.userId,
+      localAgent.id,
+      (await connectComputer(unitDatabase.database, bootstrap.userId)).id,
+    );
+    expect(reboundLocal.computerId).not.toBe(local.id);
+
+    const closed = new AgentService(unitDatabase.database);
+    await expect(closed.rebindById(bootstrap.userId, cloudAgent.id, cloud.id)).rejects.toMatchObject({
+      code: "COMPUTER_NOT_FOUND",
+    });
   });
 });

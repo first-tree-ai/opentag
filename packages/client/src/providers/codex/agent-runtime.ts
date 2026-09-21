@@ -92,6 +92,8 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "--disable",
   "remote_plugin",
   "--disable",
+  "shell_snapshot",
+  "--disable",
   "skill_mcp_dependency_install",
   "--disable",
   "tool_call_mcp_elicitation",
@@ -110,7 +112,7 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "-c",
   'shell_environment_policy.inherit="all"',
   "-c",
-  'shell_environment_policy.filters={ PATH = "include", LANG = "include", LC_ALL = "include", OPENTAG_HOME = "include", OPENTAG_PROVIDER_ENV_FILE = "include", OPENTAG_SESSION_PROOF_FILE = "include" }',
+  'shell_environment_policy.filters={ PATH = "include", ZDOTDIR = "include", LANG = "include", LC_ALL = "include", OPENTAG_HOME = "include", OPENTAG_PROVIDER_ENV_FILE = "include", OPENTAG_SESSION_PROOF_FILE = "include" }',
 ] as const;
 const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",
@@ -744,10 +746,17 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       workspaceEnvironment?: Readonly<Record<string, string>>,
       pathPrepend?: string,
       expectedCodexHome = options.process?.expectedCodexHome,
-    ) =>
-      new CodexAppServerProcess({
+    ) => {
+      // Snapshots and ~/.zshenv can both put ambient CLIs ahead of the Session launcher. With
+      // snapshots disabled above, managed executions keep zsh initialization in their state home.
+      const shellHome = pathPrepend ? workspaceEnvironment?.OPENTAG_HOME : undefined;
+      const managedArgs = [
+        ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+        ...(shellHome ? ["-c", `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(shellHome)}`] : []),
+      ];
+      return new CodexAppServerProcess({
         command,
-        args: options.process?.args ?? [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
+        args: options.process?.args ?? managedArgs,
         cwd,
         env: composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend),
         expectedCodexHome,
@@ -755,6 +764,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         requestTimeoutMs: options.process?.requestTimeoutMs,
         spawnProcess: options.process?.spawnProcess,
       });
+    };
     this.#createClient = options.createClient ?? createDefaultClient;
     const createProbeClient =
       options.createClient ??
@@ -962,7 +972,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       const method = mode === "create" ? "thread/start" : "thread/resume";
       const response = requireRecord(
         await client.request(method, {
-          ...(method === "thread/resume" && expectedThreadId ? { threadId: expectedThreadId } : {}),
+          ...codexThreadParams(method, expectedThreadId),
           cwd: request.workspace.cwd,
           developerInstructions: request.systemPrompt,
           approvalPolicy: codexApprovalPolicy(request.policy.approvals),
@@ -1161,6 +1171,20 @@ function parseProviderConfiguration(value: JsonValue | undefined): CodexProvider
     result[key as keyof CodexProviderConfiguration] = item;
   }
   return result;
+}
+
+/**
+ * Turn hydration stays on the Server: Codex otherwise returns the entire stored thread inside one
+ * `thread/resume` response, and a long Session exceeds the App Server JSONL line limit, which fails
+ * the resume as a protocol error. Only create and resume share the rest of the param shape.
+ */
+function codexThreadParams(
+  method: "thread/start" | "thread/resume",
+  expectedThreadId: string | undefined,
+): Record<string, unknown> {
+  // An exact resume always carries the bound thread id. `JSON.stringify` drops the key when it is
+  // absent, so a resume without one still sends no `threadId`.
+  return method === "thread/start" ? {} : { threadId: expectedThreadId, excludeTurns: true };
 }
 
 function parseCodexBinding(binding: AgentRuntimeBinding): { threadId: string; hostedToolsHash?: string } {

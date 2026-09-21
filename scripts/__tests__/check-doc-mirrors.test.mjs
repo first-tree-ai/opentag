@@ -32,7 +32,7 @@ function fixture({ marker = false } = {}) {
 
 function finishFixture(
   fixtureData,
-  { changeMirror = false, changeOutsideMarker = false, text = "Updated text." } = {},
+  { changeMirror = false, changeOutsideMarker = false, text = "Updated text.", bigSource = false } = {},
 ) {
   const canonicalPath = join(fixtureData.root, fixtureData.canonicalPath);
   const current = readFileSync(canonicalPath, "utf8");
@@ -40,7 +40,13 @@ function finishFixture(
   const updated = changeOutsideMarker ? changed.replace("Keep mirrored.", "Changed outside.") : changed;
   writeFileSync(canonicalPath, updated.endsWith("\n") ? updated : `${updated}\n`);
   if (changeMirror) writeFileSync(join(fixtureData.root, fixtureData.mirrorPath), "# 指南\n\n更新文本。\n");
-  runGit(fixtureData.root, "add", fixtureData.canonicalPath, ...(changeMirror ? [fixtureData.mirrorPath] : []));
+  const staged = [fixtureData.canonicalPath, ...(changeMirror ? [fixtureData.mirrorPath] : [])];
+  if (bigSource) {
+    // A >1 MiB tracked text change outside Markdown must not enter the diff the policy reads.
+    writeFileSync(join(fixtureData.root, "payload.txt"), `${"x".repeat(1_400_000)}\n`);
+    staged.push("payload.txt");
+  }
+  runGit(fixtureData.root, "add", ...staged);
   runGit(fixtureData.root, "commit", "--quiet", "-m", "change docs");
   return runGit(fixtureData.root, "rev-parse", "HEAD");
 }
@@ -93,6 +99,29 @@ test("the divergence marker does not suppress an unmarked sibling section", () =
   const fixtureData = fixture({ marker: true });
   try {
     const head = finishFixture(fixtureData, { changeOutsideMarker: true });
+    const result = runChecker(fixtureData.root, fixtureData.base, head);
+    assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.match(`${result.stdout}${result.stderr}`, /guide\.zh-CN\.md/);
+  } finally {
+    rmSync(fixtureData.root, { recursive: true, force: true });
+  }
+});
+
+test("a >1 MiB non-Markdown change with synchronized mirrors still passes", () => {
+  const fixtureData = fixture();
+  try {
+    const head = finishFixture(fixtureData, { changeMirror: true, bigSource: true });
+    const result = runChecker(fixtureData.root, fixtureData.base, head);
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  } finally {
+    rmSync(fixtureData.root, { recursive: true, force: true });
+  }
+});
+
+test("a >1 MiB non-Markdown change does not mask a missing mirror", () => {
+  const fixtureData = fixture();
+  try {
+    const head = finishFixture(fixtureData, { bigSource: true });
     const result = runChecker(fixtureData.root, fixtureData.base, head);
     assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
     assert.match(`${result.stdout}${result.stderr}`, /guide\.zh-CN\.md/);

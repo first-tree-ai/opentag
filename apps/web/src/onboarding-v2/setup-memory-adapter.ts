@@ -29,7 +29,9 @@ import {
   AgentSetupSnapshotSchema,
   type AgentSetupStage,
   type AgentSummary,
+  type CloudAvailability,
   type ComputerConnectCodeStatus,
+  type FeishuSetupActivation,
   type FeishuSetupIntent,
   type ImBindingMessagingExpectation,
   type ImCliReadinessStatus,
@@ -88,12 +90,20 @@ export interface MemorySetupSeed {
   readonly messaging?: MemoryMessagingModel;
   /** Keeps one authoritative observation leg failed, for production-parity blocker scenarios. */
   readonly observationFailure?: "computer" | "runtime" | "messaging";
+  /**
+   * Present when the Agent is bound to the managed Cloud Computer: the deployment's Cloud
+   * availability answer. Local legs (presence, runtime reports, CLI collections) are never
+   * projected for it, and no Computer connect flow exists. Defaults to available.
+   */
+  readonly cloudService?: { readonly available?: boolean; readonly reason?: CloudAvailability["reason"] };
 }
 
 /** The outside world's moves. Each throws when there is nothing for it to move. */
 export interface MemorySetupControls {
   /** The phone scan happened: the open Feishu attempt succeeds against its intent. */
   readonly scanFeishuCode: () => void;
+  /** The authorization was saved, but a prerequisite still prevents activation. */
+  readonly awaitFeishuActivation: (reason?: FeishuSetupActivation["reason"]) => void;
   /** The open Feishu attempt expired or was refused. */
   readonly failFeishuAttempt: () => void;
   /** The open Slack install expired or was refused before its callback returned. */
@@ -110,6 +120,8 @@ export interface MemorySetupControls {
   readonly setImCliReadiness: (provider: ImProvider, status: ImCliReadinessStatus) => void;
   readonly setObservationFailure: (resource: MemorySetupSeed["observationFailure"]) => void;
   readonly setRuntimeStatus: (status: ProviderReadinessStatus) => void;
+  /** The deployment's Cloud answer changed, e.g. the model path was configured and redeployed. */
+  readonly setCloudAvailability: (available: boolean, reason?: CloudAvailability["reason"]) => void;
   /** Mirrors a successful `opentag doctor --json` observation across every readiness leg. */
   readonly runDoctor: () => void;
 }
@@ -138,6 +150,8 @@ type MemoryMessagingState =
       bindingId: string;
       intent: FeishuSetupIntent;
       prior: MemoryBoundMessaging;
+      activation?: FeishuSetupActivation;
+      activationExpiresAt?: string;
     }
   | { kind: "slack-install"; intent: SlackConfigurationIntent; prior: MemoryBoundMessaging }
   | {
@@ -163,6 +177,8 @@ interface MemoryState {
   runtimeStatus: ProviderReadinessStatus;
   messaging: MemoryMessagingState;
   observationFailure: MemorySetupSeed["observationFailure"];
+  /** Present exactly when the Agent is Cloud-bound: the deployment's Cloud availability answer. */
+  cloudService: { available: boolean; reason: CloudAvailability["reason"] } | undefined;
 }
 
 interface MemoryComputerConnectAttempt {
@@ -187,8 +203,9 @@ function deriveMessaging(state: MemoryMessagingState): AgentSetupMessagingState 
         kind: "authorizing",
         provider: "feishu",
         attemptId: state.attemptId,
-        qrUrl: MEMORY_QR_URL,
-        expiresAt: attemptExpiresAt(),
+        qrUrl: state.activation ? null : MEMORY_QR_URL,
+        expiresAt: state.activationExpiresAt ?? attemptExpiresAt(),
+        ...(state.activation ? { activation: state.activation } : {}),
       };
     // Review Lab only: production leaves the application for this interval and therefore never
     // returns this authorizing state from the setup endpoint.
@@ -250,6 +267,20 @@ function computerLegBlockers(computer: AgentSetupComputerState): AgentSetupBlock
 
 function runtimeLegBlockers(runtime: AgentSetupRuntimeState): AgentSetupBlocker[] {
   if (runtime.kind === "observation-failed") return [{ code: "resource-observation-failed", resource: "runtime" }];
+  if (runtime.kind === "cloud-managed") {
+    const reason = runtime.availability.reason ?? "disabled";
+    return [
+      {
+        code: "cloud-service-unavailable",
+        reason:
+          reason === "execution_unavailable"
+            ? ("execution-unavailable" as const)
+            : reason === "model_unavailable"
+              ? ("model-unavailable" as const)
+              : ("disabled" as const),
+      },
+    ];
+  }
   if (runtime.kind === "waiting") {
     return [{ code: "runtime-not-ready", provider: runtime.provider, status: "waiting" }];
   }
@@ -312,7 +343,10 @@ function messagingBlocker(
 
 function deriveBoundActions(messaging: MemoryBound): AgentSetupAction[] {
   if (messaging.attention === "authorization-failed") {
-    return [{ kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId }];
+    return [
+      ...(isRetryableFeishu(messaging) ? [{ kind: "start-messaging", provider: "feishu" } as const] : []),
+      { kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId },
+    ];
   }
   if (!messaging.reachable && !messaging.attention) {
     return [
@@ -348,7 +382,10 @@ function deriveMessagingActions(messaging: MemoryMessagingState): AgentSetupActi
         { kind: "start-messaging", provider: "feishu" },
       ];
     case "feishu-attempt":
-      return [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId }];
+      return [
+        ...(messaging.activation ? [{ kind: "refresh" } as const] : []),
+        { kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId },
+      ];
     case "slack-install":
       return [{ kind: "refresh" }];
     case "bound":
@@ -358,6 +395,7 @@ function deriveMessagingActions(messaging: MemoryMessagingState): AgentSetupActi
 
 function deriveActions(state: MemoryState, components: AgentSetupComponent[]): AgentSetupAction[] {
   const { agent, computerOnline, observationFailure, runtimeStatus, messaging } = state;
+  if (state.cloudService !== undefined) return deriveCloudActions(state);
   if (observationFailure === "computer") return [{ kind: "refresh" }];
   if (agent.computer === null) return [{ kind: "bind-computer" }];
   if (agent.requiresComputerRebind === true) {
@@ -376,13 +414,31 @@ function deriveActions(state: MemoryState, components: AgentSetupComponent[]): A
   ) {
     return [{ kind: "refresh" }];
   }
-  return deriveMessagingActions(messaging);
+  return deriveMessagingActions(messaging).filter(
+    (action) =>
+      action.kind !== "start-messaging" ||
+      AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS.every((provider) => state.imCliReadiness[provider] === "ready"),
+  );
+}
+
+/**
+ * The actions a Cloud Agent may take. There is no machine to bind or repair and no CLI gate: the
+ * managed service's availability is the only preparation gate, and Messaging actions follow it.
+ */
+function deriveCloudActions(state: MemoryState): AgentSetupAction[] {
+  if (state.observationFailure === "messaging") return [{ kind: "refresh" }];
+  if (state.cloudService?.available !== true) return [{ kind: "refresh" }];
+  return deriveMessagingActions(state.messaging);
 }
 
 function deriveComputerState(state: MemoryState): AgentSetupComputerState {
   const { agent, computerOnline } = state;
   if (agent.computer === null) return { kind: "not-bound" };
   if (state.observationFailure === "computer") return { kind: "observation-failed", ...agent.computer };
+  if (state.cloudService !== undefined) {
+    // The Cloud identity is bound and managed; the observation time is the read, not a heartbeat.
+    return { kind: "cloud", ...agent.computer, observedAt: now() };
+  }
   if (agent.requiresComputerRebind === true) return { kind: "requires-rebind", ...agent.computer };
   const reports = (["feishu", "slack"] as const).flatMap((provider) => {
     const status = state.imCliReadiness[provider];
@@ -408,6 +464,19 @@ function deriveComputerState(state: MemoryState): AgentSetupComputerState {
 
 function deriveRuntimeState(state: MemoryState): AgentSetupRuntimeState {
   const provider = state.agent.runtimeProvider;
+  if (state.cloudService !== undefined) {
+    const available = state.cloudService.available;
+    return {
+      kind: "cloud-managed",
+      provider,
+      availability: {
+        enabled: state.cloudService.reason !== "disabled",
+        available,
+        reason: available ? null : state.cloudService.reason,
+        observedAt: now(),
+      },
+    };
+  }
   if (state.agent.computer === null) return { kind: "unavailable", provider, reason: "computer-not-bound" };
   if (state.observationFailure === "computer") {
     return { kind: "unavailable", provider, reason: "computer-observation-failed" };
@@ -427,6 +496,11 @@ function deriveStage(
   messaging: AgentSetupMessagingState,
   components: AgentSetupComponent[],
 ): AgentSetupStage {
+  if (computer.kind === "cloud") {
+    if (runtime.kind !== "cloud-managed" || !runtime.availability.available) return "needs-runtime";
+    if (messaging.kind === "ready") return "ready";
+    return "needs-messaging";
+  }
   if (computer.kind !== "bound" || computer.connectionStatus === "offline") return "needs-computer";
   if (runtime.kind !== "observed" || runtime.status !== "ready") return "needs-runtime";
   if (messaging.kind === "ready") return "ready";
@@ -443,7 +517,8 @@ function deriveSnapshot(state: MemoryState): AgentSetupSnapshot {
   const runtime = deriveRuntimeState(state);
   const messaging: AgentSetupMessagingState =
     state.observationFailure === "messaging" ? { kind: "observation-failed" } : deriveMessaging(state.messaging);
-  const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
+  const requiredImCliProviders =
+    computer.kind === "cloud" ? [] : ([...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS] as ImProvider[]);
   const components = projectAgentSetupComponents({
     computer,
     runtime,
@@ -473,7 +548,7 @@ function readBoundMessaging(state: MemoryState, operation: string): MemoryBound 
 }
 
 function assertExpectedMessaging(state: MemoryState, expected: ImBindingMessagingExpectation, operation: string): void {
-  const current = state.messaging.kind === "bound" ? state.messaging : undefined;
+  const current = state.messaging.kind === "bound" && !isRetryableFeishu(state.messaging) ? state.messaging : undefined;
   if (expected.kind === "unbound") {
     if (current) throw new Error(`${operation} was decided from a stale unbound state`);
     return;
@@ -488,11 +563,38 @@ function assertExpectedMessaging(state: MemoryState, expected: ImBindingMessagin
   }
 }
 
+function isRetryableFeishu(messaging: MemoryMessagingState): boolean {
+  return (
+    messaging.kind === "bound" &&
+    messaging.provider === "feishu" &&
+    messaging.credentialGeneration === 0 &&
+    messaging.attention === "authorization-failed"
+  );
+}
+
 const MEMORY_CONNECT_TTL_SECONDS = 15 * 60;
 const MEMORY_CONNECTED_AT = "2026-09-01T10:00:00.000Z";
 
-function computerFromAgent(agent: AgentSummary, online: boolean): AccountComputerSummary | undefined {
+function computerFromAgent(
+  agent: AgentSummary,
+  online: boolean,
+  cloud: { available: boolean; reason: CloudAvailability["reason"] } | undefined,
+): AccountComputerSummary | undefined {
   if (!agent.computer || agent.requiresComputerRebind === true) return undefined;
+  if (cloud !== undefined) {
+    return {
+      computerId: agent.computer.computerId,
+      kind: "cloud",
+      displayName: agent.computer.displayName,
+      platform: agent.computer.platform,
+      connectionStatus: "online",
+      connectedAt: null,
+      lastSeenAt: null,
+      observedAt: MEMORY_CONNECTED_AT,
+      createdAt: MEMORY_CONNECTED_AT,
+      agentIds: [agent.id],
+    };
+  }
   return {
     computerId: agent.computer.computerId,
     displayName: agent.computer.displayName,
@@ -542,9 +644,16 @@ function setMemoryComputerOnline(state: MemoryState, online: boolean): void {
   };
 }
 
+function initialCloudService(seed: MemorySetupSeed): MemoryState["cloudService"] {
+  if (seed.cloudService === undefined) return undefined;
+  const available = seed.cloudService.available ?? true;
+  return { available, reason: available ? null : (seed.cloudService.reason ?? "execution_unavailable") };
+}
+
 export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdapter {
   const bound = seed.messaging?.kind === "bound" ? seed.messaging : undefined;
-  const seededComputer = computerFromAgent(seed.agent, seed.computerOnline ?? true);
+  const cloudService = initialCloudService(seed);
+  const seededComputer = computerFromAgent(seed.agent, seed.computerOnline ?? true, cloudService);
   const state: MemoryState = {
     agent: seed.agent,
     computerOnline: seed.computerOnline ?? true,
@@ -567,6 +676,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
         }
       : { kind: "not-configured" },
     observationFailure: seed.observationFailure,
+    cloudService,
   };
   const listeners = new Set<() => void>();
   let version = 0;
@@ -586,8 +696,10 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
     startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
       assertExpectedMessaging(state, expectedMessaging, `${intent} ${messagingProviderLabel("feishu")}`);
-      const prior = state.messaging.kind === "bound" ? state.messaging : undefined;
-      if (intent === "create" && state.messaging.kind !== "not-configured") {
+      const current = state.messaging.kind === "bound" ? state.messaging : undefined;
+      const retry = isRetryableFeishu(state.messaging);
+      const prior = retry ? undefined : current;
+      if (intent === "create" && state.messaging.kind !== "not-configured" && !retry) {
         throw new Error("A Messaging Provider can be started only from not-configured");
       }
       if (intent !== "create" && prior?.provider !== "feishu") {
@@ -596,7 +708,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       state.messaging = {
         kind: "feishu-attempt",
         attemptId: crypto.randomUUID(),
-        bindingId: prior?.bindingId ?? crypto.randomUUID(),
+        bindingId: current?.bindingId ?? crypto.randomUUID(),
         intent,
         prior,
       };
@@ -618,6 +730,15 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
           attention: "authorization-failed",
         } satisfies MemoryBound);
       changed();
+    },
+    checkFeishuAttempt: async (attemptId) => {
+      if (
+        state.messaging.kind !== "feishu-attempt" ||
+        state.messaging.attemptId !== attemptId ||
+        !state.messaging.activation
+      ) {
+        throw new Error(`No saved authorization: ${attemptId}`);
+      }
     },
     startSlackInstall: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
@@ -700,6 +821,18 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
   };
 
   const controls: MemorySetupControls = {
+    awaitFeishuActivation: (reason = "permissions_pending") => {
+      if (state.messaging.kind !== "feishu-attempt") throw new Error("No authorization attempt is open");
+      state.messaging.activation = {
+        appId: "cli_saved_authorization",
+        reason,
+        missingScopes: reason === "permissions_pending" ? ["im:message"] : [],
+        lastCheckedAt: now(),
+        nextCheckAt: new Date(Date.now() + 60_000).toISOString(),
+      };
+      state.messaging.activationExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+      changed();
+    },
     scanFeishuCode: () => {
       if (state.messaging.kind !== "feishu-attempt") {
         throw new Error(`No ${messagingProviderLabel("feishu")} attempt is waiting for a scan`);
@@ -822,6 +955,14 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
     },
     setObservationFailure: (resource) => {
       state.observationFailure = resource;
+      changed();
+    },
+    setCloudAvailability: (available, reason) => {
+      if (!state.cloudService) throw new Error("The Agent is not Cloud-bound");
+      state.cloudService = {
+        available,
+        reason: available ? null : (reason ?? state.cloudService.reason ?? "execution_unavailable"),
+      };
       changed();
     },
     /** A fresh runtime observation arrived: the missing-report leg resolves to that observation. */

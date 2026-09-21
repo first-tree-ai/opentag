@@ -3,12 +3,15 @@ import { check, index, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } fro
 import { users } from "./auth.js";
 
 export const computerPlatform = pgEnum("computer_platform", ["darwin", "linux", "win32"]);
+export const computerKind = pgEnum("computer_kind", ["local", "cloud"]);
 export const computerConnectCodeMode = pgEnum("computer_connect_code_mode", ["create", "repair"]);
 
 /**
- * The Account-owned Computer. `current_installation_id` is the local installation identity the Client
- * last exchanged or repaired with; it stays a bare identifier so replacing an installation never
- * requires a referential rewrite.
+ * The Account-owned Computer. `current_installation_id` is the Client's last exchanged/repaired Local
+ * installation, or the stable Server-managed Cloud installation identity. It stays a bare identifier
+ * so replacing a Local installation never requires a referential rewrite. Historical rows default to Local. Cloud
+ * does not drop the required installation UUID, platform, arch, or client version. `current_instance_id`
+ * remains the daemon UUID and is not a GCP resource name.
  */
 export const computers = pgTable(
   "computers",
@@ -17,6 +20,7 @@ export const computers = pgTable(
     ownerAccountId: uuid("owner_account_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    kind: computerKind("kind").notNull().default("local"),
     currentInstallationId: uuid("current_installation_id").notNull(),
     displayName: text("display_name").notNull(),
     platform: computerPlatform("platform").notNull(),
@@ -31,6 +35,7 @@ export const computers = pgTable(
   (table) => [
     index("computers_owner_account_id_idx").on(table.ownerAccountId),
     uniqueIndex("computers_current_installation_id_unique").on(table.currentInstallationId),
+    uniqueIndex("computers_owner_account_id_cloud_unique").on(table.ownerAccountId).where(sql`${table.kind} = 'cloud'`),
   ],
 );
 

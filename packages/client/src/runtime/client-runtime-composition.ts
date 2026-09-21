@@ -7,6 +7,7 @@ import {
   computeRuntimeSnapshotHashes,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  type RuntimeExecutionSandbox,
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import type {
@@ -31,7 +32,14 @@ import {
   codexBindingRequiresHostedToolReplacement,
 } from "../providers/codex/agent-runtime.js";
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
-import { RuntimeStorageError } from "../storage/durable-file.js";
+import {
+  PI_AGENT_RUNTIME_MANIFEST,
+  PiAgentRuntimeFactory,
+  piAgentRuntimeEnvironment,
+} from "../providers/pi/agent-runtime.js";
+import { piRuntimePolicy, validatePiRuntimePolicy } from "../providers/pi/runtime-policy.js";
+import { SkillSyncManager } from "../skills/skill-sync.js";
+import { ensurePrivateDirectory, RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { AdmissionController } from "./admission-controller.js";
 import { AgentRuntimeAvailabilityTester } from "./agent-runtime-availability-tester.js";
@@ -51,8 +59,8 @@ import {
 import { type AgentTurnOutgoingReplyCollector, AgentTurnRunner } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
-import { ContextTreeManager } from "./context-tree.js";
-import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
+import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
+import { ContextTreeSettings } from "./context-tree-settings.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
@@ -61,13 +69,24 @@ import { cleanupOutgoingReplyRun, collectOutgoingReplyReceipts } from "./provide
 import { ProviderCliReconciler } from "./provider-cli/reconciler.js";
 import { ProviderCliTurnPlanManager } from "./provider-cli/turn-plan-manager.js";
 import { resolveProviderCliTurnRunnerInvocation } from "./provider-cli/turn-runner.js";
-import { ProviderCliValidationRunner } from "./provider-cli/validation-runner.js";
+import {
+  type ProviderCliProxyValidationSession,
+  type ProviderCliValidationRequest,
+  ProviderCliValidationRunner,
+  type ProviderCliValidationRunnerOptions,
+} from "./provider-cli/validation-runner.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
+import {
+  RuntimeCredentialEnvironmentManager,
+  type RuntimeCredentialMode,
+} from "./runtime-credential-environment-manager.js";
+import type { RuntimeProxyDataConnectionFactory, RuntimeRelayScheduler } from "./runtime-credential-relay.js";
 import {
   FileRuntimeDurabilityStore,
   RuntimeDurabilityMetrics,
   type RuntimeDurabilityStore,
 } from "./runtime-durability.js";
+import type { RuntimeProxyLoopbackCaMaterial } from "./runtime-proxy-loopback-adapter.js";
 import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
@@ -76,6 +95,7 @@ import { SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
+import { resolveWebToolsExtensionPath } from "./web-tools-artifact.js";
 
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
 const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
@@ -240,7 +260,7 @@ function resolveSharedProviderRefreshResult(
 }
 
 export interface CreateClientRuntimeOptions {
-  readonly api?: Pick<OpenTagApi, "openImResource">;
+  readonly api?: Pick<OpenTagApi, "getComputerSkillManifest" | "openComputerSkillBundle" | "openImResource">;
   readonly serverDurability?: {
     readonly api: Pick<OpenTagApi, "listRuntimeDurableWork" | "writeRuntimeDurableWork">;
     readonly machineToken: string;
@@ -249,10 +269,47 @@ export interface CreateClientRuntimeOptions {
   readonly capabilityRefreshIntervalMs?: number;
   readonly providerProbeDeadlineMs?: number;
   readonly clientVersion: string;
+  /**
+   * Explicit credential mode. `"proxy"` opens trusted executions with short-lived
+   * capabilities and local handles; it never falls back to raw materials. Default
+   * `"legacy"` preserves the existing Local behavior.
+   */
+  readonly credentialMode?: RuntimeCredentialMode;
+  /**
+   * Proxy mode injection seam for Cloud host composition. Local proxy mode uses the
+   * production defaults (loopback TLS, openssl CA, real WSS client).
+   */
+  readonly runtimeCredentials?: {
+    readonly dataConnectionFactory?: RuntimeProxyDataConnectionFactory;
+    readonly generateCa?: (materialDir: string) => Promise<RuntimeProxyLoopbackCaMaterial>;
+    readonly now?: () => number;
+    readonly openBudgetMs?: number;
+    readonly sandboxForSession?: (sessionId: string) => RuntimeExecutionSandbox | undefined;
+    readonly scheduler?: RuntimeRelayScheduler;
+    /**
+     * Host-side managed environment for the Context Tree CLI (`undefined` entries unset). Local
+     * proxy mode defaults to the live execution environment; Cloud must supply a trusted
+     * Runner-side mapping because the execution environment targets the Sandbox loopback.
+     */
+    readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
+    /** Trusted host-side environment for Context Tree settings operations, when one exists. */
+    readonly contextTreeManagementEnvironment?: () => NodeJS.ProcessEnv | undefined;
+  };
+  /**
+   * Proxy mode only: opens the Server-issued validation execution for CLI readiness.
+   * The Server issues `validationRunId`; the client never invents one. Without this the
+   * proxy readiness path clearly rejects (`needs_attention`) instead of using raw tokens.
+   */
+  readonly openProxyValidation?: (
+    request: ProviderCliValidationRequest,
+    signal?: AbortSignal,
+  ) => Promise<ProviderCliProxyValidationSession | undefined>;
   readonly codexCommand?: string;
   readonly codexHome?: string;
   readonly claudeCodeCommand?: string;
   readonly claudeCodeHome?: string;
+  readonly piCommand?: string;
+  readonly piHome?: string;
   readonly cliCommand?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
@@ -263,13 +320,23 @@ export interface CreateClientRuntimeOptions {
   readonly machineToken?: string;
   readonly durabilityStore?: RuntimeDurabilityStore;
   readonly durabilityMetrics?: RuntimeDurabilityMetrics;
+  /**
+   * Explicit web tools opt-in. Effective only in proxy credential mode with the webTools
+   * capability negotiated and the Server granting web scopes to the execution; otherwise the
+   * trusted extension is never loaded. `extensionPath` defaults to the fixed built artifact.
+   */
+  readonly webTools?: {
+    readonly enabled: boolean;
+    readonly extensionPath?: string;
+    readonly fetchImpl?: typeof fetch;
+  };
 }
 
 export class ComposedClientRuntime {
   readonly #admission: AdmissionController;
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
-  readonly credentialEnvironment: ImCredentialEnvironmentManager;
+  readonly credentialEnvironment: RuntimeCredentialEnvironmentManager;
   readonly reconciler: SessionReconciler;
   readonly sessionMessageInbox: SessionMessageInbox;
   readonly reportOwner: TurnReportOwner;
@@ -294,7 +361,7 @@ export class ComposedClientRuntime {
       admission: AdmissionController;
       bindingStore: SessionBindingStore;
       custody: TurnCustodyOwner;
-      credentialEnvironment: ImCredentialEnvironmentManager;
+      credentialEnvironment: RuntimeCredentialEnvironmentManager;
       reconciler: SessionReconciler;
       sessionMessageInbox: SessionMessageInbox;
       reportOwner: TurnReportOwner;
@@ -442,6 +509,107 @@ export class ComposedClientRuntime {
   }
 }
 
+async function materializeProductionProviderLayout(
+  options: CreateClientRuntimeOptions,
+  sourceEnvironment: NodeJS.ProcessEnv,
+): Promise<{
+  readonly claudeCodeHome: string;
+  readonly codexHome: string;
+  readonly defaultFactories: readonly AgentRuntimeFactory[];
+  readonly loginShellDiscovery: LoginShellDiscovery;
+  readonly piHome: string;
+  readonly providerArtifactIdentities: Readonly<Record<AgentRuntimeProvider, string>>;
+  readonly providerHomes: Readonly<Record<AgentRuntimeProvider, string>>;
+}> {
+  const defaultHome = sourceEnvironment.HOME ?? homedir();
+  const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
+  const defaultClaudeCodeHome = resolve(join(defaultHome, ".claude"));
+  const configuredClaudeCodeHome = resolve(
+    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? defaultClaudeCodeHome,
+  );
+  const configuredPiHome = resolve(
+    options.piHome ?? sourceEnvironment.PI_CODING_AGENT_DIR ?? resolvePiHome(sourceEnvironment),
+  );
+  const configuredPiSessionDirectory = join(configuredPiHome, "sessions");
+  await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
+  await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
+  await mkdir(configuredPiHome, { recursive: true, mode: 0o700 });
+  await mkdir(configuredPiSessionDirectory, { recursive: true, mode: 0o700 });
+  const codexHome = await realpath(configuredCodexHome);
+  const claudeCodeHome = await realpath(configuredClaudeCodeHome);
+  const piHome = await realpath(configuredPiHome);
+  const piSessionDirectory = await realpath(configuredPiSessionDirectory);
+  const contextTreeBin = resolveOpenTagHomeLayout(options.home).contextTreeBin;
+  const withContextTreeOnPath = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
+    prependPath(environment, contextTreeBin);
+  const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
+  const loginShellDiscovery = createLoginShellDiscovery();
+  const discovery = loginShellDiscovery.options;
+  const contextTreeSkillsPath = resolveContextTreePackage()?.skillsPath;
+  return {
+    claudeCodeHome,
+    codexHome,
+    loginShellDiscovery,
+    piHome,
+    providerHomes: {
+      codex: codexHome,
+      "claude-code": claudeCodeHome,
+      pi: piHome,
+    },
+    providerArtifactIdentities: {
+      codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
+      "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
+      pi: createHash("sha256").update(piHome, "utf8").digest("hex"),
+    },
+    defaultFactories: [
+      resolvedCodexFactory({
+        clientVersion: options.clientVersion,
+        command: options.codexCommand ?? "codex",
+        codexHome,
+        discovery,
+        environment: withContextTreeOnPath(
+          codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome }),
+        ),
+        sourceEnvironment,
+      }),
+      resolvedClaudeCodeFactory({
+        claudeCodeHome,
+        command: options.claudeCodeCommand ?? "claude",
+        discovery,
+        environment: withContextTreeOnPath(
+          claudeCodeProcessEnvironment(sourceEnvironment, claudeCodeHome, canonicalDefaultClaudeCodeHome),
+        ),
+        sourceEnvironment,
+      }),
+      resolvedPiFactory({
+        command: options.piCommand ?? "pi",
+        discovery,
+        environment: withContextTreeOnPath(
+          piAgentRuntimeEnvironment({ ...sourceEnvironment, PI_CODING_AGENT_DIR: piHome }),
+        ),
+        piHome,
+        sessionDirectory: piSessionDirectory,
+        skillPaths: contextTreeSkillsPath ? [contextTreeSkillsPath] : [],
+        sourceEnvironment,
+      }),
+    ],
+  };
+}
+
+/**
+ * Build the Skill sync manager when the composition has both an API client and a machine token.
+ * Without either there is nothing to authenticate a sync with, so runtime start skips it.
+ */
+export function createSkillSyncManager(
+  options: Pick<CreateClientRuntimeOptions, "api" | "machineToken">,
+  logger: ClientLogger,
+): SkillSyncManager | undefined {
+  const api = options.api;
+  const machineToken = options.machineToken;
+  if (!api || !machineToken) return undefined;
+  return new SkillSyncManager({ api, logger, machineToken: async () => machineToken });
+}
+
 export async function createClientRuntime(
   connection: RuntimeConnection,
   options: CreateClientRuntimeOptions,
@@ -449,64 +617,10 @@ export async function createClientRuntime(
   const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
   const sourceEnvironment = options.environment ?? process.env;
   options.signal?.throwIfAborted();
-  const defaultHome = sourceEnvironment.HOME ?? homedir();
-  const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
-  const defaultClaudeCodeHome = resolve(join(defaultHome, ".claude"));
-  const configuredClaudeCodeHome = resolve(
-    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? defaultClaudeCodeHome,
-  );
-  await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
-  await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
-  const codexHome = await realpath(configuredCodexHome);
-  const claudeCodeHome = await realpath(configuredClaudeCodeHome);
-  const codexCommand = options.codexCommand ?? "codex";
-  const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
+  const layout = await materializeProductionProviderLayout(options, sourceEnvironment);
+  const { codexHome, loginShellDiscovery, providerArtifactIdentities, providerHomes } = layout;
   options.signal?.throwIfAborted();
-  // The packaged Context Tree skills invoke `context-tree` by name, so the shim directory has to
-  // win the PATH lookup. This belongs to composition rather than the per-Session workspace
-  // environment: a Session-level PATH would replace the value the factory composes, including the
-  // discovered executable directory that lets `codex` and `claude` resolve at all.
-  const contextTreeBin = resolveOpenTagHomeLayout(options.home).contextTreeBin;
-  const withContextTreeOnPath = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-    prependPath(environment, contextTreeBin);
-  const codexEnvironment = withContextTreeOnPath(
-    codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome }),
-  );
-  const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
-  const claudeCodeEnvironment = withContextTreeOnPath(
-    claudeCodeProcessEnvironment(sourceEnvironment, claudeCodeHome, canonicalDefaultClaudeCodeHome),
-  );
-  const providerHomes: Readonly<Record<"codex" | "claude-code", string>> = {
-    codex: codexHome,
-    "claude-code": claudeCodeHome,
-  };
-  const providerArtifactIdentities: Readonly<Record<"codex" | "claude-code", string>> = {
-    codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
-    "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
-  };
-  const loginShellDiscovery = createLoginShellDiscovery();
-  const discovery = loginShellDiscovery.options;
-  const factories =
-    options.factories ??
-    (options.factory
-      ? [options.factory]
-      : [
-          resolvedCodexFactory({
-            clientVersion: options.clientVersion,
-            command: codexCommand,
-            codexHome,
-            discovery,
-            environment: codexEnvironment,
-            sourceEnvironment,
-          }),
-          resolvedClaudeCodeFactory({
-            claudeCodeHome,
-            command: claudeCodeCommand,
-            discovery,
-            environment: claudeCodeEnvironment,
-            sourceEnvironment,
-          }),
-        ]);
+  const factories = options.factories ?? (options.factory ? [options.factory] : layout.defaultFactories);
   const providers = new AgentRuntimeProviderRegistry(
     factories.map((factory) => productionProviderRegistration(factory, providerArtifactIdentities, providerHomes)),
   );
@@ -576,10 +690,14 @@ export async function createClientRuntime(
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
+  const credentialMode = options.credentialMode ?? "legacy";
+  connection.setCredentialProxyEnabled(credentialMode === "proxy");
   const contextTree = new ContextTreeManager({
+    environment: sourceEnvironment,
     codexHome,
     home: options.home,
     logger: moduleLogger("context-tree"),
+    managedCredentials: credentialMode === "proxy",
   });
   const durabilityStore =
     options.durabilityStore ??
@@ -592,18 +710,23 @@ export async function createClientRuntime(
     metrics: durabilityMetrics,
     persistence: durabilityStore,
   });
-  const credentialEnvironment = new ImCredentialEnvironmentManager({
+  const credentialEnvironment = createCredentialEnvironment(
+    options,
     connection,
-    home: options.home,
-    logger: moduleLogger("im-credential-environment"),
-  });
+    moduleLogger("im-credential-environment"),
+    await resolveOptedInWebToolsExtensionPath(options, moduleLogger("web-tools")),
+  );
   const providerCliReconciler = new ProviderCliReconciler({
     connection,
     logger: moduleLogger("provider-cli-reconciler"),
     manager: new ProviderCliManager({ accountHome: resolveAccountHome() }),
     refreshRuntimeProvider: createRuntimeProviderReadinessRefresher(refreshProviderReadiness, providers),
     signal: readinessSignal,
-    validation: new ProviderCliValidationRunner({ home: options.home }),
+    validation: new ProviderCliValidationRunner({
+      home: options.home,
+      openProxyValidation: resolveProxyValidationOpener(options, credentialEnvironment),
+      proxyCredentialMode: credentialMode === "proxy",
+    }),
   });
   await mkdir(options.home, { recursive: true, mode: 0o700 });
   const providerCliTurnPlans = new ProviderCliTurnPlanManager({
@@ -614,18 +737,39 @@ export async function createClientRuntime(
   });
   await providerCliTurnPlans.recover();
   const proofManager = new SessionCliProofManager(options.home);
+  const skills = createSkillSyncManager(options, moduleLogger("skills"));
   const runtimeManager = new SessionRuntimeManager({
+    environment: sourceEnvironment,
     bindingStore,
     cliCommand: options.cliCommand ?? "opentag",
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     contextTree,
+    contextTreeEnvironment: (sessionId) => {
+      const hostSide = options.runtimeCredentials?.contextTreeEnvironment?.(sessionId);
+      if (hostSide) return hostSide;
+      // Cloud: the session execution environment targets the Sandbox-side loopback, so only a
+      // trusted Runner-side mapping from the parent composition can reach the Relay.
+      if (options.runtimeCredentials?.sandboxForSession) return undefined;
+      return credentialEnvironment.executionEnvironmentForSession(sessionId);
+    },
     ensureProviderReady,
     home: options.home,
     providers,
+    providerEnvironment: (sessionId) => credentialEnvironment.environmentForSession(sessionId),
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
-    providerCliLaunchPath: (sessionId) => providerCliTurnPlans.sessionDir(sessionId),
+    providerCliLaunchPath: (sessionId) =>
+      composeProviderCliLaunchPath(
+        credentialEnvironment.shimDirForSession(sessionId),
+        providerCliTurnPlans.sessionDir(sessionId),
+      ),
+    providerCliReplyWritableRoot: (sessionId) =>
+      ensurePrivateDirectory(
+        providerCliTurnPlans.layout.plans,
+        join(providerCliTurnPlans.sessionDir(sessionId), "runs"),
+      ),
     slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,
+    skills,
     workspace,
   });
   const reconciler = new SessionReconciler({
@@ -690,6 +834,16 @@ export async function createClientRuntime(
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
   const runtime = new ClientRuntime(connection, {
+    contextTreeSettings: new ContextTreeSettings({
+      home: options.home,
+      environment: sourceEnvironment,
+      hasAgentSessions: runtimeManager.hasAgentSessions.bind(runtimeManager),
+      exclusive: contextTree.runExclusive.bind(contextTree),
+      managedCredentials: credentialMode === "proxy",
+      ...(options.runtimeCredentials?.contextTreeManagementEnvironment
+        ? { managedEnvironment: options.runtimeCredentials.contextTreeManagementEnvironment }
+        : {}),
+    }),
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
@@ -789,11 +943,11 @@ export function claudeCodeProcessEnvironment(
 
 function productionProviderRegistration(
   factory: AgentRuntimeFactory,
-  artifactIdentities: Readonly<Record<"codex" | "claude-code", string>>,
-  providerHomes: Readonly<Record<"codex" | "claude-code", string>>,
+  artifactIdentities: Readonly<Record<AgentRuntimeProvider, string>>,
+  providerHomes: Readonly<Record<AgentRuntimeProvider, string>>,
 ): AgentRuntimeProviderRegistration {
   const providerId = factory.manifest.providerId;
-  if (providerId !== "codex" && providerId !== "claude-code") {
+  if (providerId !== "codex" && providerId !== "claude-code" && providerId !== "pi") {
     throw new Error(`Production Client Runtime does not register the unreviewed provider: ${providerId}`);
   }
   const providerHome = providerHomes[providerId];
@@ -807,14 +961,18 @@ function productionProviderRegistration(
       }
     },
   };
-  return providerId === "codex"
-    ? {
-        ...common,
-        policy: codexRuntimePolicy,
-        requiresBindingReplacement: codexBindingRequiresHostedToolReplacement,
-        validate: validateCodexRuntimePolicy,
-      }
-    : { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
+  if (providerId === "codex") {
+    return {
+      ...common,
+      policy: codexRuntimePolicy,
+      requiresBindingReplacement: codexBindingRequiresHostedToolReplacement,
+      validate: validateCodexRuntimePolicy,
+    };
+  }
+  if (providerId === "claude-code") {
+    return { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
+  }
+  return { ...common, policy: piRuntimePolicy, validate: validatePiRuntimePolicy };
 }
 
 function prependPath(
@@ -1008,8 +1166,66 @@ function requireReadyClaudeCodeFactory(
   return factory;
 }
 
+export interface ResolvedPiFactoryOptions {
+  readonly command: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly piHome: string;
+  readonly sessionDirectory: string;
+  readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly skillPaths?: readonly string[];
+  readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => PiAgentRuntimeFactory;
+}
+
+export function resolvedPiFactory(options: ResolvedPiFactoryOptions): AgentRuntimeFactory {
+  let readyFactory: PiAgentRuntimeFactory | undefined;
+  const skillArgs = (options.skillPaths ?? []).flatMap((path) => ["--skill", path]);
+  const createCandidate =
+    options.createCandidateFactory ??
+    ((command: string, environment: NodeJS.ProcessEnv) =>
+      new PiAgentRuntimeFactory({
+        process: {
+          args: skillArgs,
+          command,
+          env: environment,
+          sessionDirectory: options.sessionDirectory,
+        },
+      }));
+  return {
+    manifest: PI_AGENT_RUNTIME_MANIFEST,
+    probe: (request) =>
+      probeResolvedFactory(request, {
+        provider: "pi",
+        command: options.command,
+        environment: options.environment,
+        sourceEnvironment: options.sourceEnvironment,
+        discovery: options.discovery,
+        createCandidate,
+        artifactMessage: "Pi CLI could not be executed",
+        onReady: (factory) => {
+          readyFactory = factory;
+        },
+      }),
+    create(request: CreateAgentRuntimeRequest) {
+      return requireReadyPiFactory(readyFactory).create(request);
+    },
+    resume(request: ResumeAgentRuntimeRequest) {
+      return requireReadyPiFactory(readyFactory).resume(request);
+    },
+  };
+}
+
+function requireReadyPiFactory(factory: PiAgentRuntimeFactory | undefined): PiAgentRuntimeFactory {
+  if (!factory) throw new Error("Pi provider readiness has not been established");
+  return factory;
+}
+
 export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): string {
   return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
+}
+
+export function resolvePiHome(environment: NodeJS.ProcessEnv = process.env): string {
+  return resolve(environment.PI_CODING_AGENT_DIR ?? join(environment.HOME ?? homedir(), ".pi", "agent"));
 }
 
 interface ClientRuntimePreflightDependencies {
@@ -1076,4 +1292,110 @@ function createOutgoingReplyCollector(
         runId,
       }),
   };
+}
+
+/**
+ * Credential mode selection plus the Cloud host injection seam. Local proxy mode uses the
+ * production defaults (loopback TLS, openssl CA, real WSS client); the parent harness can
+ * inject its own data connection, CA, sandbox facts, clock, and scheduler.
+ */
+export function createCredentialEnvironment(
+  options: CreateClientRuntimeOptions,
+  connection: RuntimeConnection,
+  logger: ClientLogger,
+  webToolsExtensionPath?: string,
+): RuntimeCredentialEnvironmentManager {
+  const runtimeCredentials = options.runtimeCredentials;
+  return new RuntimeCredentialEnvironmentManager({
+    connection,
+    home: options.home,
+    logger,
+    mode: options.credentialMode ?? "legacy",
+    serverUrl: connection.serverUrl,
+    ...(runtimeCredentials?.dataConnectionFactory
+      ? { dataConnectionFactory: runtimeCredentials.dataConnectionFactory }
+      : {}),
+    ...(runtimeCredentials?.generateCa ? { generateCa: runtimeCredentials.generateCa } : {}),
+    ...(runtimeCredentials?.now ? { now: runtimeCredentials.now } : {}),
+    ...(runtimeCredentials?.openBudgetMs ? { openBudgetMs: runtimeCredentials.openBudgetMs } : {}),
+    ...(runtimeCredentials?.sandboxForSession ? { sandboxForSession: runtimeCredentials.sandboxForSession } : {}),
+    ...(runtimeCredentials?.scheduler ? { scheduler: runtimeCredentials.scheduler } : {}),
+    ...(webToolsExtensionPath && options.machineToken
+      ? {
+          webTools: {
+            extensionPath: webToolsExtensionPath,
+            machineToken: options.machineToken,
+            ...(options.webTools?.fetchImpl ? { fetchImpl: options.webTools.fetchImpl } : {}),
+          },
+        }
+      : {}),
+  });
+}
+
+/**
+ * Resolve the trusted extension artifact for the web tools opt-in. Proxy mode only: legacy mode
+ * never opens executions, so web tools stay off regardless of the flag. A missing artifact is a
+ * logged fail-closed, never a fallback path.
+ */
+async function resolveOptedInWebToolsExtensionPath(
+  options: CreateClientRuntimeOptions,
+  logger: ClientLogger,
+): Promise<string | undefined> {
+  if (!options.webTools?.enabled || (options.credentialMode ?? "legacy") !== "proxy") return undefined;
+  const path = await resolveWebToolsExtensionPath(
+    options.webTools.extensionPath !== undefined ? { explicitPath: options.webTools.extensionPath } : {},
+  );
+  if (!path) {
+    logger.warn(
+      { code: "web_tools_artifact_missing" },
+      "The trusted web tools extension artifact is missing; web tools stay disabled",
+    );
+  }
+  return path;
+}
+
+/**
+ * Explicit `openProxyValidation` injection wins; otherwise proxy mode uses the trusted
+ * manager-backed opener and legacy mode keeps the raw-grant readiness path unchanged.
+ */
+export function resolveProxyValidationOpener(
+  options: Pick<CreateClientRuntimeOptions, "credentialMode" | "openProxyValidation">,
+  credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "prepareValidationSession">,
+): ProviderCliValidationRunnerOptions["openProxyValidation"] | undefined {
+  if (options.openProxyValidation) return options.openProxyValidation;
+  return options.credentialMode === "proxy" ? createProxyValidationOpener(credentialEnvironment) : undefined;
+}
+
+/**
+ * Proxy readiness opens the Server-issued validation execution (`validationRunId`) through
+ * the same trusted manager used for business Runs. No raw grant material is ever used, and
+ * a request without Server authority is an explicit rejection rather than a fallback.
+ */
+export function createProxyValidationOpener(
+  credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "prepareValidationSession">,
+): (
+  request: ProviderCliValidationRequest,
+  signal?: AbortSignal,
+) => Promise<ProviderCliProxyValidationSession | undefined> {
+  return async (request, signal) => {
+    if (!request.validationRunId || !request.agentId) return undefined;
+    const session = await credentialEnvironment.prepareValidationSession(
+      { agentId: request.agentId, placementGeneration: 1, validationRunId: request.validationRunId },
+      signal,
+    );
+    return {
+      arguments: session.arguments,
+      environment: session.environment,
+      signal: session.signal,
+      cleanup: () => session.cleanup(),
+    };
+  };
+}
+
+/**
+ * Proxy mode prepends the execution shim directory (git/gh) ahead of the Turn launcher
+ * directory (slack/lark-cli) as one PATH prefix; legacy mode keeps the launcher only.
+ */
+export function composeProviderCliLaunchPath(proxyShimDir: string | undefined, turnPlanDir: string): string {
+  return proxyShimDir ? `${proxyShimDir}${delimiter}${turnPlanDir}` : turnPlanDir;
 }

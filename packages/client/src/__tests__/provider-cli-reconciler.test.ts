@@ -185,6 +185,74 @@ function grantFrame(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function validationRunFrame(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "provider-cli:validation:run",
+    requestId: grantId,
+    requirementRequestId: requestId,
+    provider: "slack",
+    agentId,
+    integrationId,
+    credentialGeneration: 2,
+    expiresAt: "2026-08-31T00:00:20.000Z",
+    expectedIdentity: requirement.expectedIdentity,
+    validationRunId: "77777777-7777-4777-8777-777777777777",
+    ...overrides,
+  };
+}
+
+describe("provider CLI reconciler abort and close edges", () => {
+  it("refuses readiness after close and never inspects again", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await reconciler.close();
+    const callsAfterClose = inspect.mock.calls.length;
+    // Every entry point returns undefined after close instead of inspecting again.
+    await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
+    await expect(reconciler.readySelectionForRun("feishu")).resolves.toBeUndefined();
+    expect(inspect.mock.calls.length).toBe(callsAfterClose);
+  });
+
+  it("ignores frames delivered after close", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await reconciler.close();
+    const before = inspect.mock.calls.length;
+    await runtime.emit(requirement);
+    await runtime.emit(prewarm);
+    expect(inspect.mock.calls.length).toBe(before);
+  });
+
+  it("rejects a readiness wait when the caller already aborted", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    const reason = new Error("caller aborted");
+    const controller = new AbortController();
+    controller.abort(reason);
+    // The caller's own abort reason is rethrown verbatim so the Run path can classify it.
+    await expect(reconciler.readySelectionForRun("slack", controller.signal)).rejects.toBe(reason);
+    await reconciler.close();
+  });
+});
+
 describe("provider CLI reconciler", () => {
   it("does not inspect or mutate without a binding requirement", async () => {
     const inspect = vi.fn();
@@ -1111,6 +1179,61 @@ describe("provider CLI reconciler", () => {
     await reconciler.close();
   });
 
+  it("runs proxy validation with the Server-issued validation run and no raw material", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const run = vi.fn(async (_request, fence) => ({ ...fence, status: "ready" as const }));
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(validationRunFrame());
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: grantId,
+        agentId,
+        validationRunId: "77777777-7777-4777-8777-777777777777",
+      }),
+      expect.objectContaining({ provider: "slack", credentialGeneration: 2 }),
+      expect.anything(),
+    );
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty("grant");
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:validation:result", status: "ready" }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("rejects proxy readiness without validation authority instead of falling back to raw material", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const run = vi.fn(async (_request, fence) => ({ ...fence, status: "needs_attention" as const }));
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(validationRunFrame({ expiresAt: "2026-08-31T00:00:05.000Z" }));
+    expect(run).not.toHaveBeenCalled();
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "provider-cli:validation:result",
+        status: "retrying",
+        reason: "validation_expired",
+      }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
   it("drops the previous generation so a delayed old grant cannot spawn", async () => {
     const runtime = connection();
     const fixture = await externalReadyFixture();
@@ -1213,6 +1336,406 @@ describe("provider CLI reconciler", () => {
         (call) => (call[0] as RuntimeBusinessFrame).type === "provider-cli:validation:result",
       ),
     ).toBe(false);
+  });
+
+  it("passively republishes readiness for a still-live requirement", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    // A prewarm is what publishes IM CLI readiness, so it establishes the passive baseline.
+    await runtime.emit({ ...prewarm, providers: ["slack"] });
+    await runtime.emit(requirement);
+    runtime.send.mockClear();
+    await reconciler.refreshPublishedImCliReadiness();
+    // The passive path re-inspects and re-publishes the same READY readiness for the live target.
+    expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toContainEqual({
+      provider: "slack",
+      status: "ready",
+    });
+    // The passive refresh re-inspected the provider and republished readiness for its live target.
+    expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(2);
+    await reconciler.close();
+  });
+
+  it("stops a passive refresh that becomes unavailable mid-flight", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let inspection: ProviderCliInspection = fixture.inspection;
+    const inspect = vi.fn(async () => inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit({ ...prewarm, providers: ["slack"] });
+    await runtime.emit(requirement);
+    // An inspection that becomes unavailable during the refresh must not publish a stale ready.
+    inspection = notReadyInspect("slack", "unavailable", { code: "artifact_drifted" });
+    runtime.send.mockClear();
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.setImCliReadiness).toHaveBeenLastCalledWith({ provider: "slack", status: "unavailable" });
+    expect(runtime.send.mock.calls.filter((call) => (call[0] as RuntimeBusinessFrame).status === "ready")).toHaveLength(
+      0,
+    );
+    await reconciler.close();
+  });
+
+  it("ignores a superseded requirement frame and an older credential generation", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await vi.waitFor(() => expect(runtime.send).toHaveBeenCalled());
+    const callsAfterFirst = inspect.mock.calls.length;
+
+    // An EXACT duplicate request id and an OLDER credential generation are both ignored.
+    await runtime.emit(requirement);
+    await runtime.emit({ ...requirement, requestId: "99999999-9999-4999-8999-999999999999", credentialGeneration: 1 });
+    expect(inspect.mock.calls.length).toBe(callsAfterFirst);
+
+    // A newer generation for the same integration DOES supersede and reconcile again.
+    await runtime.emit({ ...requirement, requestId: "99999999-9999-4999-8999-999999999999", credentialGeneration: 3 });
+    expect(inspect.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+    await reconciler.close();
+  });
+
+  it("handles a requirement for a provider whose inspection throws and one that is absent", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let mode: "throw" | "absent" = "throw";
+    const inspect = vi.fn(async () => {
+      if (mode === "throw") throw new Error("inspect exploded");
+      return notReadyInspect("slack", "install", undefined);
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      logger: recordingLogger([]),
+      manager: { inspect, ensure: vi.fn().mockResolvedValue({ ok: false } as never), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    // An inspection that throws is published as unavailable so the Server can retry.
+    await runtime.emit(requirement);
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status", status: "unavailable" }),
+      expect.anything(),
+    );
+    // An absent CLI is repaired with an ensure, and an inspection with no diagnostic still
+    // publishes a bounded reason.
+    mode = "absent";
+    runtime.send.mockClear();
+    await runtime.emit({ ...requirement, requestId: "99999999-9999-4999-8999-999999999999" });
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status" }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("clears the tracked requirement on cancel and republishes unavailable", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    runtime.send.mockClear();
+    await runtime.emit({
+      type: "provider-cli:cancel",
+      requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      requirementRequestId: requestId,
+      provider: "slack",
+      agentId,
+      integrationId,
+      credentialGeneration: 2,
+    });
+    // The cancelled requirement is dropped and any further frame for it finds nothing to do.
+    await runtime.emit({ ...requirement, requestId: "99999999-9999-4999-8999-999999999999" });
+    await runtime.emit({
+      type: "provider-cli:cancel",
+      requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      requirementRequestId: requestId,
+      provider: "slack",
+      agentId,
+      integrationId,
+      credentialGeneration: 2,
+    });
+    expect(
+      runtime.send.mock.calls.every(
+        (call) => (call[0] as RuntimeBusinessFrame).type !== "provider-cli:validation:result",
+      ),
+    ).toBe(true);
+    await reconciler.close();
+  });
+
+  it("rejects a Run wait whose provider repair job reports a non-ready outcome", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let installed = false;
+    // The in-flight initial reconcile never becomes ready, so the joining Run must not be admitted.
+    const inspect = vi.fn(async () => {
+      if (!installed) return notReadyInspect("slack", "install", { code: "not_installed" });
+      return fixture.inspection;
+    });
+    const ensure = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { ok: false, status: "unavailable" } as never;
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    const requirementJob = runtime.emit(requirement);
+    const waiting = reconciler.readySelectionForRun("slack");
+    installed = true;
+    await requirementJob;
+    // The repair never reported ready, so the joined wait resolves undefined rather than admitting.
+    await expect(waiting).resolves.toBeUndefined();
+    await reconciler.close();
+  });
+
+  it("reports unavailable for an inspection with no diagnostic and one that is manual", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let inspection: ProviderCliInspection = notReadyInspect("slack", "unavailable", undefined);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn(async () => inspection), ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    // No diagnostic at all: a bare unavailable status with no public reason.
+    expect(runtime.send).toHaveBeenCalledWith(expect.objectContaining({ status: "unavailable" }), expect.anything());
+    const withoutReason = runtime.send.mock.calls.at(-1)?.[0] as RuntimeBusinessFrame;
+    expect(withoutReason).not.toHaveProperty("reason");
+
+    // A manual-failure diagnostic keeps its public reason.
+    inspection = notReadyInspect("slack", "unavailable", { code: "artifact_drifted" });
+    runtime.send.mockClear();
+    await runtime.emit({ ...requirement, requestId: "99999999-9999-4999-8999-999999999999" });
+    const withReason = runtime.send.mock.calls.at(-1)?.[0] as RuntimeBusinessFrame;
+    expect(withReason).toMatchObject({ status: "unavailable" });
+    await reconciler.close();
+  });
+
+  it("publishes needs_attention when the validation runner itself throws", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const run = vi.fn(async () => {
+      throw new Error("validation runner exploded");
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run: run as never, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(grantFrame());
+    expect(run).toHaveBeenCalledTimes(1);
+    // A throwing runner is a REAL failure: the grant is finished and needs_attention is published.
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:validation:result", status: "needs_attention" }),
+      expect.anything(),
+    );
+    // The grant was consumed by the attempt, so a replay cannot spawn a second validation.
+    await runtime.emit(grantFrame());
+    expect(run).toHaveBeenCalledTimes(1);
+    await reconciler.close();
+  });
+
+  it("reports validation_expired for a run frame whose deadline already passed", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const run = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:30.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(validationRunFrame({ expiresAt: "2026-08-31T00:00:20.000Z" }));
+    expect(run).not.toHaveBeenCalled();
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "provider-cli:validation:result",
+        status: "retrying",
+        reason: "validation_expired",
+      }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("reports artifact_changed for a run frame whose live selection no longer matches", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const run = vi.fn();
+    let drift = false;
+    const inspect = vi.fn(async () => {
+      if (!drift) return fixture.inspection;
+      // A rotated fingerprint makes the accepted selection stale for this validation run.
+      return readyInspect({ fingerprint: `v1:${"b".repeat(64)}`, selection: fixture.inspection.selection });
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run: run as never, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    drift = true;
+    await runtime.emit(validationRunFrame());
+    expect(run).not.toHaveBeenCalled();
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "provider-cli:validation:result",
+        status: "retrying",
+        reason: "artifact_changed",
+      }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("rejects a grant fenced to another agent, provider, or credential generation", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const run = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    // Each fence mismatch is refused before any validation spawn: a different agent, a different
+    // credential generation, a different integration, a stale requirement, and a changed identity.
+    await runtime.emit(grantFrame({ agentId: "44444444-4444-4444-8444-444444444444" }));
+    await runtime.emit(grantFrame({ credentialGeneration: 9 }));
+    await runtime.emit(grantFrame({ integrationId: otherIntegrationId }));
+    await runtime.emit(grantFrame({ requirementRequestId: "88888888-8888-4888-8888-888888888888" }));
+    await runtime.emit(grantFrame({ expectedIdentity: { ...requirement.expectedIdentity, botId: "B-other" } }));
+    await runtime.emit(grantFrame({ expectedIdentity: { provider: "feishu" } }));
+    expect(run).not.toHaveBeenCalled();
+    // A correctly fenced grant still runs exactly once.
+    await runtime.emit(grantFrame());
+    expect(run).toHaveBeenCalledTimes(1);
+    await reconciler.close();
+  });
+
+  it("keeps an expired grant reusable for a replay then prunes it after retention", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let now = Date.parse("2026-08-31T00:00:10.000Z");
+    const run = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      now: () => now,
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    // An expired grant is remembered (so a replay is answered idempotently) but never validated.
+    await runtime.emit(grantFrame({ expiresAt: "2026-08-31T00:00:05.000Z" }));
+    expect(run).not.toHaveBeenCalled();
+    await runtime.emit(grantFrame({ expiresAt: "2026-08-31T00:00:05.000Z" }));
+    expect(run).not.toHaveBeenCalled();
+    // Far past the retention window the grant is pruned; the frame is then treated as new and
+    // still refused for being expired.
+    now = Date.parse("2026-08-31T06:00:00.000Z");
+    await runtime.emit(grantFrame({ expiresAt: "2026-08-31T00:00:05.000Z" }));
+    expect(run).not.toHaveBeenCalled();
+    await reconciler.close();
+  });
+
+  it("publishes a repair outcome's unavailable diagnostic for a never-ready ensure", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    // The initial inspect is not ready and the repair reports a manual diagnostic, so the published
+    // status carries that public reason instead of a bare unavailable.
+    const inspect = vi.fn().mockResolvedValue(notReadyInspect("slack", "unavailable", { code: "artifact_drifted" }));
+    const ensure = vi.fn().mockResolvedValue({
+      ok: false,
+      diagnostic: { code: "artifact_drifted" },
+      status: "unavailable",
+    } as never);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status", status: "unavailable" }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("publishes a raw validation that becomes not-ready through a throwing runner", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: {
+        cleanupAll: vi.fn(),
+        run: vi.fn(async () => {
+          throw new Error("runner down");
+        }) as never,
+      },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(validationRunFrame());
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:validation:result", status: "needs_attention" }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("publishes needs_attention when a raw-grant validation is not ready", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const logs: RecordedLog[] = [];
+    const run = vi.fn(async (_request, fence) => ({
+      ...fence,
+      status: "needs_attention" as const,
+      reason: "credential_rejected" as const,
+    }));
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      logger: recordingLogger(logs),
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(grantFrame());
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]?.[1]).toMatchObject({ provider: "slack", credentialGeneration: 2 });
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:validation:result", status: "needs_attention" }),
+      expect.anything(),
+    );
+    expect(logs.some((entry) => entry.level === "warn")).toBe(true);
+    expect(JSON.stringify(runtime.send.mock.calls)).not.toContain("xoxb-secret");
+    await reconciler.close();
   });
 
   it("inspects both official CLIs for setup without installing or validating credentials", async () => {

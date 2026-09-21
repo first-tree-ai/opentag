@@ -42,7 +42,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.12.1
 
@@ -92,6 +92,41 @@ jobs:
           --version "${{ steps.version.outputs.version }}"
           --git-head "${{ steps.revision.outputs.sha }}"
 
+      # Build before prepare-cli-release modifies the tracked manifest. Runner has the exact
+      # CLI coordinate, but its release provenance must still name a clean source checkout.
+      - name: Verify Runner publishing configuration
+        env:
+          RUNNER_IMAGE: ${{ vars.OPENTAG_RUNNER_STAGING_IMAGE_REPOSITORY }}
+          WIF_PROVIDER: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          WIF_ACCOUNT: ${{ vars.OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT }}
+        run: |
+          test -n "$RUNNER_IMAGE" && test -n "$WIF_PROVIDER" && test -n "$WIF_ACCOUNT" || {
+            echo 'Runner image repository and Google Cloud workload identity must be configured' >&2
+            exit 1
+          }
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Publish and verify the CLI-matched Runner
+        id: runner
+        timeout-minutes: 45
+        env:
+          RUNNER_IMAGE: ${{ vars.OPENTAG_RUNNER_STAGING_IMAGE_REPOSITORY }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          gcloud auth configure-docker "${RUNNER_IMAGE%%/*}" --quiet
+          node scripts/runner/release.mjs publish \
+            --image "$RUNNER_IMAGE" --channel staging --version "$RELEASE_VERSION" \
+            --source-sha "$RELEASE_SHA" --output "$RUNNER_TEMP/runner-release.json"
+
       - name: Prepare staging package identity
         run: >-
           node scripts/prepare-cli-release.mjs
@@ -114,17 +149,6 @@ jobs:
 
       # The portable release is preflighted before npm publishing so an immutable Cloud Storage
       # conflict fails the run while npm is still unpublished and the release can be retried.
-      - name: Authenticate to Google Cloud
-        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT }}
-
-      - name: Set up the Cloud Storage CLI
-        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-
       - name: Preflight portable staging release
         if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
         env:
@@ -169,6 +193,13 @@ jobs:
           --version "${{ steps.version.outputs.version }}"
           --skip-build
 
+      - name: Record the completed Runner release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-release-staging
+          path: ${{ runner.temp }}/runner-release.json
+          if-no-files-found: error
+
   production:
     name: Publish CLI Production
     if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -190,7 +221,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.12.1
 
@@ -253,6 +284,41 @@ jobs:
           --version "${{ steps.version.outputs.version }}"
           --git-head "${{ steps.revision.outputs.sha }}"
 
+      # Build before prepare-cli-release modifies the tracked manifest. Runner has the exact
+      # CLI coordinate, but its release provenance must still name a clean source checkout.
+      - name: Verify Runner publishing configuration
+        env:
+          RUNNER_IMAGE: ${{ vars.OPENTAG_RUNNER_PROD_IMAGE_REPOSITORY }}
+          WIF_PROVIDER: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          WIF_ACCOUNT: ${{ vars.OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT }}
+        run: |
+          test -n "$RUNNER_IMAGE" && test -n "$WIF_PROVIDER" && test -n "$WIF_ACCOUNT" || {
+            echo 'Runner image repository and Google Cloud workload identity must be configured' >&2
+            exit 1
+          }
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Publish and verify the CLI-matched Runner
+        id: runner
+        timeout-minutes: 45
+        env:
+          RUNNER_IMAGE: ${{ vars.OPENTAG_RUNNER_PROD_IMAGE_REPOSITORY }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          gcloud auth configure-docker "${RUNNER_IMAGE%%/*}" --quiet
+          node scripts/runner/release.mjs publish \
+            --image "$RUNNER_IMAGE" --channel prod --version "$RELEASE_VERSION" \
+            --source-sha "$RELEASE_SHA" --output "$RUNNER_TEMP/runner-release.json"
+
       - name: Prepare production package identity
         run: >-
           node scripts/prepare-cli-release.mjs
@@ -275,17 +341,6 @@ jobs:
 
       # The portable release is preflighted before npm publishing so an immutable Cloud Storage
       # conflict fails the run while npm is still unpublished and the release can be retried.
-      - name: Authenticate to Google Cloud
-        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT }}
-
-      - name: Set up the Cloud Storage CLI
-        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-
       - name: Preflight portable production release
         if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
         env:
@@ -330,3 +385,10 @@ jobs:
           --channel prod
           --version "${{ steps.version.outputs.version }}"
           --skip-build
+
+      - name: Record the completed Runner release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runner-release-prod
+          path: ${{ runner.temp }}/runner-release.json
+          if-no-files-found: error

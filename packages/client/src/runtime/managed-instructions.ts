@@ -16,11 +16,11 @@ export interface ManagedSessionContext {
  * connection for an empty tree and start re-deriving decisions. Its own slug is not repeated
  * here — the trusted Platform section above already states it.
  */
-function renderContextTree(status: ContextTreeStatus, cliCommand: string): readonly string[] {
+function renderContextTree(status: ContextTreeStatus): readonly string[] {
   if (status.status === "ready") {
     return [
       `Context Tree: ${status.treePath}`,
-      "This is durable shared memory for every Agent on this Computer. Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
+      "This is the Context Tree selected in this Agent’s settings. Other Agents share this memory only when they select the same repository. Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
       "Use the context-tree-read and context-tree-write skills rather than editing the tree by hand.",
       "`members/<your Agent slug>/` is your own private working memory; the Agent slug is stated in the Platform section above. Do not write to another Agent's member directory.",
       "",
@@ -28,7 +28,7 @@ function renderContextTree(status: ContextTreeStatus, cliCommand: string): reado
   }
   if (status.status === "unconfigured") {
     return [
-      `Context Tree: not configured on this Computer (${cliCommand} context-tree connect).`,
+      "Context Tree: disabled for this Agent. Configure it in Agent settings → Context Tree.",
       "Durable memory is not active. Do not assume earlier decisions were recorded, and do not attempt to create a tree yourself.",
       "",
     ];
@@ -68,10 +68,24 @@ function renderAgentHome(agentHome?: string): readonly string[] {
   ];
 }
 
+/**
+ * Reusable know-how an Agent discovers can be saved to its own platform account and restored on
+ * every Computer it runs on, so a good routine is not trapped in one workspace.
+ */
+function renderSkills(cliCommand: string): readonly string[] {
+  return [
+    "## Skills",
+    "",
+    `Reusable routines can be captured as a skill: a directory with a \`SKILL.md\` whose frontmatter has \`name\` and \`description\`. Save one to the platform with \`${cliCommand} skill push <dir>\`. Saved skills are restored on every Computer this Agent runs on.`,
+    "",
+  ];
+}
+
 export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, context?: ManagedSessionContext): string {
   const session = context
     ? [
         ...renderAgentHome(context.agentHome),
+        ...renderSkills(context.cliCommand),
         "## Session",
         "",
         `Current Session: ${context.sessionId}`,
@@ -101,7 +115,7 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
             ]
           : ["Session collaboration commands are unavailable because managed Session context is missing."]),
         "",
-        ...(context.contextTree ? renderContextTree(context.contextTree, context.cliCommand) : []),
+        ...(context.contextTree ? renderContextTree(context.contextTree) : []),
       ]
     : [];
   return [

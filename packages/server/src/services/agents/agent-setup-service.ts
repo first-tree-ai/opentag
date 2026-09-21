@@ -8,6 +8,7 @@ import type {
   AgentSetupSnapshot,
   AgentSetupStage,
   AgentSummary,
+  CloudAvailability,
   FeishuSetupAttempt,
   ImProvider,
 } from "@opentag/shared";
@@ -46,6 +47,12 @@ export interface AgentSetupServiceOptions {
   }) => Promise<void>;
   providerReadiness?: ProviderReadinessSource;
   slackOAuthAvailable?: boolean;
+  /**
+   * The deployment's Cloud availability projection, consulted only for a Cloud-bound Agent. When
+   * absent, a Cloud Agent reads as the platform being disabled — a fail-closed answer, never a
+   * local-style observation.
+   */
+  cloudAvailability?: (now: Date) => CloudAvailability;
 }
 
 /**
@@ -65,6 +72,7 @@ export class AgentSetupService {
   readonly #prepareComputer?: AgentSetupServiceOptions["prepareComputer"];
   readonly #providerReadiness?: ProviderReadinessSource;
   readonly #slackOAuthAvailable: boolean;
+  readonly #cloudAvailability?: (now: Date) => CloudAvailability;
 
   constructor(
     database: DatabaseClient,
@@ -82,6 +90,7 @@ export class AgentSetupService {
     this.#prepareComputer = options.prepareComputer;
     this.#providerReadiness = options.providerReadiness;
     this.#slackOAuthAvailable = options.slackOAuthAvailable ?? true;
+    this.#cloudAvailability = options.cloudAvailability;
   }
 
   async getSetupById(callerUserId: string, agentId: string): Promise<AgentSetupSnapshot> {
@@ -124,7 +133,7 @@ export class AgentSetupService {
         409,
       );
     }
-    const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
+    const requiredImCliProviders = computer.kind === "cloud" ? [] : [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
     const components = projectAgentSetupComponents({
       computer,
       runtime,
@@ -169,6 +178,13 @@ export class AgentSetupService {
         409,
       );
     }
+    const computer = await this.#readSetupComputer(detail.computer.computerId);
+    if (computer.kind === "cloud") {
+      // A Cloud Agent has no local machine to prepare: the managed environment starts with the
+      // first real task. The refresh resolves as a pure re-read trigger so the surface's next
+      // snapshot picks up any configuration change; nothing is commanded and nothing is claimed.
+      return;
+    }
     if (!this.#prepareComputer) {
       throw new AgentServiceError(
         "SERVICE_UNAVAILABLE",
@@ -193,6 +209,23 @@ export class AgentSetupService {
     }
   }
 
+  async #readSetupComputer(computerId: string) {
+    const [computer] = await this.#database
+      .select({
+        kind: computers.kind,
+        currentInstanceId: computers.currentInstanceId,
+        lastSeenAt: computers.lastSeenAt,
+      })
+      .from(computers)
+      .where(eq(computers.id, computerId))
+      .limit(1)
+      .catch((cause: unknown) => {
+        throw new AgentSetupObservationError("Computer observation failed", { cause });
+      });
+    if (!computer) throw new Error("Active Agent is missing its bound Computer");
+    return computer;
+  }
+
   async #observeComputer(agent: AgentSummary, observedAt: Date): Promise<AgentSetupComputerState> {
     try {
       return await this.#computerState(agent, observedAt);
@@ -209,7 +242,7 @@ export class AgentSetupService {
     observedAt: Date,
   ): AgentSetupRuntimeState {
     try {
-      return runtimeStateFor(provider, computer, observedAt, this.#providerReadiness);
+      return runtimeStateFor(provider, computer, observedAt, this.#providerReadiness, this.#cloudAvailability);
     } catch (cause) {
       if (!(cause instanceof AgentSetupObservationError)) throw cause;
       return { kind: "observation-failed", provider };
@@ -233,15 +266,12 @@ export class AgentSetupService {
       platform: agent.computer.platform,
     };
     if (agent.requiresComputerRebind === true) return { kind: "requires-rebind", ...identity };
-    const [computer] = await this.#database
-      .select({ currentInstanceId: computers.currentInstanceId, lastSeenAt: computers.lastSeenAt })
-      .from(computers)
-      .where(eq(computers.id, identity.computerId))
-      .limit(1)
-      .catch((cause: unknown) => {
-        throw new AgentSetupObservationError("Computer observation failed", { cause });
-      });
-    if (!computer) throw new Error("Active Agent is missing its bound Computer");
+    const computer = await this.#readSetupComputer(identity.computerId);
+    if (computer.kind === "cloud") {
+      // The Cloud identity is a managed fact the Account row proves; it is fixed online by design
+      // and carries no heartbeat, presence window, or local CLI collection.
+      return { kind: "cloud", ...identity, observedAt: observedAt.toISOString() };
+    }
     const connectionStatus =
       computer.currentInstanceId !== null &&
       (computer.lastSeenAt?.getTime() ?? 0) >= observedAt.getTime() - this.#presenceTimeoutMs
@@ -267,14 +297,21 @@ export class AgentSetupService {
       throw new AgentSetupObservationError("Messaging observation failed", { cause });
     });
     if (!binding) return { kind: "not-configured" };
+    if (binding.handoff.bindingState === "active" && binding.handoff.handoffReady) {
+      return activeMessagingState(binding, binding.handoff);
+    }
     const attempt = binding.provider === "feishu" ? await this.#observeAttempt(agentId) : undefined;
-    if (attempt && (attempt.state === "awaiting_user" || attempt.state === "validating")) {
+    if (
+      attempt &&
+      (attempt.state === "awaiting_user" || attempt.state === "pending_activation" || attempt.state === "validating")
+    ) {
       return {
         kind: "authorizing",
         provider: "feishu",
         attemptId: attempt.id,
         qrUrl: attempt.qrUrl,
         expiresAt: attempt.expiresAt,
+        ...(attempt.activation ? { activation: attempt.activation } : {}),
       };
     }
     const { handoff } = binding;
@@ -303,8 +340,7 @@ function provisioningMessagingState(
   binding: AgentSetupBindingState,
   attempt: FeishuSetupAttempt | undefined,
 ): AgentSetupMessagingState {
-  // The attempt is terminal (or no longer observable): the provisioning binding names it exactly
-  // and the only way forward is to unbind it before a Provider can be started again.
+  // Terminal first authorization retains its exact slot for a same-Provider retry.
   return {
     kind: "blocked",
     provider: binding.provider,
@@ -350,21 +386,39 @@ function blockedMessagingState(
   };
 }
 
+function computerUnavailableReason(computer: AgentSetupComputerState) {
+  switch (computer.kind) {
+    case "not-bound":
+      return "computer-not-bound" as const;
+    case "observation-failed":
+      return "computer-observation-failed" as const;
+    case "requires-rebind":
+      return "computer-rebind-required" as const;
+    default:
+      return "computer-offline" as const;
+  }
+}
+
 function runtimeStateFor(
   provider: AgentSummary["runtimeProvider"],
   computer: AgentSetupComputerState,
   observedAt: Date,
   source?: ProviderReadinessSource,
+  cloudAvailability?: (now: Date) => CloudAvailability,
 ): AgentSetupRuntimeState {
+  if (computer.kind === "cloud") {
+    // The runtime leg of a Cloud Agent is the deployment's managed service configuration. A
+    // missing projection fails closed as disabled; it is never answered from a machine report.
+    const availability = cloudAvailability?.(observedAt) ?? {
+      enabled: false,
+      available: false,
+      reason: "disabled" as const,
+      observedAt: observedAt.toISOString(),
+    };
+    return { kind: "cloud-managed", provider, availability };
+  }
   if (computer.kind !== "bound" || computer.connectionStatus !== "online") {
-    const reason =
-      computer.kind === "not-bound"
-        ? ("computer-not-bound" as const)
-        : computer.kind === "observation-failed"
-          ? ("computer-observation-failed" as const)
-          : computer.kind === "requires-rebind"
-            ? ("computer-rebind-required" as const)
-            : ("computer-offline" as const);
+    const reason = computerUnavailableReason(computer);
     return { kind: "unavailable", provider, reason };
   }
   let readiness: ReturnType<typeof projectComputerProviderReadiness>;
@@ -391,15 +445,21 @@ function deriveSetupStage(
   messaging: AgentSetupMessagingState,
   components: AgentSetupComponent[],
 ): AgentSetupStage {
-  const computerReady = computer.kind === "bound" && computer.connectionStatus === "online";
+  const cloudManaged = computer.kind === "cloud";
+  const computerReady = cloudManaged || (computer.kind === "bound" && computer.connectionStatus === "online");
   if (!computerReady) return "needs-computer";
-  const runtimeReady = runtime.kind === "observed" && runtime.status === "ready";
+  // Cloud runtime readiness is the managed-service configuration, never a machine report.
+  const runtimeReady = cloudManaged
+    ? runtime.kind === "cloud-managed" && runtime.availability.available
+    : runtime.kind === "observed" && runtime.status === "ready";
   if (!runtimeReady) return "needs-runtime";
   if (messaging.kind === "ready") return "ready";
   // A known Messaging state (authorizing, waiting-handoff, blocked, observation-failed) keeps its
   // fail-closed needs-messaging projection; only not-configured Messaging consults the required
-  // IM CLI reports again, and both must be freshly ready before the gate passes.
+  // IM CLI reports again, and both must be freshly ready before the gate passes. A Cloud Agent has
+  // no local CLI gate at all.
   if (messaging.kind !== "not-configured") return "needs-messaging";
+  if (cloudManaged) return "needs-messaging";
   const anyCliBlocking = components.some((component) => component.kind === "im-cli" && component.blocking);
   return anyCliBlocking ? "needs-provider-clis" : "needs-messaging";
 }
@@ -437,6 +497,22 @@ function computerBlockers(computer: AgentSetupComputerState): AgentSetupBlocker[
 function runtimeBlockers(runtime: AgentSetupRuntimeState): AgentSetupBlocker[] {
   if (runtime.kind === "observation-failed") {
     return [{ code: "resource-observation-failed", resource: "runtime" }];
+  }
+  if (runtime.kind === "cloud-managed") {
+    // A needs-runtime Cloud setup means the managed service is not configured to execute. The
+    // blocker names the deployment reason; it never borrows a local probe status.
+    const reason = runtime.availability.reason ?? "disabled";
+    return [
+      {
+        code: "cloud-service-unavailable",
+        reason:
+          reason === "execution_unavailable"
+            ? "execution-unavailable"
+            : reason === "model_unavailable"
+              ? "model-unavailable"
+              : "disabled",
+      },
+    ];
   }
   if (runtime.kind === "waiting") {
     return [{ code: "runtime-not-ready", provider: runtime.provider, status: "waiting" }];
@@ -502,7 +578,19 @@ function deriveSetupActions(
       return [{ kind: "refresh" }];
     case "needs-messaging":
     case "ready":
-      return messagingActions(messaging, slackOAuthAvailable);
+      return messagingActions(messaging, slackOAuthAvailable).filter(
+        (action) =>
+          action.kind !== "start-messaging" ||
+          // A Cloud Agent has no local CLI gate: reaching the Messaging stage already proves the
+          // managed service can execute.
+          computer.kind === "cloud" ||
+          (computer.kind === "bound" &&
+            AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS.every((provider) =>
+              computer.imCliReadiness.some(
+                (entry) => entry.provider === provider && entry.status === "ready" && entry.observedAt !== null,
+              ),
+            )),
+      );
   }
 }
 
@@ -525,27 +613,17 @@ function messagingActions(messaging: AgentSetupMessagingState, slackOAuthAvailab
       return [{ kind: "refresh" }];
     case "authorizing":
       if (messaging.provider !== "feishu") return [{ kind: "refresh" }];
-      return [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId }];
+      return [
+        ...(messaging.activation ? [{ kind: "refresh" } as const] : []),
+        { kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId },
+      ];
     case "waiting-handoff":
       return [
         { kind: "refresh" },
         { kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId },
       ];
     case "blocked":
-      if (messaging.code === "authorization-failed") {
-        if (!messaging.bindingId) throw new Error("A failed Messaging authorization must name its binding");
-        return [{ kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId }];
-      }
-      if (!messaging.bindingId) throw new Error("A blocked Messaging binding must name its binding");
-      if (!messaging.credentialGeneration) {
-        throw new Error("A configured blocked Messaging binding must name its credential generation");
-      }
-      return currentBindingActions(
-        messaging.provider,
-        messaging.bindingId,
-        messaging.credentialGeneration,
-        slackOAuthAvailable,
-      );
+      return blockedMessagingActions(messaging, slackOAuthAvailable);
     case "ready":
       return currentBindingActions(
         messaging.provider,
@@ -554,6 +632,31 @@ function messagingActions(messaging: AgentSetupMessagingState, slackOAuthAvailab
         slackOAuthAvailable,
       );
   }
+}
+
+function blockedMessagingActions(
+  messaging: Extract<AgentSetupMessagingState, { kind: "blocked" }>,
+  slackOAuthAvailable: boolean,
+): AgentSetupAction[] {
+  if (messaging.code === "authorization-failed") {
+    if (!messaging.bindingId) throw new Error("A failed Messaging authorization must name its binding");
+    return [
+      ...(messaging.provider === "feishu" && messaging.credentialGeneration === 0
+        ? [{ kind: "start-messaging", provider: "feishu" } as const]
+        : []),
+      { kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId },
+    ];
+  }
+  if (!messaging.bindingId) throw new Error("A blocked Messaging binding must name its binding");
+  if (!messaging.credentialGeneration) {
+    throw new Error("A configured blocked Messaging binding must name its credential generation");
+  }
+  return currentBindingActions(
+    messaging.provider,
+    messaging.bindingId,
+    messaging.credentialGeneration,
+    slackOAuthAvailable,
+  );
 }
 
 function currentBindingActions(

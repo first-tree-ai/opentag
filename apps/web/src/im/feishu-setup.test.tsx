@@ -60,6 +60,180 @@ afterEach(() => {
 });
 
 describe("FeishuSetup", () => {
+  it("refreshes the binding when activation commits before cancellation", async () => {
+    const pending = attempt({
+      id: firstAttemptId,
+      intent: "create",
+      state: "pending_activation",
+      activation: {
+        appId: "cli_saved",
+        reason: "permissions_pending",
+        nextCheckAt: "2026-09-18T10:02:00.000Z",
+        missingScopes: ["im:message"],
+        lastCheckedAt: null,
+      },
+    });
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(pending);
+    vi.spyOn(browserApi, "cancelFeishuSetupAttempt").mockResolvedValue(
+      attempt({ id: firstAttemptId, intent: "create", state: "succeeded" }),
+    );
+    const success = vi.fn();
+    render(<Harness presentation="dialog" onSuccess={success} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel connection request" }));
+    await waitFor(() => expect(success).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog")?.hasAttribute("data-open")).not.toBe(true);
+  });
+
+  it("ignores an approved response that arrives after explicit cancellation", async () => {
+    vi.useFakeTimers();
+    const pending = attempt({
+      id: firstAttemptId,
+      intent: "create",
+      state: "pending_activation",
+      activation: {
+        appId: "cli_saved",
+        reason: "permissions_pending",
+        nextCheckAt: "2026-09-18T10:02:00.000Z",
+        missingScopes: ["im:message"],
+        lastCheckedAt: null,
+      },
+    });
+    let releasePoll!: (value: FeishuSetupAttempt) => void;
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(pending);
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releasePoll = resolve;
+        }),
+    );
+    const cancel = vi
+      .spyOn(browserApi, "cancelFeishuSetupAttempt")
+      .mockResolvedValue(attempt({ id: firstAttemptId, intent: "create", state: "canceled" }));
+    const success = vi.fn();
+    render(<Harness presentation="dialog" onSuccess={success} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await act(async () => undefined);
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel connection request" }));
+    await act(async () => undefined);
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(firstAttemptId);
+    await act(async () => releasePoll(attempt({ id: firstAttemptId, intent: "create", state: "succeeded" })));
+    expect(screen.queryByRole("dialog")?.hasAttribute("data-open")).not.toBe(true);
+    expect(success).not.toHaveBeenCalled();
+  });
+
+  it("keeps checking a saved application after cancellation fails", async () => {
+    vi.useFakeTimers();
+    const pending = attempt({
+      id: firstAttemptId,
+      intent: "create",
+      state: "pending_activation",
+      activation: {
+        appId: "cli_saved",
+        reason: "permissions_pending",
+        nextCheckAt: "2026-09-18T10:02:00.000Z",
+        missingScopes: ["im:message"],
+        lastCheckedAt: null,
+      },
+    });
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(pending);
+    const poll = vi
+      .spyOn(browserApi, "feishuSetupAttempt")
+      .mockResolvedValue(attempt({ id: firstAttemptId, intent: "create", state: "succeeded" }));
+    vi.spyOn(browserApi, "cancelFeishuSetupAttempt").mockRejectedValue(new Error("Offline"));
+    const success = vi.fn();
+    render(<Harness presentation="dialog" onSuccess={success} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel connection request" }));
+    await act(async () => undefined);
+    expect(screen.getByText("Waiting for all required permissions")).toBeTruthy();
+    expect(screen.getByRole("alert")).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    expect(poll).toHaveBeenCalledTimes(1);
+    expect(success).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["pending_activation", "validating"] as const)(
+    "keeps saved authorization running when its %s dialog closes",
+    async (state) => {
+      vi.useFakeTimers();
+      const pending = attempt({
+        id: firstAttemptId,
+        intent: "create",
+        state,
+        activation: {
+          appId: "cli_saved",
+          reason: "permissions_pending",
+          nextCheckAt: "2026-09-18T10:02:00.000Z",
+          missingScopes: ["im:message"],
+          lastCheckedAt: null,
+        },
+      });
+      const create = vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(pending);
+      const poll = vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(pending);
+      const cancel = vi.spyOn(browserApi, "cancelFeishuSetupAttempt");
+      const success = vi.fn();
+      render(<Harness presentation="dialog" onSuccess={success} />);
+      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+      await act(async () => undefined);
+      expect(screen.getByText("Waiting for all required permissions")).toBeTruthy();
+      expect(screen.queryByRole("img", { name: /QR code/ })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      await act(async () => undefined);
+      expect(screen.queryByRole("dialog")?.hasAttribute("data-open")).not.toBe(true);
+      expect(cancel).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+      await act(async () => undefined);
+      expect(screen.getByText("Waiting for all required permissions")).toBeTruthy();
+      expect(create).toHaveBeenCalledTimes(1);
+      poll.mockResolvedValue(attempt({ id: firstAttemptId, intent: "create", state: "succeeded" }));
+      await act(async () => vi.advanceTimersByTimeAsync(1_500));
+      expect(success).toHaveBeenCalledTimes(1);
+      expect(cancel).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retires an old approval poll before a manual check completes", async () => {
+    vi.useFakeTimers();
+    const pending = attempt({
+      id: firstAttemptId,
+      intent: "create",
+      state: "pending_activation",
+      activation: {
+        appId: "cli_saved",
+        reason: "permissions_pending",
+        nextCheckAt: "2026-09-18T10:02:00.000Z",
+        missingScopes: ["im:message"],
+        lastCheckedAt: null,
+      },
+    });
+    let releasePoll!: (value: FeishuSetupAttempt) => void;
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(pending);
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releasePoll = resolve;
+        }),
+    );
+    const check = vi
+      .spyOn(browserApi, "checkFeishuSetupAttempt")
+      .mockResolvedValue(attempt({ id: firstAttemptId, intent: "create", state: "succeeded" }));
+    const success = vi.fn();
+    render(<Harness presentation="dialog" onSuccess={success} />);
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await act(async () => undefined);
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    fireEvent.click(screen.getByRole("button", { name: "Check latest status" }));
+    await act(async () => undefined);
+    expect(check).toHaveBeenCalledExactlyOnceWith(firstAttemptId);
+    await act(async () => releasePoll(pending));
+    expect(success).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")?.hasAttribute("data-open")).not.toBe(true);
+    expect(screen.queryByText("Waiting for all required permissions")).toBeNull();
+  });
+
   it("opens the first connection in a dialog and cancels the Server attempt", async () => {
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
       attempt({

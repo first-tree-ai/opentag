@@ -5,6 +5,7 @@ import {
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
@@ -14,6 +15,7 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+  type RuntimeCapabilityOffers,
   type RuntimeChannelTarget,
   type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
@@ -26,7 +28,6 @@ import {
   runtimeFrameByteLength,
   runtimeNegotiatedCapabilitiesEqual,
   runtimeWebSocketUrl,
-  ServerRuntimeBusinessFrameSchema,
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
@@ -43,9 +44,17 @@ import {
   RuntimeProtocolFallbackError,
   RuntimeSendError,
 } from "./runtime-connection-errors.js";
-import { notifyTarget, protocolRejectionFields, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
+import {
+  notifyTarget,
+  parseServerBusinessFrame,
+  protocolRejectionFields,
+  type RuntimeBusinessFrame,
+  rawDataBuffer,
+  safeJson,
+} from "./runtime-connection-helpers.js";
 
 export { RuntimeConnectionError, RuntimeSendError, type RuntimeSendErrorCode } from "./runtime-connection-errors.js";
+export type { RuntimeBusinessFrame } from "./runtime-connection-helpers.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
   "server:welcome",
@@ -66,7 +75,6 @@ export type RuntimeConnectionState =
   | "registered";
 
 export type RuntimeSendPriority = (typeof PRIORITIES)[number];
-export type RuntimeBusinessFrame = Readonly<Record<string, unknown>> & { readonly type: string };
 
 export interface RuntimeSendOptions {
   deadline?: number;
@@ -158,6 +166,7 @@ export class RuntimeConnection {
   #stopped = false;
   #protocolVersion: RuntimeProtocolVersion = RUNTIME_PROTOCOL_VERSION;
   #negotiatedCapabilities: RuntimeNegotiatedCapabilities = {};
+  #supportedCapabilities: RuntimeCapabilityOffers = RUNTIME_CLIENT_CAPABILITY_OFFERS;
   #verifiedCapabilities: RuntimeClientCapabilities = { imCredentialGrant: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
   readonly #providerReadiness = new Map<
@@ -197,6 +206,10 @@ export class RuntimeConnection {
     return this.#options.computer.computerId;
   }
 
+  get serverUrl(): string {
+    return this.#options.computer.serverUrl;
+  }
+
   get instanceId(): string {
     return this.#options.instanceId;
   }
@@ -207,6 +220,16 @@ export class RuntimeConnection {
 
   capabilityVersion(capability: string): number | undefined {
     return this.#state === "registered" ? this.#negotiatedCapabilities[capability] : undefined;
+  }
+
+  /** Composition must advertise only the credential path it actually installed. */
+  setCredentialProxyEnabled(enabled: boolean): void {
+    if (this.#hasRun) throw new Error("Credential proxy mode must be configured before connecting");
+    this.#supportedCapabilities = { ...RUNTIME_CLIENT_CAPABILITY_OFFERS };
+    if (!enabled) {
+      delete this.#supportedCapabilities[RUNTIME_CAPABILITY.runtimeCredential];
+      delete this.#supportedCapabilities[RUNTIME_CAPABILITY.providerProxy];
+    }
   }
 
   setVerifiedCapabilities(
@@ -341,12 +364,7 @@ export class RuntimeConnection {
         } catch (error) {
           if (this.#stopped || isAbortError(error)) break;
           if (error instanceof RuntimeProtocolFallbackError && this.#protocolVersion === RUNTIME_PROTOCOL_V2) {
-            this.#protocolVersion = RUNTIME_PROTOCOL_V1;
-            this.#logger.info(
-              { protocolVersion: RUNTIME_PROTOCOL_V1, state: this.#state },
-              "Runtime protocol fallback selected",
-            );
-            continue;
+            throw new RuntimeConnectionError("Update the Server: required Context Tree support is unavailable", true);
           }
           if (error instanceof RuntimeConnectionError && error.fatal) {
             this.#logger.error(
@@ -449,7 +467,7 @@ export class RuntimeConnection {
     const signal = this.#lifecycleAbort.signal;
     signal.throwIfAborted();
     const socketOptions: ClientOptions = {
-      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1", [PROVIDER_READINESS_V2_HEADER]: "2" },
       maxPayload: RUNTIME_MAX_FRAME_BYTES,
     };
     const socketUrl = runtimeWebSocketUrl(this.#options.computer.serverUrl);
@@ -635,7 +653,7 @@ export class RuntimeConnection {
           }
           if (frame.protocolVersion === RUNTIME_PROTOCOL_V2) {
             expectedNegotiatedCapabilities = negotiateRuntimeCapabilities(
-              RUNTIME_CLIENT_CAPABILITY_OFFERS,
+              this.#supportedCapabilities,
               frame.supportedCapabilities,
             );
             const missing = [
@@ -674,7 +692,7 @@ export class RuntimeConnection {
               ? {
                   ...registration,
                   protocolVersion: RUNTIME_PROTOCOL_V2,
-                  supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+                  supportedCapabilities: this.#supportedCapabilities,
                   requiredServerCapabilities: RUNTIME_REQUIRED_SERVER_CAPABILITIES,
                 }
               : registration,
@@ -1026,11 +1044,6 @@ function withoutConnectionId(value: unknown): unknown {
   const frame = { ...(value as Record<string, unknown>) };
   delete frame.connectionId;
   return frame;
-}
-
-function parseServerBusinessFrame(value: unknown): RuntimeBusinessFrame | undefined {
-  const parsed = ServerRuntimeBusinessFrameSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
 }
 
 async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

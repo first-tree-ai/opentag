@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AccountComputerConnectCodeIssueRequestSchema,
+  CLOUD_IDENTITY_CAPABILITY_HEADER,
+  CLOUD_IDENTITY_CAPABILITY_VERSION,
   COMPUTER_RUNTIME_PROVIDER_CAPABILITY,
   ComputerConnectCodeExchangeRequestSchema,
   ComputerConnectCodeExchangeResponseSchema,
@@ -8,6 +10,7 @@ import {
   ComputerConnectCodeStatusSchema,
   ComputerImCliReadinessCollectionSchema,
   ComputerImCliReadinessSchema,
+  ComputerKindSchema,
   ComputerProviderReadinessCollectionSchema,
   classifyProviderCliArtifactFailure,
   clientSupportsComputerRuntimeProvider,
@@ -15,9 +18,14 @@ import {
   LocalPreparationActionSchema,
   LocalPreparationCheckSchema,
   LocalPreparationComponentSchema,
+  PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   providerCliArtifactFailureIsManual,
   publicProviderCliArtifactReason,
+  requestsCloudIdentityV1,
   requestsProviderCliReasonV2,
+  requestsProviderReadinessV1,
+  requestsProviderReadinessV2,
   withComputerRuntimeProviderSupport,
 } from "../computer.js";
 import { compareSemVer } from "../semver.js";
@@ -221,7 +229,7 @@ describe("computer contracts", () => {
 
   it("keeps the exchange response pair strict: runtimeProvider only next to its bound Agent", () => {
     const agentId = crypto.randomUUID();
-    for (const runtimeProvider of ["codex", "claude-code"] as const) {
+    for (const runtimeProvider of ["codex", "claude-code", "pi"] as const) {
       const response = {
         agentId,
         runtimeProvider,
@@ -614,5 +622,29 @@ describe("computer contracts", () => {
     expect(requestsProviderCliReasonV2("1")).toBe(false);
     expect(requestsProviderCliReasonV2("3")).toBe(false);
     expect(requestsProviderCliReasonV2("v2")).toBe(false);
+    expect(PROVIDER_READINESS_V1_HEADER).toBe("x-opentag-provider-readiness");
+    expect(PROVIDER_READINESS_V2_HEADER).toBe("x-opentag-provider-readiness-v2");
+    expect(requestsProviderReadinessV1("1")).toBe(true);
+    expect(requestsProviderReadinessV1(["1"])).toBe(true);
+    expect(requestsProviderReadinessV1(undefined)).toBe(false);
+    expect(requestsProviderReadinessV2("2")).toBe(true);
+    expect(requestsProviderReadinessV2(["2"])).toBe(true);
+    expect(requestsProviderReadinessV2("1")).toBe(false);
+  });
+
+  it("negotiates Cloud identity independently of provider readiness v2", () => {
+    expect(ComputerKindSchema.parse("local")).toBe("local");
+    expect(ComputerKindSchema.parse("cloud")).toBe("cloud");
+    expect(() => ComputerKindSchema.parse("hybrid")).toThrow();
+    expect(CLOUD_IDENTITY_CAPABILITY_HEADER).toBe("x-opentag-cloud-identity");
+    expect(CLOUD_IDENTITY_CAPABILITY_VERSION).toBe("1");
+    expect(CLOUD_IDENTITY_CAPABILITY_HEADER).not.toBe(PROVIDER_READINESS_V2_HEADER);
+    expect(requestsCloudIdentityV1("1")).toBe(true);
+    expect(requestsCloudIdentityV1(["1"])).toBe(true);
+    expect(requestsCloudIdentityV1(undefined)).toBe(false);
+    expect(requestsCloudIdentityV1("2")).toBe(false);
+    expect(requestsCloudIdentityV1("v1")).toBe(false);
+    expect(requestsProviderReadinessV2("1")).toBe(false);
+    expect(requestsCloudIdentityV1("2")).toBe(false);
   });
 });

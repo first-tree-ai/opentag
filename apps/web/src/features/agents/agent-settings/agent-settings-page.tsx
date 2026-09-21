@@ -13,6 +13,7 @@ import { useAgentDetailView } from "../agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "../agent-routes.js";
 import { AgentComputerSettings } from "./agent-computer-settings.js";
 import { AgentManageSettings } from "./agent-manage-settings.js";
+import { ContextTreeSettings } from "./context-tree-settings.js";
 import { GeneralConfigForm } from "./general-config-form.js";
 import { ImTab } from "./im-tab.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
@@ -95,12 +96,23 @@ export function AgentConfigSettingsContent({
   return (
     <AsyncState state={configState}>
       {(config) => {
+        if (section === "context-tree")
+          return (
+            <ContextTreeSettings
+              config={config}
+              computerName={agent.computer?.displayName ?? ""}
+              computerKind={agent.computerKind}
+              online={agent.availability.dependencies.computer.state === "ready"}
+              onChanged={onAgentChanged}
+            />
+          );
         if (section === "identity") {
           return <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />;
         }
         if (section === "instructions" || section === "execution") {
           return (
             <RuntimeConfigurationForm
+              computerKind={agent.computerKind}
               computerOnline={agent.availability.dependencies.computer.state === "ready"}
               initialConfig={config}
               save={(input) => browserApi.updateAgent(config.id, input)}

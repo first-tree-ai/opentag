@@ -96,29 +96,37 @@ async function invoke(flags: string[] = []) {
 }
 
 describe("targeted local Computer preparation", () => {
-  it.each(["codex", "claude-code"] as const)("checks only the exact selected %s Runtime", async (runtimeProvider) => {
-    vi.mocked(connect.runComputerConnect).mockResolvedValue({ ...connection, runtimeProvider });
-    const output = await invoke(["--json"]);
-    const document = JSON.parse(output.out);
-    expect(runtime.probeRuntimeComponent).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ provider: runtimeProvider }),
-    );
-    expect(provider.runProviderCliEnsure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ provider: "all" }));
-    expect(document).toMatchObject({
-      ok: true,
-      result: { connected: true, preparation: { status: "ready", localReady: true, readyCount: 4, requiredCount: 4 } },
-    });
-    const result = LocalComputerPreparationResultSchema.parse(document.result.preparation);
-    expect(result.components.map(({ id }) => id)).toEqual([
-      "computer",
-      `runtime:${runtimeProvider}`,
-      "im-cli:lark",
-      "im-cli:slack",
-    ]);
-    expect(output.err).toBe("");
-    expect(output.exitCode).toBe(0);
-    expect(document.result.guidance).toEqual([preparation.SERVER_CONFIRMATION_GUIDANCE]);
-  });
+  it.each(["codex", "claude-code", "pi"] as const)(
+    "checks only the exact selected %s Runtime",
+    async (runtimeProvider) => {
+      vi.mocked(connect.runComputerConnect).mockResolvedValue({ ...connection, runtimeProvider });
+      const output = await invoke(["--json"]);
+      const document = JSON.parse(output.out);
+      expect(runtime.probeRuntimeComponent).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ provider: runtimeProvider }),
+      );
+      expect(provider.runProviderCliEnsure).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ provider: "all" }),
+      );
+      expect(document).toMatchObject({
+        ok: true,
+        result: {
+          connected: true,
+          preparation: { status: "ready", localReady: true, readyCount: 4, requiredCount: 4 },
+        },
+      });
+      const result = LocalComputerPreparationResultSchema.parse(document.result.preparation);
+      expect(result.components.map(({ id }) => id)).toEqual([
+        "computer",
+        `runtime:${runtimeProvider}`,
+        "im-cli:lark",
+        "im-cli:slack",
+      ]);
+      expect(output.err).toBe("");
+      expect(output.exitCode).toBe(0);
+      expect(document.result.guidance).toEqual([preparation.SERVER_CONFIRMATION_GUIDANCE]);
+    },
+  );
 
   it("renders the ready human golden projection without claiming Server readiness", async () => {
     const result = await preparation.runLocalComputerPreparation({

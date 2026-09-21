@@ -12,8 +12,8 @@
     "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
     "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
     "messagingBindingId": "22222222-2222-4222-8222-222222222222",
-    "runtimeProviders": ["codex", "claude-code"],
-    "runtimeLabels": { "codex": "Codex", "claude-code": "Claude Code" },
+    "runtimeProviders": ["codex", "claude-code", "pi"],
+    "runtimeLabels": { "codex": "Codex", "claude-code": "Claude Code", "pi": "Pi" },
     "requiredImCliProviders": ["feishu", "slack"]
   },
   "localComponentIds": ["computer", "runtime", "im-cli:lark", "im-cli:slack"],
@@ -40,7 +40,7 @@
     }
   ],
   "coverage": {
-    "success": ["success-codex", "success-claude-code"],
+    "success": ["success-codex", "success-claude-code", "success-pi"],
     "runtime-missing": ["runtime-missing-codex"],
     "runtime-login-failure": ["runtime-signin-codex"],
     "runtime-config-failure": ["runtime-config-claude-code"],
@@ -301,6 +301,131 @@
         "rows": [
           { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
           { "component": "runtime", "state": "passed", "status": "ready", "label": "Claude Code ready" },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "success-pi",
+      "runtimeProvider": "pi",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "ready",
+          "localReady": true,
+          "exitCode": 0,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:pi", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "wait-for-fresh-server-observation",
+            "instruction": "Return to the Web app. Messaging may start only when fresh daemon observations report the Computer, the Pi runtime, and both messaging CLIs ready.",
+            "serverStageStillRequired": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": { "stage": "needs-messaging", "blockingComponents": [] }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "pi",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-messaging",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "pi",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "pi",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "messaging-not-configured" }],
+        "actions": [
+          { "kind": "start-messaging", "provider": "slack" },
+          { "kind": "start-messaging", "provider": "feishu" }
+        ],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": false,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Pi ready" },
           { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
           { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
         ]

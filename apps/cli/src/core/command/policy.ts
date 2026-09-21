@@ -339,32 +339,17 @@ function formatHumanValue(value: unknown): string {
 }
 
 function redactValue<T>(value: T): T {
-  return redactUnknown(value, new WeakSet<object>()) as T;
+  return redactSensitive(value);
 }
 
-function redactUnknown(value: unknown, seen: WeakSet<object>): unknown {
-  if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") return value;
-  if (typeof value === "string") return redactSecrets(value);
-  if (typeof value !== "object") return `[${typeof value}]`;
-  if (seen.has(value)) return "[CIRCULAR]";
-  seen.add(value);
-  if (Array.isArray(value)) return value.slice(0, 64).map((entry) => redactUnknown(entry, seen));
-  const output: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value).slice(0, 64)) {
-    output[key] = isSensitiveKey(key) ? "[REDACTED]" : redactUnknown(child, seen);
-  }
-  return output;
-}
-
-const SENSITIVE_KEY_PATTERNS = [
-  /(?:authorization|cookie|token|secret|credential|password|passwd)/iu,
-  /(?:api[_-]?key|private[_-]?key|request[_-]?body|response[_-]?body|payload|prompt)/iu,
-];
-
-function isSensitiveKey(key: string): boolean {
-  return SENSITIVE_KEY_PATTERNS.some((pattern) => pattern.test(key));
-}
-
+/*
+ * Presentation redaction delegates to the shared implementation.
+ *
+ * This module used to keep its own key-pattern list, which drifted: it matched `authorization` as a
+ * substring, so MCP's credential-free authorization summary was replaced wholesale and the CLI
+ * printed `authKind none` for a stored Bearer key. The shared redactor is the single source of truth
+ * for what counts as sensitive, and its exemptions are exact names rather than substrings.
+ */
 export function redactSecrets(value: string): string {
   return redactSensitive(value);
 }

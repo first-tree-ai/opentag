@@ -99,33 +99,15 @@
       "complexity": 21
     },
     {
-      "id": "apps/web/src/features/agents/agent-computer-choice.tsx#AgentComputerChoice",
-      "path": "apps/web/src/features/agents/agent-computer-choice.tsx",
-      "symbol": "AgentComputerChoice",
-      "complexity": 16
-    },
-    {
       "id": "apps/web/src/features/agents/agent-model.ts#projectAgentAvailability",
       "path": "apps/web/src/features/agents/agent-model.ts",
       "symbol": "projectAgentAvailability",
-      "complexity": 47
+      "complexity": 23
     },
     {
       "id": "apps/web/src/features/agents/agent-presentation.ts#agentStatusPresentation",
       "path": "apps/web/src/features/agents/agent-presentation.ts",
       "symbol": "agentStatusPresentation",
-      "complexity": 22
-    },
-    {
-      "id": "apps/web/src/features/agents/agent-queries.ts#useAgentDetailView",
-      "path": "apps/web/src/features/agents/agent-queries.ts",
-      "symbol": "useAgentDetailView",
-      "complexity": 17
-    },
-    {
-      "id": "apps/web/src/features/agents/agent-settings/agent-computer-settings.tsx#AgentComputerSettings",
-      "path": "apps/web/src/features/agents/agent-settings/agent-computer-settings.tsx",
-      "symbol": "AgentComputerSettings",
       "complexity": 17
     },
     {
@@ -133,6 +115,18 @@
       "path": "apps/web/src/features/agents/agent-settings/agent-manage-settings.tsx",
       "symbol": "AgentManageSettings",
       "complexity": 27
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-settings/context-tree-settings.tsx#ContextTreeSettings",
+      "path": "apps/web/src/features/agents/agent-settings/context-tree-settings.tsx",
+      "symbol": "ContextTreeSettings",
+      "complexity": 17
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-settings/context-tree-settings.tsx#run",
+      "path": "apps/web/src/features/agents/agent-settings/context-tree-settings.tsx",
+      "symbol": "run",
+      "complexity": 24
     },
     {
       "id": "apps/web/src/features/agents/agent-settings/im-tab.tsx#callback",
@@ -150,7 +144,7 @@
       "id": "apps/web/src/features/agents/agent-settings/runtime-configuration.tsx#RuntimeConfigurationEditor",
       "path": "apps/web/src/features/agents/agent-settings/runtime-configuration.tsx",
       "symbol": "RuntimeConfigurationEditor",
-      "complexity": 39
+      "complexity": 38
     },
     {
       "id": "apps/web/src/features/agents/agent-settings/sections.ts#agentSettingsSummary",
@@ -162,19 +156,13 @@
       "id": "apps/web/src/features/tasks-page.tsx#AgentTasksSection",
       "path": "apps/web/src/features/tasks-page.tsx",
       "symbol": "AgentTasksSection",
-      "complexity": 25
+      "complexity": 23
     },
     {
       "id": "apps/web/src/features/tasks-page.tsx#TasksPage",
       "path": "apps/web/src/features/tasks-page.tsx",
       "symbol": "TasksPage",
-      "complexity": 29
-    },
-    {
-      "id": "apps/web/src/features/tasks-page.tsx#TaskTurnView",
-      "path": "apps/web/src/features/tasks-page.tsx",
-      "symbol": "TaskTurnView",
-      "complexity": 19
+      "complexity": 27
     },
     {
       "id": "apps/web/src/im/feishu-setup.tsx#async",
@@ -366,7 +354,7 @@
       "id": "packages/client/src/providers/pi/agent-runtime.ts#executeRun",
       "path": "packages/client/src/providers/pi/agent-runtime.ts",
       "symbol": "executeRun",
-      "complexity": 21
+      "complexity": 17
     },
     {
       "id": "packages/client/src/providers/pi/rpc-wire.ts##onMessage",
@@ -423,16 +411,16 @@
       "complexity": 21
     },
     {
-      "id": "packages/client/src/runtime/client-runtime-composition.ts#createClientRuntime",
-      "path": "packages/client/src/runtime/client-runtime-composition.ts",
-      "symbol": "createClientRuntime",
-      "complexity": 16
-    },
-    {
       "id": "packages/client/src/runtime/client-runtime.ts##handleBusinessFrame",
       "path": "packages/client/src/runtime/client-runtime.ts",
       "symbol": "#handleBusinessFrame",
       "complexity": 23
+    },
+    {
+      "id": "packages/client/src/runtime/context-tree-settings.ts##run",
+      "path": "packages/client/src/runtime/context-tree-settings.ts",
+      "symbol": "#run",
+      "complexity": 37
     },
     {
       "id": "packages/client/src/runtime/install-locations.ts#versionManagerBinDirs",
@@ -555,12 +543,6 @@
       "complexity": 16
     },
     {
-      "id": "packages/client/src/runtime/session-message-inbox.ts##runMessage",
-      "path": "packages/client/src/runtime/session-message-inbox.ts",
-      "symbol": "#runMessage",
-      "complexity": 16
-    },
-    {
       "id": "packages/client/src/runtime/session-reconciler.ts##reconcileLocked",
       "path": "packages/client/src/runtime/session-reconciler.ts",
       "symbol": "#reconcileLocked",
@@ -576,7 +558,7 @@
       "id": "packages/client/src/runtime/session-runtime-manager.ts##startRuntime",
       "path": "packages/client/src/runtime/session-runtime-manager.ts",
       "symbol": "#startRuntime",
-      "complexity": 26
+      "complexity": 27
     },
     {
       "id": "packages/server/src/__tests__/integration/im-binding.test.ts#void",
@@ -729,6 +711,12 @@
       "complexity": 23
     },
     {
+      "id": "packages/server/src/runtime/runtime-domain-owner.ts#handle",
+      "path": "packages/server/src/runtime/runtime-domain-owner.ts",
+      "symbol": "handle",
+      "complexity": 16
+    },
+    {
       "id": "packages/server/src/runtime/runtime-domain-owner.ts#requestReconcile",
       "path": "packages/server/src/runtime/runtime-domain-owner.ts",
       "symbol": "requestReconcile",
@@ -762,7 +750,7 @@
       "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
-      "complexity": 30
+      "complexity": 35
     },
     {
       "id": "packages/server/src/services/auth/auth-service.ts#callback",
@@ -778,12 +766,6 @@
     },
     {
       "id": "packages/server/src/services/im-bindings/feishu/adapter.ts#callback",
-      "path": "packages/server/src/services/im-bindings/feishu/adapter.ts",
-      "symbol": "callback",
-      "complexity": 28
-    },
-    {
-      "id": "packages/server/src/services/im-bindings/feishu/adapter.ts#callback~2",
       "path": "packages/server/src/services/im-bindings/feishu/adapter.ts",
       "symbol": "callback",
       "complexity": 24
@@ -831,12 +813,6 @@
       "complexity": 27
     },
     {
-      "id": "packages/server/src/services/im/external-call-policy.ts#callback",
-      "path": "packages/server/src/services/im/external-call-policy.ts",
-      "symbol": "callback",
-      "complexity": 18
-    },
-    {
       "id": "packages/server/src/services/im/im-message-inbox.ts#callback",
       "path": "packages/server/src/services/im/im-message-inbox.ts",
       "symbol": "callback",
@@ -846,7 +822,7 @@
       "id": "packages/server/src/services/runtime-config/effective-runtime-snapshot-assembler.ts#assembleForSession",
       "path": "packages/server/src/services/runtime-config/effective-runtime-snapshot-assembler.ts",
       "symbol": "assembleForSession",
-      "complexity": 18
+      "complexity": 20
     },
     {
       "id": "packages/server/src/services/sessions/session-collaboration-service.ts##deliver",
@@ -858,19 +834,13 @@
       "id": "packages/server/src/services/sessions/session-service.ts#callback",
       "path": "packages/server/src/services/sessions/session-service.ts",
       "symbol": "callback",
-      "complexity": 21
+      "complexity": 19
     },
     {
       "id": "packages/server/src/services/sessions/session-service.ts#callback~2",
       "path": "packages/server/src/services/sessions/session-service.ts",
       "symbol": "callback",
-      "complexity": 19
-    },
-    {
-      "id": "packages/server/src/services/tasks/__tests__/task-service.test.ts#createDelivery",
-      "path": "packages/server/src/services/tasks/__tests__/task-service.test.ts",
-      "symbol": "createDelivery",
-      "complexity": 18
+      "complexity": 17
     },
     {
       "id": "scripts/check-complexity-ratchet.mjs#sourceFingerprint",
@@ -900,7 +870,7 @@
       "id": "scripts/portable/verify-portable-artifact.mjs#verify",
       "path": "scripts/portable/verify-portable-artifact.mjs",
       "symbol": "verify",
-      "complexity": 21
+      "complexity": 16
     },
     {
       "id": "scripts/prepare-cli-release.mjs#prepareCliRelease",

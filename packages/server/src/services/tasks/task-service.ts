@@ -1,4 +1,5 @@
 import type {
+  AgentRuntimeProvider,
   ImContentV1,
   ListTasksResponse,
   TaskDetail,
@@ -44,7 +45,7 @@ interface TaskSummaryRow extends Record<string, unknown> {
   agentId: string;
   agentName: string;
   agentDisplayName: string;
-  runtimeProvider: "codex" | "claude-code";
+  runtimeProvider: AgentRuntimeProvider;
   provider: "feishu" | "slack";
   conversationKind: "channel" | "dm" | "group_dm";
   sessionKind: "channel" | "thread";

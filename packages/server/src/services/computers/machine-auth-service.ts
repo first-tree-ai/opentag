@@ -12,8 +12,10 @@ import {
 } from "@opentag/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
+import { agents, computerConnectCodes, computerCredentials, computers } from "../../db/schema/index.js";
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
+import { lockActiveAccount } from "./account-lock.js";
+import { uniqueConstraintName } from "./pg-errors.js";
 
 export const COMPUTER_CONNECT_CODE_TTL_SECONDS = 15 * 60;
 const COMPUTER_CONNECT_CODE_PREFIX = "otcc_";
@@ -31,6 +33,11 @@ export interface ComputerAuthContext {
   credentialId: string;
   computerId: string;
   installationId: string;
+  /**
+   * The authenticated Computer kind. Local is the default; Cloud comes only from the trusted
+   * deployment-injected Cloud control verifier and is bound to the existing logical Cloud Computer.
+   */
+  kind?: "local" | "cloud";
 }
 
 export interface IssuedComputerConnectCode {
@@ -224,10 +231,13 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         computerId: computers.id,
         installationId: computers.currentInstallationId,
         secretHash: computerCredentials.secretHash,
+        kind: computers.kind,
       })
       .from(computerCredentials)
       .innerJoin(computers, eq(computers.id, computerCredentials.computerId))
-      .where(and(eq(computerCredentials.id, parsed[1]), isNull(computerCredentials.revokedAt)))
+      .where(
+        and(eq(computerCredentials.id, parsed[1]), isNull(computerCredentials.revokedAt), eq(computers.kind, "local")),
+      )
       .limit(1);
     if (!credential || !matchesSecretHash(credential.secretHash, parsed[2])) {
       throw invalidMachineCredential("AUTH_INVALID_TOKEN", "The machine token is invalid");
@@ -254,7 +264,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
       }
       const target = await lockOwnedComputer(transaction, input.targetComputerId);
-      if (!target || target.ownerAccountId !== input.accountId) {
+      if (!target || target.ownerAccountId !== input.accountId || target.kind !== "local") {
         throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
       }
     }
@@ -297,6 +307,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         .insert(computers)
         .values({
           ownerAccountId: connectCode.issuedByAccountId,
+          kind: "local",
           currentInstallationId: input.installationId,
           displayName: input.displayName,
           platform: input.platform,
@@ -331,7 +342,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
     }
     const target = await lockOwnedComputer(transaction, connectCode.targetComputerId);
-    if (!target || target.ownerAccountId !== connectCode.issuedByAccountId) {
+    if (!target || target.ownerAccountId !== connectCode.issuedByAccountId || target.kind !== "local") {
       throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
     }
     let repaired: { id: string } | undefined;
@@ -349,7 +360,13 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           lastSeenAt: null,
           updatedAt: now,
         })
-        .where(and(eq(computers.id, target.id), eq(computers.ownerAccountId, connectCode.issuedByAccountId)))
+        .where(
+          and(
+            eq(computers.id, target.id),
+            eq(computers.ownerAccountId, connectCode.issuedByAccountId),
+            eq(computers.kind, "local"),
+          ),
+        )
         .returning({ id: computers.id });
     } catch (error) {
       if (uniqueConstraintName(error) === "computers_current_installation_id_unique") {
@@ -520,9 +537,9 @@ async function bindConnectTargetAgent(
 async function lockOwnedComputer(
   transaction: DatabaseTransaction,
   computerId: string,
-): Promise<{ id: string; ownerAccountId: string } | undefined> {
+): Promise<{ id: string; ownerAccountId: string; kind: "local" | "cloud" } | undefined> {
   const [computer] = await transaction
-    .select({ id: computers.id, ownerAccountId: computers.ownerAccountId })
+    .select({ id: computers.id, ownerAccountId: computers.ownerAccountId, kind: computers.kind })
     .from(computers)
     .where(eq(computers.id, computerId))
     .limit(1)
@@ -536,6 +553,14 @@ async function rotateComputerCredentials(
   accountId: string,
   now: Date,
 ): Promise<{ id: string; secret: string }> {
+  const [computer] = await transaction
+    .select({ id: computers.id })
+    .from(computers)
+    .where(and(eq(computers.id, computerId), eq(computers.kind, "local")))
+    .limit(1);
+  if (!computer) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
   await transaction
     .update(computerCredentials)
     .set({ revokedByUserId: accountId, revokedAt: now })
@@ -551,31 +576,6 @@ async function rotateComputerCredentials(
     issuedAt: now,
   });
   return { id: credentialId, secret };
-}
-
-async function lockActiveAccount(transaction: DatabaseTransaction, accountId: string): Promise<void> {
-  const [user] = await transaction
-    .select({ id: users.id, suspendedAt: users.suspendedAt })
-    .from(users)
-    .where(eq(users.id, accountId))
-    .limit(1)
-    .for("update");
-  if (!user || user.suspendedAt) {
-    throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
-  }
-}
-
-function uniqueConstraintName(error: unknown): string | undefined {
-  let current = error;
-  const visited = new Set<unknown>();
-  while (typeof current === "object" && current !== null && !visited.has(current)) {
-    visited.add(current);
-    if ("code" in current && current.code === "23505" && "constraint_name" in current) {
-      return typeof current.constraint_name === "string" ? current.constraint_name : undefined;
-    }
-    current = "cause" in current ? current.cause : undefined;
-  }
-  return undefined;
 }
 
 function matchesSecretHash(expectedHash: string, secret: string): boolean {

@@ -1,10 +1,17 @@
+import { generateKeyPairSync } from "node:crypto";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { describe, expect, it, vi } from "vitest";
 import { parseRequest } from "../api/request-validation.js";
-import { isHostedEnvironment, parseDatabaseConfig, parseServerConfig, serverEnvironmentSummary } from "../config.js";
+import {
+  isHostedEnvironment,
+  parseCloudStorageBase,
+  parseDatabaseConfig,
+  parseServerConfig,
+  serverEnvironmentSummary,
+} from "../config.js";
 import { createDatabaseClient } from "../db/client.js";
 import {
   MIGRATION_ADVISORY_LOCK_ID,
@@ -29,7 +36,21 @@ const required = {
   OPENTAG_PUBLIC_URL: "http://localhost:8000",
 };
 
+const githubAppPrivateKeyPem = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: "spki", format: "pem" },
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+}).privateKey;
+
 describe("parseServerConfig", () => {
+  it("accepts an image source revision and rejects a malformed deployment proof", () => {
+    expect(parseServerConfig({ ...required, OPENTAG_BUILD_REVISION: "a".repeat(40) }).buildRevision).toBe(
+      "a".repeat(40),
+    );
+    expect(parseServerConfig({ ...required, OPENTAG_BUILD_REVISION: "" }).buildRevision).toBeUndefined();
+    expect(() => parseServerConfig({ ...required, OPENTAG_BUILD_REVISION: "main" })).toThrow();
+  });
+
   it("offers Internal Tools on staging and keeps other environments closed by default", () => {
     expect(
       parseServerConfig({
@@ -70,6 +91,279 @@ describe("parseServerConfig", () => {
       logLevel: "info",
     });
     expect(parseServerConfig(required).devAuth).toBeUndefined();
+    expect(parseServerConfig(required).cloudIdentities).toEqual({ enabled: false });
+    expect(parseServerConfig(required).cloudRunner).toEqual({ enabled: false });
+    expect(parseServerConfig(required).cloudModel).toEqual({ enabled: false });
+  });
+
+  it("derives Cloud Runner enablement from the single overall Cloud switch and requires every coordinate", () => {
+    const identities = {
+      OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+      OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e2",
+      OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+    };
+    const runnerEnv = {
+      ...identities,
+      OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+      OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+      OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+      OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+      OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+      OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+      OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+      OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
+    };
+    // The overall switch alone enables the Runner; every coordinate is mandatory.
+    for (const key of Object.keys(runnerEnv).filter(
+      (key) => key.startsWith("OPENTAG_CLOUD_RUNNER_") && key !== "OPENTAG_CLOUD_RUNNER_VERSION",
+    )) {
+      const incomplete = { ...runnerEnv } as Record<string, string>;
+      delete incomplete[key];
+      expect(() => parseServerConfig({ ...required, ...incomplete }), key).toThrow(/Cloud Runner/);
+    }
+    // The retired per-Runner flag is a transition validation input, never a switch: a leftover
+    // valid value cannot enable the Runner on its own. The dedicated retired-flag test below
+    // covers the tolerated and rejected postures.
+    expect(parseServerConfig({ ...required, OPENTAG_CLOUD_RUNNER_ENABLED: "true" }).cloudRunner).toEqual({
+      enabled: false,
+    });
+    const parsed = parseServerConfig({ ...required, ...runnerEnv });
+    expect(parsed.cloudRunner).toMatchObject({
+      enabled: true,
+      project: "opentag-test",
+      region: "us-west1",
+      backendOrigin: "https://api.example.com",
+      vpc: { network: "opentag-net", subnetwork: "opentag-subnet", executionTag: "opentag-runner" },
+    });
+    expect((parsed.cloudRunner as { staticAccessToken?: string }).staticAccessToken).toBeUndefined();
+    // A tag-only image is never accepted; the pin must be an exact digest.
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        ...runnerEnv,
+        OPENTAG_CLOUD_RUNNER_IMAGE: "us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner:0.0.5",
+      }),
+    ).toThrow();
+    // Backend origin rejects credentials, paths, and plain http.
+    const credentialOrigin = new URL("https://api.example.com");
+    credentialOrigin.username = "synthetic-user";
+    credentialOrigin.password = "synthetic-password";
+    for (const origin of [credentialOrigin.toString(), "https://api.example.com/path", "http://api.example.com"]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: origin }),
+      ).toThrow();
+    }
+    // The acceptance-harness static token is honored only when explicitly set.
+    expect(
+      parseServerConfig({
+        ...required,
+        ...runnerEnv,
+        OPENTAG_ENV: "dev",
+        OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN: "unit-token",
+      }).cloudRunner,
+    ).toMatchObject({ staticAccessToken: "unit-token" });
+    expect(() =>
+      parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN: "unit-token" }),
+    ).toThrow(/explicit OPENTAG_ENV=dev/);
+  });
+
+  it("treats the retired Runner flag as a transition validation input, never a switch", () => {
+    const runnerEnv = {
+      OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+      OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e3",
+      OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+      OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+      OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+      OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+      OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+      OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+      OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+      OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+      OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
+    };
+    // An agreeing leftover "true" stays tolerated so the deployment can roll back to an older
+    // Server that still reads the retired name.
+    expect(
+      parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_ENABLED: "true" }).cloudRunner,
+    ).toMatchObject({ enabled: true });
+    // The old "paused" posture (identities on, retired flag false) must fail startup with a clear
+    // migration error rather than silently enabling previously paused execution.
+    expect(() => parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_ENABLED: "false" })).toThrow(
+      /OPENTAG_CLOUD_RUNNER_ENABLED=false no longer pauses the Cloud Runner/,
+    );
+    // Overall Cloud off stays off regardless of a leftover valid value, in either direction.
+    expect(parseServerConfig({ ...required, OPENTAG_CLOUD_RUNNER_ENABLED: "false" }).cloudRunner).toEqual({
+      enabled: false,
+    });
+    expect(parseServerConfig({ ...required, OPENTAG_CLOUD_RUNNER_ENABLED: "true" }).cloudRunner).toEqual({
+      enabled: false,
+    });
+    // A malformed nonempty value is a migration error, whether or not Cloud is enabled.
+    for (const value of ["yes", "1", "TRUE"]) {
+      expect(() => parseServerConfig({ ...required, OPENTAG_CLOUD_RUNNER_ENABLED: value })).toThrow(
+        /OPENTAG_CLOUD_RUNNER_ENABLED is retired/,
+      );
+      expect(() => parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_ENABLED: value })).toThrow(
+        /OPENTAG_CLOUD_RUNNER_ENABLED is retired/,
+      );
+    }
+    // An empty leftover is treated as absent.
+    expect(
+      parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_ENABLED: "" }).cloudRunner,
+    ).toMatchObject({ enabled: true });
+    // The missing-coordinates error names the identities switch as the enabling cause.
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+        OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e3",
+        OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+      }),
+    ).toThrow(/OPENTAG_CLOUD_IDENTITIES_ENABLED=true enables the Cloud Runner/);
+  });
+
+  it("lets the overall Cloud switch dominate the sole secondary model switch", () => {
+    const runnerEnv = {
+      OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+      OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e4",
+      OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+      OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+      OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+      OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+      OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+      OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+      OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+      OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+      OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
+    };
+    const modelEnv = {
+      OPENTAG_CLOUD_MODEL_ENABLED: "true",
+      OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models.example.com/v1",
+      OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-master-key-sentinel-9f1c0d",
+    };
+    // Overall switch off yields identities, Runner, and model all disabled even when every Runner
+    // coordinate is present and the secondary model switch was left on.
+    const overallOff = parseServerConfig({
+      ...required,
+      ...runnerEnv,
+      ...modelEnv,
+      OPENTAG_CLOUD_IDENTITIES_ENABLED: "false",
+    });
+    expect(overallOff.cloudIdentities).toEqual({ enabled: false });
+    expect(overallOff.cloudRunner).toEqual({ enabled: false });
+    expect(overallOff.cloudModel).toEqual({ enabled: false });
+    // An opted-in model configuration is validated even while the overall switch is off: a staged
+    // error fails this startup instead of the later deploy that enables Cloud.
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        ...runnerEnv,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "false",
+        OPENTAG_CLOUD_MODEL_ENABLED: "true",
+      }),
+    ).toThrow(/Cloud model proxy is enabled without OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL/);
+    // The secondary model switch off stops model requests while Runner persistence, release, and
+    // control stay available.
+    const modelOff = parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_MODEL_ENABLED: "false" });
+    expect(modelOff.cloudRunner).toMatchObject({ enabled: true });
+    expect(modelOff.cloudModel).toEqual({ enabled: false });
+    // Both switches on with complete configuration enables the model proxy.
+    const modelOn = parseServerConfig({ ...required, ...runnerEnv, ...modelEnv });
+    // The Router model catalog is the only model authority; no allowlist survives config load.
+    expect(modelOn.cloudModel).toMatchObject({ enabled: true, upstreamBaseUrl: "https://models.example.com/v1" });
+    expect(modelOn.cloudModel).not.toHaveProperty("allowedModels");
+  });
+
+  it("parses the E9 Cloud Runner capacity ceilings with conservative defaults", () => {
+    const runnerEnv = {
+      OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+      OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e9",
+      OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+      OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+      OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+      OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+      OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+      OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+      OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+      OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+      OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
+    };
+    // Defaults: 3 occupied Instances per Account, 20 platform-wide.
+    const defaults = parseServerConfig({ ...required, ...runnerEnv });
+    expect(defaults.cloudRunner).toMatchObject({ enabled: true, maxInstancesPerAccount: 3, maxInstances: 20 });
+    // Explicit positive integers are honored.
+    const tuned = parseServerConfig({
+      ...required,
+      ...runnerEnv,
+      OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: "2",
+      OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: "7",
+    });
+    expect(tuned.cloudRunner).toMatchObject({ maxInstancesPerAccount: 2, maxInstances: 7 });
+    // Zero, negative, fractional and non-numeric ceilings are rejected at startup, never coerced.
+    for (const value of ["0", "-1", "1.5", "many"]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: value }),
+      ).toThrow();
+      expect(() =>
+        parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: value }),
+      ).toThrow();
+    }
+  });
+
+  it("enables Cloud identities only with a valid storage prefix and Runner SemVer", () => {
+    expect(() => parseServerConfig({ ...required, OPENTAG_CLOUD_IDENTITIES_ENABLED: "true" })).toThrow();
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+        OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e2",
+      }),
+    ).toThrow();
+    // The overall switch also enables the Runner, so storage prefix and Runner SemVer alone are
+    // not enough: without the complete Runner coordinates the enable is incomplete and fails.
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+        OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e2",
+        OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+      }),
+    ).toThrow(/Cloud Runner/);
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+        OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e2",
+        OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+        OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+        OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+        OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+        OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+        OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+        OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+        OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+        OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
+      }).cloudIdentities,
+    ).toEqual({
+      enabled: true,
+      storageBase: "gs://opentag-sandbox/e2",
+      runnerVersion: "0.0.5",
+    });
+    for (const storageBase of [
+      "https://bucket/prefix",
+      "gs://user:pass@bucket/prefix",
+      "gs://bucket/prefix?x=1",
+      "gs://bucket/foo/../bar",
+      "gs://bucket/./secret",
+      "gs://bucket/prefix/",
+      "gs://bucket/",
+      "s3://bucket/prefix",
+    ]) {
+      expect(() => parseServerConfig({ ...required, OPENTAG_CLOUD_STORAGE_BASE: storageBase })).toThrow();
+    }
+    expect(() => parseServerConfig({ ...required, OPENTAG_CLOUD_RUNNER_VERSION: "not-semver" })).toThrow();
+    expect(parseCloudStorageBase("gs://opentag-sandbox")).toBe("gs://opentag-sandbox");
+    expect(parseCloudStorageBase("gs://bucket/foo/../bar")).toBeUndefined();
   });
 
   it("offers Internal Tools only after an explicit loopback development opt-in", () => {
@@ -92,6 +386,68 @@ describe("parseServerConfig", () => {
   it("accepts the configured server log level and rejects unknown levels", () => {
     expect(parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "debug" }).logLevel).toBe("debug");
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
+  });
+
+  it("keeps the legacy encryption defaults and fully validates the v2 key ring opt-in", () => {
+    const ringKey = Buffer.alloc(32, 23).toString("base64");
+    const retiredKey = Buffer.alloc(32, 11).toString("base64");
+    // Defaults: no ring, v1 writes, and the single legacy key keeps working untouched.
+    const defaults = parseServerConfig(required);
+    expect(defaults.encryptionKeyRing).toBeUndefined();
+    expect(defaults.imCredentialEncryptionWriteVersion).toBe(1);
+    expect([...defaults.encryptionKey]).toEqual([...Buffer.alloc(32, 7)]);
+
+    const configured = parseServerConfig({
+      ...required,
+      OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ "im-2026-08": retiredKey, "im-2026-09": ringKey }),
+      OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "im-2026-09",
+      OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "2",
+    });
+    expect(configured.encryptionKeyRing?.activeKeyId).toBe("im-2026-09");
+    expect(configured.encryptionKeyRing?.keys.get("im-2026-09")).toEqual(new Uint8Array(Buffer.alloc(32, 23)));
+    expect(configured.imCredentialEncryptionWriteVersion).toBe(2);
+
+    // Ring and active key are coupled; the active key must be in the ring; v2 writes need a ring.
+    expect(() => parseServerConfig({ ...required, OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "im-2026-09" })).toThrow();
+    expect(() =>
+      parseServerConfig({ ...required, OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }) }),
+    ).toThrow();
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }),
+        OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "other",
+      }),
+    ).toThrow();
+    expect(() => parseServerConfig({ ...required, OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "2" })).toThrow();
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }),
+        OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "main",
+        OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "3",
+      }),
+    ).toThrow();
+
+    // Malformed rings fail closed without echoing key material.
+    for (const ring of [
+      "not-json",
+      "[]",
+      "{}",
+      JSON.stringify({ "BAD ID": ringKey }),
+      JSON.stringify({ main: "not-base64" }),
+      JSON.stringify({ main: Buffer.alloc(16).toString("base64") }),
+      JSON.stringify({ main: `${ringKey}==` }),
+      JSON.stringify({ main: 42 }),
+    ]) {
+      expect(() =>
+        parseServerConfig({
+          ...required,
+          OPENTAG_ENCRYPTION_KEY_RING: ring,
+          OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "main",
+        }),
+      ).toThrow();
+    }
   });
 
   it("defaults the channel target coordinates to the public release endpoint", () => {
@@ -203,6 +559,75 @@ describe("parseServerConfig", () => {
     }
   });
 
+  it("requires complete GitHub App configuration and a callback on this origin", () => {
+    const github = {
+      OPENTAG_GITHUB_APP_ID: "871235",
+      OPENTAG_GITHUB_APP_CLIENT_ID: "Iv1.githubclient",
+      OPENTAG_GITHUB_APP_CLIENT_SECRET: "github-client-secret",
+      OPENTAG_GITHUB_APP_PRIVATE_KEY: githubAppPrivateKeyPem,
+      OPENTAG_GITHUB_APP_WEBHOOK_SECRET: "github-webhook-secret",
+    };
+    const configured = parseServerConfig({ ...required, ...github });
+    expect(configured.githubApp).toMatchObject({
+      appId: "871235",
+      clientId: "Iv1.githubclient",
+      clientSecret: "github-client-secret",
+      webhookSecret: "github-webhook-secret",
+      oauthCallbackUrl: "http://localhost:8000/api/v1/integrations/github/oauth/callback",
+    });
+    expect(configured.githubApp?.privateKey).toContain("-----BEGIN");
+    expect(
+      parseServerConfig({
+        ...required,
+        ...github,
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000",
+      }).githubApp?.oauthCallbackUrl,
+    ).toBe("http://localhost:8000/api/v1/integrations/github/oauth/callback");
+    expect(
+      parseServerConfig({
+        ...required,
+        ...github,
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000/api/v1/integrations/github/oauth/callback",
+      }).githubApp?.oauthCallbackUrl,
+    ).toBe("http://localhost:8000/api/v1/integrations/github/oauth/callback");
+    // A base64-encoded PEM configures identically to the literal form.
+    expect(
+      parseServerConfig({
+        ...required,
+        ...github,
+        OPENTAG_GITHUB_APP_PRIVATE_KEY: Buffer.from(githubAppPrivateKeyPem, "utf8").toString("base64"),
+      }).githubApp?.privateKey,
+    ).toBe(configured.githubApp?.privateKey);
+    expect(parseServerConfig(required).githubApp).toBeUndefined();
+
+    for (const invalid of [
+      { OPENTAG_GITHUB_APP_ID: "871235" },
+      { ...github, OPENTAG_GITHUB_APP_WEBHOOK_SECRET: undefined },
+      { ...github, OPENTAG_GITHUB_APP_ID: "not-decimal" },
+      { ...github, OPENTAG_GITHUB_APP_PRIVATE_KEY: "not-a-pem" },
+      {
+        ...github,
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "https://evil.example/api/v1/integrations/github/oauth/callback",
+      },
+      { ...github, OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000/api/v1/auth/google/callback" },
+      {
+        ...github,
+        OPENTAG_ENV: "prod",
+        OPENTAG_PUBLIC_URL: "https://opentag.example.com",
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://opentag.example.com/api/v1/integrations/github/oauth/callback",
+      },
+    ]) {
+      expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
+    }
+    // The all-or-none error never echoes configured material.
+    try {
+      parseServerConfig({ ...required, OPENTAG_GITHUB_APP_CLIENT_SECRET: "github-client-secret" });
+      expect.unreachable("partial GitHub App configuration must fail");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain("github-client-secret");
+    }
+  });
+
   it("requires complete Google configuration and HTTPS in hosted environments", () => {
     expect(isHostedEnvironment("dev")).toBe(false);
     expect(isHostedEnvironment("staging")).toBe(true);
@@ -234,10 +659,37 @@ describe("parseServerConfig", () => {
     expect(serverEnvironmentSummary(config)).toEqual({
       binName: "opentag-staging",
       channel: "staging",
+      cloud: { identities: false, runner: false, model: false },
       environment: "staging",
       packageName: "open-tag-staging",
       publicUrl: "https://dev.example.com",
     });
+  });
+
+  it("reports the effective Cloud toggles in the startup summary without coordinates or key material", () => {
+    const summary = serverEnvironmentSummary(
+      parseServerConfig({
+        ...required,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+        OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e9",
+        OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+        OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+        OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+        OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+        OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+        OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+        OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+        OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+        OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
+        OPENTAG_CLOUD_MODEL_ENABLED: "true",
+        OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models.example.com/v1",
+        OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-master-key-sentinel-9f1c0d",
+      }),
+    );
+    expect(summary.cloud).toEqual({ identities: true, runner: true, model: true });
+    const serialized = JSON.stringify(summary);
+    expect(serialized).not.toContain("opentag-test");
+    expect(serialized).not.toContain("fixture-master-key-sentinel");
   });
 
   it("rejects legacy or parallel environment values", () => {
@@ -472,5 +924,110 @@ describe("database migration helpers", () => {
       "postgresql://localhost/opentag",
       expect.stringContaining("/drizzle"),
     );
+  });
+});
+
+const skillStorageEnvironment = {
+  OPENTAG_SKILL_STORAGE_ENDPOINT: "http://127.0.0.1:9000",
+  OPENTAG_SKILL_STORAGE_REGION: "us-east-1",
+  OPENTAG_SKILL_STORAGE_BUCKET: "opentag-skills",
+  OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID: "opentag",
+  OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY: "opentag-minio-dev",
+};
+
+describe("Skill storage configuration", () => {
+  it("is disabled by default", () => {
+    expect(parseServerConfig(required).skillStorage).toEqual({ enabled: false });
+  });
+
+  it("resolves the full group with prefix and path-style defaults", () => {
+    expect(parseServerConfig({ ...required, ...skillStorageEnvironment }).skillStorage).toEqual({
+      enabled: true,
+      endpoint: "http://127.0.0.1:9000",
+      region: "us-east-1",
+      bucket: "opentag-skills",
+      accessKeyId: "opentag",
+      secretAccessKey: "opentag-minio-dev",
+      prefix: "skills",
+      forcePathStyle: true,
+      gcIntervalSeconds: 3600,
+      gcGraceSeconds: 86400,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_PREFIX: "bundles",
+        OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: "false",
+      }).skillStorage,
+    ).toMatchObject({ prefix: "bundles", forcePathStyle: false });
+  });
+
+  it("defaults the GC window, allows disabling it, and floors the grace period", () => {
+    expect(parseServerConfig({ ...required, ...skillStorageEnvironment }).skillStorage).toMatchObject({
+      gcIntervalSeconds: 3600,
+      gcGraceSeconds: 86400,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS: "0",
+      }).skillStorage,
+    ).toMatchObject({ gcIntervalSeconds: 0 });
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS: "299",
+      }),
+    ).toThrow();
+  });
+
+  it("normalizes the object-key prefix and rejects a traversal at parse time", () => {
+    for (const [raw, expected] of [
+      ["skills/", "skills"],
+      ["/skills", "skills"],
+      ["//skills//", "skills"],
+      ["skills//nested/", "skills/nested"],
+    ] as const) {
+      expect(
+        parseServerConfig({ ...required, ...skillStorageEnvironment, OPENTAG_SKILL_STORAGE_PREFIX: raw }).skillStorage,
+      ).toMatchObject({ prefix: expected });
+    }
+    for (const raw of ["/", "a/../b", "a b"]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...skillStorageEnvironment, OPENTAG_SKILL_STORAGE_PREFIX: raw }),
+      ).toThrow(/OPENTAG_SKILL_STORAGE_PREFIX/);
+    }
+  });
+
+  it("allows a base path but rejects a partial group and a bad endpoint", () => {
+    expect(
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_ENDPOINT: "https://s3.example.test/gateway",
+      }).skillStorage,
+    ).toMatchObject({ enabled: true, endpoint: "https://s3.example.test/gateway" });
+
+    const partial = {
+      OPENTAG_SKILL_STORAGE_ENDPOINT: skillStorageEnvironment.OPENTAG_SKILL_STORAGE_ENDPOINT,
+      OPENTAG_SKILL_STORAGE_REGION: skillStorageEnvironment.OPENTAG_SKILL_STORAGE_REGION,
+      OPENTAG_SKILL_STORAGE_BUCKET: skillStorageEnvironment.OPENTAG_SKILL_STORAGE_BUCKET,
+      OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID: skillStorageEnvironment.OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID,
+    };
+    expect(() => parseServerConfig({ ...required, ...partial })).toThrow();
+
+    for (const endpoint of [
+      "ftp://minio.example.test",
+      "http://user:pass@minio.example.test",
+      "http://minio.example.test/?token=1",
+      "not-a-url",
+    ]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...skillStorageEnvironment, OPENTAG_SKILL_STORAGE_ENDPOINT: endpoint }),
+      ).toThrow();
+    }
   });
 });

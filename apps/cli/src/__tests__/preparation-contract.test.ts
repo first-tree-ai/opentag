@@ -25,7 +25,12 @@ import type {
   ProviderCliEnsureResult,
   ProviderCliWarning,
 } from "@opentag/client";
-import { type LocalComputerPreparationResult, LocalComputerPreparationResultSchema } from "@opentag/shared";
+import {
+  AGENT_RUNTIME_PROVIDERS,
+  type AgentRuntimeProvider,
+  type LocalComputerPreparationResult,
+  LocalComputerPreparationResultSchema,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import * as connectCore from "../core/computer/connect.js";
@@ -67,7 +72,7 @@ interface LocalComponentExpectation {
 
 interface Scenario {
   readonly id: string;
-  readonly runtimeProvider: "codex" | "claude-code";
+  readonly runtimeProvider: AgentRuntimeProvider;
   readonly local: {
     readonly facts: LocalFacts;
     readonly expected: {
@@ -91,6 +96,11 @@ interface Scenario {
 }
 
 interface FixtureFile {
+  readonly identities: {
+    readonly runtimeProviders: readonly AgentRuntimeProvider[];
+    readonly runtimeLabels: Readonly<Record<AgentRuntimeProvider, string>>;
+  };
+  readonly coverage: { readonly success: readonly string[] };
   readonly scenarios: Scenario[];
 }
 
@@ -390,7 +400,30 @@ function expectNextActionPins(scenario: Scenario, preparation: PreparationDocume
   }
 }
 
+const CLI_RUNTIME_LABELS = {
+  codex: "Codex CLI",
+  "claude-code": "Claude Code CLI",
+  pi: "Pi CLI",
+} as const satisfies Record<AgentRuntimeProvider, string>;
+
+function successScenarios(): Scenario[] {
+  return fixture.coverage.success.map((id) => {
+    const scenario = fixture.scenarios.find((candidate) => candidate.id === id);
+    if (!scenario) throw new Error(`missing success scenario ${id}`);
+    return scenario;
+  });
+}
+
 describe("F6 shared preparation matrix, CLI boundary", () => {
+  it("covers every admitted runtime provider in the authoritative success matrix", () => {
+    expect(fixture.identities.runtimeProviders).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+    expect(Object.keys(fixture.identities.runtimeLabels)).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+    expect(successScenarios().map((scenario) => scenario.runtimeProvider)).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+    for (const provider of AGENT_RUNTIME_PROVIDERS) {
+      expect(fixture.identities.runtimeLabels[provider]).toBe(CLI_RUNTIME_LABELS[provider].replace(/ CLI$/, ""));
+    }
+  });
+
   it.each(fixture.scenarios.map((scenario) => [scenario.id, scenario] as const))(
     "scenario %s: the real computer connect command projects the fixture's local verdict in JSON and human modes",
     async (_scenarioId, scenario) => {
@@ -436,6 +469,35 @@ describe("F6 shared preparation matrix, CLI boundary", () => {
       }
     },
   );
+
+  it("pins all admitted Runtime identities including Pi readiness in the local verdict", async () => {
+    for (const scenario of successScenarios()) {
+      mockScenarioWorld(scenario);
+      const jsonRun = await run(scenario, true);
+      const envelope = envelopeOf(jsonRun);
+      const preparation = envelope.result?.preparation;
+      if (!preparation) throw new Error(`no preparation for ${scenario.id}`);
+      expect(jsonRun.exitCode).toBe(0);
+      expect(preparation.localReady).toBe(true);
+      expect(preparation.status).toBe("ready");
+      const runtimeId = `runtime:${scenario.runtimeProvider}`;
+      expect(preparation.components.map((component) => component.id)).toEqual([
+        "computer",
+        runtimeId,
+        "im-cli:lark",
+        "im-cli:slack",
+      ]);
+      const runtime = preparation.components.find((component) => component.id === runtimeId);
+      if (!runtime) throw new Error(`missing ${runtimeId} row`);
+      expect(runtime.status).toBe("ready");
+      expect(runtime.blocking).toBe(false);
+      expect(runtime.label).toBe(CLI_RUNTIME_LABELS[scenario.runtimeProvider]);
+      expect(runtimeProbeModule.probeRuntimeComponent).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: scenario.runtimeProvider }),
+      );
+      vi.restoreAllMocks();
+    }
+  });
 
   it("asserts the same four components and no implicit Runtime install for a missing Runtime", async () => {
     const scenario = fixture.scenarios.find((candidate) => candidate.id === "runtime-missing-codex");

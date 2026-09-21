@@ -437,6 +437,7 @@ describe("doctor Agent Runtime CLI observations", () => {
           source: "well-known",
           status: "installed" as const,
         },
+        { displayName: "Pi CLI", provider: "pi", status: "not-installed" as const },
       ],
     ],
   ])("passes the aggregate when only %s is installed", async (_label, detection) => {
@@ -461,6 +462,7 @@ describe("doctor Agent Runtime CLI observations", () => {
       runtimeDetector: vi.fn().mockResolvedValue([
         { displayName: "Codex CLI", provider: "codex", status: "not-installed" },
         { displayName: "Claude Code CLI", provider: "claude-code", status: "not-installed" },
+        { displayName: "Pi CLI", provider: "pi", status: "not-installed" },
       ]),
     });
 
@@ -485,6 +487,7 @@ describe("doctor Agent Runtime CLI observations", () => {
           provider: "claude-code",
           status: "unknown",
         },
+        { displayName: "Pi CLI", provider: "pi", status: "not-installed" },
       ]),
     });
 
@@ -652,7 +655,6 @@ describe("doctor report and exit contract", () => {
       "Server",
       "Agent Runtime CLIs",
       "IM Provider CLIs",
-      "Context Tree",
       "Summary",
       "Not evaluated",
     ];
@@ -683,82 +685,17 @@ describe("doctor report and exit contract", () => {
       "runtime.any-installed",
       "runtime.codex.installation",
       "runtime.claude-code.installation",
+      "runtime.pi.installation",
       "provider-cli.feishu.installation",
       "provider-cli.slack.installation",
-      "context-tree.target",
-      "context-tree.tree",
     ]);
     for (const item of result.notEvaluated) expect(rendered).toContain(item);
     expect(result.exitCode).toBe(0);
   });
 
-  it("never lets a Context Tree fault change the doctor exit code", async () => {
-    const home = await createHome();
-    const cases = [
-      { configPath: resolve(home, "config", "context-tree", "config.json"), tree: "unknown" as const },
-      {
-        configPath: resolve(home, "config", "context-tree", "config.json"),
-        target: "team-context-tree",
-        tree: "invalid" as const,
-        detail: "DIRTY_TREE",
-      },
-    ];
-
-    for (const state of cases) {
-      const result = await runHealthyDoctor(home, {
-        inspectContextTreeState: vi.fn().mockResolvedValue(state),
-      });
-      // Context Tree is optional memory, so no check here may block.
-      expect(result.checks.filter((check) => check.scope === "context-tree").every((check) => !check.blocking)).toBe(
-        true,
-      );
-      expect(result.exitCode).toBe(0);
-    }
-  });
-
-  it("tells an operator how to configure a Computer that has no Context Tree", async () => {
-    const home = await createHome();
-    const result = await runHealthyDoctor(home, {
-      inspectContextTreeState: vi.fn().mockResolvedValue({
-        configPath: resolve(home, "config", "context-tree", "config.json"),
-        tree: "unknown" as const,
-      }),
-    });
-    const target = result.checks.find((check) => check.code === "context-tree.target");
-
-    expect(target).toMatchObject({ status: "info", blocking: false });
-    expect(target?.remediation).toContain("context-tree connect");
-    expect(renderDoctorReport(result)).toContain("no Context Tree is configured");
-  });
-
-  it("reports an uncloned GitHub target as expected rather than broken", async () => {
-    const home = await createHome();
-    const result = await runHealthyDoctor(home, {
-      inspectContextTreeState: vi.fn().mockResolvedValue({
-        configPath: resolve(home, "config", "context-tree", "config.json"),
-        target: "acme/shared-context",
-        tree: "not-cloned" as const,
-      }),
-    });
-
-    expect(result.checks.find((check) => check.code === "context-tree.tree")).toMatchObject({
-      status: "info",
-      blocking: false,
-    });
-    expect(renderDoctorReport(result)).toContain("the first Agent Session clones it");
-  });
-
-  it("reports an unreadable Context Tree state as unknown without failing the run", async () => {
-    const home = await createHome();
-    const result = await runHealthyDoctor(home, {
-      inspectContextTreeState: vi.fn().mockRejectedValue(new Error("inspection exploded")),
-    });
-
-    expect(result.checks.find((check) => check.code === "context-tree.target")).toMatchObject({
-      status: "unknown",
-      blocking: false,
-    });
-    expect(result.exitCode).toBe(0);
+  it("leaves per-Agent Context Tree visibility to settings and Session prompts", async () => {
+    const result = await runHealthyDoctor(await createHome());
+    expect(renderDoctorReport(result)).not.toContain("Context Tree");
   });
 
   it("returns exit 1 for any blocking fail or unknown and reports the exact count", async () => {
@@ -768,6 +705,7 @@ describe("doctor report and exit contract", () => {
       runtimeDetector: vi.fn().mockResolvedValue([
         { displayName: "Codex CLI", provider: "codex", status: "not-installed" },
         { displayName: "Claude Code CLI", provider: "claude-code", status: "not-installed" },
+        { displayName: "Pi CLI", provider: "pi", status: "not-installed" },
       ]),
     });
 
@@ -790,7 +728,6 @@ async function runHealthyDoctor(home: string, overrides: Partial<DoctorOptions> 
     cliVersion: "0.1.0",
     env: { OPENTAG_HOME: home },
     healthChecker: vi.fn().mockResolvedValue({ service: "opentag-server", status: "ok" } as const),
-    inspectContextTreeState: vi.fn().mockResolvedValue(configuredContextTree(home)),
     inspectDaemonService: vi.fn().mockResolvedValue(activeService(home)),
     integrationCliDetector: vi.fn().mockResolvedValue(missingIntegrationClis()),
     nodeVersion: "v24.0.0",
@@ -798,14 +735,6 @@ async function runHealthyDoctor(home: string, overrides: Partial<DoctorOptions> 
     runtimeDetector: vi.fn().mockResolvedValue(installedCodex()),
     ...overrides,
   });
-}
-
-function configuredContextTree(home: string) {
-  return {
-    configPath: resolve(home, "config", "context-tree", "config.json"),
-    target: "team-context-tree",
-    tree: "valid" as const,
-  };
 }
 
 function activeService(home: string) {
@@ -833,6 +762,7 @@ function installedCodex() {
       status: "installed" as const,
     },
     { displayName: "Claude Code CLI", provider: "claude-code" as const, status: "not-installed" as const },
+    { displayName: "Pi CLI", provider: "pi" as const, status: "not-installed" as const },
   ];
 }
 

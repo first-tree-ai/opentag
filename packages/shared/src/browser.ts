@@ -2,16 +2,30 @@ export * from "./account.js";
 export * from "./agent.js";
 export * from "./agent-setup.js";
 export * from "./auth.js";
+export * from "./cloud-product.js";
+export {
+  type AccountSandboxRunnerStatusResponse,
+  AccountSandboxRunnerStatusResponseSchema,
+  type AccountSandboxRunnerStopRequest,
+} from "./cloud-runner.js";
 export * from "./computer.js";
+export { ContextTreeRepositorySchema } from "./context-tree.js";
+export * from "./context-tree-operation.js";
 export * from "./errors.js";
+export * from "./github-integration.js";
+export * from "./github-management.js";
 export * from "./health.js";
 export * from "./http-paths.js";
 export * from "./im-binding.js";
+export * from "./mcp.js";
+export * from "./mcp-gateway.js";
 export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runtime-config.js";
 export * from "./runtime-configuration-options.js";
 export type { TurnFailureReason } from "./runtime-domain.js";
 export * from "./runtime-protocol.js";
+export * from "./sandbox.js";
 export * from "./sign-in-destination.js";
+export * from "./skill.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,

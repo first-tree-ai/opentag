@@ -138,7 +138,7 @@ describe("Agent persistence and authorization", () => {
         where pg_type.typname = 'agent_runtime_provider'
         order by enumsortorder
       `;
-      expect(enumValues.map(({ enumlabel }) => enumlabel)).toEqual(["codex", "claude-code"]);
+      expect(enumValues.map(({ enumlabel }) => enumlabel)).toEqual(["codex", "claude-code", "pi"]);
 
       const [sequence] = await value.sql<{ max_value: string; min_value: string }[]>`
         select min_value::text, max_value::text
@@ -249,10 +249,11 @@ describe("Agent persistence and authorization", () => {
   it.each([
     ["codex", 4],
     ["claude-code", 116],
+    ["pi", 116],
   ] as const)("projects current work and Provider-correct historical usage for %s", async (runtimeProvider, tokens) => {
     // Runtime usage fields are independently optional. The Codex case preserves a valid partial report where
     // cached input exceeds the reported provider-native input count.
-    const inputTokens = runtimeProvider === "claude-code" ? 110 : 0;
+    const inputTokens = runtimeProvider === "codex" ? 0 : 110;
     const value = await fixture();
     try {
       const now = new Date("2026-08-24T12:00:00.000Z");
@@ -393,7 +394,7 @@ describe("Agent persistence and authorization", () => {
         tasks: 2,
         measuredTasks: 1,
         failed: 1,
-        inputTokens: runtimeProvider === "claude-code" ? 112 : 0,
+        inputTokens: runtimeProvider === "codex" ? 0 : 112,
         cachedInputTokens: 2,
         outputTokens: 4,
         tokens,
@@ -413,7 +414,7 @@ describe("Agent persistence and authorization", () => {
         date: "2026-08-24",
         tasks: 2,
         measuredTasks: 1,
-        inputTokens: runtimeProvider === "claude-code" ? 112 : 0,
+        inputTokens: runtimeProvider === "codex" ? 0 : 112,
         cachedInputTokens: 2,
         outputTokens: 4,
         tokens,
@@ -846,7 +847,10 @@ describe("Agent persistence and authorization", () => {
         displayName: "Profile only",
         expectedRevision: 1,
       });
-      expect(profileOnly).toMatchObject({ revision: 2, runtimeConfig: { revision: initialRuntimeRevision } });
+      expect(profileOnly).toMatchObject({
+        revision: 2,
+        runtimeConfig: { contextTreeRepository: null, revision: initialRuntimeRevision },
+      });
 
       const cleared = await value.service.updateById(value.bootstrap.userId, created.id, {
         expectedRevision: 2,

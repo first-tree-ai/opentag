@@ -28,13 +28,21 @@ export interface AgentRuntimeAvailabilityTesterOptions {
   readonly timeoutMs?: number;
 }
 
-export function agentRuntimeAvailabilityPolicy(provider: "codex" | "claude-code"): AgentRuntimePolicy {
+export function agentRuntimeAvailabilityPolicy(provider: "codex" | "claude-code" | "pi"): AgentRuntimePolicy {
   if (provider === "claude-code") {
     return {
       fileSystem: "unrestricted",
       network: "enabled",
       approvals: "never",
       tools: { mode: "allow-list", names: [] },
+    };
+  }
+  if (provider === "pi") {
+    return {
+      fileSystem: "read-only",
+      network: "disabled",
+      approvals: "never",
+      tools: { mode: "provider-default" },
     };
   }
   return {

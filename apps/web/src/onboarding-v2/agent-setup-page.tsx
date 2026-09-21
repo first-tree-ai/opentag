@@ -16,6 +16,7 @@
 
 import type {
   AgentSetupAction,
+  AgentSetupComponent,
   AgentSetupSnapshot,
   ImProvider,
   ProviderCliHandoffProgress,
@@ -33,6 +34,7 @@ import {
 } from "../features/computer-connect/computer-connect.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
 import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
+import { FeishuActivationWaiting } from "../im/feishu-activation-waiting.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
@@ -228,6 +230,11 @@ function providerTitle(provider: ImProvider): string {
 
 /* One recovery message per known Server code, then a per-Provider fallback. */
 const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
+  FEISHU_SETUP_EXPIRED: () => m.im_feishu_authorization_expired(),
+  FEISHU_SETUP_CANCELED: () => m.im_feishu_setup_canceled({ provider: providerTitle("feishu") }),
+  FEISHU_SETUP_OWNER_RESTARTED: () => m.im_feishu_setup_interrupted({ provider: providerTitle("feishu") }),
+  FEISHU_SETUP_CANDIDATE_EXPIRED: () => m.im_feishu_saved_authorization_expired(),
+  FEISHU_CREDENTIAL_INVALID: () => m.im_feishu_saved_credential_invalid(),
   FEISHU_APP_ALREADY_BOUND: () => m.im_feishu_app_already_connected({ provider: providerTitle("feishu") }),
   FEISHU_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_permissions_missing({ provider: providerTitle("feishu") }),
   IM_BINDING_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_permissions_missing({ provider: providerTitle("feishu") }),
@@ -272,10 +279,15 @@ async function performSetupAction(
   adapter: AgentSetupAdapter,
   agentId: string,
   action: AgentSetupAction,
+  messaging?: AgentSetupSnapshot["messaging"],
 ): Promise<string | undefined> {
   switch (action.kind) {
     case "refresh":
-      await adapter.refreshPreparation(agentId);
+      if (messaging?.kind === "authorizing" && messaging.provider === "feishu" && messaging.activation) {
+        await adapter.checkFeishuAttempt(messaging.attemptId);
+      } else {
+        await adapter.refreshPreparation(agentId);
+      }
       return undefined;
     case "start-messaging":
       if (action.provider === "feishu") {
@@ -410,6 +422,7 @@ function useSetupActions(
   lifecycle: RequestLifecycle,
   read: () => Promise<boolean>,
   onExternalNavigation?: AgentSetupPageProps["onExternalNavigation"],
+  messaging?: AgentSetupSnapshot["messaging"],
 ): {
   actionError: string | undefined;
   busyKey: AgentSetupAction | undefined;
@@ -440,7 +453,7 @@ function useSetupActions(
       const mine = ++actionRun.current;
       const live = () => actionRun.current === mine;
       try {
-        const navigate = await performSetupAction(adapter, agentId, action);
+        const navigate = await performSetupAction(adapter, agentId, action, messaging);
         if (!live()) return false;
         if (navigate !== undefined) {
           if (onExternalNavigation) onExternalNavigation(navigate);
@@ -449,7 +462,13 @@ function useSetupActions(
         }
         return await read();
       } catch (cause) {
-        const message = setupActionErrorMessage(action, cause);
+        const message =
+          action.kind === "refresh" &&
+          messaging?.kind === "authorizing" &&
+          messaging.provider === "feishu" &&
+          messaging.activation
+            ? m.im_feishu_activation_check_failed()
+            : setupActionErrorMessage(action, cause);
         // Another tab may have connected a Provider after this snapshot advertised a fresh start.
         // The structured conflict names that exact current binding; immediately re-read the
         // canonical snapshot so this tab replaces stale provider buttons with its unbind action.
@@ -465,7 +484,7 @@ function useSetupActions(
         }
       }
     },
-    [adapter, agentId, lifecycle, onExternalNavigation, read],
+    [adapter, agentId, lifecycle, onExternalNavigation, read, messaging],
   );
 
   return { actionError, busyKey, act };
@@ -496,9 +515,15 @@ function useAgentSetup(
 ): AgentSetupController {
   const lifecycle = useRequestLifecycle();
   const reader = useSnapshotReader(agentId, adapter, lifecycle);
-  const actions = useSetupActions(agentId, adapter, lifecycle, reader.read, onExternalNavigation);
-
   const snapshot = reader.phase.kind === "ready" ? reader.phase.snapshot : undefined;
+  const actions = useSetupActions(
+    agentId,
+    adapter,
+    lifecycle,
+    reader.read,
+    onExternalNavigation,
+    snapshot?.stage === "needs-messaging" ? snapshot.messaging : undefined,
+  );
   const pollClass = snapshot === undefined ? undefined : snapshotPollClass(snapshot);
   const pollBudget = useRef(BOUNDED_POLL_ATTEMPTS);
   const pollWindowStartedAt = useRef<number | undefined>(undefined);
@@ -972,6 +997,14 @@ function AgentSetupSnapshotView({
 }
 
 function setupRefreshAction(snapshot: AgentSetupSnapshot, controller: AgentSetupController): ReactNode {
+  if (
+    snapshot.stage === "needs-messaging" &&
+    snapshot.messaging.kind === "authorizing" &&
+    snapshot.messaging.provider === "feishu" &&
+    snapshot.messaging.activation
+  ) {
+    return undefined;
+  }
   const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
   return canRefresh && snapshot.stage !== "ready" ? <SetupRefreshButton controller={controller} /> : undefined;
 }
@@ -1013,6 +1046,32 @@ function SetupStageNavigation({
   );
 }
 
+function preparationCheckingItem(rows: ReturnType<typeof preparationSummaryRows>): string {
+  return rows.runtime.status === "checking" || rows.runtime.status === "waiting"
+    ? rows.runtime.label
+    : rows.messaging.label;
+}
+
+function preparationHint(input: {
+  cloud: boolean;
+  ready: boolean;
+  checking: boolean;
+  checkingItem: string;
+  pollExhausted: boolean;
+  refreshAction?: ReactNode;
+}): string {
+  if (input.cloud) {
+    if (input.ready) return m.onboarding_v2_prep_cloud_continue_ready();
+    return input.pollExhausted
+      ? m.onboarding_v2_prep_checking_paused()
+      : m.onboarding_v2_prep_cloud_continue_unavailable();
+  }
+  if (input.ready) return m.onboarding_v2_prep_continue_ready();
+  if (input.checking) return m.onboarding_v2_prep_checking_automatically({ item: input.checkingItem });
+  if (input.pollExhausted) return m.onboarding_v2_prep_checking_paused();
+  return input.refreshAction ? m.onboarding_v2_prep_complete_action() : m.onboarding_v2_prep_continue_waiting();
+}
+
 function PreparationNavigation({
   checking,
   onContinue,
@@ -1029,18 +1088,16 @@ function PreparationNavigation({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const hintId = useId();
-  const rows = preparationSummaryRows(snapshot);
-  const checkingItem =
-    rows.runtime.status === "checking" || rows.runtime.status === "waiting" ? rows.runtime.label : rows.messaging.label;
-  const hint = ready
-    ? m.onboarding_v2_prep_continue_ready()
-    : checking
-      ? m.onboarding_v2_prep_checking_automatically({ item: checkingItem })
-      : pollExhausted
-        ? m.onboarding_v2_prep_checking_paused()
-        : refreshAction
-          ? m.onboarding_v2_prep_complete_action()
-          : m.onboarding_v2_prep_continue_waiting();
+  const rows = snapshot.computer.kind === "cloud" ? undefined : preparationSummaryRows(snapshot);
+  const checkingItem = rows ? preparationCheckingItem(rows) : "";
+  const hint = preparationHint({
+    cloud: snapshot.computer.kind === "cloud",
+    ready,
+    checking,
+    checkingItem,
+    pollExhausted,
+    refreshAction,
+  });
   return (
     <div className="otv2-step-footer" data-state={ready ? "ready" : "blocked"} data-ui="onboarding-v2-step-2-nav">
       <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0" id={hintId} role="status">
@@ -1090,6 +1147,13 @@ function LocalPreparationSections({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
+  // A Cloud Agent has no machine to connect and no CLIs to prepare: its environment section states
+  // the managed fact and, when the service cannot execute, the deployment's reason.
+  if (snapshot.computer.kind === "cloud") {
+    return stage === "needs-runtime" || showCompletedPreparation ? (
+      <CloudEnvironmentSection snapshot={snapshot} />
+    ) : null;
+  }
   return (
     <>
       {stage === "needs-computer" ? (
@@ -1106,6 +1170,57 @@ function LocalPreparationSections({
       ) : null}
     </>
   );
+}
+
+/**
+ * The Cloud environment leg. It renders the canonical Cloud component only: `available` states the
+ * managed fact that the environment starts with the first real task, and any other status names
+ * the deployment's reason. Nothing here claims a running machine or a completed probe.
+ */
+function CloudEnvironmentSection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
+  const component = snapshot.components.find(
+    (candidate): candidate is Extract<AgentSetupComponent, { kind: "cloud" }> => candidate.kind === "cloud",
+  );
+  if (!component) return null;
+  const available = component.status === "available";
+  return (
+    <section className="otv2-preparation flex flex-col" data-ui="agent-setup-cloud">
+      <header className={SECTION_HEADER}>
+        <Text as="h1" size="lg" variant="heading">
+          {m.onboarding_v2_cloud_title()}
+        </Text>
+        <p className={HINT}>{m.onboarding_v2_cloud_description()}</p>
+      </header>
+      <div className="otv2-preparation__checks">
+        <ComputerSummary
+          status={available ? m.onboarding_v2_cloud_status_ready() : m.onboarding_v2_cloud_status_unavailable()}
+          title={component.displayName}
+          tone={available ? "success" : "warning"}
+        />
+        {available ? (
+          <p className={HINT} data-ui="agent-setup-cloud-ready-detail">
+            {m.onboarding_v2_cloud_ready_detail()}
+          </p>
+        ) : (
+          <p className={HINT} data-ui="agent-setup-cloud-blocked-detail" role="alert">
+            {cloudUnavailableDetail(component.status)}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** The deployment reason a Cloud component carries, as one reader-facing sentence. */
+function cloudUnavailableDetail(status: Extract<AgentSetupComponent, { kind: "cloud" }>["status"]): string {
+  switch (status) {
+    case "execution-unavailable":
+      return m.onboarding_v2_cloud_reason_execution();
+    case "model-unavailable":
+      return m.onboarding_v2_cloud_reason_model();
+    default:
+      return m.onboarding_v2_cloud_reason_disabled();
+  }
 }
 
 function ComputerSetupSection({
@@ -1205,6 +1320,10 @@ function ComputerSetupSection({
         </div>
       </section>
     );
+  }
+  if (computer.kind === "cloud") {
+    // A Cloud Agent never reaches the needs-computer stage: there is no machine to bind or repair.
+    return null;
   }
   return (
     <BoundComputerSection
@@ -1495,6 +1614,19 @@ function FeishuAuthorizing({
     (action): action is Extract<AgentSetupAction, { kind: "cancel-messaging-attempt" }> =>
       action.kind === "cancel-messaging-attempt" && action.attemptId === messaging.attemptId,
   );
+  if (messaging.activation) {
+    const check = snapshot.actions.find((action) => action.kind === "refresh");
+    return (
+      <FeishuActivationWaiting
+        activation={messaging.activation}
+        expiresAt={messaging.expiresAt}
+        disabled={busyKey !== undefined}
+        checking={busyKey?.kind === "refresh"}
+        onCheck={check ? () => void onAct(check) : undefined}
+        onCancel={cancel ? () => void onAct(cancel) : undefined}
+      />
+    );
+  }
   return (
     <>
       <p className={WAITING_LINE} role="status">
@@ -1620,6 +1752,10 @@ function blockedMessagingCopy(messaging: Extract<AgentSetupSnapshot["messaging"]
   }
   if (messaging.code === "provider-error") return m.onboarding_v2_setup_messaging_provider_error({ provider });
   if (messaging.code === "unbind-required") return m.onboarding_v2_setup_messaging_unbind_required({ provider });
+  if (messaging.provider === "feishu" && messaging.credentialGeneration === 0) {
+    const known = messaging.errorCode ? FEISHU_ACTION_ERRORS[messaging.errorCode] : undefined;
+    return known ? known() : m.im_feishu_authorization_failed({ provider });
+  }
   return m.onboarding_v2_setup_messaging_auth_failed({ provider });
 }
 
@@ -1680,6 +1816,7 @@ function BlockedMessaging({
         <StatusIndicator label={m.onboarding_v2_setup_messaging_needs_attention()} tone="warning" />
       </div>
       <p className={HINT}>{blockedMessagingCopy(messaging)}</p>
+      <RetryInitialAuthorization controller={controller} snapshot={snapshot} />
       {switchBlocker ? (
         <p className={HINT}>
           {m.onboarding_v2_setup_messaging_switch_required({
@@ -1737,6 +1874,26 @@ function BlockedMessaging({
         />
       ) : null}
     </div>
+  );
+}
+
+function RetryInitialAuthorization({
+  controller,
+  snapshot,
+}: {
+  readonly controller: AgentSetupController;
+  readonly snapshot: AgentSetupSnapshot;
+}) {
+  const retry = snapshot.actions.find((action) => action.kind === "start-messaging" && action.provider === "feishu");
+  if (!retry) return null;
+  return (
+    <Button
+      disabled={controller.busyKey !== undefined}
+      loading={controller.busyKey?.kind === "start-messaging"}
+      onClick={() => void controller.act(retry)}
+    >
+      {m.im_feishu_retry_setup({ provider: providerTitle("feishu") })}
+    </Button>
   );
 }
 

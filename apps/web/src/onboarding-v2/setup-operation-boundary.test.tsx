@@ -209,7 +209,14 @@ it("starts a post-write snapshot after binding an owned Computer while an old re
       createdByUserId: agent.createdBy.userId,
       computerId,
       revision: 1,
-      runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
+      runtimeConfig: {
+        contextTreeRepository: null,
+        revision: 1,
+        model: null,
+        reasoningEffort: null,
+        instructions: "",
+        maxDurationMs: null,
+      },
     };
   });
   await renderInRouter(

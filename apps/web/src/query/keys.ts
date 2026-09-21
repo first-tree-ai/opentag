@@ -14,6 +14,8 @@ export const queryKeys = {
   internalNavigationVisibility: () => ["internalNavigationVisibility"] as const,
   /** The Account's Computers. The request takes no argument — the Server scopes it to the session. */
   computers: () => ["computers"] as const,
+  cloudAvailability: () => ["cloudAvailability"] as const,
+  cloudModelOptions: () => ["cloudModelOptions"] as const,
   computerConnectCode: (connectCodeId: string) => ["computerConnectCodes", connectCodeId] as const,
   agentSetup: (agentId: string) => ["agentSetup", agentId] as const,
   /** Every Setup snapshot read, for a write that must retire whichever one is still in flight. */
@@ -25,8 +27,16 @@ export const queryKeys = {
     detail: (agentId: string) => ["agents", agentId, "detail"] as const,
     config: (agentId: string) => ["agents", agentId, "config"] as const,
     imBinding: (agentId: string) => ["agents", agentId, "imBinding"] as const,
+    feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,
     imBindingHandoff: (agentId: string) => ["agents", agentId, "imBindingHandoff"] as const,
     usage: (agentId: string, windowDays: AgentUsageWindowDays) => ["agents", agentId, "usage", windowDays] as const,
+    /**
+     * Cloud environment overviews for one Agent: the paginated list root, plus each Session-scoped
+     * read hanging off it, so invalidating the root retires every view of that Agent's Cloud state.
+     */
+    cloudOverview: (agentId: string) => ["agents", agentId, "cloud"] as const,
+    cloudOverviewSession: (agentId: string, sessionId: string) =>
+      ["agents", agentId, "cloud", "session", sessionId] as const,
     /** Everything held for one Agent, for a write that invalidates the Agent as a whole. */
     all: (agentId: string) => ["agents", agentId] as const,
   },
@@ -40,4 +50,26 @@ export const queryKeys = {
   },
 
   feishuSetupAttempt: (attemptId: string) => ["feishuSetupAttempts", attemptId] as const,
+
+  /**
+   * MCP management. The Account pool and each Agent's own mounts are separate roots so a write to
+   * one Agent's override does not invalidate every other Agent's view.
+   */
+  mcp: {
+    servers: () => ["mcp", "servers"] as const,
+    serverRoot: () => ["mcp", "server"] as const,
+    server: (mcpServerId: string) => ["mcp", "server", mcpServerId] as const,
+    agentServers: (agentId: string) => ["mcp", "agents", agentId] as const,
+    availableServers: (agentId: string) => ["mcp", "agents", agentId, "available"] as const,
+  },
+
+  /**
+   * Agent Skills. A Skill belongs to exactly one Agent, so the Agent-scoped list is the root and each
+   * Skill detail hangs off it; invalidating the list therefore also retires every detail for that
+   * Agent, which is what a write needs.
+   */
+  skills: {
+    agentSkills: (agentId: string) => ["skills", "agents", agentId] as const,
+    skill: (agentId: string, skillId: string) => ["skills", "agents", agentId, "skill", skillId] as const,
+  },
 } as const;

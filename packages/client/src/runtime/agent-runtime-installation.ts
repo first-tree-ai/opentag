@@ -26,19 +26,19 @@ export interface ResolvedAgentRuntimeExecutable {
 
 export type AgentRuntimeCliInstallation =
   | {
-      provider: "codex" | "claude-code";
+      provider: AgentRuntimeProvider;
       displayName: string;
       status: "installed";
       path: string;
       source: AgentRuntimeExecutableSource;
     }
   | {
-      provider: "codex" | "claude-code";
+      provider: AgentRuntimeProvider;
       displayName: string;
       status: "not-installed";
     }
   | {
-      provider: "codex" | "claude-code";
+      provider: AgentRuntimeProvider;
       displayName: string;
       status: "unknown";
       detail: string;
@@ -73,12 +73,13 @@ export interface ResolveAgentRuntimeExecutableOptions {
 
 export interface ProbeAgentRuntimeCliInstallationsOptions extends ResolveAgentRuntimeExecutableOptions {
   environment?: NodeJS.ProcessEnv;
-  commands?: Partial<Record<"codex" | "claude-code", string>>;
+  commands?: Partial<Record<AgentRuntimeProvider, string>>;
 }
 
 const PROVIDERS = [
   { provider: "codex", displayName: "Codex CLI", command: "codex" },
   { provider: "claude-code", displayName: "Claude Code CLI", command: "claude" },
+  { provider: "pi", displayName: "Pi CLI", command: "pi" },
 ] as const;
 const defaultInstallationLogger = createLogger("runtime-agent-installation");
 

@@ -7,6 +7,7 @@ import {
   TurnReportRequestSchema,
 } from "@opentag/shared";
 import { and, asc, eq, gt, inArray, lt, or } from "drizzle-orm";
+import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { computers } from "../db/schema/computers.js";
 import { type RuntimeDurableWorkRow, runtimeDurableWork } from "../db/schema/runtime-durable-work.js";
@@ -34,6 +35,41 @@ export const RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS = {
   failed: ["failed", "running", "retryable", "dead-letter"],
   "dead-letter": ["dead-letter", "accepted", "retryable"],
 } as const satisfies Record<RuntimeDurableWorkRecord["status"], readonly RuntimeDurableWorkRecord["status"][]>;
+
+/**
+ * The exact allocation a Cloud Session message was accepted on. Recovery compares ONLY this
+ * against the session's authoritative current allocation; a timeout is never treated as proof of
+ * loss, and a record whose allocation was retired/replaced can no longer block or replay.
+ */
+export const CloudWorkAllocationSchema = z
+  .object({
+    sandboxId: z.string().uuid(),
+    environmentGeneration: z.number().int().safe().positive(),
+    resourceName: z.string().min(1).max(1024),
+  })
+  .strict();
+export type CloudWorkAllocation = z.infer<typeof CloudWorkAllocationSchema>;
+
+/**
+ * The Server-owned Cloud Session message durable payload: the original immutable dispatch request
+ * plus the allocation and Runner turn it was accepted for. The bare request remains valid for the
+ * existing Local client records; the explicit marker keeps the two shapes unambiguous.
+ */
+export const CloudSessionWorkEnvelopeSchema = z
+  .object({
+    type: z.literal("cloud-session-message-work"),
+    request: SessionMessageDeliveryRequestSchema,
+    allocation: CloudWorkAllocationSchema,
+    turnId: z.string().min(1).max(256),
+  })
+  .strict();
+export type CloudSessionWorkEnvelope = z.infer<typeof CloudSessionWorkEnvelopeSchema>;
+
+/** Parse a durable session-message payload; undefined for a bare Local request or invalid data. */
+export function parseCloudSessionWorkEnvelope(payload: unknown): CloudSessionWorkEnvelope | undefined {
+  const parsed = CloudSessionWorkEnvelopeSchema.safeParse(payload);
+  return parsed.success ? parsed.data : undefined;
+}
 
 export interface RuntimeDurableWorkStoreOptions {
   now?: () => number;
@@ -185,6 +221,30 @@ export class PostgresRuntimeDurableWorkStore {
     });
   }
 
+  /**
+   * Read one exact durable record. The Server-side collaboration owner uses this to preserve
+   * accepted Session work and to terminalize it on verified settlement without inventing a
+   * second record store; it never mutates truth, so no lock ordering risk exists.
+   */
+  async read(
+    computerId: string,
+    kind: RuntimeDurableWorkKind,
+    key: string,
+  ): Promise<RuntimeDurableWorkRecord | undefined> {
+    const [row] = await this.#database
+      .select()
+      .from(runtimeDurableWork)
+      .where(
+        and(
+          eq(runtimeDurableWork.computerId, computerId),
+          eq(runtimeDurableWork.kind, kind),
+          eq(runtimeDurableWork.recordKey, key),
+        ),
+      )
+      .limit(1);
+    return row ? rowToRecord(row) : undefined;
+  }
+
   async write(computerId: string, input: RuntimeDurableWorkRecord): Promise<void> {
     const record = RuntimeDurableWorkRecordSchema.parse(input);
     validatePayload(record);
@@ -197,6 +257,67 @@ export class PostgresRuntimeDurableWorkStore {
     await this.#database.transaction((transaction) =>
       this.#writeInTransaction(transaction, computerId, boundedRecord, payloadBytes, now),
     );
+  }
+
+  /**
+   * Compare-and-set replacement of one Session-message record. The Cloud Session collaboration
+   * owner is the only caller: it evaluates its custody policy against `expected` before this
+   * transaction, and this method re-checks that exact record — payload, status, timestamps and
+   * all — under the Computer-row and record-row locks, so a concurrent settlement, re-announcement
+   * repair, or replacement can never be overwritten after the owner's preflight. Returns the
+   * persisted record, or undefined when the stored record moved (or disappeared) since
+   * `expected`; the caller then fails closed. Quota accounting covers the net terminal slot
+   * change and the payload delta, and `updatedAt` stays strictly monotonic.
+   */
+  async replaceSessionMessageRecord(
+    computerId: string,
+    expected: RuntimeDurableWorkRecord,
+    input: RuntimeDurableWorkRecord,
+  ): Promise<RuntimeDurableWorkRecord | undefined> {
+    const record = RuntimeDurableWorkRecordSchema.parse(input);
+    validatePayload(record);
+    if (record.kind !== "session-message" || expected.kind !== "session-message" || record.key !== expected.key) {
+      throw new Error("Session-message record replacement requires the same kind and record key");
+    }
+    const payloadBytes = serializedPayloadBytes(record.payload);
+    if (payloadBytes > this.#maxPayloadBytesPerRecord) {
+      throw new RuntimeDurableWorkPayloadTooLargeError(this.#maxPayloadBytesPerRecord, payloadBytes);
+    }
+    const now = this.#now();
+    const boundedRecord = record.updatedAt > now + this.#maxFutureSkewMs ? { ...record, updatedAt: now } : record;
+    return this.#database.transaction(async (transaction) => {
+      const [computer] = await transaction
+        .select({ id: computers.id })
+        .from(computers)
+        .where(eq(computers.id, computerId))
+        .for("update");
+      if (!computer) throw new Error("The durable Runtime Computer does not exist");
+
+      await this.#prune(transaction, computerId, "session-message", now);
+      const [existing] = await transaction
+        .select()
+        .from(runtimeDurableWork)
+        .where(
+          and(
+            eq(runtimeDurableWork.computerId, computerId),
+            eq(runtimeDurableWork.kind, "session-message"),
+            eq(runtimeDurableWork.recordKey, expected.key),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!existing || !sameRecord(existing, expected)) return undefined;
+      const next: RuntimeDurableWorkRecord = {
+        ...boundedRecord,
+        updatedAt: Math.max(boundedRecord.updatedAt, existing.updatedAt + 1),
+      };
+      await this.#assertReplaceQuota(transaction, computerId, next.status, payloadBytes, existing);
+      await transaction
+        .update(runtimeDurableWork)
+        .set(recordValues(computerId, next))
+        .where(eq(runtimeDurableWork.id, existing.id));
+      return next;
+    });
   }
 
   async #writeInTransaction(
@@ -228,7 +349,6 @@ export class PostgresRuntimeDurableWorkStore {
       )
       .limit(1)
       .for("update");
-
     if (!existing) {
       await this.#assertQuota(transaction, computerId, record.status, payloadBytes);
       await transaction.insert(runtimeDurableWork).values(recordValues(computerId, record));
@@ -288,6 +408,45 @@ export class PostgresRuntimeDurableWorkStore {
     }
   }
 
+  /**
+   * Quota for a `replaceSessionMessageRecord` write: the replaced row's slot and payload are
+   * released before the incoming record is charged, so only the net change is asserted.
+   */
+  async #assertReplaceQuota(
+    transaction: DatabaseTransaction,
+    computerId: string,
+    incomingStatus: RuntimeDurableWorkRecord["status"],
+    incomingPayloadBytes: number,
+    existing: RuntimeDurableWorkRow | undefined,
+  ): Promise<void> {
+    const rows = await transaction
+      .select({ payload: runtimeDurableWork.payload, status: runtimeDurableWork.status })
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.computerId, computerId));
+    const currentRecords = rows.filter((row) => isNonTerminalStatus(row.status)).length;
+    const releasedRecords = existing && isNonTerminalStatus(existing.status) ? 1 : 0;
+    const requestedRecords = currentRecords - releasedRecords + Number(isNonTerminalStatus(incomingStatus));
+    if (requestedRecords > this.#maxRecordsPerComputer) {
+      throw new RuntimeDurableWorkQuotaExceededError(
+        "records",
+        this.#maxRecordsPerComputer,
+        currentRecords - releasedRecords,
+        requestedRecords,
+      );
+    }
+    const currentPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
+    const releasedPayloadBytes = existing ? serializedPayloadBytes(existing.payload) : 0;
+    const requestedPayloadBytes = currentPayloadBytes - releasedPayloadBytes + incomingPayloadBytes;
+    if (requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
+      throw new RuntimeDurableWorkQuotaExceededError(
+        "payload-bytes",
+        this.#maxPayloadBytesPerComputer,
+        currentPayloadBytes - releasedPayloadBytes,
+        requestedPayloadBytes,
+      );
+    }
+  }
+
   async #assertPayloadQuota(
     transaction: DatabaseTransaction,
     computerId: string,
@@ -323,10 +482,24 @@ export class PostgresRuntimeDurableWorkStore {
       .update(runtimeDurableWork)
       .set({ updatedAt: now })
       .where(and(eq(runtimeDurableWork.computerId, computerId), gt(runtimeDurableWork.updatedAt, futureCutoff)));
+    // Age-based retention applies to TERMINAL rows only. A non-terminal record is active durable
+    // custody: its Clock can far outrun the retention window (a Turn near the runtime maximum
+    // plus queue wait, or work paused on IM re-authorization), and deleting it would strand the
+    // exact terminal settlement it exists to acknowledge. Non-terminal state stays bounded by the
+    // per-Computer record/payload quotas, and terminal state by both this window and the count
+    // cap below. The bounds mean terminal acknowledgement evidence is NOT guaranteed to survive
+    // past its age/count limit: a settlement replayed only after that point finds no record and
+    // is never falsely acked — it keeps replaying until its Instance and journal are gone.
     const cutoff = now - this.#retentionMs;
     await transaction
       .delete(runtimeDurableWork)
-      .where(and(eq(runtimeDurableWork.computerId, computerId), lt(runtimeDurableWork.updatedAt, cutoff)));
+      .where(
+        and(
+          eq(runtimeDurableWork.computerId, computerId),
+          lt(runtimeDurableWork.updatedAt, cutoff),
+          inArray(runtimeDurableWork.status, ["succeeded", "failed", "dead-letter"]),
+        ),
+      );
     const terminal = await transaction
       .select({ id: runtimeDurableWork.id })
       .from(runtimeDurableWork)
@@ -373,11 +546,12 @@ function rowToRecord(row: RuntimeDurableWorkRow): RuntimeDurableWorkRecord {
 }
 
 function validatePayload(record: RuntimeDurableWorkRecord): void {
-  const parsed =
+  const valid =
     record.kind === "session-message"
-      ? SessionMessageDeliveryRequestSchema.safeParse(record.payload)
-      : TurnReportRequestSchema.safeParse(record.payload);
-  if (!parsed.success) throw new Error(`Invalid ${record.kind} durable payload`);
+      ? SessionMessageDeliveryRequestSchema.safeParse(record.payload).success ||
+        CloudSessionWorkEnvelopeSchema.safeParse(record.payload).success
+      : TurnReportRequestSchema.safeParse(record.payload).success;
+  if (!valid) throw new Error(`Invalid ${record.kind} durable payload`);
 }
 
 function stableJson(value: unknown): string {

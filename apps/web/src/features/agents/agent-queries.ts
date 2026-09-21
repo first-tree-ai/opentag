@@ -8,7 +8,7 @@ import type {
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
-import { liveResourceQueryOptions } from "../../query/live.js";
+import { LIVE_REFETCH_INTERVAL_MS, liveResourceQueryOptions } from "../../query/live.js";
 import {
   observedAfter,
   type ResourceObservation,
@@ -24,9 +24,10 @@ import {
   toResourceState,
   usePersistedSettledError,
 } from "../resource/resource-state.js";
-import type { AgentDetailView, AgentListItem } from "./agent-model.js";
+import type { AgentCloudRuntimeEvidence, AgentDetailView, AgentListItem } from "./agent-model.js";
 import {
   agentDetailFromListItem,
+  isHandoffChecking,
   markAgentDetailUnconfirmed,
   markAgentListUnconfirmed,
   projectAgentAvailability,
@@ -44,6 +45,19 @@ export function readComputers() {
   return browserApi.computers();
 }
 
+/** Logical online identity alone cannot establish Cloud execution readiness. */
+function useCloudRuntimeEvidence(enabled: boolean, watched: boolean): AgentCloudRuntimeEvidence {
+  const query = useQuery({
+    queryKey: queryKeys.cloudAvailability(),
+    queryFn: () => browserApi.cloudAvailability(),
+    enabled,
+    ...(watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
+  });
+  return enabled && isConfirmedQuerySuccess(query) && query.data
+    ? { kind: "ready", value: query.data }
+    : { kind: "unconfirmed" };
+}
+
 /*
  * These two endpoints answer 204 for an Agent that has none, which the API layer resolves as
  * `undefined`. A query may not resolve `undefined` — it is how the cache says "nothing read yet" —
@@ -54,6 +68,52 @@ export const readImBinding = (agentId: string): Promise<ImBindingSummary | null>
 
 export const readImBindingHandoff = (agentId: string): Promise<ImBindingHandoffStatus | null> =>
   browserApi.imBindingHandoff(agentId).then((handoff) => handoff ?? null);
+
+/**
+ * How often a handoff still being verified is re-read, and for how long that cadence is kept.
+ *
+ * The Server re-verifies delivery on demand: the read that finds the evidence expired answers "not
+ * ready, checking" and only then asks the Computer, which reports back within seconds. At the
+ * shared 30-second cadence the page would keep saying "checking" long after that, so a check in
+ * progress is re-read at the same beat Agent setup uses. The window bounds the cost of a Computer
+ * that never answers: after it the query returns to the shared cadence, still saying "checking",
+ * and leaves the verdict to the Server's own retry budget. Each read costs the Server one
+ * requirements lookup per Agent (its refresh work is coalesced), so the window is the number to
+ * revisit if the cadence or the Agent count ever grows.
+ */
+export const HANDOFF_CHECKING_REFETCH_INTERVAL_MS = 2_000;
+export const HANDOFF_CHECKING_POLL_WINDOW_MS = 90_000;
+const HANDOFF_CHECKING_POLL_BUDGET = HANDOFF_CHECKING_POLL_WINDOW_MS / HANDOFF_CHECKING_REFETCH_INTERVAL_MS;
+
+/**
+ * The window is spent in checking answers, not in wall-clock time. A hidden tab neither polls nor
+ * spends it, so a viewer who comes back minutes later -- the very case the fast cadence exists for
+ * -- still has whatever budget the check had left. Keyed by the query itself, so the budget belongs
+ * to that cache entry and goes with it.
+ */
+const handoffCheckingAnswers = new WeakMap<object, { answers: number; dataUpdatedAt: number }>();
+
+/** The refetch interval for one handoff query, chosen from its latest answer. */
+export function handoffRefetchInterval(query: {
+  state: { data: ImBindingHandoffStatus | null | undefined; dataUpdatedAt: number };
+}): number {
+  if (!isHandoffChecking(query.state.data)) {
+    handoffCheckingAnswers.delete(query);
+    return LIVE_REFETCH_INTERVAL_MS;
+  }
+  const budget = handoffCheckingAnswers.get(query) ?? { answers: 0, dataUpdatedAt: Number.NaN };
+  // The interval is recomputed on every render and state change; only a new answer spends budget.
+  if (query.state.dataUpdatedAt !== budget.dataUpdatedAt) {
+    budget.answers += 1;
+    budget.dataUpdatedAt = query.state.dataUpdatedAt;
+  }
+  handoffCheckingAnswers.set(query, budget);
+  return budget.answers <= HANDOFF_CHECKING_POLL_BUDGET
+    ? HANDOFF_CHECKING_REFETCH_INTERVAL_MS
+    : LIVE_REFETCH_INTERVAL_MS;
+}
+
+const handoffQueryOptions = { ...liveResourceQueryOptions, refetchInterval: handoffRefetchInterval };
 
 /** The Account's Computers. One cache entry, so every surface that needs them shares one read. */
 export function useComputersQuery(
@@ -109,7 +169,7 @@ export function useImBindingHandoffQuery(agentId: string, watched = true) {
   return useQuery({
     queryKey: queryKeys.agents.imBindingHandoff(agentId),
     queryFn: () => readImBindingHandoff(agentId),
-    ...(watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
+    ...(watched ? handoffQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
   });
 }
 
@@ -126,6 +186,15 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
   const computersQuery = useComputersQuery(true);
   const agents = agentsQuery.data?.agents ?? [];
   const evidenceOffered = isConfirmedQuerySuccess(computersQuery);
+  const cloudRuntime = useCloudRuntimeEvidence(
+    evidenceOffered &&
+      agents.some((agent) =>
+        computersQuery.data?.computers.some(
+          (computer) => computer.computerId === agent.computer?.computerId && computer.kind === "cloud",
+        ),
+      ),
+    true,
+  );
   const bindings = useQueries({
     queries: agents.map((agent) => ({
       queryKey: queryKeys.agents.imBinding(agent.id),
@@ -139,7 +208,7 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
       queryKey: queryKeys.agents.imBindingHandoff(agent.id),
       queryFn: () => readImBindingHandoff(agent.id),
       enabled: evidenceOffered,
-      ...liveResourceQueryOptions,
+      ...handoffQueryOptions,
     })),
   });
 
@@ -172,6 +241,7 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
           handoffConfirmed ? (handoff?.data ?? undefined) : undefined,
           bindingConfirmed,
           handoffConfirmed,
+          cloudRuntime,
         ),
         evidenceConfirmed: true,
       };
@@ -229,6 +299,14 @@ export function useAgentDetailView(
   const computersQuery = useComputersQuery(watched);
   const bindingQuery = useImBindingQuery(agentId, watched);
   const handoffQuery = useImBindingHandoffQuery(agentId, watched);
+  const projectedAgent = listedUsable ? listed : agentQuery.data;
+  const cloudRuntime = useCloudRuntimeEvidence(
+    isConfirmedQuerySuccess(computersQuery) &&
+      computersQuery.data?.computers.some(
+        (computer) => computer.computerId === projectedAgent?.computer?.computerId && computer.kind === "cloud",
+      ) === true,
+    watched,
+  );
   const listError = usePersistedSettledError(queryKeys.agents.list(accountId ?? ""), listQuery);
   const detailError = usePersistedSettledError(detailKey, agentQuery);
 
@@ -248,6 +326,7 @@ export function useAgentDetailView(
     bindingConfirmed,
     computers: computersConfirmed ? computersQuery.data?.computers : undefined,
     computersConfirmed,
+    cloudRuntime,
     detailError,
     detailRefusal,
     detailSuccess,
@@ -305,19 +384,23 @@ function assembleAgentDetailView(
   binding: ImBindingSummary | undefined,
   handoffConfirmed: boolean,
   handoff: ImBindingHandoffStatus | undefined,
+  cloudRuntime: AgentCloudRuntimeEvidence,
 ): AgentDetailView {
+  const computer = computersConfirmed
+    ? computers?.find((entry) => entry.computerId === agent.computer?.computerId)
+    : undefined;
   return {
     ...agent,
+    ...(computer?.kind === undefined ? {} : { computerKind: computer.kind }),
     messaging: bindingConfirmed ? { kind: "ready", value: binding } : { kind: "unconfirmed" },
     availability: projectAgentAvailability(
       agent,
-      computersConfirmed
-        ? computers?.find((computer) => computer.computerId === agent.computer?.computerId)
-        : undefined,
+      computer,
       binding,
       handoff,
       bindingConfirmed,
       handoffConfirmed,
+      cloudRuntime,
     ),
   };
 }
@@ -329,6 +412,7 @@ function presentAgentDetailView({
   bindingConfirmed,
   computers,
   computersConfirmed,
+  cloudRuntime,
   detailError,
   detailRefusal,
   detailSuccess,
@@ -348,6 +432,7 @@ function presentAgentDetailView({
   bindingConfirmed: boolean;
   computers?: readonly AccountComputerSummary[];
   computersConfirmed: boolean;
+  cloudRuntime: AgentCloudRuntimeEvidence;
   detailError: Error | null;
   detailRefusal?: TerminalResourceObservation;
   detailSuccess?: ResourceObservation;
@@ -383,6 +468,7 @@ function presentAgentDetailView({
         binding,
         handoffConfirmed,
         handoff,
+        cloudRuntime,
       ),
       error: displayError,
       isError: displayError !== null,

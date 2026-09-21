@@ -1,13 +1,30 @@
 import {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
+  ACCOUNT_SANDBOX_RUNNER_ACCEPTANCE_TEMPLATE,
+  ACCOUNT_SANDBOX_RUNNER_START_TEMPLATE,
+  ACCOUNT_SANDBOX_RUNNER_STOP_TEMPLATE,
+  ACCOUNT_SANDBOX_RUNNER_TEMPLATE,
+  ACCOUNT_SANDBOX_TEMPLATE,
+  AccountCloudComputerEnsureResponseSchema,
   AccountComputerConnectCodeIssueRequestSchema,
+  AccountSandboxEnsureRequestSchema,
+  AccountSandboxResponseSchema,
+  AccountSandboxRunnerAcceptanceRequestSchema,
+  AccountSandboxRunnerAcceptanceResponseSchema,
+  AccountSandboxRunnerStatusResponseSchema,
+  AccountSandboxRunnerStopRequestSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
   AgentCreationIntentIdSchema,
   AgentCreationIntentResultSchema,
   type ChannelName,
+  CLOUD_IDENTITY_CAPABILITY_HEADER,
+  type CloudAvailability,
+  CloudAvailabilitySchema,
+  type CloudModelOptions,
+  CloudModelOptionsSchema,
   CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
   ComputerConnectCodeStatusSchema,
@@ -15,10 +32,13 @@ import {
   HTTP_PATHS,
   type InternalNavigationVisibility,
   InternalNavigationVisibilitySchema,
+  type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
   ListAgentsResponseSchema,
   ListTasksResponseSchema,
-  PROVIDER_READINESS_V1_HEADER,
+  negotiateProviderReadinessFromHeaders,
+  type RuntimeProviderReadinessNegotiation,
+  requestsCloudIdentityV1,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
   TaskCancelResponseSchema,
@@ -36,6 +56,9 @@ import {
   type ComputerService,
   type MachineAuthService,
 } from "../services/computers/index.js";
+import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-config/index.js";
+import type { SandboxService } from "../services/sandboxes/index.js";
+import type { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
 import {
@@ -61,11 +84,22 @@ const TaskDetailQuerySchema = z
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 const ConnectCodeParamsSchema = z.object({ connectCodeId: z.string().uuid() }).strict();
 const CreationIntentParamsSchema = z.object({ creationIntentId: AgentCreationIntentIdSchema }).strict();
+const SandboxParamsSchema = z.object({ sandboxId: z.string().uuid() }).strict();
+const EmptyBodySchema = z.object({}).strict();
 
 export interface AccountRoutesOptions {
+  cloudAvailability?: () => CloudAvailability;
+  /**
+   * The Router-sourced Cloud model choices. Absent means the deployment's model path is disabled,
+   * which the route reports as a fixed unavailable answer; a provider snapshot that is not
+   * available (the Router list could not be confirmed) is a sanitized transient 503.
+   */
+  cloudModelOptions?: () => Promise<CloudModelOptions>;
   agentService?: AgentService;
   computerConnectCode?: { downloadBaseUrl: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
+  sandboxService?: SandboxService;
+  sandboxRunnerService?: SandboxRunnerService;
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
   /**
@@ -110,6 +144,37 @@ export function registerAccountRoutes(
   options: AccountRoutesOptions,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
+
+  app.get(HTTP_PATHS.accountCloudComputer, { preHandler }, async (_request, reply) => {
+    const availability = options.cloudAvailability?.() ?? {
+      enabled: false,
+      available: false,
+      reason: "disabled",
+      observedAt: new Date().toISOString(),
+    };
+    return reply.header("Cache-Control", "no-store").code(200).send(CloudAvailabilitySchema.parse(availability));
+  });
+
+  app.get(HTTP_PATHS.accountCloudModels, { preHandler }, async (_request, reply) => {
+    const provider = options.cloudModelOptions;
+    if (!provider) {
+      // The model path is disabled on this deployment: a stable unavailable answer, not an error.
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(CloudModelOptionsSchema.parse({ available: false, defaultModel: null, models: [] }));
+    }
+    const snapshot = await provider();
+    if (!snapshot.available) {
+      throw new AuthServiceError(
+        "CLOUD_MODEL_UNAVAILABLE",
+        "transient",
+        "The Cloud model list could not be confirmed; retry shortly",
+        503,
+      );
+    }
+    return reply.header("Cache-Control", "no-store").code(200).send(CloudModelOptionsSchema.parse(snapshot));
+  });
 
   if (options.agentService) {
     const agentService = options.agentService;
@@ -176,17 +241,114 @@ export function registerAccountRoutes(
 
     app.get(HTTP_PATHS.accountComputers, { preHandler }, async (request, reply) => {
       const account = accountId(request);
+      const readiness = negotiateProviderReadinessFromHeaders(request.headers, SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS);
+      const includeCloudIdentities = requestsCloudIdentityV1(request.headers[CLOUD_IDENTITY_CAPABILITY_HEADER]);
       const listed = await computerService.listAccountComputers(
         account,
-        request.headers[PROVIDER_READINESS_V1_HEADER] === "1",
+        readiness !== undefined,
+        includeCloudIdentities,
       );
       return reply
         .code(200)
         .send(
           ListAccountComputersResponseSchema.parse(
-            projectListAccountComputersResponseForHttp(listed, requestIncludesProviderCliReasonV2(request)),
+            projectAccountComputerProviderReadinessForHttp(
+              projectListAccountComputersResponseForHttp(listed, requestIncludesProviderCliReasonV2(request)),
+              readiness,
+            ),
           ),
         );
+    });
+
+    app.put(HTTP_PATHS.accountCloudComputer, { preHandler }, async (request, reply) => {
+      parseRequest(EmptyBodySchema, request.body ?? {});
+      const ensured = await computerService.ensureCloudComputerForAccount(accountId(request));
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(AccountCloudComputerEnsureResponseSchema.parse(ensured));
+    });
+  }
+
+  if (options.sandboxService) {
+    const sandboxService = options.sandboxService;
+
+    app.post(HTTP_PATHS.accountSandboxes, { preHandler }, async (request, reply) => {
+      const input = parseRequest(AccountSandboxEnsureRequestSchema, request.body);
+      const ensured = await sandboxService.ensureForAccount(accountId(request), input);
+      return reply.header("Cache-Control", "no-store").code(200).send(AccountSandboxResponseSchema.parse(ensured));
+    });
+
+    app.get(ACCOUNT_SANDBOX_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      const sandbox = await sandboxService.getForAccount(accountId(request), sandboxId);
+      return reply.header("Cache-Control", "no-store").code(200).send(AccountSandboxResponseSchema.parse(sandbox));
+    });
+  }
+
+  if (options.sandboxRunnerService) {
+    const sandboxRunnerService = options.sandboxRunnerService;
+
+    app.post(ACCOUNT_SANDBOX_RUNNER_START_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      parseRequest(EmptyBodySchema, request.body ?? {});
+      const status = await sandboxRunnerService.startForAccount(accountId(request), sandboxId);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(AccountSandboxRunnerStatusResponseSchema.parse(status));
+    });
+
+    app.get(ACCOUNT_SANDBOX_RUNNER_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      const status = await sandboxRunnerService.statusForAccount(accountId(request), sandboxId);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(AccountSandboxRunnerStatusResponseSchema.parse(status));
+    });
+
+    app.post(ACCOUNT_SANDBOX_RUNNER_STOP_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      const input = parseRequest(AccountSandboxRunnerStopRequestSchema, request.body ?? {});
+      const status = await sandboxRunnerService.stopForAccount(accountId(request), sandboxId, input);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(AccountSandboxRunnerStatusResponseSchema.parse(status));
+    });
+
+    /*
+     * Explicit bounded acceptance. The caller's disconnect cancels the run on the Runner; the
+     * response is the correlated structured report only — request piConfig is never echoed,
+     * logged, or persisted.
+     */
+    app.post(ACCOUNT_SANDBOX_RUNNER_ACCEPTANCE_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      const input = parseRequest(AccountSandboxRunnerAcceptanceRequestSchema, request.body);
+      /*
+       * Cancellation is driven by the RESPONSE closing before it finished, not by the request.
+       * Node fires IncomingMessage 'close' when a normal request body completes, so hooking the
+       * request would cancel every successful POST; the response only closes early on a real
+       * client disconnect. Listeners are always removed, and a finished response never aborts.
+       */
+      const abort = new AbortController();
+      const response = reply.raw;
+      const onResponseClose = () => {
+        if (!response.writableFinished) abort.abort();
+      };
+      response.on("close", onResponseClose);
+      try {
+        const result = await sandboxRunnerService.runAcceptanceForAccount(accountId(request), sandboxId, input, {
+          signal: abort.signal,
+        });
+        return reply
+          .header("Cache-Control", "no-store")
+          .code(200)
+          .send(AccountSandboxRunnerAcceptanceResponseSchema.parse(result));
+      } finally {
+        response.off("close", onResponseClose);
+      }
     });
   }
 
@@ -294,4 +456,21 @@ export function registerAccountRoutes(
 
 function resetNotOffered(): AuthServiceError {
   return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
+}
+
+function projectAccountComputerProviderReadinessForHttp(
+  response: ListAccountComputersResponse,
+  readiness: RuntimeProviderReadinessNegotiation | undefined,
+): ListAccountComputersResponse {
+  const providers = new Set(readiness?.providers);
+  return {
+    computers: response.computers.map((computer) => {
+      const { providerReadiness, ...rest } = computer;
+      if (!readiness || providerReadiness === undefined) return rest;
+      return {
+        ...rest,
+        providerReadiness: providerReadiness.filter((observation) => providers.has(observation.provider)),
+      };
+    }),
+  };
 }

@@ -19,8 +19,11 @@ import { AgentNameSchema as BrowserAgentNameSchema } from "../browser.js";
 import {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_AGENTS_PATH,
+  ACCOUNT_CLOUD_COMPUTER_PATH,
   ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   ACCOUNT_COMPUTERS_PATH,
+  ACCOUNT_SANDBOX_TEMPLATE,
+  ACCOUNT_SANDBOXES_PATH,
   ACCOUNT_SETUP_COMPLETE_PATH,
   ACCOUNT_TASKS_PATH,
   AGENT_BY_ID_TEMPLATE,
@@ -37,6 +40,7 @@ import {
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
   accountAgentCreationIntentPath,
+  accountSandboxPath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
@@ -79,6 +83,7 @@ const agent = {
   status: "active",
   revision: 1,
   runtimeConfig: {
+    contextTreeRepository: null,
     revision: 1,
     model: null,
     reasoningEffort: null,
@@ -434,8 +439,14 @@ describe("Agent contracts", () => {
 
   it("builds every Account, Agent, IM, and runtime path", () => {
     expect(HTTP_PATHS.accountAgents).toBe(ACCOUNT_AGENTS_PATH);
+    expect(HTTP_PATHS.accountCloudComputer).toBe(ACCOUNT_CLOUD_COMPUTER_PATH);
+    expect(ACCOUNT_CLOUD_COMPUTER_PATH).toBe("/api/v1/computers/cloud");
     expect(HTTP_PATHS.accountComputers).toBe(ACCOUNT_COMPUTERS_PATH);
     expect(HTTP_PATHS.accountComputerConnectCodes).toBe(ACCOUNT_COMPUTER_CONNECT_CODES_PATH);
+    expect(HTTP_PATHS.accountSandboxes).toBe(ACCOUNT_SANDBOXES_PATH);
+    expect(ACCOUNT_SANDBOXES_PATH).toBe("/api/v1/sandboxes");
+    expect(ACCOUNT_SANDBOX_TEMPLATE).toBe("/api/v1/sandboxes/:sandboxId");
+    expect(accountSandboxPath("sandbox/value")).toBe("/api/v1/sandboxes/sandbox%2Fvalue");
     expect(HTTP_PATHS.accountSetupComplete).toBe(ACCOUNT_SETUP_COMPLETE_PATH);
     expect(HTTP_PATHS.accountTasks).toBe(ACCOUNT_TASKS_PATH);
     expect(HTTP_PATHS.agentById).toBe(AGENT_BY_ID_TEMPLATE);

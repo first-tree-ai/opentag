@@ -144,6 +144,26 @@ describe("SessionCollaborationService", () => {
     });
     expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_COLLABORATION_SOURCE_UNAVAILABLE");
   });
+
+  it("maps Router model override admission to the model_unavailable outcomes", async () => {
+    const rejected = serviceFixture();
+    rejected.sessions.createInternalSessionWithMessage.mockRejectedValue(
+      Object.assign(new Error("not offered"), { code: "SESSION_MODEL_UNAVAILABLE" }),
+    );
+    await expect(rejected.service.create(createRequest(rejected), rejected.source)).resolves.toMatchObject({
+      status: "rejected",
+      code: "model_unavailable",
+    });
+
+    const unreachable = serviceFixture();
+    unreachable.sessions.createInternalSessionWithMessage.mockRejectedValue(
+      Object.assign(new Error("catalog down"), { code: "SESSION_MODEL_CATALOG_UNAVAILABLE" }),
+    );
+    await expect(unreachable.service.create(createRequest(unreachable), unreachable.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "model_unavailable",
+    });
+  });
 });
 
 function serviceFixture(
@@ -270,6 +290,7 @@ function createRequest(fixture: ReturnType<typeof serviceFixture>): SessionCliCr
 
 function snapshot(agentId: string) {
   return {
+    contextTreeRepository: null,
     revision: { agent: { sequence: 1, id: "a".repeat(64) }, session: { sequence: 1, id: "b".repeat(64) } },
     agentId,
     provider: "codex" as const,

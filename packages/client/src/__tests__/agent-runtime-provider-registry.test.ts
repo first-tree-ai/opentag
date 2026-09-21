@@ -259,6 +259,7 @@ function registration(
 
 function snapshot(): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

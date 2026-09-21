@@ -14,6 +14,11 @@ describe("getRuntimeConfigurationOptions", () => {
       ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
       ["low", "medium", "high", "xhigh", "max"],
     ],
+    [
+      "pi",
+      ["claude-opus-4-7", "claude-sonnet-4", "gpt-5.6-sol"],
+      ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    ],
   ] as const)("returns the complete %s options", (provider, modelSuggestions, reasoningEffortAllowedValues) => {
     expect(getRuntimeConfigurationOptions(provider)).toEqual({ modelSuggestions, reasoningEffortAllowedValues });
   });

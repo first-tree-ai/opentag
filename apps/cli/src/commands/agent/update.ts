@@ -7,19 +7,16 @@ export function registerAgentUpdateCommand(agent: Command): void {
   agent
     .command("update <agent-id>")
     .option("--display-name <display-name>", "new human-facing Agent name")
+    .addOption(new Option("--model <model>", "exact model ID for the selected runtime").conflicts("clearModel"))
+    .addOption(new Option("--clear-model", "let the runtime manage model selection").conflicts("model"))
     .addOption(
-      new Option("--model <model>", "exact Codex model ID; effective snapshots support Codex only").conflicts(
-        "clearModel",
+      new Option("--reasoning-effort <effort>", "reasoning effort for the selected runtime").conflicts(
+        "clearReasoningEffort",
       ),
     )
-    .addOption(new Option("--clear-model", "let Codex manage model selection").conflicts("model"))
     .addOption(
-      new Option(
-        "--reasoning-effort <effort>",
-        "Codex reasoning effort; effective snapshots support Codex only",
-      ).conflicts("clearReasoningEffort"),
+      new Option("--clear-reasoning-effort", "let the runtime manage reasoning effort").conflicts("reasoningEffort"),
     )
-    .addOption(new Option("--clear-reasoning-effort", "let Codex manage reasoning effort").conflicts("reasoningEffort"))
     .addOption(new Option("--instructions <text>", "Agent runtime instructions").conflicts("instructionsFile"))
     .addOption(
       new Option("--instructions-file <path>", "read Agent instructions from a UTF-8 file").conflicts("instructions"),

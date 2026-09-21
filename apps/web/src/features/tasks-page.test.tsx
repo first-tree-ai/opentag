@@ -102,7 +102,125 @@ function RefreshTasksButton() {
 
 afterEach(() => vi.restoreAllMocks());
 
+function timelineTurn(index: number): TaskDetail["turns"][number] {
+  const base = detail.turns[0];
+  if (!base) throw new Error("Expected the Task fixture to include a Turn");
+  return {
+    ...base,
+    deliveryId: `delivery-${index}`,
+    message: {
+      ...base.message,
+      id: `message-${index}`,
+      fallbackText: `Request ${index}`,
+      // The first pair shares a timestamp: preserve the API's delivery-id tie order as well.
+      occurredAt: `2026-08-27T0${Math.ceil(index / 2)}:00:00.000Z`,
+    },
+    report: { ...base.report, turnId: `turn-${index}`, finalText: `Response ${index}` },
+  };
+}
+
+function displayedExchanges() {
+  return [...document.querySelectorAll('[data-ui="task-exchange"]')].map((exchange) => [
+    exchange.querySelector('[data-ui="task-message-request"] p')?.textContent,
+    exchange.querySelector('[data-ui="task-message-agent"] [data-ui="task-execution-summary"] p')?.textContent,
+  ]);
+}
+
 describe("Tasks view", () => {
+  it.each([
+    ["feishu", "dm"],
+    ["feishu", "channel"],
+    ["feishu", "group_dm"],
+    ["slack", "dm"],
+    ["slack", "channel"],
+    ["slack", "group_dm"],
+  ] as const)("reads %s %s exchanges oldest to newest", async (provider, conversationKind) => {
+    const page = {
+      ...detail,
+      task: { ...task, source: { ...task.source, provider, conversationKind } },
+      turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)],
+    };
+    vi.spyOn(browserApi, "task").mockResolvedValue(page);
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />);
+    await screen.findByText("Request 3");
+
+    expect(displayedExchanges()).toEqual([
+      ["Request 1", "Response 1"],
+      ["Request 2", "Response 2"],
+      ["Request 3", "Response 3"],
+    ]);
+    expect(page.turns.map((turn) => turn.deliveryId)).toEqual(["delivery-3", "delivery-2", "delivery-1"]);
+    for (const exchange of document.querySelectorAll('[data-ui="task-exchange"]')) {
+      expect(exchange.querySelector('[data-ui="task-message-request"] strong')?.textContent).toBe("Mia Zhang");
+      expect(exchange.querySelector('[data-ui="task-message-agent"] strong')?.textContent).toBe("Atlas");
+      expect([...exchange.children].map((element) => element.getAttribute("data-ui"))).toEqual([
+        "task-message-request",
+        "task-message-agent",
+      ]);
+    }
+  });
+
+  it.each(["dm", "channel", "group_dm"] as const)(
+    "prepends complete older pages and keeps a failed page retryable above the %s conversation",
+    async (conversationKind) => {
+      const page = { ...detail, task: { ...task, source: { ...task.source, conversationKind } } };
+      const request = vi
+        .spyOn(browserApi, "task")
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(4), timelineTurn(3)], nextCursor: "older" })
+        .mockRejectedValueOnce(new Error("Temporary history failure"))
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(2), timelineTurn(1)], nextCursor: "oldest" })
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(0)], nextCursor: null });
+      await renderInRouter(<TaskDetailPage taskId={sessionId} />);
+      const earlier = await screen.findByRole("button", { name: "Load earlier activity" });
+      expect(
+        earlier.compareDocumentPosition(screen.getByText("Request 3")) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      fireEvent.click(earlier);
+      const error = await screen.findByRole("alert");
+      expect(error.textContent).toBe("Temporary history failure");
+      expect(
+        error.compareDocumentPosition(screen.getByText("Request 3")) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(displayedExchanges()).toEqual([
+        ["Request 3", "Response 3"],
+        ["Request 4", "Response 4"],
+      ]);
+
+      fireEvent.click(earlier);
+      await screen.findByText("Request 1");
+      expect(request).toHaveBeenLastCalledWith(sessionId, "older");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(displayedExchanges()).toEqual([1, 2, 3, 4].map((index) => [`Request ${index}`, `Response ${index}`]));
+
+      fireEvent.click(screen.getByRole("button", { name: "Load earlier activity" }));
+      await screen.findByText("Request 0");
+      expect(request).toHaveBeenLastCalledWith(sessionId, "oldest");
+      expect(displayedExchanges()).toEqual([0, 1, 2, 3, 4].map((index) => [`Request ${index}`, `Response ${index}`]));
+      expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
+    },
+  );
+
+  it.each(["dm", "channel", "group_dm"] as const)(
+    "places newly refreshed %s exchanges at the bottom",
+    async (conversationKind) => {
+      const page = { ...detail, task: { ...task, source: { ...task.source, conversationKind } } };
+      vi.spyOn(browserApi, "task")
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(2), timelineTurn(1)] })
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)] });
+      await renderInRouter(
+        <>
+          <TaskDetailPage taskId={sessionId} />
+          <RefreshTaskButton />
+        </>,
+      );
+      await screen.findByText("Request 2");
+      fireEvent.click(screen.getByRole("button", { name: "Refresh Task" }));
+      await screen.findByText("Request 3");
+      expect(displayedExchanges()).toEqual([1, 2, 3].map((index) => [`Request ${index}`, `Response ${index}`]));
+    },
+  );
+
   it("loads stored Tasks and filters them locally", async () => {
     const second = {
       ...task,

@@ -13,11 +13,10 @@ import {
   ServerHealthResponseError,
   ServerHealthTimeoutError,
 } from "@opentag/client";
-import type { ServerHealth } from "@opentag/shared";
+import { AGENT_RUNTIME_PROVIDERS, type AgentRuntimeProvider, type ServerHealth } from "@opentag/shared";
 import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { channelConfig } from "../channel/config.js";
 import { wasChannelDefaultHomeApplied } from "../channel/home-source.js";
-import { type ContextTreeState, readContextTreeState } from "../context-tree/state.js";
 import { createDaemonServiceManager } from "../daemon/service/index.js";
 import { canonicalizeServiceHome } from "../daemon/service/shared.js";
 import type { DaemonServiceInfo } from "../daemon/service/types.js";
@@ -30,8 +29,7 @@ export type DoctorCheckScope =
   | "daemon-service"
   | "server"
   | "agent-runtime"
-  | "provider-cli"
-  | "context-tree";
+  | "provider-cli";
 
 export interface DoctorCheck {
   code: string;
@@ -86,7 +84,6 @@ export type IntegrationCliDetector = (options: {
   environment: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
 }) => Promise<IntegrationCliInstallation[]>;
-export type ContextTreeInspector = (home: string) => Promise<ContextTreeState>;
 
 export interface DoctorOptions {
   env?: NodeJS.ProcessEnv;
@@ -100,7 +97,6 @@ export interface DoctorOptions {
   inspectDaemonService?: DaemonServiceInspector;
   runtimeDetector?: RuntimeDetector;
   integrationCliDetector?: IntegrationCliDetector;
-  inspectContextTreeState?: ContextTreeInspector;
 }
 
 export const DOCTOR_NOT_EVALUATED = [
@@ -148,14 +144,11 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
         platform: request.platform,
       }));
   const healthChecker = options.healthChecker ?? checkServerHealth;
-  const contextTreeInspector =
-    options.inspectContextTreeState ?? ((home: string) => readContextTreeState({ home, env: environment }));
 
   const localPromise = settle(localInspector(target.home));
   const daemonPromise = settle(daemonInspector(target.home));
   const runtimePromise = settle(runtimeDetector({ environment, platform }));
   const providerCliPromise = settle(integrationCliDetector({ environment, platform }));
-  const contextTreePromise = settle(contextTreeInspector(target.home));
   const healthPromise = localPromise.then(async (localResult) => {
     if (localResult.status === "rejected") return { status: "skipped" as const };
     const serverUrl = localResult.value.binding.serverUrl;
@@ -163,15 +156,13 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
     return settle(healthChecker(serverUrl));
   });
 
-  const [localResult, daemonResult, healthResult, runtimeResult, providerCliResult, contextTreeResult] =
-    await Promise.all([
-      localPromise,
-      daemonPromise,
-      healthPromise,
-      runtimePromise,
-      providerCliPromise,
-      contextTreePromise,
-    ]);
+  const [localResult, daemonResult, healthResult, runtimeResult, providerCliResult] = await Promise.all([
+    localPromise,
+    daemonPromise,
+    healthPromise,
+    runtimePromise,
+    providerCliPromise,
+  ]);
   const checks: DoctorCheck[] = [
     targetCheck(target),
     ...localChecks(localResult),
@@ -179,7 +170,6 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
     serverCheck(healthResult, localResult),
     ...runtimeChecks(runtimeResult),
     ...providerCliChecks(providerCliResult),
-    ...contextTreeChecks(contextTreeResult),
   ];
   const exitCode: 0 | 1 = checks.some(
     (check) => check.blocking && (check.status === "fail" || check.status === "unknown"),
@@ -250,7 +240,6 @@ export function renderDoctorReport(report: DoctorReport): string {
     ["Server", "server"],
     ["Agent Runtime CLIs", "agent-runtime"],
     ["IM Provider CLIs", "provider-cli"],
-    ["Context Tree", "context-tree"],
   ] as const) {
     lines.push("", heading);
     for (const check of report.checks.filter((candidate) => candidate.scope === scope)) {
@@ -419,6 +408,12 @@ function serverCheck(
   };
 }
 
+const RUNTIME_CLI_LABELS = {
+  codex: "Codex CLI",
+  "claude-code": "Claude Code CLI",
+  pi: "Pi CLI",
+} as const satisfies Record<AgentRuntimeProvider, string>;
+
 function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[]>): DoctorCheck[] {
   if (result.status === "rejected") {
     return [
@@ -431,15 +426,15 @@ function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[
         detail: safeErrorDetail(result.reason, "Runtime installation could not be determined"),
         observedFrom: "current CLI process environment",
       },
-      runtimeProviderUnknown("codex", "Codex CLI"),
-      runtimeProviderUnknown("claude-code", "Claude Code CLI"),
+      ...AGENT_RUNTIME_PROVIDERS.map((provider) => runtimeProviderUnknown(provider, RUNTIME_CLI_LABELS[provider])),
     ];
   }
   const byProvider = new Map(result.value.map((entry) => [entry.provider, entry]));
-  const codex = byProvider.get("codex") ?? unknownRuntime("codex", "Codex CLI");
-  const claude = byProvider.get("claude-code") ?? unknownRuntime("claude-code", "Claude Code CLI");
-  const installed = [codex, claude].filter((entry) => entry.status === "installed");
-  const hasUnknown = [codex, claude].some((entry) => entry.status === "unknown");
+  const runtimes = AGENT_RUNTIME_PROVIDERS.map(
+    (provider) => byProvider.get(provider) ?? unknownRuntime(provider, RUNTIME_CLI_LABELS[provider]),
+  );
+  const installed = runtimes.filter((entry) => entry.status === "installed");
+  const hasUnknown = runtimes.some((entry) => entry.status === "unknown");
   return [
     {
       code: "runtime.any-installed",
@@ -454,10 +449,9 @@ function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[
             ? "no supported Runtime was found and at least one result is unknown"
             : "no supported Runtime is installed",
       observedFrom: "current CLI process environment",
-      ...(installed.length > 0 ? {} : { remediation: "Install Codex CLI or Claude Code CLI" }),
+      ...(installed.length > 0 ? {} : { remediation: "Install Codex CLI, Claude Code CLI, or Pi CLI" }),
     },
-    cliInstallationCheck(`runtime.${codex.provider}.installation`, "agent-runtime", codex),
-    cliInstallationCheck(`runtime.${claude.provider}.installation`, "agent-runtime", claude),
+    ...runtimes.map((entry) => cliInstallationCheck(`runtime.${entry.provider}.installation`, "agent-runtime", entry)),
   ];
 }
 
@@ -556,70 +550,6 @@ function cliInstallationCheck(
   };
 }
 
-/**
- * Context Tree is optional durable memory, so every check here is non-blocking: a Session must
- * still start when the tree is absent, unconfigured, or broken.
- */
-function contextTreeChecks(result: PromiseSettledResult<ContextTreeState>): DoctorCheck[] {
-  const base = { scope: "context-tree", blocking: false } as const;
-  if (result.status === "rejected") {
-    return [
-      {
-        ...base,
-        code: "context-tree.target",
-        status: "unknown",
-        label: "Computer target",
-        detail: safeErrorDetail(result.reason, "Context Tree state could not be determined"),
-      },
-    ];
-  }
-  const state = result.value;
-  if (!state.target) {
-    return [
-      {
-        ...base,
-        code: "context-tree.target",
-        status: "info",
-        label: "Computer target",
-        detail: state.detail ?? "no Context Tree is configured, so Agent Sessions run without durable memory",
-        path: state.configPath,
-        remediation: `Run ${channelConfig.binName} context-tree connect <name-or-repository>`,
-      },
-    ];
-  }
-  return [
-    {
-      ...base,
-      code: "context-tree.target",
-      status: "pass",
-      label: "Computer target",
-      detail: state.target,
-      path: state.configPath,
-    },
-    contextTreeStateCheck(state),
-  ];
-}
-
-function contextTreeStateCheck(state: ContextTreeState): DoctorCheck {
-  const base = { code: "context-tree.tree", scope: "context-tree", blocking: false, label: "Tree" } as const;
-  if (state.tree === "valid") return { ...base, status: "pass", detail: "reachable and valid" };
-  if (state.tree === "not-cloned") {
-    // A GitHub target is cloned by the first Agent Session, so this is expected, not a fault.
-    return {
-      ...base,
-      status: "info",
-      detail: "not cloned on this Computer yet; the first Agent Session clones it",
-      remediation: "Ensure this Computer can authenticate to GitHub before the first Session",
-    };
-  }
-  return {
-    ...base,
-    status: state.tree === "invalid" ? "fail" : "unknown",
-    detail: state.detail ?? "the configured Context Tree is not usable",
-    remediation: `Repair the tree, or point this Computer at another with ${channelConfig.binName} context-tree connect`,
-  };
-}
-
 function providerFromCheckCode(code: string): "feishu" | "slack" {
   switch (code) {
     case "provider-cli.feishu.installation":
@@ -631,7 +561,7 @@ function providerFromCheckCode(code: string): "feishu" | "slack" {
   }
 }
 
-function runtimeProviderUnknown(provider: "codex" | "claude-code", label: string, detail?: string): DoctorCheck {
+function runtimeProviderUnknown(provider: AgentRuntimeProvider, label: string, detail?: string): DoctorCheck {
   return cliInstallationCheck(`runtime.${provider}.installation`, "agent-runtime", {
     detail,
     displayName: label,
@@ -639,7 +569,7 @@ function runtimeProviderUnknown(provider: "codex" | "claude-code", label: string
   });
 }
 
-function unknownRuntime(provider: "codex" | "claude-code", displayName: string): AgentRuntimeCliInstallation {
+function unknownRuntime(provider: AgentRuntimeProvider, displayName: string): AgentRuntimeCliInstallation {
   return { provider, displayName, status: "unknown", detail: "Detector did not return a result" };
 }
 

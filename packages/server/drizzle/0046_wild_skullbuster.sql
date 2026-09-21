@@ -1,0 +1,3 @@
+ALTER TABLE "sandboxes" ADD COLUMN "idle_reclaim_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "sandboxes_idle_reclaim_at_idx" ON "sandboxes" USING btree ("idle_reclaim_at") WHERE "sandboxes"."idle_reclaim_at" is not null;--> statement-breakpoint
+ALTER TABLE "sandboxes" ADD CONSTRAINT "sandboxes_idle_reclaim_requires_allocation" CHECK ("sandboxes"."idle_reclaim_at" is null or ("sandboxes"."current_resource_name" is not null and "sandboxes"."current_resource_uid" is not null));

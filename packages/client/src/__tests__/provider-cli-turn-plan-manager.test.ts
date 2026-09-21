@@ -2,10 +2,13 @@ import { chmod, lstat, mkdir, readFile, rm, stat, symlink, utimes, writeFile } f
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  computeFileIdentity,
+  computeTargetFingerprint,
   deriveProviderCliHomeNamespace,
   deriveProviderCliRunKey,
   deriveProviderCliSessionKey,
   MAX_PROVIDER_CLI_TURN_PLAN_BYTES,
+  type ProviderCliTurnPlan,
   ProviderCliTurnPlanError,
   ProviderCliTurnPlanManager,
   parseProviderCliTurnPlan,
@@ -38,6 +41,14 @@ async function trackedHarness() {
   const harness = await makeTurnPlanHarness();
   tempDirs.push(harness.accountHome, harness.openTagHome);
   return harness;
+}
+
+/** Copy an existing plan document verbatim into another Session directory. */
+async function seedPlanCopy(sessionDir: string, content: string): Promise<void> {
+  await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+  await chmod(dirname(sessionDir), 0o700);
+  await chmod(sessionDir, 0o700);
+  await writeFile(join(sessionDir, "plan.json"), content, { mode: 0o600 });
 }
 
 describe("ProviderCliTurnPlanManager prepare", () => {
@@ -439,6 +450,118 @@ describe("ProviderCliTurnPlanManager prepare", () => {
     expect(rejected).toHaveLength(1);
     expect(rejected[0]?.status === "rejected" && rejected[0].reason).toMatchObject({ code: "active_run_conflict" });
   });
+
+  it("publishes Slack proxy plans and reports the account layout", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"), "slack");
+    const artifactId = await writeManagedTurnSelection(layout, "slack", target, "4.7.0");
+    const configDir = await makePrivateSlackConfigDir(accountHome);
+    const environmentManifest = join(accountHome, "environment.json");
+    expect(manager.layout).toEqual(layout);
+
+    const managed = await manager.prepare({
+      provider: "slack",
+      sessionId: "s-managed-proxy",
+      runId: "run-1",
+      configDir,
+      environmentManifest,
+      slackApiHost: "https://127.0.0.1:9",
+    });
+    expect(managed.plan).toMatchObject({
+      selectionKind: "managed",
+      artifactId,
+      environmentManifest,
+      slackApiHost: "https://127.0.0.1:9",
+    });
+
+    await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+    const external = await manager.prepare({
+      provider: "slack",
+      sessionId: "s-external-proxy",
+      runId: "run-1",
+      configDir,
+      slackApiHost: "https://127.0.0.1:9",
+    });
+    expect(external.plan).toMatchObject({
+      selectionKind: "external",
+      slackApiHost: "https://127.0.0.1:9",
+    });
+  });
+
+  it("rejects non-canonical proxy, identity, and capture inputs before publishing", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const rejected = async (override: Record<string, unknown>) =>
+      await manager.prepare({ provider: "feishu", sessionId: "s-proxy", runId: "run-1", ...override });
+
+    await expect(rejected({ runId: "x".repeat(5000) })).rejects.toMatchObject({ code: "invalid_identity" });
+    await expect(rejected({ environmentManifest: "relative/manifest.json" })).rejects.toMatchObject({
+      code: "plan_invalid",
+    });
+    await expect(rejected({ environmentManifest: "{{ .. }}" })).rejects.toMatchObject({ code: "plan_invalid" });
+    await expect(rejected({ slackApiHost: "https://127.0.0.1:9" })).rejects.toMatchObject({
+      code: "plan_invalid",
+    });
+    await expect(rejected({ captureOutgoingReplies: "yes" as unknown as boolean })).rejects.toMatchObject({
+      code: "plan_invalid",
+    });
+
+    const slack = await trackedHarness();
+    const slackTarget = await installTurnTarget(join(slack.accountHome, "bin"), "slack");
+    await writeExternalTurnSelection(slack.layout, "slack", slackTarget, "4.7.0");
+    await expect(
+      slack.manager.prepare({
+        provider: "slack",
+        sessionId: "s-proxy",
+        runId: "run-1",
+        configDir: await makePrivateSlackConfigDir(slack.accountHome),
+        slackApiHost: "http://127.0.0.1:9",
+      }),
+    ).rejects.toMatchObject({ code: "plan_invalid" });
+  });
+
+  it("fails closed on a drifted managed fingerprint and on unpublished exclusivity races", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    const identity = await computeFileIdentity(target);
+    await writeProviderCliSelection(
+      layout,
+      "feishu",
+      {
+        kind: "managed",
+        artifactId: `1.0.92/test-platform/${"bb".repeat(32)}`,
+        version: "1.0.92",
+        targetPath: identity.path,
+        fingerprint: computeTargetFingerprint(identity, "1.0.92", "aa".repeat(32)),
+      },
+      undefined,
+    );
+    await expect(manager.prepare({ provider: "feishu", sessionId: "s-drift", runId: "run-1" })).rejects.toMatchObject({
+      code: "artifact_drifted",
+    });
+
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const racing = vi.spyOn(turnPlanStorage, "publishProviderCliTurnPlanExclusive").mockResolvedValueOnce("exists");
+    try {
+      await expect(manager.prepare({ provider: "feishu", sessionId: "s-race", runId: "run-1" })).rejects.toMatchObject({
+        code: "plan_invalid",
+      });
+    } finally {
+      racing.mockRestore();
+    }
+
+    const failing = vi
+      .spyOn(turnPlanStorage, "publishProviderCliTurnPlanExclusive")
+      .mockRejectedValueOnce(Object.assign(new Error("link is not permitted"), { code: "EPERM" }));
+    try {
+      await expect(manager.prepare({ provider: "feishu", sessionId: "s-link", runId: "run-1" })).rejects.toMatchObject({
+        message: "link is not permitted",
+      });
+    } finally {
+      failing.mockRestore();
+    }
+  });
 });
 
 describe("ProviderCliTurnPlanManager isolation and cleanup", () => {
@@ -665,6 +788,78 @@ describe("ProviderCliTurnPlanManager isolation and cleanup", () => {
     await expect(manager.recover()).rejects.toMatchObject({ code: "unsafe" });
     expect((await stat(outside)).isDirectory()).toBe(true);
   });
+
+  it("cleanup fails closed on absent, unmatched, unparseable, and unreadable Session plans", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    await expect(
+      manager.cleanup({ provider: "feishu", sessionId: "s-absent", runId: "run-1" }),
+    ).resolves.toBeUndefined();
+
+    const source = await manager.prepare({ provider: "feishu", sessionId: "s-source", runId: "run-source" });
+    const document = await readFile(source.planPath, "utf8");
+
+    const empty = manager.sessionDir("s-emptied");
+    await mkdir(empty, { recursive: true, mode: 0o700 });
+    await chmod(dirname(empty), 0o700);
+    await chmod(empty, 0o700);
+    await expect(
+      manager.cleanup({ provider: "feishu", sessionId: "s-emptied", runId: "run-1" }),
+    ).resolves.toBeUndefined();
+
+    await seedPlanCopy(manager.sessionDir("s-other-session"), document);
+    await expect(
+      manager.cleanup({ provider: "feishu", sessionId: "s-other-session", runId: "run-source" }),
+    ).rejects.toMatchObject({ code: "session_mismatch" });
+    await expect(
+      manager.cleanup({ provider: "slack", sessionId: "s-source", runId: "run-source" }),
+    ).rejects.toMatchObject({ code: "provider_mismatch" });
+
+    await seedPlanCopy(manager.sessionDir("s-corrupt"), "{not-json");
+    await expect(manager.cleanup({ provider: "feishu", sessionId: "s-corrupt", runId: "run-1" })).rejects.toMatchObject(
+      { code: "plan_invalid" },
+    );
+
+    const locked = manager.sessionDir("s-locked");
+    await mkdir(locked, { recursive: true, mode: 0o700 });
+    await chmod(dirname(locked), 0o700);
+    await chmod(locked, 0o000);
+    try {
+      await expect(
+        manager.cleanup({ provider: "feishu", sessionId: "s-locked", runId: "run-1" }),
+      ).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      await chmod(locked, 0o700).catch(() => undefined);
+    }
+  });
+
+  it("crash recovery skips foreign entries and refuses an unreadable Home directory", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-foreign", runId: "run-1" });
+    const homeDir = dirname(prepared.sessionDir);
+    await writeFile(join(homeDir, "stray.txt"), "not a session\n", { mode: 0o600 });
+    const linkName = `s-${"ab".repeat(20)}`;
+    await symlink(prepared.sessionDir, join(homeDir, linkName));
+
+    await manager.recover();
+    await expect(stat(prepared.sessionDir)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(join(homeDir, "stray.txt"))).isFile()).toBe(true);
+    expect((await lstat(join(homeDir, linkName))).isSymbolicLink()).toBe(true);
+
+    const unreadable = await trackedHarness();
+    const unreadableTarget = await installTurnTarget(join(unreadable.accountHome, "bin"));
+    await writeExternalTurnSelection(unreadable.layout, "feishu", unreadableTarget);
+    const blocked = await unreadable.manager.prepare({ provider: "feishu", sessionId: "s-blocked", runId: "run-1" });
+    await chmod(dirname(blocked.sessionDir), 0o000);
+    try {
+      await expect(unreadable.manager.recover()).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      await chmod(dirname(blocked.sessionDir), 0o700).catch(() => undefined);
+    }
+  });
 });
 
 describe("Provider CLI Turn plan schema", () => {
@@ -783,6 +978,181 @@ describe("Provider CLI Turn plan schema", () => {
     }
   });
 
+  it("rejects malformed plan identity, generation, selection, and proxy fields", async () => {
+    const base = {
+      schemaVersion: 1,
+      provider: "feishu",
+      command: "lark-cli",
+      selectionKind: "external",
+      selectionVersion: "1.0.92",
+      selectionGeneration: 1,
+      targetPath: "/opt/opentag/bin/lark-cli",
+      fingerprint: `v1:${"ab".repeat(32)}`,
+      homeNamespace: `h-${"cd".repeat(20)}`,
+      sessionId: "s-1",
+      runId: "run-1",
+    };
+    const slack = {
+      ...base,
+      provider: "slack",
+      command: "slack",
+      configDir: "/opt/opentag/slack-config",
+    };
+    const rejects = (record: Record<string, unknown>) => () => parseProviderCliTurnPlan(record);
+
+    expect(parseProviderCliTurnPlan(base).provider).toBe("feishu");
+    expect(parseProviderCliTurnPlan(slack).provider).toBe("slack");
+    expect(rejects({ ...base, provider: "github" })).toThrow(ProviderCliTurnPlanError);
+    expect(rejects({ ...base, command: "slack" })).toThrow(ProviderCliTurnPlanError);
+    for (const selectionGeneration of ["1", 1.5, 0, -1]) {
+      expect(rejects({ ...base, selectionGeneration })).toThrow(ProviderCliTurnPlanError);
+    }
+
+    for (const override of [
+      { selectionVersion: "" },
+      { selectionVersion: "not-semver" },
+      { targetPath: "" },
+      { targetPath: "relative/lark-cli" },
+      { fingerprint: "v1:nope" },
+      { homeNamespace: 42 },
+      { homeNamespace: "not-a-namespace" },
+      { sessionId: "" },
+      { runId: "" },
+      { runId: "x".repeat(5000) },
+      { selectionKind: "unknown" },
+    ]) {
+      expect(rejects({ ...base, ...override })).toThrow(ProviderCliTurnPlanError);
+    }
+
+    expect(
+      parseProviderCliTurnPlan({ ...base, selectionKind: "managed", artifactId: "1.0.92/test-platform/aa" }),
+    ).toMatchObject({ selectionKind: "managed" });
+    expect(rejects({ ...base, selectionKind: "managed" })).toThrow(ProviderCliTurnPlanError);
+    expect(rejects({ ...base, selectionKind: "managed", artifactId: "" })).toThrow(ProviderCliTurnPlanError);
+    expect(rejects({ ...base, artifactId: "unexpected" })).toThrow(ProviderCliTurnPlanError);
+    expect(rejects({ ...slack, selectionKind: "unknown" })).toThrow(ProviderCliTurnPlanError);
+    expect(rejects({ ...slack, selectionKind: "managed" })).toThrow(ProviderCliTurnPlanError);
+
+    expect(parseProviderCliTurnPlan({ ...base, captureOutgoingReplies: true })).toMatchObject({
+      captureOutgoingReplies: true,
+    });
+    expect(parseProviderCliTurnPlan({ ...base, captureOutgoingReplies: false })).not.toHaveProperty(
+      "captureOutgoingReplies",
+    );
+    expect(rejects({ ...base, captureOutgoingReplies: "true" })).toThrow(ProviderCliTurnPlanError);
+
+    for (const environmentManifest of [42, "relative/manifest.json", "{{ .. }}"]) {
+      expect(rejects({ ...base, environmentManifest })).toThrow(ProviderCliTurnPlanError);
+    }
+    const manifests = ["/opt/opentag/manifest.json"];
+    const feishuManaged = {
+      ...base,
+      selectionKind: "managed",
+      artifactId: "1.0.92/test-platform/aa",
+    };
+    expect(parseProviderCliTurnPlan({ ...base, environmentManifest: manifests[0] })).toMatchObject({
+      environmentManifest: manifests[0],
+    });
+    expect(parseProviderCliTurnPlan(feishuManaged)).toMatchObject({ selectionKind: "managed" });
+    expect(parseProviderCliTurnPlan({ ...feishuManaged, environmentManifest: manifests[0] })).toMatchObject({
+      environmentManifest: manifests[0],
+    });
+
+    for (const slackApiHost of [42, "https://example.com", "http://127.0.0.1:9"]) {
+      expect(rejects({ ...slack, slackApiHost })).toThrow(ProviderCliTurnPlanError);
+    }
+    const apiHost = "https://127.0.0.1:9123";
+    const slackManaged = {
+      ...slack,
+      selectionKind: "managed",
+      artifactId: "4.7.0/test-platform/aa",
+    };
+    expect(parseProviderCliTurnPlan({ ...slack, slackApiHost: apiHost })).toMatchObject({ slackApiHost: apiHost });
+    expect(parseProviderCliTurnPlan(slackManaged)).toMatchObject({ selectionKind: "managed" });
+    expect(parseProviderCliTurnPlan({ ...slackManaged, slackApiHost: apiHost })).toMatchObject({
+      slackApiHost: apiHost,
+    });
+
+    expect(rejects({ ...slack, configDir: 42 })).toThrow(ProviderCliTurnPlanError);
+    expect(rejects({ ...base, configDir: "/opt/opentag/slack-config" })).toThrow(ProviderCliTurnPlanError);
+  });
+
+  it("fails closed on an unreadable, unparseable, oversized, or non-private plan file", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+
+    await writeFile(prepared.planPath, "{not-json}", { mode: 0o600 });
+    await expect(readProviderCliTurnPlan(prepared.planPath)).rejects.toMatchObject({ code: "plan_invalid" });
+
+    await chmod(prepared.planPath, 0o644);
+    await expect(readProviderCliTurnPlan(prepared.planPath)).rejects.toMatchObject({ code: "unsafe" });
+    await chmod(prepared.planPath, 0o600);
+
+    const blocked = join(accountHome, "blocked-plans");
+    await mkdir(blocked, { recursive: true, mode: 0o700 });
+    await writeFile(join(blocked, "plan.json"), "{}\n", { mode: 0o600 });
+    await chmod(blocked, 0o000);
+    try {
+      await expect(readProviderCliTurnPlan(join(blocked, "plan.json"))).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      await chmod(blocked, 0o700).catch(() => undefined);
+    }
+
+    const publishRoot = await makeTempDir("opentag-turn-plan-publish-");
+    tempDirs.push(publishRoot);
+    await mkdir(publishRoot, { recursive: true, mode: 0o700 });
+    await chmod(publishRoot, 0o700);
+    const planPath = join(publishRoot, "plan.json");
+    const writable = { ...prepared.plan } as ProviderCliTurnPlan;
+    await expect(turnPlanStorage.publishProviderCliTurnPlanExclusive(planPath, writable)).resolves.toBe("created");
+    await expect(turnPlanStorage.publishProviderCliTurnPlanExclusive(planPath, writable)).resolves.toBe("exists");
+
+    const oversized = {
+      ...writable,
+      targetPath: `/${"a".repeat(MAX_PROVIDER_CLI_TURN_PLAN_BYTES)}`,
+    } as ProviderCliTurnPlan;
+    await expect(turnPlanStorage.publishProviderCliTurnPlanExclusive(planPath, oversized)).rejects.toMatchObject({
+      code: "too_large",
+    });
+
+    expect(() => turnPlanStorage.assertPlanWithinRoot(publishRoot, join(publishRoot, "..", "escape"))).toThrow(
+      ProviderCliTurnPlanError,
+    );
+    expect(() => deriveProviderCliHomeNamespace(join(publishRoot, "missing-home"))).toThrow(ProviderCliTurnPlanError);
+    expect(() =>
+      turnPlanStorage.providerCliPlanSessionDir(
+        resolveProviderCliAccountLayout(publishRoot),
+        deriveProviderCliHomeNamespace(publishRoot),
+        "not-a-session-key",
+      ),
+    ).toThrow(ProviderCliTurnPlanError);
+    expect(turnPlanStorage.planCapturesOutgoingReplies(writable)).toBe(false);
+  });
+
+  it("rejects a relative OpenTag Home and tolerates an absent Session directory", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    expect(
+      () =>
+        new ProviderCliTurnPlanManager({
+          accountHome: "/opt/opentag-account",
+          openTagHome: "relative-opentag-home",
+          runnerInvocation: providerCliTurnRunnerInvocation(),
+        }),
+    ).toThrow(ProviderCliTurnPlanError);
+
+    await expect(
+      manager.cleanup({ provider: "feishu", sessionId: "s-absent", runId: "run-1" }),
+    ).resolves.toBeUndefined();
+    await expect(manager.recover()).resolves.toBeUndefined();
+  });
+
+  // Guards the boundary between a per-Turn plan and the shared account launcher: preparing a Turn must
+  // never write into `layout.bin`. The malformed-plan cases above do not cover it -- they all fail before
+  // anything is published -- so this stays as its own test rather than folded into one of them.
   it("does not rewrite the account-global launcher v1 marker", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));

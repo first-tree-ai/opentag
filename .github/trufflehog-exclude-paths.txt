@@ -1,0 +1,23 @@
+# Paths TruffleHog does not scan.
+#
+# Scope: test files, and this file. A negative test for a credential-handling path has to contain
+# something that looks like a credential, and the case under test is that the code refuses it. Those
+# literals are unverifiable by construction, and they are the only findings this exists to silence.
+#
+# The file excludes itself because describing that rule is how the examples got here in the first
+# place, and a scan that reads its own comment reports them as findings.
+#
+# Read the scope precisely: it is wider than "test fixtures". `__tests__/` also matches the
+# integration suites and `*.spec.ts` also matches the end-to-end suites, so a credential left in
+# those is not reported. Production code is the only part of the tree still fully scanned.
+#
+# These patterns reach file content and nothing else. A commit message carries no path, so a
+# credential shape written into one is filtered by scripts/secret-scan-gate.mjs instead, which
+# reports a metadata finding only when TruffleHog verified it.
+#
+# One pattern per line, as a regular expression matched against the path. The `__tests__` directory
+# and the `test`/`spec` filename conventions are the two forms this repository uses.
+^\.github/trufflehog-exclude-paths\.txt$
+__tests__/
+\.test\.[cm]?tsx?$
+\.spec\.[cm]?tsx?$

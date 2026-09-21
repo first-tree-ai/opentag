@@ -187,7 +187,16 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       throw new Error("npm pack did not report a tarball filename");
     }
     const packedPaths = (packResult[0].files ?? []).map((file) => file.path);
-    for (const requiredPath of ["LICENSE", "README.md", "THIRD_PARTY_NOTICES", "dist/cli/index.mjs"]) {
+    for (const requiredPath of [
+      "LICENSE",
+      "README.md",
+      "THIRD_PARTY_NOTICES",
+      "dist/cli/index.mjs",
+      // The trusted Pi web tools extension must ship in the npm artifact and resolve from both
+      // bundled CLI entry layouts; absence must fail the smoke rather than disable tools silently.
+      "dist/pi-extensions/web-tools.mjs",
+      "dist/cli/pi-extensions/web-tools.mjs",
+    ]) {
       if (!packedPaths.includes(requiredPath)) {
         throw new Error(`npm tarball is missing required path ${requiredPath}`);
       }

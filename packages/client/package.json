@@ -13,7 +13,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown src/index.ts --format esm --dts",
+    "build": "tsdown src/index.ts src/runner/bin.ts src/pi-extensions/web-tools.ts --format esm --dts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1",
     "test:agent-runtime:coverage": "vitest run --config vitest.agent-runtime.config.ts",
@@ -25,13 +25,15 @@
     "@opentag/shared": "workspace:*",
     "pino": "^10.3.1",
     "semver": "^7.8.5",
+    "tar-stream": "3.2.0",
     "ws": "^8.21.3",
     "zod": "^4.5.1"
   },
   "devDependencies": {
-    "@first-tree-ai/context-tree": "0.1.12",
+    "@first-tree-ai/context-tree": "0.1.15",
     "@types/semver": "^7.8.0",
+    "@types/tar-stream": "^3.1.4",
     "@types/ws": "^8.18.1",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.1"
   }
 }

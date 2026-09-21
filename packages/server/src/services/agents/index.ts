@@ -1,4 +1,7 @@
-export { AgentRuntimeTestService } from "./agent-runtime-test-service.js";
+export {
+  AgentRuntimeTestService,
+  type CloudAgentRuntimeTestPort,
+} from "./agent-runtime-test-service.js";
 export {
   AGENT_ACTIVITY_READ_LIMIT,
   AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS,
@@ -11,4 +14,16 @@ export {
   AgentSetupService,
   type AgentSetupServiceOptions,
 } from "./agent-setup-service.js";
+export {
+  CLOUD_AGENT_RUNTIME_TEST_TIMEOUT_MS,
+  CloudAgentRuntimeTester,
+  type CloudAgentRuntimeTesterOptions,
+} from "./cloud-agent-runtime-tester.js";
+export {
+  type CloudContextTreeGitHubManagement,
+  type CloudContextTreeOperationInput,
+  type CloudContextTreeOperationRunner,
+  CloudContextTreeOperations,
+  type CloudContextTreeOperationsOptions,
+} from "./cloud-context-tree-operations.js";
 export { AgentServiceError } from "./errors.js";

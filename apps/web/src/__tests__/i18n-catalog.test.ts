@@ -15,6 +15,7 @@ const areas = [
   "auth",
   "account",
   "agents",
+  "cloud",
   "agent-settings",
   "agent-create",
   "tasks",
@@ -28,16 +29,21 @@ const areas = [
 const localeCodes = ["en", "zh"] as const;
 const allowedUntranslatedValues = new Set([
   "OpenTag",
+  "Cloud",
   "Codex",
   "Claude Code",
+  "Pi",
   "Google",
   "Slack",
   "Feishu",
   "Lark",
+  "GitHub",
   "Lark CLI",
   "Slack CLI",
   "Token",
   "Tokens",
+  "Context Tree",
+  "refs/heads/master",
 ]);
 
 function messageTexts(value: unknown): string[] {

@@ -8,8 +8,6 @@
   "agent_settings_cancel_action": "取消",
   "agent_settings_change_action": "更改",
   "agent_settings_change_model_title": "更改模型",
-  "agent_settings_channel_detail": "消息渠道：{provider}",
-  "agent_settings_channel_detail_with_name": "消息渠道：{provider} · @{name}",
   "agent_settings_claude_code": "Claude Code",
   "agent_settings_cloud_model_default": "平台默认（{model}）",
   "agent_settings_cloud_model_default_unknown": "平台默认",

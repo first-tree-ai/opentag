@@ -2,6 +2,7 @@ import claudeMark from "../assets/claude.svg";
 import feishuMark from "../assets/feishu.svg";
 import openAIBlossomBlack from "../assets/openai-blossom-black.svg";
 import openAIBlossomWhite from "../assets/openai-blossom-white.svg";
+import piMark from "../assets/pi.svg";
 import slackMark from "../assets/slack.svg";
 import { OpenTagLogo } from "../ui/opentag-logo.js";
 
@@ -14,6 +15,7 @@ const ART: Partial<Record<BrandId, string>> = {
   feishu: feishuMark,
   slack: slackMark,
   "claude-code": claudeMark,
+  pi: piMark,
 };
 
 /** Slack documents embedding this button from their own URL, so it is referenced, not copied. */

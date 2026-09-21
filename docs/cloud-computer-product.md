@@ -10,6 +10,14 @@ is optional; existing authorized repositories are supported. Local onboarding re
 
 ## Availability and status
 
+The existing `OPENTAG_CLOUD_IDENTITIES_ENABLED` is the overall default-off switch: it enables
+identities and Runner control together. `OPENTAG_CLOUD_MODEL_ENABLED` is the only secondary switch;
+turn it off to stop model requests while retaining workspace save and release. The overall switch
+off disables all three capabilities. Complete Runner configuration is required when it is on.
+`OPENTAG_CLOUD_RUNNER_ENABLED` is retired. There is no frontend flag or separate visibility setting:
+the existing availability response keeps Cloud visible but gray and disabled when unavailable,
+without selecting it or affecting Local creation.
+
 `GET /api/v1/computers/cloud` reads deployment availability. `PUT` on the same path idempotently
 ensures the caller's Computer. The existing create-Agent API binds it with `runtimeProvider=pi`.
 Cloud setup uses server configuration and IM authorization; it does not wait for a Local daemon

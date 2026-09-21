@@ -95,6 +95,15 @@ function config(overrides: Record<string, string> = {}) {
     OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
     OPENTAG_CLOUD_STORAGE_BASE: "gs://fixture-bucket/control",
     OPENTAG_CLOUD_RUNNER_VERSION: "1.0.0",
+    // The overall Cloud switch also enables the Runner, which requires its complete coordinates.
+    OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+    OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+    OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+    OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+    OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+    OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+    OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+    OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
     ...overrides,
   });
 }

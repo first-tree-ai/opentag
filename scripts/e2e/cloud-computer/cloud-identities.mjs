@@ -39,6 +39,15 @@ function cloudEnv(cliVersion, extra = {}) {
     OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
     OPENTAG_CLOUD_STORAGE_BASE: CLOUD_STORAGE_URI,
     OPENTAG_CLOUD_RUNNER_VERSION: cliVersion,
+    // Valid inert coordinates: identity/setup reads must never allocate or contact GCP.
+    OPENTAG_CLOUD_RUNNER_IMAGE: `registry.example.com/runner@sha256:${"a".repeat(64)}`,
+    OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-e2-fixture",
+    OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+    OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-e2-fixture.iam.gserviceaccount.com",
+    OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://runner-fixture.example.com",
+    OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "fixture-network",
+    OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "fixture-subnet",
+    OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "fixture-runner",
     ...extra,
   };
 }
@@ -176,6 +185,21 @@ async function runAuthGuards(fixture, shared, cookiesA, assertions) {
 
 async function runFlagOffCases(ctx) {
   const { fixture, shared, cookiesA, assertions } = ctx;
+  const availability = await requestJson({
+    baseUrl: fixture.baseUrl,
+    cookies: cookiesA,
+    method: "GET",
+    path: shared.HTTP_PATHS.accountCloudComputer,
+  });
+  record(
+    assertions,
+    "overall-off-overrides-model-on",
+    availability.ok &&
+      availability.body.enabled === false &&
+      availability.body.available === false &&
+      availability.body.reason === "disabled",
+    availability.status,
+  );
   const ensure = await requestJson({
     baseUrl: fixture.baseUrl,
     cookies: cookiesA,
@@ -393,7 +417,9 @@ async function executeCloudIdentities(repositoryRoot) {
       reensured.ok && JSON.stringify(reensured.body) === JSON.stringify(ctx.sandboxA),
     );
     await runResourceConstraints(ctx);
-    await fixture.restartServer(cloudEnv(cliVersion, { OPENTAG_CLOUD_IDENTITIES_ENABLED: "false" }));
+    await fixture.restartServer(
+      cloudEnv(cliVersion, { OPENTAG_CLOUD_IDENTITIES_ENABLED: "false", OPENTAG_CLOUD_MODEL_ENABLED: "true" }),
+    );
     await runFlagOffCases(ctx);
     if (assertions.some((entry) => !entry.ok)) throw new Error("Acceptance contains a failed assertion");
     summary.status = "passed";

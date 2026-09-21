@@ -73,8 +73,8 @@ worker 通过有大小限制的 stdin 获取参数。Pi 配置筛选为 DeepSeek
 ## E4 Cloud IM 投递（默认关闭，原生／IM 验收待完成）
 
 E4 通过同一条已认证 Runner 控制通道，把规范化 IM 消息投递给 Session 已有的 Cloud 分配。它是
-E3 protocol version 1 的增量能力，默认关闭：Server 仅在 OPENTAG_CLOUD_RUNNER_ENABLED=true
-且完成下述 Cloud 身份配置时启用 Runner 路径，仅在 OPENTAG_CLOUD_MODEL_ENABLED=true
+E3 protocol version 1 的增量能力，默认关闭：OPENTAG_CLOUD_IDENTITIES_ENABLED=true 同时启用
+Cloud 身份与 Runner，并要求完整配置；模型路径还要求 OPENTAG_CLOUD_MODEL_ENABLED=true
 且显式配置白名单时启用模型路径。E4 不新增数据库表或迁移，只复用已有的投递、custody 与
 durable work 记录。
 
@@ -177,12 +177,15 @@ provider 收发验收仍待完成；当前证据只有本地组合与外部本�
 默认保留现有传输限制；仅在验收证据表明需要时调整。可选超时、请求和响应大小、并发流与令牌
 期限配置见 [cloud-model-config.ts](../../packages/server/src/cloud-model-config.ts)。本文不会实际配置环境。
 
-先设置 OPENTAG_CLOUD_IDENTITIES_ENABLED=true、OPENTAG_CLOUD_STORAGE_BASE，以及与镜像 CLI
-版本一致的 OPENTAG_CLOUD_RUNNER_VERSION。
+总开关为 OPENTAG_CLOUD_IDENTITIES_ENABLED，默认 false。开启时需配置 OPENTAG_CLOUD_STORAGE_BASE、
+与镜像 CLI 版本一致的 OPENTAG_CLOUD_RUNNER_VERSION，以及下表中的完整 Runner 参数。关闭总开关
+会同时关闭身份、Runner 和模型能力，不受模型开关的遗留值影响。若只需暂停模型请求并保留保存／
+释放能力，仅关闭 OPENTAG_CLOUD_MODEL_ENABLED。没有独立的 Runner 开关或前端可见性开关。
+旧 OPENTAG_CLOUD_RUNNER_ENABLED 已不再读取；升级 Server 后可从部署配置移除，仅在需要回滚
+到旧版 Server 的窗口内保留。
 
 | Server 环境变量 | 含义 |
 | --- | --- |
-| OPENTAG_CLOUD_RUNNER_ENABLED | 默认 false |
 | OPENTAG_CLOUD_RUNNER_IMAGE | 必须为 name@sha256:… |
 | OPENTAG_CLOUD_RUNNER_PROJECT / REGION | 项目与区域 |
 | OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT | 最小权限 Instance 身份 |

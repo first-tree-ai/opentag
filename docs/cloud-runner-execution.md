@@ -103,8 +103,8 @@ implementation.
 
 E4 delivers a normalized IM message to a Session's existing Cloud allocation over the same
 authenticated Runner control channel. It is additive to E3 protocol version 1 and disabled by
-default: the Server enables the Runner path only with `OPENTAG_CLOUD_RUNNER_ENABLED=true` plus the
-Cloud identity configuration below, and the model path only with `OPENTAG_CLOUD_MODEL_ENABLED=true`
+default: `OPENTAG_CLOUD_IDENTITIES_ENABLED=true` enables identities and the Runner together, with
+the complete configuration below. The model path additionally requires `OPENTAG_CLOUD_MODEL_ENABLED=true`
 and an explicit allowlist. E4 adds no database table or migration; it reuses the existing
 delivery, custody and durable-work records.
 
@@ -239,12 +239,16 @@ Keep the bounded transport defaults unless acceptance shows a need to tune them.
 [`cloud-model-config.ts`](../packages/server/src/cloud-model-config.ts) for the optional timeout,
 body-size, stream-count and token-lifetime settings. This document does not provision any setting.
 
-Cloud identities must already be enabled with `OPENTAG_CLOUD_IDENTITIES_ENABLED=true`,
-`OPENTAG_CLOUD_STORAGE_BASE` and `OPENTAG_CLOUD_RUNNER_VERSION` (the image's CLI version).
+The overall switch is `OPENTAG_CLOUD_IDENTITIES_ENABLED` (default `false`). Enabling it requires
+`OPENTAG_CLOUD_STORAGE_BASE`, `OPENTAG_CLOUD_RUNNER_VERSION` (the image's CLI version), and all Runner
+coordinates below. Turning it off disables identities, Runner and model together, regardless of
+the model switch. To pause model requests while retaining save/release, disable only
+`OPENTAG_CLOUD_MODEL_ENABLED`. There is no separate Runner or frontend visibility switch.
+The retired `OPENTAG_CLOUD_RUNNER_ENABLED` is no longer read; remove it from deployment settings
+after upgrading the Server, retaining it only while an older Server rollback still needs it.
 
 | Server variable | Meaning |
 | --- | --- |
-| `OPENTAG_CLOUD_RUNNER_ENABLED` | `true` to enable; default `false` |
 | `OPENTAG_CLOUD_RUNNER_IMAGE` | Exact registry `name@sha256:…`; tags rejected |
 | `OPENTAG_CLOUD_RUNNER_PROJECT`, `…_REGION` | Dedicated configured project/region |
 | `OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT` | Minimal-permission Instance identity |

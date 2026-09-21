@@ -368,8 +368,10 @@ const ServerEnvironmentSchema = z
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
     /*
-     * Server-controlled Cloud Computer / Sandbox acceptance. Off by default; enabling requires a valid
-     * storage prefix and Runner SemVer release coordinate. This is not a UI-only gate.
+     * The single overall Cloud switch. Off by default; enabling requires a valid storage prefix and
+     * Runner SemVer release coordinate, and it also enables Cloud Runner allocation (with its own
+     * required coordinates) — there is no separate Runner flag. The model proxy is the only
+     * secondary switch. This is not a UI-only gate.
      */
     OPENTAG_CLOUD_IDENTITIES_ENABLED: booleanString("false"),
     OPENTAG_CLOUD_STORAGE_BASE: z.string().trim().optional(),
@@ -754,13 +756,14 @@ export interface ServerConfig {
    */
   internalTools: boolean;
   /**
-   * Server-controlled Cloud Computer / Sandbox acceptance. Metadata is the configured Runner
-   * target, never observed execution. Off by default.
+   * Server-controlled Cloud Computer / Sandbox acceptance. The overall Cloud switch: metadata is
+   * the configured Runner target, never observed execution. Off by default.
    */
   cloudIdentities: CloudIdentitiesConfig;
   /**
-   * E3 Cloud Runner allocation. Off by default; enabling requires Cloud identities plus the exact
-   * digest-pinned Runner image, GCP coordinates, backend origin, and Direct VPC attachment.
+   * E3 Cloud Runner allocation. Enabled by the overall Cloud switch (no separate Runner flag);
+   * enablement requires the exact digest-pinned Runner image, GCP coordinates, backend origin,
+   * and Direct VPC attachment.
    */
   cloudRunner: CloudRunnerConfig;
   /**
@@ -770,8 +773,10 @@ export interface ServerConfig {
    */
   web: WebToolsConfig;
   /**
-   * E4 controlled model path for Sandbox Pi executions. Off by default; enabling requires the
-   * Cloud Runner plus the fixed upstream, environment-only master key, and a model allowlist.
+   * E4 controlled model path for Sandbox Pi executions. The sole secondary Cloud switch, off by
+   * default; enabling requires the enabled Cloud Runner plus the fixed upstream, environment-only
+   * master key, and a model allowlist. The overall Cloud switch off disables it even when the
+   * secondary switch was left on.
    */
   cloudModel: CloudModelConfig;
   /**
@@ -904,6 +909,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
   });
 
+  // The Runner environment is parsed exactly once; the resolved config gates the model proxy, so
+  // the overall Cloud switch off yields identities, Runner, and model all disabled.
+  const cloudRunner = resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED);
+
   return {
     autoMigrate: parsed.OPENTAG_AUTO_MIGRATE,
     buildRevision: parsed.OPENTAG_BUILD_REVISION,
@@ -988,12 +997,9 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       parsed.OPENTAG_CLOUD_STORAGE_BASE,
       parsed.OPENTAG_CLOUD_RUNNER_VERSION,
     ),
-    cloudRunner: resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED),
+    cloudRunner,
     web: resolveWebToolsConfig(parsed, environment),
-    cloudModel: resolveCloudModelConfig(
-      environment,
-      resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED).enabled,
-    ),
+    cloudModel: resolveCloudModelConfig(environment, cloudRunner.enabled),
     skillStorage: resolveSkillStorageConfig(parsed),
   };
 }

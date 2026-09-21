@@ -1,11 +1,14 @@
 import { z } from "zod";
 
 /**
- * E3 Cloud Runner configuration: opt-in, disabled by default. When enabled, every coordinate the
- * Server needs to allocate Cloud Run Instances is validated up front — the digest-pinned Runner
- * image, project/region/service account, the WSS backend origin Runners dial back to, and the
- * Direct VPC attachment (network/subnetwork/execution tag, ALL_TRAFFIC egress). There is no
- * partial enablement: a missing value fails startup rather than degrading to a default egress path.
+ * E3 Cloud Runner configuration: derived, never independently switched. The overall Cloud switch
+ * (OPENTAG_CLOUD_IDENTITIES_ENABLED) enables the Runner; there is no separate Runner flag, and the
+ * retired OPENTAG_CLOUD_RUNNER_ENABLED name is ignored rather than parsed. When enabled, every
+ * coordinate the Server needs to allocate Cloud Run Instances is validated up front — the
+ * digest-pinned Runner image, project/region/service account, the WSS backend origin Runners dial
+ * back to, and the Direct VPC attachment (network/subnetwork/execution tag, ALL_TRAFFIC egress).
+ * There is no partial enablement: a missing value fails startup rather than degrading to a default
+ * egress path.
  */
 
 const GCP_PROJECT_ID_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -34,10 +37,6 @@ const BackendOriginSchema = z
 
 export const CloudRunnerEnvironmentSchema = z
   .object({
-    OPENTAG_CLOUD_RUNNER_ENABLED: z
-      .enum(["true", "false"])
-      .default("false")
-      .transform((value) => value === "true"),
     OPENTAG_CLOUD_RUNNER_IMAGE: z.string().trim().regex(DIGEST_PINNED_IMAGE_PATTERN).optional(),
     OPENTAG_CLOUD_RUNNER_PROJECT: z.string().trim().regex(GCP_PROJECT_ID_PATTERN).optional(),
     OPENTAG_CLOUD_RUNNER_REGION: z.string().trim().regex(GCP_REGION_PATTERN).optional(),
@@ -111,13 +110,16 @@ const REQUIRED_FIELDS = [
   "OPENTAG_CLOUD_RUNNER_EXECUTION_TAG",
 ] as const;
 
-/** Parse the runner environment slice; issues are reported against the enabling flag. */
+/**
+ * Parse the runner environment slice. Enablement derives from the overall Cloud switch alone:
+ * identities on means the Runner must be fully configured; identities off disables the Runner
+ * regardless of any leftover runner coordinates or the retired per-Runner flag.
+ */
 export function resolveCloudRunnerConfig(
   environment: NodeJS.ProcessEnv,
   cloudIdentitiesEnabled: boolean,
 ): CloudRunnerConfig {
   const parsed = CloudRunnerEnvironmentSchema.parse({
-    OPENTAG_CLOUD_RUNNER_ENABLED: environment.OPENTAG_CLOUD_RUNNER_ENABLED,
     OPENTAG_CLOUD_RUNNER_IMAGE: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_IMAGE),
     OPENTAG_CLOUD_RUNNER_PROJECT: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_PROJECT),
     OPENTAG_CLOUD_RUNNER_REGION: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_REGION),
@@ -135,7 +137,7 @@ export function resolveCloudRunnerConfig(
     OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: environment.OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT,
     OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: environment.OPENTAG_CLOUD_RUNNER_MAX_INSTANCES,
   });
-  if (!parsed.OPENTAG_CLOUD_RUNNER_ENABLED) return { enabled: false };
+  if (!cloudIdentitiesEnabled) return { enabled: false };
   if (parsed.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN && environment.OPENTAG_ENV !== "dev") {
     throw new Error(
       "Static Cloud Runner access tokens require explicit OPENTAG_ENV=dev; hosted servers use service identity",
@@ -144,9 +146,6 @@ export function resolveCloudRunnerConfig(
   const missing = REQUIRED_FIELDS.filter((field) => parsed[field] === undefined);
   if (missing.length > 0) {
     throw new Error(`Cloud Runner is enabled without required configuration: ${missing.join(", ")}`);
-  }
-  if (!cloudIdentitiesEnabled) {
-    throw new Error("Cloud Runner requires OPENTAG_CLOUD_IDENTITIES_ENABLED=true (Sandbox identities)");
   }
   return {
     enabled: true,

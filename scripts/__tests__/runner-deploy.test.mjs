@@ -67,7 +67,6 @@ function appDefinition(overrides = {}) {
       { key: "OPENTAG_ENV", value: "staging" },
       { key: "OPENTAG_PUBLIC_URL", value: "https://dev.opentag.build" },
       { key: "OPENTAG_CLOUD_IDENTITIES_ENABLED", value: "true" },
-      { key: "OPENTAG_CLOUD_RUNNER_ENABLED", value: "true" },
       { key: RUNNER_IMAGE_KEY, value: `${REPO}@${OLD_DIGEST}` },
       { key: RUNNER_VERSION_KEY, value: OLD_VERSION },
       { key: "OPENTAG_DATABASE_URL", value: "postgres://db-internal:5432/opentag" },
@@ -293,13 +292,13 @@ test("environment and server-image guards reject the wrong target", () => {
   const disabled = readEnvVars(
     appDefinition({
       envVars: appDefinition().envVars.map((entry) =>
-        entry.key === "OPENTAG_CLOUD_RUNNER_ENABLED" ? { key: entry.key, value: "false" } : entry,
+        entry.key === "OPENTAG_CLOUD_IDENTITIES_ENABLED" ? { key: entry.key, value: "false" } : entry,
       ),
     }),
   );
   assert.throws(
     () => assertRunnerEnvironment({ envVars: disabled, channel: "staging", publicUrl: "https://dev.opentag.build" }),
-    /CLOUD_RUNNER_ENABLED/,
+    /CLOUD_IDENTITIES_ENABLED/,
   );
 
   assertServerImage({ deployedImageName: `ghcr.io/first-tree-ai/opentag:${SERVER_SHA}`, serverRevision: SERVER_SHA });

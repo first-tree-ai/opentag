@@ -2,11 +2,15 @@ import { z } from "zod";
 
 /**
  * E4 controlled model path: the Server brokers OpenAI-compatible chat completions for Sandbox Pi
- * executions. Off by default. Enabling requires the exact fixed upstream origin, the platform
- * master key (environment only — never persisted, never forwarded to a Sandbox), and an explicit
- * model allowlist. Sandboxes receive only execution-scoped, short-lived, revocable tokens minted
- * per verified delivery; the proxy binds every request to the token's model, bounds bodies and
- * streams, and never relays arbitrary URLs or upstream paths.
+ * executions. Off by default. This is the sole secondary Cloud switch: the model proxy is enabled
+ * only when the already-resolved Cloud Runner is enabled (which the overall Cloud switch controls)
+ * and OPENTAG_CLOUD_MODEL_ENABLED is true, so model requests can be stopped while Runner
+ * persistence, release, and control stay available — and turning the overall switch off disables
+ * the model even when the secondary switch was left on. Enabling requires the exact fixed upstream
+ * origin, the platform master key (environment only — never persisted, never forwarded to a
+ * Sandbox), and an explicit model allowlist. Sandboxes receive only execution-scoped, short-lived,
+ * revocable tokens minted per verified delivery; the proxy binds every request to the token's
+ * model, bounds bodies and streams, and never relays arbitrary URLs or upstream paths.
  */
 
 const UPSTREAM_BASE_PATTERN = /^https:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._~/-]*)?$/;
@@ -106,10 +110,9 @@ export function resolveCloudModelConfig(environment: NodeJS.ProcessEnv, cloudRun
     OPENTAG_CLOUD_MODEL_MAX_RESPONSE_BYTES: environment.OPENTAG_CLOUD_MODEL_MAX_RESPONSE_BYTES,
     OPENTAG_CLOUD_MODEL_MAX_STREAMS_PER_TOKEN: environment.OPENTAG_CLOUD_MODEL_MAX_STREAMS_PER_TOKEN,
   });
-  if (!parsed.OPENTAG_CLOUD_MODEL_ENABLED) return { enabled: false };
-  if (!cloudRunnerEnabled) {
-    throw new Error("The Cloud model proxy requires the Cloud Runner to be enabled");
-  }
+  // The secondary switch never acts alone: a disabled Runner (overall Cloud switch off) disables
+  // the model proxy even when OPENTAG_CLOUD_MODEL_ENABLED stayed true.
+  if (!parsed.OPENTAG_CLOUD_MODEL_ENABLED || !cloudRunnerEnabled) return { enabled: false };
   if (!parsed.OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL) {
     throw new Error("The Cloud model proxy is enabled without OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL");
   }

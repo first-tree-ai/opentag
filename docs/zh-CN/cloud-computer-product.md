@@ -1,10 +1,16 @@
 # Cloud Computer 产品与资源控制
 
-权威来源：[英文文档](../cloud-computer-product.md)。同步日期：2026-09-20。
+权威来源：[英文文档](../cloud-computer-product.md)。同步日期：2026-09-21。
 
 Cloud Computer 是账号的逻辑身份，固定在线不表示物理 Instance 或模型已就绪。继续复用 Agent、Session 数据模型；每个 Agent Session 对应一个 Sandbox，最多绑定一个当前 Instance。Cloud 使用 Pi、1 vCPU／1 GiB。创建 Agent、打开设置不分配 Instance。Context Tree 可选，仅连接已有授权仓库。保留 Local 接入。
 
 ## 可用性与状态
+
+复用 `OPENTAG_CLOUD_IDENTITIES_ENABLED` 作为默认关闭的总开关，同时控制身份与 Runner。
+仅保留 `OPENTAG_CLOUD_MODEL_ENABLED` 作为第二个开关，便于暂停模型请求时保留工作区保存和
+资源释放能力。总开关关闭时三项能力全部关闭；开启时要求完整 Runner 配置。
+不再使用 `OPENTAG_CLOUD_RUNNER_ENABLED`。前端不增加开关或独立隐藏设置：直接使用已有
+可用性接口，未开放或不可用时保留灰色禁用的 Cloud 选项，不选中它，也不影响 Local 创建。
 
 `GET /api/v1/computers/cloud` 只读查询部署可用性；相同地址的 `PUT` 幂等取得本账号 Computer，再由已有创建 Agent API 以 `runtimeProvider=pi` 绑定。Cloud setup 使用服务端配置和 IM 授权，不等待本地 daemon，也不伪造 CLI 检测结果；真正执行仍须通过 Runner 就绪与当前执行授权。
 

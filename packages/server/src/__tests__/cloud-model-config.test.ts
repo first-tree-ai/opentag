@@ -18,11 +18,15 @@ describe("resolveCloudModelConfig", () => {
     expect(resolveCloudModelConfig({}, true)).toEqual({ enabled: false });
     expect(resolveCloudModelConfig({}, false)).toEqual({ enabled: false });
     // Disabled wins even when a Cloud Runner is unavailable; nothing is provisioned or called.
-    expect(resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "false" }, false)).toEqual({ enabled: false });
+    expect(resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "false" }, false)).toEqual({
+      enabled: false,
+    });
   });
 
-  it("requires the Cloud Runner and every fixed-upstream setting when enabled", () => {
-    expect(() => resolveCloudModelConfig(enabledEnvironment(), false)).toThrow(/Cloud Runner/);
+  it("stays disabled while the Runner is off and requires every fixed-upstream setting when enabled", () => {
+    // The overall Cloud switch dominates: with the Runner off the model proxy is disabled even
+    // when the secondary switch and every model coordinate are set and valid.
+    expect(resolveCloudModelConfig(enabledEnvironment(), false)).toEqual({ enabled: false });
     expect(() =>
       resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "" }), true),
     ).toThrow(/UPSTREAM_BASE_URL/);

@@ -14,11 +14,11 @@ export async function runCloudComputerCases(ctx) {
   const availability = await requestJson({ baseUrl: fixture.baseUrl, cookies: cookiesA, method: "GET", path });
   record(
     assertions,
-    "cloud-availability-without-runner",
+    "cloud-availability-without-model",
     availability.ok &&
       availability.body.enabled === true &&
       availability.body.available === false &&
-      availability.body.reason === "execution_unavailable",
+      availability.body.reason === "model_unavailable",
     availability.status,
   );
   const [first, second] = await concurrentPost(

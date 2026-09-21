@@ -96,10 +96,12 @@ describe("Agent creation with a Cloud destination", () => {
     });
   });
 
-  it("keeps Cloud disabled with its reason when the service is unavailable, and never pre-selects", async () => {
-    vi.spyOn(browserApi, "cloudAvailability").mockResolvedValue(
-      availability({ available: false, reason: "model_unavailable" }),
-    );
+  it.each([
+    { enabled: false, reason: "disabled" as const },
+    { enabled: true, reason: "execution_unavailable" as const },
+    { enabled: true, reason: "model_unavailable" as const },
+  ])("keeps Cloud gray and disabled for $reason without a separate visibility switch", async (state) => {
+    vi.spyOn(browserApi, "cloudAvailability").mockResolvedValue(availability({ ...state, available: false }));
     renderCreation();
 
     await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(true));
@@ -110,6 +112,9 @@ describe("Agent creation with a Cloud destination", () => {
         "Cloud is temporarily unavailable on this deployment. You can still run the agent on your own computer.",
       ),
     ).toBeTruthy();
+    fireEvent.click(cloudCard());
+    expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
+    expect(browserApi.ensureCloudComputer).not.toHaveBeenCalled();
     // Nothing was selected for the reader: Continue stays disabled until they choose Local.
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
 

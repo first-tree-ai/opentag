@@ -22,6 +22,7 @@ import { formatStartupError } from "../services/auth/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
+import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
 import {
   CloudSessionCollaborationOwner,
@@ -58,7 +59,6 @@ const CLOUD_MODEL = {
   enabled: true as const,
   upstreamBaseUrl: "https://model.invalid/v1",
   masterKey: MASTER_KEY_SENTINEL,
-  allowedModels: [MODEL],
   tokenTtlSeconds: 900,
   requestTimeoutMs: 600_000,
   maxRequestBytes: 2 * 1024 * 1024,
@@ -117,6 +117,7 @@ describe("production Cloud runtime composition", () => {
       cloudModel: CLOUD_MODEL,
       publicUrl: "https://server.example.test",
       jwtSecret: "unit-test-jwt-secret-at-least-32-characters",
+      cloudModelCatalog: createStaticCloudModelCatalog([MODEL]),
       sessionProofs: proofs,
       sessionCollaboration: {
         assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
@@ -207,10 +208,13 @@ describe("production Cloud runtime composition", () => {
       hub: runtime.runnerChannel.hub,
       cloudRuntimeFence: new CloudRuntimeFence(),
       credentialOwner: credentialOwner(),
+      cloudModelCatalog: createStaticCloudModelCatalog([MODEL]),
       allocationStatus: async () => undefined,
     });
     expect(composition.cloudModelGrants).toBeDefined();
     expect(composition.cloudDeliveryOwner).toBeDefined();
+    // The one injected catalog instance is the composition's single shared catalog.
+    expect(composition.cloudModelCatalog).toBeDefined();
 
     const appOptions = cloudAppOptions({
       runnerRuntime: runtime,
@@ -222,6 +226,7 @@ describe("production Cloud runtime composition", () => {
     expect(appOptions.runnerChannel?.cloudDelivery).toBe(composition.cloudDeliveryOwner);
     expect(appOptions.cloudModel?.grants).toBe(composition.cloudModelGrants);
     expect(appOptions.cloudModel?.config.masterKey).toBe(MASTER_KEY_SENTINEL);
+    expect(appOptions.cloudModelCatalog).toBe(composition.cloudModelCatalog);
 
     const app = createApp(appOptions);
     try {

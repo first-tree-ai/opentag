@@ -15,6 +15,7 @@ export const queryKeys = {
   /** The Account's Computers. The request takes no argument — the Server scopes it to the session. */
   computers: () => ["computers"] as const,
   cloudAvailability: () => ["cloudAvailability"] as const,
+  cloudModelOptions: () => ["cloudModelOptions"] as const,
   computerConnectCode: (connectCodeId: string) => ["computerConnectCodes", connectCodeId] as const,
   agentSetup: (agentId: string) => ["agentSetup", agentId] as const,
   /** Every Setup snapshot read, for a write that must retire whichever one is still in flight. */

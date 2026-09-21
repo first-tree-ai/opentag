@@ -475,7 +475,7 @@ export class CloudSessionCollaborationOwner {
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
   ): Promise<CloudSessionMessageOutcome> {
     const { route, message } = input;
-    const runtime = this.#resolveRuntimeModel(input.runtime);
+    const runtime = await this.#resolveRuntimeModel(input.runtime);
     if (!runtime) return { status: "unreachable", code: "model_unavailable" };
     const envelope = await this.#loadTargetEnvelope(route.targetSessionId);
     if (!envelope) return { status: "unreachable", code: "outbox_unavailable" };
@@ -1556,20 +1556,18 @@ export class CloudSessionCollaborationOwner {
       );
   }
 
-  #resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): EffectiveRuntimeSnapshot | undefined {
+  async #resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
     const grants = this.#modelGrants;
     if (!grants || !this.#modelBaseUrl) return undefined;
-    if (runtime.model && grants.isModelAllowed(runtime.model)) return runtime;
-    if (runtime.model) return undefined;
-    const fallback = grants.defaultModel;
-    if (!grants.isModelAllowed(fallback)) return undefined;
-    return { ...runtime, model: fallback };
+    if (runtime.model) return (await grants.isModelAllowed(runtime.model)) ? runtime : undefined;
+    const fallback = await grants.defaultModel();
+    return fallback ? { ...runtime, model: fallback } : undefined;
   }
 
   async #assembleRuntime(sessionId: string): Promise<EffectiveRuntimeSnapshot | undefined> {
     try {
       const assembled = await this.#assembler.assembleForSession(sessionId);
-      return this.#resolveRuntimeModel(assembled);
+      return await this.#resolveRuntimeModel(assembled);
     } catch {
       return undefined;
     }

@@ -58,6 +58,8 @@ export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE = `${ACCOUNT_AGENTS_PATH}/creation-intents/:creationIntentId`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_CLOUD_COMPUTER_PATH = `${ACCOUNT_COMPUTERS_PATH}/cloud`;
+/** The Router-sourced Cloud model choices; read-only and authenticated like the sibling Cloud routes. */
+export const ACCOUNT_CLOUD_MODELS_PATH = `${ACCOUNT_CLOUD_COMPUTER_PATH}/models`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
 export const ACCOUNT_SANDBOXES_PATH = `${API_V1_PREFIX}/sandboxes`;
 export const ACCOUNT_SANDBOX_TEMPLATE = `${ACCOUNT_SANDBOXES_PATH}/:sandboxId`;
@@ -109,6 +111,7 @@ export const RUNTIME_SKILL_BUNDLE_TEMPLATE = `${RUNTIME_SKILLS_PATH}/:name/bundl
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
   accountCloudComputer: ACCOUNT_CLOUD_COMPUTER_PATH,
+  accountCloudModels: ACCOUNT_CLOUD_MODELS_PATH,
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
   accountSandboxes: ACCOUNT_SANDBOXES_PATH,

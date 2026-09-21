@@ -81,6 +81,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   disableImBinding: [ID],
   computers: [],
   cloudAvailability: [],
+  cloudModelOptions: [],
   ensureCloudComputer: [],
   agentCloudOverview: [ID],
   stopCloudSandbox: [ID, { discardUnsavedChanges: true, environmentGeneration: 1 }],

@@ -910,6 +910,66 @@ describe("the connect-code redemption status read", () => {
 });
 
 describe("Account Cloud identity routes", () => {
+  it("serves the Router model choices through the shared catalog, sanitized", async () => {
+    const catalog = {
+      defaultModel: vi.fn(),
+      isModelAllowed: vi.fn(),
+      list: vi.fn().mockResolvedValue({
+        available: true,
+        defaultModel: "router-model-a",
+        models: ["router-model-a", "router-model-b"],
+      }),
+    };
+    const app = createApp({ authService: authService(), cloudModelCatalog: catalog });
+    apps.push(app);
+
+    const anonymous = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudModels });
+    expect(anonymous.statusCode).toBe(401);
+    expect(catalog.list).not.toHaveBeenCalled();
+
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudModels, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      available: true,
+      defaultModel: "router-model-a",
+      models: ["router-model-a", "router-model-b"],
+    });
+    expect(catalog.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers a fixed unavailable payload while the model path is disabled", async () => {
+    const app = createApp({
+      authService: authService(),
+      cloudAvailability: () => ({
+        enabled: true,
+        available: false,
+        reason: "model_unavailable",
+        observedAt: "2026-09-20T00:00:00Z",
+      }),
+    });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudModels, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ available: false, defaultModel: null, models: [] });
+  });
+
+  it("answers a sanitized 503 when the Router list cannot be confirmed", async () => {
+    const catalog = {
+      defaultModel: vi.fn(),
+      isModelAllowed: vi.fn(),
+      list: vi.fn().mockResolvedValue({ available: false, defaultModel: null, models: [] }),
+    };
+    const app = createApp({ authService: authService(), cloudModelCatalog: catalog });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudModels, headers: authorization });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      error: { code: "CLOUD_MODEL_UNAVAILABLE", category: "transient" },
+    });
+    expect(JSON.stringify(response.json())).not.toContain("master");
+  });
+
   it("registers availability even when no other Account service is wired", async () => {
     const availability = {
       enabled: false,

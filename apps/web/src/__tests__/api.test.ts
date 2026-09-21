@@ -60,6 +60,20 @@ async function expectAgentSetupDeadline(fetchImpl: typeof fetch): Promise<void> 
 }
 
 describe("BrowserApi", () => {
+  it("reads Router model choices through the Server without changing the Cloud availability contract", async () => {
+    const models = { available: true, models: ["router-model"], defaultModel: "router-model" };
+    const availability = { enabled: true, available: true, reason: null, observedAt: "2026-09-21T00:00:00.000Z" };
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === "/api/v1/computers/cloud/models") return jsonResponse(models);
+      if (String(input) === "/api/v1/computers/cloud") return jsonResponse(availability);
+      throw new Error("Unexpected request");
+    });
+    const api = new BrowserApi(fetchImpl);
+    expect(await api.cloudModelOptions()).toEqual(models);
+    expect(await api.cloudAvailability()).toEqual(availability);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("bounds an uncertain Cloud discard without replaying the mutation", async () => {
     setDocumentCookie("opentag_csrf=cloud-csrf; Path=/");
     vi.useFakeTimers();

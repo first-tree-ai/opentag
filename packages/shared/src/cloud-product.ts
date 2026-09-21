@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RuntimeModelSchema } from "./runtime-config.js";
 import { SandboxLifecycleSchema } from "./sandbox.js";
 import { SessionKindSchema } from "./session.js";
 
@@ -12,6 +13,46 @@ export const CloudAvailabilitySchema = z
   })
   .strict();
 export type CloudAvailability = z.infer<typeof CloudAvailabilitySchema>;
+
+/**
+ * Upper bound on the Router-offered model list the Server relays. The Server-side catalog applies
+ * the same bound before caching, so a response larger than this can never be published.
+ */
+export const CLOUD_MODEL_OPTIONS_MAX_MODELS = 256;
+
+/**
+ * The Cloud model choices the account surface offers, sourced ONLY from the deployment Router's
+ * authenticated model list (`GET {upstreamBaseUrl}/models`): the Router already applies tenant
+ * permissions and the priced registry, and no Server-side static list restricts or extends it.
+ * The default an Agent without an explicit model executes with is the FIRST Router model. The
+ * shape is coherent by construction: `available: false` always pairs with an empty list and a
+ * null default, and an available list is non-empty with the default as its first entry.
+ */
+export const CloudModelOptionsSchema = z
+  .object({
+    available: z.boolean(),
+    models: z.array(RuntimeModelSchema).max(CLOUD_MODEL_OPTIONS_MAX_MODELS),
+    defaultModel: RuntimeModelSchema.nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.available) {
+      if (value.models.length !== 0 || value.defaultModel !== null) {
+        context.addIssue({
+          code: "custom",
+          message: "An unavailable Cloud model list carries no models and no default",
+        });
+      }
+      return;
+    }
+    if (value.models.length === 0 || value.defaultModel !== value.models[0]) {
+      context.addIssue({
+        code: "custom",
+        message: "An available Cloud model list is non-empty and defaults to its first model",
+      });
+    }
+  });
+export type CloudModelOptions = z.infer<typeof CloudModelOptionsSchema>;
 
 export const CloudSessionSummarySchema = z
   .object({

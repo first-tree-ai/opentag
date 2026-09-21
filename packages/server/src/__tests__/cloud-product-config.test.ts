@@ -42,7 +42,6 @@ const MODEL = {
   enabled: true,
   upstreamBaseUrl: "https://models.example.com",
   masterKey: "test-master-key",
-  allowedModels: ["model-a"],
   tokenTtlSeconds: 1_800,
   requestTimeoutMs: 600_000,
   maxRequestBytes: 2 * 1024 * 1024,

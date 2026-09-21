@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { RUNTIME_MAX_DURATION_MS } from "@opentag/shared";
 import { jwtVerify, SignJWT } from "jose";
 import { z } from "zod";
+import type { CloudModelCatalog } from "./cloud-model-catalog.js";
 
 /**
  * Execution-scoped model call permission. The delivery owner may prepare a token before custody
@@ -12,6 +13,13 @@ import { z } from "zod";
  * the turn reports, when its Runner connection is lost, or when its allocation ends. Revocation
  * also aborts in-flight upstream streams. Tokens are HS256 JWTs under a dedicated audience; the
  * platform model master key never leaves the proxy route.
+ *
+ * Model admission is the Server-owned CloudModelCatalog (the deployment Router's live model
+ * list), never a static allowlist: the catalog read is awaited INSIDE the reservation lifecycle
+ * (see #mint), so the reservation still lands synchronously and a revocation, close, or expiry
+ * that races the read marks the tombstone and wins before any token exists. A stale Router list
+ * never authorizes a new grant: once the catalog's bounded cache expires, a failed refresh
+ * refuses issuance.
  *
  * Issuance keeps the capacity bound and the per-execution idempotence across concurrent issue()
  * calls without any lock table: the reservation — which counts against the retained-grant bound
@@ -105,9 +113,8 @@ interface GrantState {
 }
 
 export class CloudModelGrantService {
-  readonly #allowedModels: ReadonlySet<string>;
   readonly #byExecution = new Map<string, string>();
-  readonly #defaultModel: string;
+  readonly #catalog: CloudModelCatalog;
   readonly #grants = new Map<string, GrantState>();
   readonly #key: Uint8Array;
   readonly #maxStreamsPerToken: number;
@@ -121,7 +128,8 @@ export class CloudModelGrantService {
   constructor(
     secret: string,
     options: {
-      allowedModels: readonly string[];
+      /** The Server-owned Router model catalog; the sole admission authority for minted models. */
+      catalog: CloudModelCatalog;
       maxStreamsPerToken: number;
       now?: () => Date;
       ttlSeconds: number;
@@ -131,15 +139,13 @@ export class CloudModelGrantService {
       sweepIntervalMs?: number;
     },
   ) {
-    if (options.allowedModels.length === 0) throw new Error("The Cloud model grant service requires an allowlist");
     if (!Number.isInteger(options.ttlSeconds) || options.ttlSeconds < 1) {
       throw new Error("The Cloud model grant service requires a positive integer ttlSeconds");
     }
     if (options.ttlSeconds > CLOUD_MODEL_GRANT_MAX_TTL_MS / 1_000) {
       throw new Error("The Cloud model grant service ttlSeconds exceeds the supported 24h runtime ceiling");
     }
-    this.#allowedModels = new Set(options.allowedModels);
-    this.#defaultModel = options.allowedModels[0] as string;
+    this.#catalog = options.catalog;
     this.#key = new TextEncoder().encode(secret);
     this.#maxStreamsPerToken = options.maxStreamsPerToken;
     this.#maxTrackedGrants = options.maxTrackedGrants ?? MAX_TRACKED_GRANTS_DEFAULT;
@@ -148,9 +154,9 @@ export class CloudModelGrantService {
     this.#ttlSeconds = options.ttlSeconds;
   }
 
-  /** First configured allowed model; the Server resolves an unspecified runtime model with it. */
-  get defaultModel(): string {
-    return this.#defaultModel;
+  /** The deployment default (the first Router model); undefined while the catalog is unavailable. */
+  defaultModel(): Promise<string | undefined> {
+    return this.#catalog.defaultModel();
   }
 
   /** Diagnostic retained-state size (live grants, in-flight reservations, and revocation tombstones). */
@@ -158,12 +164,14 @@ export class CloudModelGrantService {
     return this.#grants.size;
   }
 
-  isModelAllowed(model: string): boolean {
-    return this.#allowedModels.has(model);
+  /** True only when the current Router model list offers this exact model. */
+  isModelAllowed(model: string): Promise<boolean> {
+    return this.#catalog.isModelAllowed(model);
   }
 
   /**
-   * Mint a grant for one verified delivery. The model must already be allowlisted. An identical
+   * Mint a grant for one verified delivery. The model must be offered by the current Router
+   * catalog. An identical
    * live grant for the same execution is reused (same token) and a conflicting scope/model is
    * refused. A revoked execution is never re-minted unless the caller explicitly requests
    * `supersedeRevoked` after re-validating current custody; an expired execution stays refused.
@@ -173,7 +181,7 @@ export class CloudModelGrantService {
    * reservations, so concurrent mints for distinct executions fail closed.
    */
   async issue(input: CloudModelGrantIssueInput): Promise<CloudModelGrantIssue | undefined> {
-    if (this.#closed || !this.#allowedModels.has(input.model)) return undefined;
+    if (this.#closed) return undefined;
     const nowMs = this.#now().getTime();
     const existing = this.#checkExistingGrant(input, nowMs);
     if (existing.kind === "refuse") return undefined;
@@ -227,24 +235,29 @@ export class CloudModelGrantService {
   }
 
   /**
-   * Sign one reserved grant and settle the reservation. Signing is the only await between the
-   * capacity reservation and disclosure, so anything that raced it is honoured here: a swept or
-   * evicted reservation discloses nothing, and a revocation or close that landed mid-mint keeps
-   * the reservation as a revoked tombstone whose token is never disclosed. A failed mint removes
+   * Admit the model and sign one reserved grant, settling the reservation. The Router catalog
+   * read and the signing are the only awaits between the capacity reservation and disclosure, so
+   * anything that raced them is honoured here: a swept or evicted reservation discloses nothing,
+   * and a revocation or close that landed mid-read or mid-mint keeps the reservation as a revoked
+   * tombstone whose token is never disclosed. A denied/unavailable model or a failed mint removes
    * the reservation — releasing capacity and keeping the execution reusable — unless it was
    * revoked meanwhile, in which case the tombstone stays so the turn is never silently re-minted.
    */
   async #mint(state: GrantState, issuedAt: number, expirationSeconds: number): Promise<string | undefined> {
     let token: string | undefined;
     try {
-      token = await new SignJWT(state.claims)
-        .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-        .setIssuer(MODEL_GRANT_ISSUER)
-        .setAudience(MODEL_GRANT_AUDIENCE)
-        .setIssuedAt(issuedAt)
-        .setExpirationTime(expirationSeconds)
-        .setJti(state.claims.jti)
-        .sign(this.#key);
+      // Model admission happens while the reservation already exists: a revocation racing this
+      // await marks the tombstone below instead of being lost.
+      if (await this.#catalog.isModelAllowed(state.claims.model)) {
+        token = await new SignJWT(state.claims)
+          .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+          .setIssuer(MODEL_GRANT_ISSUER)
+          .setAudience(MODEL_GRANT_AUDIENCE)
+          .setIssuedAt(issuedAt)
+          .setExpirationTime(expirationSeconds)
+          .setJti(state.claims.jti)
+          .sign(this.#key);
+      }
     } catch {
       token = undefined;
     }

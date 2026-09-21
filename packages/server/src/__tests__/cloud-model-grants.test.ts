@@ -1,6 +1,7 @@
 import { RUNTIME_MAX_DURATION_MS, RunnerServerFrameSchema } from "@opentag/shared";
 import { SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type CloudModelCatalog, createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CLOUD_MODEL_GRANT_MAX_TTL_MS, CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 
 const SECRET = "unit-test-jwt-secret-at-least-32-characters";
@@ -36,7 +37,7 @@ function issueInput(overrides: Partial<Parameters<CloudModelGrantService["issue"
 
 function makeService(
   options: {
-    allowedModels?: string[];
+    catalog?: CloudModelCatalog;
     now?: () => Date;
     maxStreamsPerToken?: number;
     maxTrackedGrants?: number;
@@ -45,7 +46,7 @@ function makeService(
   } = {},
 ) {
   return new CloudModelGrantService(SECRET, {
-    allowedModels: options.allowedModels ?? ["model-a", "model-b"],
+    catalog: options.catalog ?? createStaticCloudModelCatalog(["model-a", "model-b"]),
     maxStreamsPerToken: options.maxStreamsPerToken ?? 2,
     maxTrackedGrants: options.maxTrackedGrants ?? 32,
     sweepIntervalMs: options.sweepIntervalMs ?? 0,
@@ -61,9 +62,9 @@ describe("CloudModelGrantService", () => {
     service = undefined;
   });
 
-  it("mints a verifiable execution-scoped token and exposes the configured default model", async () => {
+  it("mints a verifiable execution-scoped token and exposes the catalog default model", async () => {
     service = makeService();
-    expect(service.defaultModel).toBe("model-a");
+    await expect(service.defaultModel()).resolves.toBe("model-a");
     const issued = await service.issue(issueInput());
     if (!issued) throw new Error("grant issue failed");
     const claims = await service.verify(issued.token);
@@ -77,10 +78,37 @@ describe("CloudModelGrantService", () => {
     expect(issued.expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
-  it("never mints a token for a model outside the allowlist", async () => {
+  it("never mints a token for a model the Router catalog does not offer", async () => {
     service = makeService();
     expect(await service.issue(issueInput({ model: "model-z" }))).toBeUndefined();
-    expect(service.isModelAllowed("model-z")).toBe(false);
+    await expect(service.isModelAllowed("model-z")).resolves.toBe(false);
+  });
+
+  it("refuses issuance while the catalog is unavailable and never mints after a close racing the read", async () => {
+    service = makeService({ catalog: createStaticCloudModelCatalog([]) });
+    expect(await service.issue(issueInput())).toBeUndefined();
+    await expect(service.defaultModel()).resolves.toBeUndefined();
+
+    // A close that lands while the catalog read is in flight wins: no reservation, no token.
+    let releaseCatalog!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseCatalog = resolve;
+    });
+    service = makeService({
+      catalog: {
+        defaultModel: async () => undefined,
+        isModelAllowed: async () => {
+          await gate;
+          return true;
+        },
+        list: async () => ({ available: false, defaultModel: null, models: [] }),
+      },
+    });
+    const pending = service.issue(issueInput());
+    service.close();
+    releaseCatalog();
+    expect(await pending).toBeUndefined();
+    expect(service.trackedGrantCount).toBe(0);
   });
 
   it("reuses one live token per execution and rejects conflicting scope or model", async () => {
@@ -437,7 +465,7 @@ describe("CloudModelGrantService", () => {
 
   it("composes maximum-length claims into the real Runner wire frame", async () => {
     const model = "m".repeat(128);
-    service = makeService({ allowedModels: [model] });
+    service = makeService({ catalog: createStaticCloudModelCatalog([model]) });
     const issued = await service.issue(
       issueInput({
         executionId: "t".repeat(256),

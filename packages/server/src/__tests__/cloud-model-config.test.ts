@@ -33,8 +33,9 @@ describe("resolveCloudModelConfig", () => {
     expect(() => resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_MASTER_KEY: "" }), true)).toThrow(
       /MASTER_KEY/,
     );
-    expect(() => resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "" }), true)).toThrow(
-      /ALLOWED_MODELS/,
+    // The retired allowlist variable is ignored: it is neither required nor restrictive.
+    expect(resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "" }), true)).toMatchObject(
+      { enabled: true },
     );
   });
 
@@ -45,9 +46,10 @@ describe("resolveCloudModelConfig", () => {
     expect(() => resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_MASTER_KEY: "" }), false)).toThrow(
       /MASTER_KEY/,
     );
-    expect(() =>
+    // A malformed retired allowlist value no longer fails the boot: the Router is the authority.
+    expect(
       resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "model-a,model-a" }), false),
-    ).toThrow(/ALLOWED_MODELS/);
+    ).toEqual({ enabled: false });
     expect(() =>
       resolveCloudModelConfig(
         enabledEnvironment({ OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "ftp://models.example.com/v1" }),
@@ -60,16 +62,28 @@ describe("resolveCloudModelConfig", () => {
     expect(resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "false" }, false)).toEqual({ enabled: false });
   });
 
-  it("normalizes a fixed HTTPS upstream and keeps the model allowlist ordered", () => {
+  it("normalizes a fixed HTTPS upstream and sources models from the Router, not the environment", () => {
     const config = resolveCloudModelConfig(enabledEnvironment(), true);
     if (!config.enabled) throw new Error("expected enabled config");
     expect(config.upstreamBaseUrl).toBe("https://models.example.com/v1");
-    expect(config.allowedModels).toEqual(["model-a", "model-b"]);
+    // No Server-side allowlist: the Router catalog is the only model authority.
+    expect(config).not.toHaveProperty("allowedModels");
     expect(config.tokenTtlSeconds).toBe(1_800);
     expect(config.requestTimeoutMs).toBe(600_000);
     expect(config.maxRequestBytes).toBe(2 * 1024 * 1024);
     expect(config.maxResponseBytes).toBe(16 * 1024 * 1024);
     expect(config.maxStreamsPerToken).toBe(4);
+    // The deployment still boots with the retired variable absent entirely.
+    const withoutLegacy = resolveCloudModelConfig(
+      {
+        OPENTAG_CLOUD_MODEL_ENABLED: "true",
+        OPENTAG_CLOUD_MODEL_MASTER_KEY: MASTER_KEY,
+        OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models.example.com/v1/",
+      },
+      true,
+    );
+    if (!withoutLegacy.enabled) throw new Error("expected enabled config");
+    expect(withoutLegacy.upstreamBaseUrl).toBe("https://models.example.com/v1");
   });
 
   it("gates loopback HTTP upstreams on the explicit dev environment", () => {
@@ -114,26 +128,6 @@ describe("resolveCloudModelConfig", () => {
     expect(() =>
       resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS: "59" }), true),
     ).toThrow();
-  });
-
-  it("rejects duplicate, oversized, or malformed model allowlists", () => {
-    for (const allowlist of [
-      "model-a,model-a",
-      "model-a,model-a,model-b",
-      "model a",
-      Array.from({ length: 17 }, (_, index) => `model-${index}`).join(","),
-    ]) {
-      expect(() =>
-        resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: allowlist }), true),
-      ).toThrow(/ALLOWED_MODELS/);
-    }
-    // Whitespace and trailing separators are normalized rather than rejected.
-    const normalized = resolveCloudModelConfig(
-      enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: " model-a , model-b ," }),
-      true,
-    );
-    if (!normalized.enabled) throw new Error("expected enabled config");
-    expect(normalized.allowedModels).toEqual(["model-a", "model-b"]);
   });
 
   it("bounds request, response, timeout, and stream limits", () => {

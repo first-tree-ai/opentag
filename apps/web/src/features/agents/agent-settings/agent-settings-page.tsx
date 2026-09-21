@@ -112,6 +112,7 @@ export function AgentConfigSettingsContent({
         if (section === "instructions" || section === "execution") {
           return (
             <RuntimeConfigurationForm
+              computerKind={agent.computerKind}
               computerOnline={agent.availability.dependencies.computer.state === "ready"}
               initialConfig={config}
               save={(input) => browserApi.updateAgent(config.id, input)}

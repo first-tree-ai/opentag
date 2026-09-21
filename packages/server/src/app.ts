@@ -66,6 +66,7 @@ import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } f
 import { McpServiceError } from "./services/mcp/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
+import type { CloudModelCatalog } from "./services/sandboxes/cloud-model-catalog.js";
 import { CloudOverviewService } from "./services/sandboxes/cloud-overview-service.js";
 import type { CloudSessionCollaborationOwner } from "./services/sandboxes/cloud-session-collaboration-owner.js";
 import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
@@ -95,6 +96,8 @@ export interface CreateAppOptions {
   sandboxService?: SandboxService;
   sandboxRunnerService?: SandboxRunnerService;
   cloudAvailability?: AccountRoutesOptions["cloudAvailability"];
+  /** The one shared Router model catalog; backs the authenticated account Cloud model list route. */
+  cloudModelCatalog?: CloudModelCatalog;
   cloudOverviewService?: CloudOverviewService;
   /** E3 Runner control channel; present exactly when Cloud Runner allocation is enabled. */
   runnerChannel?: {
@@ -773,6 +776,7 @@ function registerAvailableAccountRoutes(
     !(
       options.agentService ||
       options.cloudAvailability ||
+      options.cloudModelCatalog ||
       options.taskService ||
       options.computerService ||
       options.sandboxService ||
@@ -783,8 +787,10 @@ function registerAvailableAccountRoutes(
     )
   )
     return;
+  const cloudModelCatalog = options.cloudModelCatalog;
   registerAccountRoutes(app, authService, {
     ...(options.cloudAvailability ? { cloudAvailability: options.cloudAvailability } : {}),
+    ...(cloudModelCatalog ? { cloudModelOptions: () => cloudModelCatalog.list() } : {}),
     ...(options.agentService ? { agentService: options.agentService } : {}),
     ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
     ...(options.computerService ? { computerService: options.computerService } : {}),

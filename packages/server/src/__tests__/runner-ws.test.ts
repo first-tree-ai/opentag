@@ -38,6 +38,7 @@ import { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
+import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
 import { SandboxService } from "../services/sandboxes/index.js";
@@ -1125,7 +1126,7 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     const context = makeRunnerContext();
     const fence = new CloudRuntimeFence();
     const grants = new CloudModelGrantService(JWT_SECRET, {
-      allowedModels: [E4_MODEL],
+      catalog: createStaticCloudModelCatalog([E4_MODEL]),
       maxStreamsPerToken: 2,
       ttlSeconds: 600,
     });

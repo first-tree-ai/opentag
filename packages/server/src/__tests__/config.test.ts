@@ -240,7 +240,6 @@ describe("parseServerConfig", () => {
       OPENTAG_CLOUD_MODEL_ENABLED: "true",
       OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models.example.com/v1",
       OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-master-key-sentinel-9f1c0d",
-      OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "model-a",
     };
     // Overall switch off yields identities, Runner, and model all disabled even when every Runner
     // coordinate is present and the secondary model switch was left on.
@@ -270,7 +269,9 @@ describe("parseServerConfig", () => {
     expect(modelOff.cloudModel).toEqual({ enabled: false });
     // Both switches on with complete configuration enables the model proxy.
     const modelOn = parseServerConfig({ ...required, ...runnerEnv, ...modelEnv });
-    expect(modelOn.cloudModel).toMatchObject({ enabled: true, allowedModels: ["model-a"] });
+    // The Router model catalog is the only model authority; no allowlist survives config load.
+    expect(modelOn.cloudModel).toMatchObject({ enabled: true, upstreamBaseUrl: "https://models.example.com/v1" });
+    expect(modelOn.cloudModel).not.toHaveProperty("allowedModels");
   });
 
   it("parses the E9 Cloud Runner capacity ceilings with conservative defaults", () => {
@@ -683,7 +684,6 @@ describe("parseServerConfig", () => {
         OPENTAG_CLOUD_MODEL_ENABLED: "true",
         OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models.example.com/v1",
         OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-master-key-sentinel-9f1c0d",
-        OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "model-a",
       }),
     );
     expect(summary.cloud).toEqual({ identities: true, runner: true, model: true });

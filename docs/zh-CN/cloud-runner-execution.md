@@ -170,9 +170,23 @@ provider 收发验收仍待完成；当前证据只有本地组合与外部本�
 | Server 环境变量 | 含义 |
 | --- | --- |
 | OPENTAG_CLOUD_MODEL_ENABLED | 默认 false，true 启用 Cloud 模型代理 |
-| OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL | 固定 HTTPS OpenAI-compatible API base URL |
-| OPENTAG_CLOUD_MODEL_MASTER_KEY | 仅保留在 Server 的上游密钥，不复制进 Runner 镜像或 Sandbox |
-| OPENTAG_CLOUD_MODEL_ALLOWED_MODELS | 逗号分隔的模型白名单；Agent 未指定模型时使用第一项 |
+| OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL | 固定 HTTPS Router API base URL，包含 `/v1` |
+| OPENTAG_CLOUD_MODEL_MASTER_KEY | 仅保留在 Server 的 Router LLM 凭证，不复制进 Runner 镜像或 Sandbox |
+
+Cloud 模型选项来自 Router 的认证 `GET /models` 响应，复用上述地址和凭证。Router 负责租户权限
+和模型可用性筛选；Server 使用同一个有界、短期缓存的目录完成选项展示、配置校验、任务派发和
+模型凭证签发。Agent 未指定模型时使用返回的第一项；显式模型必须属于当前目录。刷新失败或列表
+为空时显示不可用，不回退到 Local Pi 的建议模型。`OPENTAG_CLOUD_MODEL_ALLOWED_MODELS` 已退出
+运行逻辑，不再提供或限制 Cloud 模型；回滚窗口结束后可移除。
+
+模型设置页通过一次简短的 Server → Router 请求测试托管模型连接。这会消耗少量模型配额，但不
+创建 Session、Sandbox 或 Instance，也不写入任务用量历史。成功仅证明模型访问可用；Pi 执行、
+工具、消息和工作区恢复仍需真实任务验收。Local 模型选择和 daemon 诊断保持原有行为。
+
+从直连模型供应商的部署升级时，应将现有地址和凭证切换到对应环境的 Router 租户。直接读取供应商
+模型列表不能证明已接入 Router。Runner 的 Pi provider 配置将输出限制为 Router 支持的 8,192
+tokens，并关闭不支持的 OpenAI `store` 字段。应通过现有 CLI／Runner 联合发布流程更新 Runner，
+再验收 Router 上的真实 Cloud 任务；不需要新开关、数据库迁移或 Runner 协议升级。
 
 默认保留现有传输限制；仅在验收证据表明需要时调整。可选超时、请求和响应大小、并发流与令牌
 期限配置见 [cloud-model-config.ts](../../packages/server/src/cloud-model-config.ts)。本文不会实际配置环境。

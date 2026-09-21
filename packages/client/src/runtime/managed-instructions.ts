@@ -18,15 +18,13 @@ export interface ManagedSessionContext {
  */
 function renderContextTree(status: ContextTreeStatus): readonly string[] {
   if (status.status === "configured") {
-    const guidance = new Map<string, ContextTreeStatus>();
-    for (const entry of status.connections) guidance.set(entry.status, entry);
     return [
       "Context Trees (no precedence is implied by their order):",
       ...status.connections.flatMap((entry) => [
         `Alias ${entry.alias} — ${entry.repository}:`,
         ...renderContextTreeFacts(entry),
       ]),
-      ...[...guidance.values()].flatMap(renderContextTreeGuidance),
+      ...new Set(status.connections.flatMap(renderContextTreeGuidance)),
       "Use the upstream Context Tree skills to select relevant trees, attribute disagreements to their aliases, and choose an explicit alias for every write.",
     ];
   }
@@ -44,7 +42,7 @@ function renderContextTreeFacts(status: Exclude<ContextTreeStatus, { status: "co
   ];
 }
 
-function renderContextTreeGuidance(status: ContextTreeStatus): readonly string[] {
+function renderContextTreeGuidance(status: Exclude<ContextTreeStatus, { status: "configured" }>): readonly string[] {
   if (status.status === "ready") {
     return [
       "Ready Context Trees are connected in this Agent’s settings. Other Agents share this memory only when they select the same repository. Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
@@ -60,7 +58,10 @@ function renderContextTreeGuidance(status: ContextTreeStatus): readonly string[]
     ];
   }
   return [
-    "Unavailable trees are not active for this Session. Other ready trees remain usable. Do not assume earlier decisions were recorded in unavailable trees, and do not attempt to repair the tree yourself. Trees still preparing may become usable in a later Session.",
+    "Unavailable trees are not active for this Session. Other ready trees remain usable.",
+    status.reason === "PREPARING"
+      ? "Trees still preparing may become usable in a later Session."
+      : "Do not assume earlier decisions were recorded in unavailable trees, and do not attempt to repair the tree yourself.",
     "",
   ];
 }

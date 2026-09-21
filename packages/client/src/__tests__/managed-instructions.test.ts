@@ -138,3 +138,20 @@ it("renders shared multi-tree instructions once while preserving each path and r
   expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
   expect(prompt.match(/Other ready trees remain usable/g)).toHaveLength(1);
 });
+
+it("keeps preparation guidance separate from failures in a configured tree list", () => {
+  const prompt = renderManagedSystemPrompt(snapshot, {
+    ...session,
+    contextTree: {
+      status: "configured",
+      connections: [
+        { alias: "team", repository: "acme/team", status: "ready", treePath: "/trees/team" },
+        { alias: "pending", repository: "acme/pending", status: "unavailable", reason: "PREPARING" },
+      ],
+    },
+  });
+  expect(prompt).toContain("preparation is continuing in the background");
+  expect(prompt).toContain("not active for this Session");
+  expect(prompt).toContain("Other ready trees remain usable");
+  expect(prompt).not.toContain("repair the tree");
+});

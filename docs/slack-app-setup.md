@@ -18,6 +18,15 @@ verification and inbound messages are runtime observations; neither creates, com
 generation. Production Events API remains signed HTTP and includes `app_uninstalled` and `tokens_revoked`. Socket Mode
 is not used.
 
+## Bot avatars
+
+Installation and reconnection read the installed Bot User profile through `users.info` using
+the existing `users:read` scope. OpenTag caches the shared Slack bot avatar on the installation
+and propagates it to associated bindings. It does not customize avatars per Agent or per message.
+Profile-fetch failure is nonfatal; cached metadata is retained only for the same provider identity.
+Existing installations acquire an avatar on reconnection. Later Slack-side changes remain cached
+until the next reconnection, and missing or failed images fall back to initials in OpenTag.
+
 ## Fixed Slack capability contract
 
 The first-party OpenTag Slack App requests the complete capability set on the first connection and every later

@@ -1,5 +1,6 @@
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
 import { z } from "zod";
+import type { BotProfile } from "../bot-profile.js";
 import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
   ImProviderAdapter,
@@ -68,6 +69,7 @@ export interface SlackOAuthAccessResult {
 }
 
 export interface SlackApiClient {
+  botProfile?(token: string, botUserId: string): Promise<BotProfile>;
   authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }>;
   inspectInstallation(token: string): Promise<SlackInstallationInspection>;
   oauthAccess(input: {

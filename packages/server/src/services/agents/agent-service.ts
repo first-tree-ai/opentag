@@ -72,6 +72,7 @@ interface ActiveSessionPlacement {
 }
 
 interface AgentSafeRow {
+  avatarUrl?: string | null;
   id: string;
   createdByUserId: string;
   creatorDisplayName: string;
@@ -188,6 +189,7 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
   if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as a summary");
   return {
     id: row.id,
+    ...(row.avatarUrl ? { avatarUrl: row.avatarUrl } : {}),
     createdBy: { userId: row.createdByUserId, displayName: row.creatorDisplayName },
     computer: row.computer
       ? {
@@ -595,6 +597,7 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
+        avatarUrl: imBindings.botAvatarUrl,
         agentComputerId: agents.computerId,
         computerId: computers.id,
         computerDisplayName: computers.displayName,
@@ -610,6 +613,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .orderBy(asc(agents.createdAt), asc(agents.id));
@@ -715,6 +719,7 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
+        avatarUrl: imBindings.botAvatarUrl,
         agentComputerId: agents.computerId,
         computerId: computers.id,
         computerDisplayName: computers.displayName,
@@ -730,6 +735,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);

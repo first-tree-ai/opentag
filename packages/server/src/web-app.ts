@@ -24,7 +24,8 @@ const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self' https://www.googletagmanager.com",
   "connect-src 'self' https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://*.googletagmanager.com",
-  "img-src 'self' data: https://platform.slack-edge.com https://*.google-analytics.com https://www.googletagmanager.com",
+  // Provider avatars use tenant-specific HTTPS CDNs; other resource directives stay restricted.
+  "img-src 'self' data: https:",
   "style-src 'self' 'unsafe-inline'",
   "object-src 'none'",
   "base-uri 'none'",
@@ -42,7 +43,12 @@ export function registerWebApp(app: FastifyInstance, root: string): void {
     reply.header("x-content-type-options", "nosniff");
     reply.header("x-frame-options", "DENY");
     reply.header("referrer-policy", "same-origin");
-    reply.header("cache-control", path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store");
+    reply.header(
+      "cache-control",
+      path.startsWith("/assets/") || /^\/bot-avatars\/v[0-9]+\//.test(path)
+        ? "public, max-age=31536000, immutable"
+        : "no-store",
+    );
   });
 
   app.register(fastifyStatic, { root, prefix: "/", wildcard: false });

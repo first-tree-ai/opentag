@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import {
+  Client,
   Domain,
   type EventDispatcher,
   type LarkChannel,
@@ -63,6 +64,55 @@ async function connectionFixture() {
 }
 
 describe("Feishu adapter", () => {
+  it("reads the actual Feishu app name and avatar without opening a channel", async () => {
+    const request = vi.spyOn(Client.prototype, "request").mockResolvedValue({
+      code: 0,
+      bot: {
+        open_id: "ou_profile",
+        app_name: "Actual Feishu Cat",
+        avatar_url: "https://example.com/cat.png",
+        activate_status: 2,
+      },
+    });
+    try {
+      const adapter = new FeishuAdapter({ appId: "cli_profile", appSecret: "secret", teamId: null, channel: null });
+      await expect(adapter.probeBotIdentity()).resolves.toEqual({
+        openId: "ou_profile",
+        activateStatus: 2,
+        profile: { displayName: "Actual Feishu Cat", avatarUrl: "https://example.com/cat.png" },
+      });
+      expect(request).toHaveBeenCalledWith({ url: "/open-apis/bot/v3/info", method: "GET" });
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("persists actual profiles, refreshes reauthorization, and clears metadata on replacement", async () => {
+    const value = await connectionFixture();
+    const input = {
+      agentId: value.agent.id,
+      appId: "cli_profile",
+      teamId: "tenant_1",
+      botOpenId: "ou_bot",
+      appSecret: "secret",
+      grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+    };
+    const profile = { displayName: "Actual Cat", avatarUrl: "https://example.com/feishu.png" };
+    await value.imBindings.activateFeishu({ ...input, profile });
+    const read = () => value.imBindings.getForAgent(value.bootstrap.userId, value.agent.id);
+    expect((await read())?.bot).toEqual(profile);
+    const service = new AgentService(connectionDatabase.database);
+    expect((await service.getById(value.bootstrap.userId, value.agent.id)).avatarUrl).toBe(profile.avatarUrl);
+    expect((await service.listForAccount(value.bootstrap.userId)).agents[0]?.avatarUrl).toBe(profile.avatarUrl);
+    const newer = { ...profile, avatarUrl: "https://example.com/new.png" };
+    await value.imBindings.activateFeishu({ ...input, profile: newer });
+    expect((await read())?.bot).toEqual(newer);
+    await value.imBindings.activateFeishu(input);
+    expect((await read())?.bot).toEqual(newer);
+    await value.imBindings.activateFeishu({ ...input, appId: "cli_replacement", botOpenId: "ou_other" });
+    expect((await read())?.bot).toEqual({ displayName: null, avatarUrl: null });
+  });
+
   it("maps Channel SDK message, thread, mention, and resource fields", () => {
     const message: NormalizedMessage = {
       messageId: "om_1",
@@ -718,6 +768,11 @@ function fakeConnectionAdapter(input: {
       externalTeamId: "tenant_1",
       externalBotId: input.botOpenId ?? "ou_bot",
     }),
+    probeBotIdentity: vi.fn().mockResolvedValue({
+      openId: input.botOpenId ?? "ou_bot",
+      activateStatus: 2,
+      profile: { displayName: "Provider Cat", avatarUrl: "https://example.com/provider.png" },
+    }),
     listGrantedWorkspaceScopes: vi.fn().mockResolvedValue(input.scopes ?? FEISHU_REQUIRED_TENANT_SCOPES),
     normalizeInbound: vi.fn().mockReturnValue([]),
     resolveSenderName: vi.fn(input.resolveSenderName ?? (async () => undefined)),
@@ -750,6 +805,53 @@ async function validatingConnectionAttempt(value: Awaited<ReturnType<typeof conn
 }
 
 describe("FeishuConnectionManager", () => {
+  it.each(["unavailable", "different-bot"] as const)(
+    "connects without optional profile metadata when it is %s",
+    async (failure) => {
+      const value = await connectionFixture();
+      const owner = crypto.randomUUID();
+      const attemptId = await validatingConnectionAttempt(value, owner);
+      const fake = fakeConnectionAdapter({ appId: "cli_conn" });
+      fake.adapter.probeBotIdentity =
+        failure === "unavailable"
+          ? vi.fn().mockRejectedValue(new Error("provider unavailable"))
+          : vi.fn().mockResolvedValue({
+              openId: "ou_other",
+              activateStatus: 2,
+              profile: { displayName: "Wrong bot", avatarUrl: "https://example.com/wrong.png" },
+            });
+      const diagnostics = vi.fn();
+      const manager = new FeishuConnectionManager({
+        database: connectionDatabase.database,
+        inbox: { ingest: vi.fn() } as never,
+        instanceId: owner,
+        imBindings: value.imBindings,
+        createAdapter: () => fake.adapter,
+        runtimeReady: async () => true,
+        onDiagnostic: diagnostics,
+      });
+      try {
+        await manager.activateAtomicAttempt({
+          attemptId,
+          ownerInstanceId: owner,
+          agentId: value.agent.id,
+          appId: "cli_conn",
+          appSecret: "secret",
+          teamBrand: "feishu",
+        });
+        expect((await value.imBindings.getForAgent(value.bootstrap.userId, value.agent.id))?.bot).toEqual({
+          displayName: null,
+          avatarUrl: null,
+        });
+        expect(diagnostics).toHaveBeenCalledWith(
+          failure === "unavailable" ? "FEISHU_BOT_PROFILE_UNAVAILABLE" : "FEISHU_BOT_PROFILE_IDENTITY_MISMATCH",
+        );
+      } finally {
+        await manager.stop();
+      }
+    },
+  );
+
   it("atomically activates a Channel, admits inbound messages, and observes transitions", async () => {
     const value = await connectionFixture();
     const owner = crypto.randomUUID();
@@ -795,6 +897,8 @@ describe("FeishuConnectionManager", () => {
       appSecret: "secret",
       teamBrand: "lark",
     });
+    expect(verified.profile).toEqual({ displayName: "Provider Cat", avatarUrl: "https://example.com/provider.png" });
+    expect((await value.imBindings.getForAgent(value.bootstrap.userId, value.agent.id))?.bot).toEqual(verified.profile);
     expect(verified).toMatchObject({ appId: "cli_conn", teamId: "tenant_1", botOpenId: "ou_bot", teamBrand: "lark" });
     const [row] = await connectionDatabase.database
       .select()

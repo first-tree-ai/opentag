@@ -9,12 +9,32 @@ interface RegistrationOptions {
   appId?: string;
   createOnly?: boolean;
   signal: AbortSignal;
-  appPreset: { name: string; desc: string };
+  appPreset: { name: string; desc: string; avatar?: string | string[] };
   addons: { preset: boolean; scopes: { tenant: string[]; user?: string[] }; events: { items: { tenant: string[] } } };
   onQRCodeReady(input: { url: string; expireIn: number }): void;
 }
 
 describe("Feishu registration", () => {
+  it("sends all six publicly hosted PNG presets in persona order", async () => {
+    const register = vi.fn(async (_options: unknown) => ({ client_id: "cli_new", client_secret: "secret" }));
+    const flow = new DefaultFeishuRegistrationGateway(
+      register as typeof registerApp,
+      undefined,
+      "https://opentag.example",
+    ).start({
+      profile: { name: "Cat", description: "Assistant" },
+      intent: "create",
+      receiveMode: "all_message",
+    });
+    await flow.result;
+    const options = register.mock.calls[0]?.[0] as unknown as RegistrationOptions;
+    expect(options.appPreset.avatar).toEqual(
+      ["developer", "engineer", "architect", "artist", "businessman", "sales"].map(
+        (name) => `https://opentag.example/bot-avatars/v1/${name}.png`,
+      ),
+    );
+  });
+
   it.each(["create", "replace"] as const)("allows an existing or new App for %s", async (intent) => {
     const register = vi.fn(async (rawOptions: unknown) => {
       const options = rawOptions as RegistrationOptions;

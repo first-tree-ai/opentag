@@ -28,10 +28,10 @@ import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, browserApi, CancelledRequestErro
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import {
-  ComputerConnect,
   type ComputerConnectAdapter,
   createAgentTargetedComputerConnectAdapter,
 } from "../features/computer-connect/computer-connect.js";
+import { ComputerRecovery } from "../features/computer-connect/computer-recovery.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
 import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { FeishuActivationWaiting } from "../im/feishu-activation-waiting.js";
@@ -1096,7 +1096,7 @@ function PreparationNavigation({
     checking,
     checkingItem,
     pollExhausted,
-    refreshAction,
+    refreshAction: snapshot.stage === "needs-computer" ? undefined : refreshAction,
   });
   return (
     <div className="otv2-step-footer" data-state={ready ? "ready" : "blocked"} data-ui="onboarding-v2-step-2-nav">
@@ -1341,12 +1341,11 @@ function ComputerStepHeader({ name }: { readonly name: string }) {
       <Text as="h1" size="lg" variant="heading">
         {m.onboarding_v2_connect_title()}
       </Text>
-      <p className={HINT}>{m.onboarding_v2_connect_description({ name })}</p>
-      <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0">
-        <span aria-hidden="true" className="text-kumo-brand">
+      <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
+        <span aria-hidden="true" className="shrink-0 text-kumo-brand">
           <Icon name="shield" />
         </span>
-        {m.onboarding_v2_connect_privacy()}
+        {m.onboarding_v2_connect_privacy({ name })}
       </p>
     </header>
   );
@@ -1453,23 +1452,8 @@ function BoundComputerSection({
           title={computer.displayName}
           tone={offline ? "warning" : "success"}
         />
-        {repair ? (
-          <>
-            {/* The remedy for a Computer that is merely switched off, which this step states
-                nowhere else: the reinstall escape hatch inside the command surface answers a
-                different problem, and the step footer only says to check again afterwards. The
-                Settings panel says the equivalent in its own recovery sentence, so the shared
-                surface leaves the sentence to whichever caller still needs it. */}
-            <p className={HINT}>{m.computer_connect_repair_intro({ computerName: computer.displayName })}</p>
-            <ComputerConnect
-              adapter={computerConnectAdapter}
-              intent={{
-                mode: "repair",
-                target: { computerId: repair.computerId, displayName: computer.displayName },
-              }}
-              onConnected={onChanged}
-            />
-          </>
+        {offline && repair ? (
+          <ComputerRecovery computer={computer} adapter={computerConnectAdapter} onConnected={onChanged} />
         ) : null}
       </div>
     </section>

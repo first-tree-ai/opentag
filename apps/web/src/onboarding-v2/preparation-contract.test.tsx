@@ -260,7 +260,7 @@ describe("F6 shared preparation matrix, Web projection", () => {
     const row = preparationReadinessRows(snapshot).runtime;
     expect(row.status).toBe("install-required");
     expect(row.statusLabel).toBe("Installation required");
-    expect(row.detail).toContain("OpenTag won't install it for you");
+    expect(row.detail).toMatch(/^Install Codex on .+\.$/);
     expect(row.detail).not.toMatch(/installing|checking the/i);
     expect(snapshot.actions).toEqual([{ kind: "refresh" }]);
   });
@@ -476,7 +476,9 @@ describe("F6 cross-layer gating, page level", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("needs-attention");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Needs attention");
-    expect(rowDetail("messaging-support")).toContain("Continue the messaging repair in the coding agent on Review Mac");
+    expect(rowDetail("messaging-support")).toContain(
+      "Continue the messaging repair in your coding assistant on Review Mac",
+    );
     expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
     // The row never fabricates a checking state for an unavailable report.
     expect(rowTitle("messaging-support")).not.toContain("Checking");

@@ -74,11 +74,7 @@ function CommandActionBlock({ actionNotice }: { readonly actionNotice: ReactNode
 function CopyableCommandBlock({
   comment,
   command,
-  copyLabel,
-  copiedLabel,
-  expiredNotice,
-  fallbackHint,
-  inert = false,
+  ...props
 }: CommandBlockSharedProps & {
   readonly comment: string;
   readonly command: string;
@@ -94,11 +90,58 @@ function CopyableCommandBlock({
   const split = command.lastIndexOf(" ") + 1;
   const lead = command.slice(0, split);
   const token = command.slice(split);
+  return (
+    <CopyableTextBlock {...props} label={comment} payload={`${commentLine}\n${command}`}>
+      <span className="ots-command__comment">{commentLine}</span>
+      {"\n"}
+      {lead}
+      {/* Break only the opaque token by character, keeping command words readable. */}
+      <span className="ots-command__token">{token}</span>
+    </CopyableTextBlock>
+  );
+}
+
+/** The same setup surface for a task given to an assistant, without shell quoting or token markup. */
+export function InstructionBlock({
+  instructions,
+  ...props
+}: CommandBlockSharedProps & { readonly instructions: string; readonly label: string }) {
+  const paragraphEnd = instructions.indexOf("\n\n");
+  const split = paragraphEnd === -1 ? instructions.length : paragraphEnd;
+  return (
+    <CopyableTextBlock {...props} payload={instructions} plainText>
+      <span className="ots-command__comment">{instructions.slice(0, split)}</span>
+      {instructions.slice(split)}
+    </CopyableTextBlock>
+  );
+}
+
+function CopyableTextBlock({
+  label,
+  payload,
+  children,
+  copyLabel,
+  copiedLabel,
+  fallbackHint,
+  expiredNotice,
+  inert = false,
+  plainText = false,
+}: CommandBlockSharedProps & {
+  readonly label: string;
+  readonly payload: string;
+  readonly children: ReactNode;
+  readonly expiredNotice?: ReactNode;
+  readonly inert?: boolean;
+  readonly plainText?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const [hint, setHint] = useState<string>();
   const codeRef = useRef<HTMLElement>(null);
   const resetTimer = useRef(0);
   const mounted = useRef(true);
+  const setCopyTarget = (node: HTMLElement | null) => {
+    codeRef.current = node;
+  };
 
   useEffect(() => {
     mounted.current = true;
@@ -109,7 +152,6 @@ function CopyableCommandBlock({
   }, []);
 
   async function copy() {
-    const payload = `${commentLine}\n${command}`;
     try {
       await navigator.clipboard.writeText(payload);
       if (!mounted.current) return;
@@ -132,21 +174,21 @@ function CopyableCommandBlock({
   return (
     <div className="ots-command flex flex-col gap-1" data-expired={expiredNotice ? "true" : undefined}>
       <div className="ots-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">
-        <pre className="ots-command__code flex-1 min-w-0">
-          <code ref={codeRef}>
-            <span className="ots-command__comment">{commentLine}</span>
-            {"\n"}
-            {lead}
-            {/*
-              The trailing token is an opaque secret — a connect code — and it breaks by character
-              rather than at its own hyphens and underscores. Left to break at those, two codes of
-              the same length wrap to a different number of lines and the block changes height when
-              one is reissued; measured, that was 19px of movement below 640px. The rest of the
-              command still breaks between words, so short tokens like `sh` stay whole.
-            */}
-            <span className="ots-command__token">{token}</span>
-          </code>
-        </pre>
+        <section
+          aria-label={label}
+          className="ots-command__code flex-1 min-w-0"
+          tabIndex={inert || expiredNotice !== undefined ? -1 : 0}
+        >
+          {plainText ? (
+            <p ref={setCopyTarget} className="m-0 whitespace-pre-wrap">
+              {children}
+            </p>
+          ) : (
+            <pre className="m-0 whitespace-pre-wrap font-[inherit] text-[inherit]">
+              <code ref={setCopyTarget}>{children}</code>
+            </pre>
+          )}
+        </section>
         {/*
           Icon only, and deliberately so. A button whose label changes changes width, and this one
           sits beside the command: the swap from "Copy" to "Copied" was wide enough to reflow the

@@ -646,6 +646,7 @@ export function installApi(
     if (path === "/api/v1/agents" && init?.method === undefined) return serveAgentList();
     const normalizeComputer = (computer: Record<string, unknown>) => ({
       computerId: computer.computerId ?? computer.id,
+      kind: computer.kind ?? "local",
       displayName: computer.displayName,
       platform: computer.platform,
       connectionStatus: computer.connectionStatus,

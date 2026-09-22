@@ -123,7 +123,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(within(menu).queryByRole("menuitem", { name: "Workspace" })).toBeNull();
     expect(within(menu).queryByText("Secondary")).toBeNull();
-    expect(within(menu).getByRole("menuitem", { name: "Computers" })).toBeTruthy();
+    expect(within(menu).getByRole("menuitem", { name: "Computer" })).toBeTruthy();
     expect(within(menu).queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 });

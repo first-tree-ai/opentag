@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
-import { agentId, installApi, json, memberUserId, resetWebAppState } from "./support/app-fixtures.js";
+import { agentId, computerId, installApi, json, memberUserId, resetWebAppState } from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
@@ -25,7 +25,7 @@ describe("OpenTag Web App Shell", () => {
     const status = screen.getByRole("region", { name: "Agent status" });
     expect(within(status).getByText("Computer")).toBeTruthy();
     expect(within(status).getByText("Messaging")).toBeTruthy();
-    expect(within(status).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
+    expect(within(status).getByText("Ada's Mac · macOS")).toBeTruthy();
     expect(within(status).getByText("Lark · @reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Lark · @reviewer" })).toBeNull();
     const header = screen.getByRole("heading", { name: "Reviewer" }).closest("header");
@@ -44,7 +44,8 @@ describe("OpenTag Web App Shell", () => {
       `/agents/${agentId}/context-tree`,
     );
     expect(within(agentNavigation).queryByText("Settings")).toBeNull();
-    expect(screen.queryByText("Runtime")).toBeNull();
+    expect(within(status).queryByText("Runtime")).toBeNull();
+    expect(status.querySelector('[data-ui="agent-status-runtime"]')).toBeNull();
   });
 
   it("offers one Continue setup exit for an unfinished Agent and returns to that Agent", async () => {
@@ -86,13 +87,13 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("keeps post-configuration maintenance states in Settings", async () => {
+  it("routes computer maintenance to the Account Computer", async () => {
     installApi({ bound: true, computerStatus: () => "offline" });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
-    expect((await screen.findByRole("link", { name: "Open computer setup" })).getAttribute("href")).toBe(
-      `/agents/${agentId}/settings/computer`,
+    expect((await screen.findByRole("link", { name: "Restore connection" })).getAttribute("href")).toBe(
+      `/agents/computers?computerId=${computerId}&fromAgent=${agentId}`,
     );
     expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
   });

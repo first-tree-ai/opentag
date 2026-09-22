@@ -288,12 +288,12 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer runs on your own computer.")).toBeTruthy();
+    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through OpenTag.")).toBeTruthy();
     expect(screen.getByText("No computer connected")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/setup");
 
     // The second row, so this cannot pass by binding whichever Computer happens to be first.
-    fireEvent.click(await screen.findByRole("button", { name: "Use Spare" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use this computer: Spare" }));
 
     fireEvent.click(await expectPreparationGate());
     expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
@@ -466,11 +466,11 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    const computers = screen.getByRole("menuitem", { name: "Computers" });
+    const computers = screen.getByRole("menuitem", { name: "Computer" });
     expect(computers.getAttribute("href")).toBe("/agents/computers");
     fireEvent.click(computers);
-    expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Connected Computers" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connected Computers" })).toBeNull();
     expect(screen.getByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/computers");

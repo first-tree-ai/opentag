@@ -6,145 +6,59 @@ import { agentId, computerId, installApi, resetWebAppState } from "./support/app
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
 
-  it("keeps assigned Computer details in its own Settings page", async () => {
-    installApi({ bound: true });
+  it("keeps placement and runtime separate in Agent settings", async () => {
+    installApi({
+      bound: true,
+      computerProviderReadiness: [{ provider: "codex", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" }],
+    });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
-
-    expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 2, name: "Ada's Mac" })).toBeTruthy();
-    expect(screen.getByText("macOS")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Execution" })).toBeNull();
-    expect(screen.queryByText(/Turn timeout/i)).toBeNull();
-    expect(screen.queryByText(/Last seen/i)).toBeNull();
+    expect(screen.queryByText("Needs attention")).toBeNull();
+    expect(screen.queryByText("Runtime")).toBeNull();
+    expect(screen.getByRole("link", { name: "Manage computer" }).getAttribute("href")).toContain(
+      `/agents/computers?computerId=${computerId}`,
+    );
+    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
   });
 
-  it("names the machine-level recovery for an offline Computer instead of offering a dead retry", async () => {
+  it("opens Account recovery for the exact computer and preserves the return to the Agent", async () => {
     installApi({ bound: true, computerStatus: () => "offline" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
-
-    expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 2, name: "Ada's Mac" })).toBeTruthy();
-    expect(screen.getByText("Offline")).toBeTruthy();
-    expect(screen.getByText(/Last seen/)).toBeTruthy();
-    expect(
-      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
-    ).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 3, name: "Reconnect computer" })).toBeTruthy();
-    // The connect step's own idle intro said the same thing as the sentence above it, word for word.
-    expect(screen.queryByText(/Start OpenTag on/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
-    expect(
-      vi
+    fireEvent.click(await screen.findByRole("link", { name: "Restore connection" }));
+    expect(await screen.findByRole("button", { name: "Get connection help" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to Reviewer settings" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/computer`,
+    );
+    expect(document.querySelector(".ots-command__body")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Assistant requested a repair?" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Repair connection" }));
+    await waitFor(() => {
+      const requests = vi
         .mocked(fetch)
-        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST"),
-    ).toHaveLength(0);
-  });
-
-  it("offers machine recovery on the Connected computer page when the Computer is offline", async () => {
-    installApi({ bound: true, computerStatus: () => "offline" });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
-    render(<App />);
-
-    expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 2, name: "Ada's Mac" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Generate an install command" })).toBeTruthy();
-  });
-
-  it("withholds machine recovery when the Computer is reachable but its Provider is not", async () => {
-    installApi({
-      bound: true,
-      computerProviderReadiness: [{ provider: "codex", status: "install", observedAt: "2026-08-20T00:00:00.000Z" }],
+        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");
+      expect(requests).toHaveLength(1);
+      expect(JSON.parse(String(requests[0]?.[1]?.body))).toEqual({ mode: "repair", targetComputerId: computerId });
     });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
-    render(<App />);
-
-    expect(await screen.findByText("Codex is not installed on Ada's Mac.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Generate an install command" })).toBeNull();
   });
 
-  it("generates a command naming the assigned Computer without leaving the Agent", async () => {
-    installApi({ bound: true, computerStatus: () => "offline" });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+  it("automatically retires Account recovery when the computer reconnects", async () => {
+    let status: "online" | "offline" = "offline";
+    installApi({ bound: true, computerStatus: () => status });
+    window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Generate an install command" }));
-
-    // The step is named once, and not by repeating the machine the identity header and the command
-    // block already carry.
-    expect(screen.getByRole("region", { name: "Reconnect computer" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Reconnect Ada's Mac" })).toBeNull();
-    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
-    // The comment is the POSIX null command, not a `#` line: zsh runs a pasted `#` and answers
-    // "command not found", so #500 made it inert. This is the rendered form.
-    expect(screen.getByText(": 'Run this command to reconnect OpenTag on Ada'\\''s Mac.'")).toBeTruthy();
-    const repairRequests = vi
-      .mocked(fetch)
-      .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");
-    expect(repairRequests).toHaveLength(1);
-    expect(JSON.parse(String(repairRequests[0]?.[1]?.body))).toEqual({
-      mode: "repair",
-      targetComputerId: computerId,
-    });
-    expect(window.location.pathname).toBe(`/agents/${agentId}/settings/computer`);
-  });
-
-  it("observes a Computer coming back online from the recovery page itself", async () => {
-    let computerStatus: "online" | "offline" = "offline";
-    installApi({ bound: true, computerStatus: () => computerStatus });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
-    render(<App />);
-
-    expect(await screen.findByText("Offline")).toBeTruthy();
-    expect(
-      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
-    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
-
-    computerStatus = "online";
+    fireEvent.click(await screen.findByRole("button", { name: "Get connection help" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Assistant requested a repair?" }));
+    expect(await screen.findByRole("button", { name: "Repair connection" })).toBeTruthy();
+    status = "online";
     fireEvent(window, new Event("focus"));
-
     expect(await screen.findByText("Online")).toBeTruthy();
-    await waitFor(() => expect(screen.queryByText(/Start it there/)).toBeNull());
-    expect(screen.queryByText(/Last seen/)).toBeNull();
-
-    computerStatus = "offline";
-    fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("Offline")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Generate an install command" })).toBeTruthy();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST"),
-    ).toHaveLength(1);
-  });
-
-  it("explains an unready Provider on the Computer page instead of the model settings", async () => {
-    installApi({
-      bound: true,
-      runtimeProvider: "claude-code",
-      computerProviderReadiness: [
-        { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
-        { provider: "claude-code", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" },
-      ],
-    });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
-    render(<App />);
-
-    expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 2, name: "Ada's Mac" })).toBeTruthy();
-    expect(screen.getByText("Not ready")).toBeTruthy();
-    expect(screen.getByText("Claude Code is not signed in on Ada's Mac.")).toBeTruthy();
-    /*
-     * The machine is reachable and heartbeating here -- only its Provider is not ready -- so it has
-     * no staleness to report. The badge row carries last seen now, and "Not ready · Last seen just
-     * now" on one line asks the reader to believe both at once.
-     */
-    expect(screen.queryByText(/Last seen/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
+    expect(screen.queryByText(/Last online/)).toBeNull();
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {
@@ -162,7 +76,7 @@ describe("OpenTag Web App Shell", () => {
       .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
     expect(computerRow).toBeTruthy();
     expect(within(computerRow).getByText("Offline")).toBeTruthy();
-    expect(within(computerRow).getByRole("link", { name: "Open computer setup" })).toBeTruthy();
+    expect(within(computerRow).getByRole("link", { name: "Restore connection" })).toBeTruthy();
   });
 
   it("keeps Agent cards useful when Computer status cannot be confirmed", async () => {
@@ -280,9 +194,10 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const computerRow = screen
       .getByRole("region", { name: "Agent status" })
-      .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
+      .querySelector('[data-ui="agent-status-runtime"]') as HTMLElement;
     expect(within(computerRow).queryByText("Online")).toBeNull();
-    expect(within(computerRow).getByText("Status unavailable")).toBeTruthy();
+    expect(within(computerRow).getByText("Codex status unavailable")).toBeTruthy();
+    expect(within(computerRow).queryByRole("link")).toBeNull();
     expect(within(computerRow).queryByText("OpenTag could not confirm Codex on this Computer.")).toBeNull();
     unconfirmedRuntime.unmount();
 
@@ -309,14 +224,14 @@ describe("OpenTag Web App Shell", () => {
     const states = [
       {
         /*
-         * No Computer at all. It leads the table because every row below reads a fact about a
+         * No computer assigned at all. It leads the table because every row below reads a fact about a
          * machine, and this is the state where there is none to read: without its own branch it
          * falls through to the Provider sentence and reports a Computer that does not exist.
          * Its exit differs too -- there is nothing here to view.
          */
         exit: "Continue setup",
         href: `/agents/setup?agentId=${agentId}`,
-        label: "No Computer",
+        label: "No computer assigned",
         options: { agentUnbound: true },
       },
       {
@@ -326,14 +241,14 @@ describe("OpenTag Web App Shell", () => {
         options: { computerEvidenceFails: true },
       },
       {
-        exit: "Open computer setup",
-        href: `/agents/${agentId}/settings/computer`,
+        exit: "Restore connection",
+        href: `/agents/computers?computerId=${computerId}&fromAgent=${agentId}`,
         label: "Offline",
         options: { computerStatus: () => "offline" as const },
       },
       {
-        exit: "Continue setup",
-        href: `/agents/setup?agentId=${agentId}`,
+        exit: undefined,
+        href: undefined,
         label: "Checking Codex",
         options: { computerProviderReadiness: readiness("checking") },
       },
@@ -355,7 +270,6 @@ describe("OpenTag Web App Shell", () => {
         label: "Codex unavailable",
         options: { computerProviderReadiness: readiness("unavailable") },
       },
-      { exit: undefined, href: undefined, label: "Online", options: { computerProviderReadiness: readiness("ready") } },
     ];
     for (const state of states) {
       installApi({ bound: true, ...state.options });
@@ -363,23 +277,58 @@ describe("OpenTag Web App Shell", () => {
       const rendered = render(<App />);
 
       expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+      const runtimeRow = "computerProviderReadiness" in state.options;
       const row = screen
         .getByRole("region", { name: "Agent status" })
-        .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
+        .querySelector(
+          runtimeRow ? '[data-ui="agent-status-runtime"]' : '[data-ui="agent-status-computer"]',
+        ) as HTMLElement;
       expect(row).toBeTruthy();
       expect(within(row).getByText(state.label)).toBeTruthy();
       // The unbound row names no machine, because there is none to name.
-      if (!("options" in state && state.options?.agentUnbound)) {
-        expect(within(row).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
+      if (!runtimeRow && !("agentUnbound" in state.options)) {
+        expect(within(row).getByText("Ada's Mac · macOS")).toBeTruthy();
       }
-      if (state.exit) {
-        expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(state.href);
-      } else {
-        expect(within(row).queryByRole("link")).toBeNull();
-      }
+      expectRecoveryLink(row, state.exit, state.href);
       rendered.unmount();
     }
   });
+
+  it.each([
+    { status: "install" as const, instruction: "Install Codex on Ada's Mac." },
+    { status: "sign-in" as const, instruction: "Sign in to Codex on Ada's Mac." },
+    { status: "unavailable" as const, instruction: "Open Codex on Ada's Mac and check for errors." },
+  ])("explains $status on the named computer, including for a paused Agent", async ({ status, instruction }) => {
+    installApi({
+      bound: true,
+      initialStatus: "suspended",
+      computerProviderReadiness: [{ provider: "codex", status, observedAt: "2026-08-20T00:00:00.000Z" }],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+    expect(await screen.findByText(instruction)).toBeTruthy();
+    const row = screen.getByText(instruction).closest("li") as HTMLElement;
+    expect(within(row).queryByRole("link", { name: /computer/i })).toBeNull();
+  });
+
+  it.each(["online", "offline"] as const)(
+    "hides cached runtime failures while computer status is %s",
+    async (status) => {
+      installApi({
+        bound: true,
+        computerStatus: () => status,
+        computerEvidenceFails: status === "online",
+        computerProviderReadiness: [{ provider: "codex", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" }],
+      });
+      window.history.replaceState({}, "", `/agents/${agentId}`);
+      render(<App />);
+      expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+      expect(
+        screen.getByRole("region", { name: "Agent status" }).querySelector('[data-ui="agent-status-runtime"]'),
+      ).toBeNull();
+      expect(screen.queryByText("Sign in to Codex on Ada's Mac.")).toBeNull();
+    },
+  );
 
   it("does not let a paused Agent make the Computer row contradict itself", async () => {
     /*
@@ -398,9 +347,14 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const row = screen
       .getByRole("region", { name: "Agent status" })
-      .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
+      .querySelector('[data-ui="agent-status-runtime"]') as HTMLElement;
     expect(within(row).getByText("Checking Codex")).toBeTruthy();
     expect(within(row).queryByText("OpenTag is still checking Codex on this Computer.")).toBeNull();
     expect(within(row).queryByRole("link")).toBeNull();
   });
 });
+
+function expectRecoveryLink(row: HTMLElement, label: string | undefined, href: string | undefined) {
+  if (label) expect(within(row).getByRole("link", { name: label }).getAttribute("href")).toBe(href);
+  else expect(within(row).queryByRole("link")).toBeNull();
+}

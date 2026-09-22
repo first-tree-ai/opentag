@@ -2,9 +2,13 @@
 
 [English](../observability.md)
 
+> Last synced with: 2026-09-11
+
 OpenTag Server 可选地通过 OTLP/HTTP 导出 OpenTelemetry traces。该能力默认关闭，覆盖 provider 连接、IM 入站、持久 delivery 与 Runtime 生命周期边界。
 
 Tracing 不等于日志上传。Pino 仍将 server 日志写到 stdout；本能力不会把全部 stdout 日志上传到 Logfire。Logfire 只接收 spans、span attributes 和有界的 exception events。
+
+发生在 Web App 或 CLI 而非 server 上的失败走另一条路径：server 将其中继到 Google Cloud Error Reporting。参见 [客户端错误上报](./error-reporting.md)。
 
 ## 日志契约
 
@@ -56,6 +60,7 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | `deployment.environment.name` resource 标签 |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | `[0,1]` 范围内的全局 head sample rate |
 | `OPENTAG_LOG_LEVEL` | `info` | Server Pino level：`trace`、`debug`、`info`、`warn`、`error`、`fatal` 或 `silent` |
+| `GOOGLE_CLOUD_PROJECT` | 未设置 | 将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting；参见 [客户端错误上报](./error-reporting.md) |
 
 服务 resource 固定为 `service.name=opentag-server`。每个进程还会把随机启动标识写入 `service.instance.id`，用于区分 replica 和重启。
 

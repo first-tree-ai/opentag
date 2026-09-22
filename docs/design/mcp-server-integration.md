@@ -1,7 +1,7 @@
 # MCP Server integration
 
-> **Status: the management plane is delivered; runtime delivery is delivered for Claude Code on a
-> local Computer.**
+> **Status: the management plane is delivered; runtime delivery is delivered for Claude Code and
+> Codex on a local Computer.**
 >
 > The management plane provides MCP (Model Context Protocol) Server definitions, per-Agent bindings
 > with per-Agent overrides, per-Agent authorization (anonymous / Bearer / OAuth), capability probing,
@@ -12,10 +12,9 @@
 > upstream credential is ever delivered to a Provider** — the gateway resolves the Agent's own
 > authorization row and calls upstream itself.
 >
-> Not yet covered: **Codex** (its app-server is spawned once per Session runtime from a frozen
-> argument vector, so a per-execution bearer cannot be injected into it) and the **Cloud sandbox**
-> (its Turn worker runs Pi only; neither Claude Code nor Codex runs there at all). **Pi** has no MCP
-> configuration surface and is out of scope.
+> Not yet covered: the **Cloud sandbox** (its Turn worker runs Pi only; neither Claude Code nor Codex
+> runs there at all). **Pi** has no MCP configuration surface and is out of scope; a Turn that was
+> granted MCP tools on a provider that cannot mount them logs `mcp_gateway_unsupported_provider`.
 >
 > An earlier revision of this page proposed a different path — push credentials down to the Client
 > and inject the real authorization header through a local `127.0.0.1` loopback proxy. The gateway
@@ -608,7 +607,10 @@ The management plane says which Servers an Agent may reach and with whose creden
 how it actually reaches them.
 
 ```
-Claude Code (spawned per run, local Computer)
+Claude Code (spawned per run, local Computer)       Codex (one App Server per Session)
+   │                                                   │  Bearer <Session relay token>
+   │                                                   ▼
+   │                                                 127.0.0.1 relay (swaps in the execution bearer)
    │  MCP Streamable HTTP, Authorization: Bearer <execution token>
    ▼
 POST /api/v1/mcp                                    the inbound MCP server
@@ -635,6 +637,30 @@ The token is fetched through its own `runtime:mcp:gateway` frame rather than ret
 execution-open result, because that result has never carried a secret and both existing secrets in
 the protocol — capability tokens and proxy tickets — are fetched the same way. The Client composes
 the endpoint URL against the Server origin it already pinned; only the fixed path crosses the wire.
+
+### Codex: a Session-scoped loopback relay
+
+Codex spawns its App Server once per Session runtime from a frozen argument vector, and connects its
+MCP servers when a thread starts — usually outside any execution. The bearer is minted per execution,
+so it cannot be written into that argument vector. The Codex runtime instead owns a loopback relay
+for the Session's lifetime:
+
+- The App Server mounts the relay as its only MCP server (`mcp_servers` is replaced wholesale, so the
+  user's own Codex servers stay excluded) and reads the relay's Session-local bearer from an
+  environment variable the shell environment include-list never passes to model commands.
+- Between executions the relay answers the MCP handshake itself with an empty catalogue, so Codex
+  marks the server ready instead of failed, and no execution bearer outlives its turn.
+- At the start of a run that carries a gateway, the runtime attaches that execution's bearer and
+  calls `config/mcpServer/reload`: Codex lists MCP tools only when it connects a server, so this is
+  what makes the Agent's catalogue visible. The runtime waits, bounded, for the gateway server's
+  `mcpServer/startupStatus/updated` before `turn/start`; a failed or slow reconnect costs the Agent
+  its MCP tools for that turn, never the turn. The bearer is detached when the run ends, and a later
+  run without a gateway reloads once so revoked tools disappear.
+- Gateway tools are pre-approved as a server (`default_tools_approval_mode = "approve"`), matching the
+  Claude Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
+
+Codex always defers MCP tools behind its built-in `tool_search`, so the model sees the
+`opentag-mcp` server and discovers individual tools on demand rather than in its initial tool list.
 
 ### What the gateway speaks
 

@@ -3,7 +3,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
-import { getRuntimeConfigurationOptions, hashTuple } from "@opentag/shared";
+import { getRuntimeConfigurationOptions, hashTuple, MCP_GATEWAY_SERVER_NAME } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -56,12 +56,22 @@ import {
   type CodexSpawnOptions,
   type InteractiveCodexAppServerClient,
 } from "./app-server-wire.js";
+import {
+  CODEX_MCP_RELAY_TOKEN_ENV,
+  type CodexMcpGatewayEndpoint,
+  type CodexMcpGatewayRelay,
+  codexMcpGatewayServersOverride,
+  startCodexMcpGatewayRelay,
+} from "./mcp-gateway-relay.js";
 
 const execFileAsync = promisify(execFile);
 const CODEX_BINDING_SCHEMA_VERSION = 1;
 const CODEX_PROVIDER_ID = "codex";
 const logger = createLogger("provider-codex-runtime");
 const CODEX_CAPABILITY_PROBE_INSTRUCTIONS = "OpenTag Provider prompt-surface capability probe.";
+const CODEX_NO_MCP_SERVERS_OVERRIDE = "mcp_servers={}";
+/** Upper bound for Codex to reconnect the gateway after a reload; a slow catalogue must not stall a turn. */
+const CODEX_MCP_RELOAD_TIMEOUT_MS = 15_000;
 export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "app-server",
   "--stdio",
@@ -98,7 +108,7 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "--disable",
   "tool_call_mcp_elicitation",
   "-c",
-  "mcp_servers={}",
+  CODEX_NO_MCP_SERVERS_OVERRIDE,
   "-c",
   'web_search="disabled"',
   "-c",
@@ -132,6 +142,7 @@ export const CODEX_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze(
 });
 
 interface CodexProviderConfiguration {
+  readonly mcpGateway?: CodexMcpGatewayEndpoint;
   readonly personality?: string;
   readonly serviceName?: string;
   readonly summary?: string;
@@ -146,6 +157,8 @@ interface CodexRuntimeOptions {
   readonly policy: AgentRuntimePolicy;
   readonly configuration?: AgentRunConfiguration;
   readonly hostedTools?: AgentHostedTools;
+  readonly mcpRelay: CodexMcpGatewayRelay;
+  readonly mcpReloadTimeoutMs: number;
 }
 
 export interface CodexAgentRuntimeFactoryOptions {
@@ -154,6 +167,9 @@ export interface CodexAgentRuntimeFactoryOptions {
     cwd: string,
     environment?: Readonly<Record<string, string>>,
   ) => InteractiveCodexAppServerClient;
+  /** Starts the Session-scoped MCP relay; injectable so tests can observe gateway attachment. */
+  readonly startMcpRelay?: () => Promise<CodexMcpGatewayRelay>;
+  readonly mcpReloadTimeoutMs?: number;
   readonly process?: Omit<CodexSpawnOptions, "cwd" | "env"> & { readonly env?: NodeJS.ProcessEnv };
   readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
@@ -187,6 +203,10 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
   readonly #hostedTools?: AgentHostedTools;
+  readonly #mcpRelay: CodexMcpGatewayRelay;
+  readonly #mcpReloadTimeoutMs: number;
+  /** Whether Codex currently holds a catalogue listed through an execution's gateway. */
+  #mcpCatalogAttached = false;
   readonly #unsubscribeNotifications: () => void;
   readonly #unsubscribeRequests: () => void;
   readonly #wireInteractions = new Map<string, CodexAppServerRequest>();
@@ -220,6 +240,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#hostedTools = options.hostedTools;
+    this.#mcpRelay = options.mcpRelay;
+    this.#mcpReloadTimeoutMs = options.mcpReloadTimeoutMs;
     this.#client.setDynamicToolHandler?.((call) => this.#handleHostedTool(call));
     this.#unsubscribeNotifications = this.#client.subscribe((message) => {
       this.#enqueue({ type: "notification", message });
@@ -249,6 +271,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     void this.#terminal.promise.catch(() => undefined);
 
     try {
+      await this.#attachMcpGateway(request, context.signal);
       const response = await this.#client.request("turn/start", this.#turnStartParams(request));
       const started = parseTurnResponse(response, "turn/start");
       if (started.status !== "inProgress") throw protocolError("turn/start returned a terminal turn");
@@ -271,6 +294,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       throw failure;
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
+      // The execution bearer must not outlive its turn; Codex keeps the listed catalogue meanwhile.
+      this.#mcpRelay.setUpstream(undefined);
       this.#buffering = false;
       this.#buffered = [];
       this.#context = undefined;
@@ -325,7 +350,75 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#unsubscribeRequests();
     this.#unsubscribeNotifications();
     this.#client.setDynamicToolHandler?.(undefined);
-    await this.#client.close();
+    try {
+      await this.#client.close();
+    } finally {
+      await this.#mcpRelay.close();
+    }
+  }
+
+  /**
+   * Hand this run's gateway bearer to the relay and make Codex re-list the gateway catalogue.
+   *
+   * Codex lists MCP tools only when it connects a server, so a bearer attached after the thread
+   * started is invisible until `config/mcpServer/reload` reconnects it. A run without a gateway
+   * reloads only when Codex still holds a gateway catalogue, so revoked MCP tools disappear.
+   */
+  async #attachMcpGateway(request: AgentPromptRequest, signal: AbortSignal): Promise<void> {
+    const endpoint = parseProviderConfiguration(
+      mergeConfiguration(this.#configuration, request.configuration)?.provider,
+    ).mcpGateway;
+    this.#mcpRelay.setUpstream(endpoint);
+    if (!endpoint && !this.#mcpCatalogAttached) return;
+    const refreshed = await this.#reloadMcpServers(signal);
+    // An unconfirmed reload may have left a gateway catalogue behind, so the next run reloads again.
+    this.#mcpCatalogAttached = endpoint !== undefined || !refreshed;
+  }
+
+  async #reloadMcpServers(signal: AbortSignal): Promise<boolean> {
+    const startedAt = Date.now();
+    let timer: NodeJS.Timeout | undefined;
+    const settled = deferred<{ status: string; error?: string }>();
+    // Subscribed before the request, so a status Codex emits ahead of the reload reply is not missed.
+    const unsubscribe = this.#client.subscribe((message) => {
+      if (message.method !== "mcpServer/startupStatus/updated") return;
+      const params = record(message.params);
+      if (params?.name !== MCP_GATEWAY_SERVER_NAME || params.threadId !== this.#threadId) return;
+      if (typeof params.status !== "string" || params.status === "starting") return;
+      settled.resolve({ status: params.status, ...(typeof params.error === "string" ? { error: params.error } : {}) });
+    });
+    const timedOut = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), this.#mcpReloadTimeoutMs);
+      timer.unref();
+    });
+    try {
+      await this.#client.request("config/mcpServer/reload", null, signal);
+      const outcome = await Promise.race([settled.promise, timedOut]);
+      if (!outcome) {
+        logger.warn(
+          { code: "mcp_reload_timeout", timeoutMs: this.#mcpReloadTimeoutMs },
+          "Codex did not reconnect the MCP gateway in time",
+        );
+        return false;
+      }
+      if (outcome.status !== "ready") {
+        logger.warn(
+          { code: "mcp_reload_failed", status: outcome.status, error: outcome.error?.slice(0, 500) },
+          "Codex could not reconnect the MCP gateway",
+        );
+        return false;
+      }
+      logger.info({ durationMs: Date.now() - startedAt }, "Codex MCP gateway catalogue refreshed");
+      return true;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      // Losing MCP tools must never cost the Agent its turn.
+      logger.warn({ code: "mcp_reload_request_failed", error: String(error) }, "Codex MCP reload request failed");
+      return false;
+    } finally {
+      clearTimeout(timer);
+      unsubscribe();
+    }
   }
 
   async #handleHostedTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {
@@ -729,7 +822,10 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     cwd: string,
     environment?: Readonly<Record<string, string>>,
     pathPrepend?: string,
+    mcpRelay?: CodexMcpGatewayRelay,
   ) => InteractiveCodexAppServerClient;
+  readonly #startMcpRelay: () => Promise<CodexMcpGatewayRelay>;
+  readonly #mcpReloadTimeoutMs: number;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
     readonly credential: boolean;
@@ -745,20 +841,28 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       cwd: string,
       workspaceEnvironment?: Readonly<Record<string, string>>,
       pathPrepend?: string,
+      mcpRelay?: CodexMcpGatewayRelay,
       expectedCodexHome = options.process?.expectedCodexHome,
     ) => {
       // Snapshots and ~/.zshenv can both put ambient CLIs ahead of the Session launcher. With
       // snapshots disabled above, managed executions keep zsh initialization in their state home.
       const shellHome = pathPrepend ? workspaceEnvironment?.OPENTAG_HOME : undefined;
+      // Probe clients have no relay and keep every MCP server excluded.
+      const mcpServersOverride = mcpRelay
+        ? codexMcpGatewayServersOverride(mcpRelay.url)
+        : CODEX_NO_MCP_SERVERS_OVERRIDE;
       const managedArgs = [
-        ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+        ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.map((arg) =>
+          arg === CODEX_NO_MCP_SERVERS_OVERRIDE ? mcpServersOverride : arg,
+        ),
         ...(shellHome ? ["-c", `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(shellHome)}`] : []),
       ];
+      const env = composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend);
       return new CodexAppServerProcess({
         command,
         args: options.process?.args ?? managedArgs,
         cwd,
-        env: composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend),
+        env: mcpRelay ? { ...env, [CODEX_MCP_RELAY_TOKEN_ENV]: mcpRelay.token } : env,
         expectedCodexHome,
         maxLineBytes: options.process?.maxLineBytes,
         requestTimeoutMs: options.process?.requestTimeoutMs,
@@ -766,10 +870,12 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       });
     };
     this.#createClient = options.createClient ?? createDefaultClient;
+    this.#startMcpRelay = options.startMcpRelay ?? (() => startCodexMcpGatewayRelay());
+    this.#mcpReloadTimeoutMs = options.mcpReloadTimeoutMs ?? CODEX_MCP_RELOAD_TIMEOUT_MS;
     const createProbeClient =
       options.createClient ??
       ((cwd: string, probeEnvironment?: Readonly<Record<string, string>>) =>
-        createDefaultClient(cwd, probeEnvironment, undefined, probeEnvironment?.CODEX_HOME));
+        createDefaultClient(cwd, probeEnvironment, undefined, undefined, probeEnvironment?.CODEX_HOME));
     this.#probeRunner =
       options.probeRunner ??
       (async (signal) => {
@@ -956,11 +1062,19 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         "Codex binding hosted tools cannot change during exact resume",
       );
     }
-    const client = this.#createClient(
-      request.workspace.cwd,
-      request.workspace.environment,
-      request.workspace.pathPrepend,
-    );
+    const mcpRelay = await this.#startMcpRelay();
+    let client: InteractiveCodexAppServerClient;
+    try {
+      client = this.#createClient(
+        request.workspace.cwd,
+        request.workspace.environment,
+        request.workspace.pathPrepend,
+        mcpRelay,
+      );
+    } catch (error) {
+      await mcpRelay.close();
+      throw error;
+    }
     try {
       if (request.hostedTools && typeof client.setDynamicToolHandler !== "function") {
         throw new AgentRuntimeError(
@@ -1014,12 +1128,15 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         policy: request.policy,
         configuration: request.configuration,
         hostedTools: request.hostedTools,
+        mcpRelay,
+        mcpReloadTimeoutMs: this.#mcpReloadTimeoutMs,
       });
     } catch (error) {
       logger.debug({ code: "runtime_create_failed", error: String(error) }, "Codex runtime creation failed");
       await client.close().catch((closeError: unknown) => {
         logger.debug({ code: "provider_close_failed", error: String(closeError) }, "Codex provider close failed");
       });
+      await mcpRelay.close();
       if (error instanceof AgentRuntimeError) throw error;
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Codex ${mode} failed`, {
         cause: error,
@@ -1156,21 +1273,49 @@ function parseProviderConfiguration(value: JsonValue | undefined): CodexProvider
   assertJsonValue(value, "configuration.provider");
   const object = record(value);
   if (!object) throw new AgentRuntimeError("configuration_invalid", "Codex provider configuration must be an object");
-  const allowed = new Set(["personality", "serviceName", "summary"]);
+  const allowed = new Set(["mcpGateway", "personality", "serviceName", "summary"]);
   for (const key of Object.keys(object)) {
     if (!allowed.has(key))
       throw new AgentRuntimeError("configuration_invalid", `unknown Codex configuration field: ${key}`);
   }
-  const result: { personality?: string; serviceName?: string; summary?: string } = {};
-  for (const key of allowed) {
+  const mcpGateway = parseMcpGatewayConfiguration(object.mcpGateway);
+  const result: { mcpGateway?: CodexMcpGatewayEndpoint; personality?: string; serviceName?: string; summary?: string } =
+    mcpGateway ? { mcpGateway } : {};
+  for (const key of ["personality", "serviceName", "summary"] as const) {
     const item = object[key];
     if (item === undefined) continue;
     if (typeof item !== "string" || item.trim().length === 0) {
       throw new AgentRuntimeError("configuration_invalid", `Codex configuration ${key} must be non-empty`);
     }
-    result[key as keyof CodexProviderConfiguration] = item;
+    result[key] = item;
   }
   return result;
+}
+
+/**
+ * Validate the MCP gateway descriptor before the relay forwards to it.
+ *
+ * The URL must be absolute http(s): this also runs over caller-supplied configuration, and the relay
+ * would otherwise hand the execution bearer to whatever it names.
+ */
+function parseMcpGatewayConfiguration(value: unknown): CodexMcpGatewayEndpoint | undefined {
+  if (value === undefined) return undefined;
+  const object = record(value);
+  if (!object) throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway must be an object");
+  const { url, token } = object;
+  if (typeof url !== "string" || typeof token !== "string" || token.length === 0) {
+    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway requires a url and a token");
+  }
+  let protocol: string;
+  try {
+    protocol = new URL(url).protocol;
+  } catch {
+    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway url must be absolute");
+  }
+  if (protocol !== "https:" && protocol !== "http:") {
+    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway url must be http or https");
+  }
+  return { url, token };
 }
 
 /**
@@ -1219,10 +1364,11 @@ function mergeConfiguration(
     return override;
   }
   if (!override) return base;
+  // Structurally JSON, but an interface has no index signature, so TypeScript needs the assertion.
   const provider = {
     ...parseProviderConfiguration(base.provider),
     ...parseProviderConfiguration(override.provider),
-  };
+  } as JsonValue;
   const merged: AgentRunConfiguration = {
     ...base,
     ...override,

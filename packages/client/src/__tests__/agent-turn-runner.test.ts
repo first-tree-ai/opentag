@@ -544,7 +544,7 @@ describe("AgentTurnRunner", () => {
     }
   });
 
-  it("passes the prepared MCP gateway only to the Claude Code provider", async () => {
+  it("passes the prepared MCP gateway only to providers that can mount it", async () => {
     const runWith = async (providerId: string | undefined) => {
       const prompt = vi.fn(
         async (_request: unknown): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }),
@@ -583,19 +583,18 @@ describe("AgentTurnRunner", () => {
       return prompt;
     };
 
-    const claudePrompt = await runWith("claude-code");
-    expect(claudePrompt).toHaveBeenCalledWith(
-      expect.objectContaining({
-        configuration: {
-          provider: { mcpGateway: { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" } },
-        },
-      }),
-    );
-    /*
-     * Codex spawns its app-server once per Session runtime from a frozen argument vector, so a
-     * per-execution bearer cannot reach it; handing it one would be a descriptor it silently drops.
-     */
-    for (const providerId of ["pi", "codex", undefined]) {
+    // Claude Code mounts the bearer per run; Codex hands it to its Session-scoped loopback relay.
+    for (const providerId of ["claude-code", "codex"]) {
+      const prompt = await runWith(providerId);
+      expect(prompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          configuration: {
+            provider: { mcpGateway: { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" } },
+          },
+        }),
+      );
+    }
+    for (const providerId of ["pi", undefined]) {
       const other = await runWith(providerId);
       expect(other.mock.calls[0]?.[0]).not.toHaveProperty("configuration");
     }

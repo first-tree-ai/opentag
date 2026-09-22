@@ -3,7 +3,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
-import { getRuntimeConfigurationOptions, hashTuple } from "@opentag/shared";
+import { getRuntimeConfigurationOptions, hashTuple, MCP_GATEWAY_SERVER_NAME } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -62,6 +62,15 @@ const CODEX_BINDING_SCHEMA_VERSION = 1;
 const CODEX_PROVIDER_ID = "codex";
 const logger = createLogger("provider-codex-runtime");
 const CODEX_CAPABILITY_PROBE_INSTRUCTIONS = "OpenTag Provider prompt-surface capability probe.";
+/** One deadline for rebinding a thread to a run's MCP gateway; a slow gateway must not stall a turn. */
+const CODEX_MCP_ATTACH_TIMEOUT_MS = 15_000;
+/**
+ * The share of that deadline the attach itself may use. The rest is reserved for restoring the
+ * thread without MCP, so a timed-out attach still leaves time to recover the turn.
+ */
+const CODEX_MCP_ATTACH_BUDGET_SHARE = 2 / 3;
+/** Codex's own MCP startup bound, kept inside the attach deadline. */
+const CODEX_MCP_STARTUP_TIMEOUT_SEC = 10;
 export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "app-server",
   "--stdio",
@@ -131,7 +140,14 @@ export const CODEX_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze(
   bindingSchemaVersion: CODEX_BINDING_SCHEMA_VERSION,
 });
 
+/** The execution-scoped Server MCP gateway endpoint; both fields are opaque to this provider. */
+interface CodexMcpGatewayEndpoint {
+  readonly url: string;
+  readonly token: string;
+}
+
 interface CodexProviderConfiguration {
+  readonly mcpGateway?: CodexMcpGatewayEndpoint;
   readonly personality?: string;
   readonly serviceName?: string;
   readonly summary?: string;
@@ -146,6 +162,13 @@ interface CodexRuntimeOptions {
   readonly policy: AgentRuntimePolicy;
   readonly configuration?: AgentRunConfiguration;
   readonly hostedTools?: AgentHostedTools;
+  /** The parameters the thread was opened with, reused when rebinding its MCP servers. */
+  readonly threadParams: Readonly<Record<string, unknown>>;
+  /** Extra `thread/start` parameters, used to replace a thread that has no rollout yet. */
+  readonly threadStartParams: Readonly<Record<string, unknown>>;
+  /** Whether Codex has persisted the thread, so it can be unloaded and resumed. */
+  readonly threadPersisted: boolean;
+  readonly mcpAttachTimeoutMs: number;
 }
 
 export interface CodexAgentRuntimeFactoryOptions {
@@ -154,6 +177,7 @@ export interface CodexAgentRuntimeFactoryOptions {
     cwd: string,
     environment?: Readonly<Record<string, string>>,
   ) => InteractiveCodexAppServerClient;
+  readonly mcpAttachTimeoutMs?: number;
   readonly process?: Omit<CodexSpawnOptions, "cwd" | "env"> & { readonly env?: NodeJS.ProcessEnv };
   readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
@@ -182,11 +206,23 @@ interface ParsedTurn {
 
 export class CodexAgentRuntime extends BaseAgentRuntime {
   readonly #client: InteractiveCodexAppServerClient;
-  readonly #threadId: string;
+  #threadId: string;
   readonly #workspace: AgentRuntimeWorkspace;
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
   readonly #hostedTools?: AgentHostedTools;
+  readonly #threadParams: Readonly<Record<string, unknown>>;
+  readonly #threadStartParams: Readonly<Record<string, unknown>>;
+  /** Codex writes a thread's rollout only once a turn starts; until then it cannot be resumed. */
+  #threadPersisted: boolean;
+  readonly #mcpAttachTimeoutMs: number;
+  /**
+   * Whether the loaded thread may hold MCP state other than "none": a gateway catalogue, or an
+   * interrupted rebind that may have left the thread unloaded. The next run rebinds it either way.
+   */
+  #mcpThreadDirty = false;
+  /** Present only between run admission and `turn/start`, when there is no provider turn to interrupt. */
+  #preTurnAbort?: AbortController;
   readonly #unsubscribeNotifications: () => void;
   readonly #unsubscribeRequests: () => void;
   readonly #wireInteractions = new Map<string, CodexAppServerRequest>();
@@ -220,6 +256,10 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#hostedTools = options.hostedTools;
+    this.#threadParams = options.threadParams;
+    this.#threadStartParams = options.threadStartParams;
+    this.#threadPersisted = options.threadPersisted;
+    this.#mcpAttachTimeoutMs = options.mcpAttachTimeoutMs;
     this.#client.setDynamicToolHandler?.((call) => this.#handleHostedTool(call));
     this.#unsubscribeNotifications = this.#client.subscribe((message) => {
       this.#enqueue({ type: "notification", message });
@@ -248,8 +288,25 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     void this.#turnIdReady.promise.catch(() => undefined);
     void this.#terminal.promise.catch(() => undefined);
 
+    const preTurnAbort = new AbortController();
+    this.#preTurnAbort = preTurnAbort;
     try {
+      try {
+        await this.#attachMcpGateway(request, context, AbortSignal.any([context.signal, preTurnAbort.signal]));
+      } catch (error) {
+        if (!preTurnAbort.signal.aborted) throw error;
+      }
+      // Checked after the attach settles: an abort that raced its completion must still win.
+      if (preTurnAbort.signal.aborted) {
+        return {
+          status: "aborted",
+          output: [],
+          error: { code: "run_aborted", message: "Codex run was aborted before its turn started" },
+        };
+      }
+      this.#preTurnAbort = undefined;
       const response = await this.#client.request("turn/start", this.#turnStartParams(request));
+      this.#threadPersisted = true;
       const started = parseTurnResponse(response, "turn/start");
       if (started.status !== "inProgress") throw protocolError("turn/start returned a terminal turn");
       this.#providerTurnId = started.id;
@@ -271,6 +328,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       throw failure;
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
+      this.#preTurnAbort = undefined;
       this.#buffering = false;
       this.#buffered = [];
       this.#context = undefined;
@@ -307,6 +365,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   protected override async abortProvider(request: AgentAbortRequest): Promise<void> {
+    if (this.#preTurnAbort) {
+      // No provider turn exists yet; cancelling the pending MCP attach is the whole interrupt.
+      this.#preTurnAbort.abort();
+      return;
+    }
     const turnId = await this.#activeTurnId();
     /* v8 ignore next 3 -- Base validates expectedRunId before entering the Provider hook. */
     if (request.expectedRunId !== this.#context?.runId) {
@@ -326,6 +389,124 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#unsubscribeNotifications();
     this.#client.setDynamicToolHandler?.(undefined);
     await this.#client.close();
+  }
+
+  /**
+   * Rebind the thread to this run's MCP gateway, or to none, before the turn starts.
+   *
+   * Codex spawns one App Server per Session, but the gateway bearer is minted per execution. Codex
+   * applies a thread's `config` overrides only when it loads the thread, so the thread is reloaded
+   * with the run's `mcp_servers`. The bearer travels over the App Server's stdio and is held only in
+   * its memory: never in its argument vector, environment, or a config file, so what a model command
+   * can reach is at most the live execution's own bearer, which the Server revokes when the
+   * execution ends. A run without a gateway rebinds only when the thread may still hold one.
+   *
+   * One deadline covers the whole rebind, attach and restore alike. The attach may use only part of
+   * it, so a timed-out attach still leaves the restore time to finish. Losing the gateway never costs
+   * the Agent its turn: an unconfirmed attach leaves the thread with no MCP server rather than with
+   * the run's bearer attached to a catalogue it did not confirm. Only a thread Codex cannot reload at
+   * all within the deadline fails the run, because there is no thread left to start the turn on.
+   */
+  async #attachMcpGateway(
+    request: AgentPromptRequest,
+    context: AgentProviderRunContext,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const endpoint = parseProviderConfiguration(
+      mergeConfiguration(this.#configuration, request.configuration)?.provider,
+    ).mcpGateway;
+    if (!endpoint && !this.#mcpThreadDirty) return;
+    const startedAt = Date.now();
+    const wasDirty = this.#mcpThreadDirty;
+    this.#mcpThreadDirty = true;
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.#mcpAttachTimeoutMs)]);
+    const attachBudgetMs = Math.floor(this.#mcpAttachTimeoutMs * CODEX_MCP_ATTACH_BUDGET_SHARE);
+    try {
+      await this.#rebindThread(
+        codexMcpServersConfig(endpoint),
+        context,
+        AbortSignal.any([deadline, AbortSignal.timeout(attachBudgetMs)]),
+      );
+      this.#mcpThreadDirty = endpoint !== undefined;
+      logger.info(
+        { attached: endpoint !== undefined, durationMs: Date.now() - startedAt },
+        "Codex thread rebound to the run's MCP gateway",
+      );
+      return;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      logger.warn(
+        { code: "mcp_attach_failed", error: String(error), durationMs: Date.now() - startedAt },
+        "Codex could not rebind the thread to the MCP gateway; continuing without MCP tools",
+      );
+    }
+    // An unpersisted thread is only ever replaced, so the loaded one kept its previous MCP state.
+    if (!this.#threadPersisted) {
+      this.#mcpThreadDirty = wasDirty;
+      return;
+    }
+    await this.#rebindThread(codexMcpServersConfig(undefined), context, deadline);
+    this.#mcpThreadDirty = false;
+  }
+
+  async #rebindThread(
+    config: Record<string, unknown>,
+    context: AgentProviderRunContext,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!this.#threadPersisted) {
+      await this.#replaceUnpersistedThread(config, context, signal);
+      return;
+    }
+    await this.#client.request("thread/unsubscribe", { threadId: this.#threadId }, signal);
+    const response = requireRecord(
+      await this.#client.request(
+        "thread/resume",
+        { ...this.#threadParams, threadId: this.#threadId, excludeTurns: true, config },
+        signal,
+      ),
+      "thread/resume returned an invalid response",
+    );
+    const thread = requireRecord(response.thread, "thread/resume returned no thread");
+    if (thread.id !== this.#threadId) throw protocolError("thread/resume restored another thread");
+  }
+
+  /**
+   * A thread that has never started a turn has no rollout to resume and no history to lose, so it is
+   * replaced by a new thread with the run's MCP servers and the binding moves to it. The previous
+   * thread stays loaded until the replacement exists, so a failed attach leaves it untouched, and it
+   * is unloaded without delaying the turn.
+   */
+  async #replaceUnpersistedThread(
+    config: Record<string, unknown>,
+    context: AgentProviderRunContext,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const response = requireRecord(
+      await this.#client.request("thread/start", { ...this.#threadStartParams, config }, signal),
+      "thread/start returned an invalid response",
+    );
+    const thread = requireRecord(response.thread, "thread/start returned no thread");
+    const threadId = requireString(thread.id, "thread/start returned no thread id");
+    const previous = this.#threadId;
+    /* v8 ignore next -- a runtime always has a binding once its factory has opened the thread. */
+    const payload = record(this.binding?.payload) ?? {};
+    const binding: AgentRuntimeBinding = {
+      providerId: CODEX_PROVIDER_ID,
+      schemaVersion: CODEX_BINDING_SCHEMA_VERSION,
+      payload: { ...(payload as Record<string, JsonValue>), threadId },
+    };
+    assertBinding(binding, this.manifest);
+    await context.updateBinding(binding);
+    this.#threadId = threadId;
+    // Unloading the replaced thread is housekeeping, so it stays off the turn's critical path; the
+    // rebind signal still releases it on the deadline or on cancellation.
+    void this.#client.request("thread/unsubscribe", { threadId: previous }, signal).catch((error: unknown) => {
+      logger.debug(
+        { code: "replaced_thread_unsubscribe_failed", error: String(error) },
+        "Codex did not unload a replaced thread",
+      );
+    });
   }
 
   async #handleHostedTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {
@@ -730,6 +911,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     environment?: Readonly<Record<string, string>>,
     pathPrepend?: string,
   ) => InteractiveCodexAppServerClient;
+  readonly #mcpAttachTimeoutMs: number;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
     readonly credential: boolean;
@@ -766,6 +948,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       });
     };
     this.#createClient = options.createClient ?? createDefaultClient;
+    this.#mcpAttachTimeoutMs = options.mcpAttachTimeoutMs ?? CODEX_MCP_ATTACH_TIMEOUT_MS;
     const createProbeClient =
       options.createClient ??
       ((cwd: string, probeEnvironment?: Readonly<Record<string, string>>) =>
@@ -970,25 +1153,27 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       }
       await client.initialize(this.#clientVersion);
       const method = mode === "create" ? "thread/start" : "thread/resume";
+      const threadParams = {
+        cwd: request.workspace.cwd,
+        developerInstructions: request.systemPrompt,
+        approvalPolicy: codexApprovalPolicy(request.policy.approvals),
+        sandbox: codexSandboxMode(request.policy.fileSystem),
+        ...(request.configuration?.model ? { model: request.configuration.model } : {}),
+        ...(providerConfiguration.personality ? { personality: providerConfiguration.personality } : {}),
+        serviceName: providerConfiguration.serviceName ?? "OpenTag",
+      };
+      const threadStartParams = {
+        ...threadParams,
+        ephemeral: false,
+        ...(request.hostedTools
+          ? { dynamicTools: request.hostedTools.definitions.map(codexDynamicToolDefinition) }
+          : {}),
+      };
       const response = requireRecord(
-        await client.request(method, {
-          ...codexThreadParams(method, expectedThreadId),
-          cwd: request.workspace.cwd,
-          developerInstructions: request.systemPrompt,
-          approvalPolicy: codexApprovalPolicy(request.policy.approvals),
-          sandbox: codexSandboxMode(request.policy.fileSystem),
-          ...(request.configuration?.model ? { model: request.configuration.model } : {}),
-          ...(providerConfiguration.personality ? { personality: providerConfiguration.personality } : {}),
-          serviceName: providerConfiguration.serviceName ?? "OpenTag",
-          ...(method === "thread/start"
-            ? {
-                ephemeral: false,
-                ...(request.hostedTools
-                  ? { dynamicTools: request.hostedTools.definitions.map(codexDynamicToolDefinition) }
-                  : {}),
-              }
-            : {}),
-        }),
+        await client.request(
+          method,
+          method === "thread/start" ? threadStartParams : { ...codexResumeParams(expectedThreadId), ...threadParams },
+        ),
         `${method} returned an invalid response`,
       );
       const thread = requireRecord(response.thread, `${method} returned no thread`);
@@ -1014,6 +1199,10 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         policy: request.policy,
         configuration: request.configuration,
         hostedTools: request.hostedTools,
+        threadParams,
+        threadStartParams,
+        threadPersisted: method === "thread/resume",
+        mcpAttachTimeoutMs: this.#mcpAttachTimeoutMs,
       });
     } catch (error) {
       logger.debug({ code: "runtime_create_failed", error: String(error) }, "Codex runtime creation failed");
@@ -1156,35 +1345,81 @@ function parseProviderConfiguration(value: JsonValue | undefined): CodexProvider
   assertJsonValue(value, "configuration.provider");
   const object = record(value);
   if (!object) throw new AgentRuntimeError("configuration_invalid", "Codex provider configuration must be an object");
-  const allowed = new Set(["personality", "serviceName", "summary"]);
+  const allowed = new Set(["mcpGateway", "personality", "serviceName", "summary"]);
   for (const key of Object.keys(object)) {
     if (!allowed.has(key))
       throw new AgentRuntimeError("configuration_invalid", `unknown Codex configuration field: ${key}`);
   }
-  const result: { personality?: string; serviceName?: string; summary?: string } = {};
-  for (const key of allowed) {
+  const mcpGateway = parseMcpGatewayConfiguration(object.mcpGateway);
+  const result: { mcpGateway?: CodexMcpGatewayEndpoint; personality?: string; serviceName?: string; summary?: string } =
+    mcpGateway ? { mcpGateway } : {};
+  for (const key of ["personality", "serviceName", "summary"] as const) {
     const item = object[key];
     if (item === undefined) continue;
     if (typeof item !== "string" || item.trim().length === 0) {
       throw new AgentRuntimeError("configuration_invalid", `Codex configuration ${key} must be non-empty`);
     }
-    result[key as keyof CodexProviderConfiguration] = item;
+    result[key] = item;
   }
   return result;
 }
 
 /**
+ * Validate the MCP gateway descriptor before Codex is pointed at it.
+ *
+ * The URL must be absolute http(s): this also runs over caller-supplied configuration, and Codex
+ * would otherwise present the execution bearer to whatever it names.
+ */
+function parseMcpGatewayConfiguration(value: unknown): CodexMcpGatewayEndpoint | undefined {
+  if (value === undefined) return undefined;
+  const object = record(value);
+  if (!object) throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway must be an object");
+  const { url, token } = object;
+  if (typeof url !== "string" || typeof token !== "string" || token.length === 0) {
+    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway requires a url and a token");
+  }
+  let protocol: string;
+  try {
+    protocol = new URL(url).protocol;
+  } catch {
+    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway url must be absolute");
+  }
+  if (protocol !== "https:" && protocol !== "http:") {
+    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway url must be http or https");
+  }
+  return { url, token };
+}
+
+/**
+ * The thread `config` override naming a run's MCP servers: the gateway alone, or none.
+ *
+ * It replaces the whole `mcp_servers` table, so the user's own Codex servers stay excluded exactly as
+ * the launch arguments exclude them. Gateway tools are pre-approved as a server, matching the Claude
+ * Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
+ */
+function codexMcpServersConfig(endpoint: CodexMcpGatewayEndpoint | undefined): Record<string, unknown> {
+  if (!endpoint) return { mcp_servers: {} };
+  return {
+    mcp_servers: {
+      [MCP_GATEWAY_SERVER_NAME]: {
+        url: endpoint.url,
+        http_headers: { Authorization: `Bearer ${endpoint.token}` },
+        default_tools_approval_mode: "approve",
+        startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
+      },
+    },
+  };
+}
+
+/**
  * Turn hydration stays on the Server: Codex otherwise returns the entire stored thread inside one
  * `thread/resume` response, and a long Session exceeds the App Server JSONL line limit, which fails
- * the resume as a protocol error. Only create and resume share the rest of the param shape.
+ * the resume as a protocol error.
  */
-function codexThreadParams(
-  method: "thread/start" | "thread/resume",
-  expectedThreadId: string | undefined,
-): Record<string, unknown> {
+function codexResumeParams(expectedThreadId: string | undefined): Record<string, unknown> {
   // An exact resume always carries the bound thread id. `JSON.stringify` drops the key when it is
   // absent, so a resume without one still sends no `threadId`.
-  return method === "thread/start" ? {} : { threadId: expectedThreadId, excludeTurns: true };
+  return { threadId: expectedThreadId, excludeTurns: true };
 }
 
 function parseCodexBinding(binding: AgentRuntimeBinding): { threadId: string; hostedToolsHash?: string } {
@@ -1219,10 +1454,11 @@ function mergeConfiguration(
     return override;
   }
   if (!override) return base;
+  // Structurally JSON, but an interface has no index signature, so TypeScript needs the assertion.
   const provider = {
     ...parseProviderConfiguration(base.provider),
     ...parseProviderConfiguration(override.provider),
-  };
+  } as JsonValue;
   const merged: AgentRunConfiguration = {
     ...base,
     ...override,

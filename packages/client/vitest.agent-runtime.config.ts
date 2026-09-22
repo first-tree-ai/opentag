@@ -31,6 +31,7 @@ export default defineConfig({
       "src/__tests__/codex-agent-runtime-exhaustive.test.ts",
       "src/__tests__/codex-app-server.test.ts",
       "src/__tests__/codex-app-server-exhaustive.test.ts",
+      "src/__tests__/codex-mcp-gateway.test.ts",
       "src/__tests__/pi-agent-runtime.test.ts",
       "src/__tests__/pi-agent-runtime-exhaustive.test.ts",
       "src/__tests__/pi-rpc-wire.test.ts",

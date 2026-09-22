@@ -287,9 +287,7 @@ export class AgentTurnRunner {
          * Provider-specific launch facts are resolved only when this execution actually carries
          * one, so a runtime manager with nothing to inject is never consulted at all.
          */
-        ...(started.webTools || started.mcpGateway
-          ? providerLaunchConfiguration(started, this.#runtimeManager.providerId(owner.request.sessionId))
-          : {}),
+        ...(started.webTools || started.mcpGateway ? this.#providerLaunchConfiguration(started, owner) : {}),
       });
       turn.phase = "reporting";
       completion = completionForResult(result, signal.reason);
@@ -362,6 +360,26 @@ export class AgentTurnRunner {
           "Turn Report submission failed",
         );
       });
+  }
+
+  #providerLaunchConfiguration(
+    launch: { webTools?: PreparedWebToolsLaunch; mcpGateway?: PreparedMcpGatewayLaunch },
+    owner: LiveTurnOwner,
+  ): { configuration?: AgentRunConfiguration } {
+    const providerId = this.#runtimeManager.providerId(owner.request.sessionId);
+    const fields = { agentId: owner.request.agentId, sessionId: owner.request.sessionId, turnId: owner.turnId };
+    if (launch.mcpGateway) {
+      // The Server granted MCP tools; say whether they reach the provider, since the Agent cannot.
+      if (providerSupportsMcpGateway(providerId)) {
+        this.#logger.info({ ...fields, providerId }, "MCP gateway delivered to the provider");
+      } else {
+        this.#logger.warn(
+          { ...fields, providerId, code: "mcp_gateway_unsupported_provider" },
+          "MCP gateway was granted but the provider cannot mount it; MCP tools are unavailable this turn",
+        );
+      }
+    }
+    return providerLaunchConfiguration(launch, providerId);
   }
 
   /**
@@ -484,15 +502,19 @@ function providerLaunchConfiguration(
     provider.webTools = { extensionPath: launch.webTools.extensionPath, socketPath: launch.webTools.socketPath };
   }
   /*
-   * Claude Code only, for now. Its process is spawned per run, so a per-execution bearer reaches it
-   * naturally; Codex spawns its app-server once per Session runtime from a frozen argument vector,
-   * which a short-lived token cannot be injected into without a separate mechanism.
+   * Claude Code spawns its process per run, so the bearer goes straight into that run's MCP config.
+   * Codex keeps one App Server per Session, so its runtime reloads the thread with the run's MCP
+   * servers before the turn instead.
    */
-  if (launch.mcpGateway && providerId === "claude-code") {
+  if (launch.mcpGateway && providerSupportsMcpGateway(providerId)) {
     provider.mcpGateway = { url: launch.mcpGateway.url, token: launch.mcpGateway.token };
   }
   if (Object.keys(provider).length === 0) return {};
   return { configuration: { provider } };
+}
+
+function providerSupportsMcpGateway(providerId: string | undefined): boolean {
+  return providerId === "claude-code" || providerId === "codex";
 }
 
 export function buildAgentInput(

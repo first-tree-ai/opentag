@@ -1,7 +1,7 @@
 # MCP Server integration
 
-> **Status: the management plane is delivered; runtime delivery is delivered for Claude Code on a
-> local Computer.**
+> **Status: the management plane is delivered; runtime delivery is delivered for Claude Code and
+> Codex on a local Computer.**
 >
 > The management plane provides MCP (Model Context Protocol) Server definitions, per-Agent bindings
 > with per-Agent overrides, per-Agent authorization (anonymous / Bearer / OAuth), capability probing,
@@ -12,10 +12,9 @@
 > upstream credential is ever delivered to a Provider** — the gateway resolves the Agent's own
 > authorization row and calls upstream itself.
 >
-> Not yet covered: **Codex** (its app-server is spawned once per Session runtime from a frozen
-> argument vector, so a per-execution bearer cannot be injected into it) and the **Cloud sandbox**
-> (its Turn worker runs Pi only; neither Claude Code nor Codex runs there at all). **Pi** has no MCP
-> configuration surface and is out of scope.
+> Not yet covered: the **Cloud sandbox** (its Turn worker runs Pi only; neither Claude Code nor Codex
+> runs there at all). **Pi** has no MCP configuration surface and is out of scope; a Turn that was
+> granted MCP tools on a provider that cannot mount them logs `mcp_gateway_unsupported_provider`.
 >
 > An earlier revision of this page proposed a different path — push credentials down to the Client
 > and inject the real authorization header through a local `127.0.0.1` loopback proxy. The gateway
@@ -608,7 +607,8 @@ The management plane says which Servers an Agent may reach and with whose creden
 how it actually reaches them.
 
 ```
-Claude Code (spawned per run, local Computer)
+Claude Code (spawned per run, local Computer)       Codex (one App Server per Session; the thread
+   │                                                   │  is reloaded with each run's bearer)
    │  MCP Streamable HTTP, Authorization: Bearer <execution token>
    ▼
 POST /api/v1/mcp                                    the inbound MCP server
@@ -635,6 +635,39 @@ The token is fetched through its own `runtime:mcp:gateway` frame rather than ret
 execution-open result, because that result has never carried a secret and both existing secrets in
 the protocol — capability tokens and proxy tickets — are fetched the same way. The Client composes
 the endpoint URL against the Server origin it already pinned; only the fixed path crosses the wire.
+
+### Codex: rebinding the thread per run
+
+Codex spawns its App Server once per Session runtime from a frozen argument vector, while the bearer
+is minted per execution, so the bearer cannot be written into that argument vector. Codex applies a
+thread's `config` overrides only when it loads the thread, so before each run that carries a gateway
+the Codex runtime reloads the thread with that run's `mcp_servers`:
+
+- **A persisted thread** is unloaded (`thread/unsubscribe`) and resumed (`thread/resume`) with the
+  gateway as its only MCP server. Codex connects and lists the catalogue during the resume.
+- **A thread that has never started a turn** has no rollout to resume and no history to lose, so it is
+  replaced by a new `thread/start` with the same parameters and hosted tools, and the Session binding
+  moves to the new thread through `binding_changed`. The previous thread stays loaded until the
+  replacement exists.
+- **The bearer only ever travels over the App Server's stdio** and is held in its memory. It never
+  appears in the argument vector, the environment, or a config file, so what a model command can
+  reach is at most the live execution's own bearer, which the Server revokes when the execution ends.
+  The launch arguments keep `mcp_servers={}`, and the override replaces the whole table, so the
+  user's own Codex servers stay excluded.
+- **One deadline** (15 s) covers the whole rebind, attach and restore alike, and a run cancelled
+  before its turn starts ends without waiting for one. The attach may use two thirds of the deadline;
+  the rest is reserved for the restore. An attach that is not confirmed restores the thread with no
+  MCP server — losing the gateway costs the turn its MCP tools, never the turn, and never leaves the
+  run's bearer attached to a catalogue it did not confirm. A later run without a gateway rebinds once
+  so revoked tools disappear. Only a thread Codex cannot reload at all within the deadline fails that
+  run, since no thread is left to start the turn on; the next run rebinds it.
+- **Conversation history survives the rebind.** `excludeTurns` only keeps the turn list out of the
+  `thread/resume` response; Codex reloads the thread's full model context from its rollout.
+- Gateway tools are pre-approved as a server (`default_tools_approval_mode = "approve"`), matching the
+  Claude Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
+
+Codex always defers MCP tools behind its built-in `tool_search`, so the model sees the
+`opentag-mcp` server and discovers individual tools on demand rather than in its initial tool list.
 
 ### What the gateway speaks
 

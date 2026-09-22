@@ -1,8 +1,9 @@
 /**
- * The creation surface's Cloud destination: the availability answer gates the choice, Cloud is the
- * default when the platform offers it, and a Cloud submission ensures the Account's logical Cloud
- * Computer before the existing createAgent call carries the binding. Local is never chosen for the
- * reader, and a failed availability read fails closed rather than inventing an answer.
+ * The creation surface's Cloud destination: Local is the default choice, the availability answer
+ * gates whether Cloud can be chosen at all, and a Cloud submission fixes the managed Pi runtime —
+ * there is no Runtime selector for Cloud — and ensures the Account's logical Cloud Computer before
+ * the existing createAgent call carries the binding. A failed availability read fails closed rather
+ * than inventing an answer, and never moves the choice off Local.
  */
 
 import type { CloudAvailability } from "@opentag/shared/browser";
@@ -39,6 +40,10 @@ function cloudCard(): HTMLElement {
   return screen.getByRole("button", { name: /Cloud computer/ });
 }
 
+function localCard(): HTMLElement {
+  return screen.getByRole("button", { name: /Local computer/ });
+}
+
 describe("Agent creation with a Cloud destination", () => {
   beforeEach(() => {
     vi.spyOn(browserApi, "ensureCloudComputer").mockResolvedValue({
@@ -55,7 +60,7 @@ describe("Agent creation with a Cloud destination", () => {
     vi.restoreAllMocks();
   });
 
-  it("pre-selects Cloud once the service answers available, then ensures the Computer at submit", async () => {
+  it("defaults to Local, and a Cloud pick needs no Runtime selection and ensures the Computer at submit", async () => {
     const calls: string[] = [];
     vi.spyOn(browserApi, "cloudAvailability").mockResolvedValue(availability());
     vi.spyOn(browserApi, "ensureCloudComputer").mockImplementation(async () => {
@@ -76,14 +81,21 @@ describe("Agent creation with a Cloud destination", () => {
     const onAgentAvailable = vi.fn();
     renderCreation(onAgentAvailable);
 
-    // The default arrives with the answer; nothing is selected before it.
-    await waitFor(() => expect(cloudCard().getAttribute("aria-pressed")).toBe("true"));
+    // Local is the default from the first paint; the availability answer never moves the choice.
+    expect(localCard().getAttribute("aria-pressed")).toBe("true");
+    await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
+    expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
 
+    // Choosing Cloud is the reader's explicit act.
+    fireEvent.click(cloudCard());
+    expect(cloudCard().getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    // The runtime is fixed: there is no picker to answer for a Cloud Agent.
+
+    // The runtime is fixed: there is no selector to answer for a Cloud Agent.
     expect(screen.queryByRole("button", { name: /Codex/ })).toBeNull();
-    expect(screen.getByText("Cloud agents always run Pi.")).toBeTruthy();
+    expect(screen.queryByText("Runtime")).toBeNull();
+    expect(screen.queryByText("Pi")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() => expect(onAgentAvailable).toHaveBeenCalledWith(CREATED_AGENT_ID));
@@ -115,10 +127,10 @@ describe("Agent creation with a Cloud destination", () => {
     fireEvent.click(cloudCard());
     expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
     expect(browserApi.ensureCloudComputer).not.toHaveBeenCalled();
-    // Nothing was selected for the reader: Continue stays disabled until they choose Local.
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    // The Local default is untouched by the Cloud answer: Continue was never blocked.
+    expect(localCard().getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     // The Local runtime choice is untouched by the Cloud answer.
     expect(screen.getByRole("button", { name: /Codex/ })).toBeTruthy();
@@ -128,10 +140,11 @@ describe("Agent creation with a Cloud destination", () => {
     const read = vi.spyOn(browserApi, "cloudAvailability").mockRejectedValue(new Error("network down"));
     renderCreation();
 
-    // The read never answered: Cloud stays disabled and nothing is selected for the reader.
+    // The read never answered: Cloud stays disabled and the Local default is untouched.
     await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(true));
     expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    expect(localCard().getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
     // The copy reports the check that failed — not a deployment fact the Server never stated.
     expect(screen.getByText("Could not check")).toBeTruthy();
     expect(
@@ -140,14 +153,14 @@ describe("Agent creation with a Cloud destination", () => {
     expect(screen.queryByText("Temporarily unavailable")).toBeNull();
     expect(screen.queryByText(/temporarily unavailable on this deployment/)).toBeNull();
     // Local is untouched by the failed Cloud read.
-    expect(screen.getByRole("button", { name: /Local computer/ }).hasAttribute("disabled")).toBe(false);
+    expect(localCard().hasAttribute("disabled")).toBe(false);
 
-    // The retry re-reads; an available answer unlocks and pre-selects Cloud exactly as a first
-    // successful read would.
+    // The retry re-reads; an available answer unlocks Cloud without taking the choice over.
     read.mockResolvedValue(availability());
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
-    await waitFor(() => expect(cloudCard().getAttribute("aria-pressed")).toBe("true"));
+    expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
+    expect(localCard().getAttribute("aria-pressed")).toBe("true");
     expect(screen.queryByText("Could not check")).toBeNull();
     expect(read).toHaveBeenCalledTimes(2);
   });
@@ -158,7 +171,9 @@ describe("Agent creation with a Cloud destination", () => {
     renderCreation();
 
     // The unanswered read describes the destination and says it is checking; the unavailable
-    // claim belongs to an answered "no", so it never flashes on a normal load.
+    // claim belongs to an answered "no", so it never flashes on a normal load. The Local default
+    // does not wait on it.
+    expect(localCard().getAttribute("aria-pressed")).toBe("true");
     expect(await screen.findByText("Checking…")).toBeTruthy();
     expect(screen.getByText("We run the agent for you, with tokens included.")).toBeTruthy();
     expect(screen.queryByText(/temporarily unavailable on this deployment/)).toBeNull();
@@ -167,19 +182,9 @@ describe("Agent creation with a Cloud destination", () => {
 
     read.resolve(availability());
     await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
-  });
-
-  it("never overrides a destination the reader picked before the availability answer arrived", async () => {
-    const read = deferred<CloudAvailability>();
-    vi.spyOn(browserApi, "cloudAvailability").mockReturnValue(read.promise);
-    renderCreation();
-
-    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
-    read.resolve(availability());
-    await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
-
-    expect(screen.getByRole("button", { name: /Local computer/ }).getAttribute("aria-pressed")).toBe("true");
+    // An available answer unlocks the choice; it never makes it.
     expect(cloudCard().getAttribute("aria-pressed")).toBe("false");
+    expect(localCard().getAttribute("aria-pressed")).toBe("true");
   });
 
   it("reports an ensure failure without creating an Agent", async () => {
@@ -188,7 +193,8 @@ describe("Agent creation with a Cloud destination", () => {
     const createAgent = vi.spyOn(browserApi, "createAgent");
     renderCreation(vi.fn());
 
-    await waitFor(() => expect(cloudCard().getAttribute("aria-pressed")).toBe("true"));
+    await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
+    fireEvent.click(cloudCard());
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
@@ -204,7 +210,7 @@ describe("Agent creation with a Cloud destination", () => {
     renderCreation(onAgentAvailable);
 
     await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    // Local is pre-selected, so the destination step goes straight to the Agent step.
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));

@@ -47,3 +47,8 @@ export function agentSettingsLink(agentId: string) {
 export function agentSettingsSectionLink(agentId: string, section: AgentSettingsSection) {
   return { params: { agentId, section }, to: "/agents/$agentId/settings/$section" } as const;
 }
+
+/** Account-owned Computer management, with an optional originating Agent. */
+export function accountComputerLink(computerId?: string, fromAgent?: string) {
+  return { to: "/agents/computers", search: { computerId, fromAgent } } as const;
+}

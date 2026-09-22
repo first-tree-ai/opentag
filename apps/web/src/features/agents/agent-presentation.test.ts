@@ -44,25 +44,23 @@ describe("An Agent with no Computer, as the viewer reads it", () => {
   it("names the state and gives its status row one canonical setup exit", () => {
     const agent = unbound();
 
-    expect(agentStatusPresentation(agent)).toEqual({ label: "No Computer", tone: "warning" });
+    expect(agentStatusPresentation(agent)).toEqual({ label: "No computer assigned", tone: "warning" });
     expect(agentComputerStatus(agent)).toEqual({
       action: {
         label: "Continue setup",
         link: { search: { agentId }, to: "/agents/setup" },
       },
-      label: "No Computer",
+      label: "No computer assigned",
       tone: "warning",
     });
     // The broader recovery helper still names the Settings operation; the detail status row owns
     // the one user-facing setup entry.
     expect(agentAvailabilityRecovery(agent)).toEqual({
-      label: "Connect a Computer",
+      label: "Choose computer",
       link: { params: { agentId, section: "computer" }, to: "/agents/$agentId/settings/$section" },
     });
     // The Computer panel says the same thing without naming a machine, because there is none to name.
-    expect(computerRecoveryMessage(agent)).toBe(
-      "This Agent is not connected to a Computer yet. Connect one to give it somewhere to run.",
-    );
+    expect(computerRecoveryMessage(agent)).toBe("Choose the computer this Agent will use before it can start working.");
   });
 });
 

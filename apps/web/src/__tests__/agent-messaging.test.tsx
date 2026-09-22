@@ -246,7 +246,7 @@ describe("OpenTag Web App Shell", () => {
 
     releaseComputerRead();
     expect(await screen.findByText("Offline")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open computer setup" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Restore connection" })).toBeTruthy();
   });
 
   it("invalidates a stale Agent detail after a background not-found response", async () => {

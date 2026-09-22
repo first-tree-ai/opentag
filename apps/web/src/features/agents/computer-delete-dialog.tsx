@@ -47,8 +47,8 @@ export function ComputerDeleteDialog({
     } catch (cause) {
       setError(
         cause instanceof ApiError && cause.code === "COMPUTER_IN_USE"
-          ? m.agents_computer_delete_in_use()
-          : m.agents_computer_delete_failed(),
+          ? m.computer_delete_in_use()
+          : m.computer_delete_failed(),
       );
       setBusy(false);
     }
@@ -57,19 +57,19 @@ export function ComputerDeleteDialog({
   return (
     <Dialog
       busy={busy}
-      description={m.agents_computer_delete_confirm_description()}
+      description={m.computer_delete_confirm_description()}
       returnFocusRef={returnFocusRef}
       role="alertdialog"
-      title={m.agents_computer_delete_confirm_title({ name: computer.displayName })}
+      title={m.computer_delete_confirm_title({ name: computer.displayName })}
       onClose={onClose}
     >
       <div className="grid gap-4">
-        {inUse ? <Banner variant="error" description={m.agents_computer_delete_in_use()} /> : null}
+        {inUse ? <Banner variant="error" description={m.computer_delete_in_use()} /> : null}
         {!inUse && computer.connectionStatus === "online" ? (
-          <Banner variant="secondary" description={m.agents_computer_delete_online_warning()} />
+          <Banner variant="secondary" description={m.computer_delete_online_warning()} />
         ) : null}
         {inUse ? null : (
-          <Field htmlFor={inputId} label={m.agents_computer_delete_confirm_label({ name: computer.displayName })}>
+          <Field htmlFor={inputId} label={m.computer_delete_confirm_label({ name: computer.displayName })}>
             <KumoInputControl
               autoComplete="off"
               id={inputId}
@@ -88,7 +88,7 @@ export function ComputerDeleteDialog({
             variant="danger"
             onClick={() => void deleteComputer()}
           >
-            {busy ? m.agents_computer_deleting() : m.agents_computer_delete_final_button()}
+            {busy ? m.computer_deleting() : m.computer_delete_button()}
           </Button>
         </div>
       </div>

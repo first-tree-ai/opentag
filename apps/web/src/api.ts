@@ -2,9 +2,6 @@ import {
   type AccountCloudComputerEnsureResponse,
   AccountCloudComputerEnsureResponseSchema,
   type AccountComputerConnectCodeIssueRequest,
-  type AccountSandboxRunnerStatusResponse,
-  AccountSandboxRunnerStatusResponseSchema,
-  type AccountSandboxRunnerStopRequest,
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
@@ -27,7 +24,6 @@ import {
   AuthProvidersResponseSchema,
   accountComputerByIdPath,
   accountComputerConnectCodePath,
-  accountSandboxRunnerStopPath,
   agentByIdPath,
   agentCloudPath,
   agentComputerRebindPath,
@@ -204,7 +200,6 @@ export class CancelledRequestError extends Error {
 
 /** Covers one Agent setup snapshot read: fetch, body, and diagnostic clones. */
 export const AGENT_SETUP_READ_TIMEOUT_MS = 10_000;
-export const CLOUD_CONTROL_TIMEOUT_MS = 30_000;
 
 /**
  * Bounds `run` in elapsed time even when the AbortSignal is ignored. Fetch cancellation is
@@ -531,26 +526,9 @@ export class BrowserApi {
     });
   }
 
-  agentCloudOverview(
-    agentId: string,
-    options: { cursor?: string; limit?: number; sessionId?: string } = {},
-  ): Promise<AgentCloudOverview> {
+  agentCloudOverview(agentId: string, options: { cursor?: string; limit?: number } = {}): Promise<AgentCloudOverview> {
     return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
       this.request(agentCloudPath(agentId, options), AgentCloudOverviewSchema, { signal }),
-    );
-  }
-
-  stopCloudSandbox(
-    sandboxId: string,
-    input: AccountSandboxRunnerStopRequest,
-  ): Promise<AccountSandboxRunnerStatusResponse> {
-    return withDeadline(CLOUD_CONTROL_TIMEOUT_MS, (signal) =>
-      this.request(accountSandboxRunnerStopPath(sandboxId), AccountSandboxRunnerStatusResponseSchema, {
-        signal,
-        method: "POST",
-        headers: { "content-type": "application/json", ...this.csrfHeaders() },
-        body: JSON.stringify(input),
-      }),
     );
   }
 

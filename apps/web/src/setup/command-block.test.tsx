@@ -15,9 +15,9 @@ const COPY_FEEDBACK_MS = 1_600;
 const COMMENT = "Run this command to set up OpenTag on this computer.";
 const COMMAND = "curl -fsSL https://app.opentag.build/install.sh | sh otc_abc123";
 const LABELS = {
-  copiedLabel: "Copied command",
+  copiedLabel: "Command copied",
   copyLabel: "Copy command",
-  fallbackHint: "Clipboard access is unavailable. The command is selected so you can copy it manually.",
+  fallbackHint: "Copy failed. The command is selected for manual copying.",
 };
 
 /** Writes to the clipboard through a spy the test owns, which is the only way it can be asserted. */
@@ -37,6 +37,16 @@ afterEach(() => {
 });
 
 describe("CommandBlock", () => {
+  it("makes the scrollable command keyboard-accessible while it is usable", () => {
+    const view = render(<CommandBlock {...LABELS} command={COMMAND} comment={COMMENT} />);
+    const region = screen.getByRole("region", { name: COMMENT });
+    expect(region.tabIndex).toBe(0);
+    region.focus();
+    expect(document.activeElement).toBe(region);
+    view.rerender(<CommandBlock {...LABELS} command={COMMAND} comment={COMMENT} inert />);
+    expect(region.tabIndex).toBe(-1);
+  });
+
   it("copies the comment line with the command, so a pasted agent gets the instruction", async () => {
     const writeText = clipboard(() => Promise.resolve());
     render(<CommandBlock {...LABELS} command={COMMAND} comment={COMMENT} />);
@@ -64,7 +74,7 @@ describe("CommandBlock", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
     await act(async () => {});
-    expect(screen.getByRole("button", { name: "Copied command" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Command copied" })).toBeTruthy();
 
     await act(async () => {
       vi.advanceTimersByTime(COPY_FEEDBACK_MS);
@@ -106,7 +116,7 @@ describe("CommandBlock", () => {
     await act(async () => {});
 
     expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.getByRole("button", { name: "Copied command" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Command copied" })).toBeTruthy();
   });
 
   it("does not offer to copy a command that has expired", () => {
@@ -238,7 +248,7 @@ describe("CommandBlock", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
     await act(async () => {});
     // Still confirmed when the tree goes away, which is the state the timer would have cleared.
-    expect(screen.getByRole("button", { name: "Copied command" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Command copied" })).toBeTruthy();
 
     unmount();
     await act(async () => {

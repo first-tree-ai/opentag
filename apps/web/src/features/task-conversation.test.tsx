@@ -101,6 +101,40 @@ it("keeps incomplete capture, truncation and execution failure visible beside a 
   expect(screen.getByText("Reply history is incomplete. Some messages or content could not be included.")).toBeTruthy();
 });
 
+it("explains a rejected restore in the work record without exposing resource controls", () => {
+  const current = turn();
+  current.report = null;
+  current.delivery.state = "terminal_rejected";
+  current.delivery.reason = "restore_required";
+  render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+
+  expect(screen.getByText("Saved progress could not be restored. This request could not continue.")).toBeTruthy();
+  expect(screen.queryByText("restore_required")).toBeNull();
+  expect(screen.queryByRole("button", { name: /release|discard|restore/i })).toBeNull();
+});
+
+it("explains a reported resume failure as lost continuity in the existing execution record", () => {
+  const current = turn();
+  if (!current.report) throw new Error("Expected report fixture");
+  current.report.outcome = "failed";
+  current.report.errorReason = "session_resume_failed";
+  render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+
+  expect(screen.getByText("Previous execution progress could not be resumed.")).toBeTruthy();
+  expect(screen.queryByText("session_resume_failed")).toBeNull();
+});
+
+it("keeps resource preparation behind the ordinary waiting status", () => {
+  const current = turn();
+  current.report = null;
+  current.delivery.state = "pending";
+  current.delivery.lastErrorCode = "IM_DELIVERY_CLOUD_ALLOCATION_FAILED";
+  render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+
+  expect(screen.getByText("Message pending.")).toBeTruthy();
+  expect(screen.queryByText(/IM_DELIVERY_CLOUD|Runner|Sandbox|environment preparation/i)).toBeNull();
+});
+
 it.each([0, 3])("shows the incomplete-history notice only when replies were omitted (count: %i)", (omittedCount) => {
   const current = turn();
   if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");

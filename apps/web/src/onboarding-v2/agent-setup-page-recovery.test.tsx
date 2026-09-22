@@ -381,11 +381,11 @@ describe("AgentSetupPage messaging recovery", () => {
     [{ phase: "checking_credentials" }, "Checking credentials"],
     [
       { phase: "needs_attention" },
-      "Repair the Slack connection in the coding agent on this computer, then check again.",
+      "Repair the Slack connection in your coding assistant on this computer, then check again.",
     ],
     [
       { phase: "needs_attention", reason: "upgrade_required" },
-      "Repair the Slack connection in the coding agent on this computer, then check again.",
+      "Repair the Slack connection in your coding assistant on this computer, then check again.",
     ],
     [
       { phase: "needs_attention", reason: "credential_rejected" },
@@ -523,9 +523,13 @@ describe("AgentSetupPage with the Lab Computer adapters", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
     await settle();
-    expect(screen.getByText("Start OpenTag on Review Mac; this page will continue when it reconnects.")).toBeTruthy();
+    expect(screen.getByText("Turn on or wake this computer and check its internet connection.")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Assistant requested a repair?" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Repair connection" }));
     await settle();
     expect(memory.inspect().computerConnectState).toBe("pending");
     expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();

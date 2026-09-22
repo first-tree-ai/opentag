@@ -100,12 +100,12 @@ describe("AgentComputerChoice over a cached inventory", () => {
 
     // The cache says one Computer; that is exactly the answer an automatic bind would take.
     expect(rebind).not.toHaveBeenCalled();
-    expect(screen.getByText("Checking which Computers this Account has…")).toBeTruthy();
+    expect(screen.getByText("Loading your computers…")).toBeTruthy();
 
     // The Account has since connected a second machine: the question is now the reader's.
     await act(async () => release([cachedComputer, spareComputer]));
 
-    expect(await screen.findByRole("button", { name: "Use Spare" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Use this computer: Spare" })).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
   });
 
@@ -119,7 +119,7 @@ describe("AgentComputerChoice over a cached inventory", () => {
     await act(async () => release([]));
 
     expect(
-      await screen.findByText("Paste this command into the coding agent on the computer you're connecting."),
+      await screen.findByText("Paste this command into your coding assistant on the computer you’re connecting."),
     ).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
   });

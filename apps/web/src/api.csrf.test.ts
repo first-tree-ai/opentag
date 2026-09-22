@@ -85,7 +85,6 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   cloudModelOptions: [],
   ensureCloudComputer: [],
   agentCloudOverview: [ID],
-  stopCloudSandbox: [ID, { discardUnsavedChanges: true, environmentGeneration: 1 }],
   internalNavigationVisibility: [],
   updateInternalNavigationVisibility: [{ tasks: true }],
   updateTaskTitle: [ID, { title: "A task" }],

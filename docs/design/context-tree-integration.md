@@ -2,7 +2,7 @@
 
 [简体中文](../zh-CN/design/context-tree-integration.md)
 
-Status: implemented. Updated: 2026-09-21.
+Status: implemented. Updated: 2026-09-22.
 
 ## Named connections
 
@@ -18,7 +18,8 @@ Configuration hashes sort connections by alias and normalize repository identity
 conveys no priority. Agents may share repositories within that limit, and a repository's published
 knowledge is shared with other Agents that connect it.
 
-**Agent settings → Context Tree** shows alias/repository rows with individual Disconnect buttons.
+**The Agent's Context Tree page**, reached from the Agent navigation, shows alias/repository rows
+with individual Disconnect buttons.
 Connect/create requires an alias and `OWNER/REPO`. An identical attachment is idempotent. An
 occupied alias cannot silently change repositories; rename or replacement uses disconnect followed
 by connect. Local Computers support creating and publishing a private repository; Cloud Computers

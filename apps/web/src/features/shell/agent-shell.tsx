@@ -6,6 +6,7 @@ import { DropdownMenu, Icon, Sidebar } from "../../ui/design-system.js";
 import { AgentAvatar } from "../agents/agent-avatar.js";
 import { useAgentIdentityList } from "../agents/agent-queries.js";
 import {
+  agentContextTreeLink,
   agentDetailLink,
   agentIntegrationsLink,
   agentMcpLink,
@@ -26,6 +27,12 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
   const items = [
     { section: "home", icon: "overview", label: m.shell_overview(), link: agentDetailLink(agentId) },
     { section: "tasks", icon: "instructions", label: m.shell_tasks(), link: agentTasksLink(agentId) },
+    {
+      section: "context-tree",
+      icon: "tree",
+      label: m.shell_context_tree(),
+      link: agentContextTreeLink(agentId),
+    },
     /*
      * Visible by default, with no internal-tools gate: the Server pool and per-Agent authorization
      * are an ordinary management surface, not a preview.
@@ -89,6 +96,7 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
 /** Preserve the reader's section across Agents, but never a Task or Settings detail. */
 function agentSwitchLink(pathname: string, agentId: string) {
   if (pathname.includes("/tasks")) return agentTasksLink(agentId);
+  if (pathname.includes("/context-tree")) return agentContextTreeLink(agentId);
   if (pathname.includes("/mcp")) return agentMcpLink(agentId);
   if (pathname.includes("/skills")) return agentSkillsLink(agentId);
   if (pathname.includes("/integrations")) return agentIntegrationsLink(agentId);
@@ -190,7 +198,7 @@ function AgentSwitcher({
 export function isAgentSectionActive(
   pathname: string,
   agentId: string,
-  section: "home" | "integrations" | "mcp" | "skills" | "tasks" | "usage",
+  section: "home" | "context-tree" | "integrations" | "mcp" | "skills" | "tasks" | "usage",
 ): boolean {
   const root = `/agents/${agentId}`;
   if (section === "home") return isAgentHome(pathname, agentId);

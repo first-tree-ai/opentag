@@ -40,6 +40,10 @@ export function agentMcpLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/mcp" } as const;
 }
 
+export function agentContextTreeLink(agentId: string) {
+  return { params: { agentId }, to: "/agents/$agentId/context-tree" } as const;
+}
+
 export function agentSettingsLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/settings" } as const;
 }

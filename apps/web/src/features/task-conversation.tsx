@@ -211,6 +211,9 @@ function TaskExecutionSummary({ text, collapsed }: { text: string; collapsed: bo
 
 function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
   const running = delivery.isRunning === true;
+  if (delivery.state === "terminal_rejected" && delivery.reason === "restore_required") {
+    return <p className="text-sm text-kumo-danger">{m.tasks_failure_progress_restore_failed()}</p>;
+  }
   return (
     <p className="text-sm text-kumo-subtle" data-state={running ? "progress" : "attention"}>
       {running

@@ -149,9 +149,10 @@ describe("creation step navigation", () => {
       />,
     );
 
-    // The picker is replaced by the fixed managed runtime; there is nothing to click.
+    // Cloud creation requires no runtime choice or runtime details.
     expect(screen.queryByRole("button", { name: /Codex/ })).toBeNull();
-    expect(screen.getByText("Cloud agents always run Pi.")).toBeTruthy();
+    expect(screen.queryByText("Runtime")).toBeNull();
+    expect(screen.queryByText("Pi")).toBeNull();
     const create = screen.getByRole("button", { name: "Create Agent" });
     expect(create.hasAttribute("disabled")).toBe(false);
     fireEvent.click(create);

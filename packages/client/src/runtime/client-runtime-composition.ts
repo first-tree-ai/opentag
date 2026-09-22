@@ -56,7 +56,11 @@ import {
   AgentRuntimeProviderRegistry,
   AgentRuntimeProviderUnavailableError,
 } from "./agent-runtime-provider-registry.js";
-import { type AgentTurnOutgoingReplyCollector, AgentTurnRunner } from "./agent-turn-runner.js";
+import {
+  type AgentTurnErrorReporter,
+  type AgentTurnOutgoingReplyCollector,
+  AgentTurnRunner,
+} from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
@@ -330,6 +334,11 @@ export interface CreateClientRuntimeOptions {
     readonly extensionPath?: string;
     readonly fetchImpl?: typeof fetch;
   };
+  /**
+   * Relays a failed Agent turn to the error tracker. Given every failure; which of them are defects
+   * is the host's judgement, because the answer differs between a Computer and a Runner.
+   */
+  readonly agentErrorReporter?: AgentTurnErrorReporter;
 }
 
 export class ComposedClientRuntime {
@@ -829,6 +838,7 @@ export async function createClientRuntime(
     credentialEnvironment,
     turnPlan: providerCliTurnPlans,
     outgoingReplies: createOutgoingReplyCollector(providerCliTurnPlans),
+    agentErrorReporter: options.agentErrorReporter,
   });
   const availabilityTester = new AgentRuntimeAvailabilityTester({
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),

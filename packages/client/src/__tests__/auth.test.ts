@@ -225,7 +225,10 @@ describe("OpenTagApi", () => {
 describe("AccessTokenProvider", () => {
   it("rotates an access token before it expires and persists the response", async () => {
     const home = await temporaryHome();
-    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, home);
+    await writeCredentialsAtomically(
+      { ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z", userId: "account-1" },
+      home,
+    );
     const refresh = vi.fn().mockResolvedValue({
       accessToken: "new-access",
       refreshToken: "new-refresh",
@@ -244,6 +247,8 @@ describe("AccessTokenProvider", () => {
       accessToken: "new-access",
       refreshToken: "new-refresh",
       accessTokenExpiresAt: "2026-08-18T00:15:00.000Z",
+      // A refresh renews the tokens; it does not forget who they belong to.
+      userId: "account-1",
     });
   });
 

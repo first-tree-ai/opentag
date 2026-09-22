@@ -16,11 +16,42 @@ export interface ClientErrorReportMetadata {
   command?: string | undefined;
   environment?: string | undefined;
   occurredAt?: string | undefined;
+  /** Correlates the forwarded tracker event with the server log line holding the rest of this. */
+  reportId?: string | undefined;
+  /** Operating system, architecture, and runtime version, as `doctor` reports them. */
+  platform?: string | undefined;
+  /** Who this installation signed in as, when it has; the relay is anonymous and does not verify it. */
+  userId?: string | undefined;
+  computerId?: string | undefined;
+  installationId?: string | undefined;
+  /** Set when the failure happened inside an Agent turn rather than in a command. */
+  agentId?: string | undefined;
+  sessionId?: string | undefined;
+  turnId?: string | undefined;
+  provider?: string | undefined;
 }
 
 /** Redact and bound a thrown value into the relay's request shape. */
 export function buildClientErrorReport(error: unknown, metadata: ClientErrorReportMetadata): ErrorReportRequest {
   return createErrorReport(error, { source: "cli", ...metadata });
+}
+
+/** The slice of `process` the description reads, so a test can describe a machine it is not on. */
+export interface PlatformSource {
+  readonly platform: string;
+  readonly arch: string;
+  readonly version: string;
+}
+
+/**
+ * The machine a CLI failure happened on, as one line.
+ *
+ * The same three values `doctor` prints, in the same order, so a report and the diagnostic a reader
+ * is asked to run describe the machine identically. One field rather than three because the relay
+ * bounds each field it accepts, and this is read rather than queried.
+ */
+export function describePlatform(source: PlatformSource = process): string {
+  return `${source.platform} ${source.arch} node-${source.version}`;
 }
 
 export interface ReportClientErrorOptions extends ClientErrorReportMetadata {

@@ -313,6 +313,7 @@ describe("AgentTurnRunner", () => {
     }));
     const submit = vi.fn(async () => undefined);
     const markReporting = vi.fn(async () => undefined);
+    const agentErrorReporter = vi.fn();
     const runner = new AgentTurnRunner({
       bindingStore: {
         updateUnresolved: vi.fn(async () => {
@@ -324,6 +325,7 @@ describe("AgentTurnRunner", () => {
       reportOwner: { create, submit } as unknown as TurnReportOwner,
       runtimeManager: {} as SessionRuntimeManager,
       credentialEnvironment: credentialEnvironment(),
+      agentErrorReporter,
     });
     const owner = liveOwner(request);
     runner.start(owner);
@@ -336,6 +338,17 @@ describe("AgentTurnRunner", () => {
     );
     expect(markReporting).toHaveBeenCalledOnce();
     expect(submit).toHaveBeenCalledOnce();
+    // The Agent a failure happened to, so a tracker entry names it rather than only the machine.
+    expect(agentErrorReporter).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        agentId: request.agentId,
+        sessionId: request.sessionId,
+        turnId: owner.turnId,
+        outcome: "unknown",
+        errorReason: "turn_state_unknown",
+        error: expect.any(Error),
+      }),
+    );
     runner.stop();
     runner.stop();
     runner.start({ ...owner, turnId: "stopped" });

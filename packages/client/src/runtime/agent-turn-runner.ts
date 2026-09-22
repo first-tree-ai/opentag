@@ -79,7 +79,32 @@ export interface AgentTurnRunnerOptions {
     prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
   };
   readonly outgoingReplies?: AgentTurnOutgoingReplyCollector;
+  /**
+   * Relays a turn failure to the error tracker. Given every failure without exception: deciding which
+   * of them describe a defect is the reporter's job, not this runner's, so the taxonomy can change
+   * without touching the execution path.
+   */
+  readonly agentErrorReporter?: AgentTurnErrorReporter;
 }
+
+/**
+ * One failed turn, as much of it as a reader needs to find the Agent it happened to.
+ *
+ * Only what the failure path already holds. The provider is deliberately absent: reading it means
+ * asking the runtime manager, and a turn that failed before its runtime was prepared has no answer
+ * to give — the reporter resolves it, where being unable to is not the execution path's problem.
+ */
+export interface AgentTurnFailure {
+  readonly error: unknown;
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly errorReason?: TurnFailureReason | undefined;
+  readonly outcome: TurnCompletion["outcome"];
+}
+
+/** Never throws and never awaited: a tracker that is slow or broken must not hold a turn open. */
+export type AgentTurnErrorReporter = (failure: AgentTurnFailure) => void;
 
 interface RunningTurn {
   readonly abort: AbortController;
@@ -111,6 +136,7 @@ export class AgentTurnRunner {
   readonly #credentialEnvironment: AgentTurnRunnerOptions["credentialEnvironment"];
   readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
+  readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
 
@@ -127,6 +153,9 @@ export class AgentTurnRunner {
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
     this.#outgoingReplies = options.outgoingReplies;
+    // Defaulted rather than optional so the failure path calls it unconditionally: a composition that
+    // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
+    this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
   }
 
   get activeCount(): number {
@@ -304,6 +333,14 @@ export class AgentTurnRunner {
         },
         "Turn failed",
       );
+      this.#agentErrorReporter({
+        error,
+        agentId: owner.request.agentId,
+        sessionId: owner.request.sessionId,
+        turnId: owner.turnId,
+        errorReason: completion.errorReason,
+        outcome: completion.outcome,
+      });
       /* v8 ignore else -- a terminal event observed before the failure already recorded the outcome. */
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {

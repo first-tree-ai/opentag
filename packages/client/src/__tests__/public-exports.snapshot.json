@@ -183,6 +183,7 @@
   "deriveProviderCliSessionKey",
   "deriveProviderCliValidationRequestKey",
   "deriveRuntimeKey",
+  "describePlatform",
   "detectProviderCliCandidates",
   "ensurePrivateDirectory",
   "exchangeFeishuTenantToken",

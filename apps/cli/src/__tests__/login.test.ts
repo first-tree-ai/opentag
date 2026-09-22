@@ -127,6 +127,35 @@ describe("runLogin", () => {
     expect(await readdir(home)).toEqual(["config"]);
   });
 
+  it("records the Account it signed in as, and signs in anyway when it cannot be read", async () => {
+    const exchangeConnectCode = vi.fn().mockResolvedValue({
+      accessToken: "access-secret",
+      refreshToken: "refresh-secret",
+      tokenType: "Bearer",
+      expiresIn: 900,
+    });
+    const login = async (me?: () => Promise<{ user: { id: string } }>) => {
+      const home = await mkdtemp(join(tmpdir(), "opentag-login-"));
+      temporaryDirectories.push(home);
+      await runLogin({
+        api: { exchangeConnectCode, ...(me ? { me } : {}) } as Parameters<typeof runLogin>[0]["api"],
+        code: "one-time-secret",
+        home,
+        serverUrl: "https://opentag.example",
+      });
+      return readCredentials(home);
+    };
+
+    expect(await login(async () => ({ user: { id: "account-1" } }))).toMatchObject({ userId: "account-1" });
+    // The sign-in has already succeeded by then; a diagnostic detail must not undo it.
+    const withoutAccount = await login(async () => {
+      throw new Error("unreachable");
+    });
+    expect(withoutAccount?.userId).toBeUndefined();
+    expect(withoutAccount?.accessToken).toBe("access-secret");
+    expect((await login())?.userId).toBeUndefined();
+  });
+
   it("rejects another server before consuming a connect code for a bound home", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-login-"));
     temporaryDirectories.push(home);

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as client from "@opentag/client";
 import type { Command } from "commander";
 import { CHANNEL, CLI_VERSION } from "../../build-info.js";
@@ -53,19 +54,47 @@ export function resolveCommandPath(program: Command, argv: readonly string[]): s
   return path.length > 0 ? path.join(" ") : undefined;
 }
 
-/** The server this OpenTag home talks to, from whichever credential file exists; `undefined` when none does. */
-export async function resolveErrorReportServerUrl(home: string): Promise<string | undefined> {
+/** Where a report goes and who it is from, as far as this OpenTag home knows either. */
+export interface ErrorReportTarget {
+  /** `undefined` when this home has never signed in or connected; there is then nowhere to report. */
+  serverUrl?: string | undefined;
+  userId?: string | undefined;
+  computerId?: string | undefined;
+  installationId?: string | undefined;
+}
+
+/**
+ * Read the identity this OpenTag home reports under, from whichever credential files exist.
+ *
+ * All three are read rather than stopping at the first server URL: an installation that has both an
+ * Account and a Computer can say so, and the two answer different questions — who hit this, and
+ * which machine it was. A home that has neither reports nothing at all, which is the point of
+ * returning the whole thing rather than throwing.
+ */
+export async function resolveErrorReportTarget(home: string): Promise<ErrorReportTarget> {
   try {
-    const credentials = await client.readCredentials(home);
-    if (credentials?.serverUrl) return credentials.serverUrl;
-    const [identity, machine] = await Promise.all([
+    const [credentials, identity, machine] = await Promise.all([
+      client.readCredentials(home),
       client.readComputerIdentity(home),
       client.readMachineCredentials(home),
     ]);
-    return identity?.serverUrl ?? machine?.computer.serverUrl;
+    return {
+      serverUrl: credentials?.serverUrl ?? identity?.serverUrl ?? machine?.computer.serverUrl,
+      userId: credentials?.userId,
+      computerId: identity?.computerId ?? machine?.computer.computerId,
+      installationId: machine?.computer.installationId,
+    };
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+/** The Agent a failure belongs to, when it happened inside a turn rather than inside a command. */
+export interface CliErrorReportAgent {
+  agentId?: string | undefined;
+  sessionId?: string | undefined;
+  turnId?: string | undefined;
+  provider?: string | undefined;
 }
 
 export interface CliErrorReportOptions {
@@ -73,6 +102,7 @@ export interface CliErrorReportOptions {
   environment?: NodeJS.ProcessEnv;
   home?: string;
   fetchImpl?: typeof fetch;
+  agent?: CliErrorReportAgent | undefined;
 }
 
 /**
@@ -84,7 +114,7 @@ export async function reportCliError(error: unknown, options: CliErrorReportOpti
   try {
     const environment = resolveChannelEnvironment(options.environment ?? process.env);
     const home = options.home ?? client.resolveOpenTagHome(environment);
-    const serverUrl = await resolveErrorReportServerUrl(home);
+    const { serverUrl, ...identity } = await resolveErrorReportTarget(home);
     if (!serverUrl) return { ok: false };
     return await client.reportClientError({
       serverUrl,
@@ -92,6 +122,10 @@ export async function reportCliError(error: unknown, options: CliErrorReportOpti
       version: CLI_VERSION,
       channel: CHANNEL,
       command: options.command,
+      platform: client.describePlatform(),
+      reportId: randomUUID(),
+      ...identity,
+      ...options.agent,
       fetchImpl: options.fetchImpl,
     });
   } catch {

@@ -93,10 +93,12 @@ export class AccessTokenProvider {
       const expiresAt = new Date(this.#now().getTime() + response.expiresIn * 1000).toISOString();
       await writeCredentialsAtomically(
         {
+          // Spread first so a refresh renews the tokens and keeps everything else the file holds;
+          // rebuilding the record field by field silently discarded whatever it did not name.
+          ...latest,
           accessToken: response.accessToken,
           accessTokenExpiresAt: expiresAt,
           refreshToken: response.refreshToken,
-          serverUrl: latest.serverUrl,
         },
         this.#home,
       );

@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveOpenTagHomeLayout, writeCredentialsAtomically } from "@opentag/client";
+import { resolveOpenTagHomeLayout, writeComputerIdentityAtomically, writeCredentialsAtomically } from "@opentag/client";
+import { ErrorReportRequestSchema } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNEL, CLI_VERSION } from "../build-info.js";
 import { createProgram } from "../cli/program.js";
@@ -11,9 +12,11 @@ import {
   reportCliError,
   reportCommandFailure,
   resolveCommandPath,
-  resolveErrorReportServerUrl,
+  resolveErrorReportTarget,
   shouldReportCommandError,
 } from "../core/diagnostics/error-reporting.js";
+
+const COMPUTER_ID = "c0000000-0000-4000-8000-000000000000";
 
 const homes: string[] = [];
 afterEach(async () => {
@@ -26,7 +29,7 @@ async function temporaryHome(): Promise<string> {
   return home;
 }
 
-async function loggedInHome(serverUrl: string): Promise<string> {
+async function loggedInHome(serverUrl: string, userId?: string): Promise<string> {
   const home = await temporaryHome();
   await writeCredentialsAtomically(
     {
@@ -34,6 +37,7 @@ async function loggedInHome(serverUrl: string): Promise<string> {
       accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
       refreshToken: "refresh-token",
       serverUrl,
+      ...(userId ? { userId } : {}),
     },
     home,
   );
@@ -77,10 +81,15 @@ describe("shouldReportCommandError", () => {
   });
 });
 
-describe("resolveErrorReportServerUrl", () => {
+describe("resolveErrorReportTarget", () => {
   it("prefers Account credentials and tolerates an empty or corrupt home", async () => {
-    expect(await resolveErrorReportServerUrl(await temporaryHome())).toBeUndefined();
-    expect(await resolveErrorReportServerUrl(await loggedInHome("https://opentag.example"))).toBe(
+    expect(await resolveErrorReportTarget(await temporaryHome())).toEqual({
+      serverUrl: undefined,
+      userId: undefined,
+      computerId: undefined,
+      installationId: undefined,
+    });
+    expect((await resolveErrorReportTarget(await loggedInHome("https://opentag.example"))).serverUrl).toBe(
       "https://opentag.example",
     );
 
@@ -88,7 +97,22 @@ describe("resolveErrorReportServerUrl", () => {
     const layout = resolveOpenTagHomeLayout(corrupt);
     await mkdir(layout.config, { recursive: true });
     await writeFile(join(layout.config, "credentials.json"), "{not json", { mode: 0o600 });
-    expect(await resolveErrorReportServerUrl(corrupt)).toBeUndefined();
+    expect(await resolveErrorReportTarget(corrupt)).toEqual({});
+  });
+
+  it("reads the Account from the credentials and the Computer from its own identity", async () => {
+    const home = await loggedInHome("https://opentag.example", "account-1");
+    await writeComputerIdentityAtomically(home, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: "https://opentag.example",
+    });
+
+    expect(await resolveErrorReportTarget(home)).toMatchObject({
+      serverUrl: "https://opentag.example",
+      userId: "account-1",
+      computerId: COMPUTER_ID,
+    });
   });
 });
 
@@ -109,6 +133,35 @@ describe("reportCliError", () => {
       channel: CHANNEL,
       command: "agent create",
     });
+  });
+
+  it("names the Account, the machine, and the Agent a turn failure belongs to", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    const home = await loggedInHome("https://opentag.example", "account-1");
+    await writeComputerIdentityAtomically(home, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: "https://opentag.example",
+    });
+
+    await reportCliError(new Error("boom"), {
+      home,
+      fetchImpl,
+      agent: { agentId: "agent-1", sessionId: "session-1", turnId: "turn-1", provider: "claude-code" },
+    });
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(ErrorReportRequestSchema.safeParse(body).success).toBe(true);
+    expect(body).toMatchObject({
+      userId: "account-1",
+      computerId: COMPUTER_ID,
+      agentId: "agent-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      provider: "claude-code",
+      platform: `${process.platform} ${process.arch} node-${process.version}`,
+    });
+    expect(body.reportId).toEqual(expect.any(String));
   });
 
   it("stays silent when no server is known and never throws", async () => {

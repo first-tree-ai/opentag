@@ -92,7 +92,9 @@ export {
   buildClientErrorReport,
   CLIENT_ERROR_REPORT_TIMEOUT_MS,
   type ClientErrorReportMetadata,
+  describePlatform,
   installProcessErrorReporting,
+  type PlatformSource,
   PROCESS_ERROR_FLUSH_WAIT_MS,
   PROCESS_ERROR_REPORT_WAIT_MS,
   type ProcessErrorOrigin,
@@ -206,7 +208,13 @@ export {
   AgentRuntimeProviderRegistry,
   AgentRuntimeProviderUnavailableError,
 } from "./runtime/agent-runtime-provider-registry.js";
-export { AgentTurnRunner, type AgentTurnRunnerOptions, buildAgentInput } from "./runtime/agent-turn-runner.js";
+export {
+  type AgentTurnErrorReporter,
+  type AgentTurnFailure,
+  AgentTurnRunner,
+  type AgentTurnRunnerOptions,
+  buildAgentInput,
+} from "./runtime/agent-turn-runner.js";
 export {
   AgentWorkspaceManager,
   type AgentWorkspaceManagerOptions,

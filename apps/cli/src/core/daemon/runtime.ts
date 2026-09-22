@@ -19,6 +19,7 @@ import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { channelConfig } from "../channel/config.js";
 import { resolveChannelEnvironment } from "../channel/environment.js";
 import { resolveCommandContext } from "../command/context.js";
+import { createAgentErrorReporter } from "../diagnostics/agent-error-reporting.js";
 import { createPortableAutoUpdater } from "../update/auto-update.js";
 import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
 import { resolveRuntimeCredentialMode } from "./credential-mode.js";
@@ -236,6 +237,12 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     api: apiContext.api,
     machineToken: credential.machineToken,
     webTools: resolveWebToolsOptIn(context.daemonEnvironment),
+    // A turn that fails inside the daemon never reaches a terminal, so the tracker is the only place
+    // it can be seen. The reporter decides which failures are defects; the runner reports them all.
+    agentErrorReporter: createAgentErrorReporter({
+      home: context.home,
+      environment: context.daemonEnvironment,
+    }),
   });
   context.state.updater = await attachAutoUpdater(context, runtime, runtimeLogger);
   void connection.whenRegistered(signal).then(

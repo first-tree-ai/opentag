@@ -34,6 +34,8 @@ export function ComputerDisconnectDialog({
       await browserApi.disconnectComputer(computer.computerId);
     } catch {
       // A lost response may follow a committed revocation. Ask for a fresh read before another write.
+      // Cancel pre-failure reads so their late answers cannot confirm the old access state.
+      await queryClient.cancelQueries({ queryKey: queryKeys.computers() });
       setUncertain(true);
       setBusy(false);
       onUncertain();

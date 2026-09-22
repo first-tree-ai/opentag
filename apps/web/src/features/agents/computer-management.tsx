@@ -1,6 +1,9 @@
 import type { AccountComputerSummary } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
+import { queryKeys } from "../../query/keys.js";
+import { resourceSuccessObservation } from "../../query/session-cache.js";
 import { Button, DropdownMenu, Icon } from "../../ui/design-system.js";
 import { type ComputerConnectAdapter, ComputerConnectLifecycleRoot } from "../computer-connect/computer-connect.js";
 import { ComputerConnectionDialog } from "./computer-connection-dialog.js";
@@ -25,13 +28,16 @@ export function ComputerManagement({
   onDeleted: (computer: AccountComputerSummary) => void;
 }) {
   const [dialog, setDialog] = useState<"help" | "disconnect" | "delete" | null>(null);
-  const [uncertainAt, setUncertainAt] = useState<string>();
+  const queryClient = useQueryClient();
+  const [uncertainAfter, setUncertainAfter] = useState<number>();
   const [attempt, setAttempt] = useState(0);
   const actionRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLElement>(null);
   const cloud = computer.kind === "cloud";
-  const known = confirmed && uncertainAt !== computer.observedAt;
+  const observation = resourceSuccessObservation(queryClient, queryKeys.computers())?.seq ?? 0;
+  const uncertain = uncertainAfter !== undefined && observation <= uncertainAfter;
+  const known = confirmed && !uncertain;
   const connection = known ? computer.connectionStatus : "unconfirmed";
   const intent = { mode: "repair" as const, target: computer };
   const close = () => {
@@ -41,12 +47,7 @@ export function ComputerManagement({
   return (
     <ComputerConnectLifecycleRoot key={attempt} intent={intent} adapter={adapter} onConnected={onConnected}>
       {(lifecycle) => {
-        const action = computerManagementAction(
-          connection,
-          lifecycle.state.kind,
-          Boolean(lifecycle.error),
-          uncertainAt === computer.observedAt,
-        );
+        const action = computerManagementAction(connection, lifecycle.state.kind, Boolean(lifecycle.error), uncertain);
         const openHelp = () => {
           setDialog("help");
           if (connection === "disconnected" && lifecycle.state.kind === "idle") lifecycle.issue();
@@ -96,13 +97,14 @@ export function ComputerManagement({
                 onClose={close}
                 onDisconnected={() => {
                   close();
-                  setUncertainAt(undefined);
+                  setUncertainAfter(undefined);
                   setAttempt((value) => value + 1);
                   onConnected();
                 }}
                 onUncertain={() => {
-                  setUncertainAt(computer.observedAt);
-                  lifecycle.reset();
+                  // Read the cache at failure time, not the render that started the request.
+                  // The dialog has cancelled older reads; only a subsequent Server read can clear this latch.
+                  setUncertainAfter(resourceSuccessObservation(queryClient, queryKeys.computers())?.seq ?? 0);
                 }}
                 onCheckStatus={() => {
                   close();

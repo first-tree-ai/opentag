@@ -7,7 +7,7 @@
   "computer_connect_create_command_comment": "执行此命令，在这台电脑上设置 OpenTag。",
   "computer_connect_create_command_intro": "在要连接的电脑上，将此命令发送给编程助手。",
   "computer_connect_entry_action": "连接电脑",
-  "computer_connect_expired_status": "命令已过期。",
+  "computer_connect_expired_status": "命令已失效。",
   "computer_connect_expires_in": "{time} 后过期",
   "computer_connect_issue_failed": "无法生成连接命令。",
   "computer_connect_issuing": "正在准备连接命令…",

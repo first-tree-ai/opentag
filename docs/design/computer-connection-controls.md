@@ -27,6 +27,10 @@ waiting for redemption, and checking status belong to the action row; they do no
   or the card when that action has disappeared.
 - More contains Disconnect and the existing Delete action. Disconnect confirmation focuses “Keep connected”; it
   cannot be dismissed during the request. A lost response requires checking status before another mutation.
+  Cancel inventory reads that began before the failure, then latch uncertainty against the cache's current
+  successful-read sequence. Only a later Server read can restore confidence; render-time or Server timestamps
+  cannot. Keep pending repair instructions until their own Server verdict retires them. Expired or revoked
+  commands both say “This command is no longer valid.”
 - Delete retains its existing typed-name confirmation and refusal while any non-deleted Agent is assigned.
 
 ## Access and compatibility

@@ -333,7 +333,7 @@ describe("ComputerConnect", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
 
     expect(onConnected).toHaveBeenCalledWith(computer);
-    expect(screen.queryByText("This command has expired.")).toBeNull();
+    expect(screen.queryByText("This command is no longer valid.")).toBeNull();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
   });
 
@@ -378,8 +378,8 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(commandIsShown(COMMAND)).toBe(false);
-    expect(screen.getByText("This command has expired.")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("This command has expired.");
+    expect(screen.getByText("This command is no longer valid.")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("This command is no longer valid.");
     expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
     expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
   });

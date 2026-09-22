@@ -81,7 +81,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps Skills and Integrations reachable from the object navigation", async () => {
     installApi({
-      internalNavigationVisibility: { integrations: true, skills: true },
+      internalNavigationVisibility: { integrations: true },
       internalToolsOffered: true,
     });
     window.history.replaceState({}, "", `/agents/${agentId}/skills`);

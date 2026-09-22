@@ -58,8 +58,6 @@
   "common_settings": "设置",
   "common_show_integrations_navigation": "展示集成",
   "common_show_integrations_navigation_description": "在所有用户的 Agent 导航中加入尚未开放的集成页面。",
-  "common_show_skills_navigation": "展示技能",
-  "common_show_skills_navigation_description": "在所有用户的 Agent 导航中加入尚未开放的技能页面。",
   "common_sign_in": "登录",
   "common_sign_out": "退出登录",
   "common_status": "状态",

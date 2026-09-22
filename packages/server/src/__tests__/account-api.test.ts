@@ -234,7 +234,7 @@ function appWith(
 
 describe("staging-wide internal navigation", () => {
   function navigationService() {
-    let value = { integrations: false, skills: false };
+    let value = { integrations: false };
     return {
       read: vi.fn(() => value),
       update: vi.fn((updated: typeof value) => {
@@ -257,7 +257,7 @@ describe("staging-wide internal navigation", () => {
       method: "PUT",
       url: HTTP_PATHS.internalNavigationVisibility,
       headers: authorization,
-      payload: { integrations: true, skills: false },
+      payload: { integrations: true },
     });
     const nextRead = await app.inject({
       method: "GET",
@@ -266,11 +266,11 @@ describe("staging-wide internal navigation", () => {
     });
 
     expect(initial.statusCode).toBe(200);
-    expect(initial.json()).toEqual({ integrations: false, skills: false });
+    expect(initial.json()).toEqual({ integrations: false });
     expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toEqual({ integrations: true, skills: false });
-    expect(nextRead.json()).toEqual({ integrations: true, skills: false });
-    expect(navigation.update).toHaveBeenCalledExactlyOnceWith({ integrations: true, skills: false });
+    expect(updated.json()).toEqual({ integrations: true });
+    expect(nextRead.json()).toEqual({ integrations: true });
+    expect(navigation.update).toHaveBeenCalledExactlyOnceWith({ integrations: true });
   });
 
   it("is absent when the staging-only service is not supplied", async () => {
@@ -293,7 +293,7 @@ describe("staging-wide internal navigation", () => {
       app.inject({
         method: "PUT",
         url: HTTP_PATHS.internalNavigationVisibility,
-        payload: { integrations: true, skills: true },
+        payload: { integrations: true },
       }),
       app.inject({
         method: "PUT",

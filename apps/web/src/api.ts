@@ -556,7 +556,7 @@ export class BrowserApi {
     try {
       return await this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema);
     } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 404) return { integrations: false, skills: false };
+      if (cause instanceof ApiError && cause.status === 404) return { integrations: false };
       throw cause;
     }
   }

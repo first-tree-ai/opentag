@@ -8,7 +8,7 @@ import { queryKeys } from "../query/keys.js";
 import { Button, Dialog, Icon, Switch, Text } from "../ui/design-system.js";
 import { useInternalNavigationVisibility } from "./navigation-visibility.js";
 
-type InternalNavigationItem = "integrations" | "skills";
+type InternalNavigationItem = "integrations";
 
 export interface InternalToolsPageProps {
   /** Runs after a completed reset: refresh authoritative `/me` state, then enter ordinary onboarding. */
@@ -146,14 +146,6 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
           <p className="text-sm text-kumo-subtle">{m.common_internal_navigation_description()}</p>
         </div>
         <div className="divide-y divide-kumo-line rounded-lg ring ring-kumo-line">
-          <NavigationVisibilityRow
-            checked={internalNavigation.skills}
-            description={m.common_show_skills_navigation_description()}
-            disabled={pendingPreference !== undefined}
-            label={m.common_show_skills_navigation()}
-            transitioning={pendingPreference === "skills"}
-            onCheckedChange={(checked) => void setNavigationVisibility("skills", checked)}
-          />
           <NavigationVisibilityRow
             checked={internalNavigation.integrations}
             description={m.common_show_integrations_navigation_description()}

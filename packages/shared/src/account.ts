@@ -15,7 +15,7 @@ export const AccountSetupResetModeSchema = z.enum(["all", "reboard"]);
 export const AccountSetupResetRequestSchema = z.object({ mode: AccountSetupResetModeSchema }).strict();
 
 /** Staging-wide visibility for product areas that are not ready for public navigation. */
-export const InternalNavigationVisibilitySchema = z.object({ integrations: z.boolean(), skills: z.boolean() }).strict();
+export const InternalNavigationVisibilitySchema = z.object({ integrations: z.boolean() }).strict();
 
 export const AccountComputerSummarySchema = z
   .object({

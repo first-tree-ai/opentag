@@ -58,8 +58,6 @@
   "common_settings": "Settings",
   "common_show_integrations_navigation": "Show Integrations",
   "common_show_integrations_navigation_description": "Adds the unreleased Integrations page to every user's Agent navigation.",
-  "common_show_skills_navigation": "Show Skills",
-  "common_show_skills_navigation_description": "Adds the unreleased Skills page to every user's Agent navigation.",
   "common_sign_in": "Sign in",
   "common_sign_out": "Sign out",
   "common_status": "Status",

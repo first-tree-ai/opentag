@@ -1,7 +1,8 @@
 import type { TaskTurn } from "@opentag/shared/browser";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { Fragment } from "react";
 import { describe, expect, it } from "vitest";
-import { TaskOutgoingReply } from "./task-outgoing-replies.js";
+import { TaskOutgoingReply, TaskOutgoingReplyMeta } from "./task-outgoing-replies.js";
 
 type Reply = NonNullable<NonNullable<TaskTurn["report"]>["outgoingReplies"]>["replies"][number];
 type Content = Reply["content"];
@@ -13,7 +14,14 @@ function renderReplies(contents: Content[]) {
     chatId: "oc_chat",
     content,
   }));
-  return render(replies.map((reply) => <TaskOutgoingReply key={reply.messageId} reply={reply} />));
+  return render(
+    replies.map((reply) => (
+      <Fragment key={reply.messageId}>
+        <TaskOutgoingReplyMeta reply={reply} />
+        <TaskOutgoingReply reply={reply} />
+      </Fragment>
+    )),
+  );
 }
 
 describe("actual outgoing reply content", () => {
@@ -182,10 +190,10 @@ describe("actual outgoing reply content", () => {
         content: { msgType: "text", text: "bad" },
       },
     ];
-    render(withTimes.map((reply) => <TaskOutgoingReply key={reply.messageId} reply={reply} />));
+    render(withTimes.map((reply) => <TaskOutgoingReplyMeta key={reply.messageId} reply={reply} />));
 
     // Both real times are formatted; an unparseable one is dropped rather than shown as Invalid Date.
-    const meta = [...document.querySelectorAll('[data-ui="task-sent-reply"] small')].map((node) => node.textContent);
+    const meta = [...document.querySelectorAll("small")].map((node) => node.textContent);
     expect(meta[0]).toContain("·");
     expect(meta[1]).toContain("·");
     expect(meta[2]).toBe("Text");
@@ -196,6 +204,6 @@ describe("actual outgoing reply content", () => {
     renderReplies([{ msgType: "interactive", raw: "{}" }]);
 
     // The meta line is kind-only here: the time is absent, and the kind is never dropped with it.
-    expect(document.querySelector('[data-ui="task-sent-reply"] small')?.textContent).toBe("Card");
+    expect(document.querySelector("small")?.textContent).toBe("Card");
   });
 });

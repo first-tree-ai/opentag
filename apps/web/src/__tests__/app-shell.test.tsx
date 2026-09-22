@@ -44,7 +44,7 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/agents");
     expect(screen.queryByText("Infrastructure")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Agent runtime" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Computer" })).toBeNull();
     expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
     const homeLink = screen.getByRole("link", { name: "All Agents" });
@@ -110,12 +110,12 @@ describe("OpenTag Web App Shell", () => {
         .getAllByRole("link")
         .map((item) => item.textContent),
       /*
-       * MCP Servers and Skills are present with no Internal Tools flag: they are ordinary management
-       * surfaces, unlike Integrations which the next test gates.
+       * MCP Servers, Context Tree and Skills are present with no Internal Tools flag: they are
+       * ordinary management surfaces, unlike Integrations which the next test gates.
        */
-    ).toEqual(["Overview", "Tasks", "MCP Servers", "Skills", "Usage"]);
+    ).toEqual(["Overview", "Tasks", "Context Tree", "MCP Servers", "Skills", "Usage"]);
     const navigationIcons = workspaceNavigation.querySelectorAll("svg");
-    expect(navigationIcons).toHaveLength(5);
+    expect(navigationIcons).toHaveLength(6);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
     expect(within(workspaceNavigation).queryByText("Settings")).toBeNull();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
@@ -165,7 +165,7 @@ describe("OpenTag Web App Shell", () => {
         within(workspaceNavigation)
           .getAllByRole("link")
           .map((item) => item.textContent),
-      ).toEqual(["Overview", "Tasks", "MCP Servers", "Skills", "Integrations", "Usage"]),
+      ).toEqual(["Overview", "Tasks", "Context Tree", "MCP Servers", "Skills", "Integrations", "Usage"]),
     );
   });
 

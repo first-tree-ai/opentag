@@ -6,6 +6,7 @@ import { registerAgentDeleteCommand } from "./delete.js";
 import { registerAgentImBindingCommands } from "./im.js";
 import { registerAgentLifecycleCommands } from "./lifecycle.js";
 import { registerAgentListCommand } from "./list.js";
+import { registerAgentSelfCommands } from "./self.js";
 import { registerAgentShowCommand } from "./show.js";
 import { registerAgentUpdateCommand } from "./update.js";
 
@@ -20,4 +21,5 @@ export function registerAgentCommand(program: Command): void {
   registerAgentDeleteCommand(agent);
   registerAgentImBindingCommands(agent);
   registerAgentMcpCommands(agent);
+  registerAgentSelfCommands(agent);
 }

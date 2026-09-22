@@ -72,7 +72,7 @@ describe("Login session entry", () => {
     window.history.replaceState({}, "", `/login?next=${encodeURIComponent(next)}`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Computers" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Computer" })).toBeTruthy();
     expect(window.location.pathname + window.location.search).toBe(next);
   });
 

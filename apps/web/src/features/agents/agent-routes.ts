@@ -40,10 +40,19 @@ export function agentMcpLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/mcp" } as const;
 }
 
+export function agentContextTreeLink(agentId: string) {
+  return { params: { agentId }, to: "/agents/$agentId/context-tree" } as const;
+}
+
 export function agentSettingsLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/settings" } as const;
 }
 
 export function agentSettingsSectionLink(agentId: string, section: AgentSettingsSection) {
   return { params: { agentId, section }, to: "/agents/$agentId/settings/$section" } as const;
+}
+
+/** Account-owned Computer management, with an optional originating Agent. */
+export function accountComputerLink(computerId?: string, fromAgent?: string) {
+  return { to: "/agents/computers", search: { computerId, fromAgent } } as const;
 }

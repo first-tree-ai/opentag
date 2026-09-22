@@ -273,6 +273,55 @@ describe("Tasks view", () => {
     expect(screen.getByText("Investigate the failed deployment")).toBeTruthy();
   });
 
+  it("offers four statuses and folds the finer Server statuses into them", async () => {
+    const statuses = ["queued", "running", "completed", "failed", "cancelled", "expired", "ended"] as const;
+    const tasks = statuses.map(
+      (status, index) =>
+        ({
+          ...task,
+          id: `${index}0000000-0000-4000-8000-000000000000`,
+          title: `Task ${status}`,
+          status,
+        }) satisfies TaskSummary,
+    );
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks, nextCursor: null });
+
+    await renderInRouter(<TasksPage />);
+    await screen.findByRole("table", { name: "Tasks" });
+    const statusOf = (title: string) => {
+      const row = screen.getByRole("link", { name: title }).closest("tr");
+      if (!row) throw new Error("Expected the Task link to be inside a row");
+      return within(row).getByText(/^(Queued|Running|Completed|Failed)$/u).textContent;
+    };
+    expect(statuses.map((status) => statusOf(`Task ${status}`))).toEqual([
+      "Queued",
+      "Running",
+      "Completed",
+      "Failed",
+      "Completed",
+      "Failed",
+      "Completed",
+    ]);
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
+    const options = await screen.findAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual([
+      "All statuses",
+      "Queued",
+      "Running",
+      "Completed",
+      "Failed",
+    ]);
+    const failedOption = screen.getByRole("option", { name: "Failed" });
+    fireEvent.pointerMove(failedOption, { pointerType: "mouse" });
+    fireEvent.pointerDown(failedOption, { pointerType: "mouse" });
+    fireEvent.pointerUp(failedOption, { pointerType: "mouse" });
+    fireEvent.click(failedOption);
+    await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(3));
+    expect(screen.getByText("Task failed")).toBeTruthy();
+    expect(screen.getByText("Task expired")).toBeTruthy();
+  });
+
   it("keeps the loaded rows and retries a failed page append", async () => {
     const second = {
       ...task,

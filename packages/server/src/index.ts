@@ -47,10 +47,12 @@ import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
   AgentRuntimeTestService,
+  AgentSelfService,
   AgentService,
   type AgentSessionStopTarget,
   AgentSetupService,
   CloudAgentRuntimeTester,
+  DatabaseAgentOwnerResolver,
 } from "./services/agents/index.js";
 import {
   AuthService,
@@ -978,6 +980,15 @@ export async function startServer(): Promise<void> {
         channelTarget: () => channelTargetPoller.get(),
       },
       runtimeDurableWork: { machineAuth: platformRuntime.auth, store: durableWorkStore },
+      runtimeAgent: {
+        service: new AgentSelfService({
+          agents: agentService,
+          logger: serviceLogger("agent-self"),
+          mcp: mcpServers,
+          owners: new DatabaseAgentOwnerResolver(database),
+          proofs: sessionCliProofService,
+        }),
+      },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
         proofs: sessionCliProofService,

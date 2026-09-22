@@ -9,14 +9,7 @@ import {
   runtimeProviderName,
 } from "../agent-presentation.js";
 
-export type AgentSettingsSection =
-  | "context-tree"
-  | "instructions"
-  | "execution"
-  | "messaging"
-  | "identity"
-  | "computer"
-  | "manage";
+export type AgentSettingsSection = "instructions" | "execution" | "messaging" | "identity" | "computer" | "manage";
 
 export type AgentSettingsGroup = "setup" | "danger";
 
@@ -48,7 +41,6 @@ export const agentSettingsSections: ReadonlyArray<{
     group: "setup",
     icon: "laptop",
   },
-  { key: "context-tree", label: () => m.agent_settings_context_tree_title(), group: "setup", icon: "instructions" },
   {
     key: "instructions",
     label: () => m.agent_settings_instructions_title(),
@@ -88,11 +80,6 @@ export function agentSettingsSummary(
   config: AgentAdminConfig,
   section: AgentSettingsSection,
 ): string {
-  if (section === "context-tree")
-    return (
-      config.runtimeConfig.contextTrees.map((entry) => `${entry.alias}: ${entry.repository}`).join(", ") ||
-      m.agent_settings_context_tree_disabled()
-    );
   if (section === "instructions") {
     return config.runtimeConfig.instructions.trim()
       ? m.agent_settings_custom_instructions()
@@ -123,7 +110,7 @@ export function agentSettingsSummary(
     const state = agent.availability.dependencies.computer.state;
     const status =
       state === "ready"
-        ? m.agent_settings_computer_online()
+        ? onlineComputerLabel(agent)
         : state === "action_required"
           ? m.agent_settings_computer_offline()
           : m.agent_settings_computer_unconfirmed();
@@ -146,4 +133,8 @@ function reasoningSummary(value: string | null): string {
       max: m.agent_settings_reasoning_max(),
     }[value] ?? value
   );
+}
+
+function onlineComputerLabel(agent: AgentDetailView) {
+  return agent.computerKind === "cloud" ? m.computer_managed() : m.agent_settings_computer_online();
 }

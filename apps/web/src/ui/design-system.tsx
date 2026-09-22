@@ -66,6 +66,7 @@ import {
   Plus,
   Shield,
   SquaresFour,
+  TreeStructure,
   User,
   Wrench,
   X,
@@ -436,6 +437,7 @@ export type IconName =
   | "settings"
   | "shield"
   | "sign-out"
+  | "tree"
   | "user"
   | "usage";
 
@@ -462,6 +464,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   settings: Gear,
   shield: Shield,
   "sign-out": ArrowRight,
+  tree: TreeStructure,
   user: User,
   usage: ChartLine,
 };

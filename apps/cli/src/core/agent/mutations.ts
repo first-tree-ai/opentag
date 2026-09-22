@@ -189,17 +189,22 @@ async function updateMutation(options: AgentUpdateOptions): Promise<Omit<UpdateA
   return mutation;
 }
 
-function assertInstructionsSource(options: { instructions?: string; instructionsFile?: string }): void {
+export function assertInstructionsSource(options: { instructions?: string; instructionsFile?: string }): void {
   if (options.instructions !== undefined && options.instructionsFile !== undefined) {
     throw new Error("--instructions and --instructions-file cannot be used together");
   }
 }
 
-function assertExclusive(value: unknown, clear: boolean | undefined, valueFlag: string, clearFlag: string): void {
+export function assertExclusive(
+  value: unknown,
+  clear: boolean | undefined,
+  valueFlag: string,
+  clearFlag: string,
+): void {
   if (value !== undefined && clear) throw new Error(`${valueFlag} and ${clearFlag} cannot be used together`);
 }
 
-async function readInstructions(options: { instructions?: string; instructionsFile?: string }): Promise<string> {
+export async function readInstructions(options: { instructions?: string; instructionsFile?: string }): Promise<string> {
   if (options.instructionsFile !== undefined) return readFile(options.instructionsFile, "utf8");
   return options.instructions ?? "";
 }

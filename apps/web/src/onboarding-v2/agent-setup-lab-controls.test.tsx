@@ -122,7 +122,7 @@ describe("agent setup lab controls", () => {
 
     expect(
       await screen.findByText(
-        "Previous Mac belongs to another Account. Choose a Computer owned by this Account for Reviewer.",
+        "Previous Mac belongs to another account. Choose a computer from this account for Reviewer.",
       ),
     ).toBeTruthy();
     expect(screenState()).toBe("Replace computer");

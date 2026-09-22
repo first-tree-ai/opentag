@@ -3,6 +3,13 @@ export {
   type CloudAgentRuntimeTestPort,
 } from "./agent-runtime-test-service.js";
 export {
+  type AgentOwnerResolver,
+  type AgentSelfScope,
+  AgentSelfService,
+  type AgentSelfServiceOptions,
+  DatabaseAgentOwnerResolver,
+} from "./agent-self-service.js";
+export {
   AGENT_ACTIVITY_READ_LIMIT,
   AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS,
   AgentService,

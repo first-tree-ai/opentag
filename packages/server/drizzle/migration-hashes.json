@@ -250,6 +250,11 @@
       "idx": 49,
       "tag": "0049_multiple_context_trees",
       "sha256": "551ad931ab3612214f2409f398bf9534c18a09bc2671572f458ee2ebef2a66ea"
+    },
+    {
+      "idx": 50,
+      "tag": "0050_computer_soft_delete",
+      "sha256": "120d2a1c8a0fd0e2ee5133194e65ee10d9df2337b915482b7f0f5e0c2e80c98d"
     }
   ]
 }

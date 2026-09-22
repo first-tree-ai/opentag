@@ -1,4 +1,5 @@
 import {
+  accountComputerByIdPath,
   accountComputerConnectCodePath,
   accountSandboxPath,
   agentCloudPath,
@@ -159,6 +160,7 @@ function services() {
     },
     computerService: {
       listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
+      deleteComputer: vi.fn().mockResolvedValue({ computerId, revokedCredentialCount: 1 }),
       ensureCloudComputerForAccount: vi.fn().mockResolvedValue({
         computerId,
         kind: "cloud" as const,
@@ -591,6 +593,41 @@ describe("Account-native management collections", () => {
     });
   });
 
+  it("deletes an Account-owned Computer under the authenticated Account's authority", async () => {
+    const { app, service } = appWith();
+    const response = await app.inject({
+      method: "DELETE",
+      url: accountComputerByIdPath(computerId),
+      headers: authorization,
+    });
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.body).toBe("");
+    expect(service.computerService.deleteComputer).toHaveBeenCalledWith(userId, computerId);
+  });
+
+  it("rejects a malformed Computer id and relays a refused deletion", async () => {
+    const { app, service } = appWith();
+    const malformed = await app.inject({
+      method: "DELETE",
+      url: accountComputerByIdPath("cloud"),
+      headers: authorization,
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(service.computerService.deleteComputer).not.toHaveBeenCalled();
+
+    service.computerService.deleteComputer.mockRejectedValueOnce(
+      new AuthServiceError("COMPUTER_IN_USE", "deterministic", "This Computer still hosts 1 Agent(s)", 409),
+    );
+    const refused = await app.inject({
+      method: "DELETE",
+      url: accountComputerByIdPath(computerId),
+      headers: authorization,
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: { code: "COMPUTER_IN_USE", category: "deterministic" } });
+  });
+
   it("forwards the provider readiness opt-in header", async () => {
     const { app, service } = appWith();
     await app.inject({
@@ -800,6 +837,7 @@ describe("Account-native management collections", () => {
       ["GET", HTTP_PATHS.accountAgents],
       ["POST", HTTP_PATHS.accountAgents],
       ["GET", HTTP_PATHS.accountComputers],
+      ["DELETE", accountComputerByIdPath(computerId)],
       ["PUT", HTTP_PATHS.accountCloudComputer],
       ["POST", HTTP_PATHS.accountSandboxes],
       ["GET", accountSandboxPath("2b63a21e-f6c7-4474-91ea-4dabf0566a24")],

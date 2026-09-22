@@ -35,7 +35,7 @@ import {
 import { createPlatformRuntime } from "./platform-runtime.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { type AgentSessionStopDependencies, stopAgentSessions } from "./runtime/agent-session-stopper.js";
-import { ConnectionRegistry } from "./runtime/connection-registry.js";
+import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ContextTreeOperationOwner } from "./runtime/context-tree-operation-owner.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
@@ -580,6 +580,15 @@ export async function startServer(): Promise<void> {
       providerReadiness: registry,
       cloudIdentities,
       assertCloudControlCredential: platformRuntime.assertCloudControlCredential,
+      onComputerDeleted: async (computerId) => {
+        // The deletion is already committed; a failed close only delays the fatal 401 to the next auth.
+        try {
+          const closed = await registry.closeComputer(computerId, COMPUTER_DELETED_CLOSE);
+          app?.log.info({ computerId, closed }, "Deleted Computer runtime connection closed");
+        } catch (error) {
+          app?.log.warn({ computerId, err: error }, "Failed to close a deleted Computer's runtime connection");
+        }
+      },
     });
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database

@@ -57,6 +57,8 @@ export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE = `${ACCOUNT_AGENTS_PATH}/creation-intents/:creationIntentId`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
+/** One Account-owned Computer; `DELETE` retires it and revokes its machine credential. */
+export const ACCOUNT_COMPUTER_BY_ID_TEMPLATE = `${ACCOUNT_COMPUTERS_PATH}/:computerId`;
 export const ACCOUNT_CLOUD_COMPUTER_PATH = `${ACCOUNT_COMPUTERS_PATH}/cloud`;
 /** The Router-sourced Cloud model choices; read-only and authenticated like the sibling Cloud routes. */
 export const ACCOUNT_CLOUD_MODELS_PATH = `${ACCOUNT_CLOUD_COMPUTER_PATH}/models`;
@@ -114,6 +116,7 @@ export const HTTP_PATHS = {
   accountCloudModels: ACCOUNT_CLOUD_MODELS_PATH,
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
+  accountComputerById: ACCOUNT_COMPUTER_BY_ID_TEMPLATE,
   accountSandboxes: ACCOUNT_SANDBOXES_PATH,
   sandboxRunnerWebSocket: SANDBOX_RUNNER_WEBSOCKET_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
@@ -190,6 +193,10 @@ export function sandboxRunnerWebSocketUrl(backendOrigin: string): string {
   const url = new URL(SANDBOX_RUNNER_WEBSOCKET_PATH, backendOrigin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
+}
+
+export function accountComputerByIdPath(computerId: string): string {
+  return `${ACCOUNT_COMPUTERS_PATH}/${encodeURIComponent(computerId)}`;
 }
 
 export function agentByIdPath(agentId: string): string {

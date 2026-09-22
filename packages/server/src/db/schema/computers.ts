@@ -29,12 +29,20 @@ export const computers = pgTable(
     currentInstanceId: uuid("current_instance_id"),
     connectedAt: timestamp("connected_at", { withTimezone: true }),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    /**
+     * Set when the owning Account deletes the Computer. The row stays because Agents, Session placements,
+     * and credential history reference it; deletion revokes every credential and releases the installation
+     * so the same machine can connect again as a new Computer.
+     */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("computers_owner_account_id_idx").on(table.ownerAccountId),
-    uniqueIndex("computers_current_installation_id_unique").on(table.currentInstallationId),
+    uniqueIndex("computers_current_installation_id_unique")
+      .on(table.currentInstallationId)
+      .where(sql`${table.deletedAt} IS NULL`),
     uniqueIndex("computers_owner_account_id_cloud_unique").on(table.ownerAccountId).where(sql`${table.kind} = 'cloud'`),
   ],
 );

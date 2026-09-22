@@ -1,5 +1,6 @@
 import {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
+  ACCOUNT_COMPUTER_BY_ID_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   ACCOUNT_SANDBOX_RUNNER_ACCEPTANCE_TEMPLATE,
   ACCOUNT_SANDBOX_RUNNER_START_TEMPLATE,
@@ -83,6 +84,7 @@ const TaskDetailQuerySchema = z
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 const ConnectCodeParamsSchema = z.object({ connectCodeId: z.string().uuid() }).strict();
+const ComputerParamsSchema = z.object({ computerId: z.string().uuid() }).strict();
 const CreationIntentParamsSchema = z.object({ creationIntentId: AgentCreationIntentIdSchema }).strict();
 const SandboxParamsSchema = z.object({ sandboxId: z.string().uuid() }).strict();
 const EmptyBodySchema = z.object({}).strict();
@@ -258,6 +260,17 @@ export function registerAccountRoutes(
             ),
           ),
         );
+    });
+
+    app.delete(ACCOUNT_COMPUTER_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { computerId } = parseRequest(ComputerParamsSchema, request.params);
+      const account = accountId(request);
+      const deleted = await computerService.deleteComputer(account, computerId);
+      request.log.info(
+        { accountId: account, computerId, revokedCredentialCount: deleted.revokedCredentialCount },
+        "Computer deleted",
+      );
+      return reply.header("Cache-Control", "no-store").code(204).send();
     });
 
     app.put(HTTP_PATHS.accountCloudComputer, { preHandler }, async (request, reply) => {

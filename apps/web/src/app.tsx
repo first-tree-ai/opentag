@@ -5,6 +5,7 @@ import { forwardRef, useEffect, useState } from "react";
 import { installRouteAnalytics } from "./analytics/route-analytics.js";
 import { AppErrorBoundary } from "./features/error-boundary.js";
 import { ThemeIntegrityNotice } from "./features/theme-integrity-notice.js";
+import { installRouteErrorContext } from "./observability/route-error-context.js";
 import { createQueryClient } from "./query/client.js";
 import { type AppRouter, createAppRouter } from "./router.js";
 
@@ -38,6 +39,8 @@ export function App({ router }: { router?: AppRouter } = {}) {
   // Page views follow the router rather than the document, which loads once. Subscribing here
   // rather than inside the router factory keeps the subscription tied to the mount that owns it.
   useEffect(() => installRouteAnalytics(instance), [instance]);
+  // An error report says which page it came from for the same reason, and from the same source.
+  useEffect(() => installRouteErrorContext(instance), [instance]);
   return (
     // The boundary sits outside the providers because a provider that fails to render is exactly the
     // failure a route-level boundary cannot catch.

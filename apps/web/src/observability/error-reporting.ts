@@ -11,14 +11,30 @@ export type ErrorReportInput = {
 
 export type ErrorReportSink = (input: ErrorReportInput) => void;
 
+/**
+ * What the application knows about itself when a failure happens, as opposed to what the failure
+ * itself carries. Both halves move without the sink being rebuilt — a reader signs in, a route
+ * resolves — so they are read at report time rather than captured at installation.
+ */
+export type ErrorReportContext = {
+  /** The Account on screen, or `undefined` before sign-in and after signing out. */
+  readonly userId?: string;
+  /** The matched route template, such as `/agents/:agentId`, which the address alone cannot give. */
+  readonly route?: string;
+};
+
 export type ErrorReportSinkOptions = {
   readonly fetchImpl?: typeof fetch;
   readonly version?: string;
   readonly environment?: string;
   /** Source of the page URL and user agent; the window by default. */
   readonly target?: () => Pick<Window, "location" | "navigator">;
+  /** Source of the Account and route; the module-level context by default. */
+  readonly context?: () => ErrorReportContext;
   readonly cooldownMs?: number;
   readonly now?: () => number;
+  /** Identifies one report so the server log line and the tracker event can be matched up. */
+  readonly reportId?: () => string | undefined;
 };
 
 const DEFAULT_COOLDOWN_MS = 30_000;
@@ -39,6 +55,7 @@ export function createErrorReportSink(options: ErrorReportSinkOptions = {}): Err
       const key = input.dedupeKey ?? `${input.code}\u0000${input.message}`;
       if (!rememberFailure(lastSentAt, key, now(), cooldownMs)) return;
       const target = options.target?.() ?? window;
+      const context = options.context?.() ?? currentContext;
       const report = createErrorReport(input, {
         source: "web",
         code: input.code,
@@ -46,6 +63,9 @@ export function createErrorReportSink(options: ErrorReportSinkOptions = {}): Err
         environment: options.environment,
         url: target.location.href,
         userAgent: target.navigator.userAgent,
+        userId: context.userId,
+        route: context.route,
+        reportId: (options.reportId ?? randomReportId)(),
       });
       const fetchImpl = options.fetchImpl ?? fetch;
       void Promise.resolve()
@@ -85,11 +105,48 @@ function rememberFailure(lastSentAt: Map<string, number>, key: string, at: numbe
   return true;
 }
 
+/**
+ * An identifier for one report, or nothing at all.
+ *
+ * `crypto.randomUUID` needs a secure context, so an application served over plain HTTP — a local
+ * build, an internal host — does not have it. That costs the correlation between the tracker event
+ * and the server log line; it must not cost the report.
+ */
+function randomReportId(): string | undefined {
+  try {
+    return globalThis.crypto?.randomUUID();
+  } catch {
+    return undefined;
+  }
+}
+
 let activeSink: ErrorReportSink | undefined;
+let currentContext: ErrorReportContext = {};
 
 /** Installed once by the entry point. Tests leave it unset, or inject a recording sink. */
 export function setErrorReportSink(sink: ErrorReportSink | undefined): void {
   activeSink = sink;
+}
+
+/**
+ * Name the Account every later report belongs to, or clear it.
+ *
+ * Called from the one place the session's two exits are both visible, alongside the analytics
+ * identity, so a report cannot outlive the session it names. The relay is anonymous and this value
+ * is simply what the browser said: it is a lead for whoever reads the report, not a credential.
+ */
+export function setErrorReportUser(userId: string | undefined): void {
+  currentContext = { ...currentContext, userId };
+}
+
+/** Name the route every later report happened on, or clear it. */
+export function setErrorReportRoute(route: string | undefined): void {
+  currentContext = { ...currentContext, route };
+}
+
+/** Test seam: drops the Account and route the module is holding. */
+export function resetErrorReportContext(): void {
+  currentContext = {};
 }
 
 export function forwardErrorReport(input: ErrorReportInput): void {

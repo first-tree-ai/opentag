@@ -373,31 +373,42 @@ describe("Feishu durable connection lifecycle (PostgreSQL)", () => {
     await manager.stop();
   });
 
-  it("admits exactly one activation when two instances race the same exact candidate", async () => {
-    const value = await fixture();
-    const harness = fakeAdapterFactory();
-    const managerA = createManager(value, harness);
-    const managerB = createManager(value, harness);
-    const serviceA = createSetupService(value, managerA);
-    const serviceB = createSetupService(value, managerB);
-    const { attemptId } = await insertCandidate(value.client.database, value.cipher, {
-      agentId: value.agent.id,
-    });
+  it.each(["overlapping", "already-completed"] as const)(
+    "activates the same candidate once across two instances (%s)",
+    async (timing) => {
+      const value = await fixture();
+      const harness = fakeAdapterFactory();
+      const managerA = createManager(value, harness);
+      const managerB = createManager(value, harness);
+      const serviceA = createSetupService(value, managerA);
+      const serviceB = createSetupService(value, managerB);
+      const { attemptId } = await insertCandidate(value.client.database, value.cipher, {
+        agentId: value.agent.id,
+      });
 
-    const [first, second] = await Promise.all([
-      serviceA.check(value.bootstrap.userId, attemptId),
-      serviceB.check(value.bootstrap.userId, attemptId),
-    ]);
-    const states = [first.state, second.state];
-    expect(states.filter((state) => state === "succeeded")).toHaveLength(1);
-    expect(harness.channelAdapters).toHaveLength(1);
-    const [row] = await value.client.database.select().from(imBindings).where(eq(imBindings.setupAttemptId, attemptId));
-    expect(row).toMatchObject({ status: "active", setupState: "succeeded", credentialGeneration: 1 });
-    await serviceA.stop();
-    await serviceB.stop();
-    await managerA.stop();
-    await managerB.stop();
-  });
+      const firstCheck = serviceA.check(value.bootstrap.userId, attemptId);
+      if (timing === "already-completed") await firstCheck;
+      const [first, second] = await Promise.all([firstCheck, serviceB.check(value.bootstrap.userId, attemptId)]);
+      const states = [first.state, second.state];
+      // check() projects the latest row: both callers may observe the same completed activation.
+      // Exactly-once admission is proved by the provider probe, live connection, and durable generation.
+      expect(states).toContain("succeeded");
+      for (const state of states) expect(["pending_activation", "validating", "succeeded"]).toContain(state);
+      if (timing === "already-completed") expect(states).toEqual(["succeeded", "succeeded"]);
+      // One candidate check and one activation prerequisite check; no duplicate check from the other instance.
+      expect(harness.probeAdapters).toHaveLength(2);
+      expect(harness.channelAdapters).toHaveLength(1);
+      const [row] = await value.client.database
+        .select()
+        .from(imBindings)
+        .where(eq(imBindings.setupAttemptId, attemptId));
+      expect(row).toMatchObject({ status: "active", setupState: "succeeded", credentialGeneration: 1 });
+      await serviceA.stop();
+      await serviceB.stop();
+      await managerA.stop();
+      await managerB.stop();
+    },
+  );
 
   it("enforces the migrated pending shape and clears it atomically on disable", async () => {
     const value = await fixture();

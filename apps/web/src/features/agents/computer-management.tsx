@@ -21,7 +21,9 @@ export function ComputerManagement({
     >
       <ComputerIdentity computer={computer} connection={connection} lastSeenAt={computer.lastSeenAt} />
       {cloud ? <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_cloud_description()}</p> : null}
-      {!cloud && connection === "offline" ? <ComputerRecovery computer={computer} onConnected={onConnected} /> : null}
+      {!cloud && computer.connectionStatus === "offline" ? (
+        <ComputerRecovery computer={computer} available={confirmed} onConnected={onConnected} />
+      ) : null}
     </section>
   );
 }

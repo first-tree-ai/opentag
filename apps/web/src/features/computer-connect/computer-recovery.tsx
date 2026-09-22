@@ -16,32 +16,37 @@ type RecoveryComputer = Pick<AccountComputerSummary, "computerId" | "displayName
 export function ComputerRecovery({
   computer,
   adapter,
+  available = true,
   onConnected,
 }: {
   readonly computer: RecoveryComputer;
   readonly adapter?: ComputerConnectAdapter;
+  /** Withhold recovery controls during inventory uncertainty without losing an existing attempt. */
+  readonly available?: boolean;
   readonly onConnected: () => void;
 }) {
   const intent: ComputerConnectIntent = { mode: "repair", target: computer };
   return (
     <ComputerConnectLifecycleRoot adapter={adapter} intent={intent} onConnected={onConnected}>
-      {(lifecycle) => (
-        <div className="grid min-w-0 gap-3 text-sm" data-ui="computer-recovery">
-          <p>{m.computer_connect_recovery_wake()}</p>
-          <Collapsible.Root>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-kumo-subtle">{m.computer_connect_recovery_still_offline()}</span>
-              <Collapsible.Trigger render={<Button variant="ghost" size="compact" className="text-kumo-link" />}>
-                {m.computer_connect_recovery_help()}
-                <Icon name="chevron-right" className="size-4 in-data-[panel-open]:rotate-90" />
-              </Collapsible.Trigger>
-            </div>
-            <Collapsible.Panel className="grid min-w-0 gap-4 pt-4">
-              <RecoveryHelp computer={computer} intent={intent} lifecycle={lifecycle} />
-            </Collapsible.Panel>
-          </Collapsible.Root>
-        </div>
-      )}
+      {(lifecycle) =>
+        available ? (
+          <div className="grid min-w-0 gap-3 text-sm" data-ui="computer-recovery">
+            <p>{m.computer_connect_recovery_wake()}</p>
+            <Collapsible.Root>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-kumo-subtle">{m.computer_connect_recovery_still_offline()}</span>
+                <Collapsible.Trigger render={<Button variant="ghost" size="compact" className="text-kumo-link" />}>
+                  {m.computer_connect_recovery_help()}
+                  <Icon name="chevron-right" className="size-4 in-data-[panel-open]:rotate-90" />
+                </Collapsible.Trigger>
+              </div>
+              <Collapsible.Panel className="grid min-w-0 gap-4 pt-4">
+                <RecoveryHelp computer={computer} intent={intent} lifecycle={lifecycle} />
+              </Collapsible.Panel>
+            </Collapsible.Root>
+          </div>
+        ) : null
+      }
     </ComputerConnectLifecycleRoot>
   );
 }

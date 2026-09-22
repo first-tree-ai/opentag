@@ -107,6 +107,94 @@ describe("Account Computer management", () => {
     expect(screen.queryByRole("button", { name: "Connect computer" })).toBeNull();
   });
 
+  it.each(["pending", "redeemed"] as const)(
+    "preserves a %s repair attempt through a failed inventory refresh and recovery",
+    async (codeState) => {
+      let failed = false;
+      let online = false;
+      const issuedAt = new Date().toISOString();
+      installApi({
+        computers: () => [
+          { ...twoReadyComputers[0], connectedAt: issuedAt, connectionStatus: online ? "online" : "offline" },
+        ],
+        computerReadStatus: () => (failed ? 503 : undefined),
+      });
+      const api = vi.mocked(fetch).getMockImplementation();
+      if (!api) throw new Error("API fixture is missing");
+      const verdict =
+        codeState === "redeemed"
+          ? { state: codeState, computerId, redeemedAt: issuedAt }
+          : { state: codeState, computerId: null, redeemedAt: null };
+      vi.mocked(fetch).mockImplementation(async (path, init) => {
+        if (String(path).startsWith("/api/v1/computer-connect-codes/")) {
+          return new Response(
+            JSON.stringify({
+              connectCodeId: String(path).split("/").at(-1),
+              ...verdict,
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        const response = await api(path, init);
+        if (path === "/api/v1/computer-connect-codes" && init?.method === "POST") {
+          return new Response(JSON.stringify({ ...(await response.json()), issuedAt }), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return response;
+      });
+      openComputer();
+      fireEvent.click(await screen.findByRole("button", { name: "Get connection help" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Assistant requested a repair?" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Repair connection" }));
+      const expectAttempt = async () => {
+        if (codeState === "pending") {
+          expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
+          expect(document.querySelector("code")?.textContent).toContain(
+            "opentag computer connect --server https://opentag.example.com -- example",
+          );
+        } else {
+          // A successful inventory refresh restores the controls; the next 1.5-second poll
+          // clears any transient error held by the existing attempt.
+          expect(
+            await screen.findByText("Command accepted. Waiting for OpenTag to come online…", {}, { timeout: 3_000 }),
+          ).toBeTruthy();
+          expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+        }
+      };
+      await expectAttempt();
+
+      failed = true;
+      fireEvent(window, new Event("focus"));
+      expect(await screen.findByText("Update failed. Showing last available data.")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+      expect(screen.queryByText("Offline")).toBeNull();
+      expect(screen.queryByText("Online")).toBeNull();
+      const pollPath = codeState === "pending" ? "/api/v1/computer-connect-codes/" : "/api/v1/computers";
+      const pollReads = () => vi.mocked(fetch).mock.calls.filter(([path]) => String(path).startsWith(pollPath)).length;
+      const previousReads = pollReads();
+      await waitFor(() => expect(pollReads()).toBeGreaterThan(previousReads), { timeout: 3_000 });
+
+      failed = false;
+      fireEvent(window, new Event("focus"));
+      fireEvent.click(await screen.findByRole("button", { name: "Get connection help" }));
+      await expectAttempt();
+      expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+      const issued = vi
+        .mocked(fetch)
+        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");
+      expect(issued).toHaveLength(1);
+
+      online = true;
+      fireEvent(window, new Event("focus"));
+      expect(await screen.findByText("Online", {}, { timeout: 3_000 })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
+    },
+  );
+
   it("presents managed cloud computers without local repair instructions", async () => {
     installApi({ computers: [{ ...twoReadyComputers[0], kind: "cloud", connectionStatus: "offline" }] });
     openComputer();

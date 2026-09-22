@@ -2,7 +2,7 @@
 
 [English](../error-reporting.md)
 
-> Last synced with: 2026-09-22
+> Last synced with: 2026-09-23
 
 OpenTag 会把发生在 Web App 与 CLI 中的失败经由 server 中继到
 [Google Cloud Error Reporting](https://cloud.google.com/error-reporting/)。两端客户端都不持有 Google 凭据，也不直接访问
@@ -27,12 +27,58 @@ project 的 server 会把每一份报告留在自己的日志里，不转发任�
 | `channel` | CLI | 发布渠道：`dev`、`staging` 或 `prod` |
 | `environment` | Web App | Vite mode，例如 `production` |
 | `url` | Web App | 去掉 query string、fragment 与任何凭据后的页面 URL；server 在解析时会再次剔除它们，并拒绝非 HTTP(S) URL |
+| `route` | Web App | 命中的路由模板，例如 `/agents/:agentId` |
 | `command` | CLI | 命令路径，例如 `agent create`，绝不包含参数 |
 | `userAgent` | Web App | 浏览器 user agent |
+| `platform` | CLI | 操作系统、架构与 Node.js 版本，与 `doctor` 打印的一致 |
 | `occurredAt` | 两端 | ISO 8601 时间戳 |
+| `reportId` | 两端 | 每份报告一个标识，把 tracker 事件与 server 日志行对应起来 |
+| `userId` | 两端 | 客户端自认已登录的 Account |
+| `computerId`、`installationId` | CLI | 本 OpenTag home 绑定的 Computer，仅在已绑定时存在 |
+| `agentId`、`sessionId`、`turnId` | CLI | 失败发生在 Agent turn 内部时存在 |
+| `provider` | CLI | Agent 运行时 provider，例如 `claude-code` |
 
-报告中不存在账号标识、session、token、cookie 或 user 字段，server 也不会添加。在 Error Reporting 中，事件以服务
-`opentag-web` 与 `opentag-cli` 出现，并以报告的 `version` 作为服务版本，因此回归可以归因到具体发布。
+报告中不存在 token、cookie 或 session 字段。在 Error Reporting 中，事件以服务 `opentag-web` 与 `opentag-cli` 出现，
+并以报告的 `version` 作为服务版本，因此回归可以归因到具体发布。
+
+### 身份是归因，不是授权
+
+中继是匿名的——它接受一份客户端未做任何证明的报告——因此报告中的每个标识都只是调用者*声称*的内容，server 不校验其中
+任何一个。把 `userId` 当作排查失败时的线索，绝不要当作某人身份的证据，也绝不要当作授权信号。下文的[滥用面](#滥用面)
+说明了由此带来的后果。
+
+各标识的来源：
+
+- **Web App。** 已登录 session 解析出的 Account uuid，在 `useAccountIdentityReport`
+  （`apps/web/src/analytics/milestones.ts`）中与 analytics 身份一起附加，并在 session 的两种退出方式上清除——主动登出，
+  以及 Server 拒绝下一次读取。登录前的失败不携带 `userId`。
+- **CLI。** 登录时记录在 `credentials.json` 中的 Account，这样在已经失败的路径上无需再发一次请求即可指出它。
+  **在该字段出现之前就已登录的安装，在重新登录之前不会上报 `userId`**；若已连接 Computer，它仍会上报 Computer。
+  在 Server 无法答复 `GET /me` 时登录同样会成功，只是不记录 Account——那条路径上重要的是登录本身。
+
+在 Error Reporting 控制台中，Account 显示为 `context.user`。只有 Computer 而没有 Account 的 CLI 报告呈现为
+`computer:<computerId>`，加前缀是为了让两类标识不会被混淆。上表中的其余内容——platform、route、Agent、Computer——会被
+Error Reporting 丢弃，它只保留自己定义的字段。这些内容改为留在 server 日志行上，由 `reportId` 把两者关联起来。
+
+### Web App 失败所在的页面
+
+`url` 指向的是对象：`/agents/<uuid>/settings` 对每个 Agent 都是不同的地址，于是同一个缺陷会以许多页面的形式到达，
+无法聚合。`route` 是这些地址共享的模板，从命中的路由投影而来，与测量所用的投影方式（`analyticsRoutePath`）一致，
+因此某个片段能进入报告，只可能是因为有路由文件命名了它。路由未命中的地址统一上报为常量 `/(not-found)`；而在首次
+解析完成之前——路由器尚未持有任何 match 时——的失败不携带 `route`，而不是被归因到根路由。
+
+### CLI 堆栈中的源码行号
+
+CLI 以 bundle 形式发布，因此它的堆栈过去只能指向 `dist/cli/index.mjs` 及其中的行号。现在 CLI 构建时生成 source map
+并在入口处启用，因此 CLI 自身代码中的帧会解析到它被写下的文件与行：
+
+```text
+at Module.runLogin (/path/to/apps/cli/src/core/auth/login.ts:31:21)
+```
+
+而位于 `@opentag/client` 或 `@opentag/shared` 内部的帧只解析一跳，到该包构建产物 `dist/index.mjs` 及其中的行号，
+因为 CLI 是从这些包的构建产物打包的，而 Node 只应用一层映射、不会沿链继续。这些包现在会一并发布自己的 `.map` 文件，
+因此第二跳可以基于同一个发布解析出来。Web App 未做改动，其堆栈仍是压缩后的。
 
 ## 报告来源
 
@@ -53,6 +99,13 @@ code 去重而不按路径：部署之后，仍在运行旧构建的浏览器会
 写入排空（最多一秒，以便通过管道重定向的 stderr 仍保留输出），然后以退出码 1 退出——与 Node 原本使用的退出码一致。由于 daemon 服务通过 CLI 运行（`daemon service-run`），它被同一套处理器覆盖，
 并且 daemon 意外的终止性失败会在进程退出前上报。
 
+**Agent turn。** 在 daemon 内部失败的 turn 永远不会出现在终端上，因此 tracker 是唯一能看到它的地方。turn runner 把
+每一次失败都交给 `apps/cli/src/core/daemon/runtime.ts` 安装的 reporter，由它应用与命令路径相同的判断：只中继描述
+OpenTag 自身的失败——`provider_protocol_error`、`provider_teardown_failed`、`session_resume_failed` 与
+`turn_state_unknown`。最后一个最重要，它是无人分类的抛出的兜底。provider 未安装或拒绝了 prompt、Account 未提供的凭据、
+本机无法打开的沙箱、耗尽的预算以及关机，都是运行时有意给出的答复，没有任何一次发布能修复它们，因此只留在日志中。
+报告会指明 Agent、Session 与该 turn，并且不等待中继完成：缓慢的 tracker 不得占住一个 turn。
+
 CLI 报告发往本安装所连接的 server：Account 凭据中的 server URL，或仅有机器凭据时 Computer 身份中的 server URL。从未登录
 或连接过的 CLI 不会发送任何内容。每份报告最多等待中继三秒。
 
@@ -65,9 +118,12 @@ CLI 报告发往本安装所连接的 server：Account 凭据中的 server URL�
    应放在网关层。除非 `OPENTAG_TRUST_PROXY` 指定了反向代理（参见[位于反向代理之后](#位于反向代理之后)），该地址就是 socket
    对端；未设置时，在反向代理之后每份报告都来自代理地址，整个部署共享同一个每分钟 30 份的预算，超出预算的客户端会静默失败。
 2. 依据 `ErrorReportRequestSchema` 校验请求体；未知字段、超长值或非 HTTP(S) 的 `url` 答复 `400`。解析时还会剔除 URL 的
-   query string、fragment 与凭据，因此即便客户端没有遵守契约，契约在这里仍然成立。
+   query string、fragment 与凭据，因此即便客户端没有遵守契约，契约在这里仍然成立。超过 64 KiB 的请求体不会被读取，
+   直接答复 `413`：schema 已把一份报告的有效内容限制在约 22 KiB，匿名路由没有理由接受 Fastify 默认的 1 MiB。
 3. 用 `redactForLog` 再次脱敏，并以 `warn` 级别写入 server 日志：消息为 `Client error reported`，带有
-   `module=error-reporting`、`source`、`errorCode` 与 `errorReport` 载荷。没有 Google Cloud project 的运维人员仍能在这里看到每份报告。
+   `module=error-reporting`、`source`、`errorCode`、`reportId`、`userId` 与 `errorReport` 载荷。这两个标识被提到载荷之外，
+   使运维人员无需解析载荷即可按其过滤。这一行是报告完整上下文的所在之处，因为 Error Reporting 只保留它自己定义的字段；
+   没有 Google Cloud project 的运维人员仍能在这里看到每份报告。
 4. 报告一经接受即答复 `202`（空 body，`cache-control: no-store`）。转发在后台进行。reporter 对每次转发最多等待五秒，
    之后记为失败，因为 Google 客户端自身不设截止时间且会带退避重试。这限制的是等待时长，而不是库自身的 HTTP 请求与重试，
    后者可能仍在后台继续；因此缓慢或被阻断的出口网络不会占住客户端连接。
@@ -75,8 +131,10 @@ CLI 报告发往本安装所连接的 server：Account 凭据中的 server URL�
 ### 滥用面
 
 该端点按设计是匿名的，因此任何能访问 server 的人都可以提交文本，这些文本会进入运维人员的 `warn` 日志，并在启用转发时以
-调用者自选的 `version` 出现在 Error Reporting 控制台的 `opentag-web` 或 `opentag-cli` 之下。schema 限制每个字段的长度并拒绝
-未知字段，脱敏执行两次，而按地址限流是唯一的流量控制——并带有上文的代理注意事项。阅读中继来的文本时请将其视为不可信输入；
+调用者自选的 `version` 出现在 Error Reporting 控制台的 `opentag-web` 或 `opentag-cli` 之下。这一点同样适用于每个标识：
+调用者可以提交任意的 `userId`、`computerId` 或 `agentId`，这里不会校验它们，因此一份被归到某个 Account 名下的报告
+并不能证明该 Account 做过任何事。schema 限制每个字段的长度并拒绝未知字段，请求体上限远低于 Fastify 的默认值，
+脱敏执行两次，而按地址限流是唯一的流量控制——并带有上文的代理注意事项。阅读中继来的文本时请将其视为不可信输入；
 若部署暴露给恶意流量，请在前面加上网关限流。
 
 ## 脱敏

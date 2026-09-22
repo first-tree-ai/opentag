@@ -252,7 +252,9 @@ function renderCloudTreeFacts(status: Exclude<CloudContextTreeStatus, { status: 
       }.`,
     ];
   if (status.status === "unconfigured")
-    return ["Context Tree: disabled for this Agent (no Context Tree repository is selected in the Agent's settings)."];
+    return [
+      "Context Tree: disabled for this Agent (no Context Tree repository is selected on the Agent's Context Tree page).",
+    ];
   return [`Context Tree unavailable (${status.reason}).`];
 }
 
@@ -266,7 +268,7 @@ function renderCloudTreeGuidance(
       ? `Your Agent slug is \`${slug}\` (also stated in the Platform section): \`members/${slug}/\` is your own private working memory in the tree. Do not write to another Agent's member directory.`
       : "`members/<your Agent slug>/` is your own private working memory in the tree; the Agent slug is stated in the Platform section below. Do not write to another Agent's member directory.";
     return [
-      "Ready Context Trees are connected in this Agent's settings. Each checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session.",
+      "Ready Context Trees are connected on this Agent's Context Tree page. Each checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session.",
       "Read the decisions that bear on a task before planning or changing code, and record durable decisions there. Use the context-tree-read and context-tree-write skills; the `context-tree` command is on PATH.",
       member,
       "",

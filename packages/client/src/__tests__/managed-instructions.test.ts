@@ -91,7 +91,7 @@ describe("renderManagedSystemPrompt Agent Home", () => {
       contextTree: { status: "unconfigured" },
     });
     expect(unconfigured).toContain(
-      "Context Tree: disabled for this Agent. Configure it in Agent settings → Context Tree.",
+      "Context Tree: disabled for this Agent. Connect one on the Agent's Context Tree page.",
     );
     expect(unconfigured).toContain("do not attempt to create a tree yourself");
 

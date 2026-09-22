@@ -27,7 +27,8 @@ export function ComputerConnectionDialog({
   onClose: () => void;
 }) {
   const connected = confirmed && computer.connectionStatus === "online";
-  const attempted = lifecycle.state.kind !== "idle";
+  // A completed attempt is history; only the current inventory can confirm the connection.
+  const attempted = lifecycle.state.kind !== "idle" && lifecycle.state.kind !== "connected";
   return (
     <Dialog
       open={open}

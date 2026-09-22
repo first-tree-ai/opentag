@@ -50,7 +50,11 @@ export function ComputerManagement({
         const action = computerManagementAction(connection, lifecycle.state.kind, Boolean(lifecycle.error), uncertain);
         const openHelp = () => {
           setDialog("help");
-          if (connection === "disconnected" && lifecycle.state.kind === "idle") lifecycle.issue();
+          if (
+            connection === "disconnected" &&
+            (lifecycle.state.kind === "idle" || lifecycle.state.kind === "connected")
+          )
+            lifecycle.issue();
         };
         const closeHelp = () => {
           close();

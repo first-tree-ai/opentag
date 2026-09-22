@@ -101,7 +101,6 @@ export function AgentUsageOverview({ accountId, agentId }: { accountId?: string;
         <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </div>
       <UsageSummaryState state={state} compact onRetry={retry} />
-      <Text variant="secondary">{m.usage_description()}</Text>
     </LayerCard>
   );
 }

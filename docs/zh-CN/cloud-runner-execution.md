@@ -87,7 +87,7 @@ journal 会 fail closed（scope_mismatch）且不发送任何陈旧帧；同 id�
 不会变成第二个 Turn。
 
 默认可信状态目录为 `$TMPDIR/ots/<长度受限的-sandbox-name>`（Runner 镜像内 TMPDIR 为 `/tmp`），
-保证实际公开 Unix socket 路径不超过 100 字节。输入 journal 达到 1,024 条时拒绝新条目，但仍允许
+输入 journal 达到 1,024 条时拒绝新条目，但仍允许
 重复回执与清理已有条目的确认。连接关闭时清除排队的验证授权；持久化的 received 条目必须在新
 连接上重新验证。旧连接中排队的帧不能在重连后授权新执行。
 排队 Turn 在启动前被取消时报告 not_started，并立即继续处理 FIFO 中的后续条目，不依赖新消息
@@ -101,7 +101,7 @@ journal 会 fail closed（scope_mismatch）且不发送任何陈旧帧；同 id�
 2 秒起步、最多 30 秒的指数间隔退避。Cloud 后续消息等待当前 Turn 结束，不进入 Local steering 路径。
 
 凭证与模型边界：#633 runtime-credential Relay 始终在可信父进程；Sandbox 只拿到只读 public
-材料（CA 证书、每 Turn 代理 socket、不透明 handle、每 Turn provider 环境文件），绝不包含平台
+材料（CA 证书、不透明 handle、CLI 配置），绝不包含平台
 master key、bootstrap token 或原始 provider 凭证。平台提供的模型访问通过模型代理；授权绑定到执行，
 生存期受 runtime deadline 约束。E4 在 Runner 连接丢失时撤销凭证与模型授权
 （fail-closed，权限按连接隔离）。journal 恢复仍保留真实 Turn 结果且绝不重放 started 工作，但
@@ -147,8 +147,19 @@ IM binding 处于 reauthorization_required 时暂停新的执行授权，不仅�
 连续性与密钥：Pi 会话状态与持久化 provider binding 位于 Session workspace 的
 .opentag/pi-session 子树，因此同一 Agent Session 在多次 Turn 及原生 rootfs 重置后仍保留 Pi
 binding／历史。模型授权与发布的 provider 环境只存在于每 Turn 的 0600 scratch 文件，Turn 结束即
-删除，绝不进入持久化会话状态。生产环境要求真实的 connect.sock／slack.sock 挂载；loopback
-回退只存在于显式本地测试 seam 之后，生产组合绝不使用。
+删除，绝不进入持久化会话状态。Slack、飞书 CLI 配置使用同一临时根目录中的私有目录。
+
+原生 provider 流量通过 sandbox exec 的 stdin/stdout 穿过隔离边界。每次执行的 helper 只在
+Sandbox 内监听既有 CONNECT 和 Slack TLS 端口；Node 内置 HTTP/2 在管道中复用这些字节流。
+可信父进程只接受两个固定目标名称，映射到本次执行的 adapter 端口，不为该传输开启网络监听，
+不挂载父容器 Unix socket。既有 adapter／Server 继续校验 handle、目标域名和请求范围、注入
+凭证并发起平台请求。普通公网请求继续使用既有 resolver、VPC／NAT 和系统信任库。
+Docker 开发桥接保留 Unix socket；公共材料发布函数只负责文件。
+
+HTTP/2 提供流控、并发流限制和半关闭语义。启动 Pi 前，worker 检查两个入口，并使用当前执行
+的 CA 验证 TLS；不要求配置可选集成。传输异常会中止当前 worker，报告未知结果，不重放执行。
+清理必须确认 helper 退出才能复用；无法确认退出或只能强杀父侧 exec 进程时，触发现有 Sandbox 不可用保护。
+不新增生命周期状态、网络服务、配置开关或凭证类型。
 
 兼容与发布：Runner 在 auth 帧请求 cloudDeliveryVersion: 1；Cloud 已启用的 Server 只对该连接
 回显能力与当前 allocation UID，其他连接保持与 E3 完全一致的 welcome 形状。带能力但 UID 尚未
@@ -272,8 +283,8 @@ pnpm typecheck
 ```
 
 这些用例覆盖 durable journal 边界、重复／并发 dispatch、deadline／授权准入、重放与重连恢复、
-原生命名空间清理门禁、无 loopback seam 的 socket 处理，以及只使用本地 fixture 的真实 loopback
-WebSocket 投递路径；不能证明原生 Cloud Run 隔离、原生 Unix socket 挂载、真实 GCP 验收或真实
+原生命名空间清理门禁、provider 传输故障与清理，以及只使用本地 fixture 的真实 loopback
+WebSocket 投递路径；不能证明原生 Cloud Run 隔离、原生 exec 传输、真实 GCP 验收或真实
 IM provider 收发。这些必须由 Cloud 验收与真实 IM 验收提供证据后，E4 才可称为已验收。
 云验收须显式传入项目、区域、digest、服务账号、backend origin、VPC／子网／tag，并通过环境变量传入
 短期 Cloud Admin token。脚本启动一次性 PostgreSQL 和真实本地 Server。OPENTAG_E3_PORT 可固定
@@ -418,7 +429,7 @@ Sandbox、归档、公开挂载或日志。
 支持 E7 的 Runner 在 auth/welcome 中协商 reuseVersion: 1，并在 hub 中登记为可复用；旧 E5
 Runner 永远不会被要求跟随交接（空闲删除仍会保存它们）。分配变化时，Runner 先静默旧控制器与
 原生子进程、关闭凭证／web 执行、仅在可信父目录的 assignment 标记记录封存成功时丢弃旧工作
-目录、私有材料、公开 socket 与已完成 journal，再重建新的 journal／controller／workspace，
+目录、私有材料、公开执行材料与已完成 journal，再重建新的 journal／controller／workspace，
 最后才恢复新 Session 的归档。同一分配保留未保存的本地数据；缺少封存证明、清理失败或凭证未
 证明时一律 fail closed，不执行新分配。每一次协商成功的物理控制 attach——包括没有本地标记的首次
 绑定、带本地分配状态的父进程重启、以及任何分配变化——都必须先收到 Server 为当前持有者签发的

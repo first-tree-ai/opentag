@@ -275,7 +275,12 @@ describe("CloudTurnRunner", () => {
         workerInputs.push(input);
         return options.worker?.(input, signal) ?? Promise.resolve(completedExec());
       },
-      sandbox: { exec: () => Promise.reject(new Error("unexpected native seam")) },
+      sandbox: {
+        exec: () => Promise.reject(new Error("unexpected native seam")),
+        openDuplex: () => {
+          throw new Error("unexpected native duplex seam");
+        },
+      },
       scope: () => scope,
       send: (frame) => sent.push(frame),
       serverUrl: "https://server.example.com",
@@ -668,7 +673,12 @@ describe("CloudTurnRunner", () => {
       journal,
       openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-x" }),
       runWorker: () => new Promise<ExecResult>(() => undefined),
-      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      sandbox: {
+        exec: () => Promise.reject(new Error("unused native seam")),
+        openDuplex: () => {
+          throw new Error("unused native duplex seam");
+        },
+      },
       scope: () => scope,
       send: () => undefined,
       serverUrl: "https://server.example.com",
@@ -691,7 +701,12 @@ describe("CloudTurnRunner", () => {
         workerCalls += 1;
         return completedExec();
       },
-      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      sandbox: {
+        exec: () => Promise.reject(new Error("unused native seam")),
+        openDuplex: () => {
+          throw new Error("unused native duplex seam");
+        },
+      },
       scope: () => scope,
       send: (frame) => sent.push(frame),
       serverUrl: "https://server.example.com",
@@ -728,7 +743,12 @@ describe("CloudTurnRunner", () => {
         workerCalls += 1;
         return completedExec("recovered");
       },
-      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      sandbox: {
+        exec: () => Promise.reject(new Error("unused native seam")),
+        openDuplex: () => {
+          throw new Error("unused native duplex seam");
+        },
+      },
       scope: () => h.scope,
       send: (frame) => sent.push(frame),
       serverUrl: "https://server.example.com",
@@ -760,7 +780,12 @@ describe("CloudTurnRunner", () => {
       journal: reopened,
       openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-x" }),
       runWorker: async () => completedExec(),
-      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      sandbox: {
+        exec: () => Promise.reject(new Error("unused native seam")),
+        openDuplex: () => {
+          throw new Error("unused native duplex seam");
+        },
+      },
       scope: () => ({ ...h.scope, environmentGeneration: 2, resourceUid: "new-uid" }),
       send: (frame) => sent.push(frame),
       serverUrl: "https://server.example.com",
@@ -1790,6 +1815,9 @@ describe("CloudTurnRunner", () => {
             execInputs.push({ args, stdin: options.stdin });
             return Promise.resolve(completedExec("native"));
           },
+          openDuplex: () => {
+            throw new Error("unexpected native duplex seam");
+          },
         },
       },
     });
@@ -1802,6 +1830,62 @@ describe("CloudTurnRunner", () => {
     expect(closeFailed.mock.calls.map((call) => String(call[0]))).toEqual([
       expect.stringContaining("bridge close failed"),
     ]);
+    await h.runner.close();
+  });
+
+  it("surfaces an unexpected provider bridge death instead of trusting a claimed success", async () => {
+    const h = harness({
+      runnerOptions: {
+        openExecution: async () => ({
+          bridgeFailure: () => new Error("provider bridge helper died"),
+          close: async () => undefined,
+          executionDir: "/run/opentag-execution/turn-x",
+        }),
+      },
+      worker: async () => completedExec("fake-success"),
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => reportsOf(h.sent).length === 1, "bridge-death report");
+    // The worker's claimed success over a dead provider transport can never be reported completed.
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({
+      errorReason: "turn_state_unknown",
+      executionEffects: "may_have_occurred",
+      outcome: "unknown",
+    });
+    await h.runner.close();
+  });
+
+  it("aborts an active worker when its provider bridge dies and reports unknown", async () => {
+    const failed = new AbortController();
+    let sawAbort = false;
+    const h = harness({
+      runnerOptions: {
+        openExecution: async () => ({
+          bridgeFailure: () => (failed.signal.aborted ? new Error("bridge died") : undefined),
+          bridgeFailureSignal: failed.signal,
+          close: async () => undefined,
+          executionDir: "/run/opentag-execution/turn-x",
+        }),
+      },
+      worker: async (_input, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              sawAbort = true;
+              reject(new Error("worker stopped"));
+            },
+            { once: true },
+          );
+          failed.abort();
+        }),
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => reportsOf(h.sent).length === 1, "bridge-death report");
+    expect(sawAbort).toBe(true);
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({ outcome: "unknown", errorReason: "turn_state_unknown" });
     await h.runner.close();
   });
 
@@ -1906,7 +1990,12 @@ describe("CloudTurnRunner", () => {
       journal: replacementJournal,
       openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-x" }),
       runWorker: async () => completedExec(),
-      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      sandbox: {
+        exec: () => Promise.reject(new Error("unused native seam")),
+        openDuplex: () => {
+          throw new Error("unused native duplex seam");
+        },
+      },
       scope: () => ({ ...first.scope, environmentGeneration: 2, resourceUid: "replacement-uid" }),
       send: (frame) => replacementSent.push(frame),
       serverUrl: "https://server.example.com",

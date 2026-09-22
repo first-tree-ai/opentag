@@ -174,6 +174,9 @@ function duplexSandbox(input: { name?: string; onOpen?: (duplex: FakeDuplex) => 
 
 /** A duplex whose listeners the test drives directly, mirroring the real pipe contract. */
 class FakeDuplex {
+  asStream(): never {
+    throw new Error("Web gateway uses the callback pipe interface");
+  }
   readonly written: Buffer[] = [];
   readonly kills: (NodeJS.Signals | undefined)[] = [];
   ended = false;

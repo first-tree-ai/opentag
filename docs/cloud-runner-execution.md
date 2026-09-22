@@ -119,7 +119,7 @@ durable acknowledgement clears it. A reopened journal under another allocation f
 visible conflict rather than a second Turn.
 
 The default trusted state root is `$TMPDIR/ots/<bounded-sandbox-name>` (`/tmp` in the Runner
-image), keeping the real public Unix socket paths within their 100-byte limit. The input journal
+image). The input journal
 rejects new entries at its 1,024-entry capacity while still allowing duplicate receipts and
 acknowledgements to retire existing entries. A channel close drops queued verification grants;
 the durable `received` entries require fresh verification on the replacement connection. A frame
@@ -137,8 +137,7 @@ deadline, with exponential delays from two seconds to a thirty-second cap using 
 attempt counter. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
 
 Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
-Sandbox receives only the read-only public material (CA certificate, per-turn proxy sockets,
-opaque handles, per-turn provider environment file) and never the platform master key, bootstrap
+Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
 the execution and its lifetime is bounded by the runtime deadline. In E4,
 credential and model grants are revoked when the Runner connection is lost (fail-closed,
@@ -201,9 +200,24 @@ Continuity and secrets: Pi conversation state and the persisted provider binding
 Session workspace's `.opentag/pi-session` subtree, so the same Agent Session keeps its Pi
 binding/history across Turns and across a native rootfs reset. Model grants and the published
 provider environment are per-turn scratch files with `0600` permissions and are deleted at Turn
-end; they are never part of the persisted conversation state. Production requires both real
-mounted `connect.sock`/`slack.sock` proxy sockets; a loopback fallback exists only behind the
-explicit local test seam and is never used by production composition.
+end; they are never part of the persisted conversation state. Slack and Feishu CLI configuration
+uses private directories in that same disposable scratch root.
+
+Native provider traffic crosses the isolation boundary through `sandbox exec` stdin/stdout.
+A per-execution helper listens only inside the Sandbox at the existing CONNECT and Slack TLS
+ports. Node's built-in HTTP/2 multiplexes those byte streams over the pipe; the trusted parent
+accepts only two fixed target names mapped to this execution's adapter ports. It opens no network
+listener for this transport and mounts no parent Unix sockets. The existing adapter/Server still
+validate handles, hosts and request scope, inject credentials and perform provider requests.
+Ordinary public traffic retains the existing resolver, VPC/NAT route and system trust store.
+The Docker development bridge retains its Unix sockets; public material publication is files only.
+
+HTTP/2 supplies flow control, stream limits and half-close semantics for concurrent CLI traffic.
+Before Pi starts, the worker checks both entries, including TLS against the current execution CA;
+optional integrations need not be configured. Transport failure aborts the active worker and
+reports an unknown outcome without replay. Cleanup awaits helper exit before reuse; unconfirmed
+termination or forced supervisor termination activates the existing unusable-Sandbox guard. No lifecycle state, network service,
+configuration switch or credential type is added.
 
 Compatibility and rollout: the Runner requests `cloudDeliveryVersion: 1` in the auth frame; a
 Cloud-enabled Server echoes the capability and the current allocation UID only for that
@@ -355,9 +369,9 @@ pnpm typecheck
 ```
 
 These exercise the durable journal boundaries, duplicate/concurrent dispatch, deadline/grant
-admission, replay and reconnect recovery, native namespace cleanup gating, loopback-seam-free
-socket handling, and the real loopback WebSocket dispatch path with local fixtures only. They do
-not prove native Cloud Run isolation, native Unix-socket mounts, real GCP acceptance, or real IM
+admission, replay and reconnect recovery, native namespace cleanup gating, provider transport
+failure/cleanup and the real loopback WebSocket dispatch path with local fixtures only. They do
+not prove native Cloud Run isolation, native exec transport, real GCP acceptance, or real IM
 provider ingress/reply; those remain pending and must be evidenced by the Cloud harness plus a
 real IM acceptance before E4 is called accepted.
 
@@ -544,7 +558,7 @@ An E7-capable Runner negotiates `reuseVersion: 1` in the auth/welcome exchange a
 in the hub as reuse-capable; older E5 Runners are never asked to follow a hand-off (idle deletion
 still saves them). On a changed assignment the Runner quiesces the old controller and native
 child, closes credential/web execution work, discards the old workspace, private material,
-public socket and completed journal only when the trusted-parent assignment marker records a
+public execution material and completed journal only when the trusted-parent assignment marker records a
 successful seal, and rebuilds a fresh journal/controller/workspace before restoring the new
 Session's archive. The same assignment keeps unsaved local bytes; a missing seal proof, a
 cleanup failure or an unproven credential all fail closed with no new execution. Every

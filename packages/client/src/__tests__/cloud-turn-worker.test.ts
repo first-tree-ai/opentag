@@ -1,9 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createServer, type Server, Socket } from "node:net";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createServer as createTlsServer } from "node:tls";
 import type {
   EffectiveRuntimeSnapshot,
   RunnerCloudSessionWorkerRequest,
@@ -27,6 +28,7 @@ import {
   renderCloudSystemPrompt,
   runCloudTurnWorker,
 } from "../runner/cloud-turn-worker.js";
+import { generateExecutionCa } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { RUNTIME_PROXY_PROVIDER_CA_KEY, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
@@ -376,36 +378,24 @@ describe("cloud-turn-worker", () => {
     }
   });
 
-  it("fails closed on an incomplete or missing native proxy socket mount before Pi starts", async () => {
+  it("fails closed before Pi when the proxy transport readiness probe cannot pass", async () => {
     const root = await mkdtemp(join(tmpdir(), "cloud-worker-sockets-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const executionDir = await fixtureExecution(root, "turn-1");
     let factoryBuilt = false;
     const factory = (): CloudTurnPiFactory => {
       factoryBuilt = true;
-      throw new Error("the Pi factory must not be built without a verified proxy mount");
+      throw new Error("the Pi factory must not be built without a verified proxy transport");
     };
-    // A single REAL Unix socket: one half of the native mount is missing.
-    const server: Server = createServer();
-    server.listen(join(executionDir, "connect.sock"));
-    await new Promise<void>((resolve) => server.once("listening", resolve));
-    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    // No seam and nothing serving the loopback entries: the bounded probe refuses to start Pi.
     await expect(
       runCloudTurnWorker(turnRequest(executionDir), {
         createPiFactory: factory,
         executionMount: join(root, "mount"),
+        proxyReadinessTimeoutMs: 2_000,
         workspace: join(root, "workspace"),
       }),
-    ).rejects.toThrow(/incomplete/);
-    // No sockets at all: the exact production manifest shape must still reject without the seam.
-    await rm(join(executionDir, "connect.sock"), { force: true });
-    await expect(
-      runCloudTurnWorker(turnRequest(executionDir), {
-        createPiFactory: factory,
-        executionMount: join(root, "mount"),
-        workspace: join(root, "workspace"),
-      }),
-    ).rejects.toThrow(/sockets are missing/);
+    ).rejects.toThrow(/readiness/);
     expect(factoryBuilt).toBe(false);
   });
 
@@ -452,50 +442,174 @@ describe("cloud-turn-worker", () => {
     ).rejects.toThrow(/loopback/);
   });
 
-  it("bridges the loopback endpoints to real mounted Unix sockets", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cloud-worker-bridge-"));
-    cleanup.push(() => rm(root, { recursive: true, force: true }));
-    const executionDir = await fixtureExecution(root, "turn-1");
-    const upstream = createServer((socket) => socket.pipe(socket));
-    upstream.listen(join(executionDir, "connect.sock"));
-    await new Promise<void>((resolve) => upstream.once("listening", resolve));
-    cleanup.push(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
-    const slack = createServer((socket) => socket.pipe(socket));
-    slack.listen(join(executionDir, "slack.sock"));
-    await new Promise<void>((resolve) => slack.once("listening", resolve));
-    cleanup.push(() => new Promise<void>((resolve) => slack.close(() => resolve())));
+  it.each(["github", "feishu", "none"])(
+    "verifies transport without requiring optional integrations: %s",
+    async (provider) => {
+      const root = await mkdtemp(join(tmpdir(), "cloud-worker-bridge-"));
+      cleanup.push(() => rm(root, { recursive: true, force: true }));
+      const executionDir = await fixtureExecution(root, "turn-1");
+      const environment: Record<string, string> = { [RUNTIME_PROXY_PROVIDER_CA_KEY]: join(executionDir, "ca.pem") };
+      if (provider === "github") environment[RUNTIME_PROXY_PROVIDER_URL_KEY] = "http://127.0.0.1:18080";
+      if (provider === "feishu") environment.LARKSUITE_CLI_PROXY_ADDRESS = "http://127.0.0.1:18080";
+      await writeFile(join(executionDir, "environment.json"), JSON.stringify({ executionId: "fixture", environment }));
+      // Real peers answering exactly the execution adapter's fixed refusal and challenge shapes.
+      const hits = { connect: 0, slack: 0 };
+      const connectPeer = createServer((socket) => {
+        socket.once("data", () => {
+          hits.connect += 1;
+          socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        });
+      });
+      const slackCaDir = join(root, "slack-ca");
+      await mkdir(slackCaDir);
+      const ca = await generateExecutionCa(slackCaDir);
+      const caCert = await readFile(ca.certPath, "utf8");
+      // The published public CA is what the readiness probe pins the Slack entry's TLS to.
+      await writeFile(join(executionDir, "ca.pem"), caCert);
+      const slackPeer = createTlsServer({ cert: caCert, key: await readFile(ca.keyPath, "utf8") }, (socket) => {
+        socket.once("data", () => {
+          hits.slack += 1;
+          socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        });
+      });
+      const peers = [connectPeer, slackPeer];
+      for (const peer of peers) {
+        peer.listen(0, "127.0.0.1");
+        await new Promise<void>((resolve) => peer.once("listening", resolve));
+      }
+      cleanup.push(
+        () => new Promise<void>((resolve) => connectPeer.close(() => resolve())),
+        () => new Promise<void>((resolve) => slackPeer.close(() => resolve())),
+      );
+      const portOf = (peer: Server) => {
+        const address = peer.address();
+        if (address === null || typeof address !== "object") throw new Error("peer has no bound address");
+        return address.port;
+      };
 
-    const forwarded: string[] = [];
-    const createPiFactory = (): CloudTurnPiFactory => ({
-      create: async () => {
-        forwarded.push(
-          await new Promise<string>((resolve, reject) => {
-            const socket = new Socket();
-            socket.once("error", reject);
-            socket.connect(18_080, "127.0.0.1", () => socket.write("ping"));
-            socket.once("data", (chunk: Buffer) => {
-              socket.destroy();
-              resolve(chunk.toString("utf8"));
-            });
-          }),
-        );
-        return {
-          close: async () => undefined,
-          prompt: async () => ({ output: [{ text: "bridged", type: "text" }], status: "completed" }),
-        } as unknown as CloudTurnPiRuntime;
-      },
-      resume: async () => {
-        throw new Error("unexpected resume");
-      },
+      const createPiFactory = (): CloudTurnPiFactory => ({
+        create: async () =>
+          ({
+            close: async () => undefined,
+            prompt: async () => ({ output: [{ text: "ready", type: "text" }], status: "completed" }),
+          }) as unknown as CloudTurnPiRuntime,
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      });
+      const completion = await runCloudTurnWorker(turnRequest(executionDir), {
+        continuityDirectory: join(root, "continuity"),
+        createPiFactory,
+        executionMount: join(root, "mount"),
+        proxyReadinessPorts: { connect: portOf(connectPeer), slack: portOf(slackPeer) },
+        workspace: join(root, "workspace"),
+      });
+      expect(completion.outcome).toBe("completed");
+      // Both fixed entries were genuinely probed through their real byte paths before Pi ran.
+      expect(hits).toEqual({ connect: 1, slack: 1 });
+    },
+  );
+
+  it("rejects a transport that does not answer with the execution adapter shapes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-wrong-peer-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const portOf = (peer: Server) => {
+      const address = peer.address();
+      if (address === null || typeof address !== "object") throw new Error("peer has no bound address");
+      return address.port;
+    };
+    const listenFree = async (peer: Server) => {
+      peer.listen(0, "127.0.0.1");
+      await new Promise<void>((resolve) => peer.once("listening", resolve));
+      cleanup.push(() => new Promise<void>((resolve) => peer.close(() => resolve())));
+      return portOf(peer);
+    };
+    const neverPi = (): CloudTurnPiFactory => {
+      throw new Error("the Pi factory must not be built with a rejected transport");
+    };
+
+    // A CONNECT entry that does not answer with the fixed refusal is not the execution adapter.
+    const wrongConnect = createServer((socket) => {
+      socket.once("data", () => socket.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
     });
-    const completion = await runCloudTurnWorker(turnRequest(executionDir), {
-      continuityDirectory: join(root, "continuity"),
-      createPiFactory,
-      executionMount: join(root, "mount"),
-      workspace: join(root, "workspace"),
+    const executionDir = await fixtureExecution(root, "turn-1");
+    await expect(
+      runCloudTurnWorker(turnRequest(executionDir), {
+        createPiFactory: neverPi,
+        executionMount: join(root, "mount"),
+        proxyReadinessPorts: { connect: await listenFree(wrongConnect), slack: 1 },
+        workspace: join(root, "workspace"),
+      }),
+    ).rejects.toThrow(/CONNECT entry/);
+
+    // A Slack entry whose TLS is signed by a DIFFERENT CA than this execution published is stale
+    // or foreign: the handshake pinned to the current execution CA must fail before Pi starts.
+    const foreignCaDir = join(root, "foreign-ca");
+    await mkdir(foreignCaDir);
+    const foreign = await generateExecutionCa(foreignCaDir);
+    const foreignPeer = createTlsServer(
+      { cert: await readFile(foreign.certPath, "utf8"), key: await readFile(foreign.keyPath, "utf8") },
+      (socket) => socket.destroy(),
+    );
+    const goodConnect = createServer((socket) => {
+      socket.once("data", () => socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
     });
-    expect(forwarded).toEqual(["ping"]);
-    expect(completion.outcome).toBe("completed");
+    await expect(
+      runCloudTurnWorker(turnRequest(await fixtureExecution(root, "turn-2")), {
+        createPiFactory: neverPi,
+        executionMount: join(root, "mount"),
+        proxyReadinessPorts: { connect: await listenFree(goodConnect), slack: await listenFree(foreignPeer) },
+        workspace: join(root, "workspace"),
+      }),
+    ).rejects.toThrow(/readiness/);
+  });
+
+  it("creates isolated CLI config directories and removes them after each execution", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-cli-config-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const previous: string[] = [];
+    for (const name of ["first", "second"]) {
+      const executionDir = await fixtureExecution(root, name);
+      const manifest = JSON.parse(await readFile(join(executionDir, "environment.json"), "utf8"));
+      Object.assign(manifest.environment, {
+        SLACK_CONFIG_DIR: "/tmp/opentag/slack",
+        OPENTAG_SLACK_CONFIG_DIR: "/tmp/opentag/slack",
+        LARKSUITE_CLI_CONFIG_DIR: "/tmp/opentag/lark",
+      });
+      await writeFile(join(executionDir, "environment.json"), JSON.stringify(manifest));
+      let directories: string[] = [];
+      const completion = await runCloudTurnWorker(turnRequest(executionDir), {
+        executionMount: join(root, "mount"),
+        workspace: join(root, "workspace"),
+        localProxyLoopbackSeam: true,
+        createPiFactory: ({ environment }) => ({
+          create: async () =>
+            ({
+              close: async () => undefined,
+              prompt: async () => {
+                directories = [environment.SLACK_CONFIG_DIR as string, environment.LARKSUITE_CLI_CONFIG_DIR as string];
+                expect(environment.OPENTAG_SLACK_CONFIG_DIR).toBe(directories[0]);
+                const shell = await readFile(environment.OPENTAG_PROVIDER_ENV_FILE as string, "utf8");
+                for (const directory of directories) {
+                  expect((await stat(directory)).mode & 0o777).toBe(0o700);
+                  expect(directory.startsWith(root)).toBe(false);
+                  expect(previous).not.toContain(directory);
+                  expect(await readdir(directory)).toEqual([]);
+                  expect(shell).toContain(directory);
+                  await writeFile(join(directory, "disposable-config"), "fixture");
+                }
+                return { runId: "fixture", status: "completed", output: [{ type: "text", text: "done" }] };
+              },
+            }) as CloudTurnPiRuntime,
+          resume: async () => {
+            throw new Error("unexpected resume");
+          },
+        }),
+      });
+      expect(completion.outcome).toBe("completed");
+      for (const directory of directories) await expect(stat(directory)).rejects.toThrow();
+      previous.push(...directories);
+    }
   });
 
   it("publishes the per-turn provider environment file and keeps reply instructions intact", async () => {

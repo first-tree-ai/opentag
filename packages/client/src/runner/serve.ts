@@ -244,14 +244,14 @@ export function cloudRunnerDirectories(stateDir: string): {
 
 /**
  * Longest per-Sandbox state directory segment. Long names keep the first 32 characters plus a
- * `-<8 hex digest>` suffix (41 characters), so the published public Unix socket stays under the
- * bridge's 100-byte limit even for the 63-character maximum valid Sandbox name.
+ * `-<8 hex digest>` suffix (41 characters), keeping per-turn public material paths short and
+ * stable even for the 63-character maximum valid Sandbox name.
  */
 const RUNNER_STATE_SEGMENT_MAX = 32;
 
 /**
- * Per-Sandbox state directory segment. Bounded so the published public Unix socket path stays
- * under the bridge's 100-byte limit for any accepted Sandbox name, while the deterministic hash
+ * Per-Sandbox state directory segment. Bounded so public material paths stay short and stable
+ * for any accepted Sandbox name, while the deterministic hash
  * keeps one distinct durable journal/private root per Sandbox.
  */
 export function runnerStateDirectorySegment(sandboxName: string): string {
@@ -550,7 +550,7 @@ async function assignmentReplacementAllowed(input: {
 
 /**
  * E7 sealed-assignment discard: the previous assignment's durable work is settled, so its local
- * workspace, private credential material, public socket root and completed journal entries are
+ * workspace, private credential material, public execution material and completed journal entries are
  * removed before a fresh controller/workspace is built. Every step is required; a failure fails
  * closed for the new assignment rather than executing over unproven local state.
  */

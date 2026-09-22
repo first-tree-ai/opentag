@@ -125,6 +125,7 @@
   "COMPUTER_AGENT_SKILLS_TEMPLATE",
   "COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE",
   "COMPUTER_RUNTIME_PROVIDER_CAPABILITY",
+  "CONTEXT_TREES_MAX",
   "ChannelNameSchema",
   "ClientRuntimeBusinessFrameSchema",
   "ClientRuntimeFrameSchema",

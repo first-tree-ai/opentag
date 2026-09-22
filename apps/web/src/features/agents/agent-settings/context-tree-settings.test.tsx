@@ -160,6 +160,15 @@ it("keeps Local permission and preparation failure advice unchanged", async () =
     "Context Tree preparation failed. Check the computer and repository, then retry.",
   );
 });
+it("explains the Context Tree limit instead of a generic failure", async () => {
+  vi.spyOn(browserApi, "contextTreeOperation").mockResolvedValue({ status: "failed", code: "tree_limit_reached" });
+  const view = render(<ContextTreeSettings config={config()} computerName="Computer" online onChanged={vi.fn()} />);
+  enter(view.container, "acme/memory");
+  click(view.container, "Connect");
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "This Agent already has the maximum number of Context Trees. Disconnect one before connecting another.",
+  );
+});
 it("keeps Local create and local authentication guidance unchanged", async () => {
   const operation = vi.spyOn(browserApi, "contextTreeOperation").mockResolvedValue({
     status: "failed",

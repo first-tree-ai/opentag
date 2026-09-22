@@ -354,6 +354,8 @@ function failureMessage(
       return m.agent_settings_context_tree_alias_conflict();
     case "repository_conflict":
       return m.agent_settings_context_tree_repository_conflict();
+    case "tree_limit_reached":
+      return m.agent_settings_context_tree_limit_reached();
     case "repository_exists":
       return m.agent_settings_context_tree_repository_exists();
     case "invalid_tree":

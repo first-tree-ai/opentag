@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { AgentAdminConfig, ContextTreeOperationFrame, ContextTreeOperationRequest } from "@opentag/shared";
+import {
+  type AgentAdminConfig,
+  CONTEXT_TREES_MAX,
+  type ContextTreeOperationFrame,
+  type ContextTreeOperationRequest,
+} from "@opentag/shared";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ContextTreeOperationOwner } from "../runtime/context-tree-operation-owner.js";
@@ -191,4 +196,45 @@ it("disconnects one alias while retaining the other connection", async () => {
   expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith("user", f.config.id, expect.any(Object), [
     { alias: "old", repository: "acme/old" },
   ]);
+});
+it("rejects a new connection at the tree limit before any remote work", async () => {
+  const f = fixture();
+  f.config.runtimeConfig.contextTrees = Array.from({ length: CONTEXT_TREES_MAX }, (_, index) => ({
+    alias: `tree-${index}`,
+    repository: `acme/tree-${index}`,
+  }));
+  const cloud = {
+    computerKind: vi.fn(async () => "cloud" as const),
+    run: vi.fn(async () => ({ status: "completed" as const, repository: "acme/memory" })),
+  };
+  const service = new ContextTreeOperationService(f.agents, f.owner, cloud);
+  expect(await service.run("user", f.config.id, f.input)).toEqual({ status: "failed", code: "tree_limit_reached" });
+  expect(cloud.computerKind).not.toHaveBeenCalled();
+  expect(cloud.run).not.toHaveBeenCalled();
+  expect(f.registry.send).not.toHaveBeenCalled();
+  expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+});
+it("allows disconnect and idempotent requests at the tree limit", async () => {
+  const f = fixture();
+  const connections = Array.from({ length: CONTEXT_TREES_MAX }, (_, index) => ({
+    alias: `tree-${index}`,
+    repository: `acme/tree-${index}`,
+  }));
+  f.config.runtimeConfig.contextTrees = connections;
+  expect(
+    await f.service.run("user", f.config.id, { ...f.input, alias: "tree-0", action: "disconnect", repository: null }),
+  ).toEqual({ status: "completed", repository: null });
+  expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(
+    "user",
+    f.config.id,
+    expect.any(Object),
+    connections.slice(1),
+  );
+  f.registry.send.mockClear();
+  expect(await f.service.run("user", f.config.id, { ...f.input, alias: "tree-0", repository: "ACME/TREE-0" })).toEqual({
+    status: "completed",
+    repository: "acme/tree-0",
+  });
+  expect(f.registry.send).not.toHaveBeenCalled();
+  expect(f.agents.updateContextTreeSelection).toHaveBeenCalledTimes(1);
 });

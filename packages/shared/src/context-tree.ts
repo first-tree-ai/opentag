@@ -20,7 +20,7 @@ export const ContextTreeConnectionSchema = z
   })
   .strict();
 // Bound per-Agent preparation work and runtime prompt size.
-const CONTEXT_TREES_MAX = 32;
+export const CONTEXT_TREES_MAX = 32;
 export const ContextTreesSchema = z
   .array(ContextTreeConnectionSchema)
   .max(CONTEXT_TREES_MAX)

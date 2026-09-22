@@ -1,5 +1,6 @@
 import {
   type AgentAdminConfig,
+  CONTEXT_TREES_MAX,
   type ContextTreeOperationRequest,
   ContextTreeOperationRequestSchema,
   type ContextTreeOperationResponse,
@@ -101,6 +102,7 @@ function attachmentOutcome(
         : { status: "failed", code: "alias_conflict" };
     if (connections.some((entry) => entry.repository.toLowerCase() === input.repository?.toLowerCase()))
       return { status: "failed", code: "repository_conflict" };
+    if (connections.length >= CONTEXT_TREES_MAX) return { status: "failed", code: "tree_limit_reached" };
   } else if (!existing) return { status: "completed", repository: null };
   return undefined;
 }

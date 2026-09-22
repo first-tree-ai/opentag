@@ -20,6 +20,7 @@ export const ContextTreeOperationResponseSchema = z.discriminatedUnion("status",
       code: z.enum([
         "alias_conflict",
         "repository_conflict",
+        "tree_limit_reached",
         "stale_configuration",
         "computer_unavailable",
         "capability_missing",

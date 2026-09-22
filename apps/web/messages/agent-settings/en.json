@@ -52,6 +52,7 @@
   "agent_settings_context_tree_disconnect": "Disconnect",
   "agent_settings_context_tree_failed": "Context Tree preparation failed. Check the computer and repository, then retry.",
   "agent_settings_context_tree_invalid_tree": "This repository is not a clean, valid Context Tree. Repair it before connecting.",
+  "agent_settings_context_tree_limit_reached": "This Agent already has the maximum number of Context Trees. Disconnect one before connecting another.",
   "agent_settings_context_tree_name_error": "Enter a valid repository name (1–100 letters, numbers, dots, underscores, or hyphens; start with a letter, number, or underscore and omit .git).",
   "agent_settings_context_tree_owner": "GitHub owner",
   "agent_settings_context_tree_owner_error": "Enter a valid GitHub username or organization (1–39 letters, numbers, or hyphens, starting with a letter or number).",

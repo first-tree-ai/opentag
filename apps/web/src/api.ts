@@ -25,6 +25,7 @@ import {
   type AttachMCPServerRequest,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountComputerByIdPath,
   accountComputerConnectCodePath,
   accountSandboxRunnerStopPath,
   agentByIdPath,
@@ -404,6 +405,13 @@ export class BrowserApi {
   reactivateAgent(agentId: string): Promise<AgentAdminConfig> {
     return this.request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
       method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  deleteComputer(computerId: string): Promise<void> {
+    return this.requestNoContent(accountComputerByIdPath(computerId), {
+      method: "DELETE",
       headers: this.csrfHeaders(),
     });
   }

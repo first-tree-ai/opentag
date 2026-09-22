@@ -13,7 +13,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown src/index.ts src/runner/bin.ts src/pi-extensions/web-tools.ts --format esm --dts",
+    "build": "tsdown src/index.ts src/runner/bin.ts src/pi-extensions/web-tools.ts --format esm --dts --sourcemap",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1",
     "test:agent-runtime:coverage": "vitest run --config vitest.agent-runtime.config.ts",

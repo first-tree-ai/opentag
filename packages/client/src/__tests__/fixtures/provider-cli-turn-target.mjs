@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 const mode = process.env.OPENTAG_TEST_TARGET_MODE ?? "echo";
 
 if (mode === "sleep") {
-  process.stderr.write("ready\n");
   const finish = (signal) => {
     process.stderr.write(`got ${signal}\n`);
     process.exit(signal === "SIGTERM" ? 143 : 130);
@@ -12,6 +11,8 @@ if (mode === "sleep") {
   process.on("SIGTERM", () => finish("SIGTERM"));
   process.on("SIGINT", () => finish("SIGINT"));
   setInterval(() => undefined, 60_000);
+  // The parent sends a signal as soon as it reads this readiness marker.
+  process.stderr.write("ready\n");
 } else if (mode === "large-stdout") {
   const bytes = Number(process.env.OPENTAG_TEST_TARGET_BYTES ?? String(5 * 1024 * 1024));
   const chunk = Buffer.alloc(64 * 1024, 0x61);

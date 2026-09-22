@@ -64,6 +64,11 @@ const logger = createLogger("provider-codex-runtime");
 const CODEX_CAPABILITY_PROBE_INSTRUCTIONS = "OpenTag Provider prompt-surface capability probe.";
 /** One deadline for rebinding a thread to a run's MCP gateway; a slow gateway must not stall a turn. */
 const CODEX_MCP_ATTACH_TIMEOUT_MS = 15_000;
+/**
+ * The share of that deadline the attach itself may use. The rest is reserved for restoring the
+ * thread without MCP, so a timed-out attach still leaves time to recover the turn.
+ */
+const CODEX_MCP_ATTACH_BUDGET_SHARE = 2 / 3;
 /** Codex's own MCP startup bound, kept inside the attach deadline. */
 const CODEX_MCP_STARTUP_TIMEOUT_SEC = 10;
 export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
@@ -396,9 +401,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    * can reach is at most the live execution's own bearer, which the Server revokes when the
    * execution ends. A run without a gateway rebinds only when the thread may still hold one.
    *
-   * One deadline covers the whole rebind. Losing MCP must never cost the Agent its turn, so an
-   * unconfirmed attach leaves the thread with no MCP server rather than with the run's bearer
-   * attached to a catalogue it did not confirm.
+   * One deadline covers the whole rebind, attach and restore alike. The attach may use only part of
+   * it, so a timed-out attach still leaves the restore time to finish. Losing the gateway never costs
+   * the Agent its turn: an unconfirmed attach leaves the thread with no MCP server rather than with
+   * the run's bearer attached to a catalogue it did not confirm. Only a thread Codex cannot reload at
+   * all within the deadline fails the run, because there is no thread left to start the turn on.
    */
   async #attachMcpGateway(
     request: AgentPromptRequest,
@@ -412,11 +419,13 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const startedAt = Date.now();
     const wasDirty = this.#mcpThreadDirty;
     this.#mcpThreadDirty = true;
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.#mcpAttachTimeoutMs)]);
+    const attachBudgetMs = Math.floor(this.#mcpAttachTimeoutMs * CODEX_MCP_ATTACH_BUDGET_SHARE);
     try {
       await this.#rebindThread(
         codexMcpServersConfig(endpoint),
         context,
-        AbortSignal.any([signal, AbortSignal.timeout(this.#mcpAttachTimeoutMs)]),
+        AbortSignal.any([deadline, AbortSignal.timeout(attachBudgetMs)]),
       );
       this.#mcpThreadDirty = endpoint !== undefined;
       logger.info(
@@ -436,7 +445,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#mcpThreadDirty = wasDirty;
       return;
     }
-    await this.#rebindThread(codexMcpServersConfig(undefined), context, signal);
+    await this.#rebindThread(codexMcpServersConfig(undefined), context, deadline);
     this.#mcpThreadDirty = false;
   }
 

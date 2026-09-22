@@ -503,8 +503,8 @@ function providerLaunchConfiguration(
   }
   /*
    * Claude Code spawns its process per run, so the bearer goes straight into that run's MCP config.
-   * Codex keeps one App Server per Session, so its runtime hands the bearer to a Session-scoped
-   * loopback relay for the duration of the run instead.
+   * Codex keeps one App Server per Session, so its runtime reloads the thread with the run's MCP
+   * servers before the turn instead.
    */
   if (launch.mcpGateway && providerSupportsMcpGateway(providerId)) {
     provider.mcpGateway = { url: launch.mcpGateway.url, token: launch.mcpGateway.token };

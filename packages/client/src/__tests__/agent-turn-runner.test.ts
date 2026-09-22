@@ -583,7 +583,7 @@ describe("AgentTurnRunner", () => {
       return prompt;
     };
 
-    // Claude Code mounts the bearer per run; Codex hands it to its Session-scoped loopback relay.
+    // Claude Code mounts the bearer per run; Codex reloads its thread with it before the turn.
     for (const providerId of ["claude-code", "codex"]) {
       const prompt = await runWith(providerId);
       expect(prompt).toHaveBeenCalledWith(

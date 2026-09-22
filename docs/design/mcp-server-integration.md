@@ -654,11 +654,15 @@ the Codex runtime reloads the thread with that run's `mcp_servers`:
   reach is at most the live execution's own bearer, which the Server revokes when the execution ends.
   The launch arguments keep `mcp_servers={}`, and the override replaces the whole table, so the
   user's own Codex servers stay excluded.
-- **One deadline** (15 s) covers the whole rebind, and a run cancelled before its turn starts ends
-  without waiting for one. An attach that is not confirmed restores the thread with no MCP server —
-  losing MCP costs the turn its MCP tools, never the turn, and never leaves the run's bearer attached
-  to a catalogue it did not confirm. A later run without a gateway rebinds once so revoked tools
-  disappear; a thread that cannot be restored at all fails that run and is rebound by the next one.
+- **One deadline** (15 s) covers the whole rebind, attach and restore alike, and a run cancelled
+  before its turn starts ends without waiting for one. The attach may use two thirds of the deadline;
+  the rest is reserved for the restore. An attach that is not confirmed restores the thread with no
+  MCP server — losing the gateway costs the turn its MCP tools, never the turn, and never leaves the
+  run's bearer attached to a catalogue it did not confirm. A later run without a gateway rebinds once
+  so revoked tools disappear. Only a thread Codex cannot reload at all within the deadline fails that
+  run, since no thread is left to start the turn on; the next run rebinds it.
+- **Conversation history survives the rebind.** `excludeTurns` only keeps the turn list out of the
+  `thread/resume` response; Codex reloads the thread's full model context from its rollout.
 - Gateway tools are pre-approved as a server (`default_tools_approval_mode = "approve"`), matching the
   Claude Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
 

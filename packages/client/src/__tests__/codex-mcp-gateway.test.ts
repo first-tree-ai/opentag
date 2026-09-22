@@ -322,6 +322,43 @@ describe("Codex MCP gateway delivery", () => {
     await runtime.close();
   });
 
+  it.each([
+    ["the attach fails fast and the restore never settles", "reject"],
+    ["neither the attach nor the restore ever settles", "hang"],
+  ] as const)("bounds the restore by the same deadline when %s", async (_label, attach) => {
+    const { client, runtime } = await persistedRuntime({ mcpAttachTimeoutMs: 60 });
+    client.resume = async (params, signal) =>
+      mcpState(params) === "attached" && attach === "reject"
+        ? Promise.reject(new Error("resume failed"))
+        : hangUntilAborted(signal);
+
+    const startedAt = Date.now();
+    // No thread is left to start the turn on, so the run fails, but within the one deadline.
+    await expect(runtime.prompt(prompt("restore-hangs", true))).resolves.toMatchObject({ status: "failed" });
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(client.events).toEqual([
+      "unsubscribe:thread-1",
+      "resume:attached",
+      "unsubscribe:thread-1",
+      "resume:detached",
+    ]);
+    await runtime.close();
+  });
+
+  it("keeps part of the deadline for the restore after the attach uses its whole share", async () => {
+    const { client, runtime } = await persistedRuntime({ mcpAttachTimeoutMs: 300 });
+    const restoreSignals: Array<AbortSignal | undefined> = [];
+    client.resume = async (params, signal) => {
+      if (mcpState(params) === "attached") return hangUntilAborted(signal);
+      restoreSignals.push(signal);
+      return { thread: { id: params.threadId } };
+    };
+    await expect(runtime.prompt(prompt("restore-in-budget", true))).resolves.toMatchObject({ status: "completed" });
+    expect(restoreSignals).toHaveLength(1);
+    expect(restoreSignals[0]?.aborted).toBe(false);
+    await runtime.close();
+  });
+
   it("fails the run when a persisted thread cannot be restored at all, and rebinds on the next run", async () => {
     const { client, runtime } = await persistedRuntime();
     client.resume = async () => {

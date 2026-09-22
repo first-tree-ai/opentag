@@ -1,7 +1,11 @@
 import { ERROR_REPORT_STACK_MAX_LENGTH, HTTP_PATHS, STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RouteRateLimiter } from "../api/browser-auth.js";
-import { ERROR_REPORT_RATE_LIMIT, ERROR_REPORT_RATE_LIMIT_WINDOW_MS } from "../api/error-reports.js";
+import {
+  ERROR_REPORT_BODY_LIMIT_BYTES,
+  ERROR_REPORT_RATE_LIMIT,
+  ERROR_REPORT_RATE_LIMIT_WINDOW_MS,
+} from "../api/error-reports.js";
 import { createApp } from "../app.js";
 import type { ErrorReporter } from "../observability/error-reporting.js";
 
@@ -61,6 +65,32 @@ describe("POST /api/v1/error-reports", () => {
     expect(logs()).toContain("Client error reported");
     expect(logs()).toContain('"errorCode":"unhandled_error"');
     expect(logs()).not.toContain("opaque-token");
+  });
+
+  it("lifts the identifiers an operator filters on out of the nested report", async () => {
+    const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
+    const { app, logs } = createRelayApp({ reporter });
+
+    const response = await post(app, {
+      ...validReport,
+      reportId: "6f1c2f3a-0000-4000-8000-000000000000",
+      userId: "a1b2c3d4-0000-4000-8000-000000000000",
+      route: "/agents/:agentId",
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(logs()).toContain('"reportId":"6f1c2f3a-0000-4000-8000-000000000000"');
+    expect(logs()).toContain('"userId":"a1b2c3d4-0000-4000-8000-000000000000"');
+    // The rest of the context stays where the tracker cannot keep it: the nested payload.
+    expect(logs()).toContain('"route":"/agents/:agentId"');
+  });
+
+  it("refuses a body far larger than any report the schema would accept", async () => {
+    const { app } = createRelayApp({ reporter: { report: vi.fn().mockResolvedValue(undefined) } });
+
+    const response = await post(app, { ...validReport, stack: "x".repeat(ERROR_REPORT_BODY_LIMIT_BYTES) });
+
+    expect(response.statusCode).toBe(413);
   });
 
   it("registers the relay without any reporter and still answers 202", async () => {

@@ -8,6 +8,12 @@ import { parseRequest } from "./request-validation.js";
 /** Reports accepted from one address per minute. Generous for a browser in a crash loop, tight for a flood. */
 export const ERROR_REPORT_RATE_LIMIT = 30;
 export const ERROR_REPORT_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+/**
+ * The schema bounds a report to roughly 22 KiB of useful content; this leaves room for JSON overhead
+ * and escaping while keeping the route far below Fastify's 1 MiB default. An anonymous endpoint has
+ * no reason to read a megabyte it is guaranteed to reject.
+ */
+export const ERROR_REPORT_BODY_LIMIT_BYTES = 64 * 1024;
 
 export interface ErrorReportRoutesOptions {
   reporter?: ErrorReporter;
@@ -25,7 +31,7 @@ export function registerErrorReportRoutes(app: FastifyInstance, options: ErrorRe
   const rateLimiter =
     options.rateLimiter ?? new RouteRateLimiter(ERROR_REPORT_RATE_LIMIT, ERROR_REPORT_RATE_LIMIT_WINDOW_MS);
 
-  app.post(HTTP_PATHS.errorReports, async (request, reply) => {
+  app.post(HTTP_PATHS.errorReports, { bodyLimit: ERROR_REPORT_BODY_LIMIT_BYTES }, async (request, reply) => {
     try {
       rateLimiter.check(request.ip);
     } catch (error) {
@@ -35,9 +41,22 @@ export function registerErrorReportRoutes(app: FastifyInstance, options: ErrorRe
       throw error;
     }
     const event = parseRequest(ErrorReportRequestSchema, request.body);
-    // The log line is capped per field; the forwarded copy keeps the full stack the schema allows.
+    /*
+     * The log line is capped per field; the forwarded copy keeps the full stack the schema allows.
+     *
+     * The tracker keeps only the fields it understands, so this line is where the rest of a report's
+     * context lives. The identifiers most worth filtering on are lifted out of the nested payload:
+     * `reportId` is what ties a tracker event back to this line, and `userId` is who to ask.
+     */
     request.log.warn(
-      { module: "error-reporting", source: event.source, errorCode: event.code, errorReport: redactForLog(event) },
+      {
+        module: "error-reporting",
+        source: event.source,
+        errorCode: event.code,
+        reportId: event.reportId,
+        userId: event.userId,
+        errorReport: redactForLog(event),
+      },
       "Client error reported",
     );
     const { ip } = request;

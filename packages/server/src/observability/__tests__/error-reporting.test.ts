@@ -72,7 +72,7 @@ describe("createErrorReporter", () => {
     expect(createClient).toHaveBeenCalledExactlyOnceWith("p", credentials);
   });
 
-  it("redacts before forwarding and never sets a user", async () => {
+  it("redacts before forwarding and names no user when the report named none", async () => {
     const { resolve } = fakeLogger();
     const client: ErrorReportingClient = {
       report: vi.fn((_error, _request, callback: (error: Error | null) => void) => callback(null)),
@@ -100,6 +100,22 @@ describe("createErrorReporter", () => {
     });
     expect(request).toEqual({});
     expect(error).not.toHaveProperty("user");
+  });
+
+  it("forwards the Account the report claimed, and falls back to the Computer when it claimed none", async () => {
+    const { resolve } = fakeLogger();
+    const client: ErrorReportingClient = {
+      report: vi.fn((_error, _request, callback: (error: Error | null) => void) => callback(null)),
+    };
+    const reporter = createErrorReporter({ projectId: "p", logger: resolve, createClient: () => client });
+
+    await reporter.report({ ...webEvent, userId: "account-1", computerId: "computer-1" });
+    await reporter.report({ source: "cli", message: "boom", computerId: "computer-1", occurredAt });
+
+    const calls = vi.mocked(client.report).mock.calls;
+    expect(calls[0]?.[0]).toMatchObject({ user: "account-1" });
+    // Prefixed, so a Computer identifier can never be read as an Account one.
+    expect(calls[1]?.[0]).toMatchObject({ user: "computer:computer-1" });
   });
 
   it("logs a warning and resolves when the SDK reports a failure or throws", async () => {

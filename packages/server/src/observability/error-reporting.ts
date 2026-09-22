@@ -62,22 +62,43 @@ export function reportedMessage(event: ErrorReportRequest): string {
 }
 
 /**
+ * Who the report says it came from, for `context.user`.
+ *
+ * The relay is anonymous, so this is what the caller claimed rather than what the server verified —
+ * it groups a tracker event with the person to ask about it, and proves nothing. A CLI that has only
+ * ever connected a Computer knows no Account, so its Computer is the next best handle and is prefixed
+ * rather than passed bare, so the two kinds of identifier can never be mistaken for each other.
+ */
+function reportedUser(event: ErrorReportRequest): string | undefined {
+  if (event.userId) return event.userId;
+  if (event.computerId) return `computer:${event.computerId}`;
+  return undefined;
+}
+
+/**
  * Shape the SDK turns into a `ReportedErrorEvent`. A stack-bearing report is presented as an
  * error so the client's frames are what gets grouped; a message-only report carries a synthetic
  * `reportLocation`, which the API requires when the message is not itself a stack trace.
+ *
+ * Only the fields the SDK reads reach the tracker: it copies `user`, `serviceContext` and the
+ * report-location trio off this object and drops everything else. The rest of a report's context —
+ * platform, route, Agent, Computer — is kept on the server's own log line instead, correlated by
+ * `reportId`.
  */
 export function toReportedError(event: ErrorReportRequest): Record<string, unknown> {
   const serviceContext = {
     service: SERVICE_BY_SOURCE[event.source],
     ...(event.version ? { version: event.version } : {}),
   };
-  if (event.stack) return { stack: reportedMessage(event), serviceContext };
+  const user = reportedUser(event);
+  const attribution = { ...(user ? { user } : {}), serviceContext };
+  if (event.stack) return { stack: reportedMessage(event), ...attribution };
   return {
     message: event.message,
     filePath: event.url ?? event.command ?? event.source,
     lineNumber: 0,
     functionName: event.code ?? "unknown",
-    serviceContext,
+    ...attribution,
   };
 }
 

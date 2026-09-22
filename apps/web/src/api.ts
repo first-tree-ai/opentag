@@ -24,6 +24,7 @@ import {
   AuthProvidersResponseSchema,
   accountComputerByIdPath,
   accountComputerConnectCodePath,
+  accountComputerDisconnectPath,
   agentByIdPath,
   agentCloudPath,
   agentComputerRebindPath,
@@ -54,6 +55,7 @@ import {
   CloudAvailabilitySchema,
   type CloudModelOptions,
   CloudModelOptionsSchema,
+  COMPUTER_ACCESS_CAPABILITY_HEADER,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
@@ -404,6 +406,16 @@ export class BrowserApi {
     });
   }
 
+  disconnectComputer(computerId: string): Promise<void> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.requestNoContent(accountComputerDisconnectPath(computerId), {
+        method: "POST",
+        headers: this.csrfHeaders(),
+        signal,
+      }),
+    );
+  }
+
   deleteComputer(computerId: string): Promise<void> {
     return this.requestNoContent(accountComputerByIdPath(computerId), {
       method: "DELETE",
@@ -499,6 +511,7 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
       headers: {
         [CLOUD_IDENTITY_CAPABILITY_HEADER]: "1",
+        [COMPUTER_ACCESS_CAPABILITY_HEADER]: "1",
         [PROVIDER_READINESS_V1_HEADER]: "1",
         [PROVIDER_READINESS_V2_HEADER]: "2",
         [PROVIDER_CLI_REASON_V2_HEADER]: "2",

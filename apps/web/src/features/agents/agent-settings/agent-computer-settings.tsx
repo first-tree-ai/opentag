@@ -40,8 +40,8 @@ export function AgentComputerSettings({
       return <UnconfirmedComputerSettings computer={agent.computer} onAgentChanged={onAgentChanged} />;
     }
   }
-  const connection: ComputerConnection =
-    machine.state === "ready" ? "online" : machine.state === "action_required" ? "offline" : "unconfirmed";
+  const connection = computerConnection(agent);
+  const actionLabel = computerActionLabel(connection);
   return (
     <div className="grid w-full min-w-0 max-w-3xl gap-8 wrap-anywhere">
       <AgentSettingsPageHeader
@@ -63,7 +63,7 @@ export function AgentComputerSettings({
             {...accountComputerLink(agent.computer.computerId, agent.id)}
             className={buttonClassName({ variant: "secondary", size: "compact", className: "w-fit" })}
           >
-            {connection === "offline" ? m.computer_recovery_heading() : m.computer_manage()}
+            {actionLabel}
           </Link>
         </section>
       ) : (
@@ -101,7 +101,7 @@ function UnconfirmedComputerSettings({
       <Text as="h2" variant="heading">
         {computer.displayName}
       </Text>
-      <StatusIndicator label={m.agent_settings_computer_unconfirmed()} tone="neutral" />
+      <StatusIndicator label={m.computer_status_unavailable()} tone="neutral" />
       <div>
         <Button type="button" variant="secondary" onClick={retry}>
           {m.common_try_again()}
@@ -109,4 +109,18 @@ function UnconfirmedComputerSettings({
       </div>
     </div>
   );
+}
+
+function computerConnection(agent: AgentDetailView): ComputerConnection {
+  const state = agent.availability.dependencies.computer.state;
+  if (state === "unconfirmed") return "unconfirmed";
+  if (agent.computerConnectionStatus === "disconnected") return "disconnected";
+  if (state === "ready") return "online";
+  return state === "action_required" ? "offline" : "unconfirmed";
+}
+
+function computerActionLabel(connection: ComputerConnection): string {
+  if (connection === "disconnected") return m.computer_reconnect();
+  if (connection === "offline") return m.computer_recovery_heading();
+  return m.computer_manage();
 }

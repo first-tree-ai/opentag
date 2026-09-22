@@ -255,6 +255,11 @@
       "idx": 50,
       "tag": "0050_computer_soft_delete",
       "sha256": "120d2a1c8a0fd0e2ee5133194e65ee10d9df2337b915482b7f0f5e0c2e80c98d"
+    },
+    {
+      "idx": 51,
+      "tag": "0051_computer_disconnect",
+      "sha256": "9f48fe18305286304b526939b3f776cc0debd242b99b8c978bf81b5fba9c03b5"
     }
   ]
 }

@@ -1,9 +1,11 @@
 import {
   accountComputerByIdPath,
   accountComputerConnectCodePath,
+  accountComputerDisconnectPath,
   accountSandboxPath,
   agentCloudPath,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
+  COMPUTER_ACCESS_CAPABILITY_HEADER,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   taskCancelPath,
@@ -160,6 +162,7 @@ function services() {
     },
     computerService: {
       listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
+      disconnectComputer: vi.fn().mockResolvedValue(undefined),
       deleteComputer: vi.fn().mockResolvedValue({ computerId, revokedCredentialCount: 1 }),
       ensureCloudComputerForAccount: vi.fn().mockResolvedValue({
         computerId,
@@ -593,6 +596,32 @@ describe("Account-native management collections", () => {
     });
   });
 
+  it("disconnects only under Account authority and negotiates retained inventory", async () => {
+    const { app, service } = appWith();
+    const response = await app.inject({
+      method: "POST",
+      url: accountComputerDisconnectPath(computerId),
+      headers: authorization,
+    });
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(service.computerService.disconnectComputer).toHaveBeenCalledWith(userId, computerId);
+    const invalid = await app.inject({
+      method: "POST",
+      url: accountComputerDisconnectPath(computerId),
+      headers: authorization,
+      payload: { accountId: computerId },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(service.computerService.disconnectComputer).toHaveBeenCalledTimes(1);
+    await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, [COMPUTER_ACCESS_CAPABILITY_HEADER]: "1" },
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false, false, true);
+  });
+
   it("deletes an Account-owned Computer under the authenticated Account's authority", async () => {
     const { app, service } = appWith();
     const response = await app.inject({
@@ -838,6 +867,7 @@ describe("Account-native management collections", () => {
       ["POST", HTTP_PATHS.accountAgents],
       ["GET", HTTP_PATHS.accountComputers],
       ["DELETE", accountComputerByIdPath(computerId)],
+      ["POST", accountComputerDisconnectPath(computerId)],
       ["PUT", HTTP_PATHS.accountCloudComputer],
       ["POST", HTTP_PATHS.accountSandboxes],
       ["GET", accountSandboxPath("2b63a21e-f6c7-4474-91ea-4dabf0566a24")],

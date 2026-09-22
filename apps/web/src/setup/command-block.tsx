@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Button, Icon } from "../ui/design-system.js";
 import "./setup.css";
 
@@ -104,15 +104,38 @@ function CopyableCommandBlock({
 /** The same setup surface for a task given to an assistant, without shell quoting or token markup. */
 export function InstructionBlock({
   instructions,
+  expansion,
   ...props
-}: CommandBlockSharedProps & { readonly instructions: string; readonly label: string }) {
+}: CommandBlockSharedProps & {
+  readonly instructions: string;
+  readonly label: string;
+  readonly expansion?: { readonly show: string; readonly hide: string };
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const id = useId();
   const paragraphEnd = instructions.indexOf("\n\n");
   const split = paragraphEnd === -1 ? instructions.length : paragraphEnd;
   return (
-    <CopyableTextBlock {...props} payload={instructions} plainText>
-      <span className="ots-command__comment">{instructions.slice(0, split)}</span>
-      {instructions.slice(split)}
-    </CopyableTextBlock>
+    <div className="grid min-w-0 gap-2">
+      <div id={id}>
+        <CopyableTextBlock {...props} payload={instructions} plainText expanded={expanded}>
+          <span className="ots-command__comment">{instructions.slice(0, split)}</span>
+          {instructions.slice(split)}
+        </CopyableTextBlock>
+      </div>
+      {expansion ? (
+        <Button
+          className="w-fit"
+          variant="ghost"
+          size="compact"
+          aria-controls={id}
+          aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? expansion.hide : expansion.show}
+        </Button>
+      ) : null}
+    </div>
   );
 }
 
@@ -126,6 +149,7 @@ function CopyableTextBlock({
   expiredNotice,
   inert = false,
   plainText = false,
+  expanded = false,
 }: CommandBlockSharedProps & {
   readonly label: string;
   readonly payload: string;
@@ -133,6 +157,7 @@ function CopyableTextBlock({
   readonly expiredNotice?: ReactNode;
   readonly inert?: boolean;
   readonly plainText?: boolean;
+  readonly expanded?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [hint, setHint] = useState<string>();
@@ -172,7 +197,11 @@ function CopyableTextBlock({
   const buttonLabel = copied ? copiedLabel : copyLabel;
 
   return (
-    <div className="ots-command flex flex-col gap-1" data-expired={expiredNotice ? "true" : undefined}>
+    <div
+      className="ots-command flex flex-col gap-1"
+      data-expanded={expanded || undefined}
+      data-expired={expiredNotice ? "true" : undefined}
+    >
       <div className="ots-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">
         <section
           aria-label={label}

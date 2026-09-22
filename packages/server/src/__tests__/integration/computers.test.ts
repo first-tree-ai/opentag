@@ -524,8 +524,7 @@ describe("Computer connection persistence", () => {
       accountLocked = resolve;
     });
     // Hold the Account row so both transactions queue on it in a known order: deletion first, then
-    // the redemption, which already holds its connect-code row when it starts waiting. Released, the
-    // deletion owns the Account while the redemption owns the code: the order that used to deadlock.
+    // the redemption. Both now acquire Account before code, eliminating the historical lock inversion.
     const holding = locker.sql.begin(async (sql) => {
       await sql`select id from users where id = ${value.bootstrap.userId} for update`;
       accountLocked();
@@ -559,6 +558,85 @@ describe("Computer connection persistence", () => {
       await value.sql.end();
     }
   });
+
+  it.each(["disconnect-first", "exchange-first"] as const)(
+    "serializes disconnection with a repair redemption (%s)",
+    async (order) => {
+      const value = await fixture();
+      const locker = createDatabaseClient(databaseUrl, { max: 1 });
+      const exchange = await connect(value);
+      const pendingRepair = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
+        mode: "repair",
+        targetComputerId: exchange.computerId,
+      });
+      const accountLockWaiters = async () => {
+        const [row] = await value.sql`
+        select count(*)::int as count
+        from pg_stat_activity
+        where datname = current_database()
+          and wait_event_type = 'Lock'
+          and query ilike '%from "users"%for update%'
+      `;
+        return row?.count ?? 0;
+      };
+      let releaseAccount!: () => void;
+      const accountHeld = new Promise<void>((resolve) => {
+        releaseAccount = resolve;
+      });
+      let accountLocked!: () => void;
+      const lockTaken = new Promise<void>((resolve) => {
+        accountLocked = resolve;
+      });
+      // Queue the two access mutations behind one Account lock to exercise both commit orders.
+      const holding = locker.sql.begin(async (sql) => {
+        await sql`select id from users where id = ${value.bootstrap.userId} for update`;
+        accountLocked();
+        await accountHeld;
+      });
+      try {
+        await lockTaken;
+        const disconnect = () => value.service.disconnectComputer(value.bootstrap.userId, exchange.computerId);
+        const redeem = () =>
+          value.machineAuth.exchangeConnectCode(exchangeInput(pendingRepair.code, crypto.randomUUID()));
+        const first = order === "disconnect-first" ? disconnect() : redeem();
+        await vi.waitFor(async () => expect(await accountLockWaiters()).toBe(1));
+        const second = order === "disconnect-first" ? redeem() : disconnect();
+        await vi.waitFor(async () => expect(await accountLockWaiters()).toBe(2));
+        releaseAccount();
+        await holding;
+
+        const results = await Promise.allSettled([first, second]);
+        if (order === "disconnect-first") {
+          expect(results[0].status).toBe("fulfilled");
+          expect(results[1]).toMatchObject({ status: "rejected", reason: { code: "AUTH_INVALID_CODE" } });
+        } else {
+          expect(results[0].status).toBe("fulfilled");
+          expect(results[1].status).toBe("fulfilled");
+          const credential = results[0].status === "fulfilled" ? results[0].value : undefined;
+          if (!credential) throw new Error("Missing exchanged credential");
+          await expect(value.machineAuth.verifyMachineToken(credential.machineToken)).rejects.toMatchObject({
+            code: "AUTH_INVALID_TOKEN",
+          });
+        }
+        expect(
+          (await value.service.listAccountComputers(value.bootstrap.userId, false, true, true)).computers[0]
+            ?.connectionStatus,
+        ).toBe("disconnected");
+        const fresh = await repair(value, exchange.computerId);
+        await expect(value.machineAuth.verifyMachineToken(fresh.machineToken)).resolves.toMatchObject({
+          computerId: exchange.computerId,
+        });
+        await expect(
+          value.machineAuth.exchangeConnectCode(exchangeInput(pendingRepair.code, crypto.randomUUID())),
+        ).rejects.toBeDefined();
+      } finally {
+        releaseAccount();
+        await holding.catch(() => undefined);
+        await locker.sql.end();
+        await value.sql.end();
+      }
+    },
+  );
 
   it("consumes a Computer connect code exactly once under concurrent exchange", async () => {
     const value = await fixture();

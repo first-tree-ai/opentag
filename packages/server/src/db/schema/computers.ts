@@ -29,6 +29,8 @@ export const computers = pgTable(
     currentInstanceId: uuid("current_instance_id"),
     connectedAt: timestamp("connected_at", { withTimezone: true }),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    /** Explicit access revocation; retained in capable Account inventory until repaired or reset. */
+    disconnectedAt: timestamp("disconnected_at", { withTimezone: true }),
     /**
      * Set when the owning Account deletes the Computer. The row stays because Agents, Session placements,
      * and credential history reference it; deletion revokes every credential and releases the installation

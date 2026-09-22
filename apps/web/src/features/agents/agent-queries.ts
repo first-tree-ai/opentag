@@ -392,6 +392,7 @@ function assembleAgentDetailView(
   return {
     ...agent,
     ...(computer?.kind === undefined ? {} : { computerKind: computer.kind }),
+    ...(computer ? { computerConnectionStatus: computer.connectionStatus } : {}),
     messaging: bindingConfirmed ? { kind: "ready", value: binding } : { kind: "unconfirmed" },
     availability: projectAgentAvailability(
       agent,

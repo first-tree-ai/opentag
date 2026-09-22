@@ -73,6 +73,7 @@ export type ComputerConnectState =
 export interface ComputerConnectLifecycle {
   readonly error: string | undefined;
   readonly issue: () => void;
+  readonly reset: () => void;
   readonly state: ComputerConnectState;
 }
 
@@ -122,12 +123,14 @@ async function readPollResult(
 
 async function pollRedeemedComputer({
   adapter,
+  expire,
   isCurrent,
   onConnected,
   redeemed,
   setError,
 }: {
   readonly adapter: ComputerConnectAdapter;
+  readonly expire: () => void;
   readonly isCurrent: () => boolean;
   readonly onConnected: (computer: AccountComputerSummary) => void;
   readonly redeemed: RedeemedComputerConnectCommand;
@@ -136,6 +139,16 @@ async function pollRedeemedComputer({
   try {
     const { computers } = await adapter.computers();
     if (!isCurrent()) return;
+    // A later explicit disconnection revokes the authorization bought by this redemption.
+    // Retire it rather than polling forever or offering the already-consumed command again.
+    if (
+      computers.some(
+        (computer) => computer.computerId === redeemed.computerId && computer.connectionStatus === "disconnected",
+      )
+    ) {
+      expire();
+      return;
+    }
     setError(undefined);
     const connected = computers.find(
       (computer) => computer.computerId === redeemed.computerId && isFreshlyConnected(computer, redeemed.redeemedAt),
@@ -403,7 +416,7 @@ function ComputerConnectAttempt({
       if (polling) return;
       polling = true;
       const work = redeemed
-        ? pollRedeemedComputer({ adapter, isCurrent: current, onConnected: complete, redeemed, setError })
+        ? pollRedeemedComputer({ adapter, expire, isCurrent: current, onConnected: complete, redeemed, setError })
         : pollIssuedCommand({
             adapter,
             expire,
@@ -432,7 +445,12 @@ function ComputerConnectAttempt({
     };
   }, [adapter, state, targetComputerId]);
 
-  return children({ error, issue: () => void issue(), state });
+  const reset = () => {
+    generation.current += 1;
+    setState({ kind: "idle" });
+    setError(undefined);
+  };
+  return children({ error, issue: () => void issue(), reset, state });
 }
 
 export function ComputerConnectPresentation({

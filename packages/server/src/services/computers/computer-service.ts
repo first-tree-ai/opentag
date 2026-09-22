@@ -18,6 +18,7 @@ import {
   projectAccountComputerSummary,
   projectCloudComputerEnsure,
 } from "./cloud-computer.js";
+import { disconnectComputerAccess } from "./disconnect-computer.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 import { rejectUnsupportedClientVersion } from "./machine-auth-service.js";
 import type { ProviderReadinessSource } from "./provider-readiness.js";
@@ -37,6 +38,8 @@ export interface ComputerServiceOptions {
    * authority. Cloud registration/heartbeat fails closed when the hook is missing or rejects.
    */
   assertCloudControlCredential?: (context: ComputerAuthContext) => Promise<void> | void;
+  /** Best-effort runtime closure after access revocation commits. */
+  onComputerDisconnected?: (computerId: string) => Promise<void> | void;
   /**
    * Runs after a Computer deletion commits, so a live runtime connection can be closed. The service
    * treats it as best-effort: the deletion is already durable, so a failing hook is logged and never
@@ -58,6 +61,7 @@ export class ComputerService {
   readonly #providerReadiness?: ProviderReadinessSource;
   readonly #cloudIdentities: { enabled: boolean; runnerVersion?: string };
   readonly #assertCloudControlCredential?: (context: ComputerAuthContext) => Promise<void> | void;
+  readonly #onComputerDisconnected?: (computerId: string) => Promise<void> | void;
   readonly #onComputerDeleted?: (computerId: string) => Promise<void> | void;
   readonly #logger?: ServiceLogger;
 
@@ -68,6 +72,7 @@ export class ComputerService {
     this.#providerReadiness = options.providerReadiness;
     this.#cloudIdentities = options.cloudIdentities ?? { enabled: false };
     this.#assertCloudControlCredential = options.assertCloudControlCredential;
+    this.#onComputerDisconnected = options.onComputerDisconnected;
     this.#onComputerDeleted = options.onComputerDeleted;
     this.#logger = options.logger;
   }
@@ -103,6 +108,7 @@ export class ComputerService {
     accountId: string,
     includeProviderReadiness = false,
     includeCloudIdentities = false,
+    includeDisconnected = false,
   ): Promise<ListAccountComputersResponse> {
     const rows = await this.#database
       .select({ computer: computers, agentId: agents.id })
@@ -115,7 +121,12 @@ export class ComputerService {
         agents,
         and(eq(agents.computerId, computers.id), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")),
       )
-      .where(and(eq(computers.ownerAccountId, accountId), visibleAccountComputer(includeCloudIdentities)))
+      .where(
+        and(
+          eq(computers.ownerAccountId, accountId),
+          visibleAccountComputer(includeCloudIdentities, includeDisconnected),
+        ),
+      )
       .orderBy(asc(computers.displayName), asc(computers.id), asc(agents.id));
     const observedAt = this.#now();
     const presenceCutoffMs = observedAt.getTime() - this.#presenceTimeoutMs;
@@ -140,6 +151,16 @@ export class ComputerService {
       );
     }
     return { computers: [...byId.values()] };
+  }
+
+  async disconnectComputer(accountId: string, computerId: string): Promise<void> {
+    await disconnectComputerAccess(this.#database, accountId, computerId, this.#now);
+    this.#logger?.info({ accountId, computerId }, "Computer disconnected");
+    try {
+      await this.#onComputerDisconnected?.(computerId);
+    } catch (error) {
+      this.#logger?.warn({ computerId, err: error }, "Connection close failed; Computer access remains revoked");
+    }
   }
 
   /**
@@ -184,13 +205,7 @@ export class ComputerService {
         .set({ revokedByUserId: accountId, revokedAt: now })
         .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)))
         .returning({ id: computerCredentials.id });
-      /*
-       * Redemption locks its connect-code row before the Account (exchangeConnectCode), while this
-       * transaction already holds the Account. Waiting on a code row here would close that cycle into a
-       * deadlock, so only codes nobody holds are revoked. A skipped code belongs to an in-flight
-       * redemption, which queues on the Account and then finds this Computer deleted: it fails with
-       * AUTH_INVALID_CODE and can never revive it.
-       */
+      // Account locking serializes issuance, redemption, deletion, and explicit disconnection.
       const idleCodes = await transaction
         .select({ id: computerConnectCodes.id })
         .from(computerConnectCodes)
@@ -201,7 +216,7 @@ export class ComputerService {
             isNull(computerConnectCodes.revokedAt),
           ),
         )
-        .for("update", { skipLocked: true });
+        .for("update");
       if (idleCodes.length > 0) {
         await transaction
           .update(computerConnectCodes)
@@ -388,8 +403,13 @@ export class ComputerService {
   }
 }
 
-function visibleAccountComputer(includeCloudIdentities: boolean) {
-  const localWithCredential = and(eq(computers.kind, "local"), isNotNull(computerCredentials.id));
+function visibleAccountComputer(includeCloudIdentities: boolean, includeDisconnected: boolean) {
+  const localWithCredential = and(
+    eq(computers.kind, "local"),
+    includeDisconnected
+      ? or(isNotNull(computerCredentials.id), isNotNull(computers.disconnectedAt))
+      : isNotNull(computerCredentials.id),
+  );
   const visibleKind = includeCloudIdentities
     ? or(localWithCredential, eq(computers.kind, "cloud"))
     : localWithCredential;

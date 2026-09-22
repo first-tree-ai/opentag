@@ -47,6 +47,11 @@
   transition: opacity 160ms ease;
 }
 
+.ots-command[data-expanded="true"] .ots-command__body {
+  height: auto;
+  min-height: 132px;
+}
+
 .ots-command__code {
   margin: 0;
   max-height: 100%;

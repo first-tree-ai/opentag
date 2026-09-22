@@ -337,6 +337,29 @@ describe("ComputerConnect", () => {
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
   });
 
+  it("retires a redeemed attempt if access is subsequently disconnected elsewhere", async () => {
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemed());
+    const inventory = vi
+      .spyOn(browserApi, "computers")
+      .mockResolvedValue({ computers: [{ ...computer, connectionStatus: "offline" }] });
+    render(<ComputerConnect intent={{ mode: "repair", target: computer }} onConnected={onConnected} />);
+    fireEvent.click(screen.getByRole("button", { name: "Repair connection" }));
+    await flushAsync();
+    inventory.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "disconnected", connectedAt: null }] });
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
+  });
+
   it.each(["expired", "revoked"] as const)("retires a %s command and offers replacement", async (state) => {
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,

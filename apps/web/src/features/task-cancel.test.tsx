@@ -82,7 +82,8 @@ describe("Cancelling a queued Task", () => {
     expect((await screen.findByRole("status")).textContent).toContain("The Task was cancelled.");
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     const details = screen.getByLabelText("Task details");
-    await waitFor(() => expect(within(details).getByText("Cancelled")).toBeTruthy());
+    // A withdrawn Task stopped without anything going wrong, so its status reads as completed.
+    await waitFor(() => expect(within(details).getByText("Completed")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Cancel queued Task" })).toBeNull();
     // The withdrawn Turn arrives with the revalidation the cancel triggered.
     const activity = await screen.findByRole("region", { name: "Activity" });

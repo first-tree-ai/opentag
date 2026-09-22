@@ -1,4 +1,4 @@
-import type { ListTasksResponse, TaskDetail, TaskStatus, TaskSummary } from "@opentag/shared/browser";
+import type { ListTasksResponse, TaskDetail, TaskSummary } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
@@ -18,7 +18,6 @@ import {
   Loader,
   Select,
   StatusIndicator,
-  type StatusTone,
   Table,
   Text,
 } from "../ui/design-system.js";
@@ -33,19 +32,15 @@ import {
 import { useRememberedState } from "./shell/shell-memory.js";
 import { TaskCancelControl } from "./task-cancel.js";
 import { TaskActivity } from "./task-conversation.js";
+import {
+  TASK_STATUS_GROUPS,
+  type TaskStatusGroup,
+  taskStatusGroup,
+  taskStatusGroupLabel,
+  taskStatusGroupTone,
+} from "./task-status.js";
 
-type TaskFilter = "all" | TaskStatus;
-
-const statusPresentation: Record<TaskStatus, { readonly tone: StatusTone }> = {
-  queued: { tone: "info" },
-  running: { tone: "info" },
-  completed: { tone: "success" },
-  failed: { tone: "danger" },
-  cancelled: { tone: "neutral" },
-  expired: { tone: "warning" },
-  ended: { tone: "neutral" },
-  idle: { tone: "neutral" },
-};
+type TaskFilter = "all" | TaskStatusGroup;
 
 export function TasksPage({ agentId, showExamples = false }: { agentId?: string; showExamples?: boolean } = {}) {
   const filterKey = taskFilterKey(agentId);
@@ -111,7 +106,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
       return (
         matchesQuery &&
         (agentId ? task.agent.id === agentId : selectedAgentId === "all" || task.agent.id === selectedAgentId) &&
-        (status === "all" || task.status === status)
+        (status === "all" || taskStatusGroup(task.status) === status)
       );
     });
   }, [agentId, loaded, query, selectedAgentId, status]);
@@ -169,15 +164,12 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
               label={m.tasks_filter_by_status()}
               options={[
                 { label: m.tasks_all_statuses(), value: "all" },
-                ...Object.keys(statusPresentation).map((value) => ({
-                  label: taskStatusLabel(value as TaskStatus),
-                  value,
-                })),
+                ...TASK_STATUS_GROUPS.map((value) => ({ label: taskStatusGroupLabel(value), value })),
               ]}
               renderValue={(value) =>
                 value === "all"
                   ? m.tasks_all_statuses()
-                  : m.tasks_status_filter_value({ status: taskStatusLabel(value as TaskStatus) })
+                  : m.tasks_status_filter_value({ status: taskStatusGroupLabel(value as TaskStatusGroup) })
               }
               value={status}
               onChange={(value) => setStatus(value as TaskFilter)}
@@ -401,7 +393,7 @@ export function TaskDetailPage({
   }
 
   const { task } = first;
-  const status = statusPresentation[task.status];
+  const status = taskStatusGroup(task.status);
   const pagination = (
     <>
       {taskQuery.hasNextPage ? (
@@ -470,7 +462,7 @@ export function TaskDetailPage({
             </time>
           </TaskDetailFact>
           <TaskDetailFact label={m.tasks_status_label()}>
-            <StatusIndicator label={taskStatusLabel(task.status)} tone={status?.tone ?? "neutral"} />
+            <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
           </TaskDetailFact>
         </dl>
         <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
@@ -640,7 +632,7 @@ function TaskRow({
   showExamples?: boolean;
   task: TaskSummary;
 }) {
-  const status = statusPresentation[task.status];
+  const status = taskStatusGroup(task.status);
   return (
     <Table.Row
       className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
@@ -669,7 +661,7 @@ function TaskRow({
         </span>
       </Table.Cell>
       <Table.Cell className="col-start-2 row-start-1 justify-self-end" data-label={m.tasks_status_label()}>
-        <StatusIndicator label={taskStatusLabel(task.status)} tone={status?.tone ?? "neutral"} />
+        <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
       </Table.Cell>
       <Table.Cell
         className="col-start-2 row-start-2 justify-self-end self-center"
@@ -762,17 +754,6 @@ function sourceLabel(task: TaskSummary): string {
           ? m.tasks_source_group_chat()
           : m.tasks_source_channel();
   return `${messagingProviderLabel(task.source.provider)} · ${context}`;
-}
-
-function taskStatusLabel(value: TaskStatus): string {
-  if (value === "queued") return m.tasks_status_queued();
-  if (value === "running") return m.tasks_status_running();
-  if (value === "completed") return m.tasks_status_completed();
-  if (value === "failed") return m.tasks_status_failed();
-  if (value === "cancelled") return m.tasks_status_cancelled();
-  if (value === "expired") return m.tasks_status_expired();
-  if (value === "ended") return m.tasks_status_ended();
-  return m.tasks_status_idle();
 }
 
 function taskListQueryKey(agentId: string | undefined, showExamples: boolean) {

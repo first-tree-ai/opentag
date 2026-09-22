@@ -1,5 +1,6 @@
 import {
   AccountComputerSummarySchema,
+  accountComputerByIdPath,
   accountComputerConnectCodePath,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
@@ -10,7 +11,7 @@ import {
   withComputerRuntimeProviderSupport,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
@@ -19,7 +20,7 @@ import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { agents, computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
-import { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService, ConnectCodeService, hashSecret } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -414,6 +415,147 @@ describe("Computer connection persistence", () => {
       newSocket.close();
     } finally {
       await app.close();
+      await value.sql.end();
+    }
+  });
+
+  it("deletes a live Computer over HTTP, closes it fatally, and answers its old token with 401", async () => {
+    const value = await fixture();
+    const installationId = crypto.randomUUID();
+    const exchange = await connect(value, value.bootstrap.userId, installationId);
+    const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
+    const service = new ComputerService(value.database, value.auth, {
+      onComputerDeleted: async (computerId) => {
+        await value.registry.closeComputer(computerId, COMPUTER_DELETED_CLOSE);
+      },
+    });
+    const app = createApp({
+      authService: value.auth,
+      computerService: service,
+      machineAuthService: value.machineAuth,
+      runtime: { authTimeoutMs: 1_000, registerTimeoutMs: 1_000, registry: value.registry },
+    });
+    const authFrame = () =>
+      JSON.stringify({
+        type: "auth",
+        requestId: crypto.randomUUID(),
+        protocolVersion: 2,
+        supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+        machineToken: exchange.machineToken,
+      });
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const socketUrl = `${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`;
+      const live = new WebSocket(socketUrl);
+      const liveFrames = frameQueue(live);
+      await opened(live);
+      live.send(authFrame());
+      expect(await liveFrames.next()).toMatchObject({ type: "auth:result", ok: true });
+      expect(await liveFrames.next()).toMatchObject({ type: "server:welcome" });
+      live.send(JSON.stringify(registerFrame(installationId, crypto.randomUUID())));
+      expect(await liveFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+
+      const liveClose = closeCode(live);
+      const deleted = await app.inject({
+        method: "DELETE",
+        url: accountComputerByIdPath(exchange.computerId),
+        headers: { authorization: `Bearer ${account.accessToken}` },
+      });
+      expect(deleted.statusCode).toBe(204);
+      await expect(liveClose).resolves.toBe(4401);
+
+      await expect(value.machineAuth.verifyMachineToken(exchange.machineToken)).rejects.toMatchObject({
+        code: "AUTH_INVALID_TOKEN",
+        statusCode: 401,
+      });
+      const retry = new WebSocket(socketUrl);
+      const retryClose = closeCode(retry);
+      await opened(retry);
+      retry.send(authFrame());
+      await expect(retryClose).resolves.toBe(4401);
+
+      const listed = await app.inject({
+        method: "GET",
+        url: HTTP_PATHS.accountComputers,
+        headers: { authorization: `Bearer ${account.accessToken}` },
+      });
+      expect(listed.json()).toEqual({ computers: [] });
+      const again = await app.inject({
+        method: "DELETE",
+        url: accountComputerByIdPath(exchange.computerId),
+        headers: { authorization: `Bearer ${account.accessToken}` },
+      });
+      expect(again.statusCode).toBe(404);
+      expect(again.json()).toMatchObject({ error: { code: "COMPUTER_NOT_FOUND" } });
+
+      // The machine is not locked out: it can connect again, as a brand-new Computer.
+      const reconnected = await connect(value, value.bootstrap.userId, installationId);
+      expect(reconnected.computerId).not.toBe(exchange.computerId);
+    } finally {
+      await app.close();
+      await value.sql.end();
+    }
+  });
+
+  it("deletes a Computer while one of its repair codes is being redeemed without deadlocking", async () => {
+    const value = await fixture();
+    const locker = createDatabaseClient(databaseUrl, { max: 1 });
+    const exchange = await connect(value);
+    const pendingRepair = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
+      mode: "repair",
+      targetComputerId: exchange.computerId,
+    });
+    const accountLockWaiters = async () => {
+      const [row] = await value.sql`
+        select count(*)::int as count
+        from pg_stat_activity
+        where datname = current_database()
+          and wait_event_type = 'Lock'
+          and query ilike '%from "users"%for update%'
+      `;
+      return row?.count ?? 0;
+    };
+    let releaseAccount!: () => void;
+    const accountHeld = new Promise<void>((resolve) => {
+      releaseAccount = resolve;
+    });
+    let accountLocked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => {
+      accountLocked = resolve;
+    });
+    // Hold the Account row so both transactions queue on it in a known order: deletion first, then
+    // the redemption, which already holds its connect-code row when it starts waiting. Released, the
+    // deletion owns the Account while the redemption owns the code: the order that used to deadlock.
+    const holding = locker.sql.begin(async (sql) => {
+      await sql`select id from users where id = ${value.bootstrap.userId} for update`;
+      accountLocked();
+      await accountHeld;
+    });
+    try {
+      await lockTaken;
+      const deleting = value.service.deleteComputer(value.bootstrap.userId, exchange.computerId);
+      await vi.waitFor(async () => expect(await accountLockWaiters()).toBe(1));
+      const redeeming = value.machineAuth.exchangeConnectCode(exchangeInput(pendingRepair.code, crypto.randomUUID()));
+      await vi.waitFor(async () => expect(await accountLockWaiters()).toBe(2));
+      releaseAccount();
+      await holding;
+
+      const [deleted, redeemed] = await Promise.allSettled([deleting, redeeming]);
+      expect(deleted).toMatchObject({ status: "fulfilled", value: { computerId: exchange.computerId } });
+      // The redemption loses cleanly to the committed deletion instead of a 40P01 deadlock.
+      expect(redeemed).toMatchObject({ status: "rejected", reason: { code: "AUTH_INVALID_CODE", statusCode: 401 } });
+      await expect(value.machineAuth.verifyMachineToken(exchange.machineToken)).rejects.toMatchObject({
+        code: "AUTH_INVALID_TOKEN",
+      });
+      const [code] = await value.database
+        .select({ consumedAt: computerConnectCodes.consumedAt })
+        .from(computerConnectCodes)
+        .where(eq(computerConnectCodes.id, pendingRepair.connectCodeId));
+      expect(code?.consumedAt).toBeNull();
+    } finally {
+      releaseAccount();
+      await holding.catch(() => undefined);
+      await locker.sql.end();
       await value.sql.end();
     }
   });

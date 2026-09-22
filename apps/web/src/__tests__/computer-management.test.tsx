@@ -21,6 +21,7 @@ describe("Account Computer management", () => {
     expect(screen.getByText("Online")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect computer" })).toBeNull();
     expect(document.querySelector('[data-ui="computer-connect"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete computer" })).toBeTruthy();
   });
 
   it("only issues the first connection command after an explicit action", async () => {
@@ -202,6 +203,7 @@ describe("Account Computer management", () => {
     expect(screen.queryByText("Online")).toBeNull();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete computer" })).toBeNull();
   });
 
   it("does not substitute the sole computer for a missing explicit target", async () => {

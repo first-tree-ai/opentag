@@ -5,9 +5,10 @@ import type {
   ListAccountComputersResponse,
   MeResponse,
 } from "@opentag/shared";
-import { and, asc, eq, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computerCredentials, computers, imBindings } from "../../db/schema/index.js";
+import { agents, computerConnectCodes, computerCredentials, computers, imBindings } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AuthServiceError } from "../auth/index.js";
 import { lockActiveAccount } from "./account-lock.js";
 import {
@@ -36,6 +37,18 @@ export interface ComputerServiceOptions {
    * authority. Cloud registration/heartbeat fails closed when the hook is missing or rejects.
    */
   assertCloudControlCredential?: (context: ComputerAuthContext) => Promise<void> | void;
+  /**
+   * Runs after a Computer deletion commits, so a live runtime connection can be closed. The service
+   * treats it as best-effort: the deletion is already durable, so a failing hook is logged and never
+   * turns a committed deletion into an error.
+   */
+  onComputerDeleted?: (computerId: string) => Promise<void> | void;
+  logger?: ServiceLogger;
+}
+
+export interface DeletedComputer {
+  computerId: string;
+  revokedCredentialCount: number;
 }
 
 export class ComputerService {
@@ -45,6 +58,8 @@ export class ComputerService {
   readonly #providerReadiness?: ProviderReadinessSource;
   readonly #cloudIdentities: { enabled: boolean; runnerVersion?: string };
   readonly #assertCloudControlCredential?: (context: ComputerAuthContext) => Promise<void> | void;
+  readonly #onComputerDeleted?: (computerId: string) => Promise<void> | void;
+  readonly #logger?: ServiceLogger;
 
   constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
@@ -53,6 +68,8 @@ export class ComputerService {
     this.#providerReadiness = options.providerReadiness;
     this.#cloudIdentities = options.cloudIdentities ?? { enabled: false };
     this.#assertCloudControlCredential = options.assertCloudControlCredential;
+    this.#onComputerDeleted = options.onComputerDeleted;
+    this.#logger = options.logger;
   }
 
   /**
@@ -123,6 +140,92 @@ export class ComputerService {
       );
     }
     return { computers: [...byId.values()] };
+  }
+
+  /**
+   * Retires one Local Computer the Account owns. The row is kept (Agents, Session placements and credential
+   * history reference it), but every active credential and pending repair code is revoked, so any later
+   * request signed with the old machine token fails authentication with 401. A Computer that still hosts
+   * Agents is refused: those Agents must be moved or deleted first, never silently unbound.
+   */
+  async deleteComputer(accountId: string, computerId: string): Promise<DeletedComputer> {
+    const now = this.#now();
+    const deleted = await this.#database.transaction(async (transaction) => {
+      await lockActiveAccount(transaction, accountId);
+      const [computer] = await transaction
+        .select({ id: computers.id, kind: computers.kind })
+        .from(computers)
+        .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId), isNull(computers.deletedAt)))
+        .limit(1)
+        .for("update");
+      if (!computer) throw computerNotFound();
+      if (computer.kind !== "local") {
+        throw new AuthServiceError(
+          "COMPUTER_NOT_DELETABLE",
+          "deterministic",
+          "Only a Local Computer can be deleted",
+          409,
+        );
+      }
+      const bound = await transaction
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.computerId, computerId), ne(agents.status, "deleted")));
+      if (bound.length > 0) {
+        throw new AuthServiceError(
+          "COMPUTER_IN_USE",
+          "deterministic",
+          `This Computer still hosts ${bound.length} Agent(s); move or delete them before deleting the Computer`,
+          409,
+        );
+      }
+      const revoked = await transaction
+        .update(computerCredentials)
+        .set({ revokedByUserId: accountId, revokedAt: now })
+        .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)))
+        .returning({ id: computerCredentials.id });
+      /*
+       * Redemption locks its connect-code row before the Account (exchangeConnectCode), while this
+       * transaction already holds the Account. Waiting on a code row here would close that cycle into a
+       * deadlock, so only codes nobody holds are revoked. A skipped code belongs to an in-flight
+       * redemption, which queues on the Account and then finds this Computer deleted: it fails with
+       * AUTH_INVALID_CODE and can never revive it.
+       */
+      const idleCodes = await transaction
+        .select({ id: computerConnectCodes.id })
+        .from(computerConnectCodes)
+        .where(
+          and(
+            eq(computerConnectCodes.targetComputerId, computerId),
+            isNull(computerConnectCodes.consumedAt),
+            isNull(computerConnectCodes.revokedAt),
+          ),
+        )
+        .for("update", { skipLocked: true });
+      if (idleCodes.length > 0) {
+        await transaction
+          .update(computerConnectCodes)
+          .set({ revokedByUserId: accountId, revokedAt: now })
+          .where(
+            inArray(
+              computerConnectCodes.id,
+              idleCodes.map((code) => code.id),
+            ),
+          );
+      }
+      await transaction
+        .update(computers)
+        .set({ deletedAt: now, currentInstanceId: null, connectedAt: null, updatedAt: now })
+        .where(eq(computers.id, computerId));
+      return { computerId, revokedCredentialCount: revoked.length };
+    });
+    this.#logger?.info({ accountId, ...deleted }, "Computer deleted");
+    try {
+      await this.#onComputerDeleted?.(computerId);
+    } catch (error) {
+      this.#logger?.warn({ computerId, err: error }, "Post-deletion hook failed; the Computer stays deleted");
+    }
+    return deleted;
   }
 
   async ensureCloudComputerForAccount(accountId: string): Promise<AccountCloudComputerEnsureResponse> {
@@ -246,7 +349,7 @@ export class ComputerService {
     const [computer] = await transaction
       .select({ id: computers.id })
       .from(computers)
-      .where(and(eq(computers.id, context.computerId), eq(computers.kind, kind)))
+      .where(and(eq(computers.id, context.computerId), eq(computers.kind, kind), isNull(computers.deletedAt)))
       .limit(1)
       .for("update");
     if (!computer) throw unavailableComputer();
@@ -287,7 +390,14 @@ export class ComputerService {
 
 function visibleAccountComputer(includeCloudIdentities: boolean) {
   const localWithCredential = and(eq(computers.kind, "local"), isNotNull(computerCredentials.id));
-  return includeCloudIdentities ? or(localWithCredential, eq(computers.kind, "cloud")) : localWithCredential;
+  const visibleKind = includeCloudIdentities
+    ? or(localWithCredential, eq(computers.kind, "cloud"))
+    : localWithCredential;
+  return and(isNull(computers.deletedAt), visibleKind);
+}
+
+function computerNotFound(): AuthServiceError {
+  return new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
 }
 
 function unavailableComputer(): AuthServiceError {

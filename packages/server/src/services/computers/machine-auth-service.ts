@@ -236,7 +236,12 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       .from(computerCredentials)
       .innerJoin(computers, eq(computers.id, computerCredentials.computerId))
       .where(
-        and(eq(computerCredentials.id, parsed[1]), isNull(computerCredentials.revokedAt), eq(computers.kind, "local")),
+        and(
+          eq(computerCredentials.id, parsed[1]),
+          isNull(computerCredentials.revokedAt),
+          eq(computers.kind, "local"),
+          isNull(computers.deletedAt),
+        ),
       )
       .limit(1);
     if (!credential || !matchesSecretHash(credential.secretHash, parsed[2])) {
@@ -534,6 +539,7 @@ async function bindConnectTargetAgent(
   return agent.runtimeProvider;
 }
 
+/** Locks a live Computer; a deleted Computer is indistinguishable from one that never existed. */
 async function lockOwnedComputer(
   transaction: DatabaseTransaction,
   computerId: string,
@@ -541,7 +547,7 @@ async function lockOwnedComputer(
   const [computer] = await transaction
     .select({ id: computers.id, ownerAccountId: computers.ownerAccountId, kind: computers.kind })
     .from(computers)
-    .where(eq(computers.id, computerId))
+    .where(and(eq(computers.id, computerId), isNull(computers.deletedAt)))
     .limit(1)
     .for("update");
   return computer;
@@ -556,7 +562,7 @@ async function rotateComputerCredentials(
   const [computer] = await transaction
     .select({ id: computers.id })
     .from(computers)
-    .where(and(eq(computers.id, computerId), eq(computers.kind, "local")))
+    .where(and(eq(computers.id, computerId), eq(computers.kind, "local"), isNull(computers.deletedAt)))
     .limit(1);
   if (!computer) {
     throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");

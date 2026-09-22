@@ -10,7 +10,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { ServiceLogger } from "../observability/service-logger.js";
-import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "../runtime/connection-registry.js";
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
 describe("ConnectionRegistry", () => {
@@ -90,6 +90,20 @@ describe("ConnectionRegistry", () => {
     await expect(closing).resolves.toBe(true);
     expect(runtimeSocket.close).toHaveBeenCalledWith(4002, "Machine credential rotated or revoked");
     expect(registry.currentInstanceId(computerId)).toBeUndefined();
+  });
+
+  it("closes a deleted Computer with the fatal close frame it is given, and reports an absent one", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      { installationId: randomUUID(), computerId, instanceId: randomUUID(), lastHeartbeatAt: 1, socket: runtimeSocket },
+      async () => undefined,
+    );
+
+    await expect(registry.closeComputer(computerId, COMPUTER_DELETED_CLOSE)).resolves.toBe(true);
+    expect(runtimeSocket.close).toHaveBeenCalledWith(4401, "Computer deleted");
+    await expect(registry.closeComputer(computerId, COMPUTER_DELETED_CLOSE)).resolves.toBe(false);
   });
 
   it("fences replacement close, heartbeat, and stale-instance cleanup by exact socket", async () => {

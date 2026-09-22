@@ -92,6 +92,20 @@ export interface RuntimeConnectionEntry {
   socket: WebSocket;
 }
 
+/** A WebSocket close frame the registry sends when it evicts a Computer's live connection. */
+export interface RuntimeCloseReason {
+  code: number;
+  reason: string;
+}
+
+/** Recoverable: the Client reconnects and re-authenticates with its current credential. */
+export const CREDENTIAL_ROTATED_CLOSE: RuntimeCloseReason = {
+  code: 4002,
+  reason: "Machine credential rotated or revoked",
+};
+/** Fatal (4400-4499): the Computer was deleted, so the Client must stop instead of reconnecting. */
+export const COMPUTER_DELETED_CLOSE: RuntimeCloseReason = { code: 4401, reason: "Computer deleted" };
+
 export interface ConnectionRegistryOptions {
   logger?: ServiceLogger;
 }
@@ -525,12 +539,12 @@ export class ConnectionRegistry {
     return count;
   }
 
-  async closeComputer(computerId: string): Promise<boolean> {
+  async closeComputer(computerId: string, close: RuntimeCloseReason = CREDENTIAL_ROTATED_CLOSE): Promise<boolean> {
     await (this.#registrationTails.get(computerId) ?? Promise.resolve());
     const entry = this.#entries.get(computerId);
     if (!entry) return false;
     this.#entries.delete(computerId);
-    entry.socket.close(4002, "Machine credential rotated or revoked");
+    entry.socket.close(close.code, close.reason);
     return true;
   }
 

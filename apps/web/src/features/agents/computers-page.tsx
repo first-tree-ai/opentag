@@ -1,5 +1,5 @@
 import type { AccountComputerSummary } from "@opentag/shared/browser";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
@@ -89,6 +89,7 @@ function ComputerContent({
   confirmed: boolean;
   onConnected: () => void;
 }) {
+  const navigate = useNavigate();
   const [connecting, setConnecting] = useState(false);
   // Redemption can populate inventory before the daemon starts. Keep the exact attempt mounted
   // until it confirms online, so this intermediate state never offers a second connection attempt.
@@ -122,6 +123,8 @@ function ComputerContent({
         confirmed={confirmed}
         key={selected.computerId}
         onConnected={onConnected}
+        // The deleted computer is gone from the cached inventory; leave its page for the Account's list.
+        onDeleted={() => void navigate(accountComputerLink(undefined, fromAgent))}
       />
     </>
   );

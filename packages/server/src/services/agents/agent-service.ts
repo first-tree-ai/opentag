@@ -1281,7 +1281,7 @@ export class AgentService {
     const [computer] = await transaction
       .select({ id: computers.id, kind: computers.kind })
       .from(computers)
-      .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId)))
+      .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId), isNull(computers.deletedAt)))
       .limit(1)
       .for("update");
     if (!computer) {

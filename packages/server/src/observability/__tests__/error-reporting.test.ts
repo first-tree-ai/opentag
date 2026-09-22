@@ -63,6 +63,15 @@ describe("createErrorReporter", () => {
     );
   });
 
+  it("hands an explicit service account key to the client", async () => {
+    const client: ErrorReportingClient = { report: vi.fn((_error, _request, callback) => callback(null)) };
+    const createClient = vi.fn(() => client);
+    const { resolve } = fakeLogger();
+    const credentials = { client_email: "relay@p.example", private_key: "placeholder-private-key" };
+    await createErrorReporter({ projectId: "p", credentials, logger: resolve, createClient }).report(webEvent);
+    expect(createClient).toHaveBeenCalledExactlyOnceWith("p", credentials);
+  });
+
   it("redacts before forwarding and never sets a user", async () => {
     const { resolve } = fakeLogger();
     const client: ErrorReportingClient = {

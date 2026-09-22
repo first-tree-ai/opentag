@@ -169,6 +169,8 @@ export interface CreateAppOptions {
   githubIntegrations?: Omit<GitHubIntegrationsRouteOptions, "authService" | "authOptions">;
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
+  /** Passed to Fastify; `false` (the default) ignores `X-Forwarded-*` entirely. */
+  trustProxy?: boolean | string[];
   readiness?: BootstrapReadiness;
   /** Non-secret deployment proof from the responding process, independent of control-plane state. */
   deployment?: { revision?: string; runner?: { image: string; version: string } };
@@ -491,6 +493,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }),
     genReqId: (request) => safeInboundRequestId(request.headers["x-request-id"]) ?? randomUUID(),
     logger: createFastifyLoggerOptions(options),
+    trustProxy: options.trustProxy ?? false,
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
   const healthDatabase = options.database ?? options.taskService?.database;

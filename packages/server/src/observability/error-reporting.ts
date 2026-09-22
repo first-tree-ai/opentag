@@ -1,6 +1,7 @@
 import { ErrorReporting } from "@google-cloud/error-reporting";
 import { type ErrorReportRequest, redactSensitive } from "@opentag/shared";
 import type { FastifyBaseLogger } from "fastify";
+import type { ErrorReportingCredentials } from "../error-reporting-config.js";
 
 /** Forwards one relayed client failure. Implementations never throw; a lost report is logged, not surfaced. */
 export interface ErrorReporter {
@@ -19,9 +20,11 @@ export interface ErrorReportingClient {
 export interface ErrorReporterOptions {
   /** Unset disables forwarding; the relay then only writes the server log line. */
   projectId?: string | undefined;
+  /** An explicit service account key; unset uses Application Default Credentials. */
+  credentials?: ErrorReportingCredentials | undefined;
   logger: () => FastifyBaseLogger | undefined;
   /** Injectable for tests. Defaults to the Google Cloud SDK, constructed on the first report. */
-  createClient?: (projectId: string) => ErrorReportingClient;
+  createClient?: (projectId: string, credentials?: ErrorReportingCredentials) => ErrorReportingClient;
   /** Longest a single forward may take before it is given up on and logged. */
   timeoutMs?: number;
 }
@@ -37,13 +40,18 @@ const SERVICE_BY_SOURCE: Record<ErrorReportRequest["source"], string> = {
   cli: "opentag-cli",
 };
 
-function defaultCreateClient(projectId: string): ErrorReportingClient {
+function defaultCreateClient(projectId: string, credentials?: ErrorReportingCredentials): ErrorReportingClient {
   /*
    * `reportMode: "always"`: the SDK otherwise reports only under NODE_ENV=production, and a staging
    * container is the environment most likely to be watched. Log level 1 keeps the SDK's own console
    * output to genuine errors such as missing credentials.
    */
-  const sdk = new ErrorReporting({ projectId, reportMode: "always", logLevel: 1 });
+  const sdk = new ErrorReporting({
+    projectId,
+    reportMode: "always",
+    logLevel: 1,
+    ...(credentials ? { credentials } : {}),
+  });
   return { report: (error, request, callback) => sdk.report(error, request, undefined, callback) };
 }
 
@@ -97,7 +105,7 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
       const safe = redactSensitive(event);
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        client ??= createClient(projectId);
+        client ??= options.credentials ? createClient(projectId, options.credentials) : createClient(projectId);
         const forward = new Promise<void>((resolve, reject) => {
           client?.report(
             toReportedError(safe),

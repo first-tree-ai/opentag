@@ -74,9 +74,10 @@ route:
 
 1. Rate limits by client address, 30 reports per minute per address, answering `429` beyond that. The budget is
    per process, the same trade-off the browser sign-in routes make; a shared limiter belongs at the gateway. The
-   address is the socket peer: the Fastify instance does not set `trustProxy`, so behind a reverse proxy every
-   report arrives from the proxy's address and the whole deployment shares one 30-per-minute budget. Deployments
-   that need a per-user budget must enforce it at the proxy, and clients that exceed it fail silently.
+   address is the socket peer unless `OPENTAG_TRUST_PROXY` names the reverse proxy (see
+   [Behind a reverse proxy](#behind-a-reverse-proxy)); without it, every report behind a proxy arrives from the
+   proxy's address and the whole deployment shares one 30-per-minute budget, and clients that exceed it fail
+   silently.
 2. Validates the body against `ErrorReportRequestSchema`; an unknown field, an oversized value, or a `url` that is
    not HTTP(S) answers `400`. Parsing also strips the URL's query string, fragment, and credentials, so the contract
    holds even for a client that did not honour it.
@@ -84,8 +85,10 @@ route:
    `Client error reported` with `module=error-reporting`, `source`, `errorCode`, and the `errorReport` payload.
    An operator without a Google Cloud project still sees every report here.
 4. Answers `202` with an empty body and `cache-control: no-store` as soon as the report is accepted. Forwarding
-   runs in the background and is bounded to five seconds per report, because the Google client sets no deadline of
-   its own and retries with backoff; a slow or blocked egress therefore never holds a client connection open.
+   runs in the background. The reporter waits at most five seconds for each forward and then logs it as failed,
+   because the Google client sets no deadline of its own and retries with backoff. That bounds the wait, not the
+   library's own HTTP request and retries, which may continue in the background; a slow or blocked egress
+   therefore never holds a client connection open.
 
 ### Abuse surface
 
@@ -109,14 +112,24 @@ string and fragment on the client. Message and stack are truncated to the schema
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GOOGLE_CLOUD_PROJECT` | unset | The Google Cloud project that receives forwarded reports; unset disables forwarding |
+| `GOOGLE_CLOUD_PROJECT` | unset | The Google Cloud project that receives forwarded reports; unset disables forwarding unless the key below names one |
+| `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | unset | The whole service account key file as one value; unset uses Application Default Credentials |
+| `OPENTAG_TRUST_PROXY` | `false` | Reverse proxies trusted to set `X-Forwarded-*`; see [Behind a reverse proxy](#behind-a-reverse-proxy) |
 
-Credentials come from Application Default Credentials, never from OpenTag configuration:
+Credentials come from one of two places:
 
-- On Google-managed compute, use Workload Identity or the attached service account.
-- Elsewhere, set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file mounted into the container. Do
-  not commit the key, bake it into an image layer, or place it in `.env.example`.
-- The identity needs the `roles/errorreporting.writer` role on the project.
+- `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON`, for platforms that can set environment variables but cannot mount
+  a file, such as CapRover. Paste the key file's JSON as the value. The server accepts only a
+  `service_account` key, keeps its `client_email`, `private_key`, and `project_id`, never logs the value, and
+  fails to start with a message that names the variable but not its content when the value is not such a key.
+  When `GOOGLE_CLOUD_PROJECT` is unset, the key's `project_id` is used, so the key alone enables forwarding.
+- Otherwise Application Default Credentials: Workload Identity or the attached service account on
+  Google-managed compute, or `GOOGLE_APPLICATION_CREDENTIALS` pointing at a key file mounted into the container.
+
+Either way:
+
+- Do not commit the key, bake it into an image layer, or place it in `.env.example`.
+- The identity needs the `roles/errorreporting.writer` role on the project, and nothing more.
 - Enable the Error Reporting API (`clouderrorreporting.googleapis.com`) on the project.
 
 The reporter is constructed on the first report, uses `reportMode: "always"` so a staging container reports
@@ -128,6 +141,22 @@ When `GOOGLE_CLOUD_PROJECT` is unset the server logs one `info` line on the firs
 route, validation, rate limit, and `warn` log line are all present. Self-hosted deployments therefore run this
 feature with no Google dependency at all.
 
+### Behind a reverse proxy
+
+By default the server ignores `X-Forwarded-*` and keys every per-address limit on the socket peer. Behind a
+reverse proxy that is the proxy, so set `OPENTAG_TRUST_PROXY` to the addresses the proxy connects from:
+
+- A comma-separated list of IP addresses, CIDR ranges, and the presets `loopback`, `linklocal`, and
+  `uniquelocal` (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`). CapRover's nginx reaches the
+  app over the Docker overlay network, so `uniquelocal` fits it.
+- `true` trusts every peer. Use it only when nothing but the proxy can reach the server, because any direct
+  client could then choose its own address by sending the header.
+- A hop count is rejected: Fastify cannot validate the immediate peer from a count and ignores it.
+
+The setting applies to the whole server, not only this route: the browser sign-in rate limits key on the same
+address, and `request.hostname` and `request.protocol` then come from `X-Forwarded-Host` and
+`X-Forwarded-Proto` when the peer is trusted.
+
 ## Failure path
 
 Nothing in this path is allowed to affect the person using the product.
@@ -137,7 +166,7 @@ Nothing in this path is allowed to affect the person using the product.
 - The CLI reports after it has already presented the failure and set its exit code; a slow or unreachable relay
   delays exit by at most three seconds and changes nothing else.
 - The server answers `202` before forwarding starts, and a forward that the Google Cloud library rejects or that
-  exceeds its five-second deadline is logged at `warn` as
+  is still pending after five seconds is logged at `warn` as
   `Forwarding an error report to Google Cloud Error Reporting failed`.
 - A report the schema rejects is the client's bug, answered with the shared `VALIDATION_ERROR` envelope, and is
   not forwarded.

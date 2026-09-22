@@ -2,7 +2,7 @@
 
 [English](../error-reporting.md)
 
-> Last synced with: 2026-09-11
+> Last synced with: 2026-09-22
 
 OpenTag 会把发生在 Web App 与 CLI 中的失败经由 server 中继到
 [Google Cloud Error Reporting](https://cloud.google.com/error-reporting/)。两端客户端都不持有 Google 凭据，也不直接访问
@@ -62,14 +62,15 @@ CLI 报告发往本安装所连接的 server：Account 凭据中的 server URL�
 于已认证的浏览器写操作。该路由：
 
 1. 按客户端地址限流，每个地址每分钟 30 份报告，超出时答复 `429`。预算按进程计，与浏览器登录路由的取舍相同；共享限流器
-   应放在网关层。该地址是 socket 对端：Fastify 实例未设置 `trustProxy`，因此在反向代理之后每份报告都来自代理地址，整个部署
-   共享同一个每分钟 30 份的预算。需要按用户计预算的部署必须在代理层实施，而超出预算的客户端会静默失败。
+   应放在网关层。除非 `OPENTAG_TRUST_PROXY` 指定了反向代理（参见[位于反向代理之后](#位于反向代理之后)），该地址就是 socket
+   对端；未设置时，在反向代理之后每份报告都来自代理地址，整个部署共享同一个每分钟 30 份的预算，超出预算的客户端会静默失败。
 2. 依据 `ErrorReportRequestSchema` 校验请求体；未知字段、超长值或非 HTTP(S) 的 `url` 答复 `400`。解析时还会剔除 URL 的
    query string、fragment 与凭据，因此即便客户端没有遵守契约，契约在这里仍然成立。
 3. 用 `redactForLog` 再次脱敏，并以 `warn` 级别写入 server 日志：消息为 `Client error reported`，带有
    `module=error-reporting`、`source`、`errorCode` 与 `errorReport` 载荷。没有 Google Cloud project 的运维人员仍能在这里看到每份报告。
-4. 报告一经接受即答复 `202`（空 body，`cache-control: no-store`）。转发在后台进行，且每份报告最多五秒，因为 Google 客户端
-   自身不设截止时间且会带退避重试；因此缓慢或被阻断的出口网络不会占住客户端连接。
+4. 报告一经接受即答复 `202`（空 body，`cache-control: no-store`）。转发在后台进行。reporter 对每次转发最多等待五秒，
+   之后记为失败，因为 Google 客户端自身不设截止时间且会带退避重试。这限制的是等待时长，而不是库自身的 HTTP 请求与重试，
+   后者可能仍在后台继续；因此缓慢或被阻断的出口网络不会占住客户端连接。
 
 ### 滥用面
 
@@ -90,14 +91,23 @@ schema 上限时会被截断而非拒绝。
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `GOOGLE_CLOUD_PROJECT` | 未设置 | 接收转发报告的 Google Cloud project；未设置时关闭转发 |
+| `GOOGLE_CLOUD_PROJECT` | 未设置 | 接收转发报告的 Google Cloud project；未设置且下方 key 也未提供 project 时关闭转发 |
+| `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | 未设置 | 整个 service account key 文件作为一个值；未设置时使用 Application Default Credentials |
+| `OPENTAG_TRUST_PROXY` | `false` | 允许设置 `X-Forwarded-*` 的反向代理；参见[位于反向代理之后](#位于反向代理之后) |
 
-凭据来自 Application Default Credentials，绝不来自 OpenTag 配置：
+凭据来自以下两处之一：
 
-- 在 Google 托管的计算环境中，使用 Workload Identity 或附加的 service account。
-- 其他环境中，将 `GOOGLE_APPLICATION_CREDENTIALS` 指向挂载进容器的 service account key 文件。不要提交该 key、不要把它烘进镜像层，
-  也不要放进 `.env.example`。
-- 该身份需要 project 上的 `roles/errorreporting.writer` 角色。
+- `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON`，适用于能设置环境变量但无法挂载文件的平台，例如 CapRover。把 key 文件的 JSON
+  整体作为值粘贴进去。server 只接受 `service_account` 类型的 key，只保留 `client_email`、`private_key` 与 `project_id`，
+  从不记录该值；值不是这类 key 时启动失败，错误信息只给出变量名、不含其内容。未设置 `GOOGLE_CLOUD_PROJECT` 时使用 key 中的
+  `project_id`，因此仅凭 key 即可启用转发。
+- 否则使用 Application Default Credentials：在 Google 托管的计算环境中使用 Workload Identity 或附加的 service account，
+  或将 `GOOGLE_APPLICATION_CREDENTIALS` 指向挂载进容器的 key 文件。
+
+无论哪种方式：
+
+- 不要提交该 key、不要把它烘进镜像层，也不要放进 `.env.example`。
+- 该身份只需要 project 上的 `roles/errorreporting.writer` 角色。
 - 在 project 上启用 Error Reporting API（`clouderrorreporting.googleapis.com`）。
 
 reporter 在第一份报告时才构造，使用 `reportMode: "always"`，使 staging 容器无需 `NODE_ENV=production` 即可上报，并将库自身的
@@ -106,6 +116,19 @@ console 输出限制在缺少凭据之类的真实错误。修改该变量后请
 未设置 `GOOGLE_CLOUD_PROJECT` 时，server 在第一份报告时记录一行 `info`——
 `Error reports are logged only; GOOGLE_CLOUD_PROJECT is not set`——其余行为完全相同：中继路由、校验、限流与 `warn` 日志行
 全部存在。因此自托管部署运行此功能时完全不依赖 Google。
+
+### 位于反向代理之后
+
+默认情况下 server 忽略 `X-Forwarded-*`，所有按地址计的限流都以 socket 对端为键。位于反向代理之后时，对端就是代理，
+因此应把 `OPENTAG_TRUST_PROXY` 设为代理发起连接的地址：
+
+- 逗号分隔的 IP 地址、CIDR 范围，以及预设 `loopback`、`linklocal` 与 `uniquelocal`（`10.0.0.0/8`、`172.16.0.0/12`、
+  `192.168.0.0/16`、`fc00::/7`）。CapRover 的 nginx 经 Docker overlay 网络访问应用，因此适合用 `uniquelocal`。
+- `true` 信任所有对端。仅在除代理外没有任何东西能访问 server 时使用，否则任何直连客户端都能通过该 header 自选地址。
+- 跳数会被拒绝：Fastify 无法凭跳数校验直接对端，会忽略它。
+
+该设置作用于整个 server，而不只是这条路由：浏览器登录限流使用同一个地址；对端受信任时，`request.hostname` 与
+`request.protocol` 也改由 `X-Forwarded-Host` 与 `X-Forwarded-Proto` 决定。
 
 ## 失败路径
 

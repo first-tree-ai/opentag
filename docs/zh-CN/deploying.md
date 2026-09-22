@@ -1,7 +1,7 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-09-20
+> Last synced with: 2026-09-22
 
 OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI、完成 CLI/Runner 发布的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
@@ -95,6 +95,8 @@ service，不会配置 CapRover 的 server container。
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
 | `GOOGLE_CLOUD_PROJECT` | 可选；将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting，参见 [客户端错误上报](./error-reporting.md) |
+| `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | 可选；Error Reporting service account key 文件的 JSON，用于无法挂载 key 文件的 CapRover |
+| `OPENTAG_TRUST_PROXY` | CapRover 上设为 `uniquelocal`，使限流以客户端而非 nginx 为键；参见[位于反向代理之后](./error-reporting.md#位于反向代理之后) |
 
 这两个可选变量控制 Server 如何获知它向已连接 Client 广播的 channel 精确最新目标（用于自动升级）：它轮询下载
 base URL 下该 channel 已发布的 `latest.json`，并在任何故障期间继续广播最后一次已知的目标。dev channel 从不广播

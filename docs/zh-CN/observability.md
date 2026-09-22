@@ -2,7 +2,7 @@
 
 [English](../observability.md)
 
-> Last synced with: 2026-09-11
+> Last synced with: 2026-09-22
 
 OpenTag Server 可选地通过 OTLP/HTTP 导出 OpenTelemetry traces。该能力默认关闭，覆盖 provider 连接、IM 入站、持久 delivery 与 Runtime 生命周期边界。
 
@@ -61,6 +61,7 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | `[0,1]` 范围内的全局 head sample rate |
 | `OPENTAG_LOG_LEVEL` | `info` | Server Pino level：`trace`、`debug`、`info`、`warn`、`error`、`fatal` 或 `silent` |
 | `GOOGLE_CLOUD_PROJECT` | 未设置 | 将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting；参见 [客户端错误上报](./error-reporting.md) |
+| `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | 未设置 | 该转发使用的 service account key JSON；未设置时使用 Application Default Credentials |
 
 服务 resource 固定为 `service.name=opentag-server`。每个进程还会把随机启动标识写入 `service.instance.id`，用于区分 replica 和重启。
 

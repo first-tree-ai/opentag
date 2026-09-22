@@ -63,6 +63,7 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global head sample rate in the inclusive range `0` to `1` |
 | `OPENTAG_LOG_LEVEL` | `info` | Server Pino level: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent` |
 | `GOOGLE_CLOUD_PROJECT` | unset | Forwards relayed Web App and CLI errors to Google Cloud Error Reporting; see [Client error reporting](./error-reporting.md) |
+| `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | unset | Service account key JSON for that forwarding; unset uses Application Default Credentials |
 
 The service resource is fixed to `service.name=opentag-server`. Every process also emits its random startup identity as `service.instance.id`, which distinguishes replicas and restarts.
 

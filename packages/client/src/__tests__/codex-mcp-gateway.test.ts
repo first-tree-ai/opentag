@@ -304,6 +304,36 @@ describe("Codex MCP gateway delivery", () => {
     await runtime.close();
   });
 
+  it("unloads a replaced thread without holding the turn, releasing it on the deadline", async () => {
+    const { client, factory } = setup({ mcpAttachTimeoutMs: 60 });
+    const runtime = await factory.create(createRequest());
+    const unsubscribeSignals: Array<AbortSignal | undefined> = [];
+    client.unsubscribe = async (_params, signal) => {
+      unsubscribeSignals.push(signal);
+      return hangUntilAborted(signal);
+    };
+    const startedAt = Date.now();
+    await expect(runtime.prompt(prompt("fresh-stalled-cleanup", true))).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(client.events).toEqual(["start", "start:attached", "unsubscribe:thread-1", "turn:thread-2"]);
+    await vi.waitFor(() => expect(unsubscribeSignals[0]?.aborted).toBe(true));
+    await runtime.close();
+  });
+
+  it("aborts a fresh run after its replacement exists without waiting for the old thread to unload", async () => {
+    const { client, factory } = setup();
+    const runtime = await factory.create(createRequest());
+    client.unsubscribe = async (_params, signal) => {
+      await runtime.abort({ expectedRunId: "fresh-aborted", reason: "user" });
+      return hangUntilAborted(signal);
+    };
+    await expect(runtime.prompt(prompt("fresh-aborted", true))).resolves.toMatchObject({ status: "aborted" });
+    expect(client.events.some((event) => event.startsWith("turn:"))).toBe(false);
+    await runtime.close();
+  });
+
   it("bounds the whole rebind, including a resume request that never settles", async () => {
     const { client, runtime } = await persistedRuntime({ mcpAttachTimeoutMs: 20 });
     client.resume = async (params, signal) =>

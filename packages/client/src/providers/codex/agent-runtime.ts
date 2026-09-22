@@ -474,7 +474,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   /**
    * A thread that has never started a turn has no rollout to resume and no history to lose, so it is
    * replaced by a new thread with the run's MCP servers and the binding moves to it. The previous
-   * thread stays loaded until the replacement exists, so a failed attach leaves it untouched.
+   * thread stays loaded until the replacement exists, so a failed attach leaves it untouched, and it
+   * is unloaded without delaying the turn.
    */
   async #replaceUnpersistedThread(
     config: Record<string, unknown>,
@@ -498,7 +499,9 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     assertBinding(binding, this.manifest);
     await context.updateBinding(binding);
     this.#threadId = threadId;
-    await this.#client.request("thread/unsubscribe", { threadId: previous }).catch((error: unknown) => {
+    // Unloading the replaced thread is housekeeping, so it stays off the turn's critical path; the
+    // rebind signal still releases it on the deadline or on cancellation.
+    void this.#client.request("thread/unsubscribe", { threadId: previous }, signal).catch((error: unknown) => {
       logger.debug(
         { code: "replaced_thread_unsubscribe_failed", error: String(error) },
         "Codex did not unload a replaced thread",

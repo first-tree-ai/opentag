@@ -17,10 +17,35 @@ export interface ManagedSessionContext {
  * here — the trusted Platform section above already states it.
  */
 function renderContextTree(status: ContextTreeStatus): readonly string[] {
+  if (status.status === "configured") {
+    return [
+      "Context Trees (no precedence is implied by their order):",
+      ...status.connections.flatMap((entry) => [
+        `Alias ${entry.alias} — ${entry.repository}:`,
+        ...renderContextTreeFacts(entry),
+      ]),
+      ...new Set(status.connections.flatMap(renderContextTreeGuidance)),
+      "Use the upstream Context Tree skills to select relevant trees, attribute disagreements to their aliases, and choose an explicit alias for every write.",
+    ];
+  }
+  return [...renderContextTreeFacts(status), ...renderContextTreeGuidance(status)];
+}
+
+function renderContextTreeFacts(status: Exclude<ContextTreeStatus, { status: "configured" }>): readonly string[] {
+  if (status.status === "ready") return [`Context Tree: ${status.treePath}`];
+  if (status.status === "unconfigured")
+    return ["Context Tree: disabled for this Agent. Configure it in Agent settings → Context Tree."];
+  return [
+    status.reason === "PREPARING"
+      ? "Context Tree preparation is continuing in the background."
+      : `Context Tree unavailable (${status.reason}).`,
+  ];
+}
+
+function renderContextTreeGuidance(status: Exclude<ContextTreeStatus, { status: "configured" }>): readonly string[] {
   if (status.status === "ready") {
     return [
-      `Context Tree: ${status.treePath}`,
-      "This is the Context Tree selected in this Agent’s settings. Other Agents share this memory only when they select the same repository. Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
+      "Ready Context Trees are connected in this Agent’s settings. Other Agents share this memory only when they select the same repository. Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
       "Use the context-tree-read and context-tree-write skills rather than editing the tree by hand.",
       "`members/<your Agent slug>/` is your own private working memory; the Agent slug is stated in the Platform section above. Do not write to another Agent's member directory.",
       "",
@@ -28,21 +53,15 @@ function renderContextTree(status: ContextTreeStatus): readonly string[] {
   }
   if (status.status === "unconfigured") {
     return [
-      "Context Tree: disabled for this Agent. Configure it in Agent settings → Context Tree.",
       "Durable memory is not active. Do not assume earlier decisions were recorded, and do not attempt to create a tree yourself.",
       "",
     ];
   }
-  if (status.reason === "PREPARING") {
-    return [
-      "Context Tree preparation is continuing in the background.",
-      "Durable memory is not active for this Session. A later Session can use it after preparation completes.",
-      "",
-    ];
-  }
   return [
-    `Context Tree unavailable (${status.reason}).`,
-    "Durable memory is not active for this Session. Do not assume earlier decisions were recorded, and do not attempt to repair the tree yourself.",
+    "Unavailable trees are not active for this Session. Other ready trees remain usable.",
+    status.reason === "PREPARING"
+      ? "Trees still preparing may become usable in a later Session."
+      : "Do not assume earlier decisions were recorded in unavailable trees, and do not attempt to repair the tree yourself.",
     "",
   ];
 }

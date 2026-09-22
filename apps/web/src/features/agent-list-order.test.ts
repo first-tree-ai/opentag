@@ -464,7 +464,7 @@ describe("Agent availability model and presentation", () => {
       status: agent.status,
       revision: 1,
       runtimeConfig: {
-        contextTreeRepository: null,
+        contextTrees: [],
         revision: 1,
         instructions: "Custom",
         model: null,

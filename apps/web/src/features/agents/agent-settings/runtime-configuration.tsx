@@ -81,7 +81,7 @@ function RuntimeConfigurationEditor({
   const cloud = computerKind === "cloud";
   const cloudOptions = cloudModelState?.kind === "ready" ? cloudModelState.value : undefined;
   const modelField = runtimeModelField({ cloud, cloudOptions, modelDraft, modelSelection, runtimeOptions });
-  const { unavailable: cloudModelsUnavailable, unsupported: savedModelUnavailable, invalid: modelInvalid } = modelField;
+  const { unavailable: cloudModelsUnavailable, invalid: modelInvalid } = modelField;
   const hasHistoricalReasoningDraft =
     reasoningSelection !== PROVIDER_DEFAULT_OPTION &&
     !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningSelection);
@@ -222,28 +222,23 @@ function RuntimeConfigurationEditor({
             ) : null}
           </form>
           {message?.section === "runtime" ? <SaveMessage message={message} /> : null}
-          <section aria-labelledby="runtime-test-heading" className="mt-2 grid gap-3">
-            <Text as={TroubleshootingHeading} id="runtime-test-heading" variant="heading">
-              {m.agent_settings_troubleshooting()}
-            </Text>
-            <SettingsList>
-              <RuntimeTestAction
-                key={cloud ? `${cloudOptions?.defaultModel ?? "unavailable"}:${savedModelUnavailable}` : "local"}
-                agentId={config.id}
-                cloud={cloud}
-                disabledReason={runtimeTestDisabledReason({
-                  runtimeDirty,
-                  cloudModelsUnavailable,
-                  savedModelUnavailable,
-                  cloud,
-                  computerOnline,
-                })}
-                expectedRevision={config.revision}
-                expectedRuntimeConfigRevision={config.runtimeConfig.revision}
-                providerName={providerName}
-              />
-            </SettingsList>
-          </section>
+          {/* The platform owns Cloud execution, so only a Local Computer gets a connection test. */}
+          {cloud ? null : (
+            <section aria-labelledby="runtime-test-heading" className="mt-2 grid gap-3">
+              <Text as={TroubleshootingHeading} id="runtime-test-heading" variant="heading">
+                {m.agent_settings_troubleshooting()}
+              </Text>
+              <SettingsList>
+                <RuntimeTestAction
+                  agentId={config.id}
+                  disabledReason={runtimeTestDisabledReason({ runtimeDirty, computerOnline })}
+                  expectedRevision={config.revision}
+                  expectedRuntimeConfigRevision={config.runtimeConfig.revision}
+                  providerName={providerName}
+                />
+              </SettingsList>
+            </section>
+          )}
         </section>
       ) : null}
 
@@ -348,16 +343,8 @@ function modelSaveFailureMessage(cause: unknown): string {
   return m.agent_settings_execution_save_failed();
 }
 
-function runtimeTestDisabledReason(input: {
-  runtimeDirty: boolean;
-  cloudModelsUnavailable: boolean;
-  savedModelUnavailable: boolean;
-  cloud: boolean;
-  computerOnline: boolean;
-}): string | undefined {
+function runtimeTestDisabledReason(input: { runtimeDirty: boolean; computerOnline: boolean }): string | undefined {
   if (input.runtimeDirty) return m.agent_settings_runtime_test_disabled_unsaved();
-  if (input.cloudModelsUnavailable) return m.agent_settings_cloud_models_unavailable();
-  if (input.savedModelUnavailable) return m.agent_settings_cloud_model_not_allowed();
-  if (!input.cloud && !input.computerOnline) return m.agent_settings_runtime_test_disabled_computer();
+  if (!input.computerOnline) return m.agent_settings_runtime_test_disabled_computer();
   return undefined;
 }

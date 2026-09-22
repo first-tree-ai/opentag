@@ -40,12 +40,12 @@ describe("GitHub integration authorization boundaries", () => {
     },
   );
 
-  it("cannot assign two Trees to one PostgreSQL UUID through letter-case aliases", () => {
+  it("allows multiple Trees for one Agent with case-equivalent UUIDs", () => {
     const bindings = [
       treeBinding("aabbccdd-1234-4234-8234-123456789abc", "1", agentId),
       treeBinding("aabbccdd-1234-4234-8234-123456789abd", "2", agentId.toUpperCase()),
     ];
-    expect(GitHubRepositoryBindingsSchema.safeParse(bindings).success).toBe(false);
+    expect(GitHubRepositoryBindingsSchema.safeParse(bindings).success).toBe(true);
   });
 
   it("rejects duplicate binding UUIDs regardless of letter case", () => {

@@ -135,7 +135,14 @@ function operations(
 }
 
 function runInput(overrides: Partial<Parameters<CloudContextTreeOperations["run"]>[0]> = {}) {
-  return { accountId: ACCOUNT, agentId: AGENT, action: "connect" as const, repository: "Acme/Memory", ...overrides };
+  return {
+    alias: "memory",
+    accountId: ACCOUNT,
+    agentId: AGENT,
+    action: "connect" as const,
+    repository: "Acme/Memory",
+    ...overrides,
+  };
 }
 
 afterEach(() => {
@@ -320,13 +327,14 @@ function agentConfig(overrides: Partial<AgentAdminConfig> = {}): AgentAdminConfi
     computerId: COMPUTER,
     revision: 3,
     status: "suspended",
-    runtimeConfig: { revision: 7, contextTreeRepository: null },
+    runtimeConfig: { revision: 7, contextTrees: [] },
     ...overrides,
   } as AgentAdminConfig;
 }
 
 function request(overrides: Partial<ContextTreeOperationRequest> = {}): ContextTreeOperationRequest {
   return {
+    alias: "memory",
     operationId: randomUUID(),
     expectedRevision: 3,
     expectedRuntimeConfigRevision: 7,
@@ -367,6 +375,7 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
       accountId: ACCOUNT,
       agentId: AGENT,
       action: "connect",
+      alias: "memory",
       repository: "Acme/Memory",
     });
     expect(f.ownerStart).not.toHaveBeenCalled();
@@ -375,7 +384,7 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
       ACCOUNT,
       AGENT,
       { revision: 3, runtimeConfigRevision: 7, computerId: COMPUTER, status: "suspended" },
-      "Acme/Memory",
+      [{ alias: "memory", repository: "Acme/Memory" }],
     );
   });
 
@@ -400,7 +409,15 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
   });
 
   it("disconnects a Cloud Agent without any Cloud resource", async () => {
-    const f = dispatchFixture("cloud");
+    const f = dispatchFixture(
+      "cloud",
+      agentConfig({
+        runtimeConfig: {
+          ...agentConfig().runtimeConfig,
+          contextTrees: [{ alias: "memory", repository: "acme/memory" }],
+        },
+      }),
+    );
     expect(await f.service.run(ACCOUNT, AGENT, request({ action: "disconnect", repository: null }))).toEqual({
       status: "completed",
       repository: null,
@@ -411,7 +428,7 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
       ACCOUNT,
       AGENT,
       { revision: 3, runtimeConfigRevision: 7, computerId: COMPUTER, status: "suspended" },
-      null,
+      [],
     );
   });
 
@@ -420,7 +437,7 @@ describe("ContextTreeOperationService Cloud dispatch", () => {
       "cloud",
       agentConfig({
         status: "active",
-        runtimeConfig: { ...agentConfig().runtimeConfig, contextTreeRepository: "acme/old" },
+        runtimeConfig: { ...agentConfig().runtimeConfig, contextTrees: [{ alias: "old", repository: "acme/old" }] },
       }),
     );
     expect(await paused.service.run(ACCOUNT, AGENT, request())).toEqual({ status: "failed", code: "pause_required" });
@@ -574,5 +591,44 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
     });
     expect(existsSync(marker)).toBe(false);
     await cloud.close();
+  });
+});
+
+it("selects the exact requested binding among multiple Context Tree grants and rechecks it", async () => {
+  const row = connection({
+    bindings: [
+      binding(),
+      binding({
+        repositoryId: "888",
+        fullNameDisplay: "acme/product",
+        agentScopes: [{ agentId: AGENT, role: "context_tree", access: "read", branch: "refs/heads/main" }],
+      }),
+    ],
+  });
+  const github = management(row);
+  const treeHeads = verifier();
+  const cloud = operations(github, { treeHeads });
+  expect(await cloud.run(runInput({ alias: "product", repository: "acme/product" }))).toEqual({
+    status: "completed",
+    repository: "acme/product",
+  });
+  expect(treeHeads.verify).toHaveBeenCalledWith(
+    expect.objectContaining({ repositoryId: "888", ref: "refs/heads/main" }),
+  );
+  expect(github.verifyCurrentRepositoryAdmission).toHaveBeenCalledWith(
+    expect.objectContaining({ repositoryId: "888", access: "read" }),
+  );
+});
+it("does not accept another remaining Tree binding when the requested grant is revoked during verification", async () => {
+  const row = connection({ bindings: [binding(), binding({ repositoryId: "888", fullNameDisplay: "acme/product" })] });
+  const github = management(row);
+  const treeHeads = verifier(async () => {
+    row.bindings = row.bindings.filter((entry) => entry.repositoryId !== "888");
+    return "a".repeat(40);
+  });
+  const cloud = operations(github, { treeHeads });
+  expect(await cloud.run(runInput({ alias: "product", repository: "acme/product" }))).toEqual({
+    status: "failed",
+    code: "permission_denied",
   });
 });

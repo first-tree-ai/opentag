@@ -7,6 +7,19 @@ registration SDK returns App credentials, the Server saves them before checking 
 requirements. An enterprise administrator may approve later: a page refresh, closed browser,
 or Server restart must not discard that saved authorization.
 
+## Bot avatars
+
+Registration offers six cat presets in Feishu's native picker: developer, engineer, architect,
+artist, businessman, and sales. Their versioned square PNGs are served under
+`/bot-avatars/v1/` on `OPENTAG_PUBLIC_URL`; this deployment URL must be publicly reachable
+for Feishu to load them. SVG originals are kept beside the PNG exports in `apps/web/public`.
+
+On connection or reauthorization, OpenTag reads the actual Bot profile and caches its name and
+avatar in the binding. Optional profile failures do not block activation. Previously cached
+metadata survives a failed lookup only for the same App, workspace, and Bot identity.
+Existing connections acquire avatars on their next connection or reauthorization; provider-side
+changes remain cached until then. OpenTag displays initials when the image is absent or fails to load.
+
 ## User experience
 
 All 66 scopes in `FEISHU_REQUIRED_TENANT_SCOPES` remain required. There is no partial-permission

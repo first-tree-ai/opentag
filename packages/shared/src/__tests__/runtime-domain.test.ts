@@ -316,12 +316,12 @@ describe("runtime domain contract", () => {
     const runtime = snapshot();
     const hashes = computeRuntimeSnapshotHashes(runtime);
     expect(hashes).toEqual({
-      agentConfigHash: "4ce41622fe0bc78df35784c1a6f409e392f12131075a95e5d15f7eed5f49db46",
+      agentConfigHash: "7007eb64403d2aa5ff3a4b03ffd18b77b4bf2f9e059cde1a785586aceb783ba4",
       sessionConfigHash: "9b51b9872c3617a33b57b2068500c3c645be5f1ed4662e613101b8c20546eea6",
-      effectiveSnapshotHash: "29bb3a2d86ea994d59d05826999f1d5cc722295ae8e8920eea8682adf9656088",
+      effectiveSnapshotHash: "4d2eef9ffaef9670ab63911c88fd76f822cab84f8fae2216a5641d8c033053cc",
     });
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "20f225978ec879852c0a7ad0c3b401aa73ecef5b2520ce61724507339225733b",
+      "2f5773b56951456e484642608eb3ca5382fbea0f551af9e4152c3a26e7dde771",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
     const withReplies = turnReport({
@@ -437,7 +437,7 @@ describe("runtime domain contract", () => {
       runtime: snapshot(),
     };
     expect(computeReconcilePayloadHash(request)).toBe(
-      "33f67e7fc87143715afe6adabe52cc79c1dfa2f8f939284e622685e0d9eec310",
+      "fd29f85893f3c8fc102de9bdfeed6fde66ff36b4f5bc8be7b3dca05fbff3df1e",
     );
     expect(
       computeReconcilePayloadHash({ ...request, installationId: "77777777-7777-4777-8777-777777777777" }),
@@ -620,7 +620,7 @@ describe("runtime domain contract", () => {
 
 function snapshot(): EffectiveRuntimeSnapshot {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: {
       agent: { sequence: 3, id: "agent-revision-3" },
       session: { sequence: 7, id: "session-revision-7" },
@@ -687,14 +687,19 @@ function turnReport(overrides: Partial<TurnReportHashInput> = {}): TurnReportReq
   };
 }
 
-it("requires an explicit nullable repository and hashes normalized identity", () => {
+it("requires an explicit connection list and hashes normalized identity", () => {
   const current = snapshot();
-  const { contextTreeRepository: _, ...missing } = current;
+  const { contextTrees: _, ...missing } = current;
   expect(EffectiveRuntimeSnapshotSchema.safeParse(missing).success).toBe(false);
   const off = computeRuntimeSnapshotHashes(current);
-  const selected = computeRuntimeSnapshotHashes({ ...current, contextTreeRepository: "Acme/Memory" });
+  const selected = computeRuntimeSnapshotHashes({
+    ...current,
+    contextTrees: [{ alias: "memory", repository: "Acme/Memory" }],
+  });
   expect(selected).not.toEqual(off);
-  expect(selected).toEqual(computeRuntimeSnapshotHashes({ ...current, contextTreeRepository: "acme/memory" }));
+  expect(selected).toEqual(
+    computeRuntimeSnapshotHashes({ ...current, contextTrees: [{ alias: "memory", repository: "acme/memory" }] }),
+  );
 });
 
 /*
@@ -1033,7 +1038,7 @@ describe("runtime domain rejection paths", () => {
   it("hashes a snapshot with no optional session-scoped fields", () => {
     const minimal = {
       ...snapshot(),
-      contextTreeRepository: null,
+      contextTrees: [],
       model: undefined,
       reasoningEffort: undefined,
       instructions: { platform: "platform", agent: "agent" },
@@ -1042,4 +1047,25 @@ describe("runtime domain rejection paths", () => {
     expect(computeRuntimeSnapshotHashes(minimal)).toEqual(computeRuntimeSnapshotHashes(minimal));
     expect(computeRuntimeSnapshotHashes(minimal)).not.toEqual(computeRuntimeSnapshotHashes(snapshot()));
   });
+});
+
+it("round-trips multiple connections and hashes them without order priority", () => {
+  const connections = [
+    { alias: "team", repository: "acme/team" },
+    { alias: "product", repository: "acme/product" },
+  ];
+  const runtime = { ...snapshot(), contextTrees: connections };
+  expect(EffectiveRuntimeSnapshotSchema.parse(JSON.parse(JSON.stringify(runtime)))).toEqual(runtime);
+  expect(computeRuntimeSnapshotHashes(runtime)).toEqual(
+    computeRuntimeSnapshotHashes({ ...runtime, contextTrees: [...connections].reverse() }),
+  );
+  expect(computeRuntimeSnapshotHashes(runtime)).not.toEqual(
+    computeRuntimeSnapshotHashes({
+      ...runtime,
+      contextTrees: [
+        { alias: "renamed", repository: "acme/team" },
+        { alias: "product", repository: "acme/product" },
+      ],
+    }),
+  );
 });

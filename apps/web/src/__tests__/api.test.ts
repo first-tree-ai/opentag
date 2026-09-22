@@ -7,7 +7,7 @@ import {
   type TaskSummary,
 } from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
-import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, CLOUD_CONTROL_TIMEOUT_MS } from "../api.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi } from "../api.js";
 import { DiagnosticReporter } from "../observability/diagnostics.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -74,34 +74,9 @@ describe("BrowserApi", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("bounds an uncertain Cloud discard without replaying the mutation", async () => {
-    setDocumentCookie("opentag_csrf=cloud-csrf; Path=/");
-    vi.useFakeTimers();
-    try {
-      const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-        expect(String(input)).toBe(`/api/v1/sandboxes/${SETUP_AGENT_ID}/runner/stop`);
-        expect(init?.method).toBe("POST");
-        expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("cloud-csrf");
-        expect(JSON.parse(String(init?.body))).toEqual({ discardUnsavedChanges: true, environmentGeneration: 7 });
-        return hangingJsonResponse(200);
-      });
-      const pending = new BrowserApi(fetchImpl).stopCloudSandbox(SETUP_AGENT_ID, {
-        discardUnsavedChanges: true,
-        environmentGeneration: 7,
-      });
-      const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError", code: "cancelled" });
-      await vi.advanceTimersByTimeAsync(CLOUD_CONTROL_TIMEOUT_MS);
-      await assertion;
-      expect(fetchImpl).toHaveBeenCalledOnce();
-    } finally {
-      vi.useRealTimers();
-      setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
-    }
-  });
-
   it("reads the scoped Cloud overview without leaking an Account selector", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/cloud?limit=20&sessionId=${taskSummary.id}`);
+      expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/cloud?limit=20`);
       expect(init?.method ?? "GET").toBe("GET");
       return jsonResponse({
         agentId: SETUP_AGENT_ID,
@@ -112,9 +87,9 @@ describe("BrowserApi", () => {
         nextCursor: null,
       });
     });
-    await expect(
-      new BrowserApi(fetchImpl).agentCloudOverview(SETUP_AGENT_ID, { limit: 20, sessionId: taskSummary.id }),
-    ).resolves.toMatchObject({ sessions: [] });
+    await expect(new BrowserApi(fetchImpl).agentCloudOverview(SETUP_AGENT_ID, { limit: 20 })).resolves.toMatchObject({
+      sessions: [],
+    });
   });
 
   it("updates a Task title with the Account PATCH contract and CSRF header", async () => {
@@ -168,7 +143,7 @@ describe("BrowserApi", () => {
       status: "suspended",
       revision: 2,
       runtimeConfig: {
-        contextTreeRepository: null,
+        contextTrees: [],
         revision: 1,
         model: null,
         reasoningEffort: null,

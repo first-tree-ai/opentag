@@ -742,7 +742,7 @@ async function seedCloudDurableWork(
         placementGeneration: 1,
         content: { kind: "text", text: "run the child task" },
         runtime: {
-          contextTreeRepository: null,
+          contextTrees: [],
           revision: { agent: { sequence: 1, id: "agent" }, session: { sequence: 1, id: "session" } },
           agentId: state.agent.id,
           provider: "pi",
@@ -1231,7 +1231,7 @@ describe("Cloud internal collaboration execution at the production credential bo
             placementGeneration: 1,
             content: { kind: "text", text: "run the child task" },
             runtime: {
-              contextTreeRepository: null,
+              contextTrees: [],
               revision: { agent: { sequence: 1, id: "agent" }, session: { sequence: 1, id: "session" } },
               agentId: state.agent.id,
               provider: "pi",

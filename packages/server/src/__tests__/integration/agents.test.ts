@@ -849,7 +849,7 @@ describe("Agent persistence and authorization", () => {
       });
       expect(profileOnly).toMatchObject({
         revision: 2,
-        runtimeConfig: { contextTreeRepository: null, revision: initialRuntimeRevision },
+        runtimeConfig: { contextTrees: [], revision: initialRuntimeRevision },
       });
 
       const cleared = await value.service.updateById(value.bootstrap.userId, created.id, {

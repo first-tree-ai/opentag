@@ -1329,7 +1329,7 @@ function delivery(): DirectImMessageDeliveryRequest {
     attention: "direct",
     content: { kind: "text", text: "hello", providerRef: providerRef("1710000000.000001") },
     runtime: {
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: {
         agent: { sequence: 1, id: "agent-revision" },
         session: { sequence: 1, id: "session-revision" },

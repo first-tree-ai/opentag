@@ -167,10 +167,15 @@ describe("Context Tree end-to-end", () => {
     const workspaceA = await temporaryDirectory("opentag-ct-agent-a-");
     const workspaceB = await temporaryDirectory("opentag-ct-agent-b-");
 
-    const first = await manager.ensureAgent(workspaceA, "codex", "acme/memory");
-    expect(first).toEqual({ status: "ready", treePath });
+    const first = await manager.ensureAgent(workspaceA, "codex", [{ alias: "memory", repository: "acme/memory" }]);
+    expect(first).toMatchObject({
+      status: "configured",
+      connections: [{ alias: "memory", repository: "acme/memory", status: "ready", treePath }],
+    });
     // Sharing one tree across Agents is the point of the feature, so both must land on it.
-    await expect(manager.ensureAgent(workspaceB, "codex", "acme/memory")).resolves.toEqual(first);
+    await expect(
+      manager.ensureAgent(workspaceB, "codex", [{ alias: "memory", repository: "acme/memory" }]),
+    ).resolves.toEqual(first);
 
     for (const workspace of [workspaceA, workspaceB]) {
       for (const file of ["AGENTS.md", "CLAUDE.md"]) {
@@ -193,7 +198,10 @@ describe("Context Tree end-to-end", () => {
       encoding: "utf8",
       env: { HOME: accountHome, PATH: `${manager.binDirectory()}${delimiter}${process.env.PATH ?? ""}` },
     });
-    expect(JSON.parse(stdout.trim())).toMatchObject({ tree: { path: treePath } });
+    expect(JSON.parse(stdout.trim())).toMatchObject({
+      schemaVersion: 2,
+      connections: [{ alias: "memory", tree: { path: treePath } }],
+    });
   });
 
   it.each([".codex", "codex-home"])("installs skills into account HOME with custom CODEX_HOME %s", async (name) => {
@@ -209,11 +217,10 @@ describe("Context Tree end-to-end", () => {
     });
 
     await expect(
-      manager.ensureAgent(await temporaryDirectory("opentag-ct-custom-codex-agent-"), "codex", "acme/memory"),
-    ).resolves.toEqual({
-      status: "ready",
-      treePath,
-    });
+      manager.ensureAgent(await temporaryDirectory("opentag-ct-custom-codex-agent-"), "codex", [
+        { alias: "memory", repository: "acme/memory" },
+      ]),
+    ).resolves.toMatchObject({ status: "configured", connections: [{ status: "ready", treePath }] });
     await expect(
       readFile(join(accountHome, ".agents", "skills", "context-tree-read", "SKILL.md"), "utf8"),
     ).resolves.toContain("context-tree");
@@ -232,8 +239,12 @@ describe("Context Tree end-to-end", () => {
     await mkdir(join(accountHome, ".codex"), { mode: 0o700, recursive: true });
     const writer = await temporaryDirectory("opentag-ct-writer-");
     const reader = await temporaryDirectory("opentag-ct-reader-");
-    await expect(manager.ensureAgent(writer, "codex", "acme/memory")).resolves.toMatchObject({ status: "ready" });
-    await expect(manager.ensureAgent(reader, "codex", "acme/memory")).resolves.toMatchObject({ status: "ready" });
+    await expect(
+      manager.ensureAgent(writer, "codex", [{ alias: "memory", repository: "acme/memory" }]),
+    ).resolves.toMatchObject({ connections: [{ status: "ready" }] });
+    await expect(
+      manager.ensureAgent(reader, "codex", [{ alias: "memory", repository: "acme/memory" }]),
+    ).resolves.toMatchObject({ connections: [{ status: "ready" }] });
 
     const { worktreePath } = (await runCli(["prepare-write", "--project-path", writer], environment)) as {
       worktreePath: string;
@@ -262,11 +273,59 @@ describe("Context Tree end-to-end", () => {
     await writeFile(join(treePath, "NODE.md"), "invalid tree");
 
     // Optional memory: a destroyed tree is reported, never thrown.
-    const status = await manager.ensureAgent(
-      await temporaryDirectory("opentag-ct-agent-gone-"),
-      "codex",
-      "acme/memory",
-    );
-    expect(status.status).toBe("unavailable");
+    const status = await manager.ensureAgent(await temporaryDirectory("opentag-ct-agent-gone-"), "codex", [
+      { alias: "memory", repository: "acme/memory" },
+    ]);
+    expect(status).toMatchObject({ connections: [{ status: "unavailable" }] });
   });
+});
+
+it("connects two named trees offline, writes explicitly to one and keeps the other usable after disconnect", async () => {
+  const home = await temporaryDirectory("opentag-multi-tree-account-");
+  const environment = {
+    HOME: home,
+    PATH: process.env.PATH,
+    GIT_AUTHOR_NAME: "OpenTag Test",
+    GIT_AUTHOR_EMAIL: "test@localhost",
+    GIT_COMMITTER_NAME: "OpenTag Test",
+    GIT_COMMITTER_EMAIL: "test@localhost",
+  };
+  const workspace = await temporaryDirectory("opentag-multi-tree-project-");
+  const first = (await runCli(
+    ["create", "--name", "team", "--as", "team", "--project-path", workspace, "--json"],
+    environment,
+  )) as { treePath: string };
+  const second = (await runCli(
+    ["create", "--name", "product", "--as", "product", "--project-path", workspace, "--json"],
+    environment,
+  )) as { treePath: string };
+  expect(first.treePath).not.toBe(second.treePath);
+  const before = await readFile(join(second.treePath, "NODE.md"), "utf8");
+  const prepared = (await runCli(["prepare-write", "--tree", "team", "--project-path", workspace], environment)) as {
+    worktreePath: string;
+  };
+  await recordMemberMemory(prepared.worktreePath, "tester", "Write destinations are explicit aliases.");
+  await runCli(
+    [
+      "finish-write",
+      "--tree",
+      "team",
+      "--worktree-path",
+      prepared.worktreePath,
+      "--message",
+      "docs: record named memory",
+      "--project-path",
+      workspace,
+    ],
+    environment,
+  );
+  expect(await readFile(join(first.treePath, "members", "tester", "memory.md"), "utf8")).toContain("explicit aliases");
+  expect(await readFile(join(second.treePath, "NODE.md"), "utf8")).toBe(before);
+  await runCli(["disconnect", "--tree", "team", "--project-path", workspace, "--json"], environment);
+  expect(await runCli(["sync", "--project-path", workspace], environment)).toMatchObject({
+    schemaVersion: 2,
+    connections: [{ alias: "product", ok: true }],
+  });
+  expect(await runCli(["read", "--tree-path", second.treePath, "--json"], environment)).toHaveProperty("node");
+  expect(await readFile(join(first.treePath, "members", "tester", "memory.md"), "utf8")).toContain("explicit aliases");
 });

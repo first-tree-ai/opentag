@@ -27,6 +27,7 @@ export interface CloudContextTreeOperationInput {
   agentId: string;
   action: "connect" | "create";
   repository: string;
+  alias: string;
 }
 
 /** The Cloud dispatch surface of the shared ContextTreeOperationService. */
@@ -100,13 +101,15 @@ function assertFence(observed: Fencing, expected: Fencing): void {
   }
 }
 
-/** The Agent's single authorized Context Tree binding on this connection, when one exists. */
+/** The Agent's authorized Context Tree binding for the requested repository on this connection, when one exists. */
 function agentContextTreeBinding(
   connection: GitHubConnectionStatus,
   agentId: string,
+  repository: string,
 ): { binding: GitHubRepositoryBinding; scope: GitHubAgentScope } | undefined {
   const id = agentId.toLowerCase();
   for (const binding of connection.bindings) {
+    if (binding.fullNameDisplay.toLowerCase() !== repository.toLowerCase()) continue;
     for (const scope of binding.agentScopes) {
       if (scope.agentId.toLowerCase() === id && scope.role === "context_tree") return { binding, scope };
     }
@@ -155,7 +158,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
   run(input: CloudContextTreeOperationInput): Promise<ContextTreeOperationResponse> {
     if (input.action === "create") return Promise.resolve(failed("capability_missing"));
     if (this.#closed) return Promise.resolve(failed("failed"));
-    const identity = input.repository.toLowerCase();
+    const identity = JSON.stringify([input.accountId, input.alias, input.repository.toLowerCase()]);
     const active = this.#inFlight.get(input.agentId);
     if (active) return active.identity === identity ? active.promise : Promise.resolve(failed("busy"));
     if (this.#inFlight.size >= this.#maxConcurrent) return Promise.resolve(failed("busy"));
@@ -190,7 +193,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
   async #connect(input: CloudContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
     const repository = parseRepository(input.repository);
     const connection = await this.#activeConnection(input.accountId);
-    const tree = agentContextTreeBinding(connection, input.agentId);
+    const tree = agentContextTreeBinding(connection, input.agentId, repository);
     if (!tree || tree.binding.fullNameDisplay.toLowerCase() !== repository.toLowerCase()) halt("permission_denied");
     const branch = tree.scope.branch;
     if (branch === undefined) halt("failed");
@@ -216,7 +219,14 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
       signal,
       recheck,
     });
-    await this.#assertFinalFence(input.accountId, connection.id, fence, input.agentId, tree.binding.repositoryId);
+    await this.#assertFinalFence(
+      input.accountId,
+      connection.id,
+      fence,
+      input.agentId,
+      tree.binding.repositoryId,
+      repository,
+    );
     return { status: "completed", repository };
   }
 
@@ -236,11 +246,12 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
     fence: Fencing,
     agentId: string,
     repositoryId: string,
+    repository: string,
   ): Promise<void> {
     const connection = await this.#activeConnection(accountId);
     if (connection.id !== connectionId) halt("stale_configuration");
     assertFence(connectionFence(connection), fence);
-    const tree = agentContextTreeBinding(connection, agentId);
+    const tree = agentContextTreeBinding(connection, agentId, repository);
     if (!tree || tree.binding.repositoryId !== repositoryId) halt("permission_denied");
   }
 

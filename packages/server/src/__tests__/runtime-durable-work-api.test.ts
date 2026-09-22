@@ -27,7 +27,7 @@ const record: RuntimeDurableWorkRecord = {
     placementGeneration: 1,
     content: { kind: "text", text: "hello" },
     runtime: {
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: { agent: { sequence: 1, id: "agent" }, session: { sequence: 1, id: "session" } },
       agentId,
       provider: "codex",

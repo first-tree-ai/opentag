@@ -6,9 +6,21 @@ import {
   CLOUD_CONTEXT_TREE_SUBDIRECTORY,
   type CloudContextTreePreparationInput,
   cloudAgentSlug,
-  prepareCloudContextTree,
+  prepareCloudContextTree as prepareCloudContextTrees,
 } from "../runner/cloud-context-tree.js";
 import type { ContextTreeExecFile } from "../runtime/context-tree.js";
+
+async function prepareCloudContextTree(...args: Parameters<typeof prepareCloudContextTrees>) {
+  const result = await prepareCloudContextTrees(...args);
+  if (result.status.status !== "configured")
+    return result as Omit<typeof result, "status"> & {
+      status: Exclude<typeof result.status, { status: "configured" }>;
+    };
+  const entry = result.status.connections[0];
+  if (!entry) throw new Error("Expected a configured tree result");
+  const { alias: _alias, repository: _repository, ...status } = entry;
+  return { ...result, status };
+}
 
 const directories: string[] = [];
 afterEach(async () =>
@@ -81,15 +93,29 @@ async function fixture(options: {
       network: execOptions.timeout > 30_000,
     });
     if (options.kill?.[command]) throw Object.assign(new Error("killed"), { killed: true });
-    const payload =
-      options.payloads?.[command] ??
-      (command === "connect"
-        ? { tree: { path: treePath } }
-        : command === "sync"
-          ? { branch: "master", sha: "a".repeat(40) }
-          : command === "disconnect"
-            ? { disconnected: true, schemaVersion: 1 }
-            : {});
+    const tree = { kind: "github", repository: "acme/memory", path: treePath };
+    const defaults: Record<string, unknown> = {
+      connect: { schemaVersion: 2, alias: "memory", tree },
+      sync: {
+        schemaVersion: 2,
+        connections: [{ alias: "memory", ok: true, tree, branch: "master", sha: "a".repeat(40) }],
+      },
+      disconnect: { disconnected: true, schemaVersion: 1 },
+      resolve: {
+        schemaVersion: 2,
+        connections: options.preserved
+          ? [
+              {
+                alias: "memory",
+                projectPath: workspace,
+                ok: true,
+                tree: { ...tree, repository: options.preserved.repository ?? "acme/memory" },
+              },
+            ]
+          : [],
+      },
+    };
+    const payload = options.payloads?.[command] ?? defaults[command];
     return { stdout: JSON.stringify(payload) };
   };
   if (options.priorTreeHome) {
@@ -107,6 +133,7 @@ async function fixture(options: {
         `${JSON.stringify({
           connections: [
             {
+              alias: "memory",
               projectPath: options.preserved.projectPath ?? workspace,
               tree: {
                 kind: options.preserved.kind ?? "github",
@@ -115,13 +142,14 @@ async function fixture(options: {
               },
             },
           ],
-          schemaVersion: 1,
+          schemaVersion: 2,
         })}\n`,
     );
   }
   const input: CloudContextTreePreparationInput = {
     workspace,
-    repository: options.repository === undefined ? "acme/memory" : options.repository,
+    contextTrees:
+      options.repository === null ? [] : [{ alias: "memory", repository: options.repository ?? "acme/memory" }],
     environment: options.environment ?? GRANT,
     path: "/exec/bin:/usr/bin:/bin",
     scratch,
@@ -148,9 +176,9 @@ describe("prepareCloudContextTree (unit)", () => {
     const { calls, execFile, input, workspace } = await fixture({ repository: null });
     const result = await prepareCloudContextTree(input, { contextTreePackage: PACKAGE, execFile });
     expect(result).toEqual({ status: { status: "unconfigured" } });
-    expect(calls).toEqual([]);
+    expect(calls.every((call) => !call.network)).toBe(true);
     // No tree subtree is created for a Session that never selected one.
-    await expect(stat(join(workspace, CLOUD_CONTEXT_TREE_SUBDIRECTORY))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(workspace, CLOUD_CONTEXT_TREE_SUBDIRECTORY))).resolves.toMatchObject({});
   });
 
   it("keeps the preserved record and drafts when the current Turn unselects the tree", async () => {
@@ -160,7 +188,7 @@ describe("prepareCloudContextTree (unit)", () => {
     const result = await prepareCloudContextTree(input, { contextTreePackage: PACKAGE, execFile });
     expect(result).toEqual({ status: { status: "unconfigured" } });
     // Unselecting reports the state without a CLI call, without deleting the record or drafts.
-    expect(calls).toEqual([]);
+    expect(calls.every((call) => !call.network)).toBe(true);
     expect(await readFile(join(treeHome, ".context-tree", "connections.json"), "utf8")).toBe(recordBefore);
     expect(await readFile(join(treePath, "draft.md"), "utf8")).toBe("unpublished draft");
   });
@@ -170,7 +198,7 @@ describe("prepareCloudContextTree (unit)", () => {
     await expect(prepareCloudContextTree(input, { contextTreePackage: null, execFile })).resolves.toEqual({
       status: { status: "unavailable", reason: "PACKAGE_MISSING" },
     });
-    expect(calls).toEqual([]);
+    expect(calls.every((call) => !call.network)).toBe(true);
   });
 
   it("reports WORKSPACE_MISSING when the Session workspace is not there", async () => {
@@ -181,7 +209,7 @@ describe("prepareCloudContextTree (unit)", () => {
         { contextTreePackage: PACKAGE, execFile },
       ),
     ).resolves.toEqual({ status: { status: "unavailable", reason: "WORKSPACE_MISSING" } });
-    expect(calls).toEqual([]);
+    expect(calls.every((call) => !call.network)).toBe(true);
   });
 
   it.each([
@@ -204,7 +232,7 @@ describe("prepareCloudContextTree (unit)", () => {
       const result = await prepareCloudContextTree(input, { contextTreePackage: PACKAGE, execFile });
       expect(result).toEqual({ status: { status: "unavailable", reason: "GITHUB_PERMISSION" } });
       // A revoked grant never runs the CLI, never touches the record's checkout, and never erases.
-      expect(calls).toEqual([]);
+      expect(calls.every((call) => !call.network)).toBe(true);
       expect(await readFile(join(treeHome, ".context-tree", "connections.json"), "utf8")).toBe(recordBefore);
       expect(await readFile(join(treePath, "draft.md"), "utf8")).toBe("unpublished draft");
     },
@@ -217,11 +245,12 @@ describe("prepareCloudContextTree (unit)", () => {
     const result = await prepareCloudContextTree(input, { contextTreePackage: PACKAGE, execFile });
     expect(result.status).toEqual({ status: "ready", treePath, branch: "master", sha: "a".repeat(40) });
     expect(calls.map((call) => call.args)).toEqual([
-      ["connect", "acme/memory", "--project-path", resolve(workspace), "--json"],
-      ["sync", "--project-path", resolve(workspace)],
+      ["resolve", "--project-path", resolve(workspace), "--json"],
+      ["connect", "acme/memory", "--as", "memory", "--project-path", resolve(workspace), "--json"],
+      ["sync", "--tree", "memory", "--project-path", resolve(workspace)],
     ]);
     for (const call of calls) {
-      expect(call.network).toBe(true);
+      expect(call.network).toBe(call.args[0] === "connect" || call.args[0] === "sync");
       expect(call.cwd).toBe(resolve(workspace));
       expect(call.env?.HOME).toBe(join(workspace, CLOUD_CONTEXT_TREE_SUBDIRECTORY, "home"));
       expect(call.env?.TMPDIR).toBe(join(workspace, CLOUD_CONTEXT_TREE_SUBDIRECTORY, "tmp"));
@@ -253,7 +282,7 @@ describe("prepareCloudContextTree (unit)", () => {
       });
       const result = await prepareCloudContextTree(input, { contextTreePackage: PACKAGE, execFile });
       expect(result).toEqual({ status: { status: "unavailable", reason: code } });
-      expect(calls.map((call) => call.args[0])).toEqual(["connect"]);
+      expect(calls.map((call) => call.args[0])).toEqual(["resolve", "connect"]);
       await expect(stat(join(scratch, "context-tree-bin"))).rejects.toMatchObject({ code: "ENOENT" });
     },
   );
@@ -268,7 +297,7 @@ describe("prepareCloudContextTree (unit)", () => {
     // The drafts survive and the tree stays addressable; it is never presented as current.
     expect(result.status).toEqual({ status: "stale", treePath, reason: "DIRTY_TREE" });
     expect(result.binDirectory).toBe(join(scratch, "context-tree-bin"));
-    expect(calls.map((call) => call.args[0])).toEqual(["connect"]);
+    expect(calls.map((call) => call.args[0])).toEqual(["resolve", "connect"]);
     expect(await readFile(join(treePath, "draft.md"), "utf8")).toBe("unpublished draft");
     await expect(stat(join(scratch, "context-tree-bin", "context-tree"))).resolves.toMatchObject({});
   });
@@ -329,7 +358,15 @@ describe("prepareCloudContextTree (unit)", () => {
   });
 
   it("refuses a connected checkout outside the saved workspace", async () => {
-    const { execFile, input } = await fixture({ payloads: { connect: { tree: { path: "/outside/tree" } } } });
+    const { execFile, input } = await fixture({
+      payloads: {
+        connect: {
+          schemaVersion: 2,
+          alias: "memory",
+          tree: { kind: "github", repository: "acme/memory", path: "/outside/tree" },
+        },
+      },
+    });
     await expect(prepareCloudContextTree(input, { contextTreePackage: PACKAGE, execFile })).resolves.toEqual({
       status: { status: "unavailable", reason: "TREE_OUTSIDE_WORKSPACE" },
     });
@@ -411,7 +448,7 @@ describe("prepareCloudContextTree process ownership", () => {
         agentSlug: "tree-agent",
         environment: { ...GRANT, OPENTAG_TEST_MARKER: markerFile, OPENTAG_TEST_PIDS: pidsFile },
         path: process.env.PATH ?? "",
-        repository: "acme/memory",
+        contextTrees: [{ alias: "memory", repository: "acme/memory" }],
         scratch,
         signal: controller.signal,
         workspace,
@@ -463,4 +500,178 @@ describe("cloudAgentSlug", () => {
   ])("extracts from %j", (platform, expected) => {
     expect(cloudAgentSlug(platform)).toBe(expected);
   });
+});
+
+describe("multiple Cloud Context Trees", () => {
+  it("keeps ready and per-entry failed sync results even when sync exits nonzero", async () => {
+    const f = await fixture({});
+    const connections = [
+      { alias: "team", repository: "acme/team" },
+      { alias: "product", repository: "acme/product" },
+    ];
+    const calls: string[][] = [];
+    const execFile = partialSyncCli(connections, calls, f.workspace);
+    const result = await prepareCloudContextTrees(
+      {
+        ...f.input,
+        contextTrees: connections,
+        environment: {
+          OPENTAG_GITHUB_REPOSITORIES: JSON.stringify(
+            connections.map((entry) => ({ fullName: entry.repository, role: "context_tree" })),
+          ),
+        },
+      },
+      { contextTreePackage: PACKAGE, execFile },
+    );
+    expect(result.status).toMatchObject({
+      connections: [
+        { alias: "team", status: "ready", branch: "master", sha: "a".repeat(40) },
+        { alias: "product", status: "stale", reason: "DIRTY_TREE" },
+      ],
+    });
+    expect(result.binDirectory).toBeDefined();
+    expect(calls.filter(([command]) => command === "sync").every((args) => args.includes("--tree"))).toBe(true);
+  });
+  it("keeps completed entries when the total budget expires and marks the rest unfinished", async () => {
+    const f = await fixture({});
+    const controller = new AbortController();
+    const connections = [
+      { alias: "memory", repository: "acme/memory" },
+      { alias: "later", repository: "acme/later" },
+    ];
+    const execFile: ContextTreeExecFile = async (...args) => {
+      const result = await f.execFile(...args);
+      if (args[1][1] === "sync") controller.abort();
+      return result;
+    };
+    const result = await prepareCloudContextTrees(
+      {
+        ...f.input,
+        contextTrees: connections,
+        signal: controller.signal,
+        environment: {
+          OPENTAG_GITHUB_REPOSITORIES: JSON.stringify(
+            connections.map((entry) => ({ fullName: entry.repository, role: "context_tree" })),
+          ),
+        },
+      },
+      { contextTreePackage: PACKAGE, execFile },
+    );
+    expect(result.status).toMatchObject({
+      connections: [
+        { alias: "memory", status: "ready" },
+        { alias: "later", status: "unavailable", reason: "TIMEOUT" },
+      ],
+    });
+    expect(f.calls.filter((call) => call.args[0] === "connect")).toHaveLength(1);
+  });
+  it("refuses an unsupported store without exposing a CLI or deleting the store", async () => {
+    const f = await fixture({
+      preserved: { raw: JSON.stringify({ schemaVersion: 1, connections: [] }) },
+      payloads: { resolve: { error: { code: "CORRUPT_CONNECTION" } } },
+    });
+    const before = await readFile(join(f.treeHome, ".context-tree", "connections.json"), "utf8");
+    const result = await prepareCloudContextTrees(f.input, { contextTreePackage: PACKAGE, execFile: f.execFile });
+    expect(result.status).toMatchObject({ connections: [{ reason: "CORRUPT_CONNECTION" }] });
+    expect(result.binDirectory).toBeUndefined();
+    expect(await readFile(join(f.treeHome, ".context-tree", "connections.json"), "utf8")).toBe(before);
+  });
+});
+
+function partialSyncCli(
+  connections: { alias: string; repository: string }[],
+  calls: string[][],
+  workspace: string,
+): ContextTreeExecFile {
+  return async (_file, args) => {
+    calls.push([...args.slice(1)]);
+    if (args[1] === "resolve") return { stdout: JSON.stringify({ schemaVersion: 2, connections: [] }) };
+    const alias = args[args.indexOf(args[1] === "connect" ? "--as" : "--tree") + 1];
+    const connection = connections.find((entry) => entry.alias === alias);
+    if (!connection) throw new Error("Unknown alias");
+    const tree = { kind: "github", path: join(workspace, connection.alias), repository: connection.repository };
+    const payload =
+      args[1] === "connect"
+        ? { schemaVersion: 2, alias, tree }
+        : {
+            schemaVersion: 2,
+            connections: [
+              {
+                alias,
+                tree,
+                ok: alias === "team",
+                branch: "master",
+                sha: "a".repeat(40),
+                ...(alias === "product" ? { error: { code: "DIRTY_TREE" } } : {}),
+              },
+            ],
+          };
+    if (args[1] === "sync" && alias === "product")
+      throw Object.assign(new Error("exit 1"), { stdout: JSON.stringify(payload) });
+    return { stdout: JSON.stringify(payload) };
+  };
+}
+
+it("detaches a revoked alias before exposing the CLI for another authorized tree", async () => {
+  const f = await fixture({ preserved: {} });
+  await writeFile(join(f.treePath, "draft.md"), "preserved draft");
+  const other = { alias: "team", repository: "acme/team" };
+  const execFile: ContextTreeExecFile = async (...args) => {
+    const response = await f.execFile(...args);
+    if (args[1][1] === "connect")
+      return {
+        stdout: JSON.stringify({
+          schemaVersion: 2,
+          alias: other.alias,
+          tree: { kind: "github", repository: other.repository, path: join(f.workspace, "team") },
+        }),
+      };
+    if (args[1][1] === "sync")
+      return {
+        stdout: JSON.stringify({
+          schemaVersion: 2,
+          connections: [
+            {
+              alias: other.alias,
+              ok: true,
+              tree: { kind: "github", repository: other.repository, path: join(f.workspace, "team") },
+            },
+          ],
+        }),
+      };
+    return response;
+  };
+  const result = await prepareCloudContextTrees(
+    {
+      ...f.input,
+      contextTrees: [...f.input.contextTrees, other],
+      environment: {
+        OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: other.repository, role: "context_tree" }]),
+      },
+    },
+    { contextTreePackage: PACKAGE, execFile },
+  );
+  expect(result.status).toMatchObject({
+    connections: [
+      { alias: "memory", reason: "GITHUB_PERMISSION" },
+      { alias: "team", status: "ready" },
+    ],
+  });
+  expect(f.calls.map((call) => call.args[0])).toEqual(["resolve", "disconnect", "connect", "sync"]);
+  expect(f.calls[1]?.args).toContain("memory");
+  expect(f.calls.filter((call) => call.network).every((call) => !call.args.includes("acme/memory"))).toBe(true);
+  expect(result.binDirectory).toBeDefined();
+  expect(await readFile(join(f.treePath, "draft.md"), "utf8")).toBe("preserved draft");
+});
+it("does not recover a preserved checkout attached under another alias", async () => {
+  const f = await fixture({ preserved: {}, payloads: { connect: { error: { code: "DIRTY_TREE" } } } });
+  const path = join(f.treeHome, ".context-tree", "connections.json");
+  const stored = JSON.parse(await readFile(path, "utf8"));
+  stored.connections[0].alias = "previous";
+  await writeFile(path, JSON.stringify(stored));
+  const result = await prepareCloudContextTrees(f.input, { contextTreePackage: PACKAGE, execFile: f.execFile });
+  expect(result.status).toMatchObject({
+    connections: [{ alias: "memory", status: "unavailable", reason: "DIRTY_TREE" }],
+  });
+  expect(result.binDirectory).toBeUndefined();
 });

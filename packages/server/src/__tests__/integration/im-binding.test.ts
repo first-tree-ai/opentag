@@ -5176,7 +5176,7 @@ describe("IM binding persistence", () => {
       expect(replacement).toMatchObject({
         deliveryId: firstFrame.deliveryId,
         runtime: {
-          contextTreeRepository: null,
+          contextTrees: [],
           revision: {
             agent: { sequence: firstFrame.runtime.revision.agent.sequence + 1 },
             session: { sequence: firstFrame.runtime.revision.session.sequence + 1 },

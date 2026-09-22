@@ -742,7 +742,7 @@ export async function startServer(): Promise<void> {
       cipher: applicationCipher,
       instanceId,
       imBindings: imBindingService,
-      registrations: new DefaultFeishuRegistrationGateway(undefined, feishuRegistrationPolicy),
+      registrations: new DefaultFeishuRegistrationGateway(undefined, feishuRegistrationPolicy, config.publicUrl),
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
@@ -759,6 +759,7 @@ export async function startServer(): Promise<void> {
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
+      onDiagnostic: reportDiagnostic,
       api: slackApi,
       database,
       imBindings: imBindingService,

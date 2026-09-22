@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../app.js";
 
@@ -9,6 +10,11 @@ let root: string;
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "opentag-web-app-static-"));
   await mkdir(join(root, "assets"));
+  await cp(
+    fileURLToPath(new URL("../../../../apps/web/public/bot-avatars", import.meta.url)),
+    join(root, "bot-avatars"),
+    { recursive: true },
+  );
   await writeFile(join(root, "index.html"), "<!doctype html><title>OpenTag</title>");
   await writeFile(join(root, "assets", "app.js"), "globalThis.OPENTAG_APP = true;");
 });
@@ -16,6 +22,23 @@ beforeAll(async () => {
 afterAll(async () => rm(root, { recursive: true, force: true }));
 
 describe("Web App static serving", () => {
+  it("serves all six registration avatars publicly as square PNG files", async () => {
+    const app = createApp({ webAppRoot: root });
+    try {
+      for (const name of ["developer", "engineer", "architect", "artist", "businessman", "sales"]) {
+        const response = await app.inject({ method: "GET", url: `/bot-avatars/v1/${name}.png` });
+        expect(response.statusCode).toBe(200);
+        expect(response.headers["content-type"]).toContain("image/png");
+        expect(response.headers["cache-control"]).toContain("immutable");
+        expect(response.rawPayload.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+        expect(response.rawPayload.readUInt32BE(16)).toBe(512);
+        expect(response.rawPayload.readUInt32BE(20)).toBe(512);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("serves SPA routes with security headers without swallowing API or health paths", async () => {
     const app = createApp({ webAppRoot: root });
     try {
@@ -26,7 +49,7 @@ describe("Web App static serving", () => {
       const policy = String(spa.headers["content-security-policy"]);
       expect(policy).toContain("frame-ancestors 'none'");
       expect(policy).toContain("style-src 'self' 'unsafe-inline'");
-      expect(policy).toContain("img-src 'self' data: https://platform.slack-edge.com");
+      expect(policy).toContain("img-src 'self' data: https:");
       // The analytics tag is a host allowance and nothing more: inline script stays refused, so the
       // published gtag.js snippet cannot run and the Web App queues from its own bundle instead.
       expect(policy).toContain("script-src 'self' https://www.googletagmanager.com");

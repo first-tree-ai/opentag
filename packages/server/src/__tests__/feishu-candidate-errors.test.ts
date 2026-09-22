@@ -29,7 +29,11 @@ describe("official candidate error classification", () => {
         teamBrand,
         channel: null,
       });
-      await expect(adapter.probeBotIdentity()).resolves.toEqual({ openId: "ou_test", activateStatus: 2 });
+      await expect(adapter.probeBotIdentity()).resolves.toEqual({
+        openId: "ou_test",
+        activateStatus: 2,
+        profile: { displayName: null, avatarUrl: null },
+      });
     } finally {
       request.mockRestore();
       token.mockRestore();

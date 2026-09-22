@@ -5,8 +5,6 @@
   "onboarding_v2_agent_name_hint": "这是你在消息应用中 @提及的名称。",
   "onboarding_v2_agent_name_label": "Agent 名称",
   "onboarding_v2_agent_name_too_long_error": "名称不能超过 64 个字符。",
-  "onboarding_v2_agent_runtime_cloud_description": "在 OpenTag 云端运行，无需安装。",
-  "onboarding_v2_agent_runtime_cloud_footnote": "云端 Agent 固定使用 Pi。",
   "onboarding_v2_agent_runtime_footnote": "更多运行时即将推出。",
   "onboarding_v2_agent_runtime_hint": "OpenTag 将使用的编程助手。",
   "onboarding_v2_agent_runtime_label": "Agent 运行时",

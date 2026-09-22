@@ -13,6 +13,11 @@ overrides:
   fast-uri@^4.0.0: 4.1.4
   qs@^6.14.2: 6.16.0
 
+patchedDependencies:
+  '@cloudflare/kumo@2.13.1':
+    hash: 49b076bbc7ddb6a0c227bf441dfd6747d73fe7783f3cbb8f5bf3bef774a94021
+    path: patches/@cloudflare__kumo@2.13.1.patch
+
 importers:
 
   .:
@@ -48,8 +53,8 @@ importers:
   apps/cli:
     dependencies:
       '@first-tree-ai/context-tree':
-        specifier: 0.1.15
-        version: 0.1.15
+        specifier: 0.1.16
+        version: 0.1.16
     devDependencies:
       '@opentag/client':
         specifier: workspace:*
@@ -71,7 +76,7 @@ importers:
     dependencies:
       '@cloudflare/kumo':
         specifier: 2.13.1
-        version: 2.13.1(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)
+        version: 2.13.1(patch_hash=49b076bbc7ddb6a0c227bf441dfd6747d73fe7783f3cbb8f5bf3bef774a94021)(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)
       '@fontsource/dm-sans':
         specifier: 5.3.0
         version: 5.3.0
@@ -192,8 +197,8 @@ importers:
         version: 4.5.4
     devDependencies:
       '@first-tree-ai/context-tree':
-        specifier: 0.1.15
-        version: 0.1.15
+        specifier: 0.1.16
+        version: 0.1.16
       '@types/semver':
         specifier: ^7.8.0
         version: 7.8.0
@@ -219,8 +224,8 @@ importers:
         specifier: ^11.3.0
         version: 11.3.0
       '@first-tree-ai/context-tree':
-        specifier: 0.1.15
-        version: 0.1.15
+        specifier: 0.1.16
+        version: 0.1.16
       '@larksuiteoapi/node-sdk':
         specifier: ^1.73.3
         version: 1.73.3
@@ -1097,8 +1102,8 @@ packages:
   '@fastify/websocket@11.3.0':
     resolution: {integrity: sha512-g89ag4BCcD9YP5wBZXixzoLnuf5j89p/sXFcfpCiv2pdEkYYukBEoK3heVzqsp0EAtszVDc2BBZG0KZqeAShIA==}
 
-  '@first-tree-ai/context-tree@0.1.15':
-    resolution: {integrity: sha512-0c3+La4nUE56zrNHvOuUM5mGD46Dalhb90jHBIONCM56FSpi0JD1w5P/r7u507qju/hW6bakHsmzK08XPc/IRw==}
+  '@first-tree-ai/context-tree@0.1.16':
+    resolution: {integrity: sha512-52iwDcENtwyrKpCBj/k6XU3xOfO1iRK80AXOvjU8CMd3QGjFwJSwizsz1qcveIeO7/FGeYoHZxGmfgsp/niNXg==}
     engines: {node: '>=22.13.0'}
     hasBin: true
 
@@ -5319,7 +5324,7 @@ snapshots:
       '@bytecodealliance/jco-node-fs': 0.3.2
       '@bytecodealliance/preview2-shim': 0.25.0
 
-  '@cloudflare/kumo@2.13.1(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)':
+  '@cloudflare/kumo@2.13.1(patch_hash=49b076bbc7ddb6a0c227bf441dfd6747d73fe7783f3cbb8f5bf3bef774a94021)(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)':
     dependencies:
       '@base-ui/react': 1.8.0(@date-fns/tz@1.5.0)(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@phosphor-icons/react': 2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -5626,12 +5631,12 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@first-tree-ai/context-tree@0.1.15':
+  '@first-tree-ai/context-tree@0.1.16':
     dependencies:
       commander: 15.0.0
       mdast-util-from-markdown: 2.0.3
       yaml: 2.9.0
-      zod: 4.5.4
+      zod: 4.6.5
     transitivePeerDependencies:
       - supports-color
 

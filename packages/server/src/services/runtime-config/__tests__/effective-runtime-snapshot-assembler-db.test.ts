@@ -96,7 +96,7 @@ describe("EffectiveRuntimeSnapshotAssembler database authority", () => {
       reasoningEffort: "high",
       instructions: { agent: "Read the repository instructions." },
       budget: { maxDurationMs: 30_000 },
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: { agent: { sequence: 4 }, session: { sequence: 4 } },
     });
   });

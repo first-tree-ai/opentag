@@ -5,8 +5,6 @@
   "onboarding_v2_agent_name_hint": "The name you'll @mention in your messaging app.",
   "onboarding_v2_agent_name_label": "Agent name",
   "onboarding_v2_agent_name_too_long_error": "Keep the name to 64 characters or fewer.",
-  "onboarding_v2_agent_runtime_cloud_description": "Runs on OpenTag Cloud — nothing to install.",
-  "onboarding_v2_agent_runtime_cloud_footnote": "Cloud agents always run Pi.",
   "onboarding_v2_agent_runtime_footnote": "More runtimes coming soon.",
   "onboarding_v2_agent_runtime_hint": "The coding assistant OpenTag will use.",
   "onboarding_v2_agent_runtime_label": "Agent runtime",

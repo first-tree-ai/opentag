@@ -48,13 +48,20 @@ export interface FeishuRegistrationGateway {
 export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGateway {
   readonly #registerApp: typeof registerApp;
   readonly #policy: ExternalCallPolicy;
+  readonly #avatarUrls: string[];
 
   constructor(
     register: typeof registerApp = registerApp,
     policy: ExternalCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
     }),
+    publicUrl?: string,
   ) {
+    this.#avatarUrls = publicUrl
+      ? ["developer", "engineer", "architect", "artist", "businessman", "sales"].map(
+          (name) => new URL(`/bot-avatars/v1/${name}.png`, publicUrl).href,
+        )
+      : [];
     this.#registerApp = register;
     this.#policy = policy;
   }
@@ -92,7 +99,11 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
             appPreset: {
               name: input.profile.name,
               desc: input.profile.description,
-              ...(input.profile.avatarUrl ? { avatar: input.profile.avatarUrl } : {}),
+              ...(this.#avatarUrls.length
+                ? { avatar: this.#avatarUrls }
+                : input.profile.avatarUrl
+                  ? { avatar: input.profile.avatarUrl }
+                  : {}),
             },
             addons: {
               preset: true,

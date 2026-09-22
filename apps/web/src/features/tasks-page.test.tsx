@@ -112,18 +112,21 @@ function timelineTurn(index: number): TaskDetail["turns"][number] {
       ...base.message,
       id: `message-${index}`,
       fallbackText: `Request ${index}`,
-      // The first pair shares a timestamp: preserve the API's delivery-id tie order as well.
-      occurredAt: `2026-08-27T0${Math.ceil(index / 2)}:00:00.000Z`,
+      occurredAt: new Date(Date.UTC(2026, 7, 27, 0, index * 2)).toISOString(),
     },
-    report: { ...base.report, turnId: `turn-${index}`, finalText: `Response ${index}` },
+    report: {
+      ...base.report,
+      turnId: `turn-${index}`,
+      finalText: `Response ${index}`,
+      reportedAt: new Date(Date.UTC(2026, 7, 27, 0, index * 2 + 1)).toISOString(),
+    },
   };
 }
 
-function displayedExchanges() {
-  return [...document.querySelectorAll('[data-ui="task-exchange"]')].map((exchange) => [
-    exchange.querySelector('[data-ui="task-message-request"] p')?.textContent,
-    exchange.querySelector('[data-ui="task-message-agent"] [data-ui="task-execution-summary"] p')?.textContent,
-  ]);
+function displayedMessages() {
+  return [...document.querySelectorAll('[data-ui="task-message-request"] p, [data-ui="task-execution-summary"] p')].map(
+    (message) => message.textContent,
+  );
 }
 
 describe("Tasks view", () => {
@@ -144,19 +147,20 @@ describe("Tasks view", () => {
     await renderInRouter(<TaskDetailPage taskId={sessionId} />);
     await screen.findByText("Request 3");
 
-    expect(displayedExchanges()).toEqual([
-      ["Request 1", "Response 1"],
-      ["Request 2", "Response 2"],
-      ["Request 3", "Response 3"],
+    expect(displayedMessages()).toEqual([
+      "Request 1",
+      "Response 1",
+      "Request 2",
+      "Response 2",
+      "Request 3",
+      "Response 3",
     ]);
     expect(page.turns.map((turn) => turn.deliveryId)).toEqual(["delivery-3", "delivery-2", "delivery-1"]);
-    for (const exchange of document.querySelectorAll('[data-ui="task-exchange"]')) {
-      expect(exchange.querySelector('[data-ui="task-message-request"] strong')?.textContent).toBe("Mia Zhang");
-      expect(exchange.querySelector('[data-ui="task-message-agent"] strong')?.textContent).toBe("Atlas");
-      expect([...exchange.children].map((element) => element.getAttribute("data-ui"))).toEqual([
-        "task-message-request",
-        "task-message-agent",
-      ]);
+    for (const message of document.querySelectorAll('[data-ui="task-message-request"]')) {
+      expect(message.querySelector("strong")?.textContent).toBe("Mia Zhang");
+    }
+    for (const message of document.querySelectorAll('[data-ui="task-message-agent"]')) {
+      expect(message.querySelector("strong")?.textContent).toBe("Atlas");
     }
   });
 
@@ -182,21 +186,20 @@ describe("Tasks view", () => {
       expect(
         error.compareDocumentPosition(screen.getByText("Request 3")) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
-      expect(displayedExchanges()).toEqual([
-        ["Request 3", "Response 3"],
-        ["Request 4", "Response 4"],
-      ]);
+      expect(displayedMessages()).toEqual(["Request 3", "Response 3", "Request 4", "Response 4"]);
 
       fireEvent.click(earlier);
       await screen.findByText("Request 1");
       expect(request).toHaveBeenLastCalledWith(sessionId, "older");
       expect(screen.queryByRole("alert")).toBeNull();
-      expect(displayedExchanges()).toEqual([1, 2, 3, 4].map((index) => [`Request ${index}`, `Response ${index}`]));
+      expect(displayedMessages()).toEqual([1, 2, 3, 4].flatMap((index) => [`Request ${index}`, `Response ${index}`]));
 
       fireEvent.click(screen.getByRole("button", { name: "Load earlier activity" }));
       await screen.findByText("Request 0");
       expect(request).toHaveBeenLastCalledWith(sessionId, "oldest");
-      expect(displayedExchanges()).toEqual([0, 1, 2, 3, 4].map((index) => [`Request ${index}`, `Response ${index}`]));
+      expect(displayedMessages()).toEqual(
+        [0, 1, 2, 3, 4].flatMap((index) => [`Request ${index}`, `Response ${index}`]),
+      );
       expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
     },
   );
@@ -217,7 +220,7 @@ describe("Tasks view", () => {
       await screen.findByText("Request 2");
       fireEvent.click(screen.getByRole("button", { name: "Refresh Task" }));
       await screen.findByText("Request 3");
-      expect(displayedExchanges()).toEqual([1, 2, 3].map((index) => [`Request ${index}`, `Response ${index}`]));
+      expect(displayedMessages()).toEqual([1, 2, 3].flatMap((index) => [`Request ${index}`, `Response ${index}`]));
     },
   );
 
@@ -403,6 +406,31 @@ describe("Tasks view", () => {
     expect(screen.queryByText(/150 tokens/)).toBeNull();
   });
 
+  it("stays an IM work-record view: no Cloud environment read, section, or controls", async () => {
+    // A Task is a work-record view organized by IM topic; it never queries or manages the runtime
+    // Cloud environments underneath, whatever the Agent's Computer kind.
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    const overview = vi.spyOn(browserApi, "agentCloudOverview");
+    const agent = vi.spyOn(browserApi, "agent");
+    const computers = vi.spyOn(browserApi, "computers");
+
+    await renderInRouter(<TaskDetailPage agentId={agentId} taskId={sessionId} />, {
+      path: `/agents/${agentId}/tasks/${sessionId}`,
+    });
+
+    // The Task's own facts and conversation render exactly as before.
+    expect(await screen.findByLabelText("Task details")).toBeTruthy();
+    expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
+    expect(await screen.findByRole("region", { name: "Activity" })).toBeTruthy();
+    // No environment region or resource control belongs to the page, and no Cloud read fires.
+    expect(screen.queryByRole("region", { name: "Cloud environment" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /release/ })).toBeNull();
+    expect(overview).not.toHaveBeenCalled();
+    expect(agent).not.toHaveBeenCalled();
+    expect(computers).not.toHaveBeenCalled();
+  });
+
   it("keeps generated Task titles read-only and separates useful list metadata into columns", async () => {
     vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
 
@@ -584,7 +612,12 @@ describe("Tasks view", () => {
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("This message was included in the Agent's active work.")).toBeTruthy();
+    expect(
+      within(activity)
+        .getByTitle("This message was included in the Agent's active work.")
+        .closest('[data-ui="task-message-request"]'),
+    ).toBeTruthy();
+    expect(activity.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
     expect(within(activity).getByText("Added to active work")).toBeTruthy();
     expect(within(activity).queryByText(/150 tokens/)).toBeNull();
   });
@@ -987,7 +1020,10 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Sent reply")).toBeTruthy();
+    expect(within(activity).getByText("Text").closest("header")?.getAttribute("data-ui")).toBe(
+      "task-message-author-agent",
+    );
+    expect(within(activity).queryByText("Sent reply")).toBeNull();
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
     expect(within(activity).getByText("Execution summary")).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
@@ -1013,7 +1049,7 @@ describe("Tasks view", () => {
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(within(activity).getByText("No sent replies recorded.")).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
-    expect(within(activity).queryByText("Sent reply")).toBeNull();
+    expect(activity.querySelector('[data-ui="task-sent-reply"]')).toBeNull();
   });
 
   it("keeps successful outbound messages on a failed Turn and labels unavailable legacy data", async () => {
@@ -1047,7 +1083,7 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Sent reply")).toBeTruthy();
+    expect(within(activity).getByText("Image")).toBeTruthy();
     expect(within(activity).getByText(/photo.png/)).toBeTruthy();
     expect(within(activity).getByText("Provider failed")).toBeTruthy();
   });
@@ -1075,11 +1111,14 @@ describe("Tasks view", () => {
       const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
         path: `/tasks/${sessionId}`,
       });
-      await screen.findByText("Sent reply");
-      expect(container.querySelector('[data-ui="task-sent-replies"]')?.textContent).toContain("Actual reply");
-      expect(container.querySelector('[data-ui="task-execution-summary"]')?.textContent ?? "").toBe(
-        finalText ? `Execution summary${finalText}` : "",
-      );
+      await screen.findByText("Actual reply");
+      expect(container.querySelector('[data-ui="task-sent-reply"]')?.textContent).toContain("Actual reply");
+      const summary = container.querySelector('[data-ui="task-execution-summary"]');
+      expect(summary?.querySelector("p") ?? null).toBeNull();
+      if (finalText) {
+        fireEvent.click(screen.getByRole("button", { name: "Execution summary" }));
+        expect(summary?.querySelector("p")?.textContent).toBe(finalText);
+      }
       expect(screen.queryByText("Work is in progress.")).toBeNull();
     },
   );

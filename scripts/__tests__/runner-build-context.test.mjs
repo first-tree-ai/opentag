@@ -30,7 +30,7 @@ async function fixture() {
   return { source, dest };
 }
 
-test("the production allowlist stages the scripts the in-image CLI build requires", async () => {
+test("the production allowlist stages scripts and dependency patches required by the image build", async () => {
   // Regression for the Runner Toolchain image build: apps/cli's build runs
   // `node ../../scripts/copy-web-tools-extension.mjs`, so the staged context must actually carry
   // it. Stage the real repository with the production allowlist and inspect the generated
@@ -45,6 +45,11 @@ test("the production allowlist stages the scripts the in-image CLI build require
     assert.ok(files.includes("scripts/channel-config.mjs"));
     assert.ok(files.includes("scripts/runner/Dockerfile"));
     assert.ok(files.includes("apps/cli/package.json"));
+    const manifest = JSON.parse(await readFile(join(dest, "package.json"), "utf8"));
+    for (const patch of Object.values(manifest.pnpm.patchedDependencies)) {
+      assert.ok(files.includes(patch), `the frozen install requires ${patch}`);
+      assert.equal(await readFile(join(dest, patch), "utf8"), await readFile(join(repositoryRoot, patch), "utf8"));
+    }
   } finally {
     await rm(dest, { recursive: true, force: true });
   }

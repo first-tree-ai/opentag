@@ -11,10 +11,13 @@ import {
   type AgentSummary,
   type AgentUsageDetail,
   type AgentUsageWindowDays,
+  type ContextTreeConnection,
+  ContextTreesSchema,
   type CreateAgentRequest,
   CreateAgentRequestSchema,
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
+  normalizeContextTrees,
   RUNTIME_MAX_DURATION_MS,
   runtimeUsageTotalTokens,
   type UpdateAgentRequest,
@@ -72,6 +75,7 @@ interface ActiveSessionPlacement {
 }
 
 interface AgentSafeRow {
+  avatarUrl?: string | null;
   id: string;
   createdByUserId: string;
   creatorDisplayName: string;
@@ -154,7 +158,7 @@ export interface AgentSessionStopTarget {
 function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
   return AgentRuntimeConfigSchema.parse({
     revision: row.revision,
-    contextTreeRepository: row.contextTreeRepository,
+    contextTrees: row.contextTrees,
     model: row.model,
     reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
@@ -188,6 +192,7 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
   if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as a summary");
   return {
     id: row.id,
+    ...(row.avatarUrl ? { avatarUrl: row.avatarUrl } : {}),
     createdBy: { userId: row.createdByUserId, displayName: row.creatorDisplayName },
     computer: row.computer
       ? {
@@ -278,7 +283,8 @@ function runtimeConfigsEqual(
   right: ReturnType<typeof resolveAgentRuntimeConfig>,
 ): boolean {
   return (
-    left.contextTreeRepository === right.contextTreeRepository &&
+    JSON.stringify(normalizeContextTrees(left.contextTrees)) ===
+      JSON.stringify(normalizeContextTrees(right.contextTrees)) &&
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.instructions === right.instructions &&
@@ -595,6 +601,7 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
+        avatarUrl: imBindings.botAvatarUrl,
         agentComputerId: agents.computerId,
         computerId: computers.id,
         computerDisplayName: computers.displayName,
@@ -610,6 +617,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .orderBy(asc(agents.createdAt), asc(agents.id));
@@ -715,6 +723,7 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
+        avatarUrl: imBindings.botAvatarUrl,
         agentComputerId: agents.computerId,
         computerId: computers.id,
         computerDisplayName: computers.displayName,
@@ -730,6 +739,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
@@ -931,7 +941,7 @@ export class AgentService {
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
       const nextRuntimeConfig = resolveAgentRuntimeConfig({
-        contextTreeRepository: currentRuntimeProjection.contextTreeRepository,
+        contextTrees: currentRuntimeProjection.contextTrees,
         model: input.runtimeConfig?.model !== undefined ? input.runtimeConfig.model : currentRuntimeProjection.model,
         reasoningEffort:
           input.runtimeConfig?.reasoningEffort !== undefined
@@ -984,7 +994,7 @@ export class AgentService {
     callerUserId: string,
     agentId: string,
     expected: Pick<AgentAdminConfig, "revision" | "computerId" | "status"> & { runtimeConfigRevision: number },
-    repository: string | null,
+    connections: ContextTreeConnection[],
   ): Promise<AgentAdminConfig> {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
@@ -1003,7 +1013,7 @@ export class AgentService {
           409,
         );
       }
-      if (runtimeConfig.contextTreeRepository !== null && scope.agent.status !== "suspended") {
+      if (runtimeConfig.contextTrees.length > 0 && scope.agent.status !== "suspended") {
         throw this.#lifecycleConflict("Pause the Agent before changing its Context Tree");
       }
       const now = this.#now();
@@ -1015,7 +1025,7 @@ export class AgentService {
       const [updatedRuntimeConfig] = await transaction
         .update(agentRuntimeConfigs)
         .set({
-          contextTreeRepository: repository,
+          contextTrees: ContextTreesSchema.parse(connections),
           revision: sql`nextval('runtime_config_revision_sequence')`,
           updatedAt: now,
         })

@@ -440,7 +440,7 @@ function delivery(attention: "direct" | "ambient"): DirectImMessageDeliveryReque
       },
     },
     runtime: {
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: {
         agent: { sequence: 1, id: "agent-revision-1" },
         session: { sequence: 1, id: "session-revision-1" },

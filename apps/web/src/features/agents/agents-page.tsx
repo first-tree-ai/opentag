@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useFirstConversationReport } from "../../analytics/milestones.js";
 import { orderAgentIds } from "../../features/agent-list-order.js";
-import { formatCompactNumber, initials } from "../../i18n/format.js";
+import { formatCompactNumber } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import { slackConfigurationMessage } from "../../im/slack-configuration.js";
 import * as m from "../../paraglide/messages.js";
@@ -11,6 +11,7 @@ import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
+import { AgentAvatar } from "./agent-avatar.js";
 import type { AgentListItem } from "./agent-model.js";
 import { agentCardStatus, agentSetupContinuation } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
@@ -92,13 +93,12 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
       data-ui="agent-row"
     >
       <div className="flex min-w-0 items-center gap-3 pr-6 @min-[42rem]/agent-roster:pr-0" data-ui="agent-row-identity">
-        <span
-          className="grid size-10 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold text-kumo-strong"
+        <AgentAvatar
+          displayName={agent.displayName}
+          avatarUrl={agent.avatarUrl}
+          className="size-10 text-sm text-kumo-strong"
           data-ui="agent-row-avatar"
-          aria-hidden="true"
-        >
-          {initials(agent.displayName.replaceAll("-", " "))}
-        </span>
+        />
         <div className="grid min-w-0 gap-1">
           <strong className="truncate text-base">{agent.displayName}</strong>
           {channel ? (

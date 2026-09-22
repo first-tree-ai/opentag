@@ -348,7 +348,21 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       if (missingScopes.length > 0) {
         throw new FeishuOperationError("FEISHU_SCOPE_REAUTH_REQUIRED", missingScopes);
       }
+      let profile: VerifiedFeishuBinding["profile"];
+      try {
+        const bot = await this.#policy.run("feishu.binding.profile", () => candidate.probeBotIdentity(), {
+          signal: input.signal,
+          maxAttempts: 1,
+          timeoutMs: 10_000,
+          circuitKey: `feishu:profile:${input.appId}`,
+        });
+        if (bot.openId === identity.externalBotId) profile = bot.profile;
+        else this.#onDiagnostic("FEISHU_BOT_PROFILE_IDENTITY_MISMATCH");
+      } catch {
+        this.#onDiagnostic("FEISHU_BOT_PROFILE_UNAVAILABLE");
+      }
       const verified: VerifiedFeishuBinding = {
+        profile,
         agentId: input.agentId,
         appId: input.appId,
         teamId: identity.externalTeamId === input.appId ? null : identity.externalTeamId,

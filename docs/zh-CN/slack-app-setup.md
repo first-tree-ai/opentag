@@ -15,6 +15,14 @@ remove/uninstall，使旧 row 保留历史 Agent owner 并进入 disabled，再�
 真实入站消息只属于运行观测；两者都不能创建、完成或激活凭证代际。生产 Events API 仍是带签名的 HTTP，并包含
 `app_uninstalled` 与 `tokens_revoked`。不使用 Socket Mode。
 
+## 机器人头像
+
+安装和重新连接时，OpenTag 使用现有的 `users:read` 权限，通过 `users.info` 读取已安装机器人的资料。
+Slack 共享机器人头像缓存在安装记录中，并同步到关联绑定。OpenTag 不为各个 Agent 或消息单独设置头像。
+资料读取失败不会阻止连接；只有提供方身份一致时才会保留旧缓存。
+现有安装将在重新连接时获取头像。Slack 端后续修改的头像会缓存到下一次重新连接；
+图片缺失或加载失败时，OpenTag 显示名称缩写。
+
 ## 固定的 Slack 能力契约
 
 一等 OpenTag Slack App 在首次连接以及后续重新授权时始终请求完整能力集。`mention_only` 与 `all_message` 共用同一份

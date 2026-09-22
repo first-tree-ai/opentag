@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { WebClient, type WebClientOptions } from "@slack/web-api";
 import { z } from "zod";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
+import { type BotProfile, httpsAvatar } from "../bot-profile.js";
 import type { ProviderResourceInput, ReadableResource } from "../provider-adapter.js";
 import type { SlackApiClient, SlackInstallationInspection, SlackOAuthAccessResult } from "./adapter.js";
 
@@ -43,6 +44,22 @@ export class DefaultSlackApiClient implements SlackApiClient {
         allowedHosts: ["slack.com", "files.slack.com"],
         transport: (input, init) => this.#fetch(input, init),
       });
+  }
+
+  async botProfile(token: string, botUserId: string): Promise<BotProfile> {
+    const result = await this.#policy.run(
+      "slack.users.info",
+      (signal) => this.#createClient(token, signal).users.info({ user: botUserId }),
+      { circuitKey: "slack:users.info", maxAttempts: 1, timeoutMs: 10_000 },
+    );
+    if (!result.ok || result.user?.id !== botUserId || !result.user.profile) {
+      throw new Error("SLACK_BOT_PROFILE_UNAVAILABLE");
+    }
+    const profile = result.user.profile;
+    return {
+      displayName: (profile.display_name || profile.real_name || result.user.name)?.slice(0, 255) || null,
+      avatarUrl: httpsAvatar(profile.image_512 || profile.image_192 || profile.image_72),
+    };
   }
 
   async authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }> {

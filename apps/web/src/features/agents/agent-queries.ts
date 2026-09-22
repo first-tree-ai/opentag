@@ -140,12 +140,12 @@ export function useAgentListQuery(accountId: string, enabled = true) {
 }
 
 /**
- * Names and ids only. The switcher must not subscribe to Computer, binding or handoff evidence for
+ * Cached identity and avatar only. The switcher must not subscribe to Computer, binding or handoff evidence for
  * every Agent — those reads belong to surfaces that actually display availability.
  */
 export function useAgentIdentityList(
   accountId: string,
-): LoadState<{ agents: readonly { id: string; displayName: string }[] }> {
+): LoadState<{ agents: readonly { id: string; displayName: string; avatarUrl?: string | null }[] }> {
   const agentsQuery = useAgentListQuery(accountId);
   const agentsError = usePersistedSettledError(queryKeys.agents.list(accountId), agentsQuery);
   if (agentsError && isTerminalResourceError(agentsError)) return { kind: "error", error: agentsError };

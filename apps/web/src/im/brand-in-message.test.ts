@@ -27,22 +27,6 @@ function disconnectCopy(provider: "feishu" | "slack") {
   };
 }
 
-/**
- * The unconnected-state sentence, composed the way `im-tab.tsx` composes it.
- *
- * It names both brands in one line, so it is the case where a hard-coded space cannot be right:
- * whichever brand the catalogue spaced for, the other one is wrong. The template carries no spacing
- * of its own and lets the boundary rule place it around whichever brand turns out to be Latin.
- */
-function connectCopy() {
-  return spaceScriptBoundary(
-    m.im_messaging_connect_description({
-      alternateProvider: messagingProviderLabel("feishu"),
-      provider: messagingProviderLabel("slack"),
-    }),
-  );
-}
-
 describe("a brand inside a finished Chinese sentence", () => {
   it("joins a Chinese brand to the text with no space", () => {
     withLocale("zh", () => {
@@ -70,17 +54,10 @@ describe("a brand inside a finished Chinese sentence", () => {
     });
   });
 
-  it("spaces a Latin brand and a Chinese one correctly in the same sentence", () => {
-    withLocale("zh", () => {
-      expect(connectCopy()).toBe("连接 Slack 或飞书，让团队成员可以向此 Agent 发送消息。");
-    });
-  });
-
   it("leaves the English sentences spaced as English already spaces them", () => {
     withLocale("en", () => {
       expect(disconnectCopy("feishu").title).toBe("Disconnect Lark?");
       expect(disconnectCopy("slack").title).toBe("Disconnect Slack?");
-      expect(connectCopy()).toBe("Connect Slack or Lark so teammates can send messages to this Agent.");
     });
   });
 });

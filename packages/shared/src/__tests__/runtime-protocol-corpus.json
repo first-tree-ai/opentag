@@ -3,7 +3,7 @@
     "name": "effective-runtime-snapshot",
     "schema": "EffectiveRuntimeSnapshotSchema",
     "payload": {
-      "contextTreeRepository": null,
+      "contextTrees": [],
       "revision": {
         "agent": { "sequence": 4, "id": "agent-1" },
         "session": { "sequence": 9, "id": "session-1" }
@@ -58,7 +58,7 @@
         "resources": [{ "imMessageId": "message-1", "ordinal": 0, "kind": "file", "availability": "unavailable" }]
       },
       "runtime": {
-        "contextTreeRepository": null,
+        "contextTrees": [],
         "revision": {
           "agent": { "sequence": 4, "id": "agent-1" },
           "session": { "sequence": 9, "id": "session-1" }

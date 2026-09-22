@@ -17,7 +17,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: 7,
     model: null,
     reasoningEffort: null,
@@ -118,12 +118,10 @@ describe("Cloud model settings", () => {
     mount();
     await screen.findByRole("button", { name: "Retry model list" });
     expect((screen.getByRole("combobox", { name: "Model" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Run test" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText("claude-sonnet-4")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry model list" }));
     await screen.findByText("Platform default (router-model-a)");
     expect(read).toHaveBeenCalledTimes(2);
-    expect((screen.getByRole("button", { name: "Run test" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows a retired saved model and allows an explicit reset to the platform default", async () => {
@@ -132,7 +130,6 @@ describe("Cloud model settings", () => {
     const { save } = mount(saved);
     await screen.findAllByText("This model is no longer available. Select the platform default or an available model.");
     expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain("retired-model");
-    expect((screen.getByRole("button", { name: "Run test" }) as HTMLButtonElement).disabled).toBe(true);
     expect(save).not.toHaveBeenCalled();
     await selectModel("Platform default (router-model-a)");
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
@@ -152,27 +149,16 @@ describe("Cloud model settings", () => {
     await client.refetchQueries({ queryKey: queryKeys.cloudModelOptions() });
     await screen.findByRole("button", { name: "Retry model list" });
     expect((screen.getByRole("combobox", { name: "Model" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Run test" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("tests hosted model connectivity without a Local connection and explains the limited scope", async () => {
+  it("offers no connection test or troubleshooting flow — the platform owns Cloud execution", async () => {
     vi.spyOn(browserApi, "cloudModelOptions").mockResolvedValue(options);
-    const test = vi.spyOn(browserApi, "testAgentRuntime").mockResolvedValue({ status: "passed" });
+    const test = vi.spyOn(browserApi, "testAgentRuntime");
     mount();
     await screen.findByText("Platform default (router-model-a)");
-    expect(screen.getByText("Test hosted model connection")).toBeTruthy();
-    expect(screen.getByText(/it does not test the Sandbox, Pi, or messaging/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
-    await screen.findByText(
-      "The hosted model connection passed. Sandbox and task execution still need a real task check.",
-    );
-    expect(test).toHaveBeenCalledWith(
-      config.id,
-      {
-        expectedRevision: config.revision,
-        expectedRuntimeConfigRevision: config.runtimeConfig.revision,
-      },
-      expect.any(AbortSignal),
-    );
+    expect(screen.queryByRole("heading", { name: "Troubleshooting" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run test" })).toBeNull();
+    expect(screen.queryByText(/Sandbox/)).toBeNull();
+    expect(test).not.toHaveBeenCalled();
   });
 });

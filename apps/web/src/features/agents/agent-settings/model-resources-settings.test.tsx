@@ -52,7 +52,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: 7,
     model: "gpt-5.6-terra",
     reasoningEffort: "high",

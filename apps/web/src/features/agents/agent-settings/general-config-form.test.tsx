@@ -15,7 +15,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: 7,
     model: null,
     reasoningEffort: null,

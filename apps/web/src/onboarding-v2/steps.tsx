@@ -7,7 +7,6 @@ import { Button, Icon, KumoInputControl, Text } from "../ui/design-system.js";
 import { BrandMark } from "./brand-mark.js";
 import {
   type AgentDraft,
-  CLOUD_RUNTIME,
   DEFAULT_AGENT_NAME,
   type Destination,
   draftIsSubmittable,
@@ -306,27 +305,7 @@ function RuntimeMark({ runtime }: { runtime: Runtime }) {
 }
 
 function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
-  // Cloud runs the managed Pi runtime: there is nothing to install and nothing to choose. The
-  // fixed fact is presented read-only so the choice the Local flow offers is never implied here.
-  if (draft.destination === "cloud") {
-    return (
-      <fieldset className={FIELDSET}>
-        <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
-        <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices" data-fixed="cloud">
-          <li>
-            <div className={CARD} data-ui="onboarding-v2-runtime-fixed">
-              <RuntimeMark runtime={CLOUD_RUNTIME} />
-              <CardCopy
-                description={m.onboarding_v2_agent_runtime_cloud_description()}
-                title={runtimeTitle(CLOUD_RUNTIME)}
-              />
-            </div>
-          </li>
-        </ul>
-        <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_agent_runtime_cloud_footnote()}</p>
-      </fieldset>
-    );
-  }
+  if (draft.destination === "cloud") return null;
   return (
     <fieldset className={FIELDSET}>
       <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>

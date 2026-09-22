@@ -364,6 +364,7 @@ function internalToolsFixtureResponse(input: {
 
 export function installApi(
   options: {
+    avatarUrl?: string;
     agentCreator?: { userId: string; displayName: string };
     agentRead?: () => Promise<void> | void;
     agentReadStatus?: () => number | undefined;
@@ -443,7 +444,7 @@ export function installApi(
     computerId,
     revision,
     runtimeConfig: {
-      contextTreeRepository: null,
+      contextTrees: [],
       revision: 1,
       model: null,
       reasoningEffort: null,
@@ -469,6 +470,7 @@ export function installApi(
         : [
             {
               ...agentListItem,
+              avatarUrl: options.avatarUrl,
               createdBy: options.agentCreator ?? agentListItem.createdBy,
               activity: options.agentActivity ?? agentListItem.activity,
               status: lifecycleStatus,
@@ -777,6 +779,7 @@ export function installApi(
       }
       return json({
         ...agentSummary,
+        avatarUrl: options.avatarUrl,
         createdBy: options.agentCreator ?? agentSummary.createdBy,
         runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,

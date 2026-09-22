@@ -6,9 +6,24 @@ import { Button, buttonClassName, StatusIndicator, Text } from "../../../ui/desi
 import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { accountComputerLink } from "../agent-routes.js";
-import { CloudComputerSettings } from "../cloud/cloud-environment.js";
 import { type ComputerConnection, ComputerIdentity } from "../computer-status.js";
 import { AgentSettingsPageHeader } from "./settings-layout.js";
+
+/**
+ * A Cloud Computer is managed by the platform: nothing is installed, connected, or repaired here,
+ * so the panel states that one fact under the normal heading and nothing more.
+ */
+function CloudComputerSettings() {
+  return (
+    <div className="grid gap-6">
+      <AgentSettingsPageHeader
+        description={m.cloud_computer_managed()}
+        id="computer-heading"
+        title={m.agents_status_computer()}
+      />
+    </div>
+  );
+}
 
 /** The Agent's placement. Machine maintenance belongs to the Account. */
 export function AgentComputerSettings({
@@ -20,7 +35,7 @@ export function AgentComputerSettings({
 }) {
   const machine = agent.availability.dependencies.computer;
   if (agent.computer) {
-    if (agent.computerKind === "cloud") return <CloudComputerSettings agent={agent} />;
+    if (agent.computerKind === "cloud") return <CloudComputerSettings />;
     if (agent.computerKind === undefined && machine.state === "unconfirmed") {
       return <UnconfirmedComputerSettings computer={agent.computer} onAgentChanged={onAgentChanged} />;
     }

@@ -30,13 +30,7 @@ export const queryKeys = {
     feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,
     imBindingHandoff: (agentId: string) => ["agents", agentId, "imBindingHandoff"] as const,
     usage: (agentId: string, windowDays: AgentUsageWindowDays) => ["agents", agentId, "usage", windowDays] as const,
-    /**
-     * Cloud environment overviews for one Agent: the paginated list root, plus each Session-scoped
-     * read hanging off it, so invalidating the root retires every view of that Agent's Cloud state.
-     */
-    cloudOverview: (agentId: string) => ["agents", agentId, "cloud"] as const,
-    cloudOverviewSession: (agentId: string, sessionId: string) =>
-      ["agents", agentId, "cloud", "session", sessionId] as const,
+    progressNotice: (agentId: string) => ["agents", agentId, "progress-notice"] as const,
     /** Everything held for one Agent, for a write that invalidates the Agent as a whole. */
     all: (agentId: string) => ["agents", agentId] as const,
   },

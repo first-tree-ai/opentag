@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ContextTreeConnection } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type ContextTreeExecFile,
@@ -11,203 +12,202 @@ import {
 } from "../runtime/context-tree.js";
 
 const directories: string[] = [];
-afterEach(async () => Promise.all(directories.splice(0).map((path) => rm(path, { force: true, recursive: true }))));
+afterEach(async () => {
+  vi.useRealTimers();
+  await Promise.all(directories.splice(0).map((path) => rm(path, { force: true, recursive: true })));
+});
+const trees = [
+  { alias: "team", repository: "acme/team" },
+  { alias: "product", repository: "acme/product" },
+] as const;
 
 async function fixture(
   options: {
-    fail?: string;
-    delay?: number;
-    sessionStartBudgetMs?: number;
-    packaged?: boolean;
+    failure?: string;
+    delayAlias?: string;
+    managed?: boolean;
+    packageMissing?: boolean;
     platform?: NodeJS.Platform;
-    environment?: NodeJS.ProcessEnv;
-    managedCredentials?: boolean;
   } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "opentag-context-tree-"));
   directories.push(home);
   const calls: string[][] = [];
   const environments: Array<NodeJS.ProcessEnv | undefined> = [];
-  const execFile: ContextTreeExecFile = async (_file, args, execOptions) => {
+  let attachments: ContextTreeConnection[] = [];
+  let fail = options.failure;
+  const execFile: ContextTreeExecFile = async (_file, args, execution) => {
+    const command = args[1];
     calls.push([...args.slice(1)]);
-    environments.push(execOptions.env);
-    if (options.delay) await new Promise((resolve) => setTimeout(resolve, options.delay));
-    if (options.fail) return { stdout: JSON.stringify({ error: { code: options.fail } }) };
-    return {
-      stdout: JSON.stringify(
-        args[1] === "connect" ? { tree: { path: `/trees/${args[2]}` } } : { installed: [{ host: "codex" }] },
-      ),
-    };
+    environments.push(execution.env);
+    const alias = args[args.indexOf("--as") + 1] ?? "";
+    if (command === "resolve")
+      return {
+        stdout: JSON.stringify({
+          schemaVersion: 2,
+          connections: attachments.map((entry) => ({
+            alias: entry.alias,
+            projectPath: home,
+            ok: true,
+            tree: { kind: "github", path: `/trees/${entry.alias}`, repository: entry.repository },
+          })),
+        }),
+      };
+    if (command === "disconnect") {
+      attachments = attachments.filter((entry) => entry.alias !== args[args.indexOf("--tree") + 1]);
+      return { stdout: JSON.stringify({ disconnected: true }) };
+    }
+    if (command === "connect") {
+      if (alias === options.delayAlias) await new Promise((done) => setTimeout(done, 80));
+      if (alias === "product" && fail) return { stdout: JSON.stringify({ error: { code: fail } }) };
+      attachments = [...attachments.filter((entry) => entry.alias !== alias), { alias, repository: args[2] ?? "" }];
+      return {
+        stdout: JSON.stringify({
+          schemaVersion: 2,
+          alias,
+          tree: { kind: "github", repository: args[2], path: `/trees/${alias}` },
+        }),
+      };
+    }
+    return { stdout: JSON.stringify({ installed: [{ host: "codex" }] }) };
   };
   const manager = new ContextTreeManager({
     home,
-    environment: { HOME: home, ...options.environment },
+    environment: { HOME: home, GITHUB_TOKEN: "ambient" },
     execFile,
-    contextTreePackage:
-      options.packaged === false ? null : { root: home, cliPath: join(home, "cli.mjs"), skillsPath: home },
-    ...(options.managedCredentials ? { managedCredentials: true } : {}),
-    sessionStartBudgetMs: options.sessionStartBudgetMs ?? 1000,
-    failureCooldownMs: 100,
+    contextTreePackage: options.packageMissing
+      ? null
+      : { root: home, cliPath: join(home, "cli.mjs"), skillsPath: home },
+    managedCredentials: options.managed,
+    sessionStartBudgetMs: options.delayAlias ? 30 : 1000,
+    failureCooldownMs: 50,
     platform: options.platform ?? "linux",
   });
-  return { home, cwd: join(home, "agent"), manager, calls, environments };
+  return {
+    home,
+    cwd: join(home, "workspace"),
+    calls,
+    environments,
+    manager,
+    setFailure: (value?: string) => {
+      fail = value;
+    },
+  };
 }
 
-describe("per-Agent ContextTreeManager", () => {
-  it("ignores legacy computer configuration and disconnects a disabled Agent without deleting memory", async () => {
-    const { home, cwd, manager, calls } = await fixture();
-    await mkdir(join(home, ".context-tree"));
-    await writeFile(
-      join(home, ".context-tree", "opentag.json"),
-      JSON.stringify({ schemaVersion: 1, target: { kind: "managed", name: "legacy" } }),
-    );
-    expect(await manager.ensureAgent(cwd, "codex", null)).toEqual({ status: "unconfigured" });
-    expect(calls).toEqual([["disconnect", "--project-path", cwd, "--json"]]);
-    expect(await readFile(join(home, ".context-tree", "opentag.json"), "utf8")).toContain("legacy");
-  });
-  it("uses the selected repository and caches each workspace, repository and provider", async () => {
-    const { cwd, manager, calls } = await fixture();
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory")).toEqual({
-      status: "ready",
-      treePath: "/trees/acme/memory",
+describe("named Context Tree preparation", () => {
+  it("connects each alias, caches the complete unordered set and installs skills once", async () => {
+    const f = await fixture();
+    expect(await f.manager.ensureAgent(f.cwd, "codex", trees)).toEqual({
+      status: "configured",
+      connections: trees.map((entry) => ({ ...entry, status: "ready", treePath: `/trees/${entry.alias}` })),
     });
-    await manager.ensureAgent(cwd, "pi", "acme/memory");
-    expect(calls).toHaveLength(1);
-    await manager.ensureAgent(cwd, "codex", "acme/memory");
-    expect(calls).toHaveLength(4);
-    await manager.ensureAgent(cwd, "pi", "other/memory");
-    await manager.ensureAgent(`${cwd}-other`, "pi", "acme/memory");
-    expect(calls.filter(([command]) => command === "connect")).toHaveLength(4);
+    expect(f.calls.filter(([command]) => command === "install")).toHaveLength(2);
+    await f.manager.ensureAgent(f.cwd, "codex", [...trees].reverse());
+    expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(2);
+    expect(f.calls.filter(([command]) => command === "install")).toHaveLength(2);
+    expect(f.calls.filter(([command]) => command === "resolve")).toHaveLength(2);
+    await f.manager.ensureAgent(f.cwd, "pi", trees);
+    expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(4);
+    expect(await readFile(join(f.manager.binDirectory(), "context-tree"), "utf8")).toContain(process.execPath);
   });
-  it("installs provider skills and a shim pinned to the current Node", async () => {
-    const { cwd, manager, calls } = await fixture();
-    await manager.ensureAgent(cwd, "claude-code", "acme/memory");
-    expect(calls).toContainEqual(["install", "--host", "claude", "--project", cwd]);
-    expect(calls).toContainEqual(["install", "--host", "codex"]);
-    const shim = join(manager.binDirectory(), "context-tree");
-    expect(await readFile(shim, "utf8")).toContain(process.execPath);
-    expect((await stat(shim)).mode & 0o777).toBe(0o700);
+  it("disconnects only obsolete aliases, preserving the other attachment and legacy files", async () => {
+    const f = await fixture();
+    await mkdir(join(f.home, ".context-tree"));
+    await writeFile(join(f.home, ".context-tree", "opentag.json"), "legacy");
+    await f.manager.ensureAgent(f.cwd, "pi", trees);
+    await f.manager.ensureAgent(f.cwd, "pi", [trees[1]]);
+    expect(f.calls).toContainEqual(["disconnect", "--tree", "team", "--project-path", f.cwd, "--json"]);
+    expect(await f.manager.ensureAgent(f.cwd, "pi", [])).toEqual({ status: "unconfigured" });
+    expect(f.calls).toContainEqual(["disconnect", "--tree", "product", "--project-path", f.cwd, "--json"]);
+    expect(await readFile(join(f.home, ".context-tree", "opentag.json"), "utf8")).toBe("legacy");
   });
-  it.each(["INVALID_TREE", "GITHUB_AUTH", "TIMEOUT"])("keeps failures optional and cools down %s", async (fail) => {
-    const { cwd, manager, calls } = await fixture({ fail });
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory")).toEqual({ status: "unavailable", reason: fail });
-    await manager.ensureAgent(cwd, "pi", "acme/memory");
-    expect(calls).toHaveLength(1);
-    await manager.ensureAgent(cwd, "pi", "other/memory");
-    expect(calls).toHaveLength(2);
+  it("retains healthy results while failed aliases observe their retry cooldown", async () => {
+    const f = await fixture({ failure: "GITHUB_AUTH" });
+    expect(await f.manager.ensureAgent(f.cwd, "pi", trees)).toMatchObject({
+      connections: [{ status: "ready" }, { status: "unavailable", reason: "GITHUB_AUTH" }],
+    });
+    f.setFailure();
+    await f.manager.ensureAgent(f.cwd, "pi", trees);
+    expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(2);
+    await new Promise((done) => setTimeout(done, 60));
+    expect(await f.manager.ensureAgent(f.cwd, "pi", trees)).toMatchObject({
+      connections: [{ status: "ready" }, { status: "ready" }],
+    });
+    expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(3);
   });
-  it("returns within startup budget, shares pending work, and caches its terminal result", async () => {
-    const { cwd, manager, calls } = await fixture({ delay: 40, sessionStartBudgetMs: 5 });
+  it("retains completed results on startup budget expiry and joins background work", async () => {
+    const f = await fixture({ delayAlias: "product" });
     const results = await Promise.all([
-      manager.ensureAgent(cwd, "pi", "acme/memory"),
-      manager.ensureAgent(cwd, "pi", "acme/memory"),
+      f.manager.ensureAgent(f.cwd, "pi", trees),
+      f.manager.ensureAgent(f.cwd, "pi", trees),
     ]);
-    expect(results).toEqual(Array(2).fill({ status: "unavailable", reason: "PREPARING" }));
-    await vi.waitFor(async () =>
-      expect(await manager.ensureAgent(cwd, "pi", "acme/memory")).toMatchObject({ status: "ready" }),
-    );
-    expect(calls).toHaveLength(1);
-  });
-  it("serializes settings work and disconnect behind background preparation", async () => {
-    const { cwd, manager, calls } = await fixture({ delay: 20, sessionStartBudgetMs: 2 });
-    await manager.ensureAgent(cwd, "pi", "acme/memory");
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
-    const settings = manager.runExclusive(async () => {
-      calls.push(["settings"]);
+    for (const result of results)
+      expect(result).toMatchObject({
+        connections: [{ status: "ready" }, { status: "unavailable", reason: "PREPARING" }],
+      });
+    await f.manager.runExclusive(async () => undefined);
+    expect(await f.manager.ensureAgent(f.cwd, "pi", trees)).toMatchObject({
+      connections: [{ status: "ready" }, { status: "ready" }],
     });
-    await manager.ensureAgent(cwd, "pi", null);
-    await settings;
-    await vi.waitFor(() => expect(calls).toHaveLength(3));
-    await manager.runExclusive(async () => undefined);
-    expect(calls.map(([command]) => command)).toEqual(["connect", "settings", "disconnect"]);
+    expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(2);
+  });
+  it("serializes configuration changes behind unfinished preparation", async () => {
+    const f = await fixture({ delayAlias: "product" });
+    await f.manager.ensureAgent(f.cwd, "pi", trees);
+    await f.manager.ensureAgent(f.cwd, "pi", []);
+    await f.manager.runExclusive(async () => {
+      f.calls.push(["settings"]);
+    });
+    expect(f.calls.map(([command]) => command)).toEqual([
+      "resolve",
+      "connect",
+      "connect",
+      "resolve",
+      "disconnect",
+      "disconnect",
+      "settings",
+    ]);
   });
   it.each([
-    { packaged: false, reason: "PACKAGE_MISSING" },
+    { packageMissing: true, reason: "PACKAGE_MISSING" },
     { platform: "win32" as const, reason: "SHIM_UNAVAILABLE" },
-  ])("reports $reason", async (options) => {
-    const { cwd, manager } = await fixture(options);
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory")).toEqual({
-      status: "unavailable",
-      reason: options.reason,
+  ])("applies $reason to every configured alias", async (options) => {
+    const f = await fixture(options);
+    expect(await f.manager.ensureAgent(f.cwd, "pi", trees)).toMatchObject({
+      connections: trees.map((entry) => ({ ...entry, status: "unavailable", reason: options.reason })),
     });
   });
-});
-
-describe("managed credential Context Tree preparation", () => {
-  it("fails clearly without an execution-local environment and never runs the CLI", async () => {
-    const { cwd, manager, calls } = await fixture({ managedCredentials: true });
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory")).toEqual({
-      status: "unavailable",
-      reason: "AUTHENTICATION_REQUIRED",
-    });
-    expect(calls).toHaveLength(0);
+  it("reports no configured trees without requiring a working shim", async () => {
+    const f = await fixture({ platform: "win32" });
+    expect(await f.manager.ensureAgent(f.cwd, "codex", [])).toEqual({ status: "unconfigured" });
+    expect(f.calls.map(([command]) => command)).toEqual(["resolve"]);
   });
-
-  it("runs the CLI with the execution proxy environment and unsets ambient credentials", async () => {
-    const { cwd, manager, calls, environments } = await fixture({
-      managedCredentials: true,
-      environment: { GITHUB_TOKEN: "ambient", HTTPS_PROXY: "http://ambient.invalid" },
-    });
-    const execution = {
+  it("rechecks grants before cached results and removes revoked aliases without networking", async () => {
+    const f = await fixture({ managed: true });
+    const grant = (entries: readonly ContextTreeConnection[]) => ({
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify(
+        entries.map((entry) => ({ fullName: entry.repository, role: "context_tree" })),
+      ),
       GITHUB_TOKEN: undefined,
-      GIT_SSL_CAINFO: "/execution/ca.pem",
-      HTTPS_PROXY: "http://127.0.0.1:43123",
-      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "Acme/Memory", role: "context_tree" }]),
-      SSL_CERT_FILE: "/execution/ca.pem",
-    };
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", execution)).toEqual({
-      status: "ready",
-      treePath: "/trees/acme/memory",
     });
-    expect(calls).toHaveLength(1);
-    expect(environments[0]).toMatchObject({
-      GIT_SSL_CAINFO: "/execution/ca.pem",
-      HTTPS_PROXY: "http://127.0.0.1:43123",
+    await f.manager.ensureAgent(f.cwd, "pi", trees, grant(trees));
+    const previousConnects = f.calls.filter(([command]) => command === "connect").length;
+    expect(await f.manager.ensureAgent(f.cwd, "pi", trees, grant([trees[0]]))).toMatchObject({
+      connections: [{ status: "ready" }, { status: "unavailable", reason: "GITHUB_PERMISSION" }],
     });
-    expect(environments[0]).not.toHaveProperty("GITHUB_TOKEN");
-  });
-
-  it("rejects a repository outside the execution grant before the CLI runs", async () => {
-    const { cwd, manager, calls } = await fixture({ managedCredentials: true });
-    const execution = { OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "other/memory" }]) };
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", execution)).toEqual({
-      status: "unavailable",
-      reason: "GITHUB_PERMISSION",
+    expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(previousConnects);
+    expect(f.calls).toContainEqual(["disconnect", "--tree", "product", "--project-path", f.cwd, "--json"]);
+    expect(f.environments[0]).not.toHaveProperty("GITHUB_TOKEN");
+    const callsBeforeMissingEnvironment = f.calls.length;
+    expect(await f.manager.ensureAgent(f.cwd, "pi", trees)).toMatchObject({
+      connections: [{ reason: "AUTHENTICATION_REQUIRED" }, { reason: "AUTHENTICATION_REQUIRED" }],
     });
-    expect(calls).toHaveLength(0);
-  });
-
-  it("requires a Context Tree role even when the same repository has code access", async () => {
-    const { cwd, manager, calls } = await fixture({ managedCredentials: true });
-    const execution = { OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "code" }]) };
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", execution)).toEqual({
-      status: "unavailable",
-      reason: "GITHUB_PERMISSION",
+    expect(f.calls).toHaveLength(callsBeforeMissingEnvironment);
+    expect(await f.manager.ensureAgent(f.cwd, "pi", trees, grant([trees[0]]))).toMatchObject({
+      connections: [{ status: "ready" }, { reason: "GITHUB_PERMISSION" }],
     });
-    expect(calls).toHaveLength(0);
-  });
-
-  it("checks current authority before returning a cached ready tree", async () => {
-    const { cwd, manager, calls } = await fixture({ managedCredentials: true });
-    const execution = {
-      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "context_tree" }]),
-    };
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", execution)).toMatchObject({ status: "ready" });
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory")).toEqual({
-      status: "unavailable",
-      reason: "AUTHENTICATION_REQUIRED",
-    });
-    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", { OPENTAG_GITHUB_REPOSITORIES: "[]" })).toEqual({
-      status: "unavailable",
-      reason: "GITHUB_PERMISSION",
-    });
-    expect(calls).toHaveLength(1);
-  });
-
-  it("keeps the legacy ambient environment when managed credentials are not active", async () => {
-    const { cwd, manager, environments } = await fixture({ environment: { GITHUB_TOKEN: "ambient" } });
-    await manager.ensureAgent(cwd, "pi", "acme/memory");
-    expect(environments[0]?.GITHUB_TOKEN).toBe("ambient");
+    expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(previousConnects);
   });
 });
 

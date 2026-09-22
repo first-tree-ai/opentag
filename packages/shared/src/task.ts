@@ -6,6 +6,7 @@ import {
   ImAuthorKindSchema,
   ImConversationKindSchema,
   ImMessageOperationSchema,
+  ImResourceDescriptorSchema,
 } from "./im-message.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
@@ -83,6 +84,9 @@ export const TaskTitleUpdateResponseSchema = z.object({ task: TaskSummarySchema 
  */
 export const TaskCancelResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
+/** Browser-safe attachment metadata; provider resource keys remain on the Server. */
+export const TaskAttachmentSchema = ImResourceDescriptorSchema.omit({ providerResourceKey: true });
+
 export const TaskTurnSchema = z
   .object({
     deliveryId: z.string().uuid(),
@@ -108,6 +112,8 @@ export const TaskTurnSchema = z
         authorKind: ImAuthorKindSchema,
         authorDisplayName: z.string().nullable(),
         fallbackText: z.string(),
+        // Optional for stored fixtures and Servers that predate attachment projection.
+        attachments: z.array(TaskAttachmentSchema).max(16).optional(),
         truncated: z.boolean(),
         occurredAt: z.string().datetime(),
       })
@@ -190,6 +196,7 @@ export type TaskTitleUpdateRequest = z.infer<typeof TaskTitleUpdateRequestSchema
 export type TaskTitleUpdateResponse = z.infer<typeof TaskTitleUpdateResponseSchema>;
 export type TaskCancelResponse = z.infer<typeof TaskCancelResponseSchema>;
 export type TaskTurn = z.infer<typeof TaskTurnSchema>;
+export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
 export type TaskInternalSession = z.infer<typeof TaskInternalSessionSchema>;
 export type TaskCollaborationMessage = z.infer<typeof TaskCollaborationMessageSchema>;
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;

@@ -110,12 +110,12 @@ describe("OpenTag Web App Shell", () => {
         .getAllByRole("link")
         .map((item) => item.textContent),
       /*
-       * MCP Servers is present with no Internal Tools flag: it is an ordinary management surface,
-       * unlike Skills and Integrations which the next test gates.
+       * MCP Servers and Context Tree are present with no Internal Tools flag: they are ordinary
+       * management surfaces, unlike Skills and Integrations which the next test gates.
        */
-    ).toEqual(["Overview", "Tasks", "MCP Servers", "Usage"]);
+    ).toEqual(["Overview", "Tasks", "Context Tree", "MCP Servers", "Usage"]);
     const navigationIcons = workspaceNavigation.querySelectorAll("svg");
-    expect(navigationIcons).toHaveLength(4);
+    expect(navigationIcons).toHaveLength(5);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
     expect(within(workspaceNavigation).queryByText("Settings")).toBeNull();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
@@ -165,7 +165,7 @@ describe("OpenTag Web App Shell", () => {
         within(workspaceNavigation)
           .getAllByRole("link")
           .map((item) => item.textContent),
-      ).toEqual(["Overview", "Tasks", "MCP Servers", "Skills", "Usage"]),
+      ).toEqual(["Overview", "Tasks", "Context Tree", "MCP Servers", "Skills", "Usage"]),
     );
     expect(within(workspaceNavigation).queryByRole("link", { name: "Integrations" })).toBeNull();
   });

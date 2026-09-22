@@ -40,6 +40,9 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByLabelText("More Agent actions")).toBeNull();
     const agentNavigation = await screen.findByRole("navigation", { name: "Agent" });
     expect(within(agentNavigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
+    expect(within(agentNavigation).getByRole("link", { name: "Context Tree" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/context-tree`,
+    );
     expect(within(agentNavigation).queryByText("Settings")).toBeNull();
     expect(screen.queryByText("Runtime")).toBeNull();
   });
@@ -198,7 +201,7 @@ describe("OpenTag Web App Shell", () => {
     const setup = await screen.findByRole("region", { name: "Agent setup" });
     expect(
       [...setup.querySelectorAll('[data-ui="agent-settings-entry"] strong')].map((entry) => entry.textContent),
-    ).toEqual(["Name", "Messaging", "Computer", "Context Tree", "Instructions", "Model"]);
+    ).toEqual(["Name", "Messaging", "Computer", "Instructions", "Model"]);
     const dangerZone = screen.getByRole("region", { name: "Danger zone" });
     expect(within(dangerZone).getByRole("heading", { name: "Danger zone" })).toBeTruthy();
     expect(dangerZone.className).not.toContain("border-t");

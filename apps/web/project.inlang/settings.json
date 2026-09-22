@@ -14,6 +14,7 @@
       "./messages/account/{locale}.json",
       "./messages/agents/{locale}.json",
       "./messages/computer-connect/{locale}.json",
+      "./messages/computer/{locale}.json",
       "./messages/agent-settings/{locale}.json",
       "./messages/agent-create/{locale}.json",
       "./messages/tasks/{locale}.json",

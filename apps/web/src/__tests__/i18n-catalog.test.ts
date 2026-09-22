@@ -16,6 +16,8 @@ const areas = [
   "account",
   "agents",
   "cloud",
+  "computer",
+  "computer-connect",
   "agent-settings",
   "agent-create",
   "tasks",

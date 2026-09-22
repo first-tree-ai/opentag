@@ -7,6 +7,7 @@ import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSour
 import {
   type AgentSettingsSectionLink,
   type AgentSetupLink,
+  accountComputerLink,
   agentSettingsSectionLink,
   agentSetupLink,
 } from "./agent-routes.js";
@@ -348,12 +349,12 @@ export function agentRecoveryMessage(): string {
 }
 
 /**
- * The two dependencies an Agent needs to do any work, each presented on its own terms. They are
+ * The dependencies an Agent needs to do any work, each presented on its own terms. They are
  * deliberately not collapsed into one verdict: a connected channel can coexist with an offline
  * Computer, and a viewer repairing one needs to see the other's state unchanged while they do it.
  */
 export type AgentDependencyStatus = {
-  action?: { label: string; link: AgentSettingsSectionLink | AgentSetupLink };
+  action?: { label: string; link: AgentSettingsSectionLink | AgentSetupLink | ReturnType<typeof accountComputerLink> };
   label: string;
   tone: StatusTone;
 };
@@ -369,7 +370,7 @@ function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus
  * mid-scan, or a provider CLI the Computer could not make ready.
  *
  * `computer_offline` is deliberately absent. Its subject is the machine rather than the flow, and
- * repeating setup does not reach it; the Agent page sends it to Settings, and so does the list.
+ * repeating setup does not reach it; the Computer row opens Account maintenance.
  * `handoff_checking` is absent for the opposite reason: the Computer is still working on it, and
  * the answer arrives on its own within seconds, so there is nothing for the reader to continue.
  */
@@ -418,17 +419,16 @@ function setupOrMaintenanceAction(
 }
 
 export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {
-  const { computer, runtime } = agent.availability.dependencies;
-  const providerName = runtimeProviderName(runtime.provider);
+  const { computer } = agent.availability.dependencies;
   /*
    * The status is derived from these dependency fields rather than the Agent-wide reason. A
-   * higher-ranked reason such as `agent_suspended` can mask a runtime problem, but it must not make
+   * higher-ranked reason such as `agent_suspended` can mask a connection problem, but it must not make
    * this row contradict the Computer evidence. Healthy and self-resolving states stay quiet;
    * actionable states name the exact next step instead of adding an explanatory sentence.
    */
   /*
    * An Agent with no Computer is answered first, and with its own exit. Every branch below reads a
-   * fact about a machine -- its connection, its Provider -- and there is no machine here to read
+   * fact about a machine’s connection, and there is no machine here to read
    * one from: falling through would label the Agent "Unknown" and explain that the Provider could
    * not be confirmed on a Computer that does not exist. That is the conflation this row exists to
    * avoid, and it is invisible to the type checker, because an unmatched state still returns.
@@ -453,59 +453,52 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
   }
   if (computer.state === "action_required") {
     return {
-      action: settingsAction(agent.id, m.agents_status_action_open_computer_setup(), "computer"),
+      action: { label: m.computer_recovery_heading(), link: accountComputerLink(agent.computer?.computerId, agent.id) },
       label: m.agents_status_computer_offline(),
       tone: "warning",
     };
   }
+  return {
+    label: agent.computerKind === "cloud" ? m.computer_managed() : m.agents_status_computer_ready(),
+    tone: agent.computerKind === "cloud" ? "neutral" : "success",
+  };
+}
+
+/** Only report runtime exceptions while the Computer can provide current evidence. */
+export function agentRuntimeIssue(agent: AgentDetailView): (AgentDependencyStatus & { guidance?: string }) | undefined {
+  const { computer, runtime } = agent.availability.dependencies;
+  if (computer.state !== "ready" || runtime.status === "ready") return undefined;
+  const providerName = runtimeProviderName(runtime.provider);
   if (!runtime.status) {
     return {
-      action: settingsAction(agent.id, m.agents_status_action_view_computer(), "computer"),
-      label: m.agents_status_unknown(),
+      label: m.agents_runtime_status_unavailable({ providerName }),
       tone: "neutral",
     };
   }
   if (runtime.status === "checking") {
     return {
-      action: setupOrMaintenanceAction(agent, "runtime_unavailable"),
       label: m.agents_status_computer_checking_runtime({ providerName }),
       tone: "info",
     };
   }
-  if (runtime.status === "install") {
-    return {
-      action: setupOrMaintenanceAction(
-        agent,
-        "runtime_unavailable",
-        settingsAction(agent.id, m.agents_status_action_set_up_runtime({ providerName }), "computer"),
-      ),
-      label: m.agents_status_computer_runtime_not_installed({ providerName }),
-      tone: "warning",
-    };
-  }
-  if (runtime.status === "sign-in") {
-    return {
-      action: setupOrMaintenanceAction(
-        agent,
-        "runtime_unavailable",
-        settingsAction(agent.id, m.agents_status_action_sign_in_to_runtime({ providerName }), "computer"),
-      ),
-      label: m.agents_status_computer_runtime_sign_in_required({ providerName }),
-      tone: "warning",
-    };
-  }
-  if (runtime.status !== "ready") {
-    return {
-      action: setupOrMaintenanceAction(
-        agent,
-        "runtime_unavailable",
-        settingsAction(agent.id, m.agents_status_action_troubleshoot_runtime({ providerName }), "computer"),
-      ),
-      label: m.agents_status_computer_runtime_unavailable({ providerName }),
-      tone: "warning",
-    };
-  }
-  return { label: m.agents_status_computer_ready(), tone: "success" };
+  const localComputer = agent.computerKind !== "cloud" ? agent.computer : null;
+  const context = { providerName, computerName: localComputer?.displayName ?? "" };
+  const labels = {
+    install: () => m.agents_status_computer_runtime_not_installed({ providerName }),
+    "sign-in": () => m.agents_status_computer_runtime_sign_in_required({ providerName }),
+    unavailable: () => m.agents_status_computer_runtime_unavailable({ providerName }),
+  };
+  const guidance = {
+    install: () => m.computer_runtime_install_help(context),
+    "sign-in": () => m.computer_runtime_sign_in_help(context),
+    unavailable: () => m.computer_runtime_unavailable_help(context),
+  };
+  return {
+    action: setupOrMaintenanceAction(agent, "runtime_unavailable"),
+    label: labels[runtime.status](),
+    guidance: localComputer ? guidance[runtime.status]() : undefined,
+    tone: "warning",
+  };
 }
 
 export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {

@@ -234,7 +234,7 @@ function runtimeRow(snapshot: AgentSetupSnapshot): CheckRow {
         state: "failed",
         status: "install-required",
         statusLabel: m.onboarding_v2_prep_install_required(),
-        detail: m.onboarding_v2_prep_runtime_install({ runtime, computerName: computer }),
+        detail: m.computer_runtime_install_help({ providerName: runtime, computerName: computer }),
         detailLabel,
       };
     case "sign-in":
@@ -243,7 +243,7 @@ function runtimeRow(snapshot: AgentSetupSnapshot): CheckRow {
         state: "failed",
         status: "needs-attention",
         statusLabel: m.onboarding_v2_prep_needs_attention(),
-        detail: m.onboarding_v2_prep_runtime_sign_in({ runtime, computerName: computer }),
+        detail: m.computer_runtime_sign_in_help({ providerName: runtime, computerName: computer }),
         detailLabel,
       };
     case "observation-failed":
@@ -262,7 +262,7 @@ function runtimeRow(snapshot: AgentSetupSnapshot): CheckRow {
         state: "failed",
         status: "needs-attention",
         statusLabel: m.onboarding_v2_prep_needs_attention(),
-        detail: m.onboarding_v2_prep_runtime_not_responding({ computerName: computer }),
+        detail: m.computer_runtime_unavailable_help({ providerName: runtime, computerName: computer }),
         detailLabel,
       };
   }

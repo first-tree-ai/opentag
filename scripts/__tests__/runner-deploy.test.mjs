@@ -429,6 +429,115 @@ test("apply re-gates on the fresh post-build snapshot, not the pre-build state",
   assert.equal(fake.updates().length, 0, "a Server change during the build must stop before the mutation");
 });
 
+/** Fails the first `failures` requests whose URL matches, the way an unreachable API does. */
+function unreachableFor(fake, { match, failures }) {
+  let remaining = failures;
+  let refused = 0;
+  const fetchImpl = async (url, options) => {
+    if (url.includes(match) && remaining > 0) {
+      remaining -= 1;
+      refused += 1;
+      throw new TypeError("fetch failed");
+    }
+    return fake.fetchImpl(url, options);
+  };
+  return { fetchImpl, refused: () => refused };
+}
+
+test("apply rides out an API that is briefly unreachable on the first read after the redeploy", async () => {
+  const fake = caproverFake();
+  const flaky = unreachableFor(fake, { match: "/api/v2/user/apps/appDefinitions", failures: 2 });
+  const summary = await runDeploy(
+    deployDeps(fake, { mode: "apply", fetchImpl: flaky.fetchImpl, intervalMs: 1, deadlineMs: 1_000 }),
+  );
+
+  assert.equal(flaky.refused(), 2, "the refused reads really happened");
+  assert.equal(summary.updated, true);
+  assert.equal(fake.updates().length, 1, "the Runner still lands exactly once");
+});
+
+test("apply gives up when the API stays unreachable for the whole budget", async () => {
+  const fake = caproverFake();
+  const flaky = unreachableFor(fake, { match: "/api/v2/user/apps/appDefinitions", failures: Number.MAX_SAFE_INTEGER });
+  let slept = 0;
+  await assert.rejects(
+    runDeploy(
+      deployDeps(fake, {
+        mode: "apply",
+        fetchImpl: flaky.fetchImpl,
+        intervalMs: 1,
+        deadlineMs: 5,
+        sleep: async () => {
+          slept += 1;
+        },
+      }),
+    ),
+    (error) =>
+      /stayed unreachable for/.test(error.message) &&
+      /fetch failed/.test(error.message) &&
+      error.cause?.name === "CaproverUnreachableError",
+  );
+  assert.ok(slept > 0, "it waited between attempts instead of spinning");
+  assert.equal(fake.updates().length, 0, "nothing is mutated against an app that was never observed");
+});
+
+test("a read that precedes the update is never retried", async () => {
+  const fake = caproverFake();
+  let reads = 0;
+  const fetchImpl = async (url, options) => {
+    if (url.endsWith("/api/v2/user/apps/appDefinitions")) {
+      reads += 1;
+      // The first read is the observation; the second is the fresh pre-update read that must not
+      // be retried, because what follows it is a mutation.
+      if (reads === 2) throw new TypeError("fetch failed");
+    }
+    return fake.fetchImpl(url, options);
+  };
+  await assert.rejects(
+    runDeploy(deployDeps(fake, { mode: "apply", fetchImpl, intervalMs: 1, deadlineMs: 1_000 })),
+    /could not be reached \(TypeError: fetch failed\)/,
+  );
+  assert.equal(reads, 2, "it failed on the pre-update read rather than polling again");
+  assert.equal(fake.updates().length, 0);
+});
+
+test("the idle wait retries an unreachable poll and reports the transport cause at the deadline", async () => {
+  const fake = caproverFake({ isBuilding: [true, false] });
+  const flaky = unreachableFor(fake, { match: "/api/v2/user/apps/appData/", failures: 1 });
+  let polls = 0;
+  await waitForAppIdle({
+    server: CONFIG.server,
+    token: "fixture-token",
+    appName: CONFIG.app,
+    deadlineMs: 1_000,
+    intervalMs: 1,
+    sleep: async () => {},
+    fetchImpl: async (url, options) => {
+      polls += 1;
+      return flaky.fetchImpl(url, options);
+    },
+  });
+  assert.equal(flaky.refused(), 1);
+  assert.equal(polls, 3, "one refused poll, one building, one idle");
+
+  const unreachable = unreachableFor(caproverFake(), {
+    match: "/api/v2/user/apps/appData/",
+    failures: Number.MAX_SAFE_INTEGER,
+  });
+  await assert.rejects(
+    waitForAppIdle({
+      server: CONFIG.server,
+      token: "fixture-token",
+      appName: CONFIG.app,
+      deadlineMs: 5,
+      intervalMs: 1,
+      sleep: async () => {},
+      fetchImpl: unreachable.fetchImpl,
+    }),
+    (error) => /stayed unreachable for/.test(error.message) && /fetch failed/.test(error.message),
+  );
+});
+
 test("apply fails closed with zero updates when the build never finishes", async () => {
   const fake = caproverFake({ isBuilding: true });
   await assert.rejects(

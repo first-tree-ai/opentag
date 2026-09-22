@@ -214,10 +214,9 @@ function AgentCreatePage({
   onBackToAgents?: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<AgentDraft>(() => {
-    const initial = emptyDraft(existingAgentNames);
-    return creationPreviewInitialView === "agent" ? { ...initial, destination: "local" } : initial;
-  });
+  // Local is the default destination. Cloud is an explicit choice, offered once the deployment's
+  // availability answer says it can run — nothing pre-selects it.
+  const [draft, setDraft] = useState<AgentDraft>(() => ({ ...emptyDraft(existingAgentNames), destination: "local" }));
   const [destinationConfirmed, setDestinationConfirmed] = useState(creationPreviewInitialView === "agent");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
@@ -228,8 +227,6 @@ function AgentCreatePage({
   const [cloudRead, setCloudRead] = useState<CloudAvailabilityRead>({ kind: "loading" });
   /** A retry supersedes the earlier attempt: a late answer from it must not overwrite the newer one. */
   const cloudReadAttempt = useRef(0);
-  /** A destination the reader picked themselves is never overridden by a late availability answer. */
-  const destinationChosen = useRef(creationPreviewInitialView === "agent");
   /**
    * What a refused name leaves behind: the Agent holding it when that Agent could be read, and
    * otherwise the bare fact that one exists. Both are exits, which is the point — on this route the
@@ -265,13 +262,6 @@ function AgentCreatePage({
       cloudReadAttempt.current += 1;
     };
   }, [readCloudAvailability]);
-
-  // Cloud is the default once it is known to be available; an unavailable or unreadable service
-  // leaves the choice to the reader rather than pre-selecting a destination that cannot run.
-  useEffect(() => {
-    if (cloudRead.kind !== "ready" || !cloudRead.value.available || destinationChosen.current) return;
-    setDraft((current) => (current.destination === undefined ? { ...current, destination: "cloud" } : current));
-  }, [cloudRead]);
 
   /*
    * What a refusal offers, if anything. Naming the Agent is always worth saying: it is somewhere
@@ -392,10 +382,7 @@ function AgentCreatePage({
                   : cloudRead
               }
               draft={draft}
-              onChoose={(destination) => {
-                destinationChosen.current = true;
-                setDraft({ ...draft, destination });
-              }}
+              onChoose={(destination) => setDraft({ ...draft, destination })}
               onCloudRetry={readCloudAvailability}
               onSubmit={() => setDestinationConfirmed(true)}
             />

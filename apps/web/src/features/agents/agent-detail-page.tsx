@@ -20,7 +20,7 @@ import {
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
-import { AgentCloudOverviewPanel } from "./cloud/cloud-environment.js";
+import { CloudProgressNotice } from "./cloud/cloud-progress-notice.js";
 
 export function AgentDetailPage({ agentId }: { agentId: string }) {
   const { me } = useAccount();
@@ -40,8 +40,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               <AgentUsageOverview accountId={me.user.id} agentId={agent.id} />
               <AgentStatusCard agent={agent} />
             </div>
-            {/* The Cloud board is the Agent page's environment truth; a Local Agent never renders it. */}
-            {agent.computerKind === "cloud" ? <AgentCloudOverviewPanel agentId={agent.id} /> : null}
+            {agent.computerKind === "cloud" ? <CloudProgressNotice agentId={agent.id} /> : null}
             <AgentTasksSection agentId={agent.id} />
           </div>
         </section>

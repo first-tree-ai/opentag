@@ -105,6 +105,35 @@ describe("AgentComputerSettings repair disclosure", () => {
   });
 });
 
+describe("A Cloud Computer's settings", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("states only that the platform manages it — no status light, no environment list, no repair", async () => {
+    const base = agent(COMPUTER_ID, "unconfirmed");
+    const cloudAgent: AgentDetailView = {
+      ...base,
+      computer: { computerId: COMPUTER_ID, displayName: "OpenTag Cloud", platform: "linux" },
+      computerKind: "cloud",
+    };
+    const overview = vi.spyOn(browserApi, "agentCloudOverview");
+    const connect = vi.spyOn(browserApi, "issueComputerConnectCode");
+
+    await renderInRouter(<AgentComputerSettings agent={cloudAgent} onAgentChanged={vi.fn()} />);
+
+    // The normal heading, and the one managed-platform sentence. Nothing else.
+    expect(screen.getByRole("heading", { name: "Computer" })).toBeTruthy();
+    expect(screen.getByText("Runs on OpenTag Cloud, managed by the platform")).toBeTruthy();
+    expect(screen.queryByText("Online")).toBeNull();
+    expect(screen.queryByText("Hosted by OpenTag")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(overview).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+  });
+});
+
 const UNBOUND_AGENT_ID = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
 const SECOND_AGENT_ID = "5c4b3a2d-1e0f-4998-8877-66554433221a";
 

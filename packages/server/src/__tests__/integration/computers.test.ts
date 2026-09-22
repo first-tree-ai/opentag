@@ -1,5 +1,6 @@
 import {
   AccountComputerSummarySchema,
+  accountComputerByIdPath,
   accountComputerConnectCodePath,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
@@ -19,7 +20,7 @@ import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { agents, computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
-import { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService, ConnectCodeService, hashSecret } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -412,6 +413,84 @@ describe("Computer connection persistence", () => {
       expect(await newFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
       expect(value.registry.currentInstanceId(first.computerId)).toBe(newInstanceId);
       newSocket.close();
+    } finally {
+      await app.close();
+      await value.sql.end();
+    }
+  });
+
+  it("deletes a live Computer over HTTP, closes it fatally, and answers its old token with 401", async () => {
+    const value = await fixture();
+    const installationId = crypto.randomUUID();
+    const exchange = await connect(value, value.bootstrap.userId, installationId);
+    const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
+    const service = new ComputerService(value.database, value.auth, {
+      onComputerDeleted: async (computerId) => {
+        await value.registry.closeComputer(computerId, COMPUTER_DELETED_CLOSE);
+      },
+    });
+    const app = createApp({
+      authService: value.auth,
+      computerService: service,
+      machineAuthService: value.machineAuth,
+      runtime: { authTimeoutMs: 1_000, registerTimeoutMs: 1_000, registry: value.registry },
+    });
+    const authFrame = () =>
+      JSON.stringify({
+        type: "auth",
+        requestId: crypto.randomUUID(),
+        protocolVersion: 2,
+        supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+        machineToken: exchange.machineToken,
+      });
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const socketUrl = `${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`;
+      const live = new WebSocket(socketUrl);
+      const liveFrames = frameQueue(live);
+      await opened(live);
+      live.send(authFrame());
+      expect(await liveFrames.next()).toMatchObject({ type: "auth:result", ok: true });
+      expect(await liveFrames.next()).toMatchObject({ type: "server:welcome" });
+      live.send(JSON.stringify(registerFrame(installationId, crypto.randomUUID())));
+      expect(await liveFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+
+      const liveClose = closeCode(live);
+      const deleted = await app.inject({
+        method: "DELETE",
+        url: accountComputerByIdPath(exchange.computerId),
+        headers: { authorization: `Bearer ${account.accessToken}` },
+      });
+      expect(deleted.statusCode).toBe(204);
+      await expect(liveClose).resolves.toBe(4401);
+
+      await expect(value.machineAuth.verifyMachineToken(exchange.machineToken)).rejects.toMatchObject({
+        code: "AUTH_INVALID_TOKEN",
+        statusCode: 401,
+      });
+      const retry = new WebSocket(socketUrl);
+      const retryClose = closeCode(retry);
+      await opened(retry);
+      retry.send(authFrame());
+      await expect(retryClose).resolves.toBe(4401);
+
+      const listed = await app.inject({
+        method: "GET",
+        url: HTTP_PATHS.accountComputers,
+        headers: { authorization: `Bearer ${account.accessToken}` },
+      });
+      expect(listed.json()).toEqual({ computers: [] });
+      const again = await app.inject({
+        method: "DELETE",
+        url: accountComputerByIdPath(exchange.computerId),
+        headers: { authorization: `Bearer ${account.accessToken}` },
+      });
+      expect(again.statusCode).toBe(404);
+      expect(again.json()).toMatchObject({ error: { code: "COMPUTER_NOT_FOUND" } });
+
+      // The machine is not locked out: it can connect again, as a brand-new Computer.
+      const reconnected = await connect(value, value.bootstrap.userId, installationId);
+      expect(reconnected.computerId).not.toBe(exchange.computerId);
     } finally {
       await app.close();
       await value.sql.end();

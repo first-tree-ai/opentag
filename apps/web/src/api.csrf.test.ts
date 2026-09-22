@@ -67,6 +67,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   suspendAgent: [ID],
   reactivateAgent: [ID],
   deleteAgent: [ID],
+  deleteComputer: [ID],
   imBinding: [ID],
   imBindingHandoff: [ID],
   imBindingConfig: [ID],

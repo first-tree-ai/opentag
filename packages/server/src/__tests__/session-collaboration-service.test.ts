@@ -290,7 +290,7 @@ function createRequest(fixture: ReturnType<typeof serviceFixture>): SessionCliCr
 
 function snapshot(agentId: string) {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: { agent: { sequence: 1, id: "a".repeat(64) }, session: { sequence: 1, id: "b".repeat(64) } },
     agentId,
     provider: "codex" as const,

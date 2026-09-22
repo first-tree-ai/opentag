@@ -15,6 +15,7 @@ const frame = (action: "connect" | "create" | "disconnect" = "create"): ContextT
   agentId: randomUUID(),
   requireStopped: false,
   input: {
+    alias: "memory",
     operationId: randomUUID(),
     expectedRevision: 1,
     expectedRuntimeConfigRevision: 1,
@@ -59,6 +60,17 @@ it("creates and publishes once, verifies the tree and removes the isolated proje
   );
   await settings.run(request);
   expect(run).toHaveBeenCalledTimes(6);
+  expect(
+    run.mock.calls
+      .filter(([args]) => args[0] === "connect" || args[0] === "create")
+      .every(([args]) => args.includes("--as") && args.includes("settings")),
+  ).toBe(true);
+  expect(run.mock.calls.find(([args]) => args[0] === "publish")?.[0]).toContain("--tree");
+  expect(run.mock.calls.find(([args]) => args[0] === "disconnect")?.[0]).toContain("--all");
+  expect(await settings.run({ ...request, input: { ...request.input, alias: "other" } })).toEqual({
+    status: "failed",
+    code: "stale_configuration",
+  });
   await settings.run({ ...request, input: { ...request.input, operationId: randomUUID() } });
   expect(run.mock.calls.filter(([args]) => args[0] === "publish")).toHaveLength(1);
 });

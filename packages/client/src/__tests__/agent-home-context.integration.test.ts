@@ -98,10 +98,11 @@ exec /usr/bin/git "$@"
       execFile: isolatedExecFile,
     });
     const statuses = await Promise.all([
-      treeManager.ensureAgent(agentHome, "codex", "acme/memory"),
-      treeManager.ensureAgent(agentHome, "codex", "acme/memory"),
+      treeManager.ensureAgent(agentHome, "codex", [{ alias: "memory", repository: "acme/memory" }]),
+      treeManager.ensureAgent(agentHome, "codex", [{ alias: "memory", repository: "acme/memory" }]),
     ]);
-    for (const status of statuses) expect(status).toEqual({ status: "ready", treePath });
+    for (const status of statuses)
+      expect(status).toMatchObject({ connections: [{ alias: "memory", status: "ready", treePath }] });
     expect(await readFile(join(agentHome, "AGENTS.md"), "utf8")).toBe(userInstructions);
     await expect(
       readFile(join(agentHome, ".claude", "skills", "context-tree-read", "SKILL.md"), "utf8"),
@@ -116,7 +117,10 @@ exec /usr/bin/git "$@"
     for (const cwd of [taskA, taskB]) {
       const synced = await runCli(["sync", "--project-path", agentHome], cwd);
       expect(synced.failureCode).toBeUndefined();
-      expect(readTreePath(synced.payload)).toBe(treePath);
+      expect(synced.payload).toMatchObject({
+        schemaVersion: 2,
+        connections: [{ alias: "memory", tree: { path: treePath } }],
+      });
     }
 
     const markerA = "Parallel code tasks use independent worktrees while sharing one persistent Agent Home.";
@@ -263,7 +267,10 @@ async function recordSequentialTreeWrites(options: {
     const other = cwd === taskA ? taskB : taskA;
     const synced = await runCli(["sync", "--project-path", agentHome], other);
     expect(synced.failureCode).toBeUndefined();
-    expect(readTreePath(synced.payload)).toBe(treePath);
+    expect(synced.payload).toMatchObject({
+      schemaVersion: 2,
+      connections: [{ alias: "memory", tree: { path: treePath } }],
+    });
     const read = await runCli(["read", "--tree-path", treePath, "--json"], other);
     expect(read.failureCode).toBeUndefined();
     expect(readNodeBody(read.payload)).toContain(marker);
@@ -293,7 +300,7 @@ function createManagers(home: string, installationId: string) {
 
 function runtime(agentId: string): EffectiveRuntimeSnapshot {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

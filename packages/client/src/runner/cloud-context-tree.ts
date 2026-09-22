@@ -1,5 +1,6 @@
 import { chmod, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { ContextTreeConnection } from "@opentag/shared";
 import {
   type ContextTreeExecFile,
   type ContextTreePackage,
@@ -7,6 +8,12 @@ import {
   resolveContextTreePackage,
   runContextTreeCli,
 } from "../runtime/context-tree.js";
+import {
+  connectedTree,
+  reconcileContextTreeConnections,
+  StoredConnectionsSchema,
+  syncedTree,
+} from "../runtime/context-tree-connections.js";
 
 /**
  * In-Sandbox Context Tree preparation for one Cloud Turn (E8).
@@ -17,8 +24,8 @@ import {
  * stays disposable. The record stores linkage only; proxy credentials and Git helper config stay
  * in the per-execution environment.
  *
- * Every Turn re-evaluates the current snapshot selection and execution grant. No grant means no
- * CLI call and no mutation; a failed connect/sync is reported `stale` with the preserved
+ * Every Turn re-evaluates the current snapshot selection and execution grant. Revoked grants are detached locally without
+ * network preparation; a failed connect/sync is reported `stale` with the preserved
  * in-workspace checkout still addressable through the pinned CLI; nothing is forced, reset or
  * discarded, and drafts of an unselected or rebinding tree stay on disk. A killed first clone can
  * leave a partial managed directory that the pinned CLI thereafter reports as unusable; it is
@@ -45,16 +52,20 @@ export const CLOUD_CONTEXT_TREE_PREPARATION_BUDGET_MS = 30_000;
  *   SHIM_UNAVAILABLE, PREPARATION_FAILED).
  */
 export type CloudContextTreeStatus =
+  | { status: "configured"; connections: CloudContextTreeResult[] }
   | { status: "ready"; treePath: string; branch?: string; sha?: string }
   | { status: "stale"; treePath: string; reason: string }
   | { status: "unconfigured" }
   | { status: "unavailable"; reason: string };
 
+export type CloudContextTreeResult = ContextTreeConnection &
+  Exclude<CloudContextTreeStatus, { status: "configured" } | { status: "unconfigured" }>;
+
 export interface CloudContextTreePreparation {
   readonly status: CloudContextTreeStatus;
   /**
    * Directory holding the agent-facing `context-tree` shim for this Turn. Present exactly when
-   * the tree is active (`ready`/`stale`); the worker prepends it to the Pi PATH. The shim pins
+   * at least one tree is active (`ready`/`stale`); the worker prepends it to the Pi PATH. The shim pins
    * the in-workspace HOME/TMPDIR and the commit identity and carries no secrets.
    */
   readonly binDirectory?: string;
@@ -64,8 +75,8 @@ export interface CloudContextTreePreparation {
 export interface CloudContextTreePreparationInput {
   /** In-sandbox Session workspace (the CLI project path); the tree checkout lives beneath it. */
   readonly workspace: string;
-  /** The CURRENT snapshot selection (`snapshot.contextTreeRepository`); `null` unselects. */
-  readonly repository: string | null;
+  /** The CURRENT snapshot selection (`snapshot.contextTrees`); an empty list disables memory. */
+  readonly contextTrees: readonly ContextTreeConnection[];
   /**
    * The CURRENT per-execution proxy manifest environment (GitHub handle, `GIT_CONFIG_*`,
    * `OPENTAG_GITHUB_REPOSITORIES` grant metadata, proxy routing keys). It is the only credential
@@ -111,10 +122,19 @@ export const prepareCloudContextTree: (
   internals?: CloudContextTreeInternals,
 ) => Promise<CloudContextTreePreparation> = async (input, internals = {}) => {
   try {
-    return await prepare(input, internals);
+    return await prepare(
+      {
+        ...input,
+        signal: AbortSignal.any([
+          ...(input.signal ? [input.signal] : []),
+          AbortSignal.timeout(CLOUD_CONTEXT_TREE_PREPARATION_BUDGET_MS),
+        ]),
+      },
+      internals,
+    );
   } catch {
     // Optional memory never blocks the base task; a preparation defect degrades honestly.
-    return { status: { status: "unavailable", reason: "PREPARATION_FAILED" } };
+    return failedPreparation(input.contextTrees, "PREPARATION_FAILED");
   }
 };
 
@@ -140,28 +160,24 @@ async function prepare(
       ...(input.signal ? { signal: input.signal } : {}),
     });
 
-  // Unselected trees make no CLI call and leave the preserved record and drafts untouched.
-  if (input.repository === null) return { status: { status: "unconfigured" } };
-  const repository = input.repository;
-  if (!contextTreePackage) return { status: { status: "unavailable", reason: "PACKAGE_MISSING" } };
-  if (!(await directoryExists(workspace))) return { status: { status: "unavailable", reason: "WORKSPACE_MISSING" } };
-
-  // The current execution must actively grant this exact repository the `context_tree` role.
-  // Without it nothing is read, nothing is written, and no CLI process runs at all.
-  if (!managedRepositoryAllowed(input.environment, repository)) {
-    return { status: { status: "unavailable", reason: "GITHUB_PERMISSION" } };
-  }
-
+  if (!contextTreePackage)
+    return input.contextTrees.length
+      ? failedPreparation(input.contextTrees, "PACKAGE_MISSING")
+      : { status: { status: "unconfigured" } };
+  if (!(await directoryExists(workspace))) return failedPreparation(input.contextTrees, "WORKSPACE_MISSING");
   await mkdir(treeHome, { mode: 0o700, recursive: true });
   await mkdir(treeTmp, { mode: 0o700, recursive: true });
-
-  const status = await connectAndSync(
-    (args, network) => run(contextTreePackage, args, network),
-    workspace,
-    treeHome,
-    repository,
-  );
-  if (status.status !== "ready" && status.status !== "stale") return { status };
+  const runCli: RunCli = (args, network) => run(contextTreePackage, args, network);
+  const allowed = input.contextTrees.filter((entry) => managedRepositoryAllowed(input.environment, entry.repository));
+  // Reconcile even when no trees remain authorized, before any agent-facing shim can exist.
+  const reconciliation = await reconcileContextTreeConnections(runCli, workspace, allowed);
+  if (reconciliation.failureCode) return failedPreparation(input.contextTrees, reconciliation.failureCode);
+  if (!input.contextTrees.length) return { status: { status: "unconfigured" } };
+  const connections: CloudContextTreeResult[] = [];
+  for (const connection of input.contextTrees)
+    connections.push(await prepareConnection(runCli, input, workspace, treeHome, connection));
+  const status: CloudContextTreeStatus = { status: "configured", connections };
+  if (!connections.some((entry) => entry.status === "ready" || entry.status === "stale")) return { status };
   try {
     const binDirectory = await writeContextTreeShim({
       agentSlug: input.agentSlug ?? FALLBACK_AGENT_IDENTITY,
@@ -173,8 +189,33 @@ async function prepare(
     });
     return { binDirectory, status };
   } catch {
-    return { status: { status: "unavailable", reason: "SHIM_UNAVAILABLE" } };
+    return failedPreparation(input.contextTrees, "SHIM_UNAVAILABLE");
   }
+}
+
+async function prepareConnection(
+  run: RunCli,
+  input: CloudContextTreePreparationInput,
+  workspace: string,
+  treeHome: string,
+  connection: ContextTreeConnection,
+): Promise<CloudContextTreeResult> {
+  if (!managedRepositoryAllowed(input.environment, connection.repository))
+    return { ...connection, status: "unavailable", reason: "GITHUB_PERMISSION" };
+  if (input.signal?.aborted) return { ...connection, status: "unavailable", reason: "TIMEOUT" };
+  try {
+    return { ...connection, ...(await connectAndSync(run, workspace, treeHome, connection)) };
+  } catch {
+    return { ...connection, status: "unavailable", reason: input.signal?.aborted ? "TIMEOUT" : "PREPARATION_FAILED" };
+  }
+}
+
+function failedPreparation(connections: readonly ContextTreeConnection[], reason: string): CloudContextTreePreparation {
+  return {
+    status: connections.length
+      ? { status: "configured", connections: connections.map((entry) => ({ ...entry, status: "unavailable", reason })) }
+      : { status: "unavailable", reason },
+  };
 }
 
 type RunCli = (args: readonly string[], network: boolean) => Promise<{ payload: unknown; failureCode?: string }>;
@@ -187,76 +228,61 @@ async function connectAndSync(
   run: RunCli,
   workspace: string,
   treeHome: string,
-  repository: string,
-): Promise<CloudContextTreeStatus> {
-  const connected = await run(["connect", repository, "--project-path", workspace, "--json"], true);
-  const treePath = connected.failureCode === undefined ? payloadTreePath(connected.payload) : undefined;
+  connection: ContextTreeConnection,
+): Promise<Exclude<CloudContextTreeStatus, { status: "configured" } | { status: "unconfigured" }>> {
+  const connected = await run(
+    ["connect", connection.repository, "--as", connection.alias, "--project-path", workspace, "--json"],
+    true,
+  );
+  const treePath = connected.failureCode === undefined ? connectedTree(connected.payload, connection)?.path : undefined;
   if (treePath === undefined) {
     if (connected.failureCode === undefined) return { status: "unavailable", reason: "CONNECT_FAILED" };
-    const preserved = await preservedCheckout(treeHome, workspace, repository);
+    const preserved = await preservedCheckout(treeHome, workspace, connection);
     return preserved === undefined
       ? { status: "unavailable", reason: connected.failureCode }
       : { status: "stale", treePath: preserved, reason: connected.failureCode };
   }
   // The checkout must be the per-Session copy inside the saved workspace; anything else fails
   // closed instead of being adopted.
-  if (!isWithin(await realpath(workspace), treePath)) {
+  if (!isWithin(await realpath(workspace), await realpath(treePath).catch(() => treePath))) {
     return { status: "unavailable", reason: "TREE_OUTSIDE_WORKSPACE" };
   }
-  const synced = await run(["sync", "--project-path", workspace], true);
-  return synced.failureCode === undefined
-    ? readyStatus(treePath, synced.payload)
-    : { status: "stale", treePath, reason: synced.failureCode };
+  const synced = await run(["sync", "--tree", connection.alias, "--project-path", workspace], true);
+  const entry = syncedTree(synced.payload, connection);
+  if (!entry) return { status: "stale", treePath, reason: synced.failureCode ?? "SYNC_FAILED" };
+  return entry.ok
+    ? readyStatus(treePath, entry)
+    : { status: "stale", treePath, reason: entry.error?.code ?? "SYNC_FAILED" };
 }
 
-interface StoredConnection {
-  readonly projectPath?: unknown;
-  readonly tree?: { readonly kind?: unknown; readonly path?: unknown; readonly repository?: unknown };
-}
-
-/**
- * Address the checkout that a previous Turn connected, even when this Turn cannot validate it
- * (a dirty checkout or a failed clone). Reads only the pinned CLI's schema-versioned record for
- * this exact workspace path; the CLI remains the owner of the record. The repository must match
- * the CURRENT selection, so a rebind can never address the old tree.
- */
-async function preservedCheckout(treeHome: string, workspace: string, repository: string): Promise<string | undefined> {
-  let raw: string;
+/** Recover only the exact workspace/alias/repository record from the current upstream format. */
+async function preservedCheckout(
+  treeHome: string,
+  workspace: string,
+  connection: ContextTreeConnection,
+): Promise<string | undefined> {
   try {
-    raw = await readFile(join(treeHome, ".context-tree", "connections.json"), "utf8");
-  } catch {
-    return undefined;
-  }
-  let connections: unknown;
-  try {
-    const parsed = JSON.parse(raw) as { connections?: unknown; schemaVersion?: unknown };
-    if (parsed.schemaVersion !== 1) return undefined;
-    connections = parsed.connections;
-  } catch {
-    return undefined;
-  }
-  if (!Array.isArray(connections)) return undefined;
-  const canonical = await realpath(workspace).catch(() => undefined);
-  const record = connections.find((candidate): candidate is StoredConnection => {
-    if (!candidate || typeof candidate !== "object") return false;
-    const { projectPath, tree } = candidate as StoredConnection;
-    return (
-      (projectPath === canonical || projectPath === resolve(workspace)) &&
-      tree?.kind === "github" &&
-      typeof tree.repository === "string" &&
-      tree.repository.toLowerCase() === repository.toLowerCase()
+    const parsed = StoredConnectionsSchema.safeParse(
+      JSON.parse(await readFile(join(treeHome, ".context-tree", "connections.json"), "utf8")),
     );
-  });
-  const treePath = record?.tree?.path;
-  return typeof treePath === "string" && isWithin(canonical ?? resolve(workspace), treePath) ? treePath : undefined;
+    if (!parsed.success) return undefined;
+    const canonical = await realpath(workspace);
+    const record = parsed.data.connections.find(
+      (entry) =>
+        (entry.projectPath === canonical || entry.projectPath === resolve(workspace)) &&
+        entry.alias === connection.alias &&
+        entry.tree.kind === "github" &&
+        entry.tree.repository.toLowerCase() === connection.repository.toLowerCase(),
+    );
+    if (!record) return undefined;
+    const path = await realpath(record.tree.path);
+    return isWithin(canonical, path) && (await directoryExists(path)) ? path : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-function payloadTreePath(payload: unknown): string | undefined {
-  const treePath = (payload as { tree?: { path?: unknown } } | undefined)?.tree?.path;
-  return typeof treePath === "string" && treePath.length > 0 ? treePath : undefined;
-}
-
-function readyStatus(treePath: string, payload: unknown): CloudContextTreeStatus {
+function readyStatus(treePath: string, payload: unknown): Extract<CloudContextTreeStatus, { status: "ready" }> {
   const record = payload as { branch?: unknown; sha?: unknown } | undefined;
   return {
     status: "ready",

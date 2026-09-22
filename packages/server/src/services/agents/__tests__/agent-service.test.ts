@@ -549,7 +549,7 @@ describe("AgentService", () => {
     expect(profile).toMatchObject({
       displayName: "Renamed",
       revision: 2,
-      runtimeConfig: { contextTreeRepository: null, revision: created.runtimeConfig.revision },
+      runtimeConfig: { contextTrees: [], revision: created.runtimeConfig.revision },
     });
     const changed = await service.updateById(bootstrap.userId, created.id, {
       expectedRevision: 2,

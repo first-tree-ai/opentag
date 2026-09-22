@@ -312,7 +312,7 @@ function deliveryRequest(input: {
     },
     runtime: {
       agentId: input.agentId,
-      contextTreeRepository: null,
+      contextTrees: [],
       instructions: { agent: "Agent.", platform: "Platform." },
       provider: "pi",
       model: MODEL,

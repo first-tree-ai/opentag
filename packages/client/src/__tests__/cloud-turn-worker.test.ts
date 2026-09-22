@@ -255,6 +255,39 @@ describe("cloud-turn-worker", () => {
     expect(denied).toContain("does not grant this Session the selected repository");
   });
 
+  it("renders one Cloud tree section and shared guidance for multiple aliases", () => {
+    const prompt = renderCloudSystemPrompt(cloudDeliveryFixture().runtime, {
+      contextTree: {
+        status: "configured",
+        connections: [
+          {
+            alias: "team",
+            repository: "acme/team",
+            status: "ready",
+            treePath: "/trees/team",
+            branch: "main",
+            sha: "a".repeat(40),
+          },
+          { alias: "product", repository: "acme/product", status: "ready", treePath: "/trees/product" },
+          { alias: "stale", repository: "acme/stale", status: "stale", treePath: "/trees/stale", reason: "DIRTY_TREE" },
+          { alias: "denied", repository: "acme/denied", status: "unavailable", reason: "GITHUB_PERMISSION" },
+          { alias: "timeout", repository: "acme/timeout", status: "unavailable", reason: "TIMEOUT" },
+        ],
+      },
+    });
+    expect(prompt.match(/^## Context Trees$/gm)).toHaveLength(1);
+    expect(prompt).not.toMatch(/^## Context Tree$/m);
+    expect(prompt).toContain("Alias team — acme/team");
+    expect(prompt).toContain("Context Tree: /trees/product");
+    expect(prompt).toContain("branch main, commit aaaaaaaaaaaa");
+    expect(prompt).toContain("Context Tree: /trees/stale");
+    expect(prompt).toContain("do not reset or discard");
+    expect(prompt).toContain("GITHUB_PERMISSION");
+    expect(prompt.match(/Use the context-tree-read and context-tree-write skills/g)).toHaveLength(1);
+    expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
+    expect(prompt.match(/Continue the task without those trees/g)).toHaveLength(1);
+  });
+
   it("resumes the SAME Pi binding/history across two Turns of one allocation", async () => {
     const root = await mkdtemp(join(tmpdir(), "cloud-worker-continuity-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));

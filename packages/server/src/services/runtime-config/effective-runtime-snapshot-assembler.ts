@@ -4,6 +4,7 @@ import {
   type EffectiveRuntimeSnapshot,
   EffectiveRuntimeSnapshotSchema,
   hashTuple,
+  normalizeContextTrees,
   renderPlatformInstructions,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
@@ -79,7 +80,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       // The exact rendered platform string, so a slug change produces a new Agent revision.
       platformInstructions,
       config.instructions,
-      config.contextTreeRepository?.toLowerCase() ?? null,
+      normalizeContextTrees(config.contextTrees),
       authority.agentId,
       "empty_on_create",
       "agent",
@@ -115,7 +116,7 @@ export class EffectiveRuntimeSnapshotAssembler {
           id: sessionRevisionId,
         },
       },
-      contextTreeRepository: config.contextTreeRepository,
+      contextTrees: config.contextTrees,
       agentId: authority.agentId,
       provider: authority.runtimeProvider,
       ...(model !== null ? { model } : {}),
@@ -153,7 +154,7 @@ async function loadAuthority(
       agentStatus: agents.status,
       runtimeProvider: agents.runtimeProvider,
       configRevision: agentRuntimeConfigs.revision,
-      configContextTreeRepository: agentRuntimeConfigs.contextTreeRepository,
+      configContextTrees: agentRuntimeConfigs.contextTrees,
       configModel: agentRuntimeConfigs.model,
       configReasoningEffort: agentRuntimeConfigs.reasoningEffort,
       configInstructions: agentRuntimeConfigs.instructions,
@@ -176,7 +177,7 @@ async function loadAuthority(
         ? null
         : {
             revision: row.configRevision,
-            contextTreeRepository: row.configContextTreeRepository,
+            contextTrees: row.configContextTrees,
             model: row.configModel,
             reasoningEffort: row.configReasoningEffort,
             instructions: row.configInstructions,

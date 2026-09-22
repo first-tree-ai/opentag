@@ -99,7 +99,7 @@ function e4DeliveryRequest(input: {
     },
     runtime: {
       agentId,
-      contextTreeRepository: null,
+      contextTrees: [],
       instructions: { agent: "Agent.", platform: "Platform." },
       provider: "pi",
       model: E4_MODEL,

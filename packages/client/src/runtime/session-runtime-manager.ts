@@ -307,14 +307,14 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     // Context Tree is prepared here rather than in workspace preparation because `verifyAgent`
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
-    // caches per workspace, snapshot repository, and Provider, and
-    // never throws, so a failure only changes what the prompt reports.
+    // caches connections per workspace, configured tree set, and Provider while rechecking grants
+    // and attachments. It never throws, so a failure only changes what the prompt reports.
     const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId);
     const contextTree = await prepareContextTree(
       this.#contextTree,
       managed.cwd,
       managed.snapshot.provider,
-      managed.snapshot.contextTreeRepository,
+      managed.snapshot.contextTrees,
       contextTreeEnvironment,
     );
     const configurationRoots = await prepareConfigurationRoots(this.#environment);
@@ -531,18 +531,23 @@ async function prepareContextTree(
   manager: Pick<ContextTreeManager, "ensureAgent"> | undefined,
   cwd: string,
   provider: EffectiveRuntimeSnapshot["provider"],
-  repository: string | null,
+  connections: EffectiveRuntimeSnapshot["contextTrees"],
   environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<{ promptContext: { contextTree?: ContextTreeStatus }; writableRoots: readonly string[] }> {
   // Keep the legacy call shape when no managed environment exists so existing tests and prompts
   // observe identical arguments.
   const status = environment
-    ? await manager?.ensureAgent(cwd, provider, repository, environment)
-    : await manager?.ensureAgent(cwd, provider, repository);
+    ? await manager?.ensureAgent(cwd, provider, connections, environment)
+    : await manager?.ensureAgent(cwd, provider, connections);
   if (!status) return { promptContext: {}, writableRoots: [] };
   return {
     promptContext: { contextTree: status },
-    writableRoots: status.status === "ready" ? [status.treePath] : [],
+    writableRoots:
+      status.status === "configured"
+        ? status.connections.flatMap((entry) => (entry.status === "ready" ? [entry.treePath] : []))
+        : status.status === "ready"
+          ? [status.treePath]
+          : [],
   };
 }
 

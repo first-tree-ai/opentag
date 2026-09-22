@@ -190,7 +190,7 @@ describe("E4 Cloud delivery protocol", () => {
         requestId: "0b12b3c0-0000-4000-8000-000000000008",
         runtime: {
           agentId: "0b12b3c0-0000-4000-8000-000000000005",
-          contextTreeRepository: null,
+          contextTrees: [],
           execution: { approvalPolicy: "never", networkAccess: true },
           instructions: { agent: "Agent.", platform: "Platform." },
           model: "deepseek-v4.1-flash-expires-on-0910",
@@ -233,7 +233,7 @@ describe("E8 Session collaboration protocol", () => {
     content: { kind: "text", text: "continue the task" },
     runtime: {
       agentId: "0b12b3c0-0000-4000-8000-000000000004",
-      contextTreeRepository: null,
+      contextTrees: [],
       execution: { approvalPolicy: "never", networkAccess: true },
       instructions: { agent: "Agent.", platform: "Platform." },
       model: "deepseek-v4.1-flash-expires-on-0910",
@@ -432,7 +432,7 @@ describe("Runner wire-budget rejections", () => {
   };
   const runtime = {
     agentId: "0b12b3c0-0000-4000-8000-000000000004",
-    contextTreeRepository: null,
+    contextTrees: [],
     execution: { approvalPolicy: "never" as const, networkAccess: true },
     instructions: { agent: "Agent.", platform: "Platform." },
     model: "deepseek-v4.1-flash-expires-on-0910",

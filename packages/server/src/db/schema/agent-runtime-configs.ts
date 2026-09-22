@@ -1,5 +1,6 @@
+import type { ContextTreeConnection } from "@opentag/shared";
 import { relations, sql } from "drizzle-orm";
-import { bigint, check, integer, pgSequence, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { bigint, check, integer, jsonb, pgSequence, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 
 export const runtimeConfigRevisionSequence = pgSequence("runtime_config_revision_sequence", {
@@ -17,7 +18,7 @@ export const agentRuntimeConfigs = pgTable(
     revision: bigint("revision", { mode: "number" })
       .notNull()
       .default(sql`nextval('runtime_config_revision_sequence')`),
-    contextTreeRepository: text("context_tree_repository"),
+    contextTrees: jsonb("context_trees").$type<ContextTreeConnection[]>().notNull().default(sql`'[]'::jsonb`),
     model: text("model"),
     reasoningEffort: text("reasoning_effort"),
     instructions: text("instructions").notNull(),

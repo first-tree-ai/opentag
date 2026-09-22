@@ -9,7 +9,7 @@ import {
   ProviderCliValidationResultReasonSchema,
   ProviderReadinessStatusSchema,
 } from "./computer.js";
-import { ContextTreeRepositorySchema } from "./context-tree.js";
+import { ContextTreesSchema, normalizeContextTrees } from "./context-tree.js";
 import { ContextTreeOperationFrameSchema, ContextTreeOperationResultFrameSchema } from "./context-tree-operation.js";
 import {
   runtimeByteString as byteString,
@@ -134,7 +134,7 @@ export const RuntimeUsageSchema = z
 
 export const EffectiveRuntimeSnapshotSchema = z
   .object({
-    contextTreeRepository: ContextTreeRepositorySchema.nullable(),
+    contextTrees: ContextTreesSchema,
     revision: z
       .object({
         agent: RuntimeRevisionSchema,
@@ -1178,7 +1178,7 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
     snapshot.workspace.workspaceId,
     snapshot.workspace.mode,
     snapshot.workspace.sharing,
-    snapshot.contextTreeRepository?.toLowerCase() ?? null,
+    normalizeContextTrees(snapshot.contextTrees),
   ]);
   const sessionConfigHash = hashTuple([
     1,

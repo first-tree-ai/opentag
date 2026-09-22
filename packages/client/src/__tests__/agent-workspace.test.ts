@@ -640,7 +640,7 @@ function sha256(value: string): string {
 
 function snapshot(agentId: string, workspaceId: string, sessionInstructions: string): EffectiveRuntimeSnapshot {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

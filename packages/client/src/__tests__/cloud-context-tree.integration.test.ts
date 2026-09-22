@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareCloudContextTree } from "../runner/cloud-context-tree.js";
+import { prepareCloudContextTree as prepareCloudContextTrees } from "../runner/cloud-context-tree.js";
 import { createWorkspaceArchive, restoreWorkspaceArchive } from "../runner/workspace-archive.js";
 import { resolveContextTreePackage } from "../runtime/context-tree.js";
 
@@ -17,6 +17,18 @@ import { resolveContextTreePackage } from "../runtime/context-tree.js";
 
 const execFileAsync = promisify(execFile);
 const contextTreePackage = resolveContextTreePackage();
+async function prepareCloudContextTree(...args: Parameters<typeof prepareCloudContextTrees>) {
+  const result = await prepareCloudContextTrees(...args);
+  if (result.status.status !== "configured")
+    return result as Omit<typeof result, "status"> & {
+      status: Exclude<typeof result.status, { status: "configured" }>;
+    };
+  const entry = result.status.connections[0];
+  if (!entry) throw new Error("Expected a configured tree result");
+  const { alias: _alias, repository: _repository, ...status } = entry;
+  return { ...result, status };
+}
+
 const roots: string[] = [];
 afterEach(() => Promise.all(roots.splice(0).map((path) => rm(path, { force: true, recursive: true }))));
 
@@ -149,7 +161,7 @@ exec /usr/bin/git "$@"
       agentSlug: "tree-agent",
       environment,
       path,
-      repository: "acme/memory",
+      contextTrees: [{ alias: "memory", repository: "acme/memory" }],
       scratch: overrides.scratch ?? defaultScratch,
       workspace,
     }),
@@ -163,7 +175,7 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
   it("publishes a prepared write after a real archive save and restore through the managed CLI", async () => {
     const fixtureValue = await fixture("cloud-ct-roundtrip-");
     const first = await prepareCloudContextTree(fixtureValue.input());
-    expect(first.status.status).toBe("ready");
+    expect(first.status, JSON.stringify(first.status)).toMatchObject({ status: "ready" });
     if (first.status.status !== "ready" || !first.binDirectory) throw new Error("expected a ready tree");
     const treePath = first.status.treePath;
     expect(treePath.startsWith(`${fixtureValue.workspace}/`)).toBe(true);
@@ -223,7 +235,7 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
   it("keeps a dirty restored checkout inspectable without resetting it", async () => {
     const fixtureValue = await fixture("cloud-ct-dirty-");
     const first = await prepareCloudContextTree(fixtureValue.input());
-    expect(first.status.status).toBe("ready");
+    expect(first.status, JSON.stringify(first.status)).toMatchObject({ status: "ready" });
     if (first.status.status !== "ready") throw new Error("expected a ready tree");
     const treePath = first.status.treePath;
 

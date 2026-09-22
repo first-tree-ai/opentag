@@ -4,7 +4,7 @@ import { piRuntimePolicy, validatePiRuntimePolicy } from "../providers/pi/runtim
 
 function snapshot(overrides: Partial<EffectiveRuntimeSnapshot["execution"]> = {}): EffectiveRuntimeSnapshot {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: { agent: { sequence: 1, id: "agent-rev" }, session: { sequence: 1, id: "session-rev" } },
     agentId: "agent-1",
     provider: "pi",

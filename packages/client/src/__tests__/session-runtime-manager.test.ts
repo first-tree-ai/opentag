@@ -400,7 +400,17 @@ describe("SessionRuntimeManager", () => {
       const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
       const factory = new FakeFactory();
       const treePath = resolve(home, "shared-context-tree");
-      const contextTree = { ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath })) };
+      const secondTreePath = resolve(home, "second-context-tree");
+      const contextTree = {
+        ensureAgent: vi.fn(async () => ({
+          status: "configured" as const,
+          connections: [
+            { alias: "team", repository: "acme/team", status: "ready" as const, treePath },
+            { alias: "product", repository: "acme/product", status: "ready" as const, treePath: secondTreePath },
+            { alias: "offline", repository: "acme/offline", status: "unavailable" as const, reason: "GITHUB_AUTH" },
+          ],
+        })),
+      };
       const manager = new SessionRuntimeManager({
         bindingStore: store,
         cliCommand: "opentag-dev",
@@ -424,13 +434,14 @@ describe("SessionRuntimeManager", () => {
 
       const created = factory.created[0];
       const cwd = await workspace.cwd(request.agentId);
-      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", null);
+      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", []);
       // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
       expect(created?.workspace.writableRoots).toEqual([
         cwd,
         resolve(home, "slack"),
         ...(configFailure ? [] : [resolve(process.env.HOME as string, ".context-tree")]),
         treePath,
+        secondTreePath,
       ]);
       expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
       expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
@@ -468,7 +479,7 @@ describe("SessionRuntimeManager", () => {
     await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
     await manager.ensureRuntime(request.sessionId);
     const cwd = await workspace.cwd(request.agentId);
-    expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", null, environment);
+    expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", [], environment);
     await manager.close();
   });
 
@@ -1557,7 +1568,7 @@ function reconcile(computerId: string, runtime: EffectiveRuntimeSnapshot): Sessi
 
 function snapshot(revision: number): EffectiveRuntimeSnapshot {
   return {
-    contextTreeRepository: null,
+    contextTrees: [],
     revision: {
       agent: { sequence: revision, id: `agent-revision-${revision}` },
       session: { sequence: revision, id: `session-revision-${revision}` },

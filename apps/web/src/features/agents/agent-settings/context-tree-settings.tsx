@@ -1,5 +1,6 @@
 import {
   type AgentAdminConfig,
+  ContextTreeAliasSchema,
   type ContextTreeOperationRequest,
   type ContextTreeOperationResponse,
   ContextTreeRepositorySchema,
@@ -33,7 +34,10 @@ function ContextTreeSettingsForm({
   onChanged: () => void;
 }) {
   const [mode, setMode] = useState<"connect" | "create">("connect");
-  const [drafts, setDrafts] = useState(() => repositoryDrafts(config.runtimeConfig.contextTreeRepository));
+  const [drafts, setDrafts] = useState(() => repositoryDrafts(null));
+  const [alias, setAlias] = useState("");
+  const aliasInput = useRef<HTMLInputElement>(null);
+  const aliasValid = ContextTreeAliasSchema.safeParse(alias).success;
   const [submitted, setSubmitted] = useState(false);
   const ownerInput = useRef<HTMLInputElement>(null);
   const nameInput = useRef<HTMLInputElement>(null);
@@ -50,9 +54,9 @@ function ContextTreeSettingsForm({
       mounted.current = false;
     };
   }, []);
-  const selected = config.runtimeConfig.contextTreeRepository;
+  const selected = config.runtimeConfig.contextTrees;
   const cloud = computerKind === "cloud";
-  const pauseRequired = selected !== null && config.status !== "suspended";
+  const pauseRequired = selected.length > 0 && config.status !== "suspended";
   const activeMode = cloud ? "connect" : mode;
   const draft = drafts[activeMode];
   const owner = draft.owner.trim();
@@ -79,17 +83,21 @@ function ContextTreeSettingsForm({
 
   function validateSubmission() {
     setSubmitted(true);
+    if (!aliasValid) {
+      aliasInput.current?.focus();
+      return false;
+    }
     if (valid.success) return true;
     (ownerValid ? nameInput : ownerInput).current?.focus();
     return false;
   }
 
-  async function run(action: ContextTreeOperationRequest["action"]) {
+  async function run(action: ContextTreeOperationRequest["action"], selectedAlias = alias) {
     if (pending || pauseRequired) return;
     if (action !== "disconnect" && (!online || !validateSubmission())) return;
     const nextRepository = action === "disconnect" ? null : repository.trim();
     // Keep the same ID after a lost response. The Computer owns publication deduplication.
-    const input = operationAttempt(config, action, nextRepository, attempt.current);
+    const input = operationAttempt(config, action, selectedAlias, nextRepository, attempt.current);
     attempt.current = input;
     setPending(true);
     setResult(undefined);
@@ -110,18 +118,24 @@ function ContextTreeSettingsForm({
         title={m.agent_settings_context_tree_title()}
         description={m.agent_settings_context_tree_description()}
       />
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p role="status">
-          {selected
-            ? m.agent_settings_context_tree_connected({ repository: selected })
-            : m.agent_settings_context_tree_disabled()}
-        </p>
-        {selected ? (
-          <Button variant="ghost" disabled={pending || pauseRequired} onClick={() => void run("disconnect")}>
-            {m.agent_settings_context_tree_disconnect()}
-          </Button>
-        ) : null}
-      </div>
+      {selected.length ? (
+        selected.map((entry) => (
+          <div key={entry.alias} className="flex flex-wrap items-center justify-between gap-2">
+            <p role="status" className="min-w-0 break-all">
+              {m.agent_settings_context_tree_connected_alias({ alias: entry.alias, repository: entry.repository })}
+            </p>
+            <Button
+              variant="ghost"
+              disabled={pending || pauseRequired}
+              onClick={() => void run("disconnect", entry.alias)}
+            >
+              {m.agent_settings_context_tree_disconnect()}
+            </Button>
+          </div>
+        ))
+      ) : (
+        <p role="status">{m.agent_settings_context_tree_disabled()}</p>
+      )}
       <SettingsList>
         <form
           className="grid gap-4 p-4"
@@ -137,6 +151,17 @@ function ContextTreeSettingsForm({
               ? m.agent_settings_context_tree_connect_guidance()
               : m.agent_settings_context_tree_create_guidance()}
           </p>
+          <AliasField
+            fieldId={fieldId}
+            alias={alias}
+            inputRef={aliasInput}
+            pending={pending}
+            invalid={submitted && !aliasValid}
+            onChange={(value) => {
+              setAlias(value);
+              setResult(undefined);
+            }}
+          />
           <RepositoryFields
             {...{ fieldId, draft, pending, submitted, ownerValid, nameValid, ownerInput, nameInput, updateDraft }}
           />
@@ -155,6 +180,41 @@ function ContextTreeSettingsForm({
       {pending ? <p role="status">{m.agent_settings_context_tree_pending()}</p> : null}
       {result ? <ContextTreeResult result={result} computerName={computerName} cloud={cloud} /> : null}
     </div>
+  );
+}
+
+function AliasField({
+  fieldId,
+  alias,
+  inputRef,
+  pending,
+  invalid,
+  onChange,
+}: {
+  fieldId: string;
+  alias: string;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  pending: boolean;
+  invalid: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field
+      label={m.agent_settings_context_tree_alias()}
+      htmlFor={`${fieldId}-alias`}
+      error={invalid ? m.agent_settings_context_tree_alias_error() : undefined}
+      errorId={`${fieldId}-alias-error`}
+    >
+      <KumoInputControl
+        ref={inputRef}
+        id={`${fieldId}-alias`}
+        value={alias}
+        disabled={pending}
+        aria-invalid={invalid}
+        aria-describedby={invalid ? `${fieldId}-alias-error` : undefined}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </Field>
   );
 }
 
@@ -290,6 +350,12 @@ function failureMessage(
       return cloud
         ? m.agent_settings_context_tree_cloud_permission_denied()
         : m.agent_settings_context_tree_permission_denied();
+    case "alias_conflict":
+      return m.agent_settings_context_tree_alias_conflict();
+    case "repository_conflict":
+      return m.agent_settings_context_tree_repository_conflict();
+    case "tree_limit_reached":
+      return m.agent_settings_context_tree_limit_reached();
     case "repository_exists":
       return m.agent_settings_context_tree_repository_exists();
     case "invalid_tree":
@@ -316,11 +382,13 @@ function failureMessage(
 function operationAttempt(
   config: AgentAdminConfig,
   action: ContextTreeOperationRequest["action"],
+  alias: string,
   repository: string | null,
   previous?: ContextTreeOperationRequest,
 ): ContextTreeOperationRequest {
   if (
     previous?.action === action &&
+    previous.alias === alias &&
     previous.repository?.toLowerCase() === repository?.toLowerCase() &&
     previous.expectedRevision === config.revision &&
     previous.expectedRuntimeConfigRevision === config.runtimeConfig.revision
@@ -331,6 +399,7 @@ function operationAttempt(
     expectedRevision: config.revision,
     expectedRuntimeConfigRevision: config.runtimeConfig.revision,
     action,
+    alias,
     repository,
   };
 }

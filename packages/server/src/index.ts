@@ -182,7 +182,7 @@ export {
 export { createPlatformRuntime };
 
 class InternalNavigationVisibilityService {
-  #value: InternalNavigationVisibility = { integrations: false, skills: false };
+  #value: InternalNavigationVisibility = { integrations: false };
 
   read(): InternalNavigationVisibility {
     return this.#value;

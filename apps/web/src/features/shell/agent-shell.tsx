@@ -27,13 +27,11 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
     { section: "home", icon: "overview", label: m.shell_overview(), link: agentDetailLink(agentId) },
     { section: "tasks", icon: "instructions", label: m.shell_tasks(), link: agentTasksLink(agentId) },
     /*
-     * Visible by default, with no internal-tools gate: the Server pool and per-Agent authorization
-     * are an ordinary management surface, not a preview.
+     * Visible by default, with no internal-tools gate: MCP Servers and Agent Skills are ordinary
+     * per-Agent management surfaces, not previews.
      */
     { section: "mcp", icon: "integrations", label: m.shell_mcp(), link: agentMcpLink(agentId) },
-    ...(internal.skills
-      ? ([{ section: "skills", icon: "shield", label: m.shell_skills(), link: agentSkillsLink(agentId) }] as const)
-      : []),
+    { section: "skills", icon: "shield", label: m.shell_skills(), link: agentSkillsLink(agentId) },
     ...(internal.integrations
       ? ([
           {

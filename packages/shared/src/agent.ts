@@ -26,7 +26,7 @@ export const AgentRuntimeProviderSchema = z.enum(AGENT_RUNTIME_PROVIDERS);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 export const AgentStatusSchema = z.enum(["active", "suspended"]);
 
-const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructions, context) => {
+export const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructions, context) => {
   const combined = RuntimeInstructionsSchema.safeParse({
     // The Agent name is not known here, so budget the longest platform layer any Agent can
     // render. Accepting instructions that only fit without the identity line would move the

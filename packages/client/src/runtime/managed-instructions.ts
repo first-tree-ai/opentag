@@ -34,7 +34,7 @@ function renderContextTree(status: ContextTreeStatus): readonly string[] {
 function renderContextTreeFacts(status: Exclude<ContextTreeStatus, { status: "configured" }>): readonly string[] {
   if (status.status === "ready") return [`Context Tree: ${status.treePath}`];
   if (status.status === "unconfigured")
-    return ["Context Tree: disabled for this Agent. Configure it in Agent settings → Context Tree."];
+    return ["Context Tree: disabled for this Agent. Connect one on the Agent's Context Tree page."];
   return [
     status.reason === "PREPARING"
       ? "Context Tree preparation is continuing in the background."
@@ -45,7 +45,7 @@ function renderContextTreeFacts(status: Exclude<ContextTreeStatus, { status: "co
 function renderContextTreeGuidance(status: Exclude<ContextTreeStatus, { status: "configured" }>): readonly string[] {
   if (status.status === "ready") {
     return [
-      "Ready Context Trees are connected in this Agent’s settings. Other Agents share this memory only when they select the same repository. Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
+      "Ready Context Trees are connected on this Agent's Context Tree page. Other Agents share this memory only when they select the same repository. Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
       "Use the context-tree-read and context-tree-write skills rather than editing the tree by hand.",
       "`members/<your Agent slug>/` is your own private working memory; the Agent slug is stated in the Platform section above. Do not write to another Agent's member directory.",
       "",

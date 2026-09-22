@@ -458,6 +458,7 @@ export const SlackBindingActivationSchema = z
     botAccessToken: z.string().min(1),
     signingSecret: z.string().min(1),
     installedAt: z.coerce.date(),
+    profile: ImBindingSummarySchema.shape.bot.optional(),
   })
   .strict();
 

@@ -8,6 +8,7 @@ import { Icon, Loader, Text } from "../../../ui/design-system.js";
 import { NotFoundPage } from "../../not-found.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import { useAccount } from "../../session/session-context.js";
+import { AgentAvatar } from "../agent-avatar.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { useAgentDetailView } from "../agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "../agent-routes.js";
@@ -132,7 +133,10 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
   );
   return (
     <div className="grid gap-6">
-      <AgentSettingsPageHeader title={m.agent_settings_title()} />
+      <div className="flex items-center gap-3">
+        <AgentAvatar displayName={agent.displayName} avatarUrl={agent.avatarUrl} />
+        <AgentSettingsPageHeader title={m.agent_settings_title()} />
+      </div>
       <AsyncState loading={<AgentSettingsDirectoryLoading />} state={configState}>
         {(config) => (
           <div className="grid gap-6">

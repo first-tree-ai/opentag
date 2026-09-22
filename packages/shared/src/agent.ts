@@ -87,6 +87,7 @@ const AgentIdentitySchema = z
   .strict();
 
 export const AgentSummarySchema = AgentIdentitySchema.extend({
+  avatarUrl: z.string().url().nullable().optional(),
   createdBy: z
     .object({
       userId: z.string().uuid(),

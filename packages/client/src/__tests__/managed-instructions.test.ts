@@ -62,6 +62,20 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("restored on every Computer this Agent runs on");
   });
 
+  it("tells the Agent how to change its own configuration only when the Session CLI is available", () => {
+    const prompt = renderManagedSystemPrompt(snapshot, session);
+    expect(prompt).toContain("## Self-configuration");
+    expect(prompt).toContain("`opentag-dev agent self show`");
+    expect(prompt).toContain("`opentag-dev agent self update`");
+    expect(prompt).toContain("`opentag-dev agent self mcp`");
+    expect(prompt).toContain("apply from your next Turn and start a new provider conversation");
+    expect(prompt).toContain("read the current value first");
+
+    const unavailable = renderManagedSystemPrompt(snapshot, { ...session, sessionCliAvailable: false });
+    expect(unavailable).not.toContain("## Self-configuration");
+    expect(unavailable).not.toContain("agent self");
+  });
+
   it("still describes Agent Home conventions when the concrete path is omitted", () => {
     const prompt = renderManagedSystemPrompt(snapshot, session);
     expect(prompt).toContain("## Agent Home");

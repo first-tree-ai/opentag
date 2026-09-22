@@ -107,6 +107,14 @@ export const COMPUTER_AGENT_SKILLS_TEMPLATE = `${API_V1_PREFIX}/computer/agents/
 export const COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE = `${COMPUTER_AGENT_SKILLS_TEMPLATE}/:skillId/bundle`;
 export const RUNTIME_SKILLS_PATH = `${API_V1_PREFIX}/runtime/skills`;
 export const RUNTIME_SKILL_BUNDLE_TEMPLATE = `${RUNTIME_SKILLS_PATH}/:name/bundle`;
+/*
+ * Agent self-configuration. Session-proof authenticated and never addressed by Agent id: the Agent
+ * is always the one the proof resolves to, so a request cannot reach a different Agent.
+ */
+export const RUNTIME_AGENT_PATH = `${API_V1_PREFIX}/runtime/agent`;
+export const RUNTIME_AGENT_MCP_SERVERS_PATH = `${RUNTIME_AGENT_PATH}/mcp-servers`;
+export const RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH = `${RUNTIME_AGENT_MCP_SERVERS_PATH}/available`;
+export const RUNTIME_AGENT_MCP_SERVER_TEMPLATE = `${RUNTIME_AGENT_MCP_SERVERS_PATH}/:mcpServerId`;
 
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
@@ -376,6 +384,10 @@ export function computerAgentSkillsPath(agentId: string): string {
 
 export function computerAgentSkillBundlePath(agentId: string, skillId: string): string {
   return `${computerAgentSkillsPath(agentId)}/${encodeURIComponent(skillId)}/bundle`;
+}
+
+export function runtimeAgentMcpServerPath(mcpServerId: string): string {
+  return `${RUNTIME_AGENT_MCP_SERVERS_PATH}/${encodeURIComponent(mcpServerId)}`;
 }
 
 export function runtimeSkillBundlePath(name: string): string {

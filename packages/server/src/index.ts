@@ -580,15 +580,11 @@ export async function startServer(): Promise<void> {
       providerReadiness: registry,
       cloudIdentities,
       assertCloudControlCredential: platformRuntime.assertCloudControlCredential,
+      // A failed close only delays the fatal 401 until the Client's next authentication attempt.
       onComputerDeleted: async (computerId) => {
-        // The deletion is already committed; a failed close only delays the fatal 401 to the next auth.
-        try {
-          const closed = await registry.closeComputer(computerId, COMPUTER_DELETED_CLOSE);
-          app?.log.info({ computerId, closed }, "Deleted Computer runtime connection closed");
-        } catch (error) {
-          app?.log.warn({ computerId, err: error }, "Failed to close a deleted Computer's runtime connection");
-        }
+        await registry.closeComputer(computerId, COMPUTER_DELETED_CLOSE);
       },
+      logger: serviceLogger("computers"),
     });
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database

@@ -28,7 +28,9 @@ function exchangeInput(code: string, installationId: string = randomUUID()) {
   };
 }
 
-async function connectedComputer(options: { onComputerDeleted?: (computerId: string) => void } = {}) {
+async function connectedComputer(
+  options: { onComputerDeleted?: (computerId: string) => void; logger?: ReturnType<typeof testLogger> } = {},
+) {
   const owner = await bootstrapInitialAdmin(unit.database, { email: "owner@example.com", displayName: "Owner" }, NOW);
   const machine = new MachineAuthService(unit.database, { now: () => NOW });
   const issued = await machine.issueForAccount(owner.userId, {});
@@ -37,9 +39,13 @@ async function connectedComputer(options: { onComputerDeleted?: (computerId: str
   const service = new ComputerService(
     unit.database,
     { getActiveUserById: vi.fn() },
-    { now: () => NOW, onComputerDeleted: options.onComputerDeleted },
+    { now: () => NOW, onComputerDeleted: options.onComputerDeleted, logger: options.logger },
   );
   return { exchange, installationId, machine, ownerId: owner.userId, service };
+}
+
+function testLogger() {
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
 function registerFrame(installationId: string) {
@@ -99,6 +105,31 @@ describe("ComputerService.deleteComputer", () => {
     expect(code?.revokedAt).toEqual(NOW);
     await expect(value.machine.exchangeConnectCode(exchangeInput(pendingRepair.code))).rejects.toMatchObject({
       code: "AUTH_INVALID_CODE",
+      statusCode: 401,
+    });
+  });
+
+  it("keeps a committed deletion when the post-deletion hook fails, and logs the failure", async () => {
+    const logger = testLogger();
+    const value = await connectedComputer({
+      logger,
+      onComputerDeleted: () => {
+        throw new Error("registry unavailable");
+      },
+    });
+
+    await expect(value.service.deleteComputer(value.ownerId, value.exchange.computerId)).resolves.toMatchObject({
+      computerId: value.exchange.computerId,
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: value.ownerId, computerId: value.exchange.computerId }),
+      "Computer deleted",
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ computerId: value.exchange.computerId, err: expect.any(Error) }),
+      "Post-deletion hook failed; the Computer stays deleted",
+    );
+    await expect(value.machine.verifyMachineToken(value.exchange.machineToken)).rejects.toMatchObject({
       statusCode: 401,
     });
   });

@@ -8,6 +8,7 @@ import type {
 import { and, asc, eq, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computerConnectCodes, computerCredentials, computers, imBindings } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AuthServiceError } from "../auth/index.js";
 import { lockActiveAccount } from "./account-lock.js";
 import {
@@ -37,10 +38,12 @@ export interface ComputerServiceOptions {
    */
   assertCloudControlCredential?: (context: ComputerAuthContext) => Promise<void> | void;
   /**
-   * Runs after a Computer deletion commits, so a live runtime connection can be closed. It must be
-   * best-effort from the caller's view: the deletion is already durable when it runs.
+   * Runs after a Computer deletion commits, so a live runtime connection can be closed. The service
+   * treats it as best-effort: the deletion is already durable, so a failing hook is logged and never
+   * turns a committed deletion into an error.
    */
   onComputerDeleted?: (computerId: string) => Promise<void> | void;
+  logger?: ServiceLogger;
 }
 
 export interface DeletedComputer {
@@ -56,6 +59,7 @@ export class ComputerService {
   readonly #cloudIdentities: { enabled: boolean; runnerVersion?: string };
   readonly #assertCloudControlCredential?: (context: ComputerAuthContext) => Promise<void> | void;
   readonly #onComputerDeleted?: (computerId: string) => Promise<void> | void;
+  readonly #logger?: ServiceLogger;
 
   constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
@@ -65,6 +69,7 @@ export class ComputerService {
     this.#cloudIdentities = options.cloudIdentities ?? { enabled: false };
     this.#assertCloudControlCredential = options.assertCloudControlCredential;
     this.#onComputerDeleted = options.onComputerDeleted;
+    this.#logger = options.logger;
   }
 
   /**
@@ -214,7 +219,12 @@ export class ComputerService {
         .where(eq(computers.id, computerId));
       return { computerId, revokedCredentialCount: revoked.length };
     });
-    await this.#onComputerDeleted?.(computerId);
+    this.#logger?.info({ accountId, ...deleted }, "Computer deleted");
+    try {
+      await this.#onComputerDeleted?.(computerId);
+    } catch (error) {
+      this.#logger?.warn({ computerId, err: error }, "Post-deletion hook failed; the Computer stays deleted");
+    }
     return deleted;
   }
 

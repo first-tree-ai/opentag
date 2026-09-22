@@ -9,7 +9,10 @@ const computerPath = (id: string) => `/api/v1/computers/${id}`;
  * Serves a mutable Computer list and answers `DELETE /api/v1/computers/:id` with `deleteResponse`,
  * removing the row only when the delete succeeds, as the Server does.
  */
-function installComputers(deleteResponse: () => Response = () => new Response(null, { status: 204 })) {
+function installComputers(
+  deleteResponse: () => Response = () => new Response(null, { status: 204 }),
+  removeOn: readonly number[] = [204],
+) {
   let computers: Record<string, unknown>[] = [
     { id: computerId, displayName: "Ada's Mac", platform: "darwin", connectionStatus: "online", agentIds: [] },
     {
@@ -29,7 +32,7 @@ function installComputers(deleteResponse: () => Response = () => new Response(nu
     if (init?.method === "DELETE" && path.startsWith("/api/v1/computers/")) {
       deletes.push(path);
       const response = deleteResponse();
-      if (response.status === 204)
+      if (removeOn.includes(response.status))
         computers = computers.filter((computer) => computerPath(String(computer.id)) !== path);
       return response;
     }
@@ -68,6 +71,33 @@ describe("deleting a Computer", () => {
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(await screen.findByText("Build Box")).toBeTruthy();
     expect(screen.queryByText("Ada's Mac")).toBeNull();
+  });
+
+  it("treats a computer another tab already deleted as deleted, and accepts a padded name", async () => {
+    const { deletes } = installComputers(
+      () =>
+        json(
+          {
+            error: {
+              code: "COMPUTER_NOT_FOUND",
+              category: "deterministic",
+              message: "The requested Computer was not found",
+            },
+          },
+          404,
+        ),
+      [404],
+    );
+    await openComputer(computerId);
+
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete Ada's Mac?" });
+    fireEvent.change(within(dialog).getByLabelText("Type Ada's Mac to confirm"), { target: { value: " Ada's Mac " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete computer" }));
+
+    await waitFor(() => expect(window.location.search).not.toContain("computerId"));
+    expect(deletes).toEqual([computerPath(computerId)]);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(await screen.findByText("Build Box")).toBeTruthy();
   });
 
   it("refuses a Computer that still hosts Agents without calling the Server", async () => {

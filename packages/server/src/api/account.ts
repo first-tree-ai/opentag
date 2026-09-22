@@ -264,12 +264,7 @@ export function registerAccountRoutes(
 
     app.delete(ACCOUNT_COMPUTER_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
       const { computerId } = parseRequest(ComputerParamsSchema, request.params);
-      const account = accountId(request);
-      const deleted = await computerService.deleteComputer(account, computerId);
-      request.log.info(
-        { accountId: account, computerId, revokedCredentialCount: deleted.revokedCredentialCount },
-        "Computer deleted",
-      );
+      await computerService.deleteComputer(accountId(request), computerId);
       return reply.header("Cache-Control", "no-store").code(204).send();
     });
 

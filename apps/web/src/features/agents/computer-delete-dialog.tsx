@@ -34,7 +34,7 @@ export function ComputerDeleteDialog({
     try {
       setBusy(true);
       setError(undefined);
-      await browserApi.deleteComputer(computer.computerId);
+      await deleteOrConfirmGone(computer.computerId);
       // A confirmed delete is stronger than a racing list refresh: drop the row first, then revalidate.
       await queryClient.cancelQueries({ queryKey: queryKeys.computers() });
       queryClient.setQueryData<ListAccountComputersResponse>(queryKeys.computers(), (current) =>
@@ -84,7 +84,7 @@ export function ComputerDeleteDialog({
             {m.common_cancel()}
           </Button>
           <Button
-            disabled={busy || inUse || confirmationText !== computer.displayName}
+            disabled={busy || inUse || confirmationText.trim() !== computer.displayName.trim()}
             variant="danger"
             onClick={() => void deleteComputer()}
           >
@@ -94,4 +94,17 @@ export function ComputerDeleteDialog({
       </div>
     </Dialog>
   );
+}
+
+/**
+ * A repeated delete (another tab, or a retry after a dropped 204) answers 404: the computer is already
+ * gone, which is exactly the outcome the operator asked for.
+ */
+async function deleteOrConfirmGone(computerId: string): Promise<void> {
+  try {
+    await browserApi.deleteComputer(computerId);
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.status === 404 && cause.code === "COMPUTER_NOT_FOUND") return;
+    throw cause;
+  }
 }

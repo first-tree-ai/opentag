@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ListTasksResponseSchema,
   TASK_TITLE_MAX_LENGTH,
+  TaskAttachmentSchema,
   TaskCancelResponseSchema,
   TaskDetailSchema,
   TaskStatusSchema,
@@ -35,6 +36,20 @@ describe("Task browser contracts", () => {
       nextCursor: "cursor",
     });
     expect(taskByIdPath("session/with spaces")).toBe("/api/v1/sessions/session%2Fwith%20spaces");
+  });
+
+  it("allows only attachment metadata in the browser contract", () => {
+    const metadata = {
+      kind: "file",
+      filename: "requirements.pdf",
+      mediaType: "application/pdf",
+      sizeBytes: 1234,
+      ordinal: 0,
+      availability: "available",
+    };
+    expect(TaskAttachmentSchema.parse(metadata)).toEqual(metadata);
+    expect(() => TaskAttachmentSchema.parse({ ...metadata, providerResourceKey: "secret" })).toThrow();
+    expect(() => TaskAttachmentSchema.parse({ ...metadata, downloadUrl: "https://example.com/private" })).toThrow();
   });
 
   it("bounds the resolved title while leaving room for a future manual title", () => {
@@ -104,6 +119,7 @@ describe("Task browser contracts", () => {
     });
     expect(detail.turns[0]?.report?.finalText).toBe("Stored runtime final output");
     expect(detail.turns[0]?.report?.outgoingReplies).toBeNull();
+    expect(detail.turns[0]?.message.attachments).toBeUndefined();
     expect(() => TaskDetailSchema.parse({ ...detail, providerOutboundMessages: [] })).toThrow();
     const rootTurn = detail.turns[0];
     const rootReport = rootTurn?.report;

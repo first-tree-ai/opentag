@@ -694,6 +694,7 @@
   "TASK_CANCELLED_DELIVERY_REASON",
   "TASK_CANCEL_TEMPLATE",
   "TASK_TITLE_MAX_LENGTH",
+  "TaskAttachmentSchema",
   "TaskCancelResponseSchema",
   "TaskCollaborationMessageSchema",
   "TaskDetailSchema",

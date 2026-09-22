@@ -96,7 +96,6 @@
   "tasks_report_summary": "{outcome} · {time}",
   "tasks_request_failed": "The request failed",
   "tasks_search_tasks": "Search Tasks",
-  "tasks_sent_reply": "Sent reply",
   "tasks_source_channel": "Channel",
   "tasks_source_direct_message": "Direct message",
   "tasks_source_group_chat": "Group chat",

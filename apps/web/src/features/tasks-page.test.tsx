@@ -1020,7 +1020,10 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Sent reply")).toBeTruthy();
+    expect(within(activity).getByText("Text").closest("header")?.getAttribute("data-ui")).toBe(
+      "task-message-author-agent",
+    );
+    expect(within(activity).queryByText("Sent reply")).toBeNull();
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
     expect(within(activity).getByText("Execution summary")).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
@@ -1046,7 +1049,7 @@ describe("Tasks view", () => {
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(within(activity).getByText("No sent replies recorded.")).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
-    expect(within(activity).queryByText("Sent reply")).toBeNull();
+    expect(activity.querySelector('[data-ui="task-sent-reply"]')).toBeNull();
   });
 
   it("keeps successful outbound messages on a failed Turn and labels unavailable legacy data", async () => {
@@ -1080,7 +1083,7 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Sent reply")).toBeTruthy();
+    expect(within(activity).getByText("Image")).toBeTruthy();
     expect(within(activity).getByText(/photo.png/)).toBeTruthy();
     expect(within(activity).getByText("Provider failed")).toBeTruthy();
   });
@@ -1108,7 +1111,7 @@ describe("Tasks view", () => {
       const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
         path: `/tasks/${sessionId}`,
       });
-      await screen.findByText("Sent reply");
+      await screen.findByText("Actual reply");
       expect(container.querySelector('[data-ui="task-sent-reply"]')?.textContent).toContain("Actual reply");
       const summary = container.querySelector('[data-ui="task-execution-summary"]');
       expect(summary?.querySelector("p") ?? null).toBeNull();

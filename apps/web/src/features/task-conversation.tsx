@@ -11,7 +11,7 @@ import { Collapsible, Text } from "../ui/design-system.js";
 import { TaskActivityTimeline } from "./task-activity-timeline.js";
 import { TaskAttachments } from "./task-attachments.js";
 import { TaskMessageBody } from "./task-message-body.js";
-import { TaskOutgoingReply } from "./task-outgoing-replies.js";
+import { TaskOutgoingReply, TaskOutgoingReplyMeta } from "./task-outgoing-replies.js";
 import { buildTaskTimeline, type TaskReport, type TaskTimelineEntry } from "./task-timeline.js";
 
 export function TaskActivity({
@@ -76,6 +76,7 @@ function TaskEntry({ task, entry }: { task: TaskSummary; entry: TaskTimelineEntr
         {!compact ? (
           <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
             <strong>{task.agent.displayName}</strong>
+            {entry.kind === "reply" ? <TaskOutgoingReplyMeta reply={entry.reply} /> : null}
             {entry.kind === "status" ? (
               <small className="text-kumo-subtle">{deliveryStateLabel(turn.delivery)}</small>
             ) : null}

@@ -96,7 +96,6 @@
   "tasks_report_summary": "{outcome}，{time}",
   "tasks_request_failed": "请求失败",
   "tasks_search_tasks": "搜索任务",
-  "tasks_sent_reply": "已发送回复",
   "tasks_source_channel": "频道",
   "tasks_source_direct_message": "私聊",
   "tasks_source_group_chat": "群聊",

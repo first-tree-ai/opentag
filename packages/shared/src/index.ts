@@ -205,6 +205,19 @@ export {
 export * from "./context-tree.js";
 export * from "./context-tree-operation.js";
 export {
+  createErrorReport,
+  ERROR_REPORT_FIELD_MAX_LENGTH,
+  ERROR_REPORT_MESSAGE_MAX_LENGTH,
+  ERROR_REPORT_STACK_MAX_LENGTH,
+  ERROR_REPORT_URL_MAX_LENGTH,
+  type ErrorReportMetadata,
+  type ErrorReportRequest,
+  ErrorReportRequestSchema,
+  type ErrorReportSource,
+  ErrorReportSourceSchema,
+  sanitizeErrorReportUrl,
+} from "./error-report.js";
+export {
   type ErrorCategory,
   ErrorCategorySchema,
   type ErrorCode,

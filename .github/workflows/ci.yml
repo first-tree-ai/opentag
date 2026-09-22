@@ -342,7 +342,7 @@ jobs:
           pnpm exec turbo run build --filter=open-tag...
 
       - name: Build image
-        run: docker build --tag opentag-server:ci .
+        run: docker build --build-arg "OPENTAG_WEB_VERSION=$GITHUB_SHA" --tag opentag-server:ci .
 
       - name: Start PostgreSQL
         run: |

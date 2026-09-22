@@ -366,6 +366,12 @@ const ServerEnvironmentSchema = z
     OPENTAG_OTEL_ENVIRONMENT: z.string().trim().min(1).optional(),
     OPENTAG_OTEL_HEADERS: z.string().default(""),
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
+    /*
+     * The Google Cloud project that receives relayed client errors. Unset means the relay only logs; the
+     * name is the one Google's own libraries read, so Application Default Credentials and this setting
+     * come from the same place in a deployment.
+     */
+    GOOGLE_CLOUD_PROJECT: z.string().trim().min(1).optional(),
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
     /*
      * The single overall Cloud switch. Off by default; enabling requires a valid storage prefix and
@@ -739,6 +745,8 @@ export interface ServerConfig {
       headers: string;
       sampleRate: number;
     };
+    /** Where relayed Web App and CLI errors are forwarded; `projectId` unset keeps them in the server log only. */
+    errorReporting: { projectId?: string };
   };
   logLevel: ServerLogLevel;
   /**
@@ -896,6 +904,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_ENVIRONMENT: environment.OPENTAG_OTEL_ENVIRONMENT,
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
+    GOOGLE_CLOUD_PROJECT: emptyToUndefined(environment.GOOGLE_CLOUD_PROJECT),
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
     OPENTAG_CLOUD_IDENTITIES_ENABLED: environment.OPENTAG_CLOUD_IDENTITIES_ENABLED,
     OPENTAG_CLOUD_STORAGE_BASE: emptyToUndefined(environment.OPENTAG_CLOUD_STORAGE_BASE),
@@ -993,6 +1002,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
         headers: parsed.OPENTAG_OTEL_HEADERS,
         sampleRate: parsed.OPENTAG_OTEL_SAMPLE_RATE,
       },
+      errorReporting: parsed.GOOGLE_CLOUD_PROJECT ? { projectId: parsed.GOOGLE_CLOUD_PROJECT } : {},
     },
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,

@@ -19,6 +19,7 @@ import {
 import { type CloudModelProxyRouteOptions, registerCloudModelProxyRoutes } from "./api/cloud-model-proxy.js";
 import { registerComputerSkillRoutes } from "./api/computer-skills.js";
 import { registerComputerRoutes } from "./api/computers.js";
+import { type ErrorReportRoutesOptions, registerErrorReportRoutes } from "./api/error-reports.js";
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
 import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
@@ -127,6 +128,8 @@ export interface CreateAppOptions {
     publicUrl: string;
   };
   browserAuth?: BrowserAuthRoutesOptions;
+  /** Relay for Web App and CLI failures. Always registered; without a reporter the relay only logs. */
+  errorReporting?: ErrorReportRoutesOptions;
   imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
   /** MCP management plane: definitions, per-Agent mounts/overrides, authorization, probing. */
@@ -514,6 +517,9 @@ export function createApp(options: CreateAppOptions = {}) {
     const traceId = currentTraceId();
     if (traceId) reply.header("x-trace-id", traceId);
   });
+
+  // Anonymous by design: a failure before sign-in is still a failure worth seeing.
+  registerErrorReportRoutes(app, options.errorReporting);
 
   app.get("/healthz", async (_request, reply) => {
     const health = ServerHealthSchema.parse({

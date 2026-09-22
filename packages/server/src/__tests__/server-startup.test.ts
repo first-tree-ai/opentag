@@ -333,6 +333,7 @@ function defaultConfig() {
         headers: "",
         sampleRate: 1,
       },
+      errorReporting: {},
     },
     port: 8000,
     publicUrl: "https://opentag.example.com",

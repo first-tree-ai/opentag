@@ -216,6 +216,22 @@ export function presentCommand<T>(
   return result.exitCode;
 }
 
+export type CommandFailureObserver = (error: unknown, commandError: CommandError) => void;
+
+let commandFailureObserver: CommandFailureObserver | undefined;
+
+/**
+ * Observe every failure the shared execution path handles. Commands present their own failures and
+ * return an exit code, so a process-level concern such as error reporting cannot see them from the
+ * entry point's catch; this is the one seam that does. Returns the function that detaches it.
+ */
+export function observeCommandFailures(observer: CommandFailureObserver): () => void {
+  commandFailureObserver = observer;
+  return () => {
+    if (commandFailureObserver === observer) commandFailureObserver = undefined;
+  };
+}
+
 /** Run an operation through the shared result and presentation path. */
 export async function executeCommand<T>(
   operation: () => Promise<T>,
@@ -238,14 +254,16 @@ export async function executeCommand<T>(
       },
       "CLI command failed",
     );
-    return presentCommand(
-      {
-        ok: false,
-        error: commandError,
-        exitCode: commandExitCode(commandError),
-      },
+    const exitCode = presentCommand(
+      { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
       options,
     );
+    try {
+      commandFailureObserver?.(error, commandError);
+    } catch {
+      // An observer is a bystander; its failure must not change the answer already presented.
+    }
+    return exitCode;
   }
 }
 

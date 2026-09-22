@@ -51,7 +51,7 @@ test("dock account menu preserves all destinations, visible hover, and keyboard 
   const menu = page.getByRole("menu");
   await expect(menu).toHaveAccessibleName("Account menu");
   await expect(page.getByRole("navigation", { name: "Account", exact: true })).toHaveCount(0);
-  await expect(menu.getByRole("menuitem")).toHaveText(["Computers", "Account", "Internal tools", "Sign out"]);
+  await expect(menu.getByRole("menuitem")).toHaveText(["Computer", "Account", "Internal tools", "Sign out"]);
   await expect(tooltip).toBeHidden();
   await expectWithinViewport(menu);
   await page.screenshot({ path: test.info().outputPath("workspace-account.png") });
@@ -62,7 +62,7 @@ test("dock account menu preserves all destinations, visible hover, and keyboard 
   await page.keyboard.press("End");
   await expect(menu.getByRole("menuitem", { name: "Sign out" })).toBeFocused();
   await page.keyboard.press("Home");
-  await expect(menu.getByRole("menuitem", { name: "Computers" })).toBeFocused();
+  await expect(menu.getByRole("menuitem", { name: "Computer" })).toBeFocused();
   await expectAccessible(page);
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();

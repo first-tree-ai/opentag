@@ -12,6 +12,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 - [IM Channel and Thread Sessions](./thread-sessions.md)
 - [Direct provider CLI messaging](./direct-provider-cli.md)
 - [Internal Session collaboration](./internal-session-collaboration.md)
+- [Agent self-configuration](./agent-self-configuration.md)
 - [Tasks](./tasks.md)
 - [Error taxonomy](./error-taxonomy.md)
 

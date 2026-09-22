@@ -1,6 +1,6 @@
 # 技术文档
 
-> 权威来源：[docs/README.md](../README.md) · 同步日期：2026-09-11
+> 权威来源：[docs/README.md](../README.md) · 同步日期：2026-09-22
 
 从[快速开始](../../README.zh-CN.md#快速开始)或[开发指南](../../DEVELOPMENT.zh-CN.md)开始。
 
@@ -13,6 +13,7 @@
 - [IM Channel 与 Thread Session](./thread-sessions.md)
 - [直连 provider CLI 消息](./direct-provider-cli.md)
 - [内部 Session 协作](./internal-session-collaboration.md)
+- [Agent 自我配置](./agent-self-configuration.md)
 - [任务](./tasks.md)
 - [错误分类](./error-taxonomy.md)
 

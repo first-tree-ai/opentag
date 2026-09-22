@@ -181,6 +181,7 @@ vi.mock("../services/sessions/index.js", () => ({
 }));
 vi.mock("../services/agents/index.js", () => ({
   AgentRuntimeTestService: class {},
+  AgentSelfService: class {},
   AgentService: class {
     constructor(_database: unknown, options: unknown) {
       state.agentOptions = options;
@@ -188,6 +189,7 @@ vi.mock("../services/agents/index.js", () => ({
   },
   AgentServiceError: class extends Error {},
   AgentSetupService: class {},
+  DatabaseAgentOwnerResolver: class {},
 }));
 vi.mock("../services/auth/index.js", () => ({
   AuthService: class {},

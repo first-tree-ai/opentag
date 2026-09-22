@@ -88,12 +88,16 @@ import {
   type RebindAgentComputerRequest,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
+  RUNTIME_AGENT_MCP_SERVERS_PATH,
+  RUNTIME_AGENT_PATH,
   RUNTIME_SKILLS_PATH,
   type RuntimeDurableWorkKind,
   RuntimeDurableWorkListResponseSchema,
   type RuntimeDurableWorkRecord,
   type RuntimeSkillManifest,
   RuntimeSkillManifestSchema,
+  runtimeAgentMcpServerPath,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,
@@ -126,6 +130,8 @@ import {
   type UpdateAgentRequest,
   type UpdateMCPBindingRequest,
   type UpdateMCPServerRequest,
+  type UpdateSelfAgentRequest,
+  type UpdateSelfMCPBindingRequest,
   type ValidationIssue,
 } from "@opentag/shared";
 import {
@@ -1030,6 +1036,98 @@ export class OpenTagApi {
     return this.#openBinaryResponse(
       runtimeSkillBundlePath(name),
       { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  // ------------------------------------------------------------------ Agent self-configuration
+
+  getRuntimeAgentConfig(proof: string, options?: RequestOptions): Promise<AgentAdminConfig> {
+    return this.#request(
+      RUNTIME_AGENT_PATH,
+      AgentAdminConfigSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  updateRuntimeAgentConfig(
+    proof: string,
+    input: UpdateSelfAgentRequest,
+    options?: RequestOptions,
+  ): Promise<AgentAdminConfig> {
+    return this.#request(
+      RUNTIME_AGENT_PATH,
+      AgentAdminConfigSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  listRuntimeAgentMcpServers(proof: string, options?: RequestOptions): Promise<ListAgentMCPServersResponse> {
+    return this.#request(
+      RUNTIME_AGENT_MCP_SERVERS_PATH,
+      ListAgentMCPServersResponseSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  listRuntimeAgentAvailableMcpServers(
+    proof: string,
+    options?: RequestOptions,
+  ): Promise<ListAvailableMCPServersResponse> {
+    return this.#request(
+      RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
+      ListAvailableMCPServersResponseSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  attachRuntimeAgentMcpServer(
+    proof: string,
+    input: AttachMCPServerRequest,
+    options?: RequestOptions,
+  ): Promise<MCPAgentServer> {
+    return this.#request(
+      RUNTIME_AGENT_MCP_SERVERS_PATH,
+      MCPAgentServerSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  updateRuntimeAgentMcpBinding(
+    proof: string,
+    mcpServerId: string,
+    input: UpdateSelfMCPBindingRequest,
+    options?: RequestOptions,
+  ): Promise<MCPAgentServer> {
+    return this.#request(
+      runtimeAgentMcpServerPath(mcpServerId),
+      MCPAgentServerSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  detachRuntimeAgentMcpServer(proof: string, mcpServerId: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      runtimeAgentMcpServerPath(mcpServerId),
+      { method: "DELETE", headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
       options,
     );
   }

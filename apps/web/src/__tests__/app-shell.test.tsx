@@ -44,7 +44,7 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/agents");
     expect(screen.queryByText("Infrastructure")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Agent runtime" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Computer" })).toBeNull();
     expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
     const homeLink = screen.getByRole("link", { name: "All Agents" });

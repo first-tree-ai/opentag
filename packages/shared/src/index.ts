@@ -71,6 +71,7 @@ export {
   type UpdateAgentRuntimeConfig,
   UpdateAgentRuntimeConfigSchema,
 } from "./agent.js";
+export * from "./agent-self.js";
 export * from "./agent-setup.js";
 export {
   type AuthIdentityProvider,
@@ -341,10 +342,15 @@ export {
   MCP_SERVERS_PATH,
   mcpServerPath,
   mcpServersPath,
+  RUNTIME_AGENT_MCP_SERVER_TEMPLATE,
+  RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
+  RUNTIME_AGENT_MCP_SERVERS_PATH,
+  RUNTIME_AGENT_PATH,
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   RUNTIME_SKILL_BUNDLE_TEMPLATE,
   RUNTIME_SKILLS_PATH,
+  runtimeAgentMcpServerPath,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,

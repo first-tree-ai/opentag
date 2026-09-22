@@ -59,7 +59,7 @@ test("the Account menu has named keyboard destinations", async ({ page }) => {
   await expect(trigger).toBeFocused();
   await trigger.click();
   const account = page.getByRole("menuitem", { name: "Account", exact: true });
-  await expect(page.getByRole("menuitem", { name: "Computers", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Computer", exact: true })).toBeVisible();
   await expect(account).toBeVisible();
   await account.focus();
   await expect(account).toBeFocused();

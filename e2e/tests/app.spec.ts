@@ -370,7 +370,7 @@ test("global return, local return, history, and dirty settings keep their own de
     .click();
   await expect(search).toHaveValue("seeded");
   await page.getByRole("button", { name: "Account menu", exact: true }).click();
-  await expect(page.getByRole("menuitem", { name: "Computers", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Computer", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
   await expectAccessible(page);
   await page.getByRole("menuitem", { name: "Account", exact: true }).click();
@@ -555,7 +555,7 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     { file: "home", route: "/", heading: "All Agents" },
     { file: "agents", route: "/agents", heading: "All Agents" },
     { file: "agents-setup-create", route: "/agents/setup?action=create", heading: AGENT_SETUP_CREATE_HEADING },
-    { file: "agents-computers", route: "/agents/computers", heading: "Computers" },
+    { file: "agents-computers", route: "/agents/computers", heading: "Computer" },
     { file: "agents-agentId", route: `/agents/${agentId}`, heading: "E2E Agent Updated" },
     { file: "agents-agentId-usage", route: `/agents/${agentId}/usage`, heading: "Usage" },
     { file: "agents-agentId-settings", route: `/agents/${agentId}/settings`, heading: "Agent settings" },

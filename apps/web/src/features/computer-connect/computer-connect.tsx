@@ -435,7 +435,7 @@ function ComputerConnectAttempt({
   return children({ error, issue: () => void issue(), state });
 }
 
-function ComputerConnectPresentation({
+export function ComputerConnectPresentation({
   intent,
   lifecycle,
 }: {
@@ -448,19 +448,15 @@ function ComputerConnectPresentation({
   const comment = targetName
     ? m.computer_connect_repair_command_comment({ computerName: targetName })
     : m.computer_connect_create_command_comment();
-  // Idle repair has no command to introduce yet, and the surface already asks whether one is
-  // wanted. Only idle is narrowed here: `issue-failed` and `expired` still say "paste this
-  // command" over a block that has none to paste, which predates this change and needs its own
-  // copy decision rather than a guard widened in passing.
   const intro =
-    state.kind === "idle"
-      ? undefined
-      : targetName
+    state.kind === "issued" || state.kind === "issuing"
+      ? targetName
         ? m.computer_connect_repair_command_intro({ computerName: targetName })
-        : m.computer_connect_create_command_intro();
+        : m.computer_connect_create_command_intro()
+      : undefined;
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
-      {/* Reserved from the first issued command onward, so the block does not jump when the
+      {/* Reserved while preparing or displaying the command, so the block does not jump when the
           countdown arrives. Idle has neither half of the row, and holding 20px of nothing there
           detached the command block from whatever heading a caller puts above it. */}
       {intro ? (
@@ -474,12 +470,12 @@ function ComputerConnectPresentation({
           </div>
         </div>
       ) : null}
-      <ConnectCommandSurface comment={comment} error={error} issue={issue} state={state} />
       <AttemptStatus
         error={state.kind === "issue-failed" || state.kind === "expired" ? undefined : error}
         state={state}
         targetName={targetName}
       />
+      <ConnectCommandSurface comment={comment} error={error} issue={issue} state={state} />
     </div>
   );
 }
@@ -502,34 +498,29 @@ function ConnectCommandSurface({
   };
   if (state.kind === "idle") {
     return (
-      <CommandBlock
-        {...labels}
-        actionNotice={
-          <>
-            <span>{m.computer_connect_repair_prompt()}</span>
-            <Button size="compact" variant="inline" onClick={issue}>
-              {m.computer_connect_repair_action()}
-            </Button>
-          </>
-        }
-      />
+      <Button className="w-fit" size="compact" variant="secondary" onClick={issue}>
+        {m.computer_connect_repair_action()}
+      </Button>
     );
   }
-  if (state.kind === "issue-failed") {
+  if (state.kind === "issue-failed" || state.kind === "expired") {
     return (
-      <CommandBlock
-        {...labels}
-        actionNotice={
-          <>
-            <span role="alert">{error ?? m.computer_connect_issue_failed()}</span>
-            <Button size="compact" variant="inline" onClick={issue}>
-              {m.computer_connect_retry_issue()}
-            </Button>
-          </>
-        }
-      />
+      <div className="grid gap-3 text-sm">
+        {error ? (
+          <p role="alert" className="text-kumo-danger">
+            {error}
+          </p>
+        ) : null}
+        <Button className="w-fit" size="compact" variant="secondary" onClick={issue}>
+          {state.kind === "issue-failed" || error ? m.computer_connect_retry_issue() : m.computer_connect_reissue()}
+        </Button>
+      </div>
     );
   }
+  if (state.kind === "redeemed") {
+    return <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_connect_registered_help()}</p>;
+  }
+  if (state.kind === "connected") return null;
   if (state.kind === "issuing") {
     return (
       <div aria-hidden="true" className="ots-command-pending" data-ui="computer-connect-command-skeleton">
@@ -537,25 +528,7 @@ function ConnectCommandSurface({
       </div>
     );
   }
-  const expiredNotice =
-    state.kind === "expired" ? (
-      <>
-        {error ? <span role="alert">{error}</span> : <span>{m.computer_connect_expired()}</span>}
-        <Button size="compact" variant="inline" onClick={issue}>
-          {error ? m.computer_connect_retry_issue() : m.computer_connect_reissue()}
-        </Button>
-      </>
-    ) : undefined;
-  return (
-    <CommandBlock
-      {...labels}
-      key={state.issued.command}
-      command={state.issued.command}
-      comment={comment}
-      expiredNotice={expiredNotice}
-      inert={state.kind === "redeemed"}
-    />
-  );
+  return <CommandBlock {...labels} key={state.issued.command} command={state.issued.command} comment={comment} />;
 }
 
 function AttemptStatus({
@@ -587,9 +560,11 @@ function AttemptStatus({
     content = (
       <p className="flex items-center gap-2 text-kumo-subtle">
         <span aria-hidden="true" className="ots-pulse shrink-0" />
-        {targetName
-          ? m.computer_connect_waiting_repair({ computerName: targetName })
-          : m.computer_connect_waiting_create()}
+        {state.kind === "redeemed"
+          ? m.computer_connect_registered()
+          : targetName
+            ? m.computer_connect_waiting_repair({ computerName: targetName })
+            : m.computer_connect_waiting_create()}
       </p>
     );
   } else if (state.kind === "connected") {
@@ -603,7 +578,11 @@ function AttemptStatus({
     content = <span className="text-kumo-subtle">{m.computer_connect_expired_status()}</span>;
   }
   return (
-    <div className="ots-slot--status flex min-w-0 flex-wrap items-center justify-between gap-2 text-sm">
+    <div
+      className={`ots-slot--status flex min-w-0 flex-wrap items-center justify-between gap-2 text-sm ${
+        state.kind === "expired" || state.kind === "redeemed" ? "" : "order-last"
+      }`}
+    >
       <div aria-live="polite" role="status">
         {content}
       </div>

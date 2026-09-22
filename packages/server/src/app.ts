@@ -3,7 +3,7 @@ import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
-import Fastify, { type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
 import {
   type AccountRoutesOptions,
   type InternalNavigationVisibilityService,
@@ -31,6 +31,7 @@ import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { registerRunnerWorkspaceRoutes } from "./api/runner-workspace.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
+import { type RuntimeAgentRoutesOptions, registerRuntimeAgentRoutes } from "./api/runtime-agent.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import type { RuntimeProviderProxyRoutesOptions } from "./api/runtime-provider-proxy.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
@@ -175,6 +176,8 @@ export interface CreateAppOptions {
   runtimeAuthService?: ComputerAuthVerifier;
   runtimeProviderProxy?: RuntimeProviderProxyRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
+  /** Session-proof-authenticated Agent self-configuration (`opentag agent self`). */
+  runtimeAgent?: RuntimeAgentRoutesOptions;
   runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
   /** Fixed runtime web routes; present only when the deployment enabled the web service. */
   runtimeWeb?: RuntimeWebRoutesOptions;
@@ -465,6 +468,15 @@ export function safeInboundRequestId(header: string | string[] | undefined): str
   return SAFE_REQUEST_ID.test(candidate) ? candidate : undefined;
 }
 
+/** Routes authenticated by the Session CLI proof rather than an Account or machine credential. */
+function registerSessionProofRoutes(
+  app: FastifyInstance,
+  options: Pick<CreateAppOptions, "runtimeAgent" | "runtimeSessions">,
+): void {
+  if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
+  if (options.runtimeAgent) registerRuntimeAgentRoutes(app, options.runtimeAgent);
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
     /*
@@ -484,7 +496,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const healthDatabase = options.database ?? options.taskService?.database;
   const databaseReadinessProbe = createDatabaseReadinessProbe(healthDatabase);
 
-  if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
+  registerSessionProofRoutes(app, options);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
   if (options.runtimeWeb) registerRuntimeWebRoutes(app, options.runtimeWeb);
   if (options.mcpGateway) registerMcpGatewayRoutes(app, options.mcpGateway);

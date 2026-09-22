@@ -5,7 +5,7 @@ import type {
   ListAccountComputersResponse,
   MeResponse,
 } from "@opentag/shared";
-import { and, asc, eq, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computerConnectCodes, computerCredentials, computers, imBindings } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
@@ -179,16 +179,35 @@ export class ComputerService {
         .set({ revokedByUserId: accountId, revokedAt: now })
         .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)))
         .returning({ id: computerCredentials.id });
-      await transaction
-        .update(computerConnectCodes)
-        .set({ revokedByUserId: accountId, revokedAt: now })
+      /*
+       * Redemption locks its connect-code row before the Account (exchangeConnectCode), while this
+       * transaction already holds the Account. Waiting on a code row here would close that cycle into a
+       * deadlock, so only codes nobody holds are revoked. A skipped code belongs to an in-flight
+       * redemption, which queues on the Account and then finds this Computer deleted: it fails with
+       * AUTH_INVALID_CODE and can never revive it.
+       */
+      const idleCodes = await transaction
+        .select({ id: computerConnectCodes.id })
+        .from(computerConnectCodes)
         .where(
           and(
             eq(computerConnectCodes.targetComputerId, computerId),
             isNull(computerConnectCodes.consumedAt),
             isNull(computerConnectCodes.revokedAt),
           ),
-        );
+        )
+        .for("update", { skipLocked: true });
+      if (idleCodes.length > 0) {
+        await transaction
+          .update(computerConnectCodes)
+          .set({ revokedByUserId: accountId, revokedAt: now })
+          .where(
+            inArray(
+              computerConnectCodes.id,
+              idleCodes.map((code) => code.id),
+            ),
+          );
+      }
       await transaction
         .update(computers)
         .set({ deletedAt: now, currentInstanceId: null, connectedAt: null, updatedAt: now })

@@ -11,7 +11,7 @@ import {
   withComputerRuntimeProviderSupport,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
@@ -493,6 +493,69 @@ describe("Computer connection persistence", () => {
       expect(reconnected.computerId).not.toBe(exchange.computerId);
     } finally {
       await app.close();
+      await value.sql.end();
+    }
+  });
+
+  it("deletes a Computer while one of its repair codes is being redeemed without deadlocking", async () => {
+    const value = await fixture();
+    const locker = createDatabaseClient(databaseUrl, { max: 1 });
+    const exchange = await connect(value);
+    const pendingRepair = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
+      mode: "repair",
+      targetComputerId: exchange.computerId,
+    });
+    const accountLockWaiters = async () => {
+      const [row] = await value.sql`
+        select count(*)::int as count
+        from pg_stat_activity
+        where datname = current_database()
+          and wait_event_type = 'Lock'
+          and query ilike '%from "users"%for update%'
+      `;
+      return row?.count ?? 0;
+    };
+    let releaseAccount!: () => void;
+    const accountHeld = new Promise<void>((resolve) => {
+      releaseAccount = resolve;
+    });
+    let accountLocked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => {
+      accountLocked = resolve;
+    });
+    // Hold the Account row so both transactions queue on it in a known order: deletion first, then
+    // the redemption, which already holds its connect-code row when it starts waiting. Released, the
+    // deletion owns the Account while the redemption owns the code: the order that used to deadlock.
+    const holding = locker.sql.begin(async (sql) => {
+      await sql`select id from users where id = ${value.bootstrap.userId} for update`;
+      accountLocked();
+      await accountHeld;
+    });
+    try {
+      await lockTaken;
+      const deleting = value.service.deleteComputer(value.bootstrap.userId, exchange.computerId);
+      await vi.waitFor(async () => expect(await accountLockWaiters()).toBe(1));
+      const redeeming = value.machineAuth.exchangeConnectCode(exchangeInput(pendingRepair.code, crypto.randomUUID()));
+      await vi.waitFor(async () => expect(await accountLockWaiters()).toBe(2));
+      releaseAccount();
+      await holding;
+
+      const [deleted, redeemed] = await Promise.allSettled([deleting, redeeming]);
+      expect(deleted).toMatchObject({ status: "fulfilled", value: { computerId: exchange.computerId } });
+      // The redemption loses cleanly to the committed deletion instead of a 40P01 deadlock.
+      expect(redeemed).toMatchObject({ status: "rejected", reason: { code: "AUTH_INVALID_CODE", statusCode: 401 } });
+      await expect(value.machineAuth.verifyMachineToken(exchange.machineToken)).rejects.toMatchObject({
+        code: "AUTH_INVALID_TOKEN",
+      });
+      const [code] = await value.database
+        .select({ consumedAt: computerConnectCodes.consumedAt })
+        .from(computerConnectCodes)
+        .where(eq(computerConnectCodes.id, pendingRepair.connectCodeId));
+      expect(code?.consumedAt).toBeNull();
+    } finally {
+      releaseAccount();
+      await holding.catch(() => undefined);
+      await locker.sql.end();
       await value.sql.end();
     }
   });

@@ -1,11 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { initials } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { AgentUsageOverview } from "../agent-usage.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import { AgentTasksSection } from "../tasks-page.js";
+import { AgentAvatar } from "./agent-avatar.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {
   type AgentDependencyStatus,
@@ -20,6 +20,7 @@ import {
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
+import { AgentCloudOverviewPanel } from "./cloud/cloud-environment.js";
 
 export function AgentDetailPage({ agentId }: { agentId: string }) {
   const { me } = useAccount();
@@ -39,6 +40,8 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               <AgentUsageOverview accountId={me.user.id} agentId={agent.id} />
               <AgentStatusCard agent={agent} />
             </div>
+            {/* The Cloud board is the Agent page's environment truth; a Local Agent never renders it. */}
+            {agent.computerKind === "cloud" ? <AgentCloudOverviewPanel agentId={agent.id} /> : null}
             <AgentTasksSection agentId={agent.id} />
           </div>
         </section>
@@ -77,12 +80,7 @@ export function AgentObjectHeader({
       ) : null}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
-          <span
-            className="grid size-10 shrink-0 place-items-center rounded-full bg-kumo-tint font-semibold"
-            aria-hidden="true"
-          >
-            {initials(agent.displayName)}
-          </span>
+          <AgentAvatar displayName={agent.displayName} avatarUrl={agent.avatarUrl} className="size-10" />
           <div className="grid min-w-0 gap-1">
             <div className="flex flex-wrap items-center gap-3">
               <Text as="h1" size="lg" variant="heading">

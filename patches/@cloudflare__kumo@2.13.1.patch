@@ -1,0 +1,12 @@
+diff --git a/dist/chunks/sidebar-ob6c9b8fq0hx7uke.js b/dist/chunks/sidebar-ob6c9b8fq0hx7uke.js
+index 8becbbf344a1fa93c3d40fd87e75bd1dc8a3755f..8175aa26171f4fbbdffa3091b6068e380bc8d817 100644
+--- a/dist/chunks/sidebar-ob6c9b8fq0hx7uke.js
++++ b/dist/chunks/sidebar-ob6c9b8fq0hx7uke.js
+@@ -225,6 +225,7 @@ function SidebarProvider({ defaultOpen = true, open: openProp, onOpenChange: set
+ 		open,
+ 		openMobile,
+ 		isMobile,
++		collapsible,
+ 		width,
+ 		isResizing,
+ 		isPeeking

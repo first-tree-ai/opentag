@@ -9,7 +9,7 @@ import { decodeJwt } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { createApp } from "../app.js";
-import { computers, slackOAuthNonces } from "../db/schema/index.js";
+import { computers, slackInstallations, slackOAuthNonces } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { AuthServiceError } from "../services/auth/errors.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -245,6 +245,60 @@ describe("SlackOAuthStateService", () => {
 });
 
 describe("SlackConfigurationService persistence", () => {
+  it("refreshes installed profiles, propagates bindings, and tolerates failed enrichment", async () => {
+    const value = await oauthFixture();
+    const client = apiClient();
+    client.inspectInstallation.mockResolvedValue(inspection());
+    const profile = { displayName: "Actual Slack Cat", avatarUrl: "https://example.com/slack.png" };
+    client.api.botProfile = vi.fn().mockResolvedValue(profile);
+    const diagnostic = vi.fn();
+    const service = new SlackConfigurationService({
+      api: client.api,
+      database: oauthDatabase.database,
+      imBindings: value.imBindingService,
+      now: () => now,
+      onDiagnostic: diagnostic,
+    });
+    const input = {
+      intent: "create" as const,
+      expectedBinding: null,
+      appId: "A1",
+      botAccessToken: "token",
+      signingSecret: "secret",
+    };
+    await service.configure(value.bootstrap.userId, value.agent.id, input);
+    const read = () => value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id);
+    expect((await read())?.bot).toEqual(profile);
+    const newer = { displayName: "Updated Cat", avatarUrl: "https://example.com/new.png" };
+    client.api.botProfile = vi.fn().mockResolvedValue(newer);
+    await service.configure(value.bootstrap.userId, value.agent.id, {
+      ...input,
+      intent: "reauthorize",
+      expectedBinding: await service.currentBinding(value.bootstrap.userId, value.agent.id),
+    });
+    expect((await read())?.bot).toEqual(newer);
+    const [installation] = await oauthDatabase.database.select().from(slackInstallations);
+    expect(installation).toMatchObject({ botDisplayName: newer.displayName, botAvatarUrl: newer.avatarUrl });
+
+    client.api.botProfile = vi.fn().mockRejectedValue(new Error("unavailable"));
+    await service.configure(value.bootstrap.userId, value.agent.id, {
+      ...input,
+      intent: "reauthorize",
+      expectedBinding: await service.currentBinding(value.bootstrap.userId, value.agent.id),
+    });
+    expect((await read())?.bot).toEqual(newer);
+    expect(diagnostic).toHaveBeenCalledWith("SLACK_BOT_PROFILE_UNAVAILABLE");
+    client.inspectInstallation.mockResolvedValue(
+      inspection({ teamId: "T_OTHER", botUserId: "U_OTHER", botId: "B_OTHER" }),
+    );
+    await service.configure(value.bootstrap.userId, value.agent.id, {
+      ...input,
+      intent: "reauthorize",
+      expectedBinding: await service.currentBinding(value.bootstrap.userId, value.agent.id),
+    });
+    expect((await read())?.bot).toEqual({ displayName: null, avatarUrl: null });
+  });
+
   it("reads an empty binding and commits an inspected Slack installation", async () => {
     const value = await oauthFixture();
     const client = apiClient();

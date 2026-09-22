@@ -43,6 +43,8 @@ import {
   type RuntimeValidationRunIssuer,
 } from "../../runtime-credentials/runtime-validation-execution.js";
 import type { ApplicationCipher } from "../crypto.js";
+import { activeBindingValues } from "./active-binding-values.js";
+import { type BotProfile, sameBotProfileIdentity, storedBotProfile } from "./bot-profile.js";
 import { computerKindFor, localRawGrantAllowed } from "./computer-kind.js";
 import {
   type CredentialMaterialInput,
@@ -71,6 +73,7 @@ type CredentialMaterialWithId = CredentialMaterialInput & { id?: string };
 export { disableImBindingInTransaction } from "./disable-im-binding.js";
 
 export interface VerifiedFeishuBinding {
+  profile?: BotProfile;
   agentId: string;
   appId: string;
   teamId: string | null;
@@ -552,6 +555,7 @@ export class ImBindingService {
         {
           agentId: input.agentId,
           provider: "feishu",
+          profile: input.profile,
           identity: {
             appId: input.appId,
             teamId: input.teamId,
@@ -817,8 +821,11 @@ export class ImBindingService {
         credentialSchemaVersion: imBindings.credentialSchemaVersion,
         credentialGeneration: imBindings.credentialGeneration,
         slackInstallation: slackInstallations,
+        computerKind: computers.kind,
       })
       .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(computers, eq(computers.id, agents.computerId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
       .limit(1);
@@ -840,10 +847,16 @@ export class ImBindingService {
         ? "reauthorization_required"
         : row.status;
     const readiness = await this.#readiness(
-      this.#withCredentialStatus(
-        { ...row, status, observedConnectedAt, observedAt, grantedCapabilities, credentialGeneration },
-        credential.status,
-      ),
+      {
+        ...row,
+        status,
+        observedConnectedAt,
+        observedAt,
+        grantedCapabilities,
+        credentialGeneration,
+        credentialStatus: credential.status,
+      },
+      row.computerKind,
     );
     return {
       id: row.id,
@@ -993,8 +1006,11 @@ export class ImBindingService {
         credentialSchemaVersion: imBindings.credentialSchemaVersion,
         activatedAt: imBindings.activatedAt,
         slackInstallation: slackInstallations,
+        computerKind: computers.kind,
       })
       .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(computers, eq(computers.id, agents.computerId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(eq(imBindings.id, imBindingId))
       .limit(1);
@@ -1027,7 +1043,7 @@ export class ImBindingService {
       credentialGeneration,
       lastErrorCode,
     };
-    const readiness = await this.#readiness(this.#withCredentialStatus(imBinding, credential.status));
+    const readiness = await this.#readiness({ ...imBinding, credentialStatus: credential.status }, row.computerKind);
     const activity = await this.#activity(imBindingId);
     return {
       imBindingId,
@@ -1259,28 +1275,18 @@ export class ImBindingService {
     await this.assertCanManage(callerUserId, agentId);
   }
 
-  async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {
-    return this.#providerCli.readiness(imBinding, this.#agentRuntimeReadiness(imBinding.agentId), this.#now());
+  async #readiness(
+    imBinding: ImBindingReadinessInput,
+    computerKind: "local" | "cloud" | null,
+  ): Promise<ImBindingReadiness> {
+    return this.#providerCli.readiness(
+      imBinding,
+      this.#agentRuntimeReadiness(imBinding.agentId),
+      this.#now(),
+      computerKind ?? "local",
+    );
   }
 
-  #withCredentialStatus<
-    T extends {
-      id: string;
-      provider: "feishu" | "slack";
-      encryptedCredential: string | null;
-      externalAppId: string | null;
-      externalBotId: string | null;
-      externalTeamId: string | null;
-      credentialGeneration: number;
-      credentialSchemaVersion: number | null;
-      grantedCapabilities: string[];
-    },
-  >(
-    imBinding: T,
-    credentialStatus = this.#inspectCredentialMaterial(imBinding).status,
-  ): T & { credentialStatus: "valid" | "invalid" } {
-    return { ...imBinding, credentialStatus };
-  }
   #inspectCredentialMaterial(input: CredentialMaterialWithId, bindingId?: string): CredentialInspection {
     const options = { bindingId: bindingId ?? input.id, slackInstallationId: input.slackInstallationId ?? undefined };
     return inspectCredentialMaterial(this.#cipher, input, { ...options, logger: this.#logger });
@@ -1553,6 +1559,7 @@ export class ImBindingService {
               teamId: input.teamId,
               enterpriseId: input.enterpriseId ?? null,
               botUserId: input.botUserId,
+              profile: input.profile,
               credentialPayload,
               grantedCapabilities: credential.grantedScopes,
             },
@@ -1577,6 +1584,7 @@ export class ImBindingService {
             externalTeamId: input.teamId,
             externalEnterpriseId: input.enterpriseId ?? null,
             externalBotId: input.botUserId,
+            ...storedBotProfile(input.profile, existingInstallation, sameIdentity),
             credentialSchemaVersion: 1,
             credentialGeneration: nextGeneration,
             encryptedCredential: this.#cipher.encryptCredential(
@@ -1621,6 +1629,7 @@ export class ImBindingService {
           teamId: input.teamId,
           enterpriseId: input.enterpriseId ?? null,
           botUserId: input.botUserId,
+          profile: input.profile,
           credentialPayload,
           grantedCapabilities: credential.grantedScopes,
         },
@@ -1645,6 +1654,7 @@ export class ImBindingService {
       teamId: string;
       enterpriseId: string | null;
       botUserId: string;
+      profile?: BotProfile;
       credentialPayload: string;
       grantedCapabilities: string[];
     },
@@ -1674,6 +1684,8 @@ export class ImBindingService {
         externalTeamId: input.teamId,
         externalEnterpriseId: input.enterpriseId,
         externalBotId: input.botUserId,
+        botDisplayName: input.profile?.displayName ?? null,
+        botAvatarUrl: input.profile?.avatarUrl ?? null,
         credentialSchemaVersion: 1,
         credentialGeneration: 1,
         encryptedCredential,
@@ -1855,6 +1867,7 @@ export class ImBindingService {
     input: {
       agentId: string;
       provider: "feishu";
+      profile?: BotProfile;
       identity: {
         appId: string;
         teamId: string | null;
@@ -1969,7 +1982,7 @@ export class ImBindingService {
         const replacementId = randomUUID();
         const [created] = await transaction
           .insert(imBindings)
-          .values({ id: replacementId, ...this.#activeValues(activationInput, encryptFor(replacementId), 1, now) })
+          .values({ id: replacementId, ...activeBindingValues(activationInput, encryptFor(replacementId), 1, now) })
           .returning({ id: imBindings.id });
         if (!created) throw new Error("Replacement IM binding insert did not return an id");
         await transaction
@@ -1983,7 +1996,8 @@ export class ImBindingService {
         const [updated] = await transaction
           .update(imBindings)
           .set({
-            ...this.#activeValues(activationInput, encryptFor(current.id), nextGeneration, now),
+            ...activeBindingValues(activationInput, encryptFor(current.id), nextGeneration, now),
+            ...storedBotProfile(input.profile, current, sameBotProfileIdentity(current, activationInput.identity)),
             ...(input.provider === "feishu"
               ? {
                   setupAttemptId: current.setupAttemptId,
@@ -2012,50 +2026,12 @@ export class ImBindingService {
       const createdId = randomUUID();
       const [created] = await transaction
         .insert(imBindings)
-        .values({ id: createdId, ...this.#activeValues(activationInput, encryptFor(createdId), 1, now) })
+        .values({ id: createdId, ...activeBindingValues(activationInput, encryptFor(createdId), 1, now) })
         .returning({ id: imBindings.id });
       if (!created) throw new Error("IM binding insert did not return an id");
       return activated(created.id, 1);
     };
     return existingTransaction ? activate(existingTransaction) : this.#database.transaction(activate);
-  }
-
-  #activeValues(
-    input: {
-      agentId: string;
-      provider: "feishu" | "slack";
-      identity: {
-        appId: string;
-        teamId: string | null;
-        enterpriseId: string | null;
-        botId: string;
-        teamBrand: string | null;
-      };
-      credential: { grantedScopes: string[] };
-    },
-    encryptedCredential: string,
-    generation: number,
-    now: Date,
-  ) {
-    return {
-      agentId: input.agentId,
-      provider: input.provider,
-      status: "active" as const,
-      externalAppId: input.identity.appId,
-      externalTeamId: input.identity.teamId,
-      externalEnterpriseId: input.identity.enterpriseId,
-      externalBotId: input.identity.botId,
-      externalTeamBrand: input.identity.teamBrand,
-      credentialSchemaVersion: 1,
-      credentialGeneration: generation,
-      encryptedCredential,
-      grantedCapabilities: input.credential.grantedScopes,
-      activatedAt: now,
-      ...(input.provider === "slack" ? { observedAt: null, observedConnectedAt: null } : {}),
-      disabledAt: null,
-      lastErrorCode: null,
-      updatedAt: now,
-    };
   }
 
   async #activeMaterial(

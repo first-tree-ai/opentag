@@ -15,7 +15,7 @@
   "usage_coverage_none_title": "Token data unavailable",
   "usage_coverage_partial_description": "Token data is available for {measuredTasks} of {tasks} tasks. Totals and charts reflect only reported data.",
   "usage_coverage_partial_title": "Partial data",
-  "usage_description": "Track task volume and model token use for this Agent.",
+  "usage_description": "Task and token totals include IM tasks only. Internal Session token usage is not included.",
   "usage_error_fallback": "Usage is temporarily unavailable.",
   "usage_error_title": "Usage unavailable",
   "usage_loading": "Loading Agent usage",

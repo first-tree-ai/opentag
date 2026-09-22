@@ -13,6 +13,11 @@ overrides:
   fast-uri@^4.0.0: 4.1.4
   qs@^6.14.2: 6.16.0
 
+patchedDependencies:
+  '@cloudflare/kumo@2.13.1':
+    hash: 49b076bbc7ddb6a0c227bf441dfd6747d73fe7783f3cbb8f5bf3bef774a94021
+    path: patches/@cloudflare__kumo@2.13.1.patch
+
 importers:
 
   .:
@@ -71,7 +76,7 @@ importers:
     dependencies:
       '@cloudflare/kumo':
         specifier: 2.13.1
-        version: 2.13.1(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)
+        version: 2.13.1(patch_hash=49b076bbc7ddb6a0c227bf441dfd6747d73fe7783f3cbb8f5bf3bef774a94021)(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)
       '@fontsource/dm-sans':
         specifier: 5.3.0
         version: 5.3.0
@@ -5319,7 +5324,7 @@ snapshots:
       '@bytecodealliance/jco-node-fs': 0.3.2
       '@bytecodealliance/preview2-shim': 0.25.0
 
-  '@cloudflare/kumo@2.13.1(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)':
+  '@cloudflare/kumo@2.13.1(patch_hash=49b076bbc7ddb6a0c227bf441dfd6747d73fe7783f3cbb8f5bf3bef774a94021)(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)':
     dependencies:
       '@base-ui/react': 1.8.0(@date-fns/tz@1.5.0)(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@phosphor-icons/react': 2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

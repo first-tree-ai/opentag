@@ -66,11 +66,14 @@ import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } f
 import { McpServiceError } from "./services/mcp/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
+import type { CloudModelCatalog } from "./services/sandboxes/cloud-model-catalog.js";
+import { CloudOverviewService } from "./services/sandboxes/cloud-overview-service.js";
 import type { CloudSessionCollaborationOwner } from "./services/sandboxes/cloud-session-collaboration-owner.js";
 import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
 import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
 import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
 import type { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-service.js";
+import { DEFAULT_CLOUD_CAPACITY_LIMITS } from "./services/sandboxes/sandbox-capacity.js";
 import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
@@ -92,6 +95,10 @@ export interface CreateAppOptions {
   computerService?: ComputerService;
   sandboxService?: SandboxService;
   sandboxRunnerService?: SandboxRunnerService;
+  cloudAvailability?: AccountRoutesOptions["cloudAvailability"];
+  /** The one shared Router model catalog; backs the authenticated account Cloud model list route. */
+  cloudModelCatalog?: CloudModelCatalog;
+  cloudOverviewService?: CloudOverviewService;
   /** E3 Runner control channel; present exactly when Cloud Runner allocation is enabled. */
   runnerChannel?: {
     tokens: RunnerBootstrapTokenService;
@@ -593,6 +600,16 @@ export function createApp(options: CreateAppOptions = {}) {
         options.agentRuntimeTestService,
         options.agentSetupService,
         options.contextTreeOperationService,
+        options.cloudOverviewService ??
+          (healthDatabase
+            ? new CloudOverviewService(healthDatabase, {
+                ...(options.runnerChannel ? { hub: options.runnerChannel.hub } : {}),
+                accountLimit:
+                  options.sandboxRunnerService?.capacityLimits?.accountLimit ??
+                  DEFAULT_CLOUD_CAPACITY_LIMITS.accountLimit,
+                controlsEnabled: !!options.sandboxRunnerService,
+              })
+            : undefined),
       );
     }
     registerAvailableAccountRoutes(app, authService, options, authOptions);
@@ -758,6 +775,8 @@ function registerAvailableAccountRoutes(
   if (
     !(
       options.agentService ||
+      options.cloudAvailability ||
+      options.cloudModelCatalog ||
       options.taskService ||
       options.computerService ||
       options.sandboxService ||
@@ -768,7 +787,10 @@ function registerAvailableAccountRoutes(
     )
   )
     return;
+  const cloudModelCatalog = options.cloudModelCatalog;
   registerAccountRoutes(app, authService, {
+    ...(options.cloudAvailability ? { cloudAvailability: options.cloudAvailability } : {}),
+    ...(cloudModelCatalog ? { cloudModelOptions: () => cloudModelCatalog.list() } : {}),
     ...(options.agentService ? { agentService: options.agentService } : {}),
     ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
     ...(options.computerService ? { computerService: options.computerService } : {}),

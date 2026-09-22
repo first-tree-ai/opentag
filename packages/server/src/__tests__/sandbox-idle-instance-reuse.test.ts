@@ -114,6 +114,7 @@ interface Stack {
 function makeStack(
   options: {
     workspace?: boolean;
+    capacity?: { accountLimit: number; platformLimit: number };
     sessionWorkBusy?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBusy"];
     sessionWorkBarrier?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBarrier"];
   } = {},
@@ -136,6 +137,7 @@ function makeStack(
     sleep: () => Promise.resolve(),
     now: () => current,
     ...(options.workspace === false ? {} : { workspace: { store } }),
+    ...(options.capacity ? { capacity: options.capacity } : {}),
     ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
     ...(options.sessionWorkBarrier ? { sessionWorkBarrier: options.sessionWorkBarrier } : {}),
   });
@@ -404,7 +406,9 @@ describe("E7 automatic idle reclamation", () => {
 
   it("rotates a full batch of failed seals so another Session is reclaimed on the next sweep", async () => {
     const accountId = await account();
-    const stack = makeStack();
+    // Sweep-fairness fixture: deliberately above the E9 default ceilings (3/20) so the full
+    // 26-environment batch can be allocated; admission is not what this test exercises.
+    const stack = makeStack({ capacity: { accountLimit: 100, platformLimit: 1_000 } });
     for (let index = 0; index < 25; index += 1) {
       await readySandbox(stack, accountId, `failed-${index}`, { reuseCapable: false, seal: "fail" });
       stack.advance(1);
@@ -1041,6 +1045,35 @@ describe("E7 same-account physical reuse", () => {
     expect(stack.fake.deleteCalls).toHaveLength(0);
     expect(stack.fake.liveInstanceCount()).toBe(2);
     expect(await stack.service.ensureIngressAllocation(accountId, a.row.id)).toBe("ready");
+  });
+
+  it("borrows a same-account sibling at the Account ceiling while a brand-new reservation is rejected", async () => {
+    const accountId = await account();
+    const stack = makeStack({ capacity: { accountLimit: 1, platformLimit: 20 } });
+    const a = await readySandbox(stack, accountId, "cap-room-a");
+    const b = await ownedSandbox(accountId, "cap-room-b");
+    const createsBefore = stack.fake.createCalls.length;
+
+    // A occupies the single Account slot. The borrow moves the same physical Instance to B: no
+    // new reservation is created, so admission never blocks a same-account reuse.
+    await stack.service.startForAccount(accountId, b.sandbox.sandboxId);
+    expect(stack.fake.createCalls.length).toBe(createsBefore);
+    expect(await sandboxRow(b.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "preparing",
+      currentResourceName: a.row.currentResourceName,
+      currentResourceUid: a.row.currentResourceUid,
+    });
+    expect(await sandboxRow(a.row.id)).toMatchObject({ lifecycle: "unallocated", currentResourceName: null });
+
+    // A brand-new physical reservation at the same ceiling is the only path admission rejects.
+    const c = await ownedSandbox(accountId, "cap-room-c");
+    await expect(stack.service.startForAccount(accountId, c.sandbox.sandboxId)).rejects.toMatchObject({
+      code: "CLOUD_CAPACITY_EXCEEDED",
+      scope: "account",
+      statusCode: 429,
+    });
+    expect(stack.fake.createCalls.length).toBe(createsBefore);
+    expect(stack.fake.liveInstanceCount()).toBe(1);
   });
 
   it("transfers the exact physical UID and generation fencing to a same-account sibling with zero create", async () => {

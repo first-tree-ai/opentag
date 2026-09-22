@@ -7,11 +7,13 @@ afterEach(() => vi.restoreAllMocks());
 function history(ids: string[], { more = true, taskId = "task-a" } = {}) {
   return (
     <main data-ui="content">
-      <TaskActivityTimeline key={taskId} oldestDeliveryId={ids[0]}>
+      <TaskActivityTimeline key={taskId} entryIds={ids}>
         {more ? <button type="button">Load earlier activity</button> : null}
         {ids.map((id) => (
           <section key={id} data-ui="task-exchange">
-            <article data-ui="task-message-request">{id}</article>
+            <article data-ui="task-message-request" data-task-entry-id={id}>
+              {id}
+            </article>
           </section>
         ))}
       </TaskActivityTimeline>
@@ -63,6 +65,24 @@ it("keeps the reading position when a new exchange arrives at the bottom", () =>
   viewport.scrollTop = 250;
   view.rerender(history(["1", "2", "3", "4"]));
   expect(viewport.scrollTop).toBe(250);
+});
+
+it("preserves the visible message when a late reply is inserted in the middle", () => {
+  const view = render(history(["1", "3", "4"]));
+  const viewport = measureHistory();
+  viewport.scrollTop = 300;
+  const before = screen.getByText("3").getBoundingClientRect().top;
+  view.rerender(history(["1", "reply-2", "3", "4"]));
+  expect(screen.getByText("3").getBoundingClientRect().top).toBe(before);
+});
+
+it("anchors the next visible message when a transient status is replaced", () => {
+  const view = render(history(["request", "running", "follow-up"]));
+  const viewport = measureHistory();
+  viewport.scrollTop = 300;
+  const before = screen.getByText("follow-up").getBoundingClientRect().top;
+  view.rerender(history(["request", "follow-up", "reply", "report"]));
+  expect(screen.getByText("follow-up").getBoundingClientRect().top).toBe(before);
 });
 
 it("does not carry a scroll adjustment across Tasks", () => {

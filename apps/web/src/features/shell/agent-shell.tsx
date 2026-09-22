@@ -1,9 +1,9 @@
 import { Link, useRouter } from "@tanstack/react-router";
 import { useRef, useState } from "react";
-import { initials } from "../../i18n/format.js";
 import { useInternalNavigationVisibility } from "../../internal/navigation-visibility.js";
 import * as m from "../../paraglide/messages.js";
 import { DropdownMenu, Icon, Sidebar } from "../../ui/design-system.js";
+import { AgentAvatar } from "../agents/agent-avatar.js";
 import { useAgentIdentityList } from "../agents/agent-queries.js";
 import {
   agentDetailLink,
@@ -102,8 +102,8 @@ function AgentSwitcher({
   pathname,
   agentId,
 }: {
-  agent?: { id: string; displayName: string };
-  agents: readonly { id: string; displayName: string }[];
+  agent?: { id: string; displayName: string; avatarUrl?: string | null };
+  agents: readonly { id: string; displayName: string; avatarUrl?: string | null }[];
   pathname: string;
   agentId: string;
 }) {
@@ -120,12 +120,11 @@ function AgentSwitcher({
             }
             className="min-h-11 rounded-lg px-3 hover:bg-kumo-fill-hover focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
             icon={
-              <span
-                className="grid size-6 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-semibold"
-                aria-hidden="true"
-              >
-                {agent ? initials(agent.displayName) : "A"}
-              </span>
+              <AgentAvatar
+                displayName={agent?.displayName ?? "A"}
+                avatarUrl={agent?.avatarUrl}
+                className="size-6 text-xs"
+              />
             }
             tooltip={agent?.displayName ?? m.shell_agent()}
           >
@@ -148,12 +147,11 @@ function AgentSwitcher({
           <DropdownMenu.LinkItem
             closeOnClick
             icon={
-              <span
-                className="mr-2 grid size-6 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-semibold"
-                aria-hidden="true"
-              >
-                {initials(candidate.displayName)}
-              </span>
+              <AgentAvatar
+                displayName={candidate.displayName}
+                avatarUrl={candidate.avatarUrl}
+                className="mr-2 size-6 text-xs"
+              />
             }
             key={candidate.id}
             render={

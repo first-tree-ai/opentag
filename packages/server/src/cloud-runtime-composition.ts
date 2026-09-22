@@ -16,6 +16,7 @@ import {
   createStaticTokenProvider,
 } from "./services/cloud-run/index.js";
 import { CloudDeliveryOwner, type CloudDeliveryOwnerOptions } from "./services/sandboxes/cloud-delivery-owner.js";
+import { type CloudModelCatalog, RouterCloudModelCatalog } from "./services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "./services/sandboxes/cloud-model-grants.js";
 import type { CloudRuntimeFence } from "./services/sandboxes/cloud-runtime-fence.js";
 import {
@@ -43,6 +44,11 @@ export interface SandboxRunnerRuntime {
 }
 
 export interface CloudDeliveryComposition {
+  /**
+   * The one Server-owned Router model catalog: Agent validation, Session overrides, the runtime
+   * test, the account model-options route, and the grant service all share this instance.
+   */
+  cloudModelCatalog?: CloudModelCatalog;
   cloudModelGrants?: CloudModelGrantService;
   cloudDeliveryOwner?: CloudDeliveryOwner;
   cloudSessionOwner?: CloudSessionCollaborationOwner;
@@ -105,6 +111,8 @@ export function createSandboxRunnerRuntime(
     acceptanceTimeoutMs: cloudRunner.acceptanceTimeoutMs,
     createConvergeTimeoutMs: cloudRunner.createConvergeTimeoutMs,
     idleTimeoutMs: cloudRunner.idleTimeoutMs,
+    // E9 admission ceilings from the deployment configuration (defaults 3/20).
+    capacity: { accountLimit: cloudRunner.maxInstancesPerAccount, platformLimit: cloudRunner.maxInstances },
     workspace: { store },
     ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
     ...(options.sessionWorkBarrier ? { sessionWorkBarrier: options.sessionWorkBarrier } : {}),
@@ -133,6 +141,13 @@ export function createCloudDeliveryComposition(input: {
   hub?: RunnerHub;
   cloudRuntimeFence?: CloudRuntimeFence;
   credentialOwner: RuntimeCredentialOwner;
+  /**
+   * The single Router model catalog this process shares. Production startup creates exactly one
+   * and injects it here (and into every other consumer); a test/embedding may inject a static
+   * double. When omitted while the model path is enabled, a Router-backed catalog is created from
+   * the fixed upstream coordinates so this factory stays self-sufficient.
+   */
+  cloudModelCatalog?: CloudModelCatalog;
   sessionProofs?: CloudDeliveryOwnerOptions["sessionProofs"];
   sessionCollaboration?: Pick<
     CloudSessionCollaborationOwnerOptions,
@@ -144,13 +159,21 @@ export function createCloudDeliveryComposition(input: {
   logger?: ServiceLogger;
 }): CloudDeliveryComposition {
   if (!input.cloudRuntimeFence || !input.hub) return {};
-  const cloudModelGrants = input.cloudModel.enabled
-    ? new CloudModelGrantService(input.jwtSecret, {
-        allowedModels: input.cloudModel.allowedModels,
-        maxStreamsPerToken: input.cloudModel.maxStreamsPerToken,
-        ttlSeconds: input.cloudModel.tokenTtlSeconds,
-      })
+  const cloudModelCatalog = input.cloudModel.enabled
+    ? (input.cloudModelCatalog ??
+      new RouterCloudModelCatalog({
+        upstreamBaseUrl: input.cloudModel.upstreamBaseUrl,
+        masterKey: input.cloudModel.masterKey,
+      }))
     : undefined;
+  const cloudModelGrants =
+    input.cloudModel.enabled && cloudModelCatalog
+      ? new CloudModelGrantService(input.jwtSecret, {
+          catalog: cloudModelCatalog,
+          maxStreamsPerToken: input.cloudModel.maxStreamsPerToken,
+          ttlSeconds: input.cloudModel.tokenTtlSeconds,
+        })
+      : undefined;
   const common = {
     database: input.database,
     fence: input.cloudRuntimeFence,
@@ -173,7 +196,12 @@ export function createCloudDeliveryComposition(input: {
         ...input.sessionCollaboration,
       })
     : undefined;
-  return { cloudModelGrants, cloudDeliveryOwner, cloudSessionOwner };
+  return {
+    ...(cloudModelCatalog ? { cloudModelCatalog } : {}),
+    cloudModelGrants,
+    cloudDeliveryOwner,
+    cloudSessionOwner,
+  };
 }
 
 /**
@@ -248,6 +276,7 @@ export function cloudAppOptions(input: {
   };
   runnerWorkspace?: RunnerWorkspaceService;
   cloudModel?: CloudModelProxyRouteOptions;
+  cloudModelCatalog?: CloudModelCatalog;
 } {
   const runnerOptions = sandboxRunnerRouteOptions(
     input.runnerRuntime,
@@ -262,6 +291,8 @@ export function cloudAppOptions(input: {
     ...(input.composition.cloudModelGrants && input.cloudModel.enabled
       ? { cloudModel: { config: input.cloudModel, grants: input.composition.cloudModelGrants } }
       : {}),
+    // The account-facing model options route reads the same catalog the runtime enforces.
+    ...(input.composition.cloudModelCatalog ? { cloudModelCatalog: input.composition.cloudModelCatalog } : {}),
   };
 }
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AgentSummarySchema } from "./agent.js";
+import { CloudAvailabilitySchema } from "./cloud-product.js";
 import {
   ComputerConnectionStatusSchema,
   type ComputerImCliReadiness,
@@ -63,6 +64,19 @@ export const AgentSetupComputerStateSchema = z.discriminatedUnion("kind", [
       observedAt: z.string().datetime(),
     })
     .strict(),
+  z
+    .object({
+      /**
+       * The Account's logical Cloud Computer. The identity is bound and managed by the platform;
+       * it carries no connection status, no heartbeat, and no local IM CLI reports, because none
+       * of those exist for a Computer that is not a machine.
+       */
+      kind: z.literal("cloud"),
+      ...AgentSetupComputerIdentityShape,
+      /** When the Server read the managed identity; never a connectivity observation. */
+      observedAt: z.string().datetime(),
+    })
+    .strict(),
 ]);
 
 export const AgentSetupRuntimeUnavailableReasonSchema = z.enum([
@@ -102,6 +116,19 @@ export const AgentSetupRuntimeStateSchema = z.discriminatedUnion("kind", [
       observedAt: z.string().datetime(),
     })
     .strict(),
+  z
+    .object({
+      /**
+       * The runtime leg of a Cloud-bound Agent. The platform runs the exact runtime Provider, so
+       * readiness is the deployment's Cloud execution configuration — never a Runner session probe
+       * and never a claim that an environment was validated. `available` means the platform can
+       * start an environment for the first real task, not that one is already running.
+       */
+      kind: z.literal("cloud-managed"),
+      provider: AgentSummarySchema.shape.runtimeProvider,
+      availability: CloudAvailabilitySchema,
+    })
+    .strict(),
 ]);
 
 /**
@@ -132,10 +159,23 @@ export const AGENT_SETUP_IM_CLI_COMPONENT_STATUSES = [
   "ready",
   "unavailable",
 ] as const;
+/**
+ * The managed Cloud service leg of a Cloud-bound Agent, projected from the deployment's Cloud
+ * availability at the observed instant. `available` is a configuration fact — the platform can
+ * start an execution environment for a real task — never a claim that one was already started
+ * or validated.
+ */
+export const AGENT_SETUP_CLOUD_COMPONENT_STATUSES = [
+  "available",
+  "execution-unavailable",
+  "model-unavailable",
+  "disabled",
+] as const;
 
 export const AgentSetupComputerComponentStatusSchema = z.enum(AGENT_SETUP_COMPUTER_COMPONENT_STATUSES);
 export const AgentSetupRuntimeComponentStatusSchema = z.enum(AGENT_SETUP_RUNTIME_COMPONENT_STATUSES);
 export const AgentSetupImCliComponentStatusSchema = z.enum(AGENT_SETUP_IM_CLI_COMPONENT_STATUSES);
+export const AgentSetupCloudComponentStatusSchema = z.enum(AGENT_SETUP_CLOUD_COMPONENT_STATUSES);
 
 const AgentSetupComputerComponentSchema = z
   .object({
@@ -170,16 +210,32 @@ const AgentSetupImCliComponentSchema = z
   })
   .strict();
 
+const AgentSetupCloudComponentSchema = z
+  .object({
+    kind: z.literal("cloud"),
+    status: AgentSetupCloudComponentStatusSchema,
+    /** Whether the managed service currently blocks the setup cursor. */
+    blocking: z.boolean(),
+    computerId: z.string().uuid(),
+    displayName: z.string().min(1),
+    platform: ComputerPlatformSchema,
+    /** When the Server read the Cloud identity and configuration; not a machine heartbeat. */
+    observedAt: z.string().datetime(),
+  })
+  .strict();
+
 /**
  * The canonical component projection of one setup snapshot: the exact Computer, the Agent's exact
- * Runtime, then one entry per required IM CLI Provider in canonical order. Schema validation, the
- * Server projection, and in-memory adapters derive rows through the same helper so no consumer
- * guesses at identity, status, or blocking on its own.
+ * Runtime, then one entry per required IM CLI Provider in canonical order. A Cloud-bound Agent has
+ * a single managed-service component instead: there is no machine to connect and no local CLI to
+ * prepare. Schema validation, the Server projection, and in-memory adapters derive rows through
+ * the same helper so no consumer guesses at identity, status, or blocking on its own.
  */
 export const AgentSetupComponentSchema = z.discriminatedUnion("kind", [
   AgentSetupComputerComponentSchema,
   AgentSetupRuntimeComponentSchema,
   AgentSetupImCliComponentSchema,
+  AgentSetupCloudComponentSchema,
 ]);
 
 export interface AgentSetupComponentProjectionInput {
@@ -189,14 +245,35 @@ export interface AgentSetupComponentProjectionInput {
   requiredImCliProviders: readonly ImCliProvider[];
 }
 
-function computerComponentStatus(computer: AgentSetupComputerState): AgentSetupComputerComponentStatus {
+function computerComponentStatus(
+  computer: Exclude<AgentSetupComputerState, { kind: "cloud" }>,
+): AgentSetupComputerComponentStatus {
   if (computer.kind === "bound") return computer.connectionStatus;
   return computer.kind;
 }
 
 function runtimeComponentStatus(runtime: AgentSetupRuntimeState): AgentSetupRuntimeComponentStatus {
   if (runtime.kind === "observed") return runtime.status;
+  // A Cloud-managed runtime beside a local Computer is rejected by snapshot validation; the
+  // projection stays total so that rejection is a validation issue rather than a thrown projector.
+  if (runtime.kind === "cloud-managed") return "unavailable";
   return runtime.kind;
+}
+
+/** The Cloud component's status is the deployment availability reason, or `available`. */
+function cloudComponentStatus(
+  runtime: AgentSetupRuntimeState,
+): "available" | "execution-unavailable" | "model-unavailable" | "disabled" {
+  if (runtime.kind !== "cloud-managed") return "disabled";
+  if (runtime.availability.available) return "available";
+  switch (runtime.availability.reason) {
+    case "execution_unavailable":
+      return "execution-unavailable";
+    case "model_unavailable":
+      return "model-unavailable";
+    default:
+      return "disabled";
+  }
 }
 
 /**
@@ -208,6 +285,20 @@ function runtimeComponentStatus(runtime: AgentSetupRuntimeState): AgentSetupRunt
  */
 export function projectAgentSetupComponents(input: AgentSetupComponentProjectionInput): AgentSetupComponent[] {
   const { computer, runtime, messaging } = input;
+  if (computer.kind === "cloud") {
+    const status = cloudComponentStatus(runtime);
+    return [
+      {
+        kind: "cloud",
+        status,
+        blocking: status !== "available",
+        computerId: computer.computerId,
+        displayName: computer.displayName,
+        platform: computer.platform,
+        observedAt: computer.observedAt,
+      },
+    ];
+  }
   const computerReady = computer.kind === "bound" && computer.connectionStatus === "online";
   const runtimeReady = runtime.kind === "observed" && runtime.status === "ready";
   const cliEntries = computer.kind === "bound" ? computer.imCliReadiness : [];
@@ -374,6 +465,7 @@ export const AGENT_SETUP_BLOCKER_CODES = [
   "computer-offline",
   "runtime-not-ready",
   "provider-cli-not-ready",
+  "cloud-service-unavailable",
   "messaging-not-configured",
   "messaging-not-ready",
   "messaging-unbind-required",
@@ -402,6 +494,16 @@ export const AgentSetupBlockerSchema = z
         code: z.literal("provider-cli-not-ready"),
         provider: ImCliProviderSchema,
         status: z.enum(["waiting", "checking", "install", "unavailable"]),
+      })
+      .strict(),
+    z
+      .object({
+        /**
+         * The managed Cloud execution service cannot start an environment right now. The reason
+         * is the deployment configuration fact, never an inferred runtime or machine failure.
+         */
+        code: z.literal("cloud-service-unavailable"),
+        reason: z.enum(["disabled", "execution-unavailable", "model-unavailable"]),
       })
       .strict(),
     z.object({ code: z.literal("messaging-not-configured") }).strict(),
@@ -483,6 +585,9 @@ function validateSetupComputer(snapshot: AgentSetupSnapshotCandidate, addIssue: 
   if (snapshot.computer.kind === "bound" && snapshot.agent.requiresComputerRebind === true) {
     addIssue(["computer"], "A Computer that requires rebind is not a usable bound Computer");
   }
+  if (snapshot.computer.kind === "cloud" && snapshot.agent.requiresComputerRebind === true) {
+    addIssue(["computer"], "A Computer that requires rebind is not a usable Cloud Computer");
+  }
 }
 
 function expectedRuntimeUnavailableReason(
@@ -491,6 +596,7 @@ function expectedRuntimeUnavailableReason(
   if (computer.kind === "not-bound") return "computer-not-bound";
   if (computer.kind === "observation-failed") return "computer-observation-failed";
   if (computer.kind === "requires-rebind") return "computer-rebind-required";
+  if (computer.kind === "cloud") return undefined;
   if (computer.connectionStatus === "offline") return "computer-offline";
   return undefined;
 }
@@ -498,6 +604,18 @@ function expectedRuntimeUnavailableReason(
 function validateSetupRuntime(snapshot: AgentSetupSnapshotCandidate, addIssue: AgentSetupIssue): void {
   if (snapshot.runtime.provider !== snapshot.agent.runtimeProvider) {
     addIssue(["runtime", "provider"], "Runtime readiness must describe the Agent's exact Provider");
+  }
+  if (snapshot.computer.kind === "cloud") {
+    // A Cloud Computer has no local observation path: the runtime leg is the managed Cloud service
+    // configuration, and only that. A local-style observation here would be fabricated evidence.
+    if (snapshot.runtime.kind !== "cloud-managed") {
+      addIssue(["runtime"], "A Cloud Computer's runtime readiness is the managed Cloud service, not a local report");
+    }
+    return;
+  }
+  if (snapshot.runtime.kind === "cloud-managed") {
+    addIssue(["runtime"], "A Local Computer's runtime readiness must come from its own observations");
+    return;
   }
   const unavailableReason = expectedRuntimeUnavailableReason(snapshot.computer);
   if (unavailableReason === undefined) {
@@ -564,15 +682,22 @@ function failingProviderCliBlockers(snapshot: AgentSetupSnapshotCandidate): Agen
 }
 
 function deriveSetupStage(snapshot: AgentSetupSnapshotCandidate): AgentSetupStage {
-  const computerReady = snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "online";
+  const cloudManaged = snapshot.computer.kind === "cloud";
+  const computerReady =
+    cloudManaged || (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "online");
   if (!computerReady) return "needs-computer";
-  const runtimeReady = snapshot.runtime.kind === "observed" && snapshot.runtime.status === "ready";
+  // Cloud runtime readiness is the managed-service configuration; it is satisfied exactly when the
+  // deployment can start an execution environment, and never claimed from a machine report.
+  const runtimeReady = cloudManaged
+    ? snapshot.runtime.kind === "cloud-managed" && snapshot.runtime.availability.available
+    : snapshot.runtime.kind === "observed" && snapshot.runtime.status === "ready";
   if (!runtimeReady) return "needs-runtime";
   if (snapshot.messaging.kind === "ready") return "ready";
   // The dual-Provider local preparation gate applies only while Messaging is not-configured; any
   // known Messaging state (authorizing, waiting-handoff, blocked, observation-failed) advances or
-  // fails closed without consulting the unselected CLI reports again.
+  // fails closed without consulting the unselected CLI reports again. Cloud has no local CLI gate.
   if (snapshot.messaging.kind !== "not-configured") return "needs-messaging";
+  if (cloudManaged) return "needs-messaging";
   return snapshot.requiredImCliProviders.every((provider) => requiredCliReady(snapshot, provider))
     ? "needs-messaging"
     : "needs-provider-clis";
@@ -611,6 +736,7 @@ function validateSetupStage(snapshot: AgentSetupSnapshotCandidate, addIssue: Age
   if (
     snapshot.stage === "needs-runtime" &&
     !blockerCodes.has("runtime-not-ready") &&
+    !blockerCodes.has("cloud-service-unavailable") &&
     !hasObservationBlocker(snapshot, "runtime")
   ) {
     addIssue(["blockers"], "A needs-runtime setup must name its runtime blocker");
@@ -718,9 +844,30 @@ function validateSetupActions(snapshot: AgentSetupSnapshotCandidate, addIssue: A
   }
 }
 
+function validateCloudBlocker(
+  snapshot: AgentSetupSnapshotCandidate,
+  blocker: Extract<AgentSetupBlocker, { code: "cloud-service-unavailable" }>,
+  index: number,
+  addIssue: AgentSetupIssue,
+): void {
+  if (
+    snapshot.computer.kind !== "cloud" ||
+    snapshot.runtime.kind !== "cloud-managed" ||
+    snapshot.runtime.availability.available
+  ) {
+    addIssue(["blockers", index], "A Cloud service blocker requires an unavailable Cloud-managed runtime");
+  } else if (blocker.reason !== cloudComponentStatus(snapshot.runtime)) {
+    addIssue(["blockers", index], "A Cloud service blocker must carry the availability's exact reason");
+  }
+}
+
 function validateSetupBlockers(snapshot: AgentSetupSnapshotCandidate, addIssue: AgentSetupIssue): void {
   const currentBinding = readCurrentBinding(snapshot.messaging);
   for (const [index, blocker] of snapshot.blockers.entries()) {
+    if (blocker.code === "cloud-service-unavailable") {
+      validateCloudBlocker(snapshot, blocker, index, addIssue);
+      continue;
+    }
     if (blocker.code !== "messaging-unbind-required") continue;
     if (currentBinding?.provider !== blocker.currentProvider || currentBinding.bindingId !== blocker.currentBindingId) {
       addIssue(["blockers", index], "An unbind-required blocker must name the current binding");
@@ -730,6 +877,14 @@ function validateSetupBlockers(snapshot: AgentSetupSnapshotCandidate, addIssue: 
 
 function validateSetupRequiredProviders(snapshot: AgentSetupSnapshotCandidate, addIssue: AgentSetupIssue): void {
   const { requiredImCliProviders } = snapshot;
+  // A Cloud Agent prepares no local IM CLIs: the required set is empty, and the messaging gate is
+  // the Server-owned binding itself.
+  if (snapshot.computer.kind === "cloud") {
+    if (requiredImCliProviders.length !== 0) {
+      addIssue(["requiredImCliProviders"], "A Cloud setup requires no local IM CLI Providers");
+    }
+    return;
+  }
   const canonical = AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS;
   if (
     requiredImCliProviders.length !== canonical.length ||
@@ -821,9 +976,11 @@ export type AgentSetupRuntimeState = z.infer<typeof AgentSetupRuntimeStateSchema
 export type AgentSetupComputerComponentStatus = z.infer<typeof AgentSetupComputerComponentStatusSchema>;
 export type AgentSetupRuntimeComponentStatus = z.infer<typeof AgentSetupRuntimeComponentStatusSchema>;
 export type AgentSetupImCliComponentStatus = z.infer<typeof AgentSetupImCliComponentStatusSchema>;
+export type AgentSetupCloudComponentStatus = z.infer<typeof AgentSetupCloudComponentStatusSchema>;
 export type AgentSetupComputerComponent = z.infer<typeof AgentSetupComputerComponentSchema>;
 export type AgentSetupRuntimeComponent = z.infer<typeof AgentSetupRuntimeComponentSchema>;
 export type AgentSetupImCliComponent = z.infer<typeof AgentSetupImCliComponentSchema>;
+export type AgentSetupCloudComponent = z.infer<typeof AgentSetupCloudComponentSchema>;
 export type AgentSetupComponent = z.infer<typeof AgentSetupComponentSchema>;
 export type AgentSetupMessagingBlockerCode = z.infer<typeof AgentSetupMessagingBlockerCodeSchema>;
 export type AgentSetupMessagingState = z.infer<typeof AgentSetupMessagingStateSchema>;

@@ -25,6 +25,7 @@ import {
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudDeliveryDispatchError } from "../services/sandboxes/cloud-delivery-owner.js";
+import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbox.js";
 import type { DeliveryOccupancySubject } from "./im-delivery-custody.js";
 import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
@@ -189,7 +190,7 @@ export class CloudDeliveryCoordinator {
       persistedRequest?.runtime ??
       (await this.#options.assembleRuntime(deliveryId, row.session.id, "delivery", claimToken));
     if (!assembledRuntime) return { kind: "stop" };
-    const runtime = persistedRequest ? assembledRuntime : cloudDelivery.resolveRuntimeModel(assembledRuntime);
+    const runtime = persistedRequest ? assembledRuntime : await cloudDelivery.resolveRuntimeModel(assembledRuntime);
     if (!runtime) {
       await this.#options.recordFailure(
         deliveryId,
@@ -332,13 +333,19 @@ export class CloudDeliveryCoordinator {
    */
   async #ensureEnvironment(
     deliveryId: string,
-    row: Pick<CloudDeliveryClaimRow, "session" | "agent">,
+    row: Pick<CloudDeliveryClaimRow, "delivery" | "session" | "agent">,
     claimToken: string,
   ): Promise<boolean> {
     const sandboxId = await this.#ensureSandboxRow(deliveryId, row, claimToken);
     if (!sandboxId) return false;
     if (!this.#options.cloudAllocation) return true;
-    return this.#convergeAllocation(deliveryId, row.agent.createdByUserId, sandboxId, claimToken);
+    return this.#convergeAllocation(
+      deliveryId,
+      row.agent.createdByUserId,
+      sandboxId,
+      claimToken,
+      row.delivery.attemptCount,
+    );
   }
 
   /** Create the Session Sandbox through the existing SandboxService when it is missing. */
@@ -391,6 +398,7 @@ export class CloudDeliveryCoordinator {
     accountId: string,
     sandboxId: string,
     claimToken: string,
+    attemptCount: number,
   ): Promise<boolean> {
     try {
       const outcome = await this.#options.cloudAllocation?.ensureEnvironmentAllocated({ accountId, sandboxId });
@@ -407,7 +415,18 @@ export class CloudDeliveryCoordinator {
         return false;
       }
       return true;
-    } catch {
+    } catch (error) {
+      if (error instanceof CloudCapacityExceededError) {
+        // Capacity is transient for IM: the input stays in the existing bounded queue ("waiting
+        // for cloud resources") with the same capped backoff and ingress TTL.
+        await this.#options.recordFailure(
+          deliveryId,
+          "IM_DELIVERY_CLOUD_CAPACITY_WAITING",
+          claimToken,
+          cloudDispatchRetryDelayMs(attemptCount),
+        );
+        return false;
+      }
       await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED", claimToken);
       return false;
     }

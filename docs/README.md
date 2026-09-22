@@ -23,6 +23,8 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 
 ## Operations and releases
 
+- [Cloud Computer product and resource controls](./cloud-computer-product.md)
+
 - [Staging deployment guide](./deploying.md)
 - [Staging onboarding reset](./staging-onboarding-reset.md)
 - [Server observability](./observability.md)

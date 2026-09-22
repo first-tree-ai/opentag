@@ -90,6 +90,10 @@ export const ErrorCodeSchema = z.enum([
   "SESSION_PROOF_INVALID",
   "TASK_NOT_QUEUED",
   "SANDBOX_RUNNER_CONFLICT",
+  "CLOUD_CAPACITY_EXCEEDED",
+  /* Cloud model settings: the Router model catalog is the only authority for Cloud model choices. */
+  "CLOUD_MODEL_NOT_ALLOWED",
+  "CLOUD_MODEL_UNAVAILABLE",
   "INTERNAL_ERROR",
   "RATE_LIMITED",
   "RESOURCE_NOT_FOUND",

@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runAgentCases, runCloudComputerCases } from "./cloud-identities-cloud.mjs";
@@ -39,8 +39,29 @@ function cloudEnv(cliVersion, extra = {}) {
     OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
     OPENTAG_CLOUD_STORAGE_BASE: CLOUD_STORAGE_URI,
     OPENTAG_CLOUD_RUNNER_VERSION: cliVersion,
+    // Valid inert coordinates: identity/setup reads must never allocate or contact GCP.
+    OPENTAG_CLOUD_RUNNER_IMAGE: `registry.example.com/runner@sha256:${"a".repeat(64)}`,
+    OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-e2-fixture",
+    OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+    OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-e2-fixture.iam.gserviceaccount.com",
+    OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://runner-fixture.example.com",
+    OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "fixture-network",
+    OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "fixture-subnet",
+    OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "fixture-runner",
     ...extra,
   };
+}
+
+async function currentMigrationHashes(repositoryRoot) {
+  const folder = join(repositoryRoot, "packages/server/drizzle");
+  const journal = JSON.parse(await readFile(join(folder, "meta/_journal.json"), "utf8"));
+  return Promise.all(
+    journal.entries.map(async (entry) =>
+      createHash("sha256")
+        .update(await readFile(join(folder, `${entry.tag}.sql`)))
+        .digest("hex"),
+    ),
+  );
 }
 
 async function runUpgradePhase({ repositoryRoot, artifactDirectory, cliVersion, assertions, step }) {
@@ -60,7 +81,7 @@ async function runUpgradePhase({ repositoryRoot, artifactDirectory, cliVersion, 
       'computer', (select to_jsonb(c) - 'kind' from computers c where id='${E2_IDS.localComputer}'),
       'credential', (select to_jsonb(c) from computer_credentials c where id='${E2_IDS.localCredential}'),
       'agent', (select to_jsonb(a) from agents a where id='${E2_IDS.localAgent}'),
-      'runtime', (select to_jsonb(r) from agent_runtime_configs r where agent_id='${E2_IDS.localAgent}')
+      'runtime', (select to_jsonb(r) - 'context_tree_repository' from agent_runtime_configs r where agent_id='${E2_IDS.localAgent}')
     )::text`;
     const beforeUpgrade = await fixture.postgres.psql(snapshotSql);
     await fixture.startServer();
@@ -73,7 +94,16 @@ async function runUpgradePhase({ repositoryRoot, artifactDirectory, cliVersion, 
       listed.computers.some((entry) => entry.computerId === E2_IDS.localComputer && entry.kind === undefined),
     );
     const ledger = await fixture.readAppliedMigrations();
-    record(assertions, "e1-upgrade-count", ledger.count === 43, String(ledger.count));
+    const expectedHashes = await currentMigrationHashes(repositoryRoot);
+    record(assertions, "e1-upgrade-count", ledger.count === expectedHashes.length, String(ledger.count));
+    record(assertions, "e1-upgrade-source-hashes", JSON.stringify(ledger.hashes) === JSON.stringify(expectedHashes));
+    record(
+      assertions,
+      "e1-context-tree-default",
+      (await fixture.postgres.psql(
+        `select context_tree_repository is null from agent_runtime_configs where agent_id='${E2_IDS.localAgent}'`,
+      )) === "t",
+    );
     record(
       assertions,
       "e1-hash-prefix",
@@ -155,6 +185,21 @@ async function runAuthGuards(fixture, shared, cookiesA, assertions) {
 
 async function runFlagOffCases(ctx) {
   const { fixture, shared, cookiesA, assertions } = ctx;
+  const availability = await requestJson({
+    baseUrl: fixture.baseUrl,
+    cookies: cookiesA,
+    method: "GET",
+    path: shared.HTTP_PATHS.accountCloudComputer,
+  });
+  record(
+    assertions,
+    "overall-off-overrides-model-on",
+    availability.ok &&
+      availability.body.enabled === false &&
+      availability.body.available === false &&
+      availability.body.reason === "disabled",
+    availability.status,
+  );
   const ensure = await requestJson({
     baseUrl: fixture.baseUrl,
     cookies: cookiesA,
@@ -275,7 +320,13 @@ async function executeCloudIdentities(repositoryRoot) {
     );
     await fixture.startServer();
     const clean = await fixture.readAppliedMigrations();
-    record(assertions, "clean-migration-count", clean.count === 43, String(clean.count));
+    const expectedHashes = await currentMigrationHashes(repositoryRoot);
+    record(assertions, "clean-migration-count", clean.count === expectedHashes.length, String(clean.count));
+    record(
+      assertions,
+      "clean-migration-source-hashes",
+      JSON.stringify(clean.hashes) === JSON.stringify(expectedHashes),
+    );
     const { first, second } = await step("two real dev sign-ins across Server restart", () =>
       signBoth(fixture, assertions),
     );
@@ -366,7 +417,15 @@ async function executeCloudIdentities(repositoryRoot) {
       reensured.ok && JSON.stringify(reensured.body) === JSON.stringify(ctx.sandboxA),
     );
     await runResourceConstraints(ctx);
-    await fixture.restartServer(cloudEnv(cliVersion, { OPENTAG_CLOUD_IDENTITIES_ENABLED: "false" }));
+    await fixture.restartServer(
+      cloudEnv(cliVersion, {
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "false",
+        OPENTAG_CLOUD_MODEL_ENABLED: "true",
+        OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models-fixture.example.com/v1",
+        OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-model-key-not-a-secret",
+        OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "fixture-model",
+      }),
+    );
     await runFlagOffCases(ctx);
     if (assertions.some((entry) => !entry.ok)) throw new Error("Acceptance contains a failed assertion");
     summary.status = "passed";

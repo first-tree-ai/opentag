@@ -4,7 +4,7 @@ The canonical product composition and acceptance rules live in
 [`docs/design/web-ui-contract.md`](../../../../docs/design/web-ui-contract.md). This document records the Kumo-specific
 implementation choices behind that interface.
 
-OpenTag uses Kumo `2.12.0` with Tailwind CSS v4. `src/app.css` is the only
+OpenTag uses Kumo `2.13.1` with Tailwind CSS v4. `src/app.css` is the only
 application stylesheet entry: it registers Kumo's distribution as a Tailwind
 source, imports Kumo's Tailwind styles before Tailwind itself, then loads the
 generated OpenTag theme and the small application boundary stylesheet.
@@ -92,6 +92,26 @@ React Router and leaves external URLs on native navigation. Product code can
 still use React Router `Link` when route state is required. Keep dialogs mounted
 and drive visibility with `open`/`onOpenChange`; this preserves Base UI focus
 management and Escape behaviour.
+
+## Local dependency patch
+
+[`patches/@cloudflare__kumo@2.13.1.patch`](../../../../patches/@cloudflare__kumo@2.13.1.patch)
+adds `collapsible` to `SidebarProvider`'s context memo dependencies. When the viewport
+switches from desktop to mobile, Kumo's media subscription can run before AppShell's
+subscription changes `collapsible` from `"none"` to `"icon"`. Without the dependency,
+the context retains `"none"` and the mobile navigation can ignore close actions.
+Updating the memo preserves the mounted page and its unsaved input.
+
+This is a local patch; no upstream issue or pull request has been submitted as part
+of this change. [`sidebar.test.tsx`](./sidebar.test.tsx) reproduces the subscription
+ordering and checks that closing mobile navigation preserves the page's draft.
+When upgrading Kumo, verify that this regression passes without the patch before
+removing the patch file and its `pnpm.patchedDependencies` entry and regenerating
+the lockfile. Also verify desktop-to-mobile-to-desktop navigation with unsaved input.
+
+The patch is tied to the exact Kumo version and must be reviewed on upgrades.
+Every container install context must include `patches/`, even for filtered installs
+that exclude Kumo: pnpm hashes the declared patch files before dependency selection.
 
 ## Verification
 

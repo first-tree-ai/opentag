@@ -3,11 +3,20 @@ import type {
   AgentDetail,
   AgentListItem as AgentListApiItem,
   AgentSummary,
+  CloudAvailability,
   ImBindingHandoffStatus,
   ImBindingSummary,
   ProviderCliHandoffProgress,
   ProviderReadinessStatus,
 } from "@opentag/shared/browser";
+
+/**
+ * The evidence a Cloud-bound Agent's runtime leg is judged by: the deployment's Cloud availability
+ * answer, read through the setup/availability source. It is deliberately not optional-to-mean-local:
+ * when it is absent or unreadable the Agent is unconfirmed, and the Local `providerReady` array of a
+ * Cloud Computer is never consulted — a managed Computer has no machine reports to borrow.
+ */
+export type AgentCloudRuntimeEvidence = { kind: "ready"; value: CloudAvailability } | { kind: "unconfirmed" };
 
 export type AgentAvailability = {
   state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended" | "unconfirmed";
@@ -31,8 +40,16 @@ export type AgentAvailability = {
   lastConfirmedAt: string | null;
   dependencies: {
     computer: { state: "ready" | "action_required" | "not_bound" | "unconfirmed"; lastConfirmedAt: string | null };
-    /** Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from this. */
-    runtime: { provider: AgentSummary["runtimeProvider"]; status: ProviderReadinessStatus | null };
+    /**
+     * Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from
+     * this. For a Cloud-bound Agent the status is the managed-service verdict (with `cloud`
+     * carrying its provenance); it is never a machine probe, because there is no machine.
+     */
+    runtime: {
+      provider: AgentSummary["runtimeProvider"];
+      status: ProviderReadinessStatus | null;
+      cloud?: { available: boolean; reason: CloudAvailability["reason"] };
+    };
     handoff: {
       state: "ready" | "action_required" | "checking" | "setting_up" | "not_connected" | "unconfirmed";
       lastConfirmedAt: string | null;
@@ -109,6 +126,32 @@ function handoffDependency(
   return dependency;
 }
 
+function agentRuntimeDependency(
+  agent: AgentSummary,
+  computer: AccountComputerSummary | undefined,
+  cloudRuntime?: AgentCloudRuntimeEvidence,
+): AgentAvailability["dependencies"]["runtime"] {
+  if (computer?.kind === "cloud") {
+    if (cloudRuntime?.kind !== "ready") return { provider: agent.runtimeProvider, status: null };
+    return {
+      provider: agent.runtimeProvider,
+      status: cloudRuntime.value.available ? "ready" : "unavailable",
+      cloud: { available: cloudRuntime.value.available, reason: cloudRuntime.value.reason },
+    };
+  }
+  const observation = computer?.providerReadiness?.find((item) => item.provider === agent.runtimeProvider);
+  return { provider: agent.runtimeProvider, status: observation?.status ?? null };
+}
+
+function computerDependencyState(
+  agent: AgentSummary,
+  computer: AccountComputerSummary | undefined,
+): AgentAvailability["dependencies"]["computer"]["state"] {
+  if (agent.computer === null) return "not_bound";
+  if (!computer) return "unconfirmed";
+  return computer.connectionStatus === "online" ? "ready" : "action_required";
+}
+
 export function projectAgentAvailability(
   agent: AgentSummary,
   computer: AccountComputerSummary | undefined,
@@ -116,27 +159,20 @@ export function projectAgentAvailability(
   handoff: ImBindingHandoffStatus | undefined,
   bindingEvidenceConfirmed: boolean,
   handoffEvidenceConfirmed: boolean,
+  cloudRuntime?: AgentCloudRuntimeEvidence,
 ): AgentAvailability {
+  const cloudComputer = computer?.kind === "cloud";
   const computerReady = computer?.connectionStatus === "online";
-  const providerReadiness = computer?.providerReadiness?.find(
-    (observation) => observation.provider === agent.runtimeProvider,
-  );
+  const runtimeDependency = agentRuntimeDependency(agent, computer, cloudRuntime);
   const handoffState = handoffDependencyState(binding, handoff, bindingEvidenceConfirmed, handoffEvidenceConfirmed);
   const dependencies: AgentAvailability["dependencies"] = {
     computer: {
       // Not bound is a fact the Server states, so it is never reported as evidence we could not read:
       // one is answered by binding a Computer and the other by waiting for a read to succeed.
-      state:
-        agent.computer === null
-          ? "not_bound"
-          : computer
-            ? computerReady
-              ? "ready"
-              : "action_required"
-            : "unconfirmed",
+      state: computerDependencyState(agent, computer),
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
-    runtime: { provider: agent.runtimeProvider, status: providerReadiness?.status ?? null },
+    runtime: runtimeDependency,
     handoff: handoffDependency(handoffState, binding, handoff),
     channel: {
       state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",
@@ -161,12 +197,16 @@ export function projectAgentAvailability(
       dependencies,
     };
   }
-  const runtimeReadiness = providerReadiness;
-  if (!runtimeReadiness) {
+  if (runtimeDependency.status === null) {
     return { state: "unconfirmed", reason: "runtime_unconfirmed", lastConfirmedAt: null, dependencies };
   }
-  if (runtimeReadiness.status !== "ready") {
-    return { state: "action_required", reason: "runtime_unavailable", lastConfirmedAt: null, dependencies };
+  if (runtimeDependency.status !== "ready") {
+    return {
+      state: "action_required",
+      reason: "runtime_unavailable",
+      lastConfirmedAt: cloudComputer && cloudRuntime?.kind === "ready" ? cloudRuntime.value.observedAt : null,
+      dependencies,
+    };
   }
   if (!bindingEvidenceConfirmed || !handoffEvidenceConfirmed) {
     return { state: "unconfirmed", reason: "handoff_unconfirmed", lastConfirmedAt: null, dependencies };

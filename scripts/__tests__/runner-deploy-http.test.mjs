@@ -43,7 +43,6 @@ function baseDefinition() {
       { key: "OPENTAG_ENV", value: "staging" },
       { key: "OPENTAG_PUBLIC_URL", value: "ORIGIN" },
       { key: "OPENTAG_CLOUD_IDENTITIES_ENABLED", value: "true" },
-      { key: "OPENTAG_CLOUD_RUNNER_ENABLED", value: "true" },
       { key: RUNNER_IMAGE_KEY, value: `${REPO}@${OLD_DIGEST}` },
       { key: RUNNER_VERSION_KEY, value: OLD_VERSION },
     ],

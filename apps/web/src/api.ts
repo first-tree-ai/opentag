@@ -1,10 +1,17 @@
 import {
+  type AccountCloudComputerEnsureResponse,
+  AccountCloudComputerEnsureResponseSchema,
   type AccountComputerConnectCodeIssueRequest,
+  type AccountSandboxRunnerStatusResponse,
+  AccountSandboxRunnerStatusResponseSchema,
+  type AccountSandboxRunnerStopRequest,
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
+  type AgentCloudOverview,
+  AgentCloudOverviewSchema,
   type AgentDetail,
   AgentDetailSchema,
   type AgentRuntimeTestRequest,
@@ -19,7 +26,9 @@ import {
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   accountComputerConnectCodePath,
+  accountSandboxRunnerStopPath,
   agentByIdPath,
+  agentCloudPath,
   agentComputerRebindPath,
   agentConfigPath,
   agentContextTreePath,
@@ -44,6 +53,10 @@ import {
   agentSuspendPath,
   agentUsagePath,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
+  type CloudAvailability,
+  CloudAvailabilitySchema,
+  type CloudModelOptions,
+  CloudModelOptionsSchema,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
@@ -190,6 +203,7 @@ export class CancelledRequestError extends Error {
 
 /** Covers one Agent setup snapshot read: fetch, body, and diagnostic clones. */
 export const AGENT_SETUP_READ_TIMEOUT_MS = 10_000;
+export const CLOUD_CONTROL_TIMEOUT_MS = 30_000;
 
 /**
  * Bounds `run` in elapsed time even when the AbortSignal is ignored. Fetch cancellation is
@@ -487,6 +501,49 @@ export class BrowserApi {
         [PROVIDER_CLI_REASON_V2_HEADER]: "2",
       },
     });
+  }
+
+  cloudAvailability(): Promise<CloudAvailability> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(HTTP_PATHS.accountCloudComputer, CloudAvailabilitySchema, { signal }),
+    );
+  }
+
+  cloudModelOptions(): Promise<CloudModelOptions> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(HTTP_PATHS.accountCloudModels, CloudModelOptionsSchema, { signal }),
+    );
+  }
+
+  ensureCloudComputer(): Promise<AccountCloudComputerEnsureResponse> {
+    return this.request(HTTP_PATHS.accountCloudComputer, AccountCloudComputerEnsureResponseSchema, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      body: JSON.stringify({}),
+    });
+  }
+
+  agentCloudOverview(
+    agentId: string,
+    options: { cursor?: string; limit?: number; sessionId?: string } = {},
+  ): Promise<AgentCloudOverview> {
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(agentCloudPath(agentId, options), AgentCloudOverviewSchema, { signal }),
+    );
+  }
+
+  stopCloudSandbox(
+    sandboxId: string,
+    input: AccountSandboxRunnerStopRequest,
+  ): Promise<AccountSandboxRunnerStatusResponse> {
+    return withDeadline(CLOUD_CONTROL_TIMEOUT_MS, (signal) =>
+      this.request(accountSandboxRunnerStopPath(sandboxId), AccountSandboxRunnerStatusResponseSchema, {
+        signal,
+        method: "POST",
+        headers: { "content-type": "application/json", ...this.csrfHeaders() },
+        body: JSON.stringify(input),
+      }),
+    );
   }
 
   /**

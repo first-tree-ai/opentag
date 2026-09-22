@@ -3,26 +3,12 @@ import { formatDateTime } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
 import { Collapsible } from "../ui/design-system.js";
 import { TaskMessageBody } from "./task-message-body.js";
+import { taskReplyTime } from "./task-timeline.js";
 
 type OutgoingSnapshot = NonNullable<NonNullable<TaskTurn["report"]>["outgoingReplies"]>;
 type OutgoingReply = OutgoingSnapshot["replies"][number];
 
-export function TaskOutgoingReplies({ snapshot }: { snapshot: OutgoingSnapshot }) {
-  return (
-    <div className="grid gap-3" data-ui="task-sent-replies">
-      {snapshot.replies.map((reply) => (
-        <OutgoingReplyView key={reply.messageId} reply={reply} />
-      ))}
-      {snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0 ? (
-        <p className="text-sm text-kumo-subtle" data-ui="task-reply-incomplete">
-          {m.tasks_reply_incomplete()}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-function OutgoingReplyView({ reply }: { reply: OutgoingReply }) {
+export function TaskOutgoingReply({ reply }: { reply: OutgoingReply }) {
   const content = reply.content;
   const typeLabel = replyTypeLabel(content.msgType);
   const meta = [typeLabel, replyTime(reply.createTime)].filter(Boolean).join(" · ");
@@ -153,7 +139,6 @@ function replyTypeLabel(msgType: OutgoingReply["content"]["msgType"]): string {
 }
 
 function replyTime(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const date = /^\d+$/.test(value) ? new Date(Number(value)) : new Date(value);
-  return Number.isFinite(date.getTime()) ? formatDateTime(date) : undefined;
+  const at = taskReplyTime(value);
+  return at === undefined ? undefined : formatDateTime(new Date(at));
 }

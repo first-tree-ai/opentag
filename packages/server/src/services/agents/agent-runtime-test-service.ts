@@ -7,13 +7,38 @@ import type { AgentRuntimeTestOwner } from "../../runtime/agent-runtime-test-own
 import type { AgentService } from "./agent-service.js";
 import { AgentServiceError } from "./errors.js";
 
+/**
+ * The Cloud probe boundary: a bounded Server-to-model connectivity test against the deployment
+ * Router with the Agent's saved/default model. Implemented by CloudAgentRuntimeTester; no
+ * Session, Sandbox, or Instance is created and no product history is written.
+ */
+export interface CloudAgentRuntimeTestPort {
+  test(input: { computerId: string; model: string | null; signal?: AbortSignal }): Promise<AgentRuntimeTestResponse>;
+}
+
 export class AgentRuntimeTestService {
   readonly #agents: Pick<AgentService, "getConfigById">;
   readonly #owner: AgentRuntimeTestOwner;
+  readonly #cloud?: CloudAgentRuntimeTestPort;
+  readonly #computerKind?: (computerId: string) => Promise<"local" | "cloud" | undefined>;
 
-  constructor(agents: Pick<AgentService, "getConfigById">, owner: AgentRuntimeTestOwner) {
+  constructor(
+    agents: Pick<AgentService, "getConfigById">,
+    owner: AgentRuntimeTestOwner,
+    options: {
+      /**
+       * Server-derived Computer kind read; absent keeps the historical Local-only behavior (a
+       * Cloud Computer then reports computer_unavailable from the Local registry, as before).
+       */
+      computerKind?: (computerId: string) => Promise<"local" | "cloud" | undefined>;
+      /** Present exactly when the deployment's Cloud model path is enabled. */
+      cloud?: CloudAgentRuntimeTestPort;
+    } = {},
+  ) {
     this.#agents = agents;
     this.#owner = owner;
+    this.#computerKind = options.computerKind;
+    this.#cloud = options.cloud;
   }
 
   async test(
@@ -40,6 +65,18 @@ export class AgentRuntimeTestService {
         "The Agent is not bound to a Computer",
         409,
       );
+    }
+    // Branch on the server-derived bound Computer kind (ownership was already proven by
+    // getConfigById): a Cloud Computer has no Local daemon connection, so the test is the bounded
+    // hosted-model connectivity probe instead of a dispatch.
+    if ((await this.#computerKind?.(config.computerId)) === "cloud") {
+      const cloud = this.#cloud;
+      if (!cloud) return { status: "failed", code: "computer_unavailable" };
+      return cloud.test({
+        computerId: config.computerId,
+        model: config.runtimeConfig.model,
+        ...(signal ? { signal } : {}),
+      });
     }
     return this.#owner.start(config.computerId, {
       computerId: config.computerId,

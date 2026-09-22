@@ -18,6 +18,7 @@ import type { RuntimeDispatchAdmission } from "../runtime/runtime-domain-owner.j
 import { PostgresRuntimeDurableWorkStore } from "../runtime/runtime-durable-work-store.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
+import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import { type CloudConnectionRecord, CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
 import {
@@ -26,6 +27,7 @@ import {
   CloudSessionWorkTracker,
   createSessionCliCloudProofAuthority,
 } from "../services/sandboxes/cloud-session-collaboration-owner.js";
+import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import type { AuthorizedSessionMessageRoute } from "../services/sessions/session-service.js";
@@ -170,7 +172,7 @@ function makeStack(
   const registry = new RuntimeExecutionRegistry();
   const work = new CloudSessionWorkTracker();
   const grants = new CloudModelGrantService(JWT_SECRET, {
-    allowedModels: [MODEL],
+    catalog: createStaticCloudModelCatalog([MODEL]),
     maxStreamsPerToken: 2,
     ttlSeconds: 600,
   });
@@ -825,8 +827,8 @@ describe("CloudSessionCollaborationOwner", () => {
         write: async () => undefined,
       },
       modelGrants: {
-        defaultModel: MODEL,
-        isModelAllowed: () => true,
+        defaultModel: async () => MODEL,
+        isModelAllowed: async () => true,
         issue: async () => {
           throw new Error("mint exploded");
         },
@@ -1621,7 +1623,7 @@ describe("CloudSessionCollaborationOwner", () => {
     const fence = new CloudRuntimeFence();
     const work = new CloudSessionWorkTracker();
     const grants = new CloudModelGrantService(JWT_SECRET, {
-      allowedModels: [MODEL],
+      catalog: createStaticCloudModelCatalog([MODEL]),
       maxStreamsPerToken: 2,
       ttlSeconds: 600,
     });
@@ -1691,5 +1693,81 @@ describe("CloudSessionCollaborationOwner", () => {
       vi.useRealTimers();
     }
     void sent;
+  });
+
+  it("keeps a capacity-blocked cold child retryable without taking execution custody", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    // A cold Sandbox: the dispatch needs a NEW allocation, and admission rejects it.
+    await db.database
+      .update(sandboxes)
+      .set({ lifecycle: "unallocated", environmentGeneration: 0, currentResourceName: null, currentResourceUid: null })
+      .where(eq(sandboxes.id, fixture.sandboxId));
+    const owner = new CloudSessionCollaborationOwner({
+      allocation: {
+        ensureEnvironmentAllocated: async () => {
+          throw new CloudCapacityExceededError("platform");
+        },
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
+      database: db.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(db.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
+      modelGrants: new CloudModelGrantService(JWT_SECRET, {
+        catalog: createStaticCloudModelCatalog([MODEL]),
+        maxStreamsPerToken: 2,
+        ttlSeconds: 600,
+      }),
+      work: new CloudSessionWorkTracker(),
+    });
+
+    // No custody, busy registration, or dispatch tail is created. The caller may retry the same
+    // durable message once a releasing environment frees capacity.
+    await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "cloud_capacity_exceeded",
+    });
+    expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    expect(owner.activeDispatchTargets).toBe(0);
+  });
+
+  it("keeps a generic cold-allocation failure transient and distinguishable from capacity", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    await db.database
+      .update(sandboxes)
+      .set({ lifecycle: "unallocated", environmentGeneration: 0, currentResourceName: null, currentResourceUid: null })
+      .where(eq(sandboxes.id, fixture.sandboxId));
+    const owner = new CloudSessionCollaborationOwner({
+      allocation: {
+        ensureEnvironmentAllocated: async () => {
+          throw new Error("provider unreachable");
+        },
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
+      database: db.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(db.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
+      modelGrants: new CloudModelGrantService(JWT_SECRET, {
+        catalog: createStaticCloudModelCatalog([MODEL]),
+        maxStreamsPerToken: 2,
+        ttlSeconds: 600,
+      }),
+      work: new CloudSessionWorkTracker(),
+    });
+
+    await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
   });
 });

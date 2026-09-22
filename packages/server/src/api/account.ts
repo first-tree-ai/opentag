@@ -21,6 +21,10 @@ import {
   AgentCreationIntentResultSchema,
   type ChannelName,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
+  type CloudAvailability,
+  CloudAvailabilitySchema,
+  type CloudModelOptions,
+  CloudModelOptionsSchema,
   CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
   ComputerConnectCodeStatusSchema,
@@ -84,6 +88,13 @@ const SandboxParamsSchema = z.object({ sandboxId: z.string().uuid() }).strict();
 const EmptyBodySchema = z.object({}).strict();
 
 export interface AccountRoutesOptions {
+  cloudAvailability?: () => CloudAvailability;
+  /**
+   * The Router-sourced Cloud model choices. Absent means the deployment's model path is disabled,
+   * which the route reports as a fixed unavailable answer; a provider snapshot that is not
+   * available (the Router list could not be confirmed) is a sanitized transient 503.
+   */
+  cloudModelOptions?: () => Promise<CloudModelOptions>;
   agentService?: AgentService;
   computerConnectCode?: { downloadBaseUrl: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
@@ -133,6 +144,37 @@ export function registerAccountRoutes(
   options: AccountRoutesOptions,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
+
+  app.get(HTTP_PATHS.accountCloudComputer, { preHandler }, async (_request, reply) => {
+    const availability = options.cloudAvailability?.() ?? {
+      enabled: false,
+      available: false,
+      reason: "disabled",
+      observedAt: new Date().toISOString(),
+    };
+    return reply.header("Cache-Control", "no-store").code(200).send(CloudAvailabilitySchema.parse(availability));
+  });
+
+  app.get(HTTP_PATHS.accountCloudModels, { preHandler }, async (_request, reply) => {
+    const provider = options.cloudModelOptions;
+    if (!provider) {
+      // The model path is disabled on this deployment: a stable unavailable answer, not an error.
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(CloudModelOptionsSchema.parse({ available: false, defaultModel: null, models: [] }));
+    }
+    const snapshot = await provider();
+    if (!snapshot.available) {
+      throw new AuthServiceError(
+        "CLOUD_MODEL_UNAVAILABLE",
+        "transient",
+        "The Cloud model list could not be confirmed; retry shortly",
+        503,
+      );
+    }
+    return reply.header("Cache-Control", "no-store").code(200).send(CloudModelOptionsSchema.parse(snapshot));
+  });
 
   if (options.agentService) {
     const agentService = options.agentService;

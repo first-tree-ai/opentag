@@ -79,9 +79,10 @@ export class CloudDeliveryDispatchError extends Error {
  * reaching into its internals; revocation always goes through the injected dependency.
  */
 export interface CloudModelGrantPort {
-  /** First configured allowlisted model; the deployment default for an unspecified runtime model. */
-  readonly defaultModel: string;
-  isModelAllowed(model: string): boolean;
+  /** The deployment default (first Router model); undefined while the model catalog is unavailable. */
+  defaultModel(): Promise<string | undefined>;
+  /** True only when the current Router model catalog offers this exact model. */
+  isModelAllowed(model: string): Promise<boolean>;
   issue(input: {
     executionId: string;
     sandboxId: string;
@@ -199,29 +200,22 @@ export class CloudDeliveryOwner {
    * ---------------------------------------------------------------------------------------- */
 
   /**
-   * Resolve the runtime snapshot against the deployment model allowlist BEFORE any dispatch
-   * payload (and therefore any input hash) is frozen. An Agent without an explicit model uses the
-   * deployment default; a model the deployment does not allow never reaches a Sandbox.
+   * Resolve the runtime snapshot against the Router model catalog BEFORE any dispatch payload
+   * (and therefore any input hash) is frozen. An Agent without an explicit model uses the
+   * deployment default (the first Router model); a model the Router does not currently offer —
+   * or a catalog that cannot be refreshed — never reaches a Sandbox.
    */
-  resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): EffectiveRuntimeSnapshot | undefined {
+  async resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
     const grants = this.#modelGrants;
     if (!grants || !this.#modelBaseUrl) return undefined;
-    if (runtime.model && grants.isModelAllowed(runtime.model)) return runtime;
-    if (runtime.model) return undefined;
-    // The grant service owns the deployment default (first configured allowlisted model).
-    const fallback = grants.defaultModel;
-    if (!grants.isModelAllowed(fallback)) return undefined;
-    return { ...runtime, model: fallback };
+    if (runtime.model) return (await grants.isModelAllowed(runtime.model)) ? runtime : undefined;
+    const fallback = await grants.defaultModel();
+    return fallback ? { ...runtime, model: fallback } : undefined;
   }
 
   /** True when the deployment has a usable model path; allocation must not run without it. */
   isModelPathConfigured(): boolean {
     return Boolean(this.#modelGrants && this.#modelBaseUrl);
-  }
-
-  /** True when this exact model is admitted by the deployment allowlist. */
-  isModelAllowed(model: string | undefined): boolean {
-    return Boolean(model && this.#modelGrants?.isModelAllowed(model));
   }
 
   /**
@@ -256,8 +250,9 @@ export class CloudDeliveryOwner {
     if (!this.#modelGrants || !this.#modelBaseUrl) {
       throw new CloudDeliveryDispatchError("model_unavailable", "The deployment model path is not configured");
     }
-    if (!this.#modelGrants.isModelAllowed(request.runtime.model ?? "")) {
-      throw new CloudDeliveryDispatchError("model_unavailable", "The Session model is not allowlisted");
+    // The catalog read happens before any custody write, so no lock is held across the network.
+    if (!(await this.#modelGrants.isModelAllowed(request.runtime.model ?? ""))) {
+      throw new CloudDeliveryDispatchError("model_unavailable", "The Session model is not offered by the Router");
     }
     const connection = requireDispatchableConnection(this.#fence.connectionForSandbox(row.id), snapshot.scope);
     const socket = this.#socketFor(connection);

@@ -498,7 +498,7 @@ describe("McpPage row actions", () => {
     vi.spyOn(browserApi, "probeMcpServer").mockRejectedValue(new ApiError(502, "The MCP Server did not answer"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Discover tools again" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh tools" }));
 
     expect(await screen.findByText("The MCP Server did not answer")).toBeTruthy();
   });
@@ -508,7 +508,7 @@ describe("McpPage row actions", () => {
     vi.spyOn(browserApi, "probeMcpServer").mockRejectedValue(new Error("offline"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Discover tools again" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh tools" }));
 
     expect(
       await screen.findByText("Couldn’t discover the tools. Check the URL and credential, then try again."),
@@ -527,7 +527,7 @@ describe("McpPage row actions", () => {
     });
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Discover tools again" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh tools" }));
 
     await waitFor(() => expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
   });
@@ -674,7 +674,7 @@ describe("McpPage row actions", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Tools discovered with this Agent’s credential" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
 
     expect(await screen.findByText("modern · 2026-07-28")).toBeTruthy();
     expect(screen.getByText("create_issue")).toBeTruthy();
@@ -700,7 +700,7 @@ describe("McpPage row actions", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Tools discovered with this Agent’s credential" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
 
     expect(await screen.findByText("- · -")).toBeTruthy();
     expect(screen.getByText("This Server reported no tools for this Agent’s credential.")).toBeTruthy();
@@ -725,7 +725,7 @@ describe("McpPage row actions", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Tools discovered with this Agent’s credential" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
 
     await waitFor(() =>
       expect(
@@ -738,7 +738,7 @@ describe("McpPage row actions", () => {
     stub([entry({ snapshot: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Tools discovered with this Agent’s credential" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
 
     expect(await screen.findByText("- · -")).toBeTruthy();
     expect(screen.getByText("This Server reported no tools for this Agent’s credential.")).toBeTruthy();
@@ -1486,7 +1486,7 @@ describe("McpPage OAuth callback", () => {
     vi.spyOn(browserApi, "probeMcpServer").mockRejectedValue(new ApiError(502, "Probe exploded"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Discover tools again" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh tools" }));
     expect(await screen.findByText("Probe exploded")).toBeTruthy();
 
     // A successful action clears the stale error before it starts.
@@ -1498,7 +1498,7 @@ describe("McpPage OAuth callback", () => {
       protocolEra: null,
       protocolVersion: null,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Discover tools again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh tools" }));
 
     await waitFor(() => expect(screen.queryByText("Probe exploded")).toBeNull());
   });

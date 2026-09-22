@@ -25,6 +25,7 @@ import { AgentService } from "../services/agents/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { CloudDeliveryDispatchError, CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
+import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
@@ -282,7 +283,7 @@ function makeOwner(
   const fence = new CloudRuntimeFence();
   const custody = new PostgresRuntimeCustodyStore(unit.database);
   const grants = new CloudModelGrantService("unit-test-jwt-secret-at-least-32-characters", {
-    allowedModels: [MODEL],
+    catalog: createStaticCloudModelCatalog([MODEL]),
     maxStreamsPerToken: 2,
     ttlSeconds: 600,
   });
@@ -778,7 +779,7 @@ describe("CloudDeliveryOwner", () => {
       return accept(...args);
     }) as typeof custody.acceptDelivery;
     const grants = new CloudModelGrantService("unit-test-jwt-secret-at-least-32-characters", {
-      allowedModels: [MODEL],
+      catalog: createStaticCloudModelCatalog([MODEL]),
       maxStreamsPerToken: 2,
       ttlSeconds: 600,
     });
@@ -1469,7 +1470,7 @@ describe("CloudDeliveryOwner", () => {
     const fence = new CloudRuntimeFence();
     const custody = new PostgresRuntimeCustodyStore(unit.database);
     const grants = new CloudModelGrantService("unit-test-jwt-secret-at-least-32-characters", {
-      allowedModels: [MODEL],
+      catalog: createStaticCloudModelCatalog([MODEL]),
       maxStreamsPerToken: 2,
       ttlSeconds: 600,
     });

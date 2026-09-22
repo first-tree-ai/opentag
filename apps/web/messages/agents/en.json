@@ -58,7 +58,7 @@
   "agents_list_usage_task_single": "{count} task",
   "agents_list_usage_token_plural": "{count} tokens",
   "agents_list_usage_token_single": "{count} token",
-  "agents_list_usage_window": "Last {days} days",
+  "agents_list_usage_window": "Last {days} days · IM tasks",
   "agents_messaging_not_connected_summary": "Messaging is not connected",
   "agents_messaging_setup_in_progress": "Messaging setup in progress",
   "agents_new_agent": "New Agent",

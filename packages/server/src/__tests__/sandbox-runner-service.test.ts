@@ -109,6 +109,7 @@ function makeService(
     deleteVerifyTimeoutMs?: number;
     expectedRunnerVersion?: string;
     tokens?: RunnerBootstrapTokenService;
+    capacity?: { accountLimit: number; platformLimit: number };
   } = {},
 ) {
   const tokens =
@@ -126,6 +127,7 @@ function makeService(
     createConvergeTimeoutMs: options.createConvergeTimeoutMs ?? 30_000,
     sleep: () => Promise.resolve(),
     deleteVerifyTimeoutMs: options.deleteVerifyTimeoutMs ?? 10_000,
+    ...(options.capacity ? { capacity: options.capacity } : {}),
   });
   return { service, tokens, hub };
 }
@@ -594,6 +596,183 @@ describe("SandboxRunnerService start", () => {
     expect(cleared.currentResourceUid).toBeNull();
     expect(fake.liveInstanceCount()).toBe(0);
     expect(fake.createCalls).toHaveLength(1);
+  });
+});
+
+describe("SandboxRunnerService capacity admission (E9)", () => {
+  it("exposes 3/20 defaults, honors configured ceilings, and rejects misconfiguration", async () => {
+    const fake = new RunnerFakeCloudRunAdmin();
+    expect(makeService(fake).service.capacityLimits).toEqual({ accountLimit: 3, platformLimit: 20 });
+    expect(makeService(fake, { capacity: { accountLimit: 2, platformLimit: 9 } }).service.capacityLimits).toEqual({
+      accountLimit: 2,
+      platformLimit: 9,
+    });
+    for (const capacity of [
+      { accountLimit: 0, platformLimit: 20 },
+      { accountLimit: 3, platformLimit: -1 },
+      { accountLimit: 1.5, platformLimit: 20 },
+    ]) {
+      expect(() => makeService(fake, { capacity })).toThrow(/capacity/);
+    }
+  });
+
+  it("rejects a new reservation at the Account ceiling without any cloud call or row mutation", async () => {
+    const owner = await account();
+    const first = await ownedSandbox(owner);
+    const second = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake, { capacity: { accountLimit: 1, platformLimit: 20 } });
+    await service.startForAccount(owner, first.sandbox.sandboxId);
+    expect(fake.createCalls).toHaveLength(1);
+
+    await expect(service.startForAccount(owner, second.sandbox.sandboxId)).rejects.toMatchObject({
+      code: "CLOUD_CAPACITY_EXCEEDED",
+      category: "transient",
+      statusCode: 429,
+      scope: "account",
+    });
+    // The rejected reservation rolled back completely: no generation, no name, no create.
+    expect(await sandboxRow(second.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "unallocated",
+      environmentGeneration: 0,
+      currentResourceName: null,
+      currentResourceUid: null,
+      lastErrorCode: null,
+    });
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.liveInstanceCount()).toBe(1);
+  });
+
+  it("rejects at the platform ceiling across Accounts with the platform scope", async () => {
+    const left = await account();
+    const right = await account();
+    const first = await ownedSandbox(left);
+    const second = await ownedSandbox(right);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake, { capacity: { accountLimit: 5, platformLimit: 1 } });
+    await service.startForAccount(left, first.sandbox.sandboxId);
+
+    await expect(service.startForAccount(right, second.sandbox.sandboxId)).rejects.toMatchObject({
+      code: "CLOUD_CAPACITY_EXCEEDED",
+      statusCode: 429,
+      scope: "platform",
+    });
+    expect(fake.createCalls).toHaveLength(1);
+    expect(await sandboxRow(second.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "unallocated",
+      environmentGeneration: 0,
+    });
+  });
+
+  it("counts an unknown create outcome until verified absence", async () => {
+    const owner = await account();
+    const first = await ownedSandbox(owner);
+    const second = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    fake.createUnknownWithoutResourceOnce = true;
+    const { service } = makeService(fake, { capacity: { accountLimit: 1, platformLimit: 20 } });
+    // The create outcome is unknown (no resource, no LRO): the row keeps its slot conservatively.
+    await service.startForAccount(owner, first.sandbox.sandboxId);
+    expect(await sandboxRow(first.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "preparing",
+      lastErrorCode: "cloud_create_uncertain",
+    });
+
+    await expect(service.startForAccount(owner, second.sandbox.sandboxId)).rejects.toMatchObject({
+      code: "CLOUD_CAPACITY_EXCEEDED",
+      scope: "account",
+    });
+    // The uncertain row was never released early, and the rejected starter never reached the cloud.
+    expect(fake.createCalls).toHaveLength(1);
+    await expect(service.startForAccount(owner, second.sandbox.sandboxId)).rejects.toMatchObject({
+      code: "CLOUD_CAPACITY_EXCEEDED",
+    });
+  });
+
+  it("counts a delete-unconfirmed releasing row, and a finished release frees the slot at the ceiling", async () => {
+    const owner = await account();
+    const first = await ownedSandbox(owner);
+    const second = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake, { capacity: { accountLimit: 1, platformLimit: 20 } });
+    await service.startForAccount(owner, first.sandbox.sandboxId);
+
+    // The delete fails: the row stays releasing with the binding and keeps occupying its slot.
+    fake.deleteFailures = 1;
+    await expect(service.stopForAccount(owner, first.sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(await sandboxRow(first.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "releasing",
+      lastErrorCode: "cloud_delete_incomplete",
+    });
+    await expect(service.startForAccount(owner, second.sandbox.sandboxId)).rejects.toMatchObject({
+      code: "CLOUD_CAPACITY_EXCEEDED",
+      scope: "account",
+    });
+
+    // Release is never blocked by the ceiling: the retried stop verifies removal and frees the slot.
+    await service.stopForAccount(owner, first.sandbox.sandboxId);
+    expect(await sandboxRow(first.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "unallocated",
+      currentResourceName: null,
+    });
+    await service.startForAccount(owner, second.sandbox.sandboxId);
+    expect(fake.createCalls).toHaveLength(2);
+    expect(fake.liveInstanceCount()).toBe(1);
+  });
+
+  it("counts suspended-Agent and idle-claimed environments until their cleanup is verified", async () => {
+    const owner = await account();
+    const first = await ownedSandbox(owner);
+    const second = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake, { capacity: { accountLimit: 1, platformLimit: 20 } });
+    await service.startForAccount(owner, first.sandbox.sandboxId);
+    // A ready environment quiesced by an automatic idle claim still owns its physical binding.
+    const allocated = await sandboxRow(first.sandbox.sandboxId);
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "ready", idleReclaimAt: new Date() })
+      .where(eq(sandboxes.id, first.sandbox.sandboxId));
+    // A suspended Agent's un-cleaned resource still occupies. The second Agent stays active, so
+    // only the ceiling can explain the rejection.
+    await unit.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, first.agent.id));
+
+    await expect(service.startForAccount(owner, second.sandbox.sandboxId)).rejects.toMatchObject({
+      code: "CLOUD_CAPACITY_EXCEEDED",
+      scope: "account",
+    });
+    expect(allocated.currentResourceName).not.toBeNull();
+    expect(fake.createCalls).toHaveLength(1);
+  });
+
+  it("never charges an existing allocation twice: reconcile and retry pass at the ceiling", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    fake.failNextCreateWith = new CloudRunAdminError("invalid", "create rejected", {
+      status: 400,
+      createRejected: true,
+    });
+    const { service } = makeService(fake, { capacity: { accountLimit: 1, platformLimit: 20 } });
+    // The first submission is definitively rejected: the generation is already charged (preparing).
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(await sandboxRow(sandbox.sandboxId)).toMatchObject({
+      lifecycle: "preparing",
+      environmentGeneration: 1,
+      lastErrorCode: "cloud_create_rejected",
+    });
+
+    // A retry of the SAME charged generation is admission-exempt and converges normally.
+    const retried = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(retried.lifecycle).toBe("preparing");
+    expect(retried.environmentGeneration).toBe(1);
+    expect(fake.createCalls).toHaveLength(2);
+
+    // A repeated start of the tracked allocation reconciles/reports without touching admission.
+    const again = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(again.environmentGeneration).toBe(1);
+    expect(fake.createCalls).toHaveLength(2);
+    expect(fake.liveInstanceCount()).toBe(1);
   });
 });
 

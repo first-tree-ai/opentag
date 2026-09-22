@@ -7,17 +7,23 @@ import {
 import { RunnerWorkspaceObjectSchema } from "../runner-workspace.js";
 
 describe("workspace persistence wire boundary", () => {
-  it("requires an explicit current allocation generation to discard unsaved workspace files", () => {
-    expect(AccountSandboxRunnerStopRequestSchema.parse({})).toEqual({});
+  it("requires an explicit current allocation generation to save or discard workspace files", () => {
+    expect(AccountSandboxRunnerStopRequestSchema.parse({ environmentGeneration: 4 })).toEqual({
+      environmentGeneration: 4,
+    });
+    expect(AccountSandboxRunnerStopRequestSchema.parse({ environmentGeneration: 0 })).toEqual({
+      environmentGeneration: 0,
+    });
     const discard = { discardUnsavedChanges: true, environmentGeneration: 4 };
     expect(AccountSandboxRunnerStopRequestSchema.parse(discard)).toEqual(discard);
     for (const invalid of [
+      {},
+      { environmentGeneration: -1 },
       { discardUnsavedChanges: true },
       { ...discard, environmentGeneration: 0 },
       { ...discard, environmentGeneration: Number.MAX_SAFE_INTEGER + 1 },
       { ...discard, environmentGeneration: "4" },
       { ...discard, force: true },
-      { environmentGeneration: 4 },
     ]) {
       expect(AccountSandboxRunnerStopRequestSchema.safeParse(invalid).success).toBe(false);
     }

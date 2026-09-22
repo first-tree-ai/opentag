@@ -15,7 +15,7 @@
   "usage_coverage_none_title": "Token 数据不可用",
   "usage_coverage_partial_description": "{tasks} 个任务中有 {measuredTasks} 个提供了 Token 数据。总量与图表仅反映已上报的数据。",
   "usage_coverage_partial_title": "数据不完整",
-  "usage_description": "查看此 Agent 的任务量和模型 Token 用量。",
+  "usage_description": "任务和 Token 统计仅包含 IM 任务，不包含内部 Session 的 Token 用量。",
   "usage_error_fallback": "用量数据暂时不可用。",
   "usage_error_title": "用量数据不可用",
   "usage_loading": "正在加载 Agent 用量",

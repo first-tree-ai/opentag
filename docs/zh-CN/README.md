@@ -24,6 +24,8 @@
 
 ## 运维与发布
 
+- [Cloud Computer 产品与资源控制](./cloud-computer-product.md)
+
 - [staging 部署指南](./deploying.md)
 - [staging 引导流程重置](./staging-onboarding-reset.md)
 - [Server 可观测性](./observability.md)

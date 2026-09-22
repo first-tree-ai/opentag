@@ -15,6 +15,7 @@ const areas = [
   "auth",
   "account",
   "agents",
+  "cloud",
   "agent-settings",
   "agent-create",
   "tasks",
@@ -28,6 +29,7 @@ const areas = [
 const localeCodes = ["en", "zh"] as const;
 const allowedUntranslatedValues = new Set([
   "OpenTag",
+  "Cloud",
   "Codex",
   "Claude Code",
   "Pi",

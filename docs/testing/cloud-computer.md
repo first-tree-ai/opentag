@@ -133,7 +133,7 @@ tree is discovery evidence, not acceptance of a later commit.
 
 ## What is verified
 
-1. Clean database boot applies 43 migrations. A separate E1 baseline from commit
+1. Clean database boot applies every migration in the current source journal and verifies its hash. A separate E1 baseline from commit
    `440dfed53c3bb22a8527cd731f82e9b9006bd9b5` through idx 41 upgrades into the current Server; a seeded
    Local Computer, machine credential, Pi Agent, and runtime config are preserved, including migration
    hash prefix.
@@ -176,9 +176,12 @@ E2 does not allocate compute, write storage objects, run a Runner, call a model,
 Those belong to E3 (Runner), E4 (real IM), and E9 (default product UI). No customer-facing UI is added
 here. The disposable Postgres helper still names containers with the E1 prefix; summaries label E2.
 
-The existing Agent setup and preparation-refresh endpoints are Local-only during E2 and return 404
-for a Cloud-bound Agent. Cloud identity and Sandbox reads remain available; Cloud must not appear
-offline or offer a Local repair action while its product setup flow is deferred to E9.
+E9 extends this harness to require Cloud setup and preparation-refresh responses from the Server,
+without allocating a Sandbox or claiming a Local CLI observation. The fixture injects complete but
+inert Runner coordinates and leaves the model path off, so deployment availability must report
+`model_unavailable` while the Computer remains logically online.
+The empty Agent Cloud overview is readable only by its Account. These are production HTTP/database
+checks; they do not establish real provider authorization or Cloud execution.
 Sandbox creation locks the active IM binding until commit so a concurrent provider-driven disable
 can terminate the newly committed Session instead of leaving it active behind a disabled binding.
 

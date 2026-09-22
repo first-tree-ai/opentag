@@ -38,6 +38,7 @@ import { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
+import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
 import { SandboxService } from "../services/sandboxes/index.js";
@@ -922,11 +923,20 @@ describe("account runner HTTP endpoints", () => {
     expect(body.runnerConnected).toBe(false);
     expect(body.runnerReady).toBe(false);
 
-    const stop = await app.inject({
+    const unfenced = await app.inject({
       method: "POST",
       url: accountSandboxRunnerStopPath(sandbox.sandboxId),
       headers: { ...authorization, "content-type": "application/json" },
       payload: {},
+    });
+    expect(unfenced.statusCode).toBe(400);
+    expect(fake.liveInstanceCount()).toBe(1);
+
+    const stop = await app.inject({
+      method: "POST",
+      url: accountSandboxRunnerStopPath(sandbox.sandboxId),
+      headers: { ...authorization, "content-type": "application/json" },
+      payload: { environmentGeneration: body.environmentGeneration },
     });
     expect(stop.statusCode).toBe(200);
     expect(stop.json().lifecycle).toBe("unallocated");
@@ -941,6 +951,14 @@ describe("account runner HTTP endpoints", () => {
     expect(restart.statusCode).toBe(200);
     expect(restart.json().environmentGeneration).toBe(2);
     expect(fake.liveInstanceCount()).toBe(1);
+    const staleStop = await app.inject({
+      method: "POST",
+      url: accountSandboxRunnerStopPath(sandbox.sandboxId),
+      headers: { ...authorization, "content-type": "application/json" },
+      payload: { environmentGeneration: body.environmentGeneration },
+    });
+    expect(staleStop.statusCode).toBe(409);
+    expect(fake.liveInstanceCount()).toBe(1);
   });
 
   it("answers 404 for a foreign sandbox id", async () => {
@@ -953,7 +971,14 @@ describe("account runner HTTP endpoints", () => {
       ["POST", accountSandboxRunnerStopPath(foreign)],
       ["POST", accountSandboxRunnerAcceptancePath(foreign)],
     ] as const) {
-      const payload = method !== "POST" ? undefined : url.endsWith("/acceptance") ? { mode: "offline" } : {};
+      const payload =
+        method !== "POST"
+          ? undefined
+          : url.endsWith("/acceptance")
+            ? { mode: "offline" }
+            : url.endsWith("/stop")
+              ? { environmentGeneration: 1 }
+              : {};
       const response = await app.inject({
         method,
         url,
@@ -1101,7 +1126,7 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     const context = makeRunnerContext();
     const fence = new CloudRuntimeFence();
     const grants = new CloudModelGrantService(JWT_SECRET, {
-      allowedModels: [E4_MODEL],
+      catalog: createStaticCloudModelCatalog([E4_MODEL]),
       maxStreamsPerToken: 2,
       ttlSeconds: 600,
     });

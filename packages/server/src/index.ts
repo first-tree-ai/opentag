@@ -10,6 +10,7 @@ import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import { cloudAvailability } from "./cloud-product-config.js";
 import {
   cloudAppOptions,
   collectKnownSecrets,
@@ -49,6 +50,7 @@ import {
   AgentService,
   type AgentSessionStopTarget,
   AgentSetupService,
+  CloudAgentRuntimeTester,
 } from "./services/agents/index.js";
 import {
   AuthService,
@@ -96,6 +98,7 @@ import {
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
+import { RouterCloudModelCatalog } from "./services/sandboxes/cloud-model-catalog.js";
 import { CloudRuntimeFence } from "./services/sandboxes/cloud-runtime-fence.js";
 import {
   type CloudSessionCollaborationOwner,
@@ -205,7 +208,22 @@ function cloudPlatformRuntimeOptions(
   return { cloudRuntimeFence: fence, cloudRevocationSender: sender };
 }
 
-/** The optional fence input for the delivery composition. */
+/** One model catalog shared by settings, dispatch and diagnostics. */
+function createCloudModelRuntime(config: ServerConfig, runner: SandboxRunnerRuntime | undefined) {
+  const model = config.cloudModel;
+  if (!runner || !model.enabled) return undefined;
+  const catalog = new RouterCloudModelCatalog({ upstreamBaseUrl: model.upstreamBaseUrl, masterKey: model.masterKey });
+  return { catalog, tester: new CloudAgentRuntimeTester({ catalog, config: model }) };
+}
+
+function optionalCloudModelCatalog(runtime: ReturnType<typeof createCloudModelRuntime>) {
+  return runtime ? { cloudModelCatalog: runtime.catalog } : {};
+}
+
+function optionalCloudModelTester(runtime: ReturnType<typeof createCloudModelRuntime>) {
+  return runtime ? { cloud: runtime.tester } : {};
+}
+
 function optionalCloudFence(fence: CloudRuntimeFence | undefined): { cloudRuntimeFence?: CloudRuntimeFence } {
   return fence ? { cloudRuntimeFence: fence } : {};
 }
@@ -524,6 +542,15 @@ export async function startServer(): Promise<void> {
      * It is a standalone live-connection map; the Local registry above is never shared with it.
      */
     const cloudRuntimeFence = cloudRuntimeFenceFor(cloudRunnerRuntime);
+    /*
+     * The one Server-owned Router model catalog and the bounded hosted-model connectivity tester.
+     * Both exist exactly when the Cloud model path is enabled, and every consumer — Agent and
+     * Session model validation, dispatch and model-grant admission, the account model list route,
+     * and the runtime test — shares the same catalog instance (one lazy cache, one in-flight
+     * Router read per process). The catalog performs no I/O at construction.
+     */
+    const cloudModelRuntime = createCloudModelRuntime(config, cloudRunnerRuntime);
+    const modelCatalogOptions = optionalCloudModelCatalog(cloudModelRuntime);
     // Exact Cloud revocation sender: the credential owner's sweep/close notifications reach the
     // owning Runner connection through the controller created below. Declared here because the
     // platform runtime is composed before the delivery owner.
@@ -556,11 +583,16 @@ export async function startServer(): Promise<void> {
     });
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
-        .select({ computerId: computers.id, runtimeProvider: agents.runtimeProvider })
+        .select({ computerId: computers.id, computerKind: computers.kind, runtimeProvider: agents.runtimeProvider })
         .from(agents)
         .innerJoin(computers, eq(computers.id, agents.computerId))
         .where(eq(agents.id, agentId))
         .limit(1);
+      // A Cloud Agent's runtime is the managed service: readiness is the deployment's Cloud
+      // configuration, never a Local registry observation — a Cloud Computer has no daemon to ask.
+      if (agent?.computerKind === "cloud") {
+        return cloudAvailability(config).available ? "ready" : "unavailable";
+      }
       const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
       if (!agent || !currentInstanceId) return "unavailable";
       return (
@@ -628,6 +660,7 @@ export async function startServer(): Promise<void> {
     const sessionService = new SessionService(database, {
       logger: serviceLogger("session"),
       ...sessionAuthority.session,
+      ...modelCatalogOptions,
     });
     const sandboxService = new SandboxService(database, sessionService, { cloudIdentities });
     const taskService = new TaskService(database);
@@ -658,6 +691,7 @@ export async function startServer(): Promise<void> {
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const agentService = new AgentService(database, {
       cloudIdentitiesEnabled: cloudIdentities.enabled,
+      ...modelCatalogOptions,
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
       onProviderCliPlacementChanged: (input) => providerCliReconcileOwner?.onAgentPlacementChanged(input),
       stopSessions: (targets) =>
@@ -680,7 +714,18 @@ export async function startServer(): Promise<void> {
       agentService,
       contextTreeOperationOwner,
     );
-    const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner);
+    const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner, {
+      // The branch key is the server-derived bound Computer kind; ownership was already enforced.
+      computerKind: async (computerId) => {
+        const [row] = await database
+          .select({ kind: computers.kind })
+          .from(computers)
+          .where(eq(computers.id, computerId))
+          .limit(1);
+        return row?.kind;
+      },
+      ...optionalCloudModelTester(cloudModelRuntime),
+    });
     const feishuConnections = new FeishuConnectionManager({
       database,
       inbox: imMessageInbox,
@@ -697,7 +742,7 @@ export async function startServer(): Promise<void> {
       cipher: applicationCipher,
       instanceId,
       imBindings: imBindingService,
-      registrations: new DefaultFeishuRegistrationGateway(undefined, feishuRegistrationPolicy),
+      registrations: new DefaultFeishuRegistrationGateway(undefined, feishuRegistrationPolicy, config.publicUrl),
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
@@ -710,9 +755,11 @@ export async function startServer(): Promise<void> {
       },
       providerReadiness: registry,
       slackOAuthAvailable: config.slackOAuth !== undefined,
+      cloudAvailability: (now) => cloudAvailability(config, now),
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
+      onDiagnostic: reportDiagnostic,
       api: slackApi,
       database,
       imBindings: imBindingService,
@@ -745,6 +792,7 @@ export async function startServer(): Promise<void> {
       database,
       custody,
       hub: cloudRunnerRuntime?.runnerChannel.hub,
+      ...modelCatalogOptions,
       ...optionalCloudFence(cloudRuntimeFence),
       credentialOwner: platformRuntime.credentials.owner,
       sessionProofs: sessionCliProofService,
@@ -876,6 +924,7 @@ export async function startServer(): Promise<void> {
       },
       computerService,
       sandboxService,
+      cloudAvailability: () => cloudAvailability(config),
       ...cloudAppOptions({
         runnerRuntime: cloudRunnerRuntime,
         composition: cloudDelivery,
@@ -974,6 +1023,9 @@ export async function startServer(): Promise<void> {
     };
     process.once("SIGINT", closeForSignal);
     process.once("SIGTERM", closeForSignal);
+    app.addHook("preClose", async () => {
+      cloudModelRuntime?.tester.close();
+    });
     app.addHook("onClose", async () => {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);

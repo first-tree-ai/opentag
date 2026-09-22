@@ -26,6 +26,20 @@ function slackEnvelope(event: Record<string, unknown>, eventId = "Ev-file-share"
 }
 
 describe("Slack installed-binding adapter", () => {
+  it("reads the installed bot profile using users.info and checks identity", async () => {
+    const info = vi.fn().mockResolvedValue({
+      ok: true,
+      user: { id: "U_BOT", profile: { display_name: "Cat", image_512: "https://example.com/cat.png" } },
+    });
+    const api = new DefaultSlackApiClient(() => ({ users: { info } }) as never);
+    await expect(api.botProfile("token", "U_BOT")).resolves.toEqual({
+      displayName: "Cat",
+      avatarUrl: "https://example.com/cat.png",
+    });
+    expect(info).toHaveBeenCalledWith({ user: "U_BOT" });
+    await expect(api.botProfile("token", "U_OTHER")).rejects.toThrow("SLACK_BOT_PROFILE_UNAVAILABLE");
+  });
+
   it("derives installation identity and granted scopes from Slack instead of browser input", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(

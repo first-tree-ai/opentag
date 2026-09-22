@@ -118,7 +118,7 @@ node scripts/e2e/cloud-computer.mjs cloud-identities
 
 ## 验证内容
 
-1. 空库启动应用 43 条迁移。另一路从合入 E1 的基线提交
+1. 空库启动应用当前源码 journal 中的全部迁移，并逐一核对 hash。另一路从合入 E1 的基线提交
    `440dfed53c3bb22a8527cd731f82e9b9006bd9b5` 应用到 idx 41，再由当前 Server 升级；预先写入的
    Local Computer、机器凭证、Pi Agent 与 runtime 配置以及迁移 hash 前缀均保留。
 2. 通过重启 `OPENTAG_DEV_AUTH_EMAIL` 完成两次真实开发登录，认证密钥保持不变。`/api/v1/me`
@@ -153,8 +153,10 @@ E2 不分配计算、不写存储对象、不运行 Runner、不调用模型、�
 E4（真实 IM）和 E9（默认产品 UI）。此处不增加面向客户的 UI。一次性 Postgres helper 的容器名仍使用
 E1 前缀；摘要中的标签为 E2。
 
-E2 期间既有 Agent setup 和 preparation-refresh 接口只用于 Local；Cloud Agent 调用时返回 404。
-Cloud 身份和 Sandbox 查询仍然可用；完整 setup 流程留在 E9，不能把 Cloud 展示为离线或提供 Local repair 操作。
+E9 扩展此脚本，要求 Cloud setup 与 preparation-refresh 由 Server 返回，不分配 Sandbox、不伪造 Local CLI 观测。
+测试环境注入完整但不触达 GCP 的 Runner 参数且不启用模型路径，可用性须报告 `model_unavailable`，
+Computer 仍逻辑在线。Agent 空概览仅归属账号可读。
+这些验证真实 HTTP／数据库路径，不代表真实 Provider 授权或云端执行验收。
 Sandbox 创建事务会锁住活跃 IM binding 直至提交，确保并发的 Provider 停用能结束刚提交的 Session，
 不会留下 binding 已停用但 Session 仍活跃的记录。
 

@@ -2,6 +2,7 @@ import type { MCPAgentServer, MCPAuthKind, MCPAvailableServer, MCPToolSnapshot }
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
+import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import {
@@ -82,13 +83,13 @@ export function McpPage({ agentId }: { agentId: string }) {
   const servers = mounted.data?.servers ?? [];
 
   return (
-    <section className="grid gap-4" data-ui="mcp-page">
-      <header className="grid gap-1">
-        <Text as="h1" variant="heading">
-          {m.mcp_heading()}
-        </Text>
-        <Text variant="secondary">{m.mcp_intro()}</Text>
-      </header>
+    <section className="grid gap-6" aria-labelledby="mcp-page-title" data-ui="mcp-page">
+      <PageHeader description={m.mcp_intro()} title={m.mcp_heading()} titleId="mcp-page-title">
+        <Button onClick={() => setPanel({ kind: "create" })} variant="secondary">
+          <Icon name="plus" />
+          {m.mcp_create_action()}
+        </Button>
+      </PageHeader>
 
       {outcome ? (
         <Banner variant={outcome.outcome.kind === "success" ? "default" : "error"}>
@@ -99,13 +100,6 @@ export function McpPage({ agentId }: { agentId: string }) {
       ) : null}
       {actionError ? <Banner variant="error">{actionError}</Banner> : null}
       {mounted.isError ? <Banner variant="error">{describeLoadError(mounted.error)}</Banner> : null}
-
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={() => setPanel({ kind: "create" })} variant="primary">
-          <Icon name="plus" />
-          {m.mcp_create_action()}
-        </Button>
-      </div>
 
       <McpServerList
         agentId={agentId}
@@ -258,7 +252,7 @@ function McpRow({
           </Button>
         ) : null}
         <Button onClick={() => onAction({ kind: "tools", entry })} size="compact" variant="ghost">
-          {m.mcp_tools_title()}
+          {m.mcp_tools_action()}
         </Button>
         <Button onClick={reprobe} size="compact" variant="ghost">
           {m.mcp_probe_action()}

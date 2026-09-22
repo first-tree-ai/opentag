@@ -981,11 +981,20 @@ describe("workspace release and restore", () => {
       await putArchive(stack, started.token, claimed, progress, false)
     ).json()) as RunnerWorkspaceObject;
 
+    const staleStop = await fetch(`${stack.address}${accountSandboxRunnerStopPath(started.sandbox.sandboxId)}`, {
+      method: "POST",
+      headers: { authorization: "Bearer access", "content-type": "application/json" },
+      body: JSON.stringify({ environmentGeneration: started.claims.environmentGeneration + 1 }),
+    });
+    expect(staleStop.status).toBe(409);
+    expect((await sandboxRow(started.sandbox.sandboxId)).lifecycle).toBe("ready");
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+
     // Stop: the Runner channel stays alive, a seal is requested, and deletion waits for proof.
     const stopPromise = fetch(`${stack.address}${accountSandboxRunnerStopPath(started.sandbox.sandboxId)}`, {
       method: "POST",
       headers: { authorization: "Bearer access", "content-type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ environmentGeneration: started.claims.environmentGeneration }),
     });
     const sealFrame = await runner.waitFor("workspace:seal");
     // The environment is releasing before the save completes: new starts conflict.

@@ -5,6 +5,19 @@ export const AGENT_SETUP_REFRESH_TEMPLATE = `${AGENT_SETUP_TEMPLATE}/refresh`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
+export const AGENT_CLOUD_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/cloud`;
+
+export function agentCloudPath(
+  agentId: string,
+  options: { cursor?: string; limit?: number; sessionId?: string } = {},
+): string {
+  const query = new URLSearchParams();
+  if (options.cursor !== undefined) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.sessionId !== undefined) query.set("sessionId", options.sessionId);
+  const suffix = query.toString();
+  return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}/cloud${suffix ? `?${suffix}` : ""}`;
+}
 export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
 export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
 export const AGENT_COMPUTER_REBIND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/computer/rebind`;
@@ -45,6 +58,8 @@ export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE = `${ACCOUNT_AGENTS_PATH}/creation-intents/:creationIntentId`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_CLOUD_COMPUTER_PATH = `${ACCOUNT_COMPUTERS_PATH}/cloud`;
+/** The Router-sourced Cloud model choices; read-only and authenticated like the sibling Cloud routes. */
+export const ACCOUNT_CLOUD_MODELS_PATH = `${ACCOUNT_CLOUD_COMPUTER_PATH}/models`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
 export const ACCOUNT_SANDBOXES_PATH = `${API_V1_PREFIX}/sandboxes`;
 export const ACCOUNT_SANDBOX_TEMPLATE = `${ACCOUNT_SANDBOXES_PATH}/:sandboxId`;
@@ -96,6 +111,7 @@ export const RUNTIME_SKILL_BUNDLE_TEMPLATE = `${RUNTIME_SKILLS_PATH}/:name/bundl
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
   accountCloudComputer: ACCOUNT_CLOUD_COMPUTER_PATH,
+  accountCloudModels: ACCOUNT_CLOUD_MODELS_PATH,
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
   accountSandboxes: ACCOUNT_SANDBOXES_PATH,

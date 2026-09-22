@@ -15,6 +15,7 @@ import {
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
 import { emitRootSpan, imAttrs, outcomeAttrs } from "../../../observability/index.js";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
+import { type BotProfile, httpsAvatar } from "../bot-profile.js";
 import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
   ImProviderAdapter,
@@ -592,6 +593,7 @@ function createFeishuHttpInstance(signal?: AbortSignal): HttpInstance {
 }
 
 export interface FeishuBotProbe {
+  profile?: BotProfile;
   openId: string;
   /** Provider-reported bot activation status; `null` when the platform omits it. */
   activateStatus: number | null;
@@ -687,7 +689,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   async probeBotIdentity(): Promise<FeishuBotProbe> {
     const response = await this.#client.request<{
       code?: number;
-      bot?: { open_id?: string; activate_status?: number };
+      bot?: { open_id?: string; activate_status?: number; app_name?: string; avatar_url?: string };
     }>({ url: "/open-apis/bot/v3/info", method: "GET" });
     if (response.code !== undefined && response.code !== 0) {
       throw Object.assign(new Error("FEISHU_BOT_INFO_FAILED"), { code: response.code });
@@ -696,7 +698,14 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     if (!openId) {
       throw Object.assign(new Error("FEISHU_BOT_IDENTITY_MISSING"), { code: "FEISHU_BOT_IDENTITY_MISSING" });
     }
-    return { openId, activateStatus: response.bot?.activate_status ?? null };
+    return {
+      openId,
+      activateStatus: response.bot?.activate_status ?? null,
+      profile: {
+        displayName: response.bot?.app_name?.slice(0, 255) || null,
+        avatarUrl: httpsAvatar(response.bot?.avatar_url),
+      },
+    };
   }
 
   normalizeInbound(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {

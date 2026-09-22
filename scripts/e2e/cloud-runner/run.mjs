@@ -209,7 +209,6 @@ export async function main(argv, { createFixture = createCloudIdentitiesFixture 
           OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
           OPENTAG_CLOUD_STORAGE_BASE: values.storageBase,
           OPENTAG_CLOUD_RUNNER_VERSION: cliVersion,
-          OPENTAG_CLOUD_RUNNER_ENABLED: "true",
           OPENTAG_CLOUD_RUNNER_IMAGE: values.image,
           OPENTAG_CLOUD_RUNNER_PROJECT: values.project,
           OPENTAG_CLOUD_RUNNER_REGION: values.region,
@@ -363,7 +362,14 @@ async function cleanupAllocation({ api, allocation, shared, receipt, sleepFn }) 
         .catch(() => {
           allocation.receiptError = true;
         });
-      const stopped = await api("POST", shared.accountSandboxRunnerStopPath(allocation.sandboxId), {}, true);
+      const stopped = await api(
+        "POST",
+        shared.accountSandboxRunnerStopPath(allocation.sandboxId),
+        {
+          environmentGeneration: current.environmentGeneration,
+        },
+        true,
+      );
       if (stopped.lifecycle !== "unallocated" || stopped.currentResourceName !== null)
         throw new Error("Cloud removal is uncertain");
       allocation.cleanup = "verified-removed";

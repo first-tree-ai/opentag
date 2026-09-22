@@ -29,6 +29,7 @@ import {
   AgentSetupSnapshotSchema,
   type AgentSetupStage,
   type AgentSummary,
+  type CloudAvailability,
   type ComputerConnectCodeStatus,
   type FeishuSetupActivation,
   type FeishuSetupIntent,
@@ -89,6 +90,12 @@ export interface MemorySetupSeed {
   readonly messaging?: MemoryMessagingModel;
   /** Keeps one authoritative observation leg failed, for production-parity blocker scenarios. */
   readonly observationFailure?: "computer" | "runtime" | "messaging";
+  /**
+   * Present when the Agent is bound to the managed Cloud Computer: the deployment's Cloud
+   * availability answer. Local legs (presence, runtime reports, CLI collections) are never
+   * projected for it, and no Computer connect flow exists. Defaults to available.
+   */
+  readonly cloudService?: { readonly available?: boolean; readonly reason?: CloudAvailability["reason"] };
 }
 
 /** The outside world's moves. Each throws when there is nothing for it to move. */
@@ -113,6 +120,8 @@ export interface MemorySetupControls {
   readonly setImCliReadiness: (provider: ImProvider, status: ImCliReadinessStatus) => void;
   readonly setObservationFailure: (resource: MemorySetupSeed["observationFailure"]) => void;
   readonly setRuntimeStatus: (status: ProviderReadinessStatus) => void;
+  /** The deployment's Cloud answer changed, e.g. the model path was configured and redeployed. */
+  readonly setCloudAvailability: (available: boolean, reason?: CloudAvailability["reason"]) => void;
   /** Mirrors a successful `opentag doctor --json` observation across every readiness leg. */
   readonly runDoctor: () => void;
 }
@@ -168,6 +177,8 @@ interface MemoryState {
   runtimeStatus: ProviderReadinessStatus;
   messaging: MemoryMessagingState;
   observationFailure: MemorySetupSeed["observationFailure"];
+  /** Present exactly when the Agent is Cloud-bound: the deployment's Cloud availability answer. */
+  cloudService: { available: boolean; reason: CloudAvailability["reason"] } | undefined;
 }
 
 interface MemoryComputerConnectAttempt {
@@ -256,6 +267,20 @@ function computerLegBlockers(computer: AgentSetupComputerState): AgentSetupBlock
 
 function runtimeLegBlockers(runtime: AgentSetupRuntimeState): AgentSetupBlocker[] {
   if (runtime.kind === "observation-failed") return [{ code: "resource-observation-failed", resource: "runtime" }];
+  if (runtime.kind === "cloud-managed") {
+    const reason = runtime.availability.reason ?? "disabled";
+    return [
+      {
+        code: "cloud-service-unavailable",
+        reason:
+          reason === "execution_unavailable"
+            ? ("execution-unavailable" as const)
+            : reason === "model_unavailable"
+              ? ("model-unavailable" as const)
+              : ("disabled" as const),
+      },
+    ];
+  }
   if (runtime.kind === "waiting") {
     return [{ code: "runtime-not-ready", provider: runtime.provider, status: "waiting" }];
   }
@@ -370,6 +395,7 @@ function deriveMessagingActions(messaging: MemoryMessagingState): AgentSetupActi
 
 function deriveActions(state: MemoryState, components: AgentSetupComponent[]): AgentSetupAction[] {
   const { agent, computerOnline, observationFailure, runtimeStatus, messaging } = state;
+  if (state.cloudService !== undefined) return deriveCloudActions(state);
   if (observationFailure === "computer") return [{ kind: "refresh" }];
   if (agent.computer === null) return [{ kind: "bind-computer" }];
   if (agent.requiresComputerRebind === true) {
@@ -395,10 +421,24 @@ function deriveActions(state: MemoryState, components: AgentSetupComponent[]): A
   );
 }
 
+/**
+ * The actions a Cloud Agent may take. There is no machine to bind or repair and no CLI gate: the
+ * managed service's availability is the only preparation gate, and Messaging actions follow it.
+ */
+function deriveCloudActions(state: MemoryState): AgentSetupAction[] {
+  if (state.observationFailure === "messaging") return [{ kind: "refresh" }];
+  if (state.cloudService?.available !== true) return [{ kind: "refresh" }];
+  return deriveMessagingActions(state.messaging);
+}
+
 function deriveComputerState(state: MemoryState): AgentSetupComputerState {
   const { agent, computerOnline } = state;
   if (agent.computer === null) return { kind: "not-bound" };
   if (state.observationFailure === "computer") return { kind: "observation-failed", ...agent.computer };
+  if (state.cloudService !== undefined) {
+    // The Cloud identity is bound and managed; the observation time is the read, not a heartbeat.
+    return { kind: "cloud", ...agent.computer, observedAt: now() };
+  }
   if (agent.requiresComputerRebind === true) return { kind: "requires-rebind", ...agent.computer };
   const reports = (["feishu", "slack"] as const).flatMap((provider) => {
     const status = state.imCliReadiness[provider];
@@ -424,6 +464,19 @@ function deriveComputerState(state: MemoryState): AgentSetupComputerState {
 
 function deriveRuntimeState(state: MemoryState): AgentSetupRuntimeState {
   const provider = state.agent.runtimeProvider;
+  if (state.cloudService !== undefined) {
+    const available = state.cloudService.available;
+    return {
+      kind: "cloud-managed",
+      provider,
+      availability: {
+        enabled: state.cloudService.reason !== "disabled",
+        available,
+        reason: available ? null : state.cloudService.reason,
+        observedAt: now(),
+      },
+    };
+  }
   if (state.agent.computer === null) return { kind: "unavailable", provider, reason: "computer-not-bound" };
   if (state.observationFailure === "computer") {
     return { kind: "unavailable", provider, reason: "computer-observation-failed" };
@@ -443,6 +496,11 @@ function deriveStage(
   messaging: AgentSetupMessagingState,
   components: AgentSetupComponent[],
 ): AgentSetupStage {
+  if (computer.kind === "cloud") {
+    if (runtime.kind !== "cloud-managed" || !runtime.availability.available) return "needs-runtime";
+    if (messaging.kind === "ready") return "ready";
+    return "needs-messaging";
+  }
   if (computer.kind !== "bound" || computer.connectionStatus === "offline") return "needs-computer";
   if (runtime.kind !== "observed" || runtime.status !== "ready") return "needs-runtime";
   if (messaging.kind === "ready") return "ready";
@@ -459,7 +517,8 @@ function deriveSnapshot(state: MemoryState): AgentSetupSnapshot {
   const runtime = deriveRuntimeState(state);
   const messaging: AgentSetupMessagingState =
     state.observationFailure === "messaging" ? { kind: "observation-failed" } : deriveMessaging(state.messaging);
-  const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
+  const requiredImCliProviders =
+    computer.kind === "cloud" ? [] : ([...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS] as ImProvider[]);
   const components = projectAgentSetupComponents({
     computer,
     runtime,
@@ -516,8 +575,26 @@ function isRetryableFeishu(messaging: MemoryMessagingState): boolean {
 const MEMORY_CONNECT_TTL_SECONDS = 15 * 60;
 const MEMORY_CONNECTED_AT = "2026-09-01T10:00:00.000Z";
 
-function computerFromAgent(agent: AgentSummary, online: boolean): AccountComputerSummary | undefined {
+function computerFromAgent(
+  agent: AgentSummary,
+  online: boolean,
+  cloud: { available: boolean; reason: CloudAvailability["reason"] } | undefined,
+): AccountComputerSummary | undefined {
   if (!agent.computer || agent.requiresComputerRebind === true) return undefined;
+  if (cloud !== undefined) {
+    return {
+      computerId: agent.computer.computerId,
+      kind: "cloud",
+      displayName: agent.computer.displayName,
+      platform: agent.computer.platform,
+      connectionStatus: "online",
+      connectedAt: null,
+      lastSeenAt: null,
+      observedAt: MEMORY_CONNECTED_AT,
+      createdAt: MEMORY_CONNECTED_AT,
+      agentIds: [agent.id],
+    };
+  }
   return {
     computerId: agent.computer.computerId,
     displayName: agent.computer.displayName,
@@ -567,9 +644,16 @@ function setMemoryComputerOnline(state: MemoryState, online: boolean): void {
   };
 }
 
+function initialCloudService(seed: MemorySetupSeed): MemoryState["cloudService"] {
+  if (seed.cloudService === undefined) return undefined;
+  const available = seed.cloudService.available ?? true;
+  return { available, reason: available ? null : (seed.cloudService.reason ?? "execution_unavailable") };
+}
+
 export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdapter {
   const bound = seed.messaging?.kind === "bound" ? seed.messaging : undefined;
-  const seededComputer = computerFromAgent(seed.agent, seed.computerOnline ?? true);
+  const cloudService = initialCloudService(seed);
+  const seededComputer = computerFromAgent(seed.agent, seed.computerOnline ?? true, cloudService);
   const state: MemoryState = {
     agent: seed.agent,
     computerOnline: seed.computerOnline ?? true,
@@ -592,6 +676,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
         }
       : { kind: "not-configured" },
     observationFailure: seed.observationFailure,
+    cloudService,
   };
   const listeners = new Set<() => void>();
   let version = 0;
@@ -870,6 +955,14 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
     },
     setObservationFailure: (resource) => {
       state.observationFailure = resource;
+      changed();
+    },
+    setCloudAvailability: (available, reason) => {
+      if (!state.cloudService) throw new Error("The Agent is not Cloud-bound");
+      state.cloudService = {
+        available,
+        reason: available ? null : (reason ?? state.cloudService.reason ?? "execution_unavailable"),
+      };
       changed();
     },
     /** A fresh runtime observation arrived: the missing-report leg resolves to that observation. */

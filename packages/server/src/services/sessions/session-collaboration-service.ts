@@ -372,6 +372,10 @@ function mapFailure(error: unknown): { status: "unreachable" | "rejected"; code:
   if (code === "SESSION_TARGET_UNAVAILABLE") return { status: "rejected", code: "target_unavailable" };
   if (code === "SESSION_SCOPE_MISMATCH") return { status: "rejected", code: "scope_mismatch" };
   if (code === "SESSION_MESSAGE_CONFLICT") return { status: "rejected", code: "message_conflict" };
+  // Router model admission for a Cloud Session override: an unoffered model is a deterministic
+  // rejection; an unconfirmable model list is transient and unreachable.
+  if (code === "SESSION_MODEL_UNAVAILABLE") return { status: "rejected", code: "model_unavailable" };
+  if (code === "SESSION_MODEL_CATALOG_UNAVAILABLE") return { status: "unreachable", code: "model_unavailable" };
   return { status: "unreachable", code: "runtime_unavailable" };
 }
 

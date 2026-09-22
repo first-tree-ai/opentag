@@ -103,8 +103,8 @@ implementation.
 
 E4 delivers a normalized IM message to a Session's existing Cloud allocation over the same
 authenticated Runner control channel. It is additive to E3 protocol version 1 and disabled by
-default: the Server enables the Runner path only with `OPENTAG_CLOUD_RUNNER_ENABLED=true` plus the
-Cloud identity configuration below, and the model path only with `OPENTAG_CLOUD_MODEL_ENABLED=true`
+default: `OPENTAG_CLOUD_IDENTITIES_ENABLED=true` enables identities and the Runner together, with
+the complete configuration below. The model path additionally requires `OPENTAG_CLOUD_MODEL_ENABLED=true`
 and an explicit allowlist. E4 adds no database table or migration; it reuses the existing
 delivery, custody and durable-work records.
 
@@ -231,20 +231,67 @@ For E4, the Server additionally requires these model settings when enabling exec
 | Server variable | Meaning |
 | --- | --- |
 | `OPENTAG_CLOUD_MODEL_ENABLED` | Default `false`; `true` opts into the Cloud model proxy |
-| `OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` | Fixed HTTPS OpenAI-compatible API base URL |
-| `OPENTAG_CLOUD_MODEL_MASTER_KEY` | Server-only upstream secret; never copied into the Runner image or Sandbox |
-| `OPENTAG_CLOUD_MODEL_ALLOWED_MODELS` | Comma-separated model allowlist; the first is used when the Agent has no explicit model |
+| `OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` | Fixed HTTPS Router API base URL, including `/v1` |
+| `OPENTAG_CLOUD_MODEL_MASTER_KEY` | Server-only Router LLM credential; never copied into the Runner image or Sandbox |
+
+Cloud model choices come from the Router's authenticated `GET /models` response using that same
+base URL and credential. The Router applies tenant permissions and model availability. The
+Server uses one bounded, short-lived catalog for model selection, configuration validation,
+dispatch and model grants. An Agent without an explicit model uses the first returned model;
+an explicit model must be in the current catalog. Failed refreshes and empty lists are unavailable,
+never a fallback to the Local Pi model suggestions. `OPENTAG_CLOUD_MODEL_ALLOWED_MODELS` is retired
+and no longer restricts or supplies Cloud models; remove it after the rollback window.
+
+The model settings page tests hosted model connectivity with one short Server-to-Router request.
+This consumes a small model request but creates no Session, Sandbox or Instance, and does not add
+task usage history. It proves model access only: Pi execution, tools, messaging and workspace
+recovery still require a real task check. Local model selection and daemon diagnostics are unchanged.
+
+When upgrading a deployment that directly calls a provider, configure the existing base URL and
+credential for that environment's Router tenant. Listing a provider's models directly does not
+establish Router integration. The Runner's Pi provider configuration bounds output to Router's
+8,192-token limit and disables the unsupported OpenAI `store` field. Publish the updated Runner
+through the existing joint CLI/Runner release before accepting real Cloud tasks on Router. No
+additional feature switch, database migration or Runner protocol upgrade is needed.
 
 Keep the bounded transport defaults unless acceptance shows a need to tune them. See
 [`cloud-model-config.ts`](../packages/server/src/cloud-model-config.ts) for the optional timeout,
 body-size, stream-count and token-lifetime settings. This document does not provision any setting.
 
-Cloud identities must already be enabled with `OPENTAG_CLOUD_IDENTITIES_ENABLED=true`,
-`OPENTAG_CLOUD_STORAGE_BASE` and `OPENTAG_CLOUD_RUNNER_VERSION` (the image's CLI version).
+The overall switch is `OPENTAG_CLOUD_IDENTITIES_ENABLED` (default `false`). Enabling it requires
+`OPENTAG_CLOUD_STORAGE_BASE`, `OPENTAG_CLOUD_RUNNER_VERSION` (the image's CLI version), and all eight
+Runner coordinates below (`OPENTAG_CLOUD_RUNNER_IMAGE`, `…_PROJECT`, `…_REGION`,
+`…_SERVICE_ACCOUNT`, `…_BACKEND_ORIGIN`, `…_VPC_NETWORK`, `…_VPC_SUBNET`, `…_EXECUTION_TAG`);
+startup fails when any is missing. Turning it off disables identities, Runner and model together,
+regardless of the model switch. To pause model requests while retaining save/release, disable only
+`OPENTAG_CLOUD_MODEL_ENABLED`. There is no separate Runner or frontend visibility switch.
+
+Upgrading from an identities-only deployment (`OPENTAG_CLOUD_IDENTITIES_ENABLED=true` without
+Runner coordinates, the pre-consolidation posture) now requires the storage prefix, the Runner
+version, and all eight Runner coordinates before the Server will boot: identities-on always means
+Runner-on. Prepare the full coordinate set first, then upgrade the Server.
+
+The retired `OPENTAG_CLOUD_RUNNER_ENABLED` is still read, but only as a transition validation
+input — never as a switch or alias, and never as a runtime pause toggle:
+
+- A malformed nonempty value fails startup; correct or remove it.
+- `OPENTAG_CLOUD_RUNNER_ENABLED=false` combined with `OPENTAG_CLOUD_IDENTITIES_ENABLED=true`
+  fails startup with a migration error. That combination used to mean "identities on, execution
+  paused"; silently applying the new semantics would enable the previously paused Runner. To keep
+  execution off, set `OPENTAG_CLOUD_IDENTITIES_ENABLED=false`; to run Cloud, remove the retired
+  variable.
+- An agreeing `OPENTAG_CLOUD_RUNNER_ENABLED=true` remains tolerated so the deployment can still
+  roll back to an older Server that reads it.
+- With the overall switch off, a leftover valid value has no effect either way; Cloud stays off.
+
+Remove the retired variable from deployment settings once a rollback to a pre-consolidation Server
+is no longer planned; until then retain `=true` only when the rollback target ran with the Runner
+enabled. Rolling back to an old Server whose posture was identities-only (retired flag `false`)
+first requires disabling the overall switch on this Server — the new Server never runs the
+identities-on/flag-`false` combination.
 
 | Server variable | Meaning |
 | --- | --- |
-| `OPENTAG_CLOUD_RUNNER_ENABLED` | `true` to enable; default `false` |
 | `OPENTAG_CLOUD_RUNNER_IMAGE` | Exact registry `name@sha256:…`; tags rejected |
 | `OPENTAG_CLOUD_RUNNER_PROJECT`, `…_REGION` | Dedicated configured project/region |
 | `OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT` | Minimal-permission Instance identity |

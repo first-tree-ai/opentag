@@ -211,9 +211,6 @@ export function assertRunnerEnvironment({ envVars, channel, publicUrl }) {
   if (envVars.get("OPENTAG_CLOUD_IDENTITIES_ENABLED") !== "true") {
     throw new Error('app OPENTAG_CLOUD_IDENTITIES_ENABLED must be "true" before the Runner target can change');
   }
-  if (envVars.get("OPENTAG_CLOUD_RUNNER_ENABLED") !== "true") {
-    throw new Error('app OPENTAG_CLOUD_RUNNER_ENABLED must be "true" before the Runner target can change');
-  }
 }
 
 /**

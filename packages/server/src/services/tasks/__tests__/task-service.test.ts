@@ -124,6 +124,7 @@ async function createMessage(
     occurredAt?: Date;
     authorDisplayName?: string | null;
     revisionKey?: string;
+    resources?: ImContentV1["resources"];
     providerContext?: { provider: "feishu"; chatType?: string; threadId?: string; rootId?: string };
   } = {},
 ) {
@@ -145,6 +146,7 @@ async function createMessage(
         version: 1,
         fallbackText: options.text ?? "Task input",
         blocks: options.blocks ?? [],
+        ...(options.resources ? { resources: options.resources } : {}),
         truncated: false,
       },
       providerContext: options.providerContext ?? { provider: "feishu", chatType: "group" },
@@ -651,6 +653,54 @@ describe("TaskService", () => {
     // Any message in the topic opens the same Task under its canonical id.
     await expect(service.get(bootstrap.userId, reply.id, { limit: 10 })).resolves.toMatchObject({
       task: { id: root.id },
+    });
+  });
+
+  it("projects browser-safe attachment metadata and tolerates legacy messages", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const session = await createSession(binding.id, { channelId: DM, conversationKind: "dm" });
+    const legacy = await createMessage(binding.id, { channelId: DM, occurredAt: minutes(0) });
+    await createDelivery(session.id, legacy.id);
+    const message = await createMessage(binding.id, {
+      channelId: DM,
+      occurredAt: minutes(1),
+      resources: [
+        {
+          providerResourceKey: "private-provider-key",
+          kind: "file",
+          filename: "requirements.pdf",
+          mediaType: "application/pdf",
+          sizeBytes: 1234,
+        },
+        {
+          providerResourceKey: "private-image-key",
+          ordinal: 1,
+          kind: "image",
+          filename: null,
+          mediaType: null,
+          sizeBytes: 30_000_000,
+          availability: "too_large",
+        },
+      ],
+    });
+    await createDelivery(session.id, message.id);
+    const detail = await service.get(bootstrap.userId, message.id, { limit: 10 });
+    expect(detail.turns.find((turn) => turn.message.id === message.id)?.message.attachments).toEqual([
+      {
+        ordinal: 0,
+        kind: "file",
+        filename: "requirements.pdf",
+        mediaType: "application/pdf",
+        sizeBytes: 1234,
+        availability: "available",
+      },
+      { ordinal: 1, kind: "image", filename: null, mediaType: null, sizeBytes: 30_000_000, availability: "too_large" },
+    ]);
+    expect(detail.turns.find((turn) => turn.message.id === legacy.id)?.message.attachments).toEqual([]);
+    expect(JSON.stringify(detail)).not.toContain("private-provider-key");
+    expect(JSON.stringify(detail)).not.toContain("private-image-key");
+    await expect(service.get(crypto.randomUUID(), message.id, { limit: 10 })).rejects.toMatchObject({
+      statusCode: 404,
     });
   });
 

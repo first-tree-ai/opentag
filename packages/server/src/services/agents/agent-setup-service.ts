@@ -8,6 +8,7 @@ import type {
   AgentSetupSnapshot,
   AgentSetupStage,
   AgentSummary,
+  CloudAvailability,
   FeishuSetupAttempt,
   ImProvider,
 } from "@opentag/shared";
@@ -22,7 +23,7 @@ import {
 } from "../computers/index.js";
 import type { AgentSetupBindingState } from "../im-bindings/index.js";
 import type { AgentService } from "./agent-service.js";
-import { AgentServiceError, resourceNotFound } from "./errors.js";
+import { AgentServiceError } from "./errors.js";
 
 class AgentSetupObservationError extends Error {}
 
@@ -46,6 +47,12 @@ export interface AgentSetupServiceOptions {
   }) => Promise<void>;
   providerReadiness?: ProviderReadinessSource;
   slackOAuthAvailable?: boolean;
+  /**
+   * The deployment's Cloud availability projection, consulted only for a Cloud-bound Agent. When
+   * absent, a Cloud Agent reads as the platform being disabled — a fail-closed answer, never a
+   * local-style observation.
+   */
+  cloudAvailability?: (now: Date) => CloudAvailability;
 }
 
 /**
@@ -65,6 +72,7 @@ export class AgentSetupService {
   readonly #prepareComputer?: AgentSetupServiceOptions["prepareComputer"];
   readonly #providerReadiness?: ProviderReadinessSource;
   readonly #slackOAuthAvailable: boolean;
+  readonly #cloudAvailability?: (now: Date) => CloudAvailability;
 
   constructor(
     database: DatabaseClient,
@@ -82,6 +90,7 @@ export class AgentSetupService {
     this.#prepareComputer = options.prepareComputer;
     this.#providerReadiness = options.providerReadiness;
     this.#slackOAuthAvailable = options.slackOAuthAvailable ?? true;
+    this.#cloudAvailability = options.cloudAvailability;
   }
 
   async getSetupById(callerUserId: string, agentId: string): Promise<AgentSetupSnapshot> {
@@ -124,7 +133,7 @@ export class AgentSetupService {
         409,
       );
     }
-    const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
+    const requiredImCliProviders = computer.kind === "cloud" ? [] : [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
     const components = projectAgentSetupComponents({
       computer,
       runtime,
@@ -169,7 +178,13 @@ export class AgentSetupService {
         409,
       );
     }
-    await this.#readSetupComputer(detail.computer.computerId);
+    const computer = await this.#readSetupComputer(detail.computer.computerId);
+    if (computer.kind === "cloud") {
+      // A Cloud Agent has no local machine to prepare: the managed environment starts with the
+      // first real task. The refresh resolves as a pure re-read trigger so the surface's next
+      // snapshot picks up any configuration change; nothing is commanded and nothing is claimed.
+      return;
+    }
     if (!this.#prepareComputer) {
       throw new AgentServiceError(
         "SERVICE_UNAVAILABLE",
@@ -208,8 +223,6 @@ export class AgentSetupService {
         throw new AgentSetupObservationError("Computer observation failed", { cause });
       });
     if (!computer) throw new Error("Active Agent is missing its bound Computer");
-    // E2 exposes Cloud identities only; Local setup and preparation must not offer Cloud repair.
-    if (computer.kind === "cloud") throw resourceNotFound();
     return computer;
   }
 
@@ -229,7 +242,7 @@ export class AgentSetupService {
     observedAt: Date,
   ): AgentSetupRuntimeState {
     try {
-      return runtimeStateFor(provider, computer, observedAt, this.#providerReadiness);
+      return runtimeStateFor(provider, computer, observedAt, this.#providerReadiness, this.#cloudAvailability);
     } catch (cause) {
       if (!(cause instanceof AgentSetupObservationError)) throw cause;
       return { kind: "observation-failed", provider };
@@ -254,6 +267,11 @@ export class AgentSetupService {
     };
     if (agent.requiresComputerRebind === true) return { kind: "requires-rebind", ...identity };
     const computer = await this.#readSetupComputer(identity.computerId);
+    if (computer.kind === "cloud") {
+      // The Cloud identity is a managed fact the Account row proves; it is fixed online by design
+      // and carries no heartbeat, presence window, or local CLI collection.
+      return { kind: "cloud", ...identity, observedAt: observedAt.toISOString() };
+    }
     const connectionStatus =
       computer.currentInstanceId !== null &&
       (computer.lastSeenAt?.getTime() ?? 0) >= observedAt.getTime() - this.#presenceTimeoutMs
@@ -368,21 +386,39 @@ function blockedMessagingState(
   };
 }
 
+function computerUnavailableReason(computer: AgentSetupComputerState) {
+  switch (computer.kind) {
+    case "not-bound":
+      return "computer-not-bound" as const;
+    case "observation-failed":
+      return "computer-observation-failed" as const;
+    case "requires-rebind":
+      return "computer-rebind-required" as const;
+    default:
+      return "computer-offline" as const;
+  }
+}
+
 function runtimeStateFor(
   provider: AgentSummary["runtimeProvider"],
   computer: AgentSetupComputerState,
   observedAt: Date,
   source?: ProviderReadinessSource,
+  cloudAvailability?: (now: Date) => CloudAvailability,
 ): AgentSetupRuntimeState {
+  if (computer.kind === "cloud") {
+    // The runtime leg of a Cloud Agent is the deployment's managed service configuration. A
+    // missing projection fails closed as disabled; it is never answered from a machine report.
+    const availability = cloudAvailability?.(observedAt) ?? {
+      enabled: false,
+      available: false,
+      reason: "disabled" as const,
+      observedAt: observedAt.toISOString(),
+    };
+    return { kind: "cloud-managed", provider, availability };
+  }
   if (computer.kind !== "bound" || computer.connectionStatus !== "online") {
-    const reason =
-      computer.kind === "not-bound"
-        ? ("computer-not-bound" as const)
-        : computer.kind === "observation-failed"
-          ? ("computer-observation-failed" as const)
-          : computer.kind === "requires-rebind"
-            ? ("computer-rebind-required" as const)
-            : ("computer-offline" as const);
+    const reason = computerUnavailableReason(computer);
     return { kind: "unavailable", provider, reason };
   }
   let readiness: ReturnType<typeof projectComputerProviderReadiness>;
@@ -409,15 +445,21 @@ function deriveSetupStage(
   messaging: AgentSetupMessagingState,
   components: AgentSetupComponent[],
 ): AgentSetupStage {
-  const computerReady = computer.kind === "bound" && computer.connectionStatus === "online";
+  const cloudManaged = computer.kind === "cloud";
+  const computerReady = cloudManaged || (computer.kind === "bound" && computer.connectionStatus === "online");
   if (!computerReady) return "needs-computer";
-  const runtimeReady = runtime.kind === "observed" && runtime.status === "ready";
+  // Cloud runtime readiness is the managed-service configuration, never a machine report.
+  const runtimeReady = cloudManaged
+    ? runtime.kind === "cloud-managed" && runtime.availability.available
+    : runtime.kind === "observed" && runtime.status === "ready";
   if (!runtimeReady) return "needs-runtime";
   if (messaging.kind === "ready") return "ready";
   // A known Messaging state (authorizing, waiting-handoff, blocked, observation-failed) keeps its
   // fail-closed needs-messaging projection; only not-configured Messaging consults the required
-  // IM CLI reports again, and both must be freshly ready before the gate passes.
+  // IM CLI reports again, and both must be freshly ready before the gate passes. A Cloud Agent has
+  // no local CLI gate at all.
   if (messaging.kind !== "not-configured") return "needs-messaging";
+  if (cloudManaged) return "needs-messaging";
   const anyCliBlocking = components.some((component) => component.kind === "im-cli" && component.blocking);
   return anyCliBlocking ? "needs-provider-clis" : "needs-messaging";
 }
@@ -455,6 +497,22 @@ function computerBlockers(computer: AgentSetupComputerState): AgentSetupBlocker[
 function runtimeBlockers(runtime: AgentSetupRuntimeState): AgentSetupBlocker[] {
   if (runtime.kind === "observation-failed") {
     return [{ code: "resource-observation-failed", resource: "runtime" }];
+  }
+  if (runtime.kind === "cloud-managed") {
+    // A needs-runtime Cloud setup means the managed service is not configured to execute. The
+    // blocker names the deployment reason; it never borrows a local probe status.
+    const reason = runtime.availability.reason ?? "disabled";
+    return [
+      {
+        code: "cloud-service-unavailable",
+        reason:
+          reason === "execution_unavailable"
+            ? "execution-unavailable"
+            : reason === "model_unavailable"
+              ? "model-unavailable"
+              : "disabled",
+      },
+    ];
   }
   if (runtime.kind === "waiting") {
     return [{ code: "runtime-not-ready", provider: runtime.provider, status: "waiting" }];
@@ -523,6 +581,9 @@ function deriveSetupActions(
       return messagingActions(messaging, slackOAuthAvailable).filter(
         (action) =>
           action.kind !== "start-messaging" ||
+          // A Cloud Agent has no local CLI gate: reaching the Messaging stage already proves the
+          // managed service can execute.
+          computer.kind === "cloud" ||
           (computer.kind === "bound" &&
             AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS.every((provider) =>
               computer.imCliReadiness.some(

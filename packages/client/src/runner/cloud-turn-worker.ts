@@ -315,7 +315,8 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
         [CLOUD_MODEL_PI_PROVIDER]: {
           api: "openai-completions",
           baseUrl: model.baseUrl,
-          models: [{ id: model.model, name: model.model }],
+          // Router accepts at most 8,192 output tokens and has no OpenAI `store` option.
+          models: [{ id: model.model, name: model.model, maxTokens: 8_192, compat: { supportsStore: false } }],
         },
       },
     },

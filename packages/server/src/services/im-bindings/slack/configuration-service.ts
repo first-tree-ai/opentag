@@ -39,6 +39,7 @@ export class SlackConfigurationServiceError extends Error {
 
 export class SlackConfigurationService {
   readonly #api: SlackApiClient;
+  readonly #onDiagnostic: (code: string) => void;
   readonly #afterConfigurationTransaction?: () => Promise<void>;
   readonly #beforeConfigurationTransaction?: () => Promise<void>;
   readonly #database: DatabaseClient;
@@ -47,6 +48,7 @@ export class SlackConfigurationService {
 
   constructor(input: {
     api: SlackApiClient;
+    onDiagnostic?: (code: string) => void;
     database: DatabaseClient;
     imBindings: ImBindingService;
     now?: () => Date;
@@ -54,6 +56,7 @@ export class SlackConfigurationService {
     beforeConfigurationTransaction?: () => Promise<void>;
   }) {
     this.#api = input.api;
+    this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
     this.#afterConfigurationTransaction = input.afterConfigurationTransaction;
     this.#beforeConfigurationTransaction = input.beforeConfigurationTransaction;
     this.#database = input.database;
@@ -83,6 +86,14 @@ export class SlackConfigurationService {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const installation = await this.#inspect(input.botAccessToken);
     this.#validateInstallation(input.appId, installation);
+    // Profile enrichment must never prevent a valid installation from connecting.
+    let profile: SlackBindingActivation["profile"];
+    try {
+      profile = await this.#api.botProfile?.(input.botAccessToken, installation.botUserId);
+    } catch {
+      this.#onDiagnostic("SLACK_BOT_PROFILE_UNAVAILABLE");
+      profile = undefined;
+    }
     await this.#beforeConfigurationTransaction?.();
 
     const configured = await this.#database.transaction(async (transaction) => {
@@ -126,6 +137,7 @@ export class SlackConfigurationService {
         botAccessToken: input.botAccessToken,
         signingSecret: input.signingSecret,
         installedAt: this.#now(),
+        profile,
       };
       return this.#imBindings.activateSlack(activation, installation.botId, transaction);
     });

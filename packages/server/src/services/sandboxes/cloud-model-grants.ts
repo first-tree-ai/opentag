@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { RUNTIME_MAX_DURATION_MS } from "@opentag/shared";
+import { CLOUD_MODEL_OUTPUT_TOKEN_LIMIT, RUNTIME_MAX_DURATION_MS } from "@opentag/shared";
 import { jwtVerify, SignJWT } from "jose";
 import { z } from "zod";
-import type { CloudModelCatalog } from "./cloud-model-catalog.js";
+import {
+  type CloudModelCatalog,
+  type CloudModelExecutionProfile,
+  selectCloudModelExecutionProfile,
+} from "./cloud-model-catalog.js";
 
 /**
  * Execution-scoped model call permission. The delivery owner may prepare a token before custody
@@ -62,13 +66,27 @@ const MAX_TOKEN_CHARS = 4_096;
 /** Small clock skew tolerated when validating a token's issued-at claim. */
 const MAX_ISSUED_AT_SKEW_SECONDS = 5;
 
+/**
+ * The immutable execution scope reserved synchronously at issue() time; the Router-verified
+ * capability profile is resolved inside the reservation (see #mint) and completes the claims.
+ */
+const grantScopeShape = {
+  jti: z.string().uuid(),
+  executionId: z.string().min(1).max(256),
+  sandboxId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  model: z.string().min(1).max(128),
+} as const;
+
+const CloudModelGrantScopeSchema = z.object(grantScopeShape).strict();
+
+type CloudModelGrantScope = z.infer<typeof CloudModelGrantScopeSchema>;
+
 const CloudModelGrantClaimsSchema = z
   .object({
-    jti: z.string().uuid(),
-    executionId: z.string().min(1).max(256),
-    sandboxId: z.string().uuid(),
-    sessionId: z.string().uuid(),
-    model: z.string().min(1).max(128),
+    ...grantScopeShape,
+    /** The issued output budget the model proxy enforces for this exact permission. */
+    maxTokens: z.number().int().min(1).max(CLOUD_MODEL_OUTPUT_TOKEN_LIMIT),
   })
   .strict();
 
@@ -78,6 +96,13 @@ export interface CloudModelGrantIssue {
   claims: CloudModelGrantClaims;
   token: string;
   expiresAt: Date;
+  /**
+   * The working context window selected once here from the Router-verified native window
+   * (exactly one of the two Cloud tiers); the Runner writes it to Pi verbatim.
+   */
+  contextWindow: CloudModelExecutionProfile["contextWindow"];
+  /** The issued output budget: `min(platform ceiling, Router-verified native output limit)`. */
+  maxTokens: number;
 }
 
 export interface CloudModelGrantIssueInput {
@@ -102,7 +127,12 @@ export interface CloudModelGrantIssueInput {
 }
 
 interface GrantState {
-  claims: CloudModelGrantClaims;
+  /** The immutable scope reserved synchronously at issue() time (revocation matches on it). */
+  scope: CloudModelGrantScope;
+  /** The finalized claims; present once the mint resolved the capability profile. */
+  claims: CloudModelGrantClaims | undefined;
+  /** The Server-selected execution profile for this grant; present once the mint resolved it. */
+  profile: CloudModelExecutionProfile | undefined;
   expiresAtMs: number;
   revoked: boolean;
   inFlight: Set<{ abort(): void }>;
@@ -190,29 +220,31 @@ export class CloudModelGrantService {
     // the by-execution pointer moves to the new jti so revocation of the turn kills both.
     const expiresAtMs = this.#resolveExpiry(input.expiresAt, nowMs);
     if (expiresAtMs === undefined) return undefined;
-    const claims = CloudModelGrantClaimsSchema.safeParse({
+    const scope = CloudModelGrantScopeSchema.safeParse({
       executionId: input.executionId,
       jti: randomUUID(),
       model: input.model,
       sandboxId: input.sandboxId,
       sessionId: input.sessionId,
     });
-    if (!claims.success) return undefined;
+    if (!scope.success) return undefined;
     const issuedAt = Math.floor(nowMs / 1_000);
     const expirationSeconds = Math.floor(expiresAtMs / 1_000);
     if (expirationSeconds <= issuedAt || !this.#reserveCapacity()) return undefined;
     // Reserve the slot synchronously, BEFORE the asynchronous signing starts: the capacity bound
     // and the per-execution idempotence therefore hold across concurrent issue() calls.
     const reservation: GrantState = {
-      claims: claims.data,
+      scope: scope.data,
+      claims: undefined,
+      profile: undefined,
       expiresAtMs,
       inFlight: new Set(),
       revoked: false,
       signing: undefined,
       token: "",
     };
-    this.#grants.set(claims.data.jti, reservation);
-    this.#byExecution.set(claims.data.executionId, claims.data.jti);
+    this.#grants.set(scope.data.jti, reservation);
+    this.#byExecution.set(scope.data.executionId, scope.data.jti);
     this.#ensureSweepTimer();
     reservation.signing = this.#mint(reservation, issuedAt, expirationSeconds);
     return this.#disclose(reservation);
@@ -228,10 +260,19 @@ export class CloudModelGrantService {
       const settled = await state.signing;
       if (settled === undefined) return undefined;
     }
-    if (this.#grants.get(state.claims.jti) !== state) return undefined;
+    if (this.#grants.get(state.scope.jti) !== state) return undefined;
     if (state.revoked || state.token.length === 0) return undefined;
     if (state.expiresAtMs <= this.#now().getTime()) return undefined;
-    return { claims: state.claims, expiresAt: new Date(state.expiresAtMs), token: state.token };
+    const claims = state.claims;
+    const profile = state.profile;
+    if (!claims || !profile) return undefined;
+    return {
+      claims,
+      expiresAt: new Date(state.expiresAtMs),
+      token: state.token,
+      contextWindow: profile.contextWindow,
+      maxTokens: profile.maxTokens,
+    };
   }
 
   /**
@@ -239,36 +280,48 @@ export class CloudModelGrantService {
    * read and the signing are the only awaits between the capacity reservation and disclosure, so
    * anything that raced them is honoured here: a swept or evicted reservation discloses nothing,
    * and a revocation or close that landed mid-read or mid-mint keeps the reservation as a revoked
-   * tombstone whose token is never disclosed. A denied/unavailable model or a failed mint removes
-   * the reservation — releasing capacity and keeping the execution reusable — unless it was
-   * revoked meanwhile, in which case the tombstone stays so the turn is never silently re-minted.
+   * tombstone whose token is never disclosed. A denied/unavailable model, a model without valid
+   * Router-verified capabilities, or a failed mint removes the reservation — releasing capacity
+   * and keeping the execution reusable — unless it was revoked meanwhile, in which case the
+   * tombstone stays so the turn is never silently re-minted.
    */
   async #mint(state: GrantState, issuedAt: number, expirationSeconds: number): Promise<string | undefined> {
     let token: string | undefined;
     try {
       // Model admission happens while the reservation already exists: a revocation racing this
-      // await marks the tombstone below instead of being lost.
-      if (await this.#catalog.isModelAllowed(state.claims.model)) {
-        token = await new SignJWT(state.claims)
+      // await marks the tombstone below instead of being lost. Admission requires Router-verified
+      // capabilities that select a real Cloud execution profile; a listed model without them (or
+      // with a native window below the smallest tier) is not a valid Cloud choice and never gets
+      // a fabricated default.
+      const profile = selectCloudModelExecutionProfile(await this.#catalog.capabilitiesOf(state.scope.model));
+      const claims = profile
+        ? CloudModelGrantClaimsSchema.safeParse({ ...state.scope, maxTokens: profile.maxTokens })
+        : undefined;
+      if (profile && claims?.success) {
+        token = await new SignJWT(claims.data)
           .setProtectedHeader({ alg: "HS256", typ: "JWT" })
           .setIssuer(MODEL_GRANT_ISSUER)
           .setAudience(MODEL_GRANT_AUDIENCE)
           .setIssuedAt(issuedAt)
           .setExpirationTime(expirationSeconds)
-          .setJti(state.claims.jti)
+          .setJti(claims.data.jti)
           .sign(this.#key);
+        if (token !== undefined) {
+          state.claims = claims.data;
+          state.profile = profile;
+        }
       }
     } catch {
       token = undefined;
     }
     state.signing = undefined;
     // A swept or evicted reservation discloses nothing.
-    if (this.#grants.get(state.claims.jti) !== state) return undefined;
+    if (this.#grants.get(state.scope.jti) !== state) return undefined;
     if (token === undefined) {
       if (state.revoked) return undefined;
-      this.#grants.delete(state.claims.jti);
-      if (this.#byExecution.get(state.claims.executionId) === state.claims.jti) {
-        this.#byExecution.delete(state.claims.executionId);
+      this.#grants.delete(state.scope.jti);
+      if (this.#byExecution.get(state.scope.executionId) === state.scope.jti) {
+        this.#byExecution.delete(state.scope.executionId);
       }
       return undefined;
     }
@@ -290,9 +343,9 @@ export class CloudModelGrantService {
       return { kind: "none" };
     }
     const sameScope =
-      existing.claims.model === input.model &&
-      existing.claims.sandboxId === input.sandboxId &&
-      existing.claims.sessionId === input.sessionId;
+      existing.scope.model === input.model &&
+      existing.scope.sandboxId === input.sandboxId &&
+      existing.scope.sessionId === input.sessionId;
     if (existing.revoked) {
       // The execution was revoked (connection loss, stop, report, or retirement). Only an
       // explicit recovery rotation may supersede it, and only for the identical execution scope;
@@ -329,16 +382,19 @@ export class CloudModelGrantService {
         model: verified.payload.model,
         sandboxId: verified.payload.sandboxId,
         sessionId: verified.payload.sessionId,
+        maxTokens: verified.payload.maxTokens,
       });
       if (!claims.success || claims.data.jti !== jti) return undefined;
       const state = this.#grants.get(claims.data.jti);
       // A grant whose token was never disclosed (mint in flight or lost to a race) never verifies.
       if (!state || state.revoked || state.token.length === 0 || state.expiresAtMs <= now.getTime()) return undefined;
       if (
+        !state.claims ||
         state.claims.executionId !== claims.data.executionId ||
         state.claims.model !== claims.data.model ||
         state.claims.sandboxId !== claims.data.sandboxId ||
-        state.claims.sessionId !== claims.data.sessionId
+        state.claims.sessionId !== claims.data.sessionId ||
+        state.claims.maxTokens !== claims.data.maxTokens
       ) {
         return undefined;
       }
@@ -371,7 +427,7 @@ export class CloudModelGrantService {
   revokeExecution(executionId: string): number {
     let revoked = 0;
     for (const state of this.#grants.values()) {
-      if (state.claims.executionId !== executionId || state.revoked) continue;
+      if (state.scope.executionId !== executionId || state.revoked) continue;
       state.revoked = true;
       revoked += 1;
       for (const handle of [...state.inFlight]) handle.abort();
@@ -391,8 +447,8 @@ export class CloudModelGrantService {
         state.inFlight.clear();
       }
       this.#grants.delete(jti);
-      if (this.#byExecution.get(state.claims.executionId) === jti) {
-        this.#byExecution.delete(state.claims.executionId);
+      if (this.#byExecution.get(state.scope.executionId) === jti) {
+        this.#byExecution.delete(state.scope.executionId);
       }
       swept += 1;
     }
@@ -450,8 +506,8 @@ export class CloudModelGrantService {
       if (!next) break;
       const [jti, state] = next;
       this.#grants.delete(jti);
-      if (this.#byExecution.get(state.claims.executionId) === jti) {
-        this.#byExecution.delete(state.claims.executionId);
+      if (this.#byExecution.get(state.scope.executionId) === jti) {
+        this.#byExecution.delete(state.scope.executionId);
       }
     }
     return this.#grants.size < this.#maxTrackedGrants;

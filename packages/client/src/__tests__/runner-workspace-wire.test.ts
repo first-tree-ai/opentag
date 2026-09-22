@@ -394,6 +394,8 @@ it.each([false, true])(
           baseUrl: "https://server.example.com/api/v1/cloud-model",
           token: "fixture-model-token-1234567890123456",
           model: delivery.runtime.model,
+          contextWindow: 64_000,
+          maxTokens: 8_192,
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
         },
       });
@@ -580,6 +582,8 @@ function modelGrant(delivery: DirectImMessageDeliveryRequest) {
     baseUrl: "https://server.example.com/api/v1/cloud-model",
     token: "fixture-model-token-1234567890123456",
     model: delivery.runtime.model,
+    contextWindow: 64_000,
+    maxTokens: 8_192,
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
   };
 }

@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createStaticCloudModelCatalog, RouterCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
+import {
+  createStaticCloudModelCatalog,
+  RouterCloudModelCatalog,
+  selectCloudModelExecutionProfile,
+} from "../services/sandboxes/cloud-model-catalog.js";
 import {
   type CloudModelUpstream,
   FIXTURE_MASTER_KEY,
@@ -9,8 +13,22 @@ import {
 const MODELS_PAYLOAD = {
   object: "list",
   data: [
-    { id: "router-model-a", object: "model", created: 0, owned_by: "llm-router" },
-    { id: "router-model-b", object: "model", created: 0, owned_by: "llm-router" },
+    {
+      id: "router-model-a",
+      object: "model",
+      created: 0,
+      owned_by: "llm-router",
+      context_window: 262_144,
+      max_output_tokens: 8_192,
+    },
+    {
+      id: "router-model-b",
+      object: "model",
+      created: 0,
+      owned_by: "llm-router",
+      context_window: 64_000,
+      max_output_tokens: 4_096,
+    },
   ],
 };
 
@@ -61,6 +79,42 @@ describe("RouterCloudModelCatalog", () => {
     expect(upstream.stats.authorizations).toEqual([`Bearer ${FIXTURE_MASTER_KEY}`]);
     // Nothing but the ids crossed the boundary.
     expect(JSON.stringify(snapshot)).not.toContain("llm-router");
+  });
+
+  it("retains Router-verified capability metadata per model without changing the visible list", async () => {
+    const upstream = await startCatalogUpstream({ kind: "json", payload: MODELS_PAYLOAD });
+    const catalog = makeCatalog(upstream);
+    await expect(catalog.capabilitiesOf("router-model-a")).resolves.toEqual({
+      contextWindow: 262_144,
+      maxOutputTokens: 8_192,
+    });
+    await expect(catalog.capabilitiesOf("router-model-b")).resolves.toEqual({
+      contextWindow: 64_000,
+      maxOutputTokens: 4_096,
+    });
+    // An unlisted model has no capabilities; the capability read shares the one bounded fetch.
+    await expect(catalog.capabilitiesOf("model-z")).resolves.toBeUndefined();
+    expect(upstream.stats.hits).toBe(1);
+  });
+
+  it("excludes models whose capability metadata is absent or malformed", async () => {
+    const upstream = await startCatalogUpstream({
+      kind: "json",
+      payload: {
+        object: "list",
+        data: [
+          { id: "router-no-caps" },
+          { id: "router-bad-window", context_window: "258000", max_output_tokens: 8_192 },
+          { id: "router-fractional", context_window: 258_000.5, max_output_tokens: 8_192 },
+          { id: "router-oversized-output", context_window: 258_000, max_output_tokens: 65_536 },
+          { id: "router-zero", context_window: 0, max_output_tokens: 8_192 },
+        ],
+      },
+    });
+    const catalog = makeCatalog(upstream);
+    const snapshot = await catalog.list();
+    expect(snapshot).toEqual({ available: false, defaultModel: null, models: [] });
+    await expect(catalog.isModelAllowed("router-no-caps")).resolves.toBe(false);
   });
 
   it("reuses the fresh cache within its TTL and refreshes lazily after expiry", async () => {
@@ -177,10 +231,56 @@ describe("RouterCloudModelCatalog", () => {
       defaultModel: "model-a",
       models: ["model-a", "model-b"],
     });
+    // The double defaults to a fully verified extended-tier profile; overrides are per model and
+    // an explicit `undefined` marks a deliberately unverifiable model.
+    await expect(catalog.capabilitiesOf("model-a")).resolves.toEqual({
+      contextWindow: 258_000,
+      maxOutputTokens: 8_192,
+    });
+    const overridden = createStaticCloudModelCatalog(["model-a", "model-b"], {
+      "model-a": { contextWindow: 100_000, maxOutputTokens: 2_048 },
+      "model-b": undefined,
+    });
+    await expect(overridden.capabilitiesOf("model-a")).resolves.toEqual({
+      contextWindow: 100_000,
+      maxOutputTokens: 2_048,
+    });
+    await expect(overridden.capabilitiesOf("model-b")).resolves.toBeUndefined();
     await expect(createStaticCloudModelCatalog([]).list()).resolves.toEqual({
       available: false,
       defaultModel: null,
       models: [],
+    });
+  });
+
+  it("selects the two Cloud window tiers only at the verified boundaries and never fabricates a default", async () => {
+    expect(selectCloudModelExecutionProfile(undefined)).toBeUndefined();
+    expect(selectCloudModelExecutionProfile({ contextWindow: 63_999, maxOutputTokens: 8_192 })).toBeUndefined();
+    expect(selectCloudModelExecutionProfile({ contextWindow: 0, maxOutputTokens: 8_192 })).toBeUndefined();
+    expect(selectCloudModelExecutionProfile({ contextWindow: 64_000, maxOutputTokens: 8_192 })).toEqual({
+      contextWindow: 64_000,
+      maxTokens: 8_192,
+    });
+    expect(selectCloudModelExecutionProfile({ contextWindow: 256_000, maxOutputTokens: 8_192 })).toEqual({
+      contextWindow: 64_000,
+      maxTokens: 8_192,
+    });
+    expect(selectCloudModelExecutionProfile({ contextWindow: 257_999, maxOutputTokens: 8_192 })).toEqual({
+      contextWindow: 64_000,
+      maxTokens: 8_192,
+    });
+    expect(selectCloudModelExecutionProfile({ contextWindow: 258_000, maxOutputTokens: 8_192 })).toEqual({
+      contextWindow: 258_000,
+      maxTokens: 8_192,
+    });
+    // A 262,144-native model runs at the extended tier; the output budget is the verified cap.
+    expect(selectCloudModelExecutionProfile({ contextWindow: 262_144, maxOutputTokens: 4_096 })).toEqual({
+      contextWindow: 258_000,
+      maxTokens: 4_096,
+    });
+    expect(selectCloudModelExecutionProfile({ contextWindow: 1_000_000, maxOutputTokens: 1 })).toEqual({
+      contextWindow: 258_000,
+      maxTokens: 1,
     });
   });
 });

@@ -9,6 +9,7 @@ import {
   RunnerAcceptanceRunFrameSchema,
   RunnerAuthFrameSchema,
   RunnerClientFrameSchema,
+  type RunnerCloudModelGrant,
   RunnerCloudModelGrantSchema,
   RunnerCloudSessionMessageRunFrameSchema,
   RunnerCloudSessionWorkerRequestSchema,
@@ -123,12 +124,39 @@ describe("E4 Cloud delivery protocol", () => {
         expiresAt: new Date(1_900_000_000_000).toISOString(),
         model,
         token: worstCaseToken,
+        contextWindow: 258_000 as const,
+        maxTokens: 8_192,
       },
     };
     expect(RunnerServerFrameSchema.safeParse(frame).success).toBe(true);
     // The bound is inclusive at 4096 and rejects a single byte more.
     expect(RunnerCloudModelGrantSchema.safeParse({ ...frame.model, token: "t".repeat(4096) }).success).toBe(true);
     expect(RunnerCloudModelGrantSchema.safeParse({ ...frame.model, token: "t".repeat(4097) }).success).toBe(false);
+  });
+
+  it("admits only the two Server-selected context windows and a bounded issued output budget", () => {
+    const grant = {
+      baseUrl: "https://server.example.com/api/v1/cloud-model",
+      expiresAt: new Date(1_900_000_000_000).toISOString(),
+      model: "model-a",
+      token: "t".repeat(64),
+      contextWindow: 258_000 as const,
+      maxTokens: 8_192,
+    };
+    expect(RunnerCloudModelGrantSchema.safeParse(grant).success).toBe(true);
+    expect(RunnerCloudModelGrantSchema.safeParse({ ...grant, contextWindow: 64_000 }).success).toBe(true);
+    // A Runner never re-derives or invents a window: off-tier values are rejected on the wire.
+    for (const contextWindow of [63_999, 128_000, 256_000, 262_144, 0, -1, 64_000.5]) {
+      expect(RunnerCloudModelGrantSchema.safeParse({ ...grant, contextWindow }).success).toBe(false);
+    }
+    for (const maxTokens of [8_193, 65_536, 0, -1, 1.5]) {
+      expect(RunnerCloudModelGrantSchema.safeParse({ ...grant, maxTokens }).success).toBe(false);
+    }
+    // A grant without the Server-selected window/budget is not executable.
+    const { contextWindow: _contextWindow, ...noWindow } = grant;
+    expect(RunnerCloudModelGrantSchema.safeParse(noWindow).success).toBe(false);
+    const { maxTokens: _maxTokens, ...noBudget } = grant;
+    expect(RunnerCloudModelGrantSchema.safeParse(noBudget).success).toBe(false);
   });
 
   it("negotiates the Cloud capability as an optional additive auth/welcome field", () => {
@@ -211,6 +239,8 @@ describe("E4 Cloud delivery protocol", () => {
         expiresAt: new Date(1_900_000_000_000).toISOString(),
         model: "deepseek-v4.1-flash-expires-on-0910",
         token: "unit-execution-token-0123456789abcdef",
+        contextWindow: 258_000 as const,
+        maxTokens: 8_192,
       },
       piSessionDirectory: "/tmp/opentag-cloud-turn/pi-session",
     };
@@ -323,6 +353,8 @@ describe("E8 Session collaboration protocol", () => {
       expiresAt: new Date(1_900_000_000_000).toISOString(),
       model: "deepseek-v4.1-flash-expires-on-0910",
       token: "unit-execution-token-0123456789abcdef",
+      contextWindow: 258_000 as const,
+      maxTokens: 8_192,
     };
     const sessionWorker = {
       kind: "session-message" as const,
@@ -424,11 +456,13 @@ describe("E8 Session collaboration protocol", () => {
 
 describe("Runner wire-budget rejections", () => {
   const uuid = "0b12b3c0-0000-4000-8000-000000000001";
-  const grant = {
+  const grant: RunnerCloudModelGrant = {
     baseUrl: "https://server.example.com/api/v1/cloud-model",
     expiresAt: new Date(1_900_000_000_000).toISOString(),
     model: "deepseek-v4.1-flash-expires-on-0910",
     token: "unit-execution-token-0123456789abcdef",
+    contextWindow: 258_000 as const,
+    maxTokens: 8_192,
   };
   const runtime = {
     agentId: "0b12b3c0-0000-4000-8000-000000000004",

@@ -46,7 +46,9 @@ const CloudModelEnvironmentSchema = z
       .int()
       .min(64 * 1024)
       .max(8 * 1024 * 1024)
-      .default(2 * 1024 * 1024),
+      // Transport protection for one chat-completions body — not a token budget: the issued
+      // grant's context window and Pi's native compaction decide what fits the model.
+      .default(8 * 1024 * 1024),
     OPENTAG_CLOUD_MODEL_MAX_RESPONSE_BYTES: z.coerce
       .number()
       .int()

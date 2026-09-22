@@ -272,7 +272,9 @@ function ComputerChoices({
                 {platformLabel(computer.platform)} ·{" "}
                 {computer.connectionStatus === "online"
                   ? m.agents_computer_choice_online()
-                  : m.agents_computer_choice_offline()}
+                  : computer.connectionStatus === "disconnected"
+                    ? m.computer_disconnected()
+                    : m.agents_computer_choice_offline()}
               </span>
             </span>
             <Button

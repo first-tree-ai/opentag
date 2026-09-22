@@ -186,6 +186,7 @@ export class OnboardingResetService {
       await transaction
         .update(computers)
         .set({
+          disconnectedAt: null,
           currentInstanceId: null,
           connectedAt: null,
           updatedAt: now,

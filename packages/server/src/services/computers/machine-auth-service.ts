@@ -167,9 +167,18 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   async exchangeConnectCode(input: ComputerConnectExchangeInput): Promise<ComputerConnectExchangeResult> {
     rejectUnsupportedClientVersion(input.clientVersion);
     const clientSupportsRuntimeProvider = clientSupportsComputerRuntimeProvider(input.clientVersion);
-    const now = this.#now();
     const tokenHash = hashSecret(input.code);
     const result = await this.#database.transaction(async (transaction) => {
+      // All access mutations lock Account before code and Computer. Read the immutable issuer first,
+      // then re-read and validate under the code lock: disconnect/reset cannot race a redemption.
+      const [issuer] = await transaction
+        .select({ accountId: computerConnectCodes.issuedByAccountId })
+        .from(computerConnectCodes)
+        .where(eq(computerConnectCodes.tokenHash, tokenHash))
+        .limit(1);
+      if (!issuer) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+      await lockActiveAccount(transaction, issuer.accountId);
+      const now = this.#now();
       const [connectCode] = await transaction
         .select()
         .from(computerConnectCodes)
@@ -185,7 +194,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       if (connectCode.expiresAt <= now) {
         throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
       }
-      await lockActiveAccount(transaction, connectCode.issuedByAccountId);
 
       const computer =
         connectCode.mode === "repair"
@@ -355,6 +363,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       [repaired] = await transaction
         .update(computers)
         .set({
+          disconnectedAt: null,
           currentInstallationId: input.installationId,
           displayName: input.displayName,
           platform: input.platform,

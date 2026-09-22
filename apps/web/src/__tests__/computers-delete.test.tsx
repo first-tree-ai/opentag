@@ -45,7 +45,8 @@ async function openComputer(id: string) {
   window.history.replaceState({}, "", `/agents/computers?computerId=${id}`);
   render(<App />);
   expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
-  fireEvent.click(await screen.findByRole("button", { name: "Delete computer" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Computer actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Delete computer" }));
 }
 
 describe("deleting a Computer", () => {

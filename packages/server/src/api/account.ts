@@ -2,6 +2,7 @@ import {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_COMPUTER_BY_ID_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
+  ACCOUNT_COMPUTER_DISCONNECT_TEMPLATE,
   ACCOUNT_SANDBOX_RUNNER_ACCEPTANCE_TEMPLATE,
   ACCOUNT_SANDBOX_RUNNER_START_TEMPLATE,
   ACCOUNT_SANDBOX_RUNNER_STOP_TEMPLATE,
@@ -26,6 +27,7 @@ import {
   CloudAvailabilitySchema,
   type CloudModelOptions,
   CloudModelOptionsSchema,
+  COMPUTER_ACCESS_CAPABILITY_HEADER,
   CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
   ComputerConnectCodeStatusSchema,
@@ -249,6 +251,7 @@ export function registerAccountRoutes(
         account,
         readiness !== undefined,
         includeCloudIdentities,
+        ...(request.headers[COMPUTER_ACCESS_CAPABILITY_HEADER] === "1" ? ([true] as const) : []),
       );
       return reply
         .code(200)
@@ -260,6 +263,13 @@ export function registerAccountRoutes(
             ),
           ),
         );
+    });
+
+    app.post(ACCOUNT_COMPUTER_DISCONNECT_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { computerId } = parseRequest(ComputerParamsSchema, request.params);
+      parseRequest(EmptyBodySchema, request.body ?? {});
+      await computerService.disconnectComputer(accountId(request), computerId);
+      return reply.header("Cache-Control", "no-store").code(204).send();
     });
 
     app.delete(ACCOUNT_COMPUTER_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {

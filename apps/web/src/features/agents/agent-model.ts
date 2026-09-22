@@ -81,6 +81,7 @@ export type AgentDetailView = AgentDetail & {
   messaging: DetailEvidence<ImBindingSummary>;
   /** The bound Computer's exact kind when the Account read confirmed it; Cloud-only settings rely on it. */
   computerKind?: "local" | "cloud";
+  computerConnectionStatus?: AccountComputerSummary["connectionStatus"];
 };
 
 /**

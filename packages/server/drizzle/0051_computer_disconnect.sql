@@ -1,0 +1,1 @@
+ALTER TABLE "computers" ADD COLUMN "disconnected_at" timestamp with time zone;

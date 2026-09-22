@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
-import { computerId, installApi, resetWebAppState, twoReadyComputers } from "./support/app-fixtures.js";
+import { agentId, computerId, installApi, resetWebAppState, twoReadyComputers } from "./support/app-fixtures.js";
 
 function openComputer(search = "") {
   window.history.replaceState({}, "", `/agents/computers${search}`);
@@ -10,6 +10,18 @@ function openComputer(search = "") {
 
 describe("Account Computer management", () => {
   beforeEach(resetWebAppState);
+
+  it("keeps a disconnected computer assigned and links Agent settings to its reconnection", async () => {
+    installApi({ bound: true, computers: [{ ...twoReadyComputers[0], connectionStatus: "disconnected" }] });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+    expect(await screen.findByText("Disconnected")).toBeTruthy();
+    const reconnect = screen.getByRole("link", { name: "Reconnect" });
+    expect(reconnect.getAttribute("href")).toContain(`computerId=${computerId}`);
+    expect(screen.queryByText("Choose a computer for this Agent.")).toBeNull();
+    fireEvent.click(reconnect);
+    expect(await screen.findByRole("button", { name: "Reconnect" })).toBeTruthy();
+  });
 
   it("manages the sole computer directly and does not encourage adding another", async () => {
     installApi({ bound: true });
@@ -21,7 +33,9 @@ describe("Account Computer management", () => {
     expect(screen.getByText("Online")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect computer" })).toBeNull();
     expect(document.querySelector('[data-ui="computer-connect"]')).toBeNull();
-    expect(screen.getByRole("button", { name: "Delete computer" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete computer" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Computer actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Delete computer" })).toBeTruthy();
   });
 
   it("only issues the first connection command after an explicit action", async () => {
@@ -100,11 +114,11 @@ describe("Account Computer management", () => {
     expect(await screen.findByRole("button", { name: "Repair connection" })).toBeTruthy();
     failed = true;
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("Update failed. Showing last available data.")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
+    expect(await screen.findByText("Couldn’t check this computer’s status.")).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
     expect(screen.queryByText("Waiting for Computer")).toBeNull();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Repair connection" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Connect computer" })).toBeNull();
   });
 
@@ -159,16 +173,21 @@ describe("Account Computer management", () => {
           // A successful inventory refresh restores the controls; the next 1.5-second poll
           // clears any transient error held by the existing attempt.
           expect(
-            await screen.findByText("Command accepted. Waiting for OpenTag to come online…", {}, { timeout: 3_000 }),
+            await within(screen.getByRole("dialog")).findByText(
+              "Command accepted. Waiting for OpenTag to come online…",
+              {},
+              { timeout: 3_000 },
+            ),
           ).toBeTruthy();
           expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
         }
       };
       await expectAttempt();
+      fireEvent.click(screen.getByRole("button", { name: "Close Reconnect" }));
 
       failed = true;
       fireEvent(window, new Event("focus"));
-      expect(await screen.findByText("Update failed. Showing last available data.")).toBeTruthy();
+      expect(await screen.findByText("Couldn’t check this computer’s status.")).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
       expect(screen.queryByText("Offline")).toBeNull();
@@ -180,7 +199,7 @@ describe("Account Computer management", () => {
 
       failed = false;
       fireEvent(window, new Event("focus"));
-      fireEvent.click(await screen.findByRole("button", { name: "Get connection help" }));
+      fireEvent.click(await screen.findByRole("button", { name: "View instructions" }));
       await expectAttempt();
       expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
@@ -191,7 +210,9 @@ describe("Account Computer management", () => {
 
       online = true;
       fireEvent(window, new Event("focus"));
-      expect(await screen.findByText("Online", {}, { timeout: 3_000 })).toBeTruthy();
+      expect(await screen.findByText("Ada's Mac is connected", {}, { timeout: 3_000 })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      expect(screen.getByText("Online")).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     },
   );

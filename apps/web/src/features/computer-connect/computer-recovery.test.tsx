@@ -54,7 +54,8 @@ describe("shared Computer recovery", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy instructions" })));
 
     const payload = writeText.mock.calls[0]?.[0] as string;
-    expect(payload).toContain("Ada's Mac (Computer ID: review-mac)");
+    expect(payload).toContain("Ada's Mac.");
+    expect(payload).toContain("Computer ID: review-mac.");
     expect(payload).toContain("opentag doctor --json");
     expect(payload).toContain("opentag daemon status --json");
     expect(payload).toContain("only if the installed service is stopped");
@@ -148,7 +149,7 @@ describe("shared Computer recovery", () => {
     expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy instructions" })));
-    expect(writeText.mock.calls[1]?.[0]).toContain("Other Mac (Computer ID: other-mac)");
+    expect(writeText.mock.calls[1]?.[0]).toContain("Other Mac.");
     expect(writeText.mock.calls[1]?.[0]).not.toContain("Ada's Mac");
   });
 });

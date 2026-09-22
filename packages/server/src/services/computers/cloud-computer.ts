@@ -16,6 +16,7 @@ type ComputerRow = {
   platform: "darwin" | "linux" | "win32";
   currentInstanceId: string | null;
   connectedAt: Date | null;
+  disconnectedAt?: Date | null;
   lastSeenAt: Date | null;
   createdAt: Date;
 };
@@ -42,12 +43,8 @@ export function projectAccountComputerSummary(input: {
 }): AccountComputerSummary {
   const { computer } = input;
   const cloud = computer.kind === "cloud";
-  const connectionStatus = cloud
-    ? "online"
-    : computer.currentInstanceId !== null && (computer.lastSeenAt?.getTime() ?? 0) >= input.presenceCutoffMs
-      ? "online"
-      : "offline";
-  const readinessConnection = cloud ? "offline" : connectionStatus;
+  const connectionStatus = accountConnectionStatus(computer, input.presenceCutoffMs);
+  const readinessConnection = cloud || connectionStatus === "disconnected" ? "offline" : connectionStatus;
   return {
     computerId: computer.id,
     ...(input.includeCloudIdentities ? { kind: computer.kind } : {}),
@@ -76,4 +73,15 @@ export function projectAccountComputerSummary(input: {
     createdAt: computer.createdAt.toISOString(),
     agentIds: input.agentIds,
   };
+}
+
+function accountConnectionStatus(
+  computer: ComputerRow,
+  presenceCutoffMs: number,
+): AccountComputerSummary["connectionStatus"] {
+  if (computer.kind === "cloud") return "online";
+  if (computer.disconnectedAt) return "disconnected";
+  return computer.currentInstanceId !== null && (computer.lastSeenAt?.getTime() ?? 0) >= presenceCutoffMs
+    ? "online"
+    : "offline";
 }

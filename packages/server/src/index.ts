@@ -584,6 +584,9 @@ export async function startServer(): Promise<void> {
       cloudIdentities,
       assertCloudControlCredential: platformRuntime.assertCloudControlCredential,
       // A failed close only delays the fatal 401 until the Client's next authentication attempt.
+      onComputerDisconnected: async (computerId) => {
+        await registry.closeComputer(computerId, { code: 4401, reason: "Computer disconnected" });
+      },
       onComputerDeleted: async (computerId) => {
         await registry.closeComputer(computerId, COMPUTER_DELETED_CLOSE);
       },

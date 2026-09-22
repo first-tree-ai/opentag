@@ -333,7 +333,30 @@ describe("ComputerConnect", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
 
     expect(onConnected).toHaveBeenCalledWith(computer);
-    expect(screen.queryByText("This command has expired.")).toBeNull();
+    expect(screen.queryByText("This command is no longer valid.")).toBeNull();
+    expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
+  });
+
+  it("retires a redeemed attempt if access is subsequently disconnected elsewhere", async () => {
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemed());
+    const inventory = vi
+      .spyOn(browserApi, "computers")
+      .mockResolvedValue({ computers: [{ ...computer, connectionStatus: "offline" }] });
+    render(<ComputerConnect intent={{ mode: "repair", target: computer }} onConnected={onConnected} />);
+    fireEvent.click(screen.getByRole("button", { name: "Repair connection" }));
+    await flushAsync();
+    inventory.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "disconnected", connectedAt: null }] });
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(onConnected).not.toHaveBeenCalled();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
   });
 
@@ -355,8 +378,8 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(commandIsShown(COMMAND)).toBe(false);
-    expect(screen.getByText("This command has expired.")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("This command has expired.");
+    expect(screen.getByText("This command is no longer valid.")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("This command is no longer valid.");
     expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
     expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
   });

@@ -52,7 +52,9 @@ export function ComputersPage({ computerId, fromAgent }: { computerId?: string; 
       ) : null}
       <Page title={m.agents_computers_title()} description={m.agents_computers_description()}>
         <div className="grid min-w-0 gap-6">
-          {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void query.refetch()} /> : null}
+          {refreshError && !computerId && query.data?.computers.length !== 1 ? (
+            <ResourceRefreshNotice error={refreshError} onRetry={() => void query.refetch()} />
+          ) : null}
           <AsyncState state={state}>
             {({ computers }) => (
               <ComputerContent
@@ -61,6 +63,7 @@ export function ComputersPage({ computerId, fromAgent }: { computerId?: string; 
                 computerId={computerId}
                 fromAgent={fromAgent}
                 confirmed={confirmed}
+                refreshing={query.isFetching}
                 onConnected={() => void query.refetch()}
               />
             )}
@@ -81,12 +84,14 @@ function ComputerContent({
   computerId,
   fromAgent,
   confirmed,
+  refreshing,
   onConnected,
 }: {
   computers: readonly AccountComputerSummary[];
   computerId?: string;
   fromAgent?: string;
   confirmed: boolean;
+  refreshing: boolean;
   onConnected: () => void;
 }) {
   const navigate = useNavigate();
@@ -121,6 +126,7 @@ function ComputerContent({
       <ComputerManagement
         computer={selected}
         confirmed={confirmed}
+        refreshing={refreshing}
         key={selected.computerId}
         onConnected={onConnected}
         // The deleted computer is gone from the cached inventory; leave its page for the Account's list.

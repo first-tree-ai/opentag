@@ -59,6 +59,7 @@ export const ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE = `${ACCOUNT_AGENTS_PATH}/cr
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 /** One Account-owned Computer; `DELETE` retires it and revokes its machine credential. */
 export const ACCOUNT_COMPUTER_BY_ID_TEMPLATE = `${ACCOUNT_COMPUTERS_PATH}/:computerId`;
+export const ACCOUNT_COMPUTER_DISCONNECT_TEMPLATE = `${ACCOUNT_COMPUTER_BY_ID_TEMPLATE}/disconnect`;
 export const ACCOUNT_CLOUD_COMPUTER_PATH = `${ACCOUNT_COMPUTERS_PATH}/cloud`;
 /** The Router-sourced Cloud model choices; read-only and authenticated like the sibling Cloud routes. */
 export const ACCOUNT_CLOUD_MODELS_PATH = `${ACCOUNT_CLOUD_COMPUTER_PATH}/models`;
@@ -207,6 +208,10 @@ export function sandboxRunnerWebSocketUrl(backendOrigin: string): string {
 
 export function accountComputerByIdPath(computerId: string): string {
   return `${ACCOUNT_COMPUTERS_PATH}/${encodeURIComponent(computerId)}`;
+}
+
+export function accountComputerDisconnectPath(computerId: string): string {
+  return `${accountComputerByIdPath(computerId)}/disconnect`;
 }
 
 export function agentByIdPath(agentId: string): string {

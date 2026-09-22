@@ -1,11 +1,13 @@
 import { z } from "zod";
 import {
-  ComputerConnectionStatusSchema,
   ComputerImCliReadinessCollectionSchema,
   ComputerKindSchema,
   ComputerPlatformSchema,
   ComputerProviderReadinessCollectionSchema,
 } from "./computer.js";
+
+/** Opt-in inventory retains explicitly disconnected Computers; legacy callers see active access only. */
+export const COMPUTER_ACCESS_CAPABILITY_HEADER = "x-opentag-computer-access";
 
 export const CompleteAccountSetupRequestSchema = z.object({ agentId: z.string().uuid() }).strict();
 export const AccountSetupCompletionSchema = z.object({ setupCompletedAt: z.string().datetime() }).strict();
@@ -24,7 +26,7 @@ export const AccountComputerSummarySchema = z
     kind: ComputerKindSchema.optional(),
     displayName: z.string().min(1),
     platform: ComputerPlatformSchema,
-    connectionStatus: ComputerConnectionStatusSchema,
+    connectionStatus: z.enum(["online", "offline", "disconnected"]),
     providerReadiness: ComputerProviderReadinessCollectionSchema.optional(),
     imCliReadiness: ComputerImCliReadinessCollectionSchema.optional(),
     connectedAt: z.string().datetime().nullable(),

@@ -25,6 +25,7 @@ async function fixture(
   options: {
     failure?: string;
     delayAlias?: string;
+    onConnect?: (alias: string) => void;
     managed?: boolean;
     packageMissing?: boolean;
     platform?: NodeJS.Platform;
@@ -58,6 +59,7 @@ async function fixture(
       return { stdout: JSON.stringify({ disconnected: true }) };
     }
     if (command === "connect") {
+      options.onConnect?.(alias);
       if (alias === options.delayAlias) await new Promise((done) => setTimeout(done, 80));
       if (alias === "product" && fail) return { stdout: JSON.stringify({ error: { code: fail } }) };
       attachments = [...attachments.filter((entry) => entry.alias !== alias), { alias, repository: args[2] ?? "" }];
@@ -137,15 +139,28 @@ describe("named Context Tree preparation", () => {
     expect(f.calls.filter(([command]) => command === "connect")).toHaveLength(3);
   });
   it("retains completed results on startup budget expiry and joins background work", async () => {
-    const f = await fixture({ delayAlias: "product" });
-    const results = await Promise.all([
-      f.manager.ensureAgent(f.cwd, "pi", trees),
-      f.manager.ensureAgent(f.cwd, "pi", trees),
-    ]);
+    let notifyProductStart: (() => void) | undefined;
+    const productStarted = new Promise<void>((resolve) => {
+      notifyProductStart = resolve;
+    });
+    const f = await fixture({
+      delayAlias: "product",
+      onConnect: (alias) => {
+        if (alias === "product") notifyProductStart?.();
+      },
+    });
+    // Let real filesystem setup finish before advancing the budget. Host I/O speed must not
+    // decide whether the already-completed first alias is present in the partial result.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pending = Promise.all([f.manager.ensureAgent(f.cwd, "pi", trees), f.manager.ensureAgent(f.cwd, "pi", trees)]);
+    await productStarted;
+    await vi.advanceTimersByTimeAsync(30);
+    const results = await pending;
     for (const result of results)
       expect(result).toMatchObject({
         connections: [{ status: "ready" }, { status: "unavailable", reason: "PREPARING" }],
       });
+    await vi.advanceTimersByTimeAsync(50);
     await f.manager.runExclusive(async () => undefined);
     expect(await f.manager.ensureAgent(f.cwd, "pi", trees)).toMatchObject({
       connections: [{ status: "ready" }, { status: "ready" }],

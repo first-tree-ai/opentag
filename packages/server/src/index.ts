@@ -908,9 +908,11 @@ export async function startServer(): Promise<void> {
     app = createApp({
       deployment: deploymentProof(config),
       loggerLevel: config.logLevel,
+      trustProxy: config.trustProxy,
       errorReporting: {
         reporter: createErrorReporter({
           projectId: config.observability.errorReporting.projectId,
+          credentials: config.observability.errorReporting.credentials,
           logger: () => app?.log,
         }),
       },

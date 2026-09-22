@@ -19,11 +19,15 @@ const validReport = {
   occurredAt: "2026-09-11T10:00:00.000Z",
 };
 
-function createRelayApp(options: { reporter?: ErrorReporter; rateLimiter?: RouteRateLimiter } = {}) {
+function createRelayApp(
+  options: { reporter?: ErrorReporter; rateLimiter?: RouteRateLimiter; trustProxy?: boolean | string[] } = {},
+) {
   const chunks: string[] = [];
+  const { trustProxy, ...errorReporting } = options;
   const app = createApp({
     loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
-    errorReporting: options,
+    errorReporting,
+    ...(trustProxy === undefined ? {} : { trustProxy }),
   });
   apps.push(app);
   return { app, logs: () => chunks.join("") };
@@ -126,6 +130,41 @@ describe("POST /api/v1/error-reports", () => {
     expect((await post(app, validReport, "198.51.100.2")).statusCode).toBe(202);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(reporter.report).toHaveBeenCalledTimes(3);
+  });
+
+  it("keys the budget on the forwarded client only when the proxy is trusted", async () => {
+    const viaProxy = (app: ReturnType<typeof createApp>, client: string) =>
+      app.inject({
+        method: "POST",
+        url: HTTP_PATHS.errorReports,
+        remoteAddress: "10.0.1.5",
+        headers: { "content-type": "application/json", "x-forwarded-for": client },
+        payload: JSON.stringify(validReport),
+      });
+    const limiter = () => new RouteRateLimiter(1, ERROR_REPORT_RATE_LIMIT_WINDOW_MS);
+    const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
+
+    const trusted = createRelayApp({ reporter, rateLimiter: limiter(), trustProxy: ["uniquelocal"] }).app;
+    expect((await viaProxy(trusted, "203.0.113.7")).statusCode).toBe(202);
+    expect((await viaProxy(trusted, "198.51.100.2")).statusCode).toBe(202);
+    expect((await viaProxy(trusted, "203.0.113.7")).statusCode).toBe(429);
+
+    const untrusted = createRelayApp({ reporter, rateLimiter: limiter() }).app;
+    expect((await viaProxy(untrusted, "203.0.113.7")).statusCode).toBe(202);
+    expect((await viaProxy(untrusted, "198.51.100.2")).statusCode).toBe(429);
+
+    // A peer outside the trusted list cannot pick its own address by sending the header.
+    const direct = createRelayApp({ reporter, rateLimiter: limiter(), trustProxy: ["uniquelocal"] }).app;
+    const spoof = (client: string) =>
+      direct.inject({
+        method: "POST",
+        url: HTTP_PATHS.errorReports,
+        remoteAddress: "203.0.113.9",
+        headers: { "content-type": "application/json", "x-forwarded-for": client },
+        payload: JSON.stringify(validReport),
+      });
+    expect((await spoof("192.0.2.1")).statusCode).toBe(202);
+    expect((await spoof("192.0.2.2")).statusCode).toBe(429);
   });
 
   it("defaults to a per-minute budget of thirty reports", () => {

@@ -742,6 +742,51 @@ describe("parseServerConfig", () => {
     ).toEqual({ projectId: "opentag-staging" });
   });
 
+  it("reads a service account key from the environment without echoing it on failure", () => {
+    const keyType = ["service", "account"].join("_");
+    const key = JSON.stringify({
+      type: keyType,
+      project_id: "key-project",
+      client_email: "relay@key-project.example",
+      private_key: "placeholder-private-key",
+    });
+    const credentials = {
+      client_email: "relay@key-project.example",
+      private_key: "placeholder-private-key",
+      project_id: "key-project",
+    };
+    expect(
+      parseServerConfig({ ...required, OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: key }).observability.errorReporting,
+    ).toEqual({ projectId: "key-project", credentials });
+    expect(
+      parseServerConfig({
+        ...required,
+        GOOGLE_CLOUD_PROJECT: "explicit-project",
+        OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: key,
+      }).observability.errorReporting,
+    ).toEqual({ projectId: "explicit-project", credentials });
+    expect(
+      parseServerConfig({ ...required, OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: " " }).observability.errorReporting,
+    ).toEqual({});
+
+    const invalid = '{"private_key":"placeholder-private-key-value"';
+    expect(() => parseServerConfig({ ...required, OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: invalid })).toThrow(
+      /OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON must be a Google service account key/,
+    );
+    try {
+      parseServerConfig({ ...required, OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: invalid });
+    } catch (error) {
+      expect(String(error)).not.toContain("placeholder-private-key-value");
+    }
+  });
+
+  it("reads which reverse proxies are trusted, defaulting to none", () => {
+    expect(parseServerConfig(required).trustProxy).toBe(false);
+    expect(parseServerConfig({ ...required, OPENTAG_TRUST_PROXY: "uniquelocal" }).trustProxy).toEqual(["uniquelocal"]);
+    expect(parseServerConfig({ ...required, OPENTAG_TRUST_PROXY: "true" }).trustProxy).toBe(true);
+    expect(() => parseServerConfig({ ...required, OPENTAG_TRUST_PROXY: "1" })).toThrow(/OPENTAG_TRUST_PROXY/);
+  });
+
   it("allows migration commands to parse only their database dependency", () => {
     expect(parseDatabaseConfig({ OPENTAG_DATABASE_URL: required.OPENTAG_DATABASE_URL })).toMatchObject({
       databaseUrl: required.OPENTAG_DATABASE_URL,

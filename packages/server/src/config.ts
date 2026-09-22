@@ -13,7 +13,13 @@ import { z } from "zod";
 import { CloudRunnerVersionSchema, parseCloudStorageBase } from "./cloud-identities-config.js";
 import { type CloudModelConfig, resolveCloudModelConfig } from "./cloud-model-config.js";
 import { type CloudRunnerConfig, resolveCloudRunnerConfig } from "./cloud-runner-config.js";
+import {
+  type ErrorReportingConfig,
+  ErrorReportingCredentialsJsonSchema,
+  resolveErrorReportingConfig,
+} from "./error-reporting-config.js";
 import { normalizeSkillObjectPrefix } from "./services/skills/skill-object-prefix.js";
+import { type TrustProxyConfig, TrustProxySchema } from "./trust-proxy-config.js";
 
 export { parseCloudStorageBase } from "./cloud-identities-config.js";
 
@@ -372,6 +378,13 @@ const ServerEnvironmentSchema = z
      * come from the same place in a deployment.
      */
     GOOGLE_CLOUD_PROJECT: z.string().trim().min(1).optional(),
+    /*
+     * The service account key for forwarding, as the whole key file in one value, for platforms that
+     * can set variables but not mount a file for GOOGLE_APPLICATION_CREDENTIALS. Never logged.
+     */
+    OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: ErrorReportingCredentialsJsonSchema,
+    /* Which reverse proxies may set X-Forwarded-*; decides the address rate limits key on. */
+    OPENTAG_TRUST_PROXY: TrustProxySchema,
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
     /*
      * The single overall Cloud switch. Off by default; enabling requires a valid storage prefix and
@@ -746,7 +759,7 @@ export interface ServerConfig {
       sampleRate: number;
     };
     /** Where relayed Web App and CLI errors are forwarded; `projectId` unset keeps them in the server log only. */
-    errorReporting: { projectId?: string };
+    errorReporting: ErrorReportingConfig;
   };
   logLevel: ServerLogLevel;
   /**
@@ -755,6 +768,8 @@ export interface ServerConfig {
    */
   mcpAllowLoopback: boolean;
   port: number;
+  /** Peers trusted to set `X-Forwarded-*`; `false` keys `request.ip` on the socket peer. */
+  trustProxy: TrustProxyConfig;
   publicUrl: string;
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
@@ -905,6 +920,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     GOOGLE_CLOUD_PROJECT: emptyToUndefined(environment.GOOGLE_CLOUD_PROJECT),
+    OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON: emptyToUndefined(environment.OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON),
+    OPENTAG_TRUST_PROXY: emptyToUndefined(environment.OPENTAG_TRUST_PROXY),
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
     OPENTAG_CLOUD_IDENTITIES_ENABLED: environment.OPENTAG_CLOUD_IDENTITIES_ENABLED,
     OPENTAG_CLOUD_STORAGE_BASE: emptyToUndefined(environment.OPENTAG_CLOUD_STORAGE_BASE),
@@ -1002,9 +1019,13 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
         headers: parsed.OPENTAG_OTEL_HEADERS,
         sampleRate: parsed.OPENTAG_OTEL_SAMPLE_RATE,
       },
-      errorReporting: parsed.GOOGLE_CLOUD_PROJECT ? { projectId: parsed.GOOGLE_CLOUD_PROJECT } : {},
+      errorReporting: resolveErrorReportingConfig(
+        parsed.GOOGLE_CLOUD_PROJECT,
+        parsed.OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON,
+      ),
     },
     port: parsed.OPENTAG_PORT,
+    trustProxy: parsed.OPENTAG_TRUST_PROXY,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
     internalTools: offersInternalTools(parsed.OPENTAG_ENV, parsed.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED),

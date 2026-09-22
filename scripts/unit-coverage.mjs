@@ -98,7 +98,6 @@ export const AGENT_RUNTIME_COVERAGE_INCLUDE = [
   "src/providers/claude-code/runtime-policy.ts",
   "src/providers/codex/agent-runtime.ts",
   "src/providers/codex/app-server-wire.ts",
-  "src/providers/codex/mcp-gateway-relay.ts",
   "src/providers/codex/runtime-policy.ts",
   "src/providers/pi/agent-runtime.ts",
   "src/providers/pi/rpc-wire.ts",

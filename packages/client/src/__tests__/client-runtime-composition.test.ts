@@ -723,21 +723,12 @@ describe("createClientRuntime production composition", () => {
     expect(launches).toContain("app-server --help");
     expect(launches).toContain("login status");
     expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(3);
-    // A Session App Server mounts its loopback MCP relay, whose port is chosen at runtime.
-    const relayOverride = /^mcp_servers=\{ "opentag-mcp" = \{ url = "http:\/\/127\.0\.0\.1:\d+\/mcp", /;
-    const managedSessionArgs = (line: string) => {
-      const [prefix, suffix] = line.split(/mcp_servers=\{ "opentag-mcp" = \{ [^}]* \} \}/);
-      return (
-        relayOverride.test(line.slice(prefix?.length ?? 0)) &&
-        `${prefix}mcp_servers={}${suffix}` ===
-          [
-            ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
-            "-c",
-            `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`,
-          ].join(" ")
-      );
-    };
-    expect(launches.filter(managedSessionArgs)).toHaveLength(1);
+    const managedSessionArgs = [
+      ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`,
+    ];
+    expect(launches.filter((line) => line === managedSessionArgs.join(" "))).toHaveLength(1);
     await expect(
       runtime.reconciler.reconcile({
         ...reconcileRequest(connection.installationId, snapshot()),

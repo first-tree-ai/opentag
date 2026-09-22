@@ -32,7 +32,6 @@ import type {
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
 import { CodexAppServerError } from "../providers/codex/app-server-wire.js";
-import { CODEX_MCP_RELAY_TOKEN_ENV } from "../providers/codex/mcp-gateway-relay.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -1336,53 +1335,25 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     expect(codexDependencies).toEqual([]);
 
     const cwd = await temporaryDirectory("opentag-codex-local-artifact-");
-    const launches: Array<{
-      command: string;
-      args: readonly string[];
-      path: string | undefined;
-      relayToken: string | undefined;
-    }> = [];
+    const launches: Array<{ command: string; args: readonly string[]; path: string | undefined }> = [];
     const runtimeFactory = new CodexAgentRuntimeFactory({
       clientVersion: "0.0.1-test",
       process: {
         env: { PATH: process.env.PATH, CODEX_FIXTURE_SCENARIO: "normal" },
         requestTimeoutMs: 2_000,
         spawnProcess: (command, args, options) => {
-          launches.push({
-            command,
-            args: [...args],
-            path: options.env?.PATH,
-            relayToken: options.env?.[CODEX_MCP_RELAY_TOKEN_ENV],
-          });
+          launches.push({ command, args: [...args], path: options.env?.PATH });
           return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
         },
       },
-      startMcpRelay: async () => relay,
       probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "fixture" }),
     });
-    const relay = {
-      url: "http://127.0.0.1:4100/mcp",
-      token: "relay-token",
-      setUpstream: vi.fn(),
-      close: vi.fn(async () => undefined),
-    };
     const runtime = await runtimeFactory.create({ ...createRequest(() => undefined), workspace: { cwd } });
     await runtime.close();
 
-    // The only MCP server Codex may mount is the Session relay; the user's own servers stay excluded.
     expect(launches).toEqual([
-      {
-        command: "codex",
-        args: CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.map((arg) =>
-          arg === "mcp_servers={}"
-            ? 'mcp_servers={ "opentag-mcp" = { url = "http://127.0.0.1:4100/mcp", bearer_token_env_var = "OPENTAG_MCP_RELAY_TOKEN", default_tools_approval_mode = "approve" } }'
-            : arg,
-        ),
-        path: process.env.PATH,
-        relayToken: "relay-token",
-      },
+      { command: "codex", args: [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS], path: process.env.PATH },
     ]);
-    expect(relay.close).toHaveBeenCalledOnce();
   });
 
   it("runs the full Provider through a real offline App Server process", async () => {

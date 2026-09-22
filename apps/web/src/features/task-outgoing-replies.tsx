@@ -8,16 +8,16 @@ import { taskReplyTime } from "./task-timeline.js";
 type OutgoingSnapshot = NonNullable<NonNullable<TaskTurn["report"]>["outgoingReplies"]>;
 type OutgoingReply = OutgoingSnapshot["replies"][number];
 
+export function TaskOutgoingReplyMeta({ reply }: { reply: OutgoingReply }) {
+  const typeLabel = replyTypeLabel(reply.content.msgType);
+  const meta = [typeLabel, replyTime(reply.createTime)].filter(Boolean).join(" · ");
+  return <small className="text-kumo-subtle">{meta}</small>;
+}
+
 export function TaskOutgoingReply({ reply }: { reply: OutgoingReply }) {
   const content = reply.content;
-  const typeLabel = replyTypeLabel(content.msgType);
-  const meta = [typeLabel, replyTime(reply.createTime)].filter(Boolean).join(" · ");
   return (
     <article className="grid gap-2" data-ui="task-sent-reply" data-msg-type={content.msgType}>
-      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <strong className="text-sm">{m.tasks_sent_reply()}</strong>
-        {meta ? <small className="text-kumo-subtle">{meta}</small> : null}
-      </header>
       <OutgoingReplyBody reply={reply} />
       {content.unavailable === "content_truncated" ? (
         <p className="text-sm text-kumo-subtle" data-ui="task-reply-content-truncated">

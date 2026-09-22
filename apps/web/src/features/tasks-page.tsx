@@ -24,7 +24,6 @@ import {
 } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
-import { TaskCloudEnvironment } from "./agents/cloud/cloud-environment.js";
 import {
   liveRefreshErrors,
   ResourceRefreshNotice,
@@ -476,12 +475,6 @@ export function TaskDetailPage({
         </dl>
         <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
       </header>
-
-      {/*
-       * The environment this Task's Session occupies, for a Cloud Agent. It is a fact beside the
-       * Task, never a rewrite of it: a completed Task can still carry a failed workspace save.
-       */}
-      {showExamples ? null : <TaskCloudEnvironment agentId={agentId ?? task.agent.id} sessionId={task.id} />}
 
       {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void taskQuery.refetch()} /> : null}
 

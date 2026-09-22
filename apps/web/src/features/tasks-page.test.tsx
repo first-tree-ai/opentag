@@ -406,6 +406,31 @@ describe("Tasks view", () => {
     expect(screen.queryByText(/150 tokens/)).toBeNull();
   });
 
+  it("stays an IM work-record view: no Cloud environment read, section, or controls", async () => {
+    // A Task is a work-record view organized by IM topic; it never queries or manages the runtime
+    // Cloud environments underneath, whatever the Agent's Computer kind.
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    const overview = vi.spyOn(browserApi, "agentCloudOverview");
+    const agent = vi.spyOn(browserApi, "agent");
+    const computers = vi.spyOn(browserApi, "computers");
+
+    await renderInRouter(<TaskDetailPage agentId={agentId} taskId={sessionId} />, {
+      path: `/agents/${agentId}/tasks/${sessionId}`,
+    });
+
+    // The Task's own facts and conversation render exactly as before.
+    expect(await screen.findByLabelText("Task details")).toBeTruthy();
+    expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
+    expect(await screen.findByRole("region", { name: "Activity" })).toBeTruthy();
+    // No environment region or resource control belongs to the page, and no Cloud read fires.
+    expect(screen.queryByRole("region", { name: "Cloud environment" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /release/ })).toBeNull();
+    expect(overview).not.toHaveBeenCalled();
+    expect(agent).not.toHaveBeenCalled();
+    expect(computers).not.toHaveBeenCalled();
+  });
+
   it("keeps generated Task titles read-only and separates useful list metadata into columns", async () => {
     vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
 
@@ -995,7 +1020,10 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Sent reply")).toBeTruthy();
+    expect(within(activity).getByText("Text").closest("header")?.getAttribute("data-ui")).toBe(
+      "task-message-author-agent",
+    );
+    expect(within(activity).queryByText("Sent reply")).toBeNull();
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
     expect(within(activity).getByText("Execution summary")).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
@@ -1021,7 +1049,7 @@ describe("Tasks view", () => {
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(within(activity).getByText("No sent replies recorded.")).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
-    expect(within(activity).queryByText("Sent reply")).toBeNull();
+    expect(activity.querySelector('[data-ui="task-sent-reply"]')).toBeNull();
   });
 
   it("keeps successful outbound messages on a failed Turn and labels unavailable legacy data", async () => {
@@ -1055,7 +1083,7 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Sent reply")).toBeTruthy();
+    expect(within(activity).getByText("Image")).toBeTruthy();
     expect(within(activity).getByText(/photo.png/)).toBeTruthy();
     expect(within(activity).getByText("Provider failed")).toBeTruthy();
   });
@@ -1083,7 +1111,7 @@ describe("Tasks view", () => {
       const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
         path: `/tasks/${sessionId}`,
       });
-      await screen.findByText("Sent reply");
+      await screen.findByText("Actual reply");
       expect(container.querySelector('[data-ui="task-sent-reply"]')?.textContent).toContain("Actual reply");
       const summary = container.querySelector('[data-ui="task-execution-summary"]');
       expect(summary?.querySelector("p") ?? null).toBeNull();

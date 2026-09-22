@@ -7,8 +7,23 @@ import { ComputerConnect } from "../../computer-connect/computer-connect.js";
 import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js";
-import { CloudComputerSettings } from "../cloud/cloud-environment.js";
 import { AgentSettingsPageHeader } from "./settings-layout.js";
+
+/**
+ * A Cloud Computer is managed by the platform: nothing is installed, connected, or repaired here,
+ * so the panel states that one fact under the normal heading and nothing more.
+ */
+function CloudComputerSettings() {
+  return (
+    <div className="grid gap-6">
+      <AgentSettingsPageHeader
+        description={m.cloud_computer_managed()}
+        id="computer-heading"
+        title={m.agents_status_computer()}
+      />
+    </div>
+  );
+}
 
 /**
  * The panel an Agent that has no Computer gets. It is a distinct screen rather than the repair flow
@@ -88,11 +103,11 @@ export function AgentComputerSettings({
   const recovery = computerRecoveryMessage(agent);
   if (!agent.computer) return <AgentComputerBinding agent={agent} onAgentChanged={onAgentChanged} />;
   /*
-   * A Cloud Computer is a logical identity that is always online: nothing is installed or
-   * repaired here, and the operative state lives in the Session environments. The Local path
-   * below is unchanged — a Cloud Agent never reaches the bind or repair flows.
+   * A Cloud Computer is managed by the platform, so the settings panel is one sentence rather
+   * than a status board. The Local path below is unchanged — a Cloud Agent never reaches the
+   * bind or repair flows.
    */
-  if (agent.computerKind === "cloud") return <CloudComputerSettings agent={agent} />;
+  if (agent.computerKind === "cloud") return <CloudComputerSettings />;
   if (agent.computerKind === undefined && computerState.state === "unconfirmed") {
     return <UnconfirmedComputerSettings computer={agent.computer} onAgentChanged={onAgentChanged} />;
   }

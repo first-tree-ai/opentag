@@ -27,6 +27,11 @@ import {
  * opaque local endpoints — never a token. The Docker credential bridge mounts this directory into
  * the untrusted container; the native Runner mounts it into the Cloud Run Sandbox. Both callers
  * keep the trusted Relay/adapter outside the Sandbox boundary.
+ *
+ * Transport divergence: the Docker bridge additionally publishes the two per-execution Unix
+ * sockets (`listenBridgeProxySockets` below) that its generated entry program bridges to the
+ * trusted loopback adapter. The native transport never mounts parent sockets — it uses the
+ * per-execution HTTP/2 `sandbox exec` duplex bridge instead — so publication here is files only.
  */
 export interface BridgeMaterialResources {
   adapter: RuntimeProxyLoopbackAdapter;
@@ -68,14 +73,13 @@ export async function closeBridgeSockets(resources: BridgeSocketResources): Prom
 }
 
 /**
- * Publish the per-execution PUBLIC material (CA certificate, proxy sockets, handles, CLI config)
- * into `publicDirectory` — the exact directory that becomes the read-only Sandbox mount. The
+ * Publish the per-execution PUBLIC material (CA certificate, handles, CLI config) into
+ * `publicDirectory` — the exact directory that becomes the read-only Sandbox mount. The
  * trusted CA private key and every handle secret stay in the adapter's private `materialDir`,
  * which callers must keep OUTSIDE `publicDirectory` (the native Runner mounts only this subtree).
  */
 export async function publishExecutionMaterial(
   resources: BridgeMaterialResources,
-  socketResources: BridgeSocketResources,
   publicDirectory: string,
   options: PublishExecutionMaterialOptions,
 ): Promise<string> {
@@ -87,8 +91,6 @@ export async function publishExecutionMaterial(
   const caFile = join(published, CLOUD_SANDBOX_CA_FILE);
   await copyFile(adapter.caCertPath, caFile);
   await chmod(caFile, 0o444);
-  await listenProxySocket(socketResources, "connect", adapter.connectProxyUrl, join(published, "connect.sock"));
-  await listenProxySocket(socketResources, "slack", adapter.slackApiHost, join(published, "slack.sock"));
   const handles = new Map(relay.providers.map((entry) => [entry.provider, relay.localHandleFor(entry.provider)]));
   const layout: RuntimeProxyExecutionLayout = {
     adapterCaCertPath: `${mount}/${CLOUD_SANDBOX_CA_FILE}`,
@@ -138,6 +140,20 @@ export async function publishExecutionMaterial(
   );
   await writePublicFile(join(published, "bin", "gh"), renderRuntimeProxyProviderLauncher("gh"), 0o555);
   return published;
+}
+
+/**
+ * Docker bridge only: listen on the two per-execution Unix sockets inside the published
+ * directory and bridge each accepted connection to the trusted loopback adapter. The native
+ * transport never calls this — no parent socket is ever mounted into the native Sandbox.
+ */
+export async function listenBridgeProxySockets(
+  resources: BridgeSocketResources,
+  adapter: RuntimeProxyLoopbackAdapter,
+  publicDirectory: string,
+): Promise<void> {
+  await listenProxySocket(resources, "connect", adapter.connectProxyUrl, join(publicDirectory, "connect.sock"));
+  await listenProxySocket(resources, "slack", adapter.slackApiHost, join(publicDirectory, "slack.sock"));
 }
 
 async function listenProxySocket(

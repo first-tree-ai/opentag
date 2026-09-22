@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Duplex } from "node:stream";
 
 /**
  * Native Cloud Run sandbox orchestration. The sandbox supervisor binary lives at a fixed
@@ -92,6 +93,7 @@ export interface SandboxExecResult {
  * trusted parent caller; this type deliberately exposes no raw process or environment access.
  */
 export interface SandboxExecDuplex {
+  asStream(): Duplex;
   write(chunk: Uint8Array): void;
   end(): void;
   kill(signal?: NodeJS.Signals): void;
@@ -461,7 +463,17 @@ export class NativeSandbox {
     child.stdin.on("error", deliverError);
     child.stdout.on("error", deliverError);
     child.stderr.on("error", deliverError);
+    let pipe: Duplex | undefined;
     return {
+      asStream() {
+        // Node supports a pair of Node streams; @types/node currently declares only the Web pair.
+        const fromStreams = Duplex.from as unknown as (pair: {
+          readable: ChildProcessWithoutNullStreams["stdout"];
+          writable: ChildProcessWithoutNullStreams["stdin"];
+        }) => Duplex;
+        pipe ??= fromStreams({ readable: child.stdout, writable: child.stdin });
+        return pipe;
+      },
       write(chunk) {
         if (child.stdin.destroyed) return;
         try {

@@ -25,11 +25,7 @@ import {
   TurnReportRequestSchema,
 } from "@opentag/shared";
 import { z } from "zod";
-import {
-  closeBridgeSockets,
-  createBridgeSocketResources,
-  publishExecutionMaterial,
-} from "../cloud-runtime/bridge-material.js";
+import { publishExecutionMaterial } from "../cloud-runtime/bridge-material.js";
 import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
 import type { TurnCompletion } from "../runtime/agent-turn-runner.js";
 import { turnTimeoutMs } from "../runtime/agent-turn-runner.js";
@@ -50,7 +46,8 @@ import {
   computeCloudSessionInputHash,
 } from "./cloud-journal.js";
 import { CloudWorkspaceError } from "./cloud-workspace.js";
-import { type NativeSandbox, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
+import { NativeProviderBridge } from "./native-provider-bridge.js";
+import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
 
 /**
  * Trusted-parent Cloud Turn lifecycle (E4). Owns the durable journal boundary for every delivery
@@ -93,7 +90,7 @@ export interface CloudTurnRunnerOptions {
    */
   readonly publicDirectory?: string;
   readonly journal: CloudJournal;
-  readonly sandbox: Pick<NativeSandbox, "exec">;
+  readonly sandbox: Pick<NativeSandbox, "exec" | "openDuplex">;
   readonly serverUrl: string;
   readonly send: (frame: RunnerClientFrame) => void;
   /** The #633 tunnel over the current Runner connection. */
@@ -151,6 +148,12 @@ export interface CloudTurnExecutionHandle {
    * via stdin and cleared with the execution; never journaled, logged, or archived.
    */
   readonly sessionCliProof?: SessionCliProofGrant;
+  /**
+   * Unexpected death of this execution's in-Sandbox provider bridge, when it happened. A Turn
+   * that claims success while its provider transport died cannot be trusted as completed.
+   */
+  readonly bridgeFailure?: () => Error | undefined;
+  readonly bridgeFailureSignal?: AbortSignal;
   close(): Promise<void>;
 }
 
@@ -1363,30 +1366,8 @@ export class CloudTurnRunner {
           : {}),
         ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
       });
-      const runWorker =
-        this.#options.runWorker ??
-        ((input: { stdin: string; timeoutMs: number }, workerSignal: AbortSignal) =>
-          this.#options.sandbox.exec(SANDBOX_NODE, [SANDBOX_WORKER_ENTRY, "worker"], {
-            signal: workerSignal,
-            stdin: input.stdin,
-            timeoutMs: input.timeoutMs,
-          }));
-      // The in-sandbox worker owns the persisted runtime deadline and aborts itself at
-      // `turnTimeoutMs(...)`, reporting `turn_timeout`. This parent value is only the exec
-      // backstop that stops a wedged wrapper; it adds the bounded reporting grace so the worker's
-      // own deadline wins, and it never makes the advertised runtime longer than that grace.
       const timeoutMs = turnTimeoutMs(delivery, Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
-      const exec = await runWorker({ stdin, timeoutMs }, signal);
-      if (signal.aborted) {
-        return { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
-      }
-      const completion = parseWorkerCompletion(exec.stdout);
-      // A nonzero worker exit can never be a successful Turn, even when stdout claims one
-      // (truncated/forged output). A genuine non-completed completion is still honored.
-      if (exec.code !== 0 && completion.outcome === "completed") {
-        return { errorReason: "provider_failed", executionEffects: "may_have_occurred", outcome: "failed" };
-      }
-      return completion;
+      return await this.#runWorker({ stdin, timeoutMs }, signal, execution);
     } finally {
       await execution.close().catch((error) => this.#reportPersistenceError(error));
     }
@@ -1504,34 +1485,62 @@ export class CloudTurnRunner {
           : {}),
         ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
       });
-      const runWorker =
-        this.#options.runWorker ??
-        ((input: { stdin: string; timeoutMs: number }, workerSignal: AbortSignal) =>
-          this.#options.sandbox.exec(SANDBOX_NODE, [SANDBOX_WORKER_ENTRY, "worker"], {
-            signal: workerSignal,
-            stdin: input.stdin,
-            timeoutMs: input.timeoutMs,
-          }));
       const timeoutMs = Math.max(1, Date.parse(deadlineAt) - Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
-      const exec = await runWorker({ stdin, timeoutMs }, signal);
-      if (signal.aborted) {
-        return { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
-      }
-      const completion = parseWorkerCompletion(exec.stdout);
-      if (exec.code !== 0 && completion.outcome === "completed") {
-        return { errorReason: "provider_failed", executionEffects: "may_have_occurred", outcome: "failed" };
-      }
-      return completion;
+      return await this.#runWorker({ stdin, timeoutMs }, signal, execution);
     } finally {
       await execution.close().catch((error) => this.#reportPersistenceError(error));
     }
   }
 
+  /** Both execution paths use the same transport-failure and completion boundary. */
+  async #runWorker(
+    input: { stdin: string; timeoutMs: number },
+    signal: AbortSignal,
+    execution: CloudTurnExecutionHandle,
+  ): Promise<TurnCompletion> {
+    const workerSignal = execution.bridgeFailureSignal
+      ? AbortSignal.any([signal, execution.bridgeFailureSignal])
+      : signal;
+    const runWorker =
+      this.#options.runWorker ??
+      ((input, workerSignal) =>
+        this.#options.sandbox.exec(SANDBOX_NODE, [SANDBOX_WORKER_ENTRY, "worker"], {
+          signal: workerSignal,
+          stdin: input.stdin,
+          timeoutMs: input.timeoutMs,
+        }));
+    try {
+      // The worker owns its runtime deadline; the exec backstop includes the reporting grace.
+      const exec = await runWorker(input, workerSignal);
+      if (signal.aborted) {
+        return { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
+      }
+      if (execution.bridgeFailure?.()) {
+        return { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
+      }
+      const completion = parseWorkerCompletion(exec.stdout);
+      // A nonzero exit cannot corroborate success, even when stdout claims completion.
+      if (exec.code !== 0 && completion.outcome === "completed") {
+        return { errorReason: "provider_failed", executionEffects: "may_have_occurred", outcome: "failed" };
+      }
+      return completion;
+    } catch (error) {
+      if (execution.bridgeFailure?.() && !signal.aborted) {
+        return { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
+      }
+      throw error;
+    }
+  }
+
   /**
    * Default per-turn credential bridge: open a #633 execution through the Runner channel tunnel,
-   * start the trusted loopback adapter, and publish ONLY the per-turn public material the native
-   * Sandbox mounts. The private CA/journal/bootstrap material stays in the unmounted private root.
-   * Nothing runs in this parent beyond credential relaying; the worker executes inside the Sandbox.
+   * start the trusted loopback adapter, publish ONLY the per-turn public material the native
+   * Sandbox mounts, and open the per-execution HTTP/2 provider bridge (`sandbox exec` duplex)
+   * whose in-Sandbox helper owns the two fixed loopback entry ports. The parent side of the
+   * bridge dials exactly two enumerated targets — this execution's own adapter ports — and no
+   * parent Unix socket is ever mounted. The private CA/journal/bootstrap material stays in the
+   * unmounted private root. Nothing runs in this parent beyond credential relaying; the worker
+   * executes inside the Sandbox.
    */
   async #openBridgeExecution(input: CloudTurnExecutionOpenInput): Promise<CloudTurnExecutionHandle> {
     return this.#openRelayExecution({
@@ -1568,7 +1577,7 @@ export class CloudTurnRunner {
     const connection = new CloudCredentialConnection(this.#options.credentialChannel());
     let relay: Awaited<ReturnType<typeof RuntimeCredentialRelay.open>> | undefined;
     let adapter: Awaited<ReturnType<typeof RuntimeProxyLoopbackAdapter.start>> | undefined;
-    let sockets: ReturnType<typeof createBridgeSocketResources> | undefined;
+    let bridge: NativeProviderBridge | undefined;
     let privateDirectory: string | undefined;
     let publicDirectory: string | undefined;
     let cleaned = false;
@@ -1588,12 +1597,22 @@ export class CloudTurnRunner {
           failures.push(error);
         }
       };
-      const ownedSockets = sockets;
+      const ownedBridge = bridge;
       const ownedAdapter = adapter;
       const ownedRelay = relay;
       const ownedPublic = publicDirectory;
       const ownedPrivate = privateDirectory;
-      if (ownedSockets) await step(() => closeBridgeSockets(ownedSockets));
+      // The bridge goes first: its helper and every in-flight parent connection stop before the
+      // trusted adapter/relay they dialed are released.
+      if (ownedBridge)
+        await step(async () => {
+          try {
+            await ownedBridge.close();
+          } catch (error) {
+            this.#sandboxUnusable = true;
+            throw error;
+          }
+        });
       if (ownedAdapter) await step(() => ownedAdapter.close());
       if (ownedRelay) await step(() => ownedRelay.close(reason));
       await step(() => connection.close());
@@ -1625,7 +1644,6 @@ export class CloudTurnRunner {
         input.signal,
       );
       const openRelay = relay;
-      sockets = createBridgeSocketResources();
       privateDirectory = await mkdtemp(join(this.#options.stateDirectory, "turn-private-"));
       const publicRoot = this.#options.publicDirectory ?? join(this.#options.stateDirectory, "public");
       await mkdir(publicRoot, { recursive: true, mode: 0o700 });
@@ -1641,13 +1659,27 @@ export class CloudTurnRunner {
         verifyHandle: (provider, handle) => openRelay.verifyLocalHandle(provider, handle),
       });
       const inSandboxExecutionDir = `${CLOUD_EXECUTION_MOUNT}/${basename(publicDirectory)}`;
-      await publishExecutionMaterial({ adapter, relay: openRelay }, sockets, publicDirectory, {
+      // Public files only: the native Sandbox never receives a parent socket. The HTTP/2 bridge
+      // helper opened next owns the two loopback entry ports the published environment names.
+      await publishExecutionMaterial({ adapter, relay: openRelay }, publicDirectory, {
         includeEntryPrograms: false,
         publicMountPath: inSandboxExecutionDir,
       });
+      const openAdapter = adapter;
+      bridge = await NativeProviderBridge.open({
+        sandbox: this.#options.sandbox,
+        signal: input.signal,
+        targets: {
+          connect: loopbackPortOf(openAdapter.connectProxyUrl),
+          slack: loopbackPortOf(openAdapter.slackApiHost),
+        },
+      });
+      const openBridge = bridge;
       return {
         executionDir: inSandboxExecutionDir,
         ...(openRelay.sessionCliProof ? { sessionCliProof: openRelay.sessionCliProof } : {}),
+        bridgeFailure: () => openBridge.failure,
+        bridgeFailureSignal: openBridge.failureSignal,
         close: async () => {
           const failures = await cleanup("execution_closed");
           if (failures.length > 0) {
@@ -1658,6 +1690,10 @@ export class CloudTurnRunner {
         },
       };
     } catch (error) {
+      if (error instanceof NativeSandboxError && error.code === "delete_failed") {
+        this.#sandboxUnusable = true;
+        this.#reportPersistenceError(error);
+      }
       const cleanupFailures = await cleanup("open_failed");
       if (cleanupFailures.length > 0) {
         // A leaked credential connection/adapter in the trusted parent is surfaced through the
@@ -1765,6 +1801,24 @@ function workspaceSaveFailure(completion: TurnCompletion): TurnCompletion {
 /** A Turn that did not verifiably complete may have left native processes behind. */
 function isInterrupted(completion: TurnCompletion): boolean {
   return completion.outcome !== "completed" || completion.executionEffects !== "completed";
+}
+
+/**
+ * Enumerated bridge target extraction: the parent maps the two bridge entries to exactly the two
+ * loopback TCP ports of its own per-execution adapter. Anything that is not a numeric 127.0.0.1
+ * port is a composition bug and fails before any helper is spawned; no address or path is ever
+ * taken from the Sandbox or from a caller.
+ */
+function loopbackPortOf(endpoint: string): number {
+  const url = new URL(endpoint);
+  if (url.hostname !== "127.0.0.1") {
+    throw new Error("The execution adapter endpoint is not a fixed loopback address");
+  }
+  const port = Number(url.port);
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    throw new Error("The execution adapter endpoint has no valid loopback port");
+  }
+  return port;
 }
 
 /** One-line error text for logs and aggregate cleanup errors. */

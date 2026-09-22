@@ -15,6 +15,7 @@ import {
   type BridgeSocketResources,
   closeBridgeSockets,
   createBridgeSocketResources,
+  listenBridgeProxySockets,
   publishExecutionMaterial,
 } from "./bridge-material.js";
 import { CLOUD_EXECUTION_MOUNT } from "./sandbox-entry.js";
@@ -122,10 +123,11 @@ export class CloudSandboxCredentialBridge {
       });
       resources.public = await publishExecutionMaterial(
         { adapter: resources.adapter, relay },
-        resources,
         join(directory, "public"),
         { includeEntryPrograms: true },
       );
+      // The Docker entry program bridges the container's loopback ports to these mounted sockets.
+      await listenBridgeProxySockets(resources, resources.adapter, resources.public);
       const bridge = new CloudSandboxCredentialBridge(resources as ReadyBridgeResources, options.spawnProcess ?? spawn);
       const abort = () => void bridge.close();
       relay.signal.addEventListener("abort", abort, { once: true });

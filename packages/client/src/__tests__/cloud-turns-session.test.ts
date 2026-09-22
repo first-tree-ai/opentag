@@ -182,7 +182,12 @@ describe("CloudTurnRunner Session collaboration", () => {
         workerInputs.push(input);
         return options.worker?.(input, signal) ?? Promise.resolve(completedExec());
       },
-      sandbox: { exec: () => Promise.reject(new Error("unexpected native seam")) },
+      sandbox: {
+        exec: () => Promise.reject(new Error("unexpected native seam")),
+        openDuplex: () => {
+          throw new Error("unexpected native duplex seam");
+        },
+      },
       scope: () => scope,
       send: (frame) => sent.push(frame),
       serverUrl: "https://server.example.com",
@@ -191,6 +196,57 @@ describe("CloudTurnRunner Session collaboration", () => {
     });
     return { journal, message, runner, scope, sent, workerInputs };
   }
+
+  it("surfaces an unexpected provider bridge death instead of a claimed Session success", async () => {
+    const h = harness({
+      runnerOptions: {
+        openSessionExecution: async () => ({
+          bridgeFailure: () => new Error("provider bridge helper died"),
+          close: async () => undefined,
+          executionDir: "/run/opentag-execution/turn-session",
+        }),
+      },
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message, "internal"));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await waitFor(() => settledOf(h.sent).length === 1, "bridge-death settlement");
+    // The worker's claimed success over a dead provider transport settles as unknown, never completed.
+    expect(settledOf(h.sent)[0]?.outcome).toBe("unknown");
+    await h.runner.close();
+  });
+
+  it("aborts an active Session worker on bridge failure and settles unknown", async () => {
+    const failed = new AbortController();
+    let sawAbort = false;
+    const h = harness({
+      runnerOptions: {
+        openSessionExecution: async () => ({
+          bridgeFailure: () => (failed.signal.aborted ? new Error("bridge died") : undefined),
+          bridgeFailureSignal: failed.signal,
+          close: async () => undefined,
+          executionDir: "/run/opentag-execution/turn-session",
+        }),
+      },
+      worker: async (_input, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              sawAbort = true;
+              reject(new Error("worker stopped"));
+            },
+            { once: true },
+          );
+          failed.abort();
+        }),
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message, "internal"));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await waitFor(() => settledOf(h.sent).length === 1, "bridge-death settlement");
+    expect(sawAbort).toBe(true);
+    expect(settledOf(h.sent)[0]?.outcome).toBe("unknown");
+    await h.runner.close();
+  });
 
   it("journals, executes, and settles a Session message, forwarding the open proof via stdin", async () => {
     const h = harness({ proof: PROOF });
@@ -858,7 +914,12 @@ describe("CloudTurnRunner Session collaboration", () => {
         executionDir: "/run/opentag-execution/turn-session",
       }),
       runWorker: async () => completedExec(),
-      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      sandbox: {
+        exec: () => Promise.reject(new Error("unused native seam")),
+        openDuplex: () => {
+          throw new Error("unused native duplex seam");
+        },
+      },
       scope: () => h.scope,
       send: () => undefined,
       serverUrl: "https://server.example.com",

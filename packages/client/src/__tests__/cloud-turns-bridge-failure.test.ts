@@ -3,20 +3,23 @@ import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunnerClientFrame, RuntimeCredentialServerFrame } from "@opentag/shared";
+import type { RunnerClientFrame, RuntimeCredentialServerFrame, SessionMessageDeliveryRequest } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudCredentialChannel } from "../runner/cloud-credential-connection.js";
 import { CloudJournal } from "../runner/cloud-journal.js";
 import { CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
-import { cloudRunnerDirectories, defaultRunnerStateDir, runnerStateDirectorySegment } from "../runner/serve.js";
+import { NativeProviderBridge } from "../runner/native-provider-bridge.js";
+import { NativeSandboxError } from "../runner/native-sandbox.js";
+import { cloudRunnerDirectories, defaultRunnerStateDir } from "../runner/serve.js";
 import { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 /**
- * Default `#openBridgeExecution` acquisition-lifetime regressions. The credential relay and the
- * loopback adapter are controlled local fixtures; every failure below is a REAL filesystem
- * failure. No Cloud, credential, model, provider or IM operation occurs.
+ * Default `#openBridgeExecution` acquisition-lifetime regressions. The credential relay, the
+ * loopback adapter and the native provider bridge are controlled local fixtures; every failure
+ * below is a REAL filesystem or fixture failure. No Cloud, credential, model, provider or IM
+ * operation occurs, and no parent socket may ever be published into the Sandbox material.
  */
 
 const MODEL_GRANT = {
@@ -100,6 +103,17 @@ async function fakeAdapter(root: string, caPath: string, closeCounter: { count: 
   };
 }
 
+/** Controlled bridge fixture; the open spy records every input for target/lifetime assertions. */
+function fakeBridge(closeCounter: { count: number }, events?: string[]): unknown {
+  return {
+    close: async () => {
+      closeCounter.count += 1;
+      events?.push("bridge:close");
+    },
+    failure: undefined,
+  };
+}
+
 /** Bounded explicit completion waiter; never an unbounded loop. */
 async function waitFor(check: () => boolean, description: string, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -112,6 +126,27 @@ async function waitFor(check: () => boolean, description: string, timeoutMs = 5_
 
 function reportsOf(sent: RunnerClientFrame[]) {
   return sent.filter((frame) => frame.type === "delivery:report");
+}
+
+function settledOf(sent: RunnerClientFrame[]) {
+  return sent.filter((frame) => frame.type === "session:message:settled");
+}
+
+/** One minimal valid Session message sharing the delivery's Session scope. */
+function sessionMessageFixture(sessionId: string): SessionMessageDeliveryRequest {
+  const runtime = cloudDeliveryFixture().runtime;
+  const messageId = randomUUID();
+  return {
+    type: "session:message:deliver",
+    requestId: messageId,
+    messageId,
+    sourceSessionId: randomUUID(),
+    targetSessionId: sessionId,
+    agentId: runtime.agentId,
+    placementGeneration: 1,
+    content: { kind: "text", text: "child task" },
+    runtime,
+  };
 }
 
 describe("CloudTurnRunner default bridge acquisition lifetime", () => {
@@ -149,6 +184,7 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     state: ChannelFixture;
     publicDirectory?: string;
     stateDirectory?: string;
+    onPersistenceError?: (error: unknown) => void;
     runWorker: (
       stdin: { stdin: string; timeoutMs: number },
       signal: AbortSignal,
@@ -159,7 +195,13 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
       journal,
       ...(input.publicDirectory ? { publicDirectory: input.publicDirectory } : {}),
       runWorker: input.runWorker,
-      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      onPersistenceError: input.onPersistenceError,
+      sandbox: {
+        exec: () => Promise.reject(new Error("unused native seam")),
+        openDuplex: () => {
+          throw new Error("unused native duplex seam");
+        },
+      },
       scope: () => input.scope,
       send: (frame) => input.sent.push(frame),
       serverUrl: "https://server.example.com",
@@ -184,10 +226,52 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     await waitFor(() => runner.activeDeliveryId === undefined, "turn to settle");
   }
 
+  async function driveToSessionSettled(
+    runner: CloudTurnRunner,
+    message: SessionMessageDeliveryRequest,
+    sent: RunnerClientFrame[],
+  ): Promise<void> {
+    await runner.handleSessionMessageRun({
+      type: "session:message:run",
+      requestId: message.requestId,
+      message,
+      sessionKind: "internal",
+    });
+    await runner.handleSessionMessageVerified({
+      type: "session:message:verified",
+      requestId: message.requestId,
+      status: "verified",
+      model: MODEL_GRANT,
+    });
+    await waitFor(() => settledOf(sent).length === 1, "Session settlement");
+    await waitFor(() => runner.activeMessageId === undefined, "Session turn to settle");
+  }
+
+  /** The real relay/adapter fixtures plus a controlled bridge, ready for one turn. */
+  async function mockExecutionStack(input: { events?: string[]; withCa?: boolean } = {}) {
+    const relayClosed = { count: 0 };
+    const adapterClosed = { count: 0 };
+    const bridgeClosed = { count: 0 };
+    vi.spyOn(RuntimeCredentialRelay, "open").mockResolvedValue(fakeRelay(relayClosed) as never);
+    await mkdir(stateDirectory, { recursive: true });
+    const caPath = join(root, "ca.pem");
+    if (input.withCa !== false) {
+      await writeFile(caPath, "-----BEGIN CERTIFICATE-----fixture-----END CERTIFICATE-----\n");
+    }
+    const adapter = await fakeAdapter(root, caPath, adapterClosed);
+    vi.spyOn(RuntimeProxyLoopbackAdapter, "start").mockResolvedValue(adapter.adapter as never);
+    const bridgeOpen = vi.spyOn(NativeProviderBridge, "open").mockImplementation(async () => {
+      input.events?.push("bridge:open");
+      return fakeBridge(bridgeClosed, input.events) as never;
+    });
+    return { adapter, adapterClosed, bridgeClosed, bridgeOpen, relayClosed };
+  }
+
   it("closes the credential connection when RuntimeCredentialRelay.open rejects", async () => {
     const s = scenario();
     vi.spyOn(RuntimeCredentialRelay, "open").mockRejectedValue(new Error("relay open rejected"));
     const adapterStart = vi.spyOn(RuntimeProxyLoopbackAdapter, "start");
+    const bridgeOpen = vi.spyOn(NativeProviderBridge, "open");
     const runner = makeRunner({
       runWorker: async () => {
         throw new Error("the worker must never execute after a bridge failure");
@@ -202,6 +286,7 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     expect(s.state.registered()).toBe(2);
     expect(s.state.activeListeners()).toBe(0);
     expect(adapterStart).not.toHaveBeenCalled();
+    expect(bridgeOpen).not.toHaveBeenCalled();
     expect((reportsOf(s.sent)[0] as { report: { outcome: string } }).report.outcome).toBe("unknown");
     // No scratch directory was created before the failure.
     await expect(stat(stateDirectory)).rejects.toThrow();
@@ -211,6 +296,7 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     const s = scenario();
     const relayClosed = { count: 0 };
     vi.spyOn(RuntimeCredentialRelay, "open").mockResolvedValue(fakeRelay(relayClosed) as never);
+    const bridgeOpen = vi.spyOn(NativeProviderBridge, "open");
     // A regular file at the state directory path makes the real mkdtemp fail.
     await writeFile(stateDirectory, "not-a-directory");
     const runner = makeRunner({
@@ -225,25 +311,18 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     await runner.close();
     expect(relayClosed.count).toBe(1);
     expect(s.state.activeListeners()).toBe(0);
+    expect(bridgeOpen).not.toHaveBeenCalled();
     // The public root is only created after the private directory exists.
     await expect(stat(publicRoot)).rejects.toThrow();
   });
 
   it("closes the started adapter, relay and connection when publication fails after partial acquisition", async () => {
     const s = scenario();
-    const relayClosed = { count: 0 };
-    const adapterClosed = { count: 0 };
-    vi.spyOn(RuntimeCredentialRelay, "open").mockResolvedValue(fakeRelay(relayClosed) as never);
-    await mkdir(stateDirectory, { recursive: true });
-    const caPath = join(root, "ca.pem");
-    await writeFile(caPath, "-----BEGIN CERTIFICATE-----fixture-----END CERTIFICATE-----\n");
-    const adapter = await fakeAdapter(root, caPath, adapterClosed);
-    vi.spyOn(RuntimeProxyLoopbackAdapter, "start").mockResolvedValue(adapter.adapter as never);
-    // The per-turn public directory resolves to an over-long native Unix socket path: the real
-    // publish fails after the adapter (with its real listener) was acquired.
-    const longRoot = join(root, "p".repeat(110));
+    // The adapter fixture points at a CA file that does not exist: the real publish copy fails
+    // after the adapter (with its real listener) was acquired.
+    const { adapter, adapterClosed, bridgeOpen, relayClosed } = await mockExecutionStack({ withCa: false });
     const runner = makeRunner({
-      publicDirectory: longRoot,
+      publicDirectory: publicRoot,
       runWorker: async () => {
         throw new Error("the worker must never execute after a bridge failure");
       },
@@ -257,79 +336,13 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     expect(adapterClosed.count).toBe(1);
     expect(adapter.listening()).toBe(false);
     expect(s.state.activeListeners()).toBe(0);
+    expect(bridgeOpen).not.toHaveBeenCalled();
     // Both scratch trees are gone: no partially published material survives the failure.
     expect(await readdir(stateDirectory)).toEqual([]);
-    expect(await readdir(longRoot)).toEqual([]);
+    expect(await readdir(publicRoot)).toEqual([]);
   });
 
-  it("publishes the maximum-valid production bridge path without exceeding the native socket limit", async () => {
-    // Random per-run identities so concurrent independent test processes never share a fixture.
-    const productionName = `ot-p-${randomUUID().replaceAll("-", "")}-zzzzzzzzzzz`;
-    // Maximum length accepted by loadRunnerServeConfig: ^[a-z][a-z0-9-]{0,62}$.
-    const maxName = `a${randomUUID().replaceAll("-", "")}`.padEnd(63, "z");
-    for (const sandboxName of [productionName, maxName]) {
-      const segment = runnerStateDirectorySegment(sandboxName);
-      expect(segment.length).toBeLessThanOrEqual(41);
-      const worstCaseSocket = join(
-        cloudRunnerDirectories(defaultRunnerStateDir(sandboxName, "/tmp")).publicRoot,
-        "turn-XXXXXX",
-        "connect.sock",
-      );
-      expect(Buffer.byteLength(worstCaseSocket, "utf8")).toBeLessThanOrEqual(100);
-      // The previous default exceeded the bridge limit and made every production turn fail.
-      const legacySocket = join(
-        "/tmp",
-        "opentag-runner-state",
-        sandboxName,
-        "bridge-public",
-        "turn-XXXXXX",
-        "connect.sock",
-      );
-      expect(Buffer.byteLength(legacySocket, "utf8")).toBeGreaterThan(100);
-    }
-    // Real publication at the worst valid default path, not just a length calculation.
-    const productionStateDir = defaultRunnerStateDir(maxName, "/tmp");
-    const directories = cloudRunnerDirectories(productionStateDir);
-    await mkdir(productionStateDir, { recursive: true, mode: 0o700 });
-    try {
-      const relayClosed = { count: 0 };
-      const adapterClosed = { count: 0 };
-      vi.spyOn(RuntimeCredentialRelay, "open").mockResolvedValue(fakeRelay(relayClosed) as never);
-      const caPath = join(root, "ca.pem");
-      await writeFile(caPath, "-----BEGIN CERTIFICATE-----fixture-----END CERTIFICATE-----\n");
-      const adapter = await fakeAdapter(root, caPath, adapterClosed);
-      vi.spyOn(RuntimeProxyLoopbackAdapter, "start").mockResolvedValue(adapter.adapter as never);
-      const s = scenario();
-      const runner = makeRunner({
-        publicDirectory: directories.publicRoot,
-        runWorker: async () => ({
-          code: 0,
-          stderr: "",
-          stdout: `${JSON.stringify({
-            kind: "result",
-            completion: { executionEffects: "completed", finalText: "prod-path", outcome: "completed" },
-          })}\n`,
-        }),
-        scope: s.scope,
-        sent: s.sent,
-        state: s.state,
-        stateDirectory: productionStateDir,
-      });
-      await driveToReport(runner, s.delivery, s.sent);
-      expect((reportsOf(s.sent)[0] as { report: { outcome: string } }).report.outcome).toBe("completed");
-      // The real publication created and then cleaned the turn's real Unix sockets under this path.
-      expect(relayClosed.count).toBe(1);
-      expect(adapterClosed.count).toBe(1);
-      expect(s.state.activeListeners()).toBe(0);
-      // Only the persistent public root remains; the turn's sockets and private scratch are gone.
-      expect(await readdir(directories.publicRoot)).toEqual([]);
-      expect(await readdir(productionStateDir)).toEqual(["bridge-public"]);
-    } finally {
-      await rm(productionStateDir, { recursive: true, force: true });
-    }
-  });
-
-  it("releases every acquired resource exactly once per successful turn and never accumulates", async () => {
+  it("closes the adapter, relay and connection when the provider bridge fails to open", async () => {
     const s = scenario();
     const relayClosed = { count: 0 };
     const adapterClosed = { count: 0 };
@@ -339,6 +352,200 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     await writeFile(caPath, "-----BEGIN CERTIFICATE-----fixture-----END CERTIFICATE-----\n");
     const adapter = await fakeAdapter(root, caPath, adapterClosed);
     vi.spyOn(RuntimeProxyLoopbackAdapter, "start").mockResolvedValue(adapter.adapter as never);
+    // A startup failure of the in-Sandbox helper (e.g. an entry port that will not bind).
+    vi.spyOn(NativeProviderBridge, "open").mockRejectedValue(new Error("bridge helper did not become ready"));
+    let workerRan = false;
+    const runner = makeRunner({
+      publicDirectory: publicRoot,
+      runWorker: async () => {
+        workerRan = true;
+        throw new Error("the worker must never execute after a bridge open failure");
+      },
+      scope: s.scope,
+      sent: s.sent,
+      state: s.state,
+    });
+    await driveToReport(runner, s.delivery, s.sent);
+    await runner.close();
+    expect(workerRan).toBe(false);
+    expect(relayClosed.count).toBe(1);
+    expect(adapterClosed.count).toBe(1);
+    expect(adapter.listening()).toBe(false);
+    expect(s.state.activeListeners()).toBe(0);
+    expect((reportsOf(s.sent)[0] as { report: { outcome: string } }).report.outcome).toBe("unknown");
+    expect(await readdir(stateDirectory)).toEqual([]);
+    expect(await readdir(publicRoot)).toEqual([]);
+  });
+
+  it("publishes files-only material at the worst valid default path and never a parent socket", async () => {
+    // Random per-run identities so concurrent independent test processes never share a fixture.
+    const maxName = `a${randomUUID().replaceAll("-", "")}`.padEnd(63, "z");
+    const productionStateDir = defaultRunnerStateDir(maxName, "/tmp");
+    const directories = cloudRunnerDirectories(productionStateDir);
+    await mkdir(productionStateDir, { recursive: true, mode: 0o700 });
+    try {
+      const { adapterClosed, bridgeClosed, bridgeOpen, relayClosed } = await mockExecutionStack();
+      const s = scenario();
+      let inspected: string[] | undefined;
+      const runner = makeRunner({
+        publicDirectory: directories.publicRoot,
+        runWorker: async () => {
+          // Mid-turn the published per-turn directory must carry files only, never parent sockets.
+          const turns = await readdir(directories.publicRoot);
+          expect(turns).toHaveLength(1);
+          inspected = await readdir(join(directories.publicRoot, turns[0] as string));
+          return {
+            code: 0,
+            stderr: "",
+            stdout: `${JSON.stringify({
+              kind: "result",
+              completion: { executionEffects: "completed", finalText: "prod-path", outcome: "completed" },
+            })}\n`,
+          };
+        },
+        scope: s.scope,
+        sent: s.sent,
+        state: s.state,
+        stateDirectory: productionStateDir,
+      });
+      await driveToReport(runner, s.delivery, s.sent);
+      expect((reportsOf(s.sent)[0] as { report: { outcome: string } }).report.outcome).toBe("completed");
+      expect(inspected).toBeDefined();
+      expect(inspected).toContain("environment.json");
+      expect(inspected).toContain("ca.pem");
+      expect(inspected).not.toContain("connect.sock");
+      expect(inspected).not.toContain("slack.sock");
+      // The bridge was opened for exactly the two enumerated adapter loopback targets.
+      expect(bridgeOpen).toHaveBeenCalledTimes(1);
+      expect(bridgeOpen.mock.calls[0]?.[0]).toMatchObject({ targets: { connect: 18_080, slack: 18_443 } });
+      expect(relayClosed.count).toBe(1);
+      expect(adapterClosed.count).toBe(1);
+      expect(bridgeClosed.count).toBe(1);
+      expect(s.state.activeListeners()).toBe(0);
+      // Only the persistent public root remains; the turn's material and private scratch are gone.
+      expect(await readdir(directories.publicRoot)).toEqual([]);
+      expect(await readdir(productionStateDir)).toEqual(["bridge-public"]);
+    } finally {
+      await rm(productionStateDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["open", "close"])("blocks reuse when helper termination cannot be confirmed during %s", async (phase) => {
+    const s = scenario();
+    const stack = await mockExecutionStack();
+    const terminationError = new NativeSandboxError("delete_failed", "helper termination unconfirmed");
+    if (phase === "open") stack.bridgeOpen.mockRejectedValue(terminationError);
+    else
+      stack.bridgeOpen.mockResolvedValue({
+        close: async () => {
+          throw terminationError;
+        },
+      } as never);
+    const runWorker = vi.fn(async () => ({
+      code: 0,
+      stderr: "",
+      stdout: JSON.stringify({
+        kind: "result",
+        completion: { outcome: "completed", executionEffects: "completed", finalText: "done" },
+      }),
+    }));
+    const onPersistenceError = vi.fn();
+    const runner = makeRunner({ ...s, runWorker, onPersistenceError, publicDirectory: publicRoot });
+    await driveToReport(runner, s.delivery, s.sent);
+    const before = runWorker.mock.calls.length;
+    const successor = cloudDeliveryFixture({ sessionId: s.delivery.sessionId });
+    await runner.handleDeliveryRun({ type: "delivery:run", requestId: successor.requestId, delivery: successor });
+    await expect(
+      runner.handleVerified({
+        type: "delivery:verified",
+        requestId: successor.requestId,
+        status: "verified",
+        model: MODEL_GRANT,
+      }),
+    ).rejects.toThrow(/namespace could not be verified clean/);
+    await runner.waitForActive();
+    expect(runWorker).toHaveBeenCalledTimes(before);
+    expect(stack.bridgeOpen).toHaveBeenCalledTimes(1);
+    expect(onPersistenceError).toHaveBeenCalled();
+    expect(stack.adapterClosed.count).toBe(1);
+    expect(stack.relayClosed.count).toBe(1);
+    expect(s.state.activeListeners()).toBe(0);
+    await runner.close();
+  });
+
+  it("closes the first execution's bridge before the successor execution opens its own", async () => {
+    const s = scenario();
+    const events: string[] = [];
+    const { bridgeOpen, relayClosed } = await mockExecutionStack({ events });
+    const runner = makeRunner({
+      publicDirectory: publicRoot,
+      runWorker: async () => ({
+        code: 0,
+        stderr: "",
+        stdout: `${JSON.stringify({
+          kind: "result",
+          completion: { executionEffects: "completed", finalText: "done", outcome: "completed" },
+        })}\n`,
+      }),
+      scope: s.scope,
+      sent: s.sent,
+      state: s.state,
+    });
+    await driveToReport(runner, s.delivery, s.sent);
+    const second = cloudDeliveryFixture({ sessionId: s.delivery.sessionId });
+    await driveToReport(runner, second, s.sent);
+    await runner.close();
+    // Two executions, two bridges; the predecessor's helper and in-flight connections were gone
+    // before the successor's helper ever started.
+    expect(bridgeOpen).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(["bridge:open", "bridge:close", "bridge:open", "bridge:close"]);
+    expect(relayClosed.count).toBe(2);
+    expect(await readdir(stateDirectory)).toEqual([]);
+    expect(await readdir(publicRoot)).toEqual([]);
+  });
+
+  it("opens the same files-only bridge for a Session-message execution and closes it on settle", async () => {
+    const s = scenario();
+    const { bridgeClosed, bridgeOpen, relayClosed } = await mockExecutionStack();
+    let inspected: string[] | undefined;
+    const runner = makeRunner({
+      publicDirectory: publicRoot,
+      runWorker: async () => {
+        const turns = await readdir(publicRoot);
+        expect(turns).toHaveLength(1);
+        inspected = await readdir(join(publicRoot, turns[0] as string));
+        return {
+          code: 0,
+          stderr: "",
+          stdout: `${JSON.stringify({
+            kind: "result",
+            completion: { executionEffects: "completed", finalText: "session-done", outcome: "completed" },
+          })}\n`,
+        };
+      },
+      scope: s.scope,
+      sent: s.sent,
+      state: s.state,
+    });
+    await driveToSessionSettled(runner, sessionMessageFixture(s.delivery.sessionId), s.sent);
+    await runner.close();
+    expect((settledOf(s.sent)[0] as { outcome: string }).outcome).toBe("completed");
+    expect(bridgeOpen).toHaveBeenCalledTimes(1);
+    expect(bridgeOpen.mock.calls[0]?.[0]).toMatchObject({ targets: { connect: 18_080, slack: 18_443 } });
+    expect(inspected).toBeDefined();
+    expect(inspected).toContain("environment.json");
+    expect(inspected).not.toContain("connect.sock");
+    expect(inspected).not.toContain("slack.sock");
+    expect(bridgeClosed.count).toBe(1);
+    expect(relayClosed.count).toBe(1);
+    expect(s.state.activeListeners()).toBe(0);
+    expect(await readdir(stateDirectory)).toEqual([]);
+    expect(await readdir(publicRoot)).toEqual([]);
+  });
+
+  it("releases every acquired resource exactly once per successful turn and never accumulates", async () => {
+    const s = scenario();
+    const { adapter, adapterClosed, bridgeClosed, relayClosed } = await mockExecutionStack();
     const runner = makeRunner({
       publicDirectory: publicRoot,
       runWorker: async () => ({
@@ -356,6 +563,7 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     await driveToReport(runner, s.delivery, s.sent);
     expect(relayClosed.count).toBe(1);
     expect(adapterClosed.count).toBe(1);
+    expect(bridgeClosed.count).toBe(1);
     expect(adapter.listening()).toBe(false);
     expect(s.state.activeListeners()).toBe(0);
     expect(await readdir(stateDirectory)).toEqual([]);
@@ -366,6 +574,7 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     await driveToReport(runner, second, s.sent);
     expect(relayClosed.count).toBe(2);
     expect(adapterClosed.count).toBe(2);
+    expect(bridgeClosed.count).toBe(2);
     expect(adapter.listening()).toBe(false);
     expect(s.state.activeListeners()).toBe(0);
     expect(await readdir(stateDirectory)).toEqual([]);
@@ -373,5 +582,6 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     await runner.close();
     expect(relayClosed.count).toBe(2);
     expect(adapterClosed.count).toBe(2);
+    expect(bridgeClosed.count).toBe(2);
   });
 });

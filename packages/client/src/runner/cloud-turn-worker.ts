@@ -1,7 +1,9 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect as connectTls } from "node:tls";
 import type { EffectiveRuntimeSnapshot, RunnerCloudWorkerRequest } from "@opentag/shared";
 import type {
   AgentPromptRequest,
@@ -15,9 +17,9 @@ import { prepareSandboxCa } from "../cloud-runtime/sandbox-ca.js";
 import {
   CLOUD_CONNECT_PROXY_PORT,
   CLOUD_EXECUTION_MOUNT,
+  CLOUD_SANDBOX_CA_FILE,
   CLOUD_SLACK_API_PORT,
 } from "../cloud-runtime/sandbox-entry.js";
-import { type SandboxLoopbackForwarder, startSandboxLoopbackForwarder } from "../cloud-runtime/sandbox-loopback.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import type { PiRpcProcessSpawnOptions } from "../providers/pi/rpc-wire.js";
 import { completionForError, completionForResult, type TurnCompletion } from "../runtime/agent-turn-runner.js";
@@ -55,9 +57,13 @@ import { assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js
  *
  * The per-execution proxy manifest is the only credential source for Pi and its tools; platform
  * keys and raw IM tokens never enter the Sandbox, and routing/CA variables reach only the
- * provider shell that sources them. NATIVE UDS BOUNDARY: production requires both mounted
- * `connect.sock`/`slack.sock`; the loopback fallback exists only for the explicit
- * `localProxyLoopbackSeam` test seam. Cancellation kills every Pi child this worker owns.
+ * provider shell that sources them. NATIVE TRANSPORT BOUNDARY: before Pi starts, production
+ * proves the per-execution HTTP/2 provider bridge with a bounded readiness check of both fixed
+ * loopback entries — the execution adapter's fixed CONNECT refusal and a TLS exchange pinned to
+ * THIS execution's published CA — so a missing or stale transport fails the Turn honestly. The
+ * explicit `localProxyLoopbackSeam` test seam skips that probe for local fixtures only; it is
+ * never set by production composition and is never evidence that the native bridge works.
+ * Cancellation kills every Pi child this worker owns.
  */
 
 /** Pi custom provider name for the Server-mediated model path. */
@@ -361,11 +367,19 @@ export interface CloudTurnWorkerRunOptions {
    */
   readonly executionMount?: string;
   /**
-   * Test-only local seam: with no mounted proxy sockets at all, accept the manifest's fixed
-   * loopback endpoints instead of failing. Production never sets this; both real Unix sockets are
-   * required there, so a missing native mount can never degrade into a loopback execution.
+   * Test-only local seam: skip the bounded proxy-transport readiness probe for local fixtures
+   * that run the worker outside any native Sandbox. Production never sets this; the real probe
+   * against both loopback entries always runs there. This seam is not evidence of the native
+   * provider bridge — the bridge is proven by its own real-helper tests.
    */
   readonly localProxyLoopbackSeam?: boolean;
+  /**
+   * Test seam: relocate the readiness probe targets to free loopback ports. Production always
+   * probes the fixed execution entries (`CLOUD_CONNECT_PROXY_PORT`/`CLOUD_SLACK_API_PORT`).
+   */
+  readonly proxyReadinessPorts?: { readonly connect: number; readonly slack: number };
+  /** Test seam: bound the readiness probe deadline (production uses the default). */
+  readonly proxyReadinessTimeoutMs?: number;
   /**
    * Test seam: replace Context Tree preparation (production runs the packaged CLI through
    * `prepareCloudContextTree`). Receives only per-Turn, in-sandbox inputs.
@@ -442,15 +456,13 @@ export async function runCloudTurnWorker(
   );
   const scratch = await mkdtemp(join(tmpdir(), "opentag-cloud-turn-"));
   const pids = new Set<number>();
-  let forwarder: SandboxLoopbackForwarder | undefined;
   let runtime: CloudTurnPiRuntime | undefined;
-  // A SIGTERM must terminate the real Pi tree and release the forwarder/scratch. Failures are
+  // A SIGTERM must terminate the real Pi tree and release the scratch directory. Failures are
   // written to stderr by the signal handler instead of being silently ignored.
   registerRunnerSignalCleanup(async () => {
     terminateTrackedProcesses(pids, { immediate: true });
     const failures: unknown[] = [];
     await runtime?.close().catch((error: unknown) => failures.push(error));
-    await forwarder?.close().catch((error: unknown) => failures.push(error));
     await rm(scratch, { recursive: true, force: true }).catch((error: unknown) => failures.push(error));
     if (failures.length > 0) {
       throw new Error(`Cloud Turn signal cleanup failed: ${failures.map((error) => String(error)).join("; ")}`);
@@ -469,7 +481,8 @@ export async function runCloudTurnWorker(
     const manifest = ProxyEnvironmentManifestSchema.parse(
       JSON.parse(await readFile(join(request.executionDir, "environment.json"), "utf8")),
     );
-    forwarder = await openProxyBridge(request.executionDir, manifest.environment, options);
+    await verifyProxyTransport(request.executionDir, manifest.environment, options);
+    await prepareCliDirectories(manifest.environment, scratch);
 
     // The effective execution deadline and caller cancellation bound everything below, including
     // optional Context Tree preparation (which additionally has its own small budget).
@@ -589,58 +602,126 @@ export async function runCloudTurnWorker(
     return completion;
   } finally {
     registerRunnerSignalCleanup(undefined);
-    await forwarder?.close().catch(() => undefined);
     await rm(scratch, { recursive: true, force: true });
   }
 }
 
+/** Bounded total deadline for both readiness probes; the bridge is ready before the worker starts. */
+const CLOUD_PROXY_READINESS_TIMEOUT_MS = 10_000;
+/** Each probe needs only the adapter's fixed status line; anything larger is a violation. */
+const READINESS_RESPONSE_MAX_BYTES = 4 * 1024;
+/** Fixed probe target the allowlisted-hosts check always refuses without any upstream work. */
+const READINESS_CONNECT_TARGET = "opentag-transport-check.invalid:443";
+
 /**
- * Bridge the manifest's fixed loopback ports to the mounted per-execution Unix sockets. The native
- * path requires BOTH sockets to be real sockets; a partial mount or a missing native socket with a
- * socket-oriented manifest fails closed. Only the explicit local seam (no sockets at all AND the
- * manifest naming the fixed loopback ports) skips the forwarder.
+ * Meaningful per-execution transport proof, replacing the old isSocket-only mount check. The
+ * manifest must name the fixed loopback endpoint; then both entries must answer through the
+ * HTTP/2 bridge within one bounded deadline:
+ *
+ * - CONNECT entry: `CONNECT <invalid-host>:443` must return the execution adapter's fixed 403
+ *   refusal — a response that exists only because the byte path reaches the trusted adapter of
+ *   this execution (no relay, provider, or credential work happens for a refused host).
+ * - Slack entry: a TLS handshake pinned to THIS execution's published CA plus a request must
+ *   return the adapter's 401 credential challenge. The per-execution CA ties the proof to the
+ *   current execution: a stale or foreign listener cannot complete the handshake.
+ *
+ * Any failure throws BEFORE Pi starts, so a broken transport can never degrade into a Turn that
+ * silently has no provider access. The explicit local seam skips both probes for local fixtures.
  */
-async function openProxyBridge(
+async function verifyProxyTransport(
   executionDir: string,
   environment: Record<string, string>,
   options: CloudTurnWorkerRunOptions,
-): Promise<SandboxLoopbackForwarder | undefined> {
-  const connectSocket = join(executionDir, "connect.sock");
-  const slackSocket = join(executionDir, "slack.sock");
-  const kinds = await Promise.all([socketKind(connectSocket), socketKind(slackSocket)]);
-  const sockets = kinds.filter((kind) => kind === "socket").length;
-  if (sockets === 2) {
-    return startSandboxLoopbackForwarder({
-      endpoints: [
-        { name: "connect", port: CLOUD_CONNECT_PROXY_PORT },
-        { name: "slack", port: CLOUD_SLACK_API_PORT },
-      ],
-      mount: executionDir,
+): Promise<void> {
+  const expected = `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`;
+  for (const key of [RUNTIME_PROXY_PROVIDER_URL_KEY, "LARKSUITE_CLI_PROXY_ADDRESS"]) {
+    if (environment[key] !== undefined && environment[key] !== expected) {
+      throw new Error("The proxy manifest does not name the fixed execution loopback endpoint");
+    }
+  }
+  if (options.localProxyLoopbackSeam === true) return;
+  const ports = options.proxyReadinessPorts ?? { connect: CLOUD_CONNECT_PROXY_PORT, slack: CLOUD_SLACK_API_PORT };
+  const deadline = Date.now() + Math.max(1, options.proxyReadinessTimeoutMs ?? CLOUD_PROXY_READINESS_TIMEOUT_MS);
+  try {
+    const connectLine = await probeStatusLine({
+      deadline,
+      port: ports.connect,
+      request: `CONNECT ${READINESS_CONNECT_TARGET} HTTP/1.1\r\nHost: ${READINESS_CONNECT_TARGET}\r\nConnection: close\r\n\r\n`,
     });
-  }
-  if (sockets !== 0) {
-    throw new Error("The per-execution proxy Unix sockets are incomplete");
-  }
-  if (options.localProxyLoopbackSeam !== true) {
+    if (!connectLine.startsWith("HTTP/1.1 403")) {
+      throw new Error("the CONNECT entry did not answer with the execution adapter refusal");
+    }
+    const ca = await readFile(join(executionDir, CLOUD_SANDBOX_CA_FILE));
+    const slackLine = await probeStatusLine({
+      ca,
+      deadline,
+      port: ports.slack,
+      request: "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+      servername: "localhost",
+    });
+    if (!slackLine.startsWith("HTTP/1.1 401")) {
+      throw new Error("the Slack entry did not answer with the execution adapter challenge");
+    }
+  } catch (error) {
     throw new Error(
-      "The per-execution proxy Unix sockets are missing; the native connect.sock/slack.sock mounts are required",
+      `The per-execution proxy transport readiness check failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  // Explicit local test seam only: the manifest must still name the fixed loopback endpoint.
-  const loopback = environment[RUNTIME_PROXY_PROVIDER_URL_KEY];
-  if (loopback !== `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`) {
-    throw new Error("The proxy manifest names no mounted Unix socket and no fixed loopback endpoint");
-  }
-  return undefined;
 }
 
-async function socketKind(path: string): Promise<"missing" | "other" | "socket"> {
-  try {
-    const stats = await lstat(path);
-    return stats.isSocket() ? "socket" : "other";
-  } catch {
-    return "missing";
-  }
+/** One bounded request/response exchange against a loopback entry; resolves with the status line. */
+async function probeStatusLine(input: {
+  readonly ca?: Buffer;
+  readonly deadline: number;
+  readonly port: number;
+  readonly request: string;
+  readonly servername?: string;
+}): Promise<string> {
+  const remaining = input.deadline - Date.now();
+  if (remaining <= 0) throw new Error("the readiness deadline was exceeded");
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let received = 0;
+    let buffered = "";
+    const finish = (error?: Error, line?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error);
+      else resolve(line as string);
+    };
+    const timer = setTimeout(() => finish(new Error("the readiness probe timed out")), remaining);
+    timer.unref?.();
+    const socket = input.ca
+      ? connectTls({
+          ca: input.ca,
+          host: "127.0.0.1",
+          port: input.port,
+          rejectUnauthorized: true,
+          ...(input.servername ? { servername: input.servername } : {}),
+        })
+      : connectTcp({ host: "127.0.0.1", port: input.port });
+    socket.once("error", (error) => finish(new Error(`the readiness connection failed: ${error.message}`)));
+    socket.once("close", () => finish(new Error("the readiness connection closed without a response")));
+    socket.on("data", (chunk: Buffer) => {
+      received += chunk.byteLength;
+      if (received > READINESS_RESPONSE_MAX_BYTES) {
+        finish(new Error("the readiness response exceeded the bound"));
+        return;
+      }
+      buffered += chunk.toString("latin1");
+      const newline = buffered.indexOf("\r\n");
+      if (newline < 0) return;
+      const line = buffered.slice(0, newline);
+      if (!/^HTTP\/1\.[01] \d{3}( |$)/.test(line)) {
+        finish(new Error("the readiness response is not an HTTP status line"));
+        return;
+      }
+      finish(undefined, line);
+    });
+    socket.once(input.ca ? "secureConnect" : "connect", () => socket.write(input.request));
+  });
 }
 
 async function readPersistedBinding(path: string): Promise<AgentRuntimeBinding | undefined> {
@@ -680,4 +761,21 @@ function randomTurnRunId(request: RunnerCloudWorkerRequest): string {
   return request.kind === "turn"
     ? `cloud-turn-${request.delivery.deliveryId}`
     : `cloud-session-${request.message.messageId}`;
+}
+
+/** Keep CLI writes in the existing per-execution scratch lifetime. */
+async function prepareCliDirectories(environment: Record<string, string>, scratch: string): Promise<void> {
+  // Native exec does not run the Docker entry script. CLI config belongs to this execution's
+  // existing scratch lifetime, never the saved workspace or the read-only public mount.
+  if (environment.OPENTAG_SLACK_CONFIG_DIR || environment.SLACK_CONFIG_DIR) {
+    const directory = join(scratch, "slack");
+    await mkdir(directory, { mode: 0o700 });
+    environment.OPENTAG_SLACK_CONFIG_DIR = directory;
+    environment.SLACK_CONFIG_DIR = directory;
+  }
+  if (environment.LARKSUITE_CLI_CONFIG_DIR) {
+    const directory = join(scratch, "lark");
+    await mkdir(directory, { mode: 0o700 });
+    environment.LARKSUITE_CLI_CONFIG_DIR = directory;
+  }
 }

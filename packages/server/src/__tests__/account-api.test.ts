@@ -159,6 +159,7 @@ function services() {
         collaborationMessages: [],
         nextCursor: null,
       }),
+      listReplies: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     },
     computerService: {
       listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
@@ -477,6 +478,39 @@ describe("Account-native management collections", () => {
     expect(detail.statusCode).toBe(200);
     expect(detail.headers["cache-control"]).toBe("no-store");
     expect(service.taskService.get).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 50 });
+  });
+
+  it("reads the Task's captured replies with the authenticated scope and bounded paging", async () => {
+    const { app, service } = appWith();
+
+    const replies = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}/replies`,
+      headers: authorization,
+    });
+    expect(replies.statusCode).toBe(200);
+    expect(replies.headers["cache-control"]).toBe("no-store");
+    expect(replies.json()).toEqual({ items: [], nextCursor: null });
+    expect(service.taskService.listReplies).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 20 });
+
+    const paged = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}/replies?limit=50&cursor=abc`,
+      headers: authorization,
+    });
+    expect(paged.statusCode).toBe(200);
+    expect(service.taskService.listReplies).toHaveBeenLastCalledWith(userId, taskSummary.id, {
+      limit: 50,
+      cursor: "abc",
+    });
+
+    const beyondCap = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}/replies?limit=51`,
+      headers: authorization,
+    });
+    expect(beyondCap.statusCode).toBe(400);
+    expect(service.taskService.listReplies).toHaveBeenCalledTimes(2);
   });
 
   it("updates and clears a Task title in the authenticated Account scope", async () => {

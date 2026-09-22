@@ -11,19 +11,33 @@ import { Collapsible, Text } from "../ui/design-system.js";
 import { TaskActivityTimeline } from "./task-activity-timeline.js";
 import { TaskAttachments } from "./task-attachments.js";
 import { TaskMessageBody } from "./task-message-body.js";
-import { TaskOutgoingReply, TaskOutgoingReplyMeta } from "./task-outgoing-replies.js";
-import { buildTaskTimeline, type TaskReport, type TaskTimelineEntry } from "./task-timeline.js";
+import {
+  TaskCapturedReply,
+  TaskCapturedReplyMeta,
+  TaskOutgoingReply,
+  TaskOutgoingReplyMeta,
+} from "./task-outgoing-replies.js";
+import { buildTaskTimeline, type CapturedTaskReply, type TaskReport, type TaskTimelineEntry } from "./task-timeline.js";
 
 export function TaskActivity({
   task,
   turns,
+  replies,
   pagination,
+  repliesStatus,
 }: {
   task: TaskSummary;
   turns: TaskTurn[];
+  replies?: CapturedTaskReply[];
   pagination: ReactNode;
+  repliesStatus?: ReactNode;
 }) {
-  const entries = buildTaskTimeline(turns, task.source.provider);
+  /*
+   * Supplying the replies feed — even empty while it loads, errors, or finds nothing — makes its
+   * state authoritative. Legacy-only callers omit `replies` and keep the old per-report notices.
+   */
+  const capturedFeedSupplied = replies !== undefined;
+  const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []);
   return (
     <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
       <Text as="h2" id="task-activity-title" variant="heading">
@@ -35,7 +49,7 @@ export function TaskActivity({
           <div className="grid">
             {entries.map((entry) => (
               <div key={entry.id} className="py-4 first:pt-0 last:pb-0">
-                <TaskEntry task={task} entry={entry} />
+                <TaskEntry capturedFeedSupplied={capturedFeedSupplied} task={task} entry={entry} />
               </div>
             ))}
           </div>
@@ -49,12 +63,22 @@ export function TaskActivity({
             </Text>
           </div>
         )}
+        {repliesStatus}
       </TaskActivityTimeline>
     </section>
   );
 }
 
-function TaskEntry({ task, entry }: { task: TaskSummary; entry: TaskTimelineEntry }) {
+function TaskEntry({
+  task,
+  entry,
+  capturedFeedSupplied,
+}: {
+  task: TaskSummary;
+  entry: TaskTimelineEntry;
+  capturedFeedSupplied: boolean;
+}) {
+  if (entry.kind === "captured") return <TaskCapturedReplyEntry task={task} entry={entry} />;
   const turn = entry.turn;
   if (entry.kind === "request") return <TaskRequest turn={turn} id={entry.id} />;
   const compact = entry.kind === "report" && entry.hasReplies;
@@ -94,7 +118,12 @@ function TaskEntry({ task, entry }: { task: TaskSummary; entry: TaskTimelineEntr
           {entry.kind === "reply" ? (
             <TaskOutgoingReply reply={entry.reply} />
           ) : entry.kind === "report" ? (
-            <TaskReportBody report={entry.report} hasReplies={entry.hasReplies} provider={task.source.provider} />
+            <TaskReportBody
+              capturedFeedSupplied={capturedFeedSupplied}
+              hasReplies={entry.hasReplies}
+              provider={task.source.provider}
+              report={entry.report}
+            />
           ) : (
             <TaskUnreportedBody delivery={turn.delivery} />
           )}
@@ -145,17 +174,19 @@ function TaskReportBody({
   report,
   hasReplies,
   provider,
+  capturedFeedSupplied,
 }: {
   report: TaskReport;
   hasReplies: boolean;
   provider: TaskSummary["source"]["provider"];
+  capturedFeedSupplied: boolean;
 }) {
   return (
     <>
       <small className="text-kumo-subtle">
         {m.tasks_report_summary({ outcome: humanizeEnum(report.outcome), time: formatDateTime(report.reportedAt) })}
       </small>
-      {provider === "feishu" ? <TaskReplyNotice report={report} /> : null}
+      {provider === "feishu" ? <TaskReplyNotice capturedFeedSupplied={capturedFeedSupplied} report={report} /> : null}
       {report.finalText ? <TaskExecutionSummary text={report.finalText} collapsed={hasReplies} /> : null}
       {report.outgoingReplies?.runtimeSummaryTruncated ? (
         <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p>
@@ -165,10 +196,16 @@ function TaskReportBody({
   );
 }
 
-function TaskReplyNotice({ report }: { report: TaskReport }) {
+/**
+ * The old report's own reply snapshot. Once the captured replies feed is supplied, this notice only
+ * states what stays true about that snapshot — an incomplete history — and stays silent on the
+ * missing, unavailable, or empty cases the feed itself now reports. Legacy-only callers keep every
+ * notice.
+ */
+function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport; capturedFeedSupplied: boolean }) {
   const snapshot = report.outgoingReplies;
   if (!snapshot || snapshot.status === "unavailable")
-    return (
+    return capturedFeedSupplied ? null : (
       <p className="text-sm text-kumo-subtle" data-ui="task-reply-unavailable">
         {m.tasks_reply_data_unavailable()}
       </p>
@@ -180,7 +217,7 @@ function TaskReplyNotice({ report }: { report: TaskReport }) {
       </p>
     );
   if (snapshot.replies.length === 0)
-    return (
+    return capturedFeedSupplied ? null : (
       <p className="text-sm text-kumo-subtle" data-ui="task-no-reply">
         {m.tasks_no_reply_sent()}
       </p>
@@ -223,6 +260,46 @@ function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
           ? m.tasks_execution_report_unavailable()
           : m.tasks_message_state({ state: deliveryStateLabel(delivery).toLocaleLowerCase() })}
     </p>
+  );
+}
+
+/**
+ * One platform-confirmed sent reply from the Server's capture. It carries no Turn and never
+ * will — the record stands on the provider's own confirmation.
+ */
+function TaskCapturedReplyEntry({
+  task,
+  entry,
+}: {
+  task: TaskSummary;
+  entry: TaskTimelineEntry & { kind: "captured" };
+}) {
+  return (
+    <article
+      className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3"
+      data-ui="task-message-agent"
+      data-task-entry-id={entry.id}
+    >
+      <span
+        className="grid size-8 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+        aria-hidden="true"
+      >
+        {task.agent.displayName.charAt(0)}
+      </span>
+      <div className="grid min-w-0 gap-2">
+        <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
+          <strong>{task.agent.displayName}</strong>
+          <TaskCapturedReplyMeta reply={entry.reply} />
+        </header>
+        <section
+          className="grid max-w-[48rem] gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+          aria-label={m.tasks_agent_response()}
+          data-ui="task-agent-response"
+        >
+          <TaskCapturedReply legacyReply={entry.legacyReply} reply={entry.reply} />
+        </section>
+      </div>
+    </article>
   );
 }
 

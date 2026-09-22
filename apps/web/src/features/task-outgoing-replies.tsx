@@ -2,8 +2,9 @@ import type { TaskTurn } from "@opentag/shared/browser";
 import { formatDateTime } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
 import { Collapsible } from "../ui/design-system.js";
+import { TaskAttachments } from "./task-attachments.js";
 import { TaskMessageBody } from "./task-message-body.js";
-import { taskReplyTime } from "./task-timeline.js";
+import { type CapturedTaskReply, type TaskReply, taskReplyTime } from "./task-timeline.js";
 
 type OutgoingSnapshot = NonNullable<NonNullable<TaskTurn["report"]>["outgoingReplies"]>;
 type OutgoingReply = OutgoingSnapshot["replies"][number];
@@ -12,6 +13,53 @@ export function TaskOutgoingReplyMeta({ reply }: { reply: OutgoingReply }) {
   const typeLabel = replyTypeLabel(reply.content.msgType);
   const meta = [typeLabel, replyTime(reply.createTime)].filter(Boolean).join(" · ");
   return <small className="text-kumo-subtle">{meta}</small>;
+}
+
+/** The platform-reported message type of a captured reply, mapped onto the same labels. */
+function capturedReplyTypeLabel(messageType: string | null): string {
+  return replyTypeLabel(messageType ?? "unknown");
+}
+
+export function TaskCapturedReplyMeta({ reply }: { reply: CapturedTaskReply }) {
+  const meta = [
+    capturedReplyTypeLabel(reply.messageType),
+    formatDateTime(reply.occurredAt),
+    reply.timeSource === "observed" ? m.tasks_reply_time_observed() : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return <small className="text-kumo-subtle">{meta}</small>;
+}
+
+/**
+ * The body of a platform-confirmed reply captured by the Server. When the capture carried no
+ * usable body, a matching legacy receipt still represents the same message: its whole rich
+ * content is rendered by the existing reply renderer, with that renderer's own media description,
+ * raw payload, and truncation/unavailable indicators. Without either, the record is shown honestly
+ * as sent with unavailable content — never reconstructed from a runtime summary.
+ */
+export function TaskCapturedReply({ reply, legacyReply }: { reply: CapturedTaskReply; legacyReply?: TaskReply }) {
+  if (!reply.contentAvailable) {
+    if (legacyReply) return <TaskOutgoingReply reply={legacyReply} />;
+    return (
+      <article className="grid gap-2" data-ui="task-sent-reply" data-msg-type={reply.messageType ?? "unknown"}>
+        <p className="text-sm text-kumo-subtle" data-ui="task-reply-content-unavailable">
+          {m.tasks_reply_sent_content_unavailable()}
+        </p>
+      </article>
+    );
+  }
+  return (
+    <article className="grid gap-2" data-ui="task-sent-reply" data-msg-type={reply.messageType ?? "unknown"}>
+      {reply.fallbackText ? <TaskMessageBody format="plain_text" text={reply.fallbackText} /> : null}
+      <TaskAttachments attachments={reply.attachments ?? []} />
+      {reply.truncated ? (
+        <p className="text-sm text-kumo-subtle" data-ui="task-reply-content-truncated">
+          {m.tasks_reply_content_truncated()}
+        </p>
+      ) : null}
+    </article>
+  );
 }
 
 export function TaskOutgoingReply({ reply }: { reply: OutgoingReply }) {
@@ -109,7 +157,7 @@ function mediaDescription(content: OutgoingReply["content"]): string | undefined
   return parts.join(" · ");
 }
 
-function replyTypeLabel(msgType: OutgoingReply["content"]["msgType"]): string {
+function replyTypeLabel(msgType: string): string {
   switch (msgType) {
     case "text":
       return m.tasks_reply_type_text();

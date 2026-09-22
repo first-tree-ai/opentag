@@ -7,7 +7,7 @@ import type {
 } from "@opentag/shared/browser";
 import { onlineManager, useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
 import { AgentUsageOverview, AgentUsageTab } from "../features/agent-usage.js";
@@ -178,6 +178,10 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   onlineManager.setOnline(true);
+});
+
+beforeEach(() => {
+  vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [], nextCursor: null });
 });
 
 describe("shared live resource queries", () => {

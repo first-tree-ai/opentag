@@ -1,4 +1,4 @@
-import type { ListTasksResponse, TaskDetail, TaskSummary } from "@opentag/shared/browser";
+import type { ListTasksResponse, TaskDetail, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
@@ -366,6 +366,13 @@ export function TaskDetailPage({
     // Reverse the complete collection, including each page's order and the API's timestamp ties.
     return loaded.reverse();
   }, [taskQuery.data]);
+  /*
+   * The Task's captured outbound replies: an independent paged subresource with its own cursor,
+   * refreshed on the same live policy as the detail. It reads only after the detail has resolved
+   * the canonical Task id, so a legacy Session-alias URL queries replies under the Task's real id
+   * instead of the route's alias.
+   */
+  const repliesQuery = useTaskRepliesQuery(showExamples ? undefined : first?.task.id);
   const taskError = asError(taskQuery.error);
   const persistedError = usePersistedSettledError(detailKey, {
     error: taskQuery.error ? taskError : null,
@@ -394,25 +401,9 @@ export function TaskDetailPage({
 
   const { task } = first;
   const status = taskStatusGroup(task.status);
+  const repliesStatus = <TaskRepliesStatus query={repliesQuery} task={task} turns={turns} />;
   const pagination = (
-    <>
-      {taskQuery.hasNextPage ? (
-        <Button
-          loading={taskQuery.isFetchingNextPage}
-          type="button"
-          variant="secondary"
-          disabled={taskQuery.isFetching}
-          onClick={() => void taskQuery.fetchNextPage({ cancelRefetch: false })}
-        >
-          {m.tasks_load_earlier_activity()}
-        </Button>
-      ) : null}
-      {loadMoreError ? (
-        <p className="text-sm text-kumo-danger" data-ui="task-activity-error" role="alert">
-          {loadMoreError.message}
-        </p>
-      ) : null}
-    </>
+    <TaskActivityPagination loadMoreError={loadMoreError} repliesQuery={repliesQuery} taskQuery={taskQuery} />
   );
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
@@ -470,8 +461,133 @@ export function TaskDetailPage({
 
       {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void taskQuery.refetch()} /> : null}
 
-      <TaskActivity task={task} turns={turns} pagination={pagination} />
+      <TaskActivity
+        task={task}
+        replies={repliesQuery.supplied ? repliesQuery.replies : undefined}
+        repliesStatus={repliesStatus}
+        turns={turns}
+        pagination={pagination}
+      />
     </article>
+  );
+}
+
+/**
+ * The paged replies read, kept next to the detail read it complements. `taskId` is the canonical
+ * id from the detail response and is absent until that detail resolves — and for development
+ * examples, which have no Server feed at all — so the read never starts against an unresolved or
+ * aliased route id.
+ */
+function useTaskRepliesQuery(taskId: string | undefined) {
+  const query = useInfiniteQuery({
+    queryKey: queryKeys.tasks.replies(taskId ?? ""),
+    queryFn: ({ pageParam }) => browserApi.taskReplies(taskId as string, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: taskId !== undefined,
+    ...liveResourceQueryOptions,
+  });
+  const replies = useMemo(() => {
+    const loaded = query.data?.pages.flatMap((page) => page.items) ?? [];
+    return loaded.reverse();
+  }, [query.data]);
+  return { ...query, supplied: taskId !== undefined, replies };
+}
+
+type TaskRepliesQuery = ReturnType<typeof useTaskRepliesQuery>;
+
+/*
+ * The replies read is reported on its own terms: a load error is a load error (retryable, with any
+ * cached replies still visible), and an empty successful page only says no reply was recorded —
+ * never that the Agent sent nothing. A Server without the subresource is not special-cased: a 404
+ * and a missing scope both stay honest errors rather than proving an absent capability.
+ */
+function TaskRepliesStatus({ query, task, turns }: { query: TaskRepliesQuery; task: TaskSummary; turns: TaskTurn[] }) {
+  if (!query.supplied) return null;
+  if (query.isPending) {
+    return (
+      <p className="text-sm text-kumo-subtle" data-ui="task-replies-loading" role="status">
+        {m.tasks_replies_loading()}
+      </p>
+    );
+  }
+  if (query.isError) {
+    return (
+      <div className="flex flex-wrap items-center gap-3" data-ui="task-replies-error" role="alert">
+        <span className="text-sm text-kumo-danger">
+          {m.tasks_replies_unavailable()} {asError(query.error).message}
+        </span>
+        <Button loading={query.isRefetching} type="button" variant="secondary" onClick={() => retryReplies(query)}>
+          {m.tasks_try_again()}
+        </Button>
+      </div>
+    );
+  }
+  const hasLegacyReplies = turns.some(
+    (turn) => task.source.provider === "feishu" && (turn.report?.outgoingReplies?.replies.length ?? 0) > 0,
+  );
+  if (query.replies.length > 0 || hasLegacyReplies) return null;
+  return (
+    <p className="text-sm text-kumo-subtle" data-ui="task-replies-empty">
+      {m.tasks_no_captured_replies()}
+    </p>
+  );
+}
+
+/**
+ * Retrying resumes from the read that failed: a failed older-page fetch resumes that page, while a
+ * failed first-page or background refresh re-reads the first page even though a next cursor exists.
+ */
+function retryReplies(query: TaskRepliesQuery): void {
+  if (query.isFetchNextPageError) void query.fetchNextPage({ cancelRefetch: false });
+  else void query.refetch();
+}
+
+/** Earlier activity and earlier replies page independently, each with its own cursor. */
+function TaskActivityPagination({
+  taskQuery,
+  repliesQuery,
+  loadMoreError,
+}: {
+  taskQuery: {
+    hasNextPage: boolean;
+    isFetching: boolean;
+    isFetchingNextPage: boolean;
+    fetchNextPage: (options: { cancelRefetch: boolean }) => Promise<unknown>;
+  };
+  repliesQuery: TaskRepliesQuery;
+  loadMoreError: Error | null;
+}) {
+  return (
+    <>
+      {taskQuery.hasNextPage ? (
+        <Button
+          loading={taskQuery.isFetchingNextPage}
+          type="button"
+          variant="secondary"
+          disabled={taskQuery.isFetching}
+          onClick={() => void taskQuery.fetchNextPage({ cancelRefetch: false })}
+        >
+          {m.tasks_load_earlier_activity()}
+        </Button>
+      ) : null}
+      {repliesQuery.hasNextPage ? (
+        <Button
+          loading={repliesQuery.isFetchingNextPage}
+          type="button"
+          variant="secondary"
+          disabled={repliesQuery.isFetching}
+          onClick={() => void repliesQuery.fetchNextPage({ cancelRefetch: false })}
+        >
+          {m.tasks_load_earlier_replies()}
+        </Button>
+      ) : null}
+      {loadMoreError ? (
+        <p className="text-sm text-kumo-danger" data-ui="task-activity-error" role="alert">
+          {loadMoreError.message}
+        </p>
+      ) : null}
+    </>
   );
 }
 

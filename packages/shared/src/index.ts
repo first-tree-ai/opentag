@@ -366,8 +366,10 @@ export {
   sandboxRunnerWebSocketUrl,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
+  TASK_REPLIES_TEMPLATE,
   taskByIdPath,
   taskCancelPath,
+  taskRepliesPath,
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./im-message.js";

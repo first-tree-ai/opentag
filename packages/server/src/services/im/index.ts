@@ -7,4 +7,15 @@ export {
   ImMessageInbox,
   type IngestResult,
 } from "./im-message-inbox.js";
+export {
+  type CapturedOutboundMessage,
+  ImOutboundCapture,
+  type ImOutboundCaptureOptions,
+  OUTBOUND_CAPTURED_CONTENT_MAX_BYTES,
+  OUTBOUND_CREATED_REVISION_KEY,
+  type OutboundCaptureEvent,
+  type OutboundCaptureParse,
+  type OutboundCaptureSkipReason,
+  parseCapturedOutbound,
+} from "./im-outbound-capture.js";
 export { type AuthorizedImResource, ImResourceService } from "./im-resource-service.js";

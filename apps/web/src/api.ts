@@ -111,6 +111,8 @@ import {
   ListAvailableMCPServersResponseSchema,
   type ListMCPServersResponse,
   ListMCPServersResponseSchema,
+  type ListTaskRepliesResponse,
+  ListTaskRepliesResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
   type MCPAgentServer,
@@ -153,6 +155,7 @@ import {
   TaskTitleUpdateResponseSchema,
   taskByIdPath,
   taskCancelPath,
+  taskRepliesPath,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
   type UpdateGitHubConnectionBindingsRequest,
@@ -295,6 +298,12 @@ export class BrowserApi {
   task(sessionId: string, cursor?: string): Promise<TaskDetail> {
     const query = cursor ? `?${new URLSearchParams({ cursor }).toString()}` : "";
     return this.request(`${taskByIdPath(sessionId)}${query}`, TaskDetailSchema);
+  }
+
+  /** The Task's platform-confirmed outbound replies, paged independently of its Turns. */
+  taskReplies(sessionId: string, cursor?: string): Promise<ListTaskRepliesResponse> {
+    const query = cursor ? `?${new URLSearchParams({ cursor }).toString()}` : "";
+    return this.request(`${taskRepliesPath(sessionId)}${query}`, ListTaskRepliesResponseSchema);
   }
 
   updateTaskTitle(sessionId: string, input: TaskTitleUpdateRequest): Promise<TaskDetail["task"]> {

@@ -6,7 +6,6 @@ import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import {
-  Badge,
   Banner,
   Button,
   Checkbox,
@@ -20,7 +19,7 @@ import {
   Text,
 } from "../../ui/design-system.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
-import { canRevoke, type McpRowStates, rowStates, sharedDefinitionImpact } from "./mcp-page-model.js";
+import { sharedDefinitionImpact } from "./mcp-page-model.js";
 import {
   useAgentMcpServers,
   useAttachMcpServer,
@@ -36,6 +35,7 @@ import {
   useUpdateMcpBinding,
   useUpdateMcpServer,
 } from "./mcp-queries.js";
+import { McpServerCard } from "./mcp-server-card.js";
 
 /**
  * One Agent's MCP Servers, backed by the real management API.
@@ -184,7 +184,6 @@ function McpRow({
 }) {
   const updateBinding = useUpdateMcpBinding(agentId);
   const probe = useProbeMcpServer(agentId);
-  const states = rowStates(entry);
 
   const toggle = async () => {
     onError("");
@@ -205,66 +204,14 @@ function McpRow({
   };
 
   return (
-    <li className="grid gap-2 rounded-lg border border-kumo-line p-4" data-ui="mcp-server-row">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="grid gap-0.5">
-          <Text variant="body">{entry.name}</Text>
-          <Text variant="secondary">{entry.effective.url}</Text>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Four independent states, never folded into one: see mcp-page-model.ts. */}
-          <Badge variant={states.mount === "enabled" ? "success" : "neutral"}>
-            {states.mount === "enabled" ? m.mcp_mount_enabled() : m.mcp_mount_disabled()}
-          </Badge>
-          <Badge variant="info">{describeKind(states.authorizationKind)}</Badge>
-          <Badge variant={states.authorizationStatus === "active" ? "success" : "warning"}>
-            {describeStatus(states.authorizationStatus)}
-          </Badge>
-          <Badge variant={states.probe === "failed" ? "error" : "neutral"}>{describeProbe(entry)}</Badge>
-          {entry.authorization?.accessTokenExpiresAt ? (
-            <Text variant="secondary">{m.mcp_expires_at({ time: entry.authorization.accessTokenExpiresAt })}</Text>
-          ) : null}
-        </div>
-      </div>
-
-      {!entry.enabled ? <Text variant="secondary">{m.mcp_disabled_hint()}</Text> : null}
-      {/*
-       * The operator's own words win; the probed description is the fallback, shown with its
-       * provenance so nobody mistakes a Server's self-description for something an admin wrote.
-       */}
-      {entry.description ? <Text variant="secondary">{entry.description}</Text> : null}
-      {!entry.description && entry.discoveredDescription ? (
-        <Text variant="secondary">{m.mcp_description_discovered({ value: entry.discoveredDescription })}</Text>
-      ) : null}
-      {entry.authorization?.probeError ? <Text variant="error">{entry.authorization.probeError}</Text> : null}
-      {entry.authorization?.toolsTruncated ? <Text variant="error">{m.mcp_tools_truncated()}</Text> : null}
-
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={toggle} size="compact" variant="secondary">
-          {entry.enabled ? m.mcp_disable_action() : m.mcp_enable_action()}
-        </Button>
-        <Button onClick={() => onAction({ kind: "authorize", entry })} size="compact" variant="secondary">
-          {m.mcp_authorize_action()}
-        </Button>
-        {canRevoke(entry) ? (
-          <Button onClick={() => onAction({ kind: "revoke", entry })} size="compact" variant="ghost">
-            {m.mcp_revoke_action()}
-          </Button>
-        ) : null}
-        <Button onClick={() => onAction({ kind: "tools", entry })} size="compact" variant="ghost">
-          {m.mcp_tools_action()}
-        </Button>
-        <Button onClick={reprobe} size="compact" variant="ghost">
-          {m.mcp_probe_action()}
-        </Button>
-        <Button onClick={() => onAction({ kind: "edit", entry })} size="compact" variant="ghost">
-          {m.mcp_edit_action()}
-        </Button>
-        <Button onClick={() => onAction({ kind: "remove", entry })} size="compact" variant="ghost">
-          {m.mcp_detach_action()}
-        </Button>
-      </div>
-    </li>
+    <McpServerCard
+      entry={entry}
+      onAction={(kind) => onAction({ kind, entry })}
+      onProbe={() => void reprobe()}
+      onToggle={() => void toggle()}
+      probing={probe.isPending}
+      toggling={updateBinding.isPending}
+    />
   );
 }
 
@@ -903,44 +850,6 @@ function describeImpact(count: number, names: string[]): string {
 }
 
 // ------------------------------------------------------------------ helpers
-
-function describeKind(kind: McpRowStates["authorizationKind"]): string {
-  if (kind === "bearer") return m.mcp_authorization_bearer();
-  if (kind === "oauth") return m.mcp_authorization_oauth();
-  // No authorization at all, which is not the same claim as an anonymous one being in force.
-  if (kind === "unauthorized") return m.mcp_authorization_status_none();
-  return m.mcp_authorization_anonymous();
-}
-
-function describeStatus(status: string): string {
-  switch (status) {
-    case "active":
-      return m.mcp_authorization_status_active();
-    case "pending":
-      return m.mcp_authorization_status_pending();
-    case "expired":
-      return m.mcp_authorization_status_expired();
-    case "revoked":
-      return m.mcp_authorization_status_revoked();
-    case "error":
-      return m.mcp_authorization_status_error();
-    default:
-      return m.mcp_authorization_status_none();
-  }
-}
-
-/**
- * The probe state as one phrase. "Never probed" and "probing right now" are different: the first
- * means the credential has not been exercised, the second means a result is on its way.
- */
-function describeProbe(entry: MCPAgentServer): string {
-  const authorization = entry.authorization;
-  if (!authorization) return m.mcp_probe_state_not_run();
-  if (authorization.probeState === "succeeded")
-    return m.mcp_probe_state_succeeded({ count: authorization.toolsCount ?? 0 });
-  if (authorization.probeState === "failed") return m.mcp_probe_state_failed();
-  return authorization.probedAt ? m.mcp_probe_state_pending() : m.mcp_probe_state_not_run();
-}
 
 /**
  * A bounded message for an OAuth failure. The callback never returns an `error_description`, so the

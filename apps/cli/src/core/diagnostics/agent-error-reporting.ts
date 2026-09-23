@@ -12,13 +12,15 @@ import { reportCliError } from "./error-reporting.js";
  * this machine cannot open, a budget that ran out, a shutdown. Those are worth a log line and a
  * message to the person, not a tracker entry that no release can ever fix.
  *
- * `turn_state_unknown` is in, and is the important one: it is the catch-all for a throw nothing
- * classified, which is exactly the shape of a defect nobody has seen yet.
+ * Only what the runner can actually emit is listed. `provider_protocol_error` is a provider that
+ * answered in a shape the runtime could not read, whether it threw or returned it.
+ * `turn_state_unknown` is the important one: it is the catch-all for a throw nothing classified,
+ * which is exactly the shape of a defect nobody has seen yet. `provider_teardown_failed` and
+ * `session_resume_failed` exist in the shared taxonomy but nothing in the Client produces them
+ * yet; they join this set when a producer does, not before.
  */
 const REPORTED_TURN_FAILURES: ReadonlySet<TurnFailureReason> = new Set([
   "provider_protocol_error",
-  "provider_teardown_failed",
-  "session_resume_failed",
   "turn_state_unknown",
 ]);
 

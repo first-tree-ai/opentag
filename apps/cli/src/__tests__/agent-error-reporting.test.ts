@@ -41,12 +41,7 @@ const failure = {
 
 describe("shouldReportTurnFailure", () => {
   it("reports OpenTag's own defects and leaves the machine, the provider, and the caller alone", () => {
-    for (const errorReason of [
-      "provider_protocol_error",
-      "provider_teardown_failed",
-      "session_resume_failed",
-      "turn_state_unknown",
-    ] as const) {
+    for (const errorReason of ["provider_protocol_error", "turn_state_unknown"] as const) {
       expect(shouldReportTurnFailure({ errorReason })).toBe(true);
     }
     for (const errorReason of [
@@ -60,6 +55,9 @@ describe("shouldReportTurnFailure", () => {
       "output_too_large",
       "turn_timeout",
       "client_shutdown",
+      // In the taxonomy, but nothing in the Client produces them yet.
+      "provider_teardown_failed",
+      "session_resume_failed",
     ] as const satisfies readonly TurnFailureReason[]) {
       expect(shouldReportTurnFailure({ errorReason })).toBe(false);
     }

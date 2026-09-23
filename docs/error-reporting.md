@@ -34,8 +34,8 @@ server. Unknown fields are rejected, so a client cannot attach anything the sche
 | `occurredAt` | both | ISO 8601 timestamp |
 | `reportId` | both | One identifier per report, tying the tracker event to the server log line |
 | `userId` | both | The Account the client believed it was signed in as |
-| `computerId` | CLI | The Account Computer this OpenTag home is connected as — the uuid the Server and the Web App know — read from the machine credential, when one exists |
-| `installationId` | CLI | This installation's own locally generated identity (`computer.json`), the value the daemon logs under the same name; falls back to the machine credential's copy |
+| `computerId` | CLI | The Account Computer this OpenTag home is connected as — the uuid the Server and the Web App know — read from the machine credential, only when that credential names the server the report goes to |
+| `installationId` | CLI | This installation's own locally generated identity (`computer.json`), the value the daemon logs under the same name, only when that file names the server the report goes to; otherwise the machine credential's copy, under the same condition |
 | `agentId`, `sessionId`, `turnId` | CLI | Present when the failure happened inside an Agent turn |
 | `provider` | CLI | The Agent runtime provider, such as `claude-code` |
 
@@ -60,8 +60,8 @@ Where each identifier comes from:
   purpose: every installed CLI reads `credentials.json` with a strict schema, so a key added there by a newer CLI
   would make the file invalid for an older one, and the documented rollback (`install.sh --version <previous>`)
   would leave every Account-authenticated command refusing to run. The identity file is read only by the report
-  path, records the server it was signed in to, and counts only while it names the same server as the
-  credentials; a malformed one costs the report its `userId` and nothing else. **An installation that signed in
+  path, records the server it was signed in to, and counts only while it names the server the report goes to; a
+  malformed one costs the report its `userId` and nothing else. **An installation that signed in
   before this file existed reports no `userId` until it signs in again**; it still reports its Computer if one is
   connected. Signing in while the Server cannot answer `GET /me` also succeeds without recording the Account — the
   login is what matters there — and removes any identity an earlier sign-in left, so a report never names an
@@ -81,6 +81,15 @@ three tokens, so the marker changes neither grouping. Searching the server log f
 The identity files are read independently on the CLI side: a malformed `computer.json` costs the report its
 `installationId`, a malformed `account-identity.json` costs it its `userId`, and nothing else; valid Account
 credentials alone are enough to address it.
+
+Every identifier is attached only from a record that names the server the report is sent to. The CLI chooses
+the destination first — the Account credentials' server when signed in, otherwise the Computer's — and then
+takes `userId`, `computerId`, and `installationId` only from records whose server, compared as a normalized
+origin, is that one. The mismatch is a supported state rather than a corrupt one: `login --server A` followed by
+`computer connect --server B` leaves an Account for A beside a Computer for B, and a report to A that named B's
+Computer would hand A's operator an identifier they cannot resolve while carrying B's identifiers across a
+deployment boundary. Such a report names the Account and no machine. The two machine identifiers also stay a
+pair: a `computerId` from one server never travels with an `installationId` from another.
 
 ### The page a Web App failure happened on
 

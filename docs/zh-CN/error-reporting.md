@@ -34,8 +34,8 @@ project 的 server 会把每一份报告留在自己的日志里，不转发任�
 | `occurredAt` | 两端 | ISO 8601 时间戳 |
 | `reportId` | 两端 | 每份报告一个标识，把 tracker 事件与 server 日志行对应起来 |
 | `userId` | 两端 | 客户端自认已登录的 Account |
-| `computerId` | CLI | 本 OpenTag home 所连接的 Account Computer——Server 与 Web App 认识的那个 uuid——读自机器凭据，仅在存在时携带 |
-| `installationId` | CLI | 本安装自己在本地生成的身份（`computer.json`），即 daemon 以同名字段记录的值；缺失时回退到机器凭据中的副本 |
+| `computerId` | CLI | 本 OpenTag home 所连接的 Account Computer——Server 与 Web App 认识的那个 uuid——读自机器凭据，且仅当该凭据指向报告要发往的 server 时携带 |
+| `installationId` | CLI | 本安装自己在本地生成的身份（`computer.json`），即 daemon 以同名字段记录的值，仅当该文件指向报告要发往的 server 时携带；否则在同样条件下回退到机器凭据中的副本 |
 | `agentId`、`sessionId`、`turnId` | CLI | 失败发生在 Agent turn 内部时存在 |
 | `provider` | CLI | Agent 运行时 provider，例如 `claude-code` |
 
@@ -57,7 +57,7 @@ project 的 server 会把每一份报告留在自己的日志里，不转发任�
   已经失败的路径上无需再发一次请求即可指出它。它有意单独成文件：每一个已安装的 CLI 都用严格的 schema 读取
   `credentials.json`，较新的 CLI 若往里加一个键，就会让较旧的 CLI 认为该文件无效，文档中的回滚方式
   （`install.sh --version <previous>`）会让所有需要 Account 认证的命令拒绝运行。该身份文件只由上报路径读取，记录着登录
-  时的 server，且只在它指向与凭据相同的 server 时才生效；文件损坏只让报告失去 `userId`，不影响其他内容。**在该文件出现
+  时的 server，且只在它指向报告要发往的 server 时才生效；文件损坏只让报告失去 `userId`，不影响其他内容。**在该文件出现
   之前就已登录的安装，在重新登录之前不会上报 `userId`**；若已连接 Computer，它仍会上报 Computer。在 Server 无法答复
   `GET /me` 时登录同样会成功，只是不记录 Account——那条路径上重要的是登录本身——并且会删除此前登录留下的身份文件，
   因此报告绝不会指向一个当前 token 可能并不属于的 Account。写入该文件是尽力而为：失败会被记录到日志，登录仍然成功。
@@ -71,6 +71,13 @@ Error Reporting 丢弃，它只保留自己定义的字段。这些内容改为�
 
 CLI 端会分别读取各个身份文件：损坏的 `computer.json` 只让报告失去 `installationId`，损坏的 `account-identity.json`
 只让它失去 `userId`，其余不受影响；仅凭有效的 Account 凭据就足以为报告确定去向。
+
+每个标识都只会取自指向报告发往的那个 server 的记录。CLI 先确定目的地——已登录时是 Account 凭据中的 server，否则是
+Computer 的 server——然后只从（按规范化 origin 比较）指向该 server 的记录中取 `userId`、`computerId` 与
+`installationId`。这种不一致是受支持的状态而非文件损坏：先 `login --server A` 再 `computer connect --server B`，会让
+A 的 Account 与 B 的 Computer 并存于同一个 home；若发往 A 的报告写上 B 的 Computer，A 的运维人员会拿到一个无法解析的
+标识，而 B 的标识也会越过部署边界。这样的报告只指明 Account，不指明任何机器。两个机器标识也始终成对：来自一个
+server 的 `computerId` 绝不会与来自另一个 server 的 `installationId` 同行。
 
 ### Web App 失败所在的页面
 

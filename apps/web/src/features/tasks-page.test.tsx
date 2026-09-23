@@ -1069,7 +1069,10 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Execution summary")).toBeTruthy();
+    expect(within(activity).queryByText("Execution summary")).toBeNull();
+    expect(within(activity).getByRole("group", { name: "Execution summary" }).textContent).toContain(
+      detail.turns[0]?.report?.finalText,
+    );
     expect(within(activity).queryByText("Reply data is unavailable.")).toBeNull();
     expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
   });
@@ -1108,7 +1111,9 @@ describe("Tasks view", () => {
     );
     expect(within(activity).queryByText("Sent reply")).toBeNull();
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
-    expect(within(activity).getByText("Execution summary")).toBeTruthy();
+    expect(within(activity).queryByText("Execution summary")).toBeNull();
+    expect(within(activity).queryByRole("button", { name: "Details" })).toBeNull();
+    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
   });
 
@@ -1130,8 +1135,9 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    // The captured feed is authoritative for the empty case; the report does not invent a reply.
-    expect(await within(activity).findByText("No reply records available.")).toBeTruthy();
+    expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
+    expect(within(activity).queryByText("No reply records available.")).toBeNull();
+    expect(within(activity).getByText(/^Completed ·/)).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
     expect(activity.querySelector('[data-ui="task-sent-reply"]')).toBeNull();
   });
@@ -1195,14 +1201,15 @@ describe("Tasks view", () => {
       const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
         path: `/tasks/${sessionId}`,
       });
-      await screen.findByText("Actual reply");
+      await screen.findAllByText("Actual reply");
       expect(container.querySelector('[data-ui="task-sent-reply"]')?.textContent).toContain("Actual reply");
       const summary = container.querySelector('[data-ui="task-execution-summary"]');
-      expect(summary?.querySelector("p") ?? null).toBeNull();
       if (finalText) {
-        fireEvent.click(screen.getByRole("button", { name: "Execution summary" }));
         expect(summary?.querySelector("p")?.textContent).toBe(finalText);
+      } else {
+        expect(summary).toBeNull();
       }
+      expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
     },
   );
@@ -1220,14 +1227,17 @@ describe("Tasks view", () => {
        * The captured feed owns the empty state. The report's own incomplete-history note stays,
        * because it remains true of that snapshot; its missing/unavailable notice yields to the feed.
        */
-      await screen.findByText(
-        status === "incomplete"
-          ? "Reply history is incomplete. Some messages or content could not be included."
-          : "No reply records available.",
-      );
+      await screen.findByRole("group", { name: "Execution summary" });
+      if (status === "incomplete") {
+        expect(
+          screen.getByText("Reply history is incomplete. Some messages or content could not be included."),
+        ).toBeTruthy();
+      }
+      expect(screen.queryByText("No reply records available.")).toBeNull();
       expect(screen.queryByText("No sent replies recorded.")).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
-      expect(screen.getByText("Execution summary")).toBeTruthy();
+      expect(screen.queryByText("Execution summary")).toBeNull();
+      expect(screen.getByRole("group", { name: "Execution summary" }).textContent).toContain(report.finalText);
     },
   );
 
@@ -1460,15 +1470,14 @@ describe("Task captured replies", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("reports an empty record without claiming nothing was sent", async () => {
+  it("keeps the conversation visible without an empty reply notice", async () => {
     vi.spyOn(browserApi, "task").mockResolvedValue(detail);
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
-    const empty = await screen.findByText("No reply records available.");
-    expect(empty).toBeTruthy();
-    expect(document.querySelector('[data-ui="task-replies-empty"]')).not.toBeNull();
-    expect(screen.getByText("Please investigate the failed deployment.")).toBeTruthy();
+    expect(await screen.findByText("Please investigate the failed deployment.")).toBeTruthy();
+    expect(screen.queryByText("No reply records available.")).toBeNull();
+    expect(document.querySelector('[data-ui="task-replies-empty"]')).toBeNull();
     expect(screen.queryByText(/nothing was sent|An empty list is not proof/i)).toBeNull();
   });
 

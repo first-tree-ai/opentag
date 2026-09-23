@@ -7,7 +7,7 @@ import {
 import type { ReactNode } from "react";
 import { formatDateTime, initials } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
-import { Collapsible, Text } from "../ui/design-system.js";
+import { Text } from "../ui/design-system.js";
 import { TaskActivityTimeline } from "./task-activity-timeline.js";
 import { TaskAttachments } from "./task-attachments.js";
 import { TaskMessageBody } from "./task-message-body.js";
@@ -39,7 +39,7 @@ export function TaskActivity({
   const capturedFeedSupplied = replies !== undefined;
   const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []);
   return (
-    <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
+    <section className="grid w-full max-w-3xl gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
       <Text as="h2" id="task-activity-title" variant="heading">
         {m.tasks_activity()}
       </Text>
@@ -100,18 +100,13 @@ function TaskEntry({
         {!compact ? (
           <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
             <strong>{task.agent.displayName}</strong>
-            {entry.kind === "reply" ? <TaskOutgoingReplyMeta reply={entry.reply} /> : null}
-            {entry.kind === "status" ? (
-              <small className="text-kumo-subtle">{deliveryStateLabel(turn.delivery)}</small>
-            ) : null}
+            <TaskAgentMeta entry={entry} />
           </header>
         ) : null}
-        <section
-          className={
-            compact
-              ? "grid max-w-[48rem] gap-3 text-sm"
-              : "grid max-w-[48rem] gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-          }
+        {/* biome-ignore lint/a11y/useSemanticElements: This groups message content, not form controls. */}
+        <div
+          className={compact ? "grid min-w-0 gap-3 text-sm" : "grid min-w-0 gap-3"}
+          role="group"
           aria-label={m.tasks_agent_response()}
           data-ui="task-agent-response"
         >
@@ -127,10 +122,19 @@ function TaskEntry({
           ) : (
             <TaskUnreportedBody delivery={turn.delivery} />
           )}
-        </section>
+        </div>
       </div>
     </article>
   );
+}
+
+function TaskAgentMeta({ entry }: { entry: TaskTimelineEntry }) {
+  if (entry.kind === "reply") return <TaskOutgoingReplyMeta reply={entry.reply} />;
+  if (entry.kind === "report") return <TaskReportMeta report={entry.report} />;
+  if (entry.kind === "status") {
+    return <small className="text-kumo-subtle">{deliveryStateLabel(entry.turn.delivery)}</small>;
+  }
+  return null;
 }
 
 function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
@@ -153,7 +157,7 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
             {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
           </small>
         </header>
-        <div className="grid max-w-[48rem] gap-3 rounded-lg bg-kumo-recessed p-4">
+        <div className="grid min-w-0 gap-3 rounded-lg bg-kumo-recessed p-4">
           {turn.message.fallbackText || attachments.length === 0 ? (
             <TaskMessageBody format="plain_text" text={turn.message.fallbackText} />
           ) : null}
@@ -170,6 +174,14 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
   );
 }
 
+function TaskReportMeta({ report }: { report: TaskReport }) {
+  return (
+    <small className="text-kumo-subtle">
+      {m.tasks_report_summary({ outcome: humanizeEnum(report.outcome), time: formatDateTime(report.reportedAt) })}
+    </small>
+  );
+}
+
 function TaskReportBody({
   report,
   hasReplies,
@@ -183,11 +195,9 @@ function TaskReportBody({
 }) {
   return (
     <>
-      <small className="text-kumo-subtle">
-        {m.tasks_report_summary({ outcome: humanizeEnum(report.outcome), time: formatDateTime(report.reportedAt) })}
-      </small>
+      {hasReplies ? <TaskReportMeta report={report} /> : null}
       {provider === "feishu" ? <TaskReplyNotice capturedFeedSupplied={capturedFeedSupplied} report={report} /> : null}
-      {report.finalText ? <TaskExecutionSummary text={report.finalText} collapsed={hasReplies} /> : null}
+      {report.finalText ? <TaskExecutionSummary text={report.finalText} /> : null}
       {report.outgoingReplies?.runtimeSummaryTruncated ? (
         <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p>
       ) : null}
@@ -199,8 +209,8 @@ function TaskReportBody({
 /**
  * The old report's own reply snapshot. Once the captured replies feed is supplied, this notice only
  * states what stays true about that snapshot — an incomplete history — and stays silent on the
- * missing, unavailable, or empty cases the feed itself now reports. Legacy-only callers keep every
- * notice.
+ * missing or unavailable cases the feed itself now reports. Legacy-only callers keep those notices;
+ * an empty snapshot needs no notice.
  */
 function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport; capturedFeedSupplied: boolean }) {
   const snapshot = report.outgoingReplies;
@@ -216,34 +226,15 @@ function TaskReplyNotice({ report, capturedFeedSupplied }: { report: TaskReport;
         {m.tasks_reply_incomplete()}
       </p>
     );
-  if (snapshot.replies.length === 0)
-    return capturedFeedSupplied ? null : (
-      <p className="text-sm text-kumo-subtle" data-ui="task-no-reply">
-        {m.tasks_no_reply_sent()}
-      </p>
-    );
   return null;
 }
 
-function TaskExecutionSummary({ text, collapsed }: { text: string; collapsed: boolean }) {
+function TaskExecutionSummary({ text }: { text: string }) {
   return (
-    <section className="grid gap-2" data-ui="task-execution-summary" aria-label={m.tasks_execution_summary()}>
-      {collapsed ? (
-        <Collapsible.Root>
-          <Collapsible.DefaultTrigger>{m.tasks_execution_summary()}</Collapsible.DefaultTrigger>
-          <Collapsible.Panel>
-            <div className="pt-3">
-              <TaskMessageBody format="markdown" text={text} />
-            </div>
-          </Collapsible.Panel>
-        </Collapsible.Root>
-      ) : (
-        <>
-          <strong className="text-sm">{m.tasks_execution_summary()}</strong>
-          <TaskMessageBody format="markdown" text={text} />
-        </>
-      )}
-    </section>
+    // biome-ignore lint/a11y/useSemanticElements: This groups summary content, not form controls.
+    <div className="grid gap-2" data-ui="task-execution-summary" role="group" aria-label={m.tasks_execution_summary()}>
+      <TaskMessageBody format="markdown" text={text} />
+    </div>
   );
 }
 
@@ -291,13 +282,15 @@ function TaskCapturedReplyEntry({
           <strong>{task.agent.displayName}</strong>
           <TaskCapturedReplyMeta reply={entry.reply} />
         </header>
-        <section
-          className="grid max-w-[48rem] gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+        {/* biome-ignore lint/a11y/useSemanticElements: This groups message content, not form controls. */}
+        <div
+          className="grid min-w-0 gap-3"
+          role="group"
           aria-label={m.tasks_agent_response()}
           data-ui="task-agent-response"
         >
           <TaskCapturedReply legacyReply={entry.legacyReply} reply={entry.reply} />
-        </section>
+        </div>
       </div>
     </article>
   );

@@ -69,8 +69,6 @@
   "tasks_message_truncated": "This message was truncated.",
   "tasks_no_activity": "No activity recorded",
   "tasks_no_activity_detail": "Messages and Agent results will appear here.",
-  "tasks_no_captured_replies": "No reply records available.",
-  "tasks_no_reply_sent": "No sent replies recorded.",
   "tasks_no_tasks_found": "No Tasks found",
   "tasks_no_tasks_found_detail": "Try a different search or filter.",
   "tasks_no_tasks_yet_detail": "Message this Agent in your chat app to put it to work.",

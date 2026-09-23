@@ -1,4 +1,4 @@
-import type { ListTasksResponse, TaskDetail, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import type { ListTasksResponse, TaskDetail, TaskSummary } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
@@ -401,7 +401,7 @@ export function TaskDetailPage({
 
   const { task } = first;
   const status = taskStatusGroup(task.status);
-  const repliesStatus = <TaskRepliesStatus query={repliesQuery} task={task} turns={turns} />;
+  const repliesStatus = <TaskRepliesStatus query={repliesQuery} />;
   const pagination = (
     <TaskActivityPagination loadMoreError={loadMoreError} repliesQuery={repliesQuery} taskQuery={taskQuery} />
   );
@@ -497,12 +497,11 @@ function useTaskRepliesQuery(taskId: string | undefined) {
 type TaskRepliesQuery = ReturnType<typeof useTaskRepliesQuery>;
 
 /*
- * The replies read is reported on its own terms: a load error is a load error (retryable, with any
- * cached replies still visible), and an empty successful page only says no reply was recorded —
- * never that the Agent sent nothing. A Server without the subresource is not special-cased: a 404
- * and a missing scope both stay honest errors rather than proving an absent capability.
+ * Keep loading and retryable failures visible, with cached replies retained. A successful empty
+ * page needs no notice. A Server without the subresource is not special-cased: a 404 and a missing
+ * scope both stay honest errors rather than proving an absent capability.
  */
-function TaskRepliesStatus({ query, task, turns }: { query: TaskRepliesQuery; task: TaskSummary; turns: TaskTurn[] }) {
+function TaskRepliesStatus({ query }: { query: TaskRepliesQuery }) {
   if (!query.supplied) return null;
   if (query.isPending) {
     return (
@@ -523,15 +522,7 @@ function TaskRepliesStatus({ query, task, turns }: { query: TaskRepliesQuery; ta
       </div>
     );
   }
-  const hasLegacyReplies = turns.some(
-    (turn) => task.source.provider === "feishu" && (turn.report?.outgoingReplies?.replies.length ?? 0) > 0,
-  );
-  if (query.replies.length > 0 || hasLegacyReplies) return null;
-  return (
-    <p className="text-sm text-kumo-subtle" data-ui="task-replies-empty">
-      {m.tasks_no_captured_replies()}
-    </p>
-  );
+  return null;
 }
 
 /**

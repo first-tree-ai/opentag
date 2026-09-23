@@ -1,5 +1,5 @@
 import type { TaskReply, TaskSummary, TaskTurn } from "@opentag/shared/browser";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { TaskActivity } from "./task-conversation.js";
 
@@ -63,12 +63,15 @@ function turn(): TaskTurn {
   };
 }
 
-it("keeps an expanded summary open across refresh, duplicate pages and prepended history", () => {
+it("shows the summary beside replies and keeps it visible across refresh, duplicate pages and prepended history", () => {
   const current = turn();
   const view = render(<TaskActivity task={task} turns={[current]} pagination={null} />);
-  expect(screen.queryByText("Review finished")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Execution summary" }));
   expect(screen.getByText("Review finished")).toBeTruthy();
+  expect(screen.queryByText("Execution summary")).toBeNull();
+  expect(screen.getAllByRole("group", { name: "Agent response" })).toHaveLength(2);
+  expect(screen.getByRole("group", { name: "Execution summary" })).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Agent response" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
   const earlier = turn();
   earlier.deliveryId = "earlier";
   earlier.message = { ...earlier.message, id: "earlier", occurredAt: "2026-09-20T23:00:00Z" };
@@ -83,10 +86,10 @@ it("keeps an expanded summary open across refresh, duplicate pages and prepended
   );
   expect(screen.getByText("Review finished")).toBeTruthy();
   expect(screen.getAllByText("Here is the review")).toHaveLength(1);
-  expect(screen.getByRole("button", { name: "Execution summary" }).getAttribute("aria-expanded")).toBe("true");
+  expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
 });
 
-it("keeps incomplete capture, truncation and execution failure visible beside a collapsed summary", () => {
+it("keeps incomplete capture, truncation and execution failure visible beside the summary", () => {
   const current = turn();
   if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");
   current.report.outcome = "failed";
@@ -94,7 +97,7 @@ it("keeps incomplete capture, truncation and execution failure visible beside a 
   current.report.outgoingReplies.status = "incomplete";
   current.report.outgoingReplies.runtimeSummaryTruncated = true;
   render(<TaskActivity task={task} turns={[current]} pagination={null} />);
-  expect(screen.queryByText("Review finished")).toBeNull();
+  expect(screen.getByText("Review finished")).toBeTruthy();
   expect(screen.getByText("Here is the review")).toBeTruthy();
   expect(screen.getByText("Provider failed")).toBeTruthy();
   expect(screen.getByText("Execution summary was truncated.")).toBeTruthy();
@@ -141,7 +144,7 @@ it.each([0, 3])("shows the incomplete-history notice only when replies were omit
   current.report.outgoingReplies.omittedCount = omittedCount;
   render(<TaskActivity task={task} turns={[current]} pagination={null} />);
 
-  expect(screen.queryByText("Review finished")).toBeNull();
+  expect(screen.getByText("Review finished")).toBeTruthy();
   expect(screen.getByText("Here is the review")).toBeTruthy();
   expect(screen.queryAllByText(/Reply history is incomplete/)).toHaveLength(omittedCount > 0 ? 1 : 0);
 });
@@ -300,5 +303,7 @@ it("keeps a standalone captured reply without a Turn, and two same-text native i
   );
 
   expect(screen.getAllByText("Confirmed reply body")).toHaveLength(2);
+  expect(screen.getAllByRole("group", { name: "Agent response" })).toHaveLength(2);
+  expect(screen.queryByRole("region", { name: "Agent response" })).toBeNull();
   expect(screen.queryByText("No activity recorded")).toBeNull();
 });

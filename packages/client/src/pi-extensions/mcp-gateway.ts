@@ -32,6 +32,6 @@ export default adapter.createMcpAdapter({
         tasks: false,
       },
     },
-    settings: { scriptMode: false },
+    settings: { namespaceProxyTools: false, scriptMode: false },
   },
 });

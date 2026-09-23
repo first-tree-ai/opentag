@@ -51,8 +51,9 @@ loads one OpenTag wrapper extension while Pi's implicit extension discovery rema
 wrapper supplies an isolated programmatic configuration containing only `opentag-mcp`; Pi's global
 and project MCP files are never merged. The gateway bearer travels in the Pi process environment,
 not its arguments or persisted Session binding. The adapter uses the gateway's supported legacy
-MCP handshake and exposes the bounded proxy tool; direct tools, resources, Tasks and scripting
-are disabled. A missing Agent mount or rejected service grant leaves the Turn without MCP tools.
+MCP handshake and exposes only the bounded `mcp` proxy tool. Direct tools, per-server namespace
+proxies, resources, Tasks and scripting are disabled. A missing Agent mount or rejected service grant
+leaves the Turn without MCP tools.
 
 For Cloud, the trusted Runner requests the existing `mcp` execution service after verified custody,
 acquires a bearer over the existing credential control tunnel, and passes the Server URL and bearer

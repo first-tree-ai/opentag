@@ -128,6 +128,71 @@ export async function lookupRunnerTag({ repository, tag, accessToken, fetchImpl 
   return { present: true, digest, bytes, contentType: response.headers.get("content-type") };
 }
 
+const TAG_LIST_PAGE_SIZE = 1000;
+const TAG_LIST_MAX_PAGES = 100;
+
+/** Reads the `rel="next"` target of a Link header as a registry path under `/v2/`, or null. */
+function nextTagListPath(linkHeader, host) {
+  if (!linkHeader) return null;
+  for (const part of linkHeader.split(",")) {
+    const match = /^\s*<([^>]+)>\s*;(.*)$/.exec(part);
+    if (!match || !/;\s*rel="?next"?\s*(?:;|$)/.test(`;${match[2]}`)) continue;
+    let target;
+    try {
+      target = new URL(match[1], `https://${host}/`);
+    } catch {
+      throw new Error("registry tag listing returned an unparseable pagination link");
+    }
+    if (target.origin !== `https://${host}` || !target.pathname.startsWith("/v2/")) {
+      throw new Error("registry tag listing returned a pagination link off the registry origin");
+    }
+    return `${target.pathname.slice("/v2/".length)}${target.search}`;
+  }
+  return null;
+}
+
+/**
+ * Lists every tag of the repository, following registry pagination. A 404 is the definitive "this
+ * image has never been pushed" and yields an empty list; any other non-200 is inconclusive and
+ * throws, because a version chosen against a partial listing could collide with an existing tag.
+ */
+export async function listRunnerTags({ repository, accessToken, fetchImpl = fetch, timeoutMs }) {
+  const label = `registry tag listing of ${repository.repository}`;
+  const tags = [];
+  let path = `${repository.path}/tags/list?n=${TAG_LIST_PAGE_SIZE}`;
+  for (let page = 0; path !== null; page += 1) {
+    if (page >= TAG_LIST_MAX_PAGES) {
+      throw new Error(`${label} exceeded ${TAG_LIST_MAX_PAGES} pages`);
+    }
+    const response = await garRequest({ host: repository.host, path, accessToken, label, fetchImpl, timeoutMs });
+    if (response.status === 404) {
+      if (page > 0) throw new Error(`${label} lost a page mid-listing (status 404)`);
+      return [];
+    }
+    tags.push(...(await readTagListPage(response, label)));
+    path = nextTagListPath(response.headers.get("link"), repository.host);
+  }
+  return tags;
+}
+
+/** One page of a tag listing: only a 200 with a well-formed string list counts. */
+async function readTagListPage(response, label) {
+  if (response.status !== 200) {
+    throw new Error(`${label} was inconclusive with status ${response.status}`);
+  }
+  let document;
+  try {
+    document = JSON.parse((await readBody(response, label)).toString("utf8"));
+  } catch {
+    throw new Error(`${label} returned a non-JSON response`);
+  }
+  const tags = document?.tags ?? [];
+  if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string")) {
+    throw new Error(`${label} returned an invalid tags list`);
+  }
+  return tags;
+}
+
 async function fetchVerifiedJson({ repository, digest, accessToken, kind, fetchImpl, timeoutMs }) {
   const response = await garRequest({
     host: repository.host,

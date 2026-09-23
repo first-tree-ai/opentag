@@ -50,7 +50,7 @@ test("publish reuses a verified existing tag without overwriting it", async () =
   }
 });
 
-test("publish fails a tag claimed by a different commit with the manual recovery steps", async () => {
+test("publish fails a tag claimed by a different commit and names the recovery", async () => {
   const gar = garRouter({ labelOverrides: { [RUNNER_LABELS.revision]: OTHER_SHA } });
   const recorder = commandRecorder();
   const { deps, root, outDir } = await publishDeps({
@@ -68,9 +68,10 @@ test("publish fails a tag claimed by a different commit with the manual recovery
         );
         assert.match(
           String(error?.message),
-          new RegExp(`add a quarantine tag to the claimed image and then delete the exact ${IMAGE}:${VERSION} tag`),
-          "the message names the quarantine-then-delete recovery step",
+          /staging version resolver steps over every Runner tag already in the registry/,
+          "on staging the message points at the self-healing re-run, not a manual tag deletion",
         );
+        assert.doesNotMatch(String(error?.message), /delete the exact/);
         assert.match(String(error?.message), /Never overwrite the existing tag/);
         assert.ok(error?.cause instanceof Error, "the underlying identity mismatch is preserved as the cause");
         return true;

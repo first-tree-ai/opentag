@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CHANNEL_CONFIG } from "./channel-config.mjs";
 import { findLatestStagingVersion, resolveNextPublishedStagingVersion } from "./release-versions.mjs";
+import { listRunnerTags, parseGarRepository, readGcloudAccessToken, runLocalCommand } from "./runner/gar.mjs";
 
 export function classifyPublishedVersionsLookup({ status, stdout, stderr }) {
   if (status === 0) {
@@ -60,16 +61,30 @@ function parseArguments(arguments_) {
   return values;
 }
 
+/**
+ * Every Runner tag already in the registry. The Runner image is pushed under the release version
+ * before the CLI reaches npm, so a run that fails between the two leaves a tag npm never sees; the
+ * version is chosen past those tags so the next run never asks for an immutable tag another
+ * commit already claimed. Runs with gcloud credentials the workflow configured beforehand.
+ */
+async function readReservedRunnerVersions(image) {
+  const repository = parseGarRepository(image);
+  const accessToken = await readGcloudAccessToken({ runCommand: runLocalCommand });
+  return listRunnerTags({ repository, accessToken });
+}
+
 async function main() {
   const arguments_ = parseArguments(process.argv.slice(2));
   const sourceVersion = arguments_.get("source-version");
   const releaseGitHead = arguments_.get("git-head");
   const runAttempt = arguments_.get("run-attempt");
-  if (!sourceVersion || !releaseGitHead || !runAttempt) {
-    throw new Error("--source-version, --git-head, and --run-attempt are required");
+  const runnerImage = arguments_.get("runner-image");
+  if (!sourceVersion || !releaseGitHead || !runAttempt || !runnerImage) {
+    throw new Error("--source-version, --git-head, --run-attempt, and --runner-image are required");
   }
 
   const packageName = CHANNEL_CONFIG.staging.packageName;
+  const reservedVersions = await readReservedRunnerVersions(runnerImage);
   const versionsLookup = spawnSync("npm", ["view", packageName, "versions", "--json"], { encoding: "utf8" });
   const publishedVersions = classifyPublishedVersionsLookup({
     status: versionsLookup.status,
@@ -95,6 +110,7 @@ async function main() {
   const version = resolveNextPublishedStagingVersion({
     sourceVersion,
     publishedVersions,
+    reservedVersions,
     latestGitHead,
     releaseGitHead,
     runAttempt,

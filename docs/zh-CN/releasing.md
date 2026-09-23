@@ -51,6 +51,12 @@ X.Y.(Z+1)-staging.<release_sequence>.<github_run_attempt>
 执行，读取目标 release line 已发布的最大序号并加一；新的 release line 从序号 `1` 开始。同一 commit 重试时
 复用已有坐标，旧 run 的 commit 如果已不是当前 `main`，则会在发布前失败。
 
+序号同时从 npm 和 Runner image registry 读取。与 CLI 匹配的 Runner image 会先以 release version 推送，之后
+CLI 才发布到 npm；如果 run 在两者之间失败（例如 revision 过期复查未通过），会留下一个 npm 不知道的 Runner
+tag。下一次 run 会跳过该 release line 上已存在的所有 Runner tag，而不会去申请一个已被其他 commit 占用的
+不可变 tag。只有当前 release line 上的 staging 版本才计入；quarantine tag 和其他 release line 会被忽略。
+Runner tag 不可变，永远不会被覆盖。
+
 发布前会查询 registry。不存在的坐标可以发布；已存在的坐标只有在 `gitHead` 与 release commit 相同时才作为
 幂等成功。registry 查询失败、出现不支持的已发布版本、revision 已过期或坐标属于其他 commit 时都会硬失败。
 

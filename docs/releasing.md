@@ -53,6 +53,12 @@ are serialized, read the highest published sequence for the target release line,
 line starts at sequence `1`. A retry for the same commit reuses its existing coordinate, while a stale run whose commit is
 no longer current `main` fails before publishing.
 
+The sequence is read from both npm and the Runner image registry. The CLI-matched Runner image is pushed under the
+release version before the CLI reaches npm, so a run that fails in between (for example, the stale-revision recheck)
+leaves a Runner tag npm never sees. The next run steps over every Runner tag already present on the release line instead
+of asking for an immutable tag another commit already claimed. Only staging versions on the current release line count;
+quarantine tags and other lines are ignored. The Runner tag is immutable and is never overwritten.
+
 The workflow checks the registry before publishing. An absent coordinate may be published; an existing coordinate is
 accepted only when its `gitHead` matches the release commit. A registry failure, unsupported published version, stale
 revision, or coordinate owned by another commit fails closed.

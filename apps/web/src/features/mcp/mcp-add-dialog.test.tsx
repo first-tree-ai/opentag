@@ -210,4 +210,18 @@ describe("MCP unified add journey", () => {
     expect(await screen.findByText("Credential update failed")).toBeTruthy();
     expect(revoke).not.toHaveBeenCalled();
   });
+  it("prefills the account authentication default for an unfinished connection and allows another method", async () => {
+    stub([entry({ authorization: null })]);
+    vi.mocked(browserApi.mcpServer).mockResolvedValue({
+      ...detail(1),
+      server: { ...detail(1).server, defaultAuthKind: "bearer" },
+    });
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await menuAction("Authentication");
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "API key or token" }).getAttribute("aria-checked")).toBe("true"),
+    );
+    chooseAuth("No authentication");
+    expect(screen.getByRole("radio", { name: "No authentication" }).getAttribute("aria-checked")).toBe("true");
+  });
 });

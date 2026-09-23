@@ -1,10 +1,10 @@
 import { type MCPAgentServer, MCPAuthSchemeSchema, MCPCustomAuthHeaderSchema } from "@opentag/shared/browser";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog } from "../../ui/design-system.js";
 import { McpAuthFields, McpFooter } from "./mcp-form.js";
 import { type AuthDraft, actionError, authBindingPatch, authDraft, validHeaders } from "./mcp-form-model.js";
-import { useSetMcpAuthorization, useStartMcpOAuth, useUpdateMcpBinding } from "./mcp-queries.js";
+import { useMcpServerDetail, useSetMcpAuthorization, useStartMcpOAuth, useUpdateMcpBinding } from "./mcp-queries.js";
 
 export function validAuth(draft: AuthDraft, existing: boolean): boolean {
   if (
@@ -54,6 +54,14 @@ export function McpAuthorizeDialog({
     ...authDraft(entry.effective, entry.authorization?.kind ?? "oauth"),
     headerMode: entry.overridden.extraHeaders ? ("custom" as const) : ("inherit" as const),
   }));
+  const defaults = useMcpServerDetail(entry.authorization ? undefined : entry.mcpServerId);
+  const chosen = useRef(false);
+  const defaultKind = defaults.data?.server.defaultAuthKind;
+  useEffect(() => {
+    if (!entry.authorization && defaultKind && !chosen.current) {
+      setDraft((current) => ({ ...current, kind: defaultKind }));
+    }
+  }, [defaultKind, entry.authorization]);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const [error, setError] = useState<string>();
@@ -89,7 +97,14 @@ export function McpAuthorizeDialog({
       >
         <fieldset disabled={busy} className="mcp-fields border-0 p-0">
           {error ? <Banner variant="error">{error}</Banner> : null}
-          <McpAuthFields draft={draft} onChange={setDraft} existing />
+          <McpAuthFields
+            draft={draft}
+            onChange={(next) => {
+              chosen.current = true;
+              setDraft(next);
+            }}
+            existing
+          />
         </fieldset>
         <McpFooter onClose={onClose} busy={busy}>
           <Button type="submit" disabled={busy || !validAuth(draft, true)} loading={busy}>

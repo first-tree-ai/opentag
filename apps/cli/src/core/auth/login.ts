@@ -1,6 +1,7 @@
 import {
   type ClientLogger,
   createLogger,
+  credentialsFingerprint,
   credentialsPath,
   normalizeServerUrl,
   type OpenTagApi,
@@ -50,7 +51,7 @@ export async function runLogin(options: LoginOptions): Promise<LoginResult> {
     serverUrl,
   };
   await writeCredentialsAtomically(credentials, home);
-  await recordAccountIdentity(home, serverUrl, userId, options.logger ?? createLogger("login"));
+  await recordAccountIdentity(home, credentials, userId, options.logger ?? createLogger("login"));
   return {
     credentialsPath: credentialsPath(home),
     message: `Logged in to OpenTag at ${serverUrl}`,
@@ -81,17 +82,23 @@ async function resolveUserId(api: LoginApi, accessToken: string): Promise<string
  * purpose, for the same reason `resolveUserId` is: the credentials are already written, and a
  * diagnostic detail must not turn a working login into a failed one. A sign-in that could not name
  * its Account removes any identity a previous sign-in left, so a report never names an Account the
- * current tokens may not belong to.
+ * current tokens may not belong to. The identity carries a fingerprint of the credentials it is
+ * written beside, so a later sign-in by an older CLI — which rewrites only the credentials — leaves
+ * a file the report path can tell is no longer about the tokens it holds.
  */
 async function recordAccountIdentity(
   home: string,
-  serverUrl: string,
+  credentials: StoredCredentials,
   userId: string | undefined,
   logger: Pick<ClientLogger, "warn">,
 ): Promise<void> {
   try {
-    if (userId) await writeAccountIdentityAtomically({ userId, serverUrl }, home);
-    else await removeAccountIdentity(home);
+    if (userId) {
+      await writeAccountIdentityAtomically(
+        { userId, serverUrl: credentials.serverUrl, credentialsFingerprint: credentialsFingerprint(credentials) },
+        home,
+      );
+    } else await removeAccountIdentity(home);
   } catch (error) {
     logger.warn(
       { code: "account_identity_write_failed", reason: error instanceof Error ? error.message : String(error) },

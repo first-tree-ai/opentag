@@ -121,9 +121,20 @@ export async function resolveErrorReportTarget(home: string): Promise<ErrorRepor
     normalizedServerUrl(machine?.computer.serverUrl);
   const machineOnServer = sameServer(machine?.computer.serverUrl, serverUrl) ? machine?.computer : undefined;
   const identityOnServer = sameServer(identity?.serverUrl, serverUrl) ? identity : undefined;
+  /*
+   * The Account counts only when its file names the destination and was provably written beside
+   * the credentials read here. Rollback is supported, and an older CLI signing in as another
+   * Account rewrites only `credentials.json`; without the fingerprint check the previous Account
+   * would be attributed to the new tokens. Omission is the safe direction, never misattribution.
+   */
+  const accountIsBound =
+    account !== undefined &&
+    credentials !== undefined &&
+    sameServer(account.serverUrl, serverUrl) &&
+    client.accountIdentityMatchesCredentials(account, credentials);
   return {
     serverUrl,
-    userId: sameServer(account?.serverUrl, serverUrl) ? account?.userId : undefined,
+    userId: accountIsBound ? account.userId : undefined,
     computerId: machineOnServer?.computerId,
     installationId: identityOnServer?.computerId ?? machineOnServer?.installationId,
   };

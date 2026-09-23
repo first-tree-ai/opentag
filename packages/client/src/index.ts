@@ -56,9 +56,13 @@ export {
 export { normalizeServerUrl, OpenTagApi, OpenTagApiError } from "./api.js";
 export {
   ACCOUNT_IDENTITY_FILE_NAME,
+  type AccountIdentityRotation,
+  accountIdentityMatchesCredentials,
   accountIdentityPath,
+  credentialsFingerprint,
   readAccountIdentity,
   removeAccountIdentity,
+  rotateAccountIdentityFingerprint,
   type StoredAccountIdentity,
   StoredAccountIdentitySchema,
   writeAccountIdentityAtomically,

@@ -2,7 +2,9 @@ import { constants } from "node:fs";
 import { open, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { OpenTagApi } from "../api.js";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { rotateAccountIdentityFingerprint } from "./account-identity.js";
 import {
   readCredentials,
   resolveOpenTagHome,
@@ -28,6 +30,8 @@ export interface TokenProviderOptions {
   refreshSkewSeconds?: number;
   lockRetryMs?: number;
   lockTimeoutMs?: number;
+  /** Where a best-effort step that did not change the refresh's outcome is noted. */
+  logger?: Pick<ClientLogger, "debug">;
 }
 
 export class AccessTokenProvider {
@@ -37,6 +41,7 @@ export class AccessTokenProvider {
   readonly #api?: Pick<OpenTagApi, "refresh">;
   readonly #lockRetryMs: number;
   readonly #lockTimeoutMs: number;
+  readonly #logger: Pick<ClientLogger, "debug">;
   #refreshInFlight?: Promise<AccessTokenLease>;
 
   constructor(options: TokenProviderOptions = {}) {
@@ -46,6 +51,7 @@ export class AccessTokenProvider {
     this.#api = options.api;
     this.#lockRetryMs = options.lockRetryMs ?? DEFAULT_LOCK_RETRY_MS;
     this.#lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+    this.#logger = options.logger ?? createLogger("auth");
     if (!Number.isSafeInteger(this.#lockRetryMs) || this.#lockRetryMs < 1) {
       throw new Error("lockRetryMs must be a positive safe integer");
     }
@@ -102,8 +108,32 @@ export class AccessTokenProvider {
         },
         this.#home,
       );
+      // The server rotates the refresh token with every refresh, and the Account identity beside
+      // the credentials is bound to that token; carry it over so the binding survives the rotation.
+      await this.#rebindAccountIdentity(latest.refreshToken, response.refreshToken);
       return { accessToken: response.accessToken, expiresAt };
     });
+  }
+
+  /**
+   * Best effort, and only for an identity that provably belonged to the credentials just replaced:
+   * the tokens are already persisted, and a diagnostic detail must not fail the refresh that
+   * produced them. A failure here costs later reports their Account and nothing else.
+   */
+  async #rebindAccountIdentity(previousRefreshToken: string, nextRefreshToken: string): Promise<void> {
+    try {
+      const rotation = await rotateAccountIdentityFingerprint(
+        { previous: { refreshToken: previousRefreshToken }, next: { refreshToken: nextRefreshToken } },
+        this.#home,
+      );
+      if (rotation !== "absent")
+        this.#logger.debug({ rotation }, "Account identity checked against rotated credentials");
+    } catch (error) {
+      this.#logger.debug(
+        { code: "account_identity_rebind_failed", reason: error instanceof Error ? error.message : String(error) },
+        "Account identity could not be rebound to the rotated credentials",
+      );
+    }
   }
 }
 

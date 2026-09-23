@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   accountIdentityPath,
+  credentialsFingerprint,
   credentialsPath,
   readAccountIdentity,
   readCredentials,
@@ -183,7 +184,11 @@ describe("runLogin", () => {
     };
 
     const named = await login(await freshHome(), async () => ({ user: { id: "account-1" } }));
-    expect(named.account).toEqual({ userId: "account-1", serverUrl: "https://opentag.example" });
+    expect(named.account).toEqual({
+      userId: "account-1",
+      serverUrl: "https://opentag.example",
+      credentialsFingerprint: credentialsFingerprint({ refreshToken: "refresh-secret" }),
+    });
     expect(named.credentials).not.toHaveProperty("userId");
 
     // The sign-in has already succeeded by then; a diagnostic detail must not undo it.
@@ -196,7 +201,10 @@ describe("runLogin", () => {
 
     // A sign-in that cannot name its Account forgets the one a previous sign-in left behind.
     const stale = await freshHome();
-    await writeAccountIdentityAtomically({ userId: "account-0", serverUrl: "https://opentag.example" }, stale);
+    await writeAccountIdentityAtomically(
+      { userId: "account-0", serverUrl: "https://opentag.example", credentialsFingerprint: "0".repeat(64) },
+      stale,
+    );
     expect((await login(stale)).account).toBeUndefined();
   });
 
@@ -234,7 +242,11 @@ describe("runLogin", () => {
       false,
     );
     // The attribution is beside the credentials, and the report reads it from there.
-    expect(await readAccountIdentity(home)).toEqual({ userId: "account-1", serverUrl: "https://opentag.example" });
+    expect(await readAccountIdentity(home)).toEqual({
+      userId: "account-1",
+      serverUrl: "https://opentag.example",
+      credentialsFingerprint: credentialsFingerprint({ refreshToken: "refresh-secret" }),
+    });
     expect(await resolveErrorReportTarget(home)).toMatchObject({
       serverUrl: "https://opentag.example",
       userId: "account-1",

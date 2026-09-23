@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ACCOUNT_IDENTITY_FILE_NAME,
+  credentialsFingerprint,
   removeAccountIdentity,
   resolveOpenTagHomeLayout,
   writeAccountIdentityAtomically,
@@ -14,6 +15,7 @@ import { ErrorReportRequestSchema } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNEL, CLI_VERSION } from "../build-info.js";
 import { createProgram } from "../cli/program.js";
+import { runLogin } from "../core/auth/login.js";
 import { CommandError } from "../core/command/policy.js";
 import {
   installCliProcessErrorReporting,
@@ -69,9 +71,15 @@ async function loggedInHome(serverUrl: string, userId?: string): Promise<string>
     },
     home,
   );
-  // The Account lives in its own file, beside the credentials rather than inside them.
-  if (userId) await writeAccountIdentityAtomically({ userId, serverUrl }, home);
+  // The Account lives in its own file, beside the credentials rather than inside them, bound to
+  // them by a fingerprint of the refresh token just written.
+  if (userId) await writeAccountIdentityAtomically(accountIdentity(userId, serverUrl), home);
   return home;
+}
+
+/** An identity bound to the credentials `loggedInHome` writes; another server or token unbinds it. */
+function accountIdentity(userId: string, serverUrl: string, refreshToken = "refresh-token") {
+  return { userId, serverUrl, credentialsFingerprint: credentialsFingerprint({ refreshToken }) };
 }
 
 describe("resolveCommandPath", () => {
@@ -189,27 +197,79 @@ describe("resolveErrorReportTarget", () => {
 
     // An identity a sign-in to another server left behind is not this sign-in's Account.
     const elsewhere = await loggedInHome("https://opentag.example");
-    await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://other.example" }, elsewhere);
+    await writeAccountIdentityAtomically(accountIdentity("account-1", "https://other.example"), elsewhere);
     expect((await resolveErrorReportTarget(elsewhere)).userId).toBeUndefined();
 
-    // Without credentials the Computer's server is the destination; an identity naming that server
-    // is still a lead worth attaching there, one naming another server is not.
+    // Without credentials there is nothing the identity can be proved against, so it is not attached
+    // even though the Computer's server is the destination it names.
     const orphaned = await temporaryHome();
-    await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://opentag.example" }, orphaned);
+    await writeAccountIdentityAtomically(accountIdentity("account-1", "https://opentag.example"), orphaned);
     await connectHome(orphaned);
     expect(await resolveErrorReportTarget(orphaned)).toMatchObject({
       serverUrl: "https://opentag.example",
-      userId: "account-1",
+      userId: undefined,
       computerId: COMPUTER_ID,
     });
-    await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://other.example" }, orphaned);
-    expect((await resolveErrorReportTarget(orphaned)).userId).toBeUndefined();
+
+    // An identity written beside other credentials — a different refresh token — is not attached.
+    const rebound = await loggedInHome("https://opentag.example");
+    await writeAccountIdentityAtomically(accountIdentity("account-1", "https://opentag.example", "b-token"), rebound);
+    expect((await resolveErrorReportTarget(rebound)).userId).toBeUndefined();
 
     // Signing out is forgetting the Account: once removed, the next report names none.
     const signedOut = await loggedInHome("https://opentag.example", ACCOUNT_ID);
     expect((await resolveErrorReportTarget(signedOut)).userId).toBe(ACCOUNT_ID);
     await removeAccountIdentity(signedOut);
     expect((await resolveErrorReportTarget(signedOut)).userId).toBeUndefined();
+  });
+
+  it("drops the Account once an older CLI has signed in as someone else beside it", async () => {
+    // The supported rollback sequence: sign in as A with this CLI, roll back, sign in as B with the
+    // older CLI (which rewrites only credentials.json, in main's strict shape), upgrade, report.
+    const home = await temporaryHome();
+    const exchangeConnectCode = vi.fn().mockResolvedValue({
+      accessToken: "a-access",
+      refreshToken: "a-refresh",
+      tokenType: "Bearer",
+      expiresIn: 900,
+    });
+    await runLogin({
+      api: { exchangeConnectCode, me: async () => ({ user: { id: "account-a" } }) } as unknown as Parameters<
+        typeof runLogin
+      >[0]["api"],
+      code: "one-time-secret",
+      home,
+      serverUrl: "https://opentag.example",
+    });
+    expect((await resolveErrorReportTarget(home)).userId).toBe("account-a");
+
+    await writeConfigFile(
+      home,
+      "credentials.json",
+      JSON.stringify({
+        accessToken: "b-access",
+        accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
+        refreshToken: "b-refresh",
+        serverUrl: "https://opentag.example",
+      }),
+    );
+
+    // The refresh token belongs to B; the identity file still names A and must not be believed.
+    expect(await resolveErrorReportTarget(home)).toMatchObject({
+      serverUrl: "https://opentag.example",
+      userId: undefined,
+    });
+
+    // A fresh sign-in as A with this CLI binds the identity to the new credentials again.
+    await runLogin({
+      api: { exchangeConnectCode, me: async () => ({ user: { id: "account-a" } }) } as unknown as Parameters<
+        typeof runLogin
+      >[0]["api"],
+      code: "one-time-secret",
+      home,
+      serverUrl: "https://opentag.example",
+    });
+    expect((await resolveErrorReportTarget(home)).userId).toBe("account-a");
   });
 
   it("attaches machine identifiers only from records naming the server the report goes to", async () => {

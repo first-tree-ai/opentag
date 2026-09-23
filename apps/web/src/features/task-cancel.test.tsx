@@ -1,6 +1,6 @@
 import type { TaskDetail, TaskSummary } from "@opentag/shared/browser";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
 import { TaskDetailPage } from "./tasks-page.js";
@@ -63,6 +63,10 @@ async function openConfirmation() {
 }
 
 afterEach(() => vi.restoreAllMocks());
+
+beforeEach(() => {
+  vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [], nextCursor: null });
+});
 
 describe("Cancelling a queued Task", () => {
   it("cancels from the detail page and shows the refreshed status without a reload", async () => {

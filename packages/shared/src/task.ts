@@ -154,6 +154,38 @@ export const TaskTurnSchema = z
   })
   .strict();
 
+/** When a captured reply's time comes from the platform versus the Server's own observation. */
+export const TaskReplyTimeSourceSchema = z.enum(["provider", "observed"]);
+
+/**
+ * One confirmed outbound IM message of a Task's scope, captured by the Server provider proxy.
+ * The record proves a platform-confirmed send; it is never a runtime summary, a fabricated Turn,
+ * or a request body. An empty list says there is no record, not that nothing was sent.
+ */
+export const TaskReplySchema = z
+  .object({
+    id: z.string().uuid(),
+    provider: ImProviderSchema,
+    channelId: z.string().min(1),
+    externalMessageId: z.string().min(1),
+    authorKind: ImAuthorKindSchema,
+    authorDisplayName: z.string().nullable(),
+    /** Native message type the platform reported; null on records captured before it was kept. */
+    messageType: z.string().min(1).nullable(),
+    /** False means the send is confirmed but no usable body was captured; never inferred from text. */
+    contentAvailable: z.boolean(),
+    fallbackText: z.string(),
+    attachments: z.array(TaskAttachmentSchema).max(16).optional(),
+    truncated: z.boolean(),
+    occurredAt: z.string().datetime(),
+    timeSource: TaskReplyTimeSourceSchema,
+  })
+  .strict();
+
+export const ListTaskRepliesResponseSchema = z
+  .object({ items: z.array(TaskReplySchema), nextCursor: z.string().min(1).nullable() })
+  .strict();
+
 export const TaskInternalSessionSchema = z
   .object({
     id: z.string().uuid(),
@@ -198,5 +230,8 @@ export type TaskCancelResponse = z.infer<typeof TaskCancelResponseSchema>;
 export type TaskTurn = z.infer<typeof TaskTurnSchema>;
 export type TaskAttachment = z.infer<typeof TaskAttachmentSchema>;
 export type TaskInternalSession = z.infer<typeof TaskInternalSessionSchema>;
+export type TaskReplyTimeSource = z.infer<typeof TaskReplyTimeSourceSchema>;
+export type TaskReply = z.infer<typeof TaskReplySchema>;
+export type ListTaskRepliesResponse = z.infer<typeof ListTaskRepliesResponseSchema>;
 export type TaskCollaborationMessage = z.infer<typeof TaskCollaborationMessageSchema>;
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;

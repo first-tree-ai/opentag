@@ -4,6 +4,7 @@ import type { ServiceLogger } from "../observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
+import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
 import {
   type RuntimeConnectionFence,
@@ -355,6 +356,9 @@ function createImAdapters(
   urlHandles: RuntimeUrlHandleStore,
 ): Map<RuntimeCredentialProvider, ProviderProxyAdapter> {
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
+  const outboundCapture = new ImOutboundCapture(options.database, {
+    ...(options.logger ? { logger: options.logger } : {}),
+  });
   const defaults = [
     ["slack", SLACK_OPERATIONS],
     ["feishu", FEISHU_OPERATIONS],
@@ -367,7 +371,9 @@ function createImAdapters(
         provider,
         registry: new ProviderOperationRegistry(operations),
         urlHandles,
+        outboundCapture,
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        ...(options.logger ? { logger: options.logger } : {}),
       }),
     );
   }

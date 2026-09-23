@@ -1,7 +1,7 @@
-import type { TaskDetail, TaskSummary } from "@opentag/shared/browser";
+import type { TaskDetail, TaskReply, TaskSummary } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
 import { queryKeys } from "../query/keys.js";
@@ -100,7 +100,25 @@ function RefreshTasksButton() {
   );
 }
 
+function RefreshTaskRepliesButton({ taskId }: { taskId: string }) {
+  const queryClient = useQueryClient();
+  return (
+    <button
+      type="button"
+      onClick={() => void queryClient.refetchQueries({ queryKey: queryKeys.tasks.replies(taskId) })}
+    >
+      Refresh replies
+    </button>
+  );
+}
+
 afterEach(() => vi.restoreAllMocks());
+
+// The Task replies subresource is read alongside the detail; tests declare its behavior here and
+// override per scenario as needed.
+beforeEach(() => {
+  vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [], nextCursor: null });
+});
 
 function timelineTurn(index: number): TaskDetail["turns"][number] {
   const base = detail.turns[0];
@@ -534,6 +552,22 @@ describe("Tasks view", () => {
     ).toBeTruthy();
     expect(screen.getByRole("link", { name: "Tasks" }).getAttribute("href")).toBe("/tasks");
     expect(taskRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps development examples on the legacy-only path with no capture-feed state", async () => {
+    const repliesRequest = vi.spyOn(browserApi, "taskReplies");
+
+    await renderInRouter(<TaskDetailPage showExamples taskId="10000000-0000-4000-8000-000000000001" />, {
+      path: "/tasks/10000000-0000-4000-8000-000000000001?examples=true",
+    });
+
+    await screen.findByRole("heading", { name: "Review Q3 launch readiness and flag unowned work" });
+    expect(repliesRequest).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-ui="task-replies-loading"]')).toBeNull();
+    expect(document.querySelector('[data-ui="task-replies-error"]')).toBeNull();
+    expect(document.querySelector('[data-ui="task-replies-empty"]')).toBeNull();
+    // The example report keeps its own legacy notice: no captured feed exists to supersede it.
+    expect(document.querySelector('[data-ui="task-reply-unavailable"]')).not.toBeNull();
   });
 
   it("omits the repeated Agent column in an Agent-scoped Task list", async () => {
@@ -1096,7 +1130,8 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("No sent replies recorded.")).toBeTruthy();
+    // The captured feed is authoritative for the empty case; the report does not invent a reply.
+    expect(await within(activity).findByText("No reply records available.")).toBeTruthy();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
     expect(activity.querySelector('[data-ui="task-sent-reply"]')).toBeNull();
   });
@@ -1181,10 +1216,14 @@ describe("Tasks view", () => {
       report.outgoingReplies = status === "legacy" ? null : { status, replies: [] };
       vi.spyOn(browserApi, "task").mockResolvedValue(data);
       await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+      /*
+       * The captured feed owns the empty state. The report's own incomplete-history note stays,
+       * because it remains true of that snapshot; its missing/unavailable notice yields to the feed.
+       */
       await screen.findByText(
         status === "incomplete"
           ? "Reply history is incomplete. Some messages or content could not be included."
-          : "Reply data is unavailable.",
+          : "No reply records available.",
       );
       expect(screen.queryByText("No sent replies recorded.")).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
@@ -1220,5 +1259,374 @@ describe("Tasks view", () => {
     const sourceValue = sourceTerm.parentElement?.querySelector("dd");
     expect(sourceValue?.textContent).toContain("Lark");
     expect(sourceValue?.textContent).not.toMatch(/feishu/);
+  });
+});
+
+function capturedReply(overrides: Partial<TaskReply> = {}): TaskReply {
+  return {
+    id: "66666666-6666-4666-8666-666666666666",
+    provider: "feishu",
+    channelId: "oc_debug_channel",
+    externalMessageId: "om_captured",
+    authorKind: "bot",
+    authorDisplayName: null,
+    messageType: "text",
+    contentAvailable: true,
+    fallbackText: "Confirmed reply from the platform",
+    truncated: false,
+    occurredAt: "2026-08-27T01:30:00.000Z",
+    timeSource: "provider",
+    ...overrides,
+  };
+}
+
+function baseReport(): NonNullable<TaskDetail["turns"][number]["report"]> {
+  const report = detail.turns[0]?.report;
+  if (!report) throw new Error("Expected the Task fixture to include a report");
+  return report;
+}
+
+function detailWithTurn(turn: Partial<TaskDetail["turns"][number]>): TaskDetail {
+  const base = detail.turns[0];
+  if (!base) throw new Error("Expected the Task fixture to include a Turn");
+  return { ...detail, turns: [{ ...base, ...turn }] };
+}
+
+function sentReplies(): HTMLElement[] {
+  return [...document.querySelectorAll('[data-ui="task-sent-reply"]')] as HTMLElement[];
+}
+
+describe("Task captured replies", () => {
+  it("shows a confirmed reply even when its Turn has no report", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report: null }));
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText("Confirmed reply from the platform");
+    expect(sentReplies()).toHaveLength(1);
+    expect(document.querySelector('[data-ui="task-replies-empty"]')).toBeNull();
+  });
+
+  it("keeps a confirmed reply and the failed execution outcome visible together", async () => {
+    const failedReport = {
+      ...baseReport(),
+      outcome: "failed" as const,
+      executionEffects: "may_have_occurred" as const,
+      errorReason: "provider_failed",
+      finalText: null,
+    };
+    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report: failedReport }));
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText("Confirmed reply from the platform");
+    expect(screen.getByText("Provider failed")).toBeTruthy();
+    expect(sentReplies()).toHaveLength(1);
+  });
+
+  it("renders the Server record once when a legacy receipt carries the same native identity", async () => {
+    const receipt = {
+      provider: "feishu" as const,
+      teamBrand: "lark" as const,
+      messageId: "om_captured",
+      chatId: "oc_debug_channel",
+      content: { msgType: "text" as const, text: "Legacy receipt body" },
+    };
+    const report = {
+      ...baseReport(),
+      outgoingReplies: { status: "complete" as const, replies: [receipt] },
+    };
+    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText("Confirmed reply from the platform");
+    expect(sentReplies()).toHaveLength(1);
+    expect(screen.queryByText("Legacy receipt body")).toBeNull();
+  });
+
+  it("lets an old receipt supply the body when the Server record's content is unavailable", async () => {
+    const receipt = {
+      provider: "feishu" as const,
+      teamBrand: "lark" as const,
+      messageId: "om_captured",
+      chatId: "oc_debug_channel",
+      content: { msgType: "text" as const, text: "Legacy receipt body" },
+    };
+    const report = {
+      ...baseReport(),
+      outgoingReplies: { status: "complete" as const, replies: [receipt] },
+    };
+    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
+      items: [capturedReply({ contentAvailable: false, fallbackText: "" })],
+      nextCursor: null,
+    });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText("Legacy receipt body");
+    expect(sentReplies()).toHaveLength(1);
+    expect(screen.queryByText("Sent; the content could not be captured.")).toBeNull();
+  });
+
+  it("marks a confirmed reply with unavailable content honestly", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
+      items: [capturedReply({ contentAvailable: false, fallbackText: "", timeSource: "observed" })],
+      nextCursor: null,
+    });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText("Sent; the content could not be captured.");
+    expect(screen.getByText(/observed time/)).toBeTruthy();
+  });
+
+  it("keeps a truncated captured body distinguishable from an unavailable one", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
+      items: [capturedReply({ truncated: true, fallbackText: "Only part of this confirmed reply" })],
+      nextCursor: null,
+    });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText("Only part of this confirmed reply");
+    expect(screen.getByText("This reply was truncated.")).toBeTruthy();
+    expect(screen.queryByText("Sent; the content could not be captured.")).toBeNull();
+    expect(document.querySelector('[data-ui="task-replies-empty"]')).toBeNull();
+  });
+
+  it("pages older replies independently of earlier activity", async () => {
+    const older = capturedReply({
+      id: "77777777-7777-4777-8777-777777777777",
+      externalMessageId: "om_older",
+      fallbackText: "Older captured reply",
+      occurredAt: "2026-08-27T01:10:00.000Z",
+    });
+    const request = vi
+      .spyOn(browserApi, "taskReplies")
+      .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
+      .mockResolvedValueOnce({ items: [older], nextCursor: null });
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    await screen.findByText("Confirmed reply from the platform");
+    expect(screen.queryByText("Older captured reply")).toBeNull();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier replies" }));
+    await screen.findByText("Older captured reply");
+    expect(request).toHaveBeenLastCalledWith(sessionId, "older-replies");
+    const olderNode = screen.getByText("Older captured reply");
+    const newerNode = screen.getByText("Confirmed reply from the platform");
+    expect(olderNode.compareDocumentPosition(newerNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load earlier replies" })).toBeNull();
+    // Turn paging is untouched: no earlier-activity request was made for replies.
+    expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
+  });
+
+  it("reports replies loading while the conversation is already readable", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    vi.spyOn(browserApi, "taskReplies").mockReturnValue(new Promise<never>(() => undefined));
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText("Please investigate the failed deployment.");
+    expect(screen.getByText("Loading sent replies…")).toBeTruthy();
+    expect(document.querySelector('[data-ui="task-replies-loading"]')).not.toBeNull();
+    expect(document.querySelector('[data-ui="task-replies-empty"]')).toBeNull();
+  });
+
+  it("shows a retryable load error and recovers without disturbing the conversation", async () => {
+    const request = vi
+      .spyOn(browserApi, "taskReplies")
+      .mockRejectedValueOnce(new Error("Temporary replies failure"))
+      .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: null });
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toContain("Temporary replies failure");
+    expect(document.querySelector('[data-ui="task-replies-error"]')).not.toBeNull();
+    expect(screen.getByText("Please investigate the failed deployment.")).toBeTruthy();
+
+    fireEvent.click(within(error).getByRole("button", { name: "Try again" }));
+    await screen.findByText("Confirmed reply from the platform");
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("reports an empty record without claiming nothing was sent", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    const empty = await screen.findByText("No reply records available.");
+    expect(empty).toBeTruthy();
+    expect(document.querySelector('[data-ui="task-replies-empty"]')).not.toBeNull();
+    expect(screen.getByText("Please investigate the failed deployment.")).toBeTruthy();
+    expect(screen.queryByText(/nothing was sent|An empty list is not proof/i)).toBeNull();
+  });
+
+  it("waits for the detail's canonical Task id before reading replies", async () => {
+    const canonicalId = "99999999-9999-4999-8999-999999999999";
+    let resolveDetail: (value: TaskDetail) => void = () => undefined;
+    vi.spyOn(browserApi, "task").mockReturnValue(
+      new Promise<TaskDetail>((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+    const request = vi
+      .spyOn(browserApi, "taskReplies")
+      .mockResolvedValue({ items: [capturedReply()], nextCursor: null });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    expect(screen.getByText("Loading Task")).toBeTruthy();
+    expect(request).not.toHaveBeenCalled();
+
+    // The route id is a Session alias; replies belong to the Task id the detail resolved.
+    await act(async () => {
+      resolveDetail({ ...detail, task: { ...task, id: canonicalId } });
+    });
+    await screen.findByText("Confirmed reply from the platform");
+    expect(request).toHaveBeenCalledWith(canonicalId, undefined);
+  });
+
+  it("keeps an old file receipt's rich content instead of an unavailable-capture notice", async () => {
+    const receipt = {
+      provider: "feishu" as const,
+      teamBrand: "lark" as const,
+      messageId: "om_captured",
+      chatId: "oc_debug_channel",
+      content: { msgType: "file" as const, filename: "review.pdf", fileKey: "file_fixture" },
+    };
+    const report = {
+      ...baseReport(),
+      outgoingReplies: { status: "complete" as const, replies: [receipt] },
+    };
+    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
+      items: [capturedReply({ messageType: "file", contentAvailable: false, fallbackText: "" })],
+      nextCursor: null,
+    });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText(/review\.pdf/);
+    expect(sentReplies()).toHaveLength(1);
+    expect(screen.queryByText("Sent; the content could not be captured.")).toBeNull();
+  });
+
+  it("lets the captured feed replace the old per-report missing-reply notice", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [capturedReply()], nextCursor: null });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    await screen.findByText("Confirmed reply from the platform");
+    expect(screen.queryByText("Reply data is unavailable.")).toBeNull();
+    expect(screen.queryByText("No sent replies recorded.")).toBeNull();
+  });
+
+  it("keeps cached replies visible when older replies fail, and retries that page", async () => {
+    const older = capturedReply({
+      id: "88888888-8888-4888-8888-888888888888",
+      externalMessageId: "om_older",
+      fallbackText: "Older captured reply",
+      occurredAt: "2026-08-27T01:10:00.000Z",
+    });
+    const request = vi
+      .spyOn(browserApi, "taskReplies")
+      .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
+      .mockRejectedValueOnce(new Error("Older replies failure"))
+      .mockResolvedValueOnce({ items: [older], nextCursor: null });
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    await screen.findByText("Confirmed reply from the platform");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier replies" }));
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toContain("Older replies failure");
+    expect(document.querySelector('[data-ui="task-replies-error"]')).not.toBeNull();
+    expect(screen.getByText("Confirmed reply from the platform")).toBeTruthy();
+
+    fireEvent.click(within(error).getByRole("button", { name: "Try again" }));
+    await screen.findByText("Older captured reply");
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("retries a failed background refresh against the first page, not older history", async () => {
+    const refreshed = capturedReply({
+      id: "99999999-9999-4999-8999-999999999999",
+      externalMessageId: "om_refreshed",
+      fallbackText: "Refreshed first-page reply",
+    });
+    const request = vi
+      .spyOn(browserApi, "taskReplies")
+      .mockResolvedValueOnce({ items: [capturedReply()], nextCursor: "older-replies" })
+      .mockRejectedValueOnce(new Error("Replies refresh failure"))
+      .mockResolvedValueOnce({ items: [refreshed], nextCursor: "older-replies" });
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    await renderInRouter(
+      <>
+        <TaskDetailPage taskId={sessionId} />
+        <RefreshTaskRepliesButton taskId={sessionId} />
+      </>,
+      { path: `/tasks/${sessionId}` },
+    );
+    await screen.findByText("Confirmed reply from the platform");
+    // The first page is cached with a next cursor, but older history was never fetched.
+    expect(screen.getByRole("button", { name: "Load earlier replies" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh replies" }));
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toContain("Replies refresh failure");
+    expect(screen.getByText("Confirmed reply from the platform")).toBeTruthy();
+
+    fireEvent.click(within(error).getByRole("button", { name: "Try again" }));
+    await screen.findByText("Refreshed first-page reply");
+    // Retry re-read the first page instead of fetching the page the cursor points at.
+    expect(request).toHaveBeenLastCalledWith(sessionId, undefined);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText("Confirmed reply from the platform")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("reports a replies read failure honestly instead of assuming an old Server", async () => {
+    const receipt = {
+      provider: "feishu" as const,
+      teamBrand: "lark" as const,
+      messageId: "om_legacy",
+      chatId: "oc_debug_channel",
+      content: { msgType: "text" as const, text: "Legacy receipt body" },
+    };
+    const report = {
+      ...baseReport(),
+      outgoingReplies: { status: "complete" as const, replies: [receipt] },
+    };
+    const request = vi
+      .spyOn(browserApi, "taskReplies")
+      .mockRejectedValue(new ApiError(404, "The requested resource was not found"));
+    vi.spyOn(browserApi, "task").mockResolvedValue(detailWithTurn({ report }));
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    // Legacy data is retained while the failed replies read is reported on its own terms.
+    await screen.findByText("Legacy receipt body");
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toContain("Sent replies could not be loaded.");
+    expect(error.textContent).toContain("The requested resource was not found");
+    expect(document.querySelector('[data-ui="task-replies-empty"]')).toBeNull();
+
+    fireEvent.click(within(error).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
   });
 });

@@ -41,6 +41,8 @@ export const queryKeys = {
     /** One Agent's own Tasks. A sibling of the Account task list, so neither invalidates the other. */
     byAgent: (agentId: string) => ["tasks", "byAgent", agentId] as const,
     detail: (taskId: string) => ["tasks", taskId, "detail"] as const,
+    /** One Task's captured outbound replies, a sibling of its detail with its own cursor. */
+    replies: (taskId: string) => ["tasks", taskId, "replies"] as const,
   },
 
   feishuSetupAttempt: (attemptId: string) => ["feishuSetupAttempts", attemptId] as const,

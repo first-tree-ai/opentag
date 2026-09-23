@@ -1,4 +1,4 @@
-import type { TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import type { TaskReply, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { TaskActivity } from "./task-conversation.js";
@@ -172,4 +172,133 @@ it("renders attachment-only input with names, types and availability without an 
   expect(screen.getByText("This message was truncated.")).toBeTruthy();
   expect(screen.queryByText("No text content")).toBeNull();
   expect(screen.queryByRole("link")).toBeNull();
+});
+
+function capturedReply(overrides: Partial<TaskReply> = {}): TaskReply {
+  return {
+    id: "66666666-6666-4666-8666-666666666666",
+    provider: "feishu",
+    channelId: "chat",
+    externalMessageId: "om_captured",
+    authorKind: "bot",
+    authorDisplayName: null,
+    messageType: "text",
+    contentAvailable: true,
+    fallbackText: "Confirmed reply body",
+    truncated: false,
+    occurredAt: "2026-09-21T00:05:00Z",
+    timeSource: "provider",
+    ...overrides,
+  };
+}
+
+it("suppresses the missing-reply notice only when the captured feed is supplied", () => {
+  const current = turn();
+  if (!current.report) throw new Error("Expected report fixture");
+  current.report.outgoingReplies = null;
+
+  const view = render(<TaskActivity task={task} turns={[current]} pagination={null} />);
+  expect(screen.getByText("Reply data is unavailable.")).toBeTruthy();
+
+  view.rerender(<TaskActivity task={task} turns={[current]} pagination={null} replies={[]} />);
+  expect(screen.queryByText("Reply data is unavailable.")).toBeNull();
+  expect(screen.getByText("Review finished")).toBeTruthy();
+});
+
+it("keeps the report's own incomplete-history notice beside the captured feed", () => {
+  const current = turn();
+  if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");
+  current.report.outgoingReplies.status = "incomplete";
+  current.report.outgoingReplies.omittedCount = 2;
+
+  render(<TaskActivity task={task} turns={[current]} pagination={null} replies={[]} />);
+  expect(screen.getByText("Reply history is incomplete. Some messages or content could not be included.")).toBeTruthy();
+});
+
+it("renders a legacy file receipt when the captured record's content is unavailable", () => {
+  const current = turn();
+  if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");
+  current.report.outgoingReplies.replies = [
+    {
+      provider: "feishu",
+      teamBrand: "lark",
+      messageId: "sent",
+      chatId: "chat",
+      content: { msgType: "file", filename: "review.pdf", fileKey: "file_fixture" },
+    },
+  ];
+
+  render(
+    <TaskActivity
+      task={task}
+      turns={[current]}
+      pagination={null}
+      replies={[
+        capturedReply({
+          externalMessageId: "sent",
+          messageType: "file",
+          contentAvailable: false,
+          fallbackText: "",
+        }),
+      ]}
+    />,
+  );
+
+  expect(screen.getByText(/review\.pdf/)).toBeTruthy();
+  expect(screen.queryByText("Sent; the content could not be captured.")).toBeNull();
+});
+
+it("renders a legacy card receipt when the captured card body is unavailable", () => {
+  const current = turn();
+  if (!current.report?.outgoingReplies) throw new Error("Expected capture fixture");
+  current.report.outgoingReplies.replies = [
+    {
+      provider: "feishu",
+      teamBrand: "lark",
+      messageId: "sent",
+      chatId: "chat",
+      content: { msgType: "interactive", raw: JSON.stringify({ element: "fixture" }) },
+    },
+  ];
+
+  render(
+    <TaskActivity
+      task={task}
+      turns={[current]}
+      pagination={null}
+      replies={[
+        capturedReply({
+          externalMessageId: "sent",
+          messageType: "interactive",
+          contentAvailable: false,
+          fallbackText: "",
+        }),
+      ]}
+    />,
+  );
+
+  const reply = document.querySelector('[data-ui="task-sent-reply"]');
+  expect(reply?.getAttribute("data-msg-type")).toBe("interactive");
+  expect(reply?.textContent).toContain("Message details");
+  expect(screen.queryByText("Sent; the content could not be captured.")).toBeNull();
+});
+
+it("keeps a standalone captured reply without a Turn, and two same-text native identities", () => {
+  const store = capturedReply();
+  render(
+    <TaskActivity
+      task={task}
+      turns={[]}
+      pagination={null}
+      replies={[
+        store,
+        // The same native identity from an overlapping page stays one entry.
+        { ...store },
+        { ...store, id: "77777777-7777-4777-8777-777777777777", externalMessageId: "om_other" },
+      ]}
+    />,
+  );
+
+  expect(screen.getAllByText("Confirmed reply body")).toHaveLength(2);
+  expect(screen.queryByText("No activity recorded")).toBeNull();
 });

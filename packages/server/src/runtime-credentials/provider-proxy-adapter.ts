@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import type { RuntimeCredentialProvider } from "@opentag/shared";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { decodeBufferedBody, slackBufferedBodyKind } from "./buffered-body.js";
 import type { RuntimeProxyAuthorization } from "./credential-broker.js";
 import {
@@ -35,6 +36,13 @@ import { classifyStatusWriteOutcome, classifyWriteOutcome } from "./write-outcom
 
 export { RuntimeProxyError, type RuntimeProxyFailureCode } from "./provider-proxy-support.js";
 
+/**
+ * How long the proxy waits for the capture port before returning the confirmed provider response.
+ * A capture that overruns this is cancelled or abandoned behind its own bounded deadline; the
+ * confirmed send is never delayed past this budget and is never retried.
+ */
+export const OUTBOUND_CAPTURE_WAIT_MS = 2_000;
+
 export interface ProviderProxyRequest {
   executionId: string;
   sessionId: string;
@@ -59,12 +67,44 @@ export interface ProviderProxyAdapter {
   handle(request: ProviderProxyRequest, authorization: RuntimeProxyAuthorization): Promise<ProviderProxyResponse>;
 }
 
+/**
+ * One verified platform write success handed to the capture port. The payload is the native JSON
+ * exactly as the platform returned it, before any temporary-URL rewriting. No headers, tokens, or
+ * raw request bytes ever cross this boundary.
+ */
+export interface OutboundWriteCaptureEvent {
+  provider: RuntimeCredentialProvider;
+  operationId: string;
+  /** Server-authorized binding identity; never taken from the request body. */
+  bindingId: string;
+  pathParams: Record<string, string>;
+  query: string;
+  requestBody: unknown;
+  responsePayload: unknown;
+  observedAt: Date;
+}
+
+/**
+ * Port for persisting platform-confirmed outbound messages. The adapter calls it at most once per
+ * verified write success, after classification and before response rewriting, and isolates it from
+ * the caller: a capture failure is logged and swallowed, never a `write_outcome_unknown`, never a
+ * resend.
+ */
+export interface OutboundWriteCapture {
+  capture(event: OutboundWriteCaptureEvent): Promise<void>;
+}
+
 export interface ImProviderProxyAdapterOptions {
   provider: RuntimeCredentialProvider;
   registry: ProviderOperationRegistry;
   urlHandles: RuntimeUrlHandleStore;
   fetchImpl?: typeof fetch;
   capabilityTtlSeconds?: number;
+  /** Optional confirmed-send capture (IM adapters in production); absent keeps the proxy read-only. */
+  outboundCapture?: OutboundWriteCapture;
+  /** Test/deployment override for the bounded capture-port wait; defaults to the proxy budget. */
+  captureWaitMs?: number;
+  logger?: Pick<ServiceLogger, "error" | "warn">;
 }
 
 /**
@@ -130,7 +170,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       const response = await this.#fetchUpstream(operation, prepared, headers, request, material);
       return operation.response === "stream"
         ? this.#streamResponse(match, response)
-        : await this.#jsonResponse(match, request, material, response);
+        : await this.#jsonResponse(match, request, authorization, material, prepared, response);
     } catch (error) {
       if (error instanceof RuntimeProxyError) {
         // A write whose response cannot be parsed or read is an unconfirmed outcome, never a
@@ -235,7 +275,9 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
   async #jsonResponse(
     match: ProviderOperationMatch,
     request: ProviderProxyRequest,
+    authorization: RuntimeProxyAuthorization,
     material: RuntimeProviderMaterial,
+    prepared: { bytes: Uint8Array; parsed: unknown },
     response: Response,
   ): Promise<ProviderProxyResponse> {
     const operation = match.operation;
@@ -244,6 +286,9 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       const outcome = classifyWriteOutcome({ payload, provider: request.provider, status: response.status });
       // An unconfirmed or ambiguous outcome must never reach the caller as a successful write.
       if (outcome.state === "unknown") throw new RuntimeProxyError("write_outcome_unknown");
+      if (outcome.state === "succeeded") {
+        await this.#captureConfirmedWrite(match, request, authorization, prepared.parsed, payload);
+      }
     }
     const rewritten = rewriteOperationResponse(operation, payload, {
       executionId: request.executionId,
@@ -257,6 +302,61 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       headers: { ...filterResponseHeaders(response.headers), "content-type": "application/json" },
       body: singleChunk(new TextEncoder().encode(JSON.stringify(rewritten.payload))),
     };
+  }
+
+  /**
+   * Hand one verified write success to the capture port, before the response is rewritten. The
+   * wait is bounded so a stalled port cannot hold the confirmed response, and the capture runs
+   * behind its own try/catch so a persistence failure can never downgrade the confirmed send
+   * into `write_outcome_unknown` or make the caller retry the platform write.
+   */
+  async #captureConfirmedWrite(
+    match: ProviderOperationMatch,
+    request: ProviderProxyRequest,
+    authorization: RuntimeProxyAuthorization,
+    parsedRequest: unknown,
+    payload: unknown,
+  ): Promise<void> {
+    const capture = this.#options.outboundCapture;
+    if (!capture) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        capture
+          .capture({
+            provider: request.provider,
+            operationId: match.operation.operationId,
+            bindingId: authorization.bindingId,
+            pathParams: match.params,
+            query: match.query,
+            requestBody: parsedRequest,
+            responsePayload: payload,
+            observedAt: new Date(),
+          })
+          .then(() => "settled" as const),
+        new Promise<"timeout">((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), this.#options.captureWaitMs ?? OUTBOUND_CAPTURE_WAIT_MS);
+        }),
+      ]);
+      if (outcome === "timeout") {
+        this.#options.logger?.warn(
+          {
+            code: "IM_OUTBOUND_CAPTURE_TIMEOUT",
+            provider: request.provider,
+            operationId: match.operation.operationId,
+          },
+          "IM outbound capture did not settle before the proxy deadline",
+        );
+      }
+    } catch {
+      // Controlled identifiers only: a database failure can embed SQL parameters and bodies.
+      this.#options.logger?.error(
+        { code: "IM_OUTBOUND_CAPTURE_FAILED", provider: request.provider, operationId: match.operation.operationId },
+        "IM outbound capture failed",
+      );
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   #createHandle(request: ProviderProxyRequest, origin: string, kind: "upload" | "download", url: string): string {

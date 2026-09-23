@@ -57,6 +57,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   agents: [],
   tasks: [{}],
   task: [ID],
+  taskReplies: [ID],
   agent: [ID],
   agentSetup: [ID],
   refreshAgentSetup: [ID],

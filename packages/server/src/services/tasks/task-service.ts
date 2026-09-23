@@ -1,8 +1,10 @@
 import type {
   AgentRuntimeProvider,
   ImContentV1,
+  ListTaskRepliesResponse,
   ListTasksResponse,
   TaskDetail,
+  TaskReply,
   TaskStatus,
   TaskSummary,
   TaskTurn,
@@ -111,6 +113,27 @@ interface ScopeRow extends Record<string, unknown> {
   bindingId: string;
   channelId: string;
   topicKey: string | null;
+}
+
+interface TaskReplyRow extends Record<string, unknown> {
+  id: string;
+  provider: "feishu" | "slack";
+  channelId: string;
+  externalMessageId: string;
+  authorKind: "human" | "bot" | "system";
+  authorDisplayName: string | null;
+  content: {
+    fallbackText?: unknown;
+    truncated?: unknown;
+    blocks?: ImContentV1["blocks"];
+    resources?: ImContentV1["resources"];
+    outbound?: {
+      messageType?: unknown;
+      contentAvailable?: unknown;
+      timeSource?: unknown;
+    };
+  };
+  occurredAt: Date | string;
 }
 
 export interface ListTaskOptions {
@@ -225,6 +248,37 @@ function turnText(content: TaskTurnRow["content"]): string {
   return messageTextFromBlocks(Array.isArray(content.blocks) ? content.blocks : undefined) ?? fallback;
 }
 
+/**
+ * One platform-confirmed outbound message in a Task's scope. The stored record is projected the
+ * same way a Turn message is; `contentAvailable`/`timeSource` come from the optional outbound
+ * metadata and default honestly for rows captured before it existed.
+ */
+function toReply(row: TaskReplyRow): TaskReply {
+  const outbound = row.content.outbound;
+  return {
+    id: row.id,
+    provider: row.provider,
+    channelId: row.channelId,
+    externalMessageId: row.externalMessageId,
+    authorKind: row.authorKind,
+    authorDisplayName: row.authorDisplayName,
+    messageType: typeof outbound?.messageType === "string" ? outbound.messageType : null,
+    contentAvailable: typeof outbound?.contentAvailable === "boolean" ? outbound.contentAvailable : true,
+    fallbackText: turnText(row.content),
+    attachments: (row.content.resources ?? []).map((resource, index) => ({
+      ordinal: resource.ordinal ?? index,
+      kind: resource.kind,
+      filename: resource.filename,
+      mediaType: resource.mediaType,
+      sizeBytes: resource.sizeBytes,
+      availability: resource.availability ?? "available",
+    })),
+    truncated: row.content.truncated === true,
+    occurredAt: toIso(row.occurredAt),
+    timeSource: outbound?.timeSource === "observed" ? "observed" : "provider",
+  };
+}
+
 function toTurn(row: TaskTurnRow): TaskTurn {
   const report = row.turnReport;
   return {
@@ -305,6 +359,33 @@ function sameTopic(left: string, right: string): SQL {
   return sql`${sql.raw(left)}.im_binding_id = ${sql.raw(right)}.im_binding_id
     and ${sql.raw(left)}.channel_id = ${sql.raw(right)}.channel_id
     and ${sql.raw(left)}.topic_key is not distinct from ${sql.raw(right)}.topic_key`;
+}
+
+/**
+ * Stored private-conversation context: a Feishu p2p chat or a Slack IM is one Task with no topic
+ * key, so its whole channel is in scope. Any other or missing context stays a group topic and must
+ * never widen to the whole channel.
+ */
+function privateConversation(alias: string): SQL {
+  return sql`(${sql.raw(alias)}.provider_context ->> 'chatType' = 'p2p'
+    or ${sql.raw(alias)}.provider_context ->> 'channelType' = 'im')`;
+}
+
+/**
+ * The topic key of one stored message inside a group channel. The inbound thread-root mapping
+ * comes first, exactly as Task detail and list classify inbound messages; then comes a threaded
+ * message's own captured native root, which is what lets a first outbound reply land in the topic
+ * before any inbound thread mapping exists; then the thread key and the message itself. A message
+ * with no thread context is a root of its own, so its root field never re-classifies it.
+ */
+function topicKeyExpression(messageAlias: string, rootAlias: string): SQL {
+  return sql`coalesce(
+    ${sql.raw(rootAlias)}.root_external_id,
+    case when ${sql.raw(messageAlias)}.thread_key is not null
+      then ${sql.raw(messageAlias)}.provider_context ->> 'rootId' end,
+    ${sql.raw(messageAlias)}.thread_key,
+    ${sql.raw(messageAlias)}.external_message_id
+  )`;
 }
 
 /**
@@ -780,6 +861,64 @@ export class TaskService {
     return row ? { bindingId: row.bindingId, channelId: row.channelId, topicKey: row.topicKey } : undefined;
   }
 
+  /**
+   * The Task scope of an authorized stored inbound-message anchor, from stored IM data only: the
+   * binding's Account ownership, the anchor's channel, and its native conversation and
+   * thread/root context. This is deliberately not `#scopeOfMessage`: the runtime CTE chain reads
+   * chat Sessions, and a captured reply must be readable while no Session exists — the normal case
+   * for a first confirmed send. Private context comes from the stored provider context, and any
+   * unknown or group context keeps a concrete topic key rather than widening to the channel.
+   */
+  async #replyScopeOfMessage(accountId: string, messageId: string): Promise<TopicScope | undefined> {
+    const rows = await this.database.execute<ScopeRow>(sql`
+      with anchor as (
+        select
+          m.im_binding_id,
+          m.channel_id,
+          m.thread_key,
+          m.external_message_id,
+          m.provider_context
+        from im_messages m
+        inner join im_bindings b on b.id = m.im_binding_id
+        inner join agents a on a.id = b.agent_id
+        where m.id = ${messageId}::uuid
+          and m.direction = 'inbound'
+          and a.created_by_user_id = ${accountId}::uuid
+          and a.status <> 'deleted'
+        limit 1
+      ),
+      thread_roots as (
+        select distinct on (m.im_binding_id, m.channel_id, m.thread_key)
+          m.im_binding_id,
+          m.channel_id,
+          m.thread_key,
+          m.provider_context ->> 'rootId' as root_external_id
+        from im_messages m
+        inner join anchor an on an.im_binding_id = m.im_binding_id and an.channel_id = m.channel_id
+        where m.direction = 'inbound'
+          and m.thread_key is not null
+          and m.provider_context ->> 'rootId' is not null
+          and m.provider_context ->> 'rootId' <> m.thread_key
+        order by m.im_binding_id, m.channel_id, m.thread_key, m.occurred_at asc, m.provider_revision_key asc, m.id asc
+      )
+      select
+        an.im_binding_id as "bindingId",
+        an.channel_id as "channelId",
+        case
+          when ${privateConversation("an")} then null
+          else ${topicKeyExpression("an", "tr")}
+        end as "topicKey"
+      from anchor an
+      left join thread_roots tr
+        on tr.im_binding_id = an.im_binding_id
+        and tr.channel_id = an.channel_id
+        and tr.thread_key = an.thread_key
+      limit 1
+    `);
+    const [row] = [...rows];
+    return row ? { bindingId: row.bindingId, channelId: row.channelId, topicKey: row.topicKey } : undefined;
+  }
+
   /** The topic a Session's title applies to; a group's channel Session titles nothing. */
   async #scopeOfSession(accountId: string, sessionId: string): Promise<TopicScope | undefined> {
     const located = await this.database.execute<ChannelScope & Record<string, unknown>>(sql`
@@ -918,6 +1057,84 @@ export class TaskService {
       where true
         ${cursor ? sql`and (m.occurred_at, d.id) < (${cursorTimestamp(cursor)}::timestamptz, ${cursor.id}::uuid)` : sql``}
       order by m.occurred_at desc, d.id desc
+      limit ${limit}
+    `);
+    return [...rows];
+  }
+
+  /**
+   * The Task's platform-confirmed outbound replies, newest first with an independent
+   * `(occurred_at, id)` keyset cursor. The anchor is an authorized stored inbound message, and its
+   * scope is resolved from stored IM data only — the binding's Account ownership, the message's
+   * channel, and its native conversation and thread/root context. No runtime Session, Sandbox,
+   * worker, or Pi state is consulted, so captured replies are readable before any execution, and
+   * no delivery is ever created by the write side of this feature. An empty page means there is no
+   * captured record, never proof that nothing was sent.
+   */
+  async listReplies(accountId: string, taskId: string, options: GetTaskOptions): Promise<ListTaskRepliesResponse> {
+    const cursor = parseCursor(options.cursor);
+    const scope = await this.#replyScopeOfMessage(accountId, taskId);
+    if (!scope) throw taskNotFound();
+    const rows = await this.#replyRows(scope, cursor, options.limit + 1);
+    const page = rows.slice(0, options.limit);
+    const last = page.at(-1);
+    return {
+      items: page.map(toReply),
+      nextCursor: rows.length > options.limit && last ? encodeCursor(last.occurredAt, last.id) : null,
+    };
+  }
+
+  /**
+   * Captured outbound messages of one resolved Task scope. The topic classification is the same
+   * expression the anchor resolved with — the same-binding inbound thread-root mapping first, then
+   * the record's own captured native root, then its thread key and its own id — so an outbound
+   * record lands in exactly the topic its thread belongs to, including a first reply whose thread
+   * has no inbound mapping yet, and a record that cannot be proven to belong is not shown. A
+   * private chat (null topic key) takes the whole conversation, as it does inbound.
+   */
+  async #replyRows(
+    scope: TopicScope,
+    cursor: { at: Date; id: string } | undefined,
+    limit: number,
+  ): Promise<TaskReplyRow[]> {
+    const rows = await this.database.execute<TaskReplyRow>(sql`
+      with thread_roots as (
+        select distinct on (m.im_binding_id, m.channel_id, m.thread_key)
+          m.im_binding_id,
+          m.channel_id,
+          m.thread_key,
+          m.provider_context ->> 'rootId' as root_external_id
+        from im_messages m
+        where m.im_binding_id = ${scope.bindingId}::uuid
+          and m.channel_id = ${scope.channelId}
+          and m.direction = 'inbound'
+          and m.thread_key is not null
+          and m.provider_context ->> 'rootId' is not null
+          and m.provider_context ->> 'rootId' <> m.thread_key
+        order by m.im_binding_id, m.channel_id, m.thread_key, m.occurred_at asc, m.provider_revision_key asc, m.id asc
+      )
+      select
+        m.id,
+        b.provider,
+        m.channel_id as "channelId",
+        m.external_message_id as "externalMessageId",
+        m.author_kind as "authorKind",
+        m.author_display_name as "authorDisplayName",
+        m.content,
+        m.occurred_at as "occurredAt"
+      from im_messages m
+      inner join im_bindings b on b.id = m.im_binding_id
+      left join thread_roots tr
+        on tr.im_binding_id = m.im_binding_id
+        and tr.channel_id = m.channel_id
+        and tr.thread_key = m.thread_key
+      where m.im_binding_id = ${scope.bindingId}::uuid
+        and m.channel_id = ${scope.channelId}
+        and m.direction = 'outbound'
+        and m.operation = 'created'
+        ${scope.topicKey === null ? sql`` : sql`and ${topicKeyExpression("m", "tr")} = ${scope.topicKey}`}
+        ${cursor ? sql`and (m.occurred_at, m.id) < (${cursorTimestamp(cursor)}::timestamptz, ${cursor.id}::uuid)` : sql``}
+      order by m.occurred_at desc, m.id desc
       limit ${limit}
     `);
     return [...rows];

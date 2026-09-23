@@ -38,12 +38,14 @@ import {
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
   ListAgentsResponseSchema,
+  ListTaskRepliesResponseSchema,
   ListTasksResponseSchema,
   negotiateProviderReadinessFromHeaders,
   type RuntimeProviderReadinessNegotiation,
   requestsCloudIdentityV1,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
+  TASK_REPLIES_TEMPLATE,
   TaskCancelResponseSchema,
   TaskDetailSchema,
   TaskTitleUpdateRequestSchema,
@@ -82,6 +84,12 @@ const TaskDetailQuerySchema = z
   .object({
     cursor: z.string().min(1).max(1024).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+const TaskRepliesQuerySchema = z
+  .object({
+    cursor: z.string().min(1).max(1024).optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(20),
   })
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
@@ -223,6 +231,19 @@ export function registerAccountRoutes(
       const { sessionId } = parseRequest(TaskParamsSchema, request.params);
       const query = parseRequest(TaskDetailQuerySchema, request.query);
       const response = TaskDetailSchema.parse(await taskService.get(accountId(request), sessionId, query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    /*
+     * The Task's platform-confirmed outbound replies, paged independently of its Turns. Read-only:
+     * nothing here touches delivery, runtime state, or the IM providers.
+     */
+    app.get(TASK_REPLIES_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskRepliesQuerySchema, request.query);
+      const response = ListTaskRepliesResponseSchema.parse(
+        await taskService.listReplies(accountId(request), sessionId, query),
+      );
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
 

@@ -60,6 +60,25 @@ const ImUnsupportedBlockSchema = z
   .object({ type: z.literal("unsupported"), providerType: z.string().min(1).max(160) })
   .strict();
 
+/**
+ * Optional metadata present only on captured OUTBOUND messages (a confirmed send the Server
+ * observed through the provider proxy). Inbound rows never carry it, and older stored content
+ * simply omits it; both read back unchanged.
+ */
+export const ImOutboundContentMetaSchema = z
+  .object({
+    /** Native message type the platform reported (Feishu msg_type, Slack message subtype/type). */
+    messageType: z.string().min(1).max(160).optional(),
+    /**
+     * False when the platform response carried no usable body. The record still proves the send;
+     * the body is honestly reported as unavailable rather than reconstructed from the request.
+     */
+    contentAvailable: z.boolean(),
+    /** `provider` when occurred_at is the platform's send time, `observed` when it is the capture time. */
+    timeSource: z.enum(["provider", "observed"]),
+  })
+  .strict();
+
 export const ImContentBlockSchema = z.discriminatedUnion("type", [
   ImTextBlockSchema,
   ImMentionBlockSchema,
@@ -77,6 +96,7 @@ export const ImContentV1Schema = z
     blocks: z.array(ImContentBlockSchema).max(512),
     resources: z.array(ImResourceDescriptorSchema).max(16).optional(),
     truncated: z.boolean().default(false),
+    outbound: ImOutboundContentMetaSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -130,5 +150,6 @@ export type ImConversationKind = z.infer<typeof ImConversationKindSchema>;
 export type ImMessageOperation = z.infer<typeof ImMessageOperationSchema>;
 export type ImAttention = z.infer<typeof ImAttentionSchema>;
 export type ImContentV1 = z.infer<typeof ImContentV1Schema>;
+export type ImOutboundContentMeta = z.infer<typeof ImOutboundContentMetaSchema>;
 export type ProviderInboundContext = z.infer<typeof ProviderInboundContextSchema>;
 export type NormalizedInboundImEvent = z.infer<typeof NormalizedInboundImEventSchema>;

@@ -82,6 +82,8 @@ export const INTERNAL_NAVIGATION_VISIBILITY_PATH = `${API_V1_PREFIX}/internal/na
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 export const TASK_CANCEL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/cancel`;
+/** Read-only paged subresource of the Task's platform-confirmed outbound IM replies. */
+export const TASK_REPLIES_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/replies`;
 /*
  * MCP management plane. Server definitions live on the Account pool; every binding, authorization,
  * and probe is addressed under the Agent that owns it, because authorization is strictly per Agent.
@@ -173,6 +175,10 @@ export function taskByIdPath(sessionId: string): string {
 
 export function taskCancelPath(sessionId: string): string {
   return `${taskByIdPath(sessionId)}/cancel`;
+}
+
+export function taskRepliesPath(sessionId: string): string {
+  return `${taskByIdPath(sessionId)}/replies`;
 }
 
 export function accountComputerConnectCodePath(connectCodeId: string): string {

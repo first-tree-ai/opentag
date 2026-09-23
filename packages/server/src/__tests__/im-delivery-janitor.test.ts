@@ -170,6 +170,39 @@ describe("runImDeliveryRetention", () => {
     expect(await deliveryRow(unit, local.deliveryId)).toBeUndefined();
     expect(await messageRow(unit, local.messageId)).toBeUndefined();
   });
+
+  it("sweeps an aged captured outbound reply under the existing message retention", async () => {
+    const now = new Date();
+    const scope = await seedScope(unit, {
+      kind: "local",
+      occurredAt: now,
+      expiresAt: new Date(now.getTime() + 60_000),
+    });
+    const agedReplyId = randomUUID();
+    const freshReplyId = randomUUID();
+    // Captured replies carry no delivery; the existing message retention owns their lifetime.
+    const reply = (id: string, occurredAt: Date) => ({
+      id,
+      imBindingId: scope.bindingId,
+      providerEventId: null,
+      channelId: "channel",
+      externalMessageId: `reply-${id}`,
+      providerRevisionKey: "outbound:created:v1",
+      operation: "created" as const,
+      direction: "outbound" as const,
+      authorKind: "bot" as const,
+      authorExternalId: "B_BOT",
+      content: { version: 1 as const, fallbackText: "confirmed reply", blocks: [], truncated: false },
+      providerContext: { provider: "slack" as const },
+      occurredAt,
+    });
+    await unit.database.insert(imMessages).values([reply(agedReplyId, aged(now)), reply(freshReplyId, now)]);
+
+    await runImDeliveryRetention(unit.database, janitorOptions(now));
+
+    expect(await messageRow(unit, agedReplyId)).toBeUndefined();
+    expect(await messageRow(unit, freshReplyId)).toBeDefined();
+  });
 });
 
 function janitorOptions(now: Date, overrides: Partial<ImDeliveryJanitorOptions> = {}): ImDeliveryJanitorOptions {

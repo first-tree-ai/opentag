@@ -421,6 +421,8 @@ export function installApi(
     setupFailureCode?: string;
     setupCompletedAt?: string | null;
     unauthenticated?: boolean;
+    /** Answers `/me` with 401 from the moment it returns true, so a signed-in session can lapse mid-test. */
+    sessionExpired?: () => boolean;
     meAfterLogout?: () => Promise<Response> | Response;
     workspaceless?: boolean;
   } = {},
@@ -525,7 +527,9 @@ export function installApi(
     }
     if (path === "/api/v1/me") {
       if (loggedOut) return options.meAfterLogout?.() ?? json({ error: { message: "Sign in required" } }, 401);
-      if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
+      if (options.unauthenticated || options.sessionExpired?.()) {
+        return json({ error: { message: "Sign in required" } }, 401);
+      }
       if (profileUpdated && options.meAfterProfileUpdate) return options.meAfterProfileUpdate();
       if (profileUpdated && meFailuresRemaining > 0) {
         meFailuresRemaining -= 1;

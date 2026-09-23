@@ -34,7 +34,8 @@ server. Unknown fields are rejected, so a client cannot attach anything the sche
 | `occurredAt` | both | ISO 8601 timestamp |
 | `reportId` | both | One identifier per report, tying the tracker event to the server log line |
 | `userId` | both | The Account the client believed it was signed in as |
-| `computerId`, `installationId` | CLI | The Computer this OpenTag home is bound to, when it is bound to one |
+| `computerId` | CLI | The Account Computer this OpenTag home is connected as — the uuid the Server and the Web App know — read from the machine credential, when one exists |
+| `installationId` | CLI | This installation's own locally generated identity (`computer.json`), the value the daemon logs under the same name; falls back to the machine credential's copy |
 | `agentId`, `sessionId`, `turnId` | CLI | Present when the failure happened inside an Agent turn |
 | `provider` | CLI | The Agent runtime provider, such as `claude-code` |
 
@@ -63,7 +64,14 @@ In the Error Reporting console the Account appears as `context.user`. A CLI repo
 Account is presented as `computer:<computerId>`, prefixed so the two kinds of identifier can never be confused.
 Everything else in the table above — platform, route, Agent, Computer — is dropped by Error Reporting, which
 keeps only the fields it defines. Those live on the server log line instead, and `reportId` is what joins the
-two.
+two: the server writes it into the event's own text as a trailing `[reportId=<id>]` line, after the stack or
+the message, so it is visible in the console and searchable there. The line comes last on purpose. Error
+Reporting groups a stack trace by its exception type and five topmost frames, and a bare message by its first
+three tokens, so the marker changes neither grouping. Searching the server log for the same `reportId` finds the
+`Client error reported` line with the rest of the context.
+
+The identity files are read independently on the CLI side: a malformed `computer.json` costs the report its
+`installationId` and nothing else, and valid Account credentials alone are enough to address it.
 
 ### The page a Web App failure happened on
 
@@ -86,9 +94,17 @@ at Module.runLogin (/path/to/apps/cli/src/core/auth/login.ts:31:21)
 
 A frame inside `@opentag/client` or `@opentag/shared` resolves one hop, to that package's built
 `dist/index.mjs` and a line in it, because the CLI bundles those packages from their build output and Node
-applies one level of mapping rather than following a chain. Those packages now ship their own `.map` files
-alongside, so the second hop can be resolved from the same release. The Web App is unchanged and its stacks stay
-minified.
+applies one level of mapping rather than following a chain. The CLI's map names those files by a path relative
+to the monorepo (`../../../packages/client/dist/index.mjs`, and likewise for `@opentag/shared`), which does not
+exist in an end-user install, so Node never follows the second hop on its own. Those packages ship their own
+`.map` files alongside, so a person holding the matching package tarball can resolve the second hop by hand from
+the same release; it is not resolved automatically. The Web App is unchanged and its stacks stay minified.
+
+The maps are an accepted size cost: they carry the full source of everything bundled, third-party code
+included, and roughly triple the published `dist` of `open-tag`, `@opentag/client`, and `@opentag/shared`. The
+bundler offers no way to drop the embedded source for third-party files alone, and a map without source text
+would name a file the reader cannot open, so the whole map ships. Portable releases carry the maps too, beside
+every chunk, because the entry point enables source maps and every chunk names its map.
 
 ## Where reports come from
 
@@ -118,14 +134,21 @@ Node would have used. Because the daemon service runs through the CLI (`daemon s
 covered by the same handlers, and an unexpected terminal daemon failure is reported before the process exits.
 
 **Agent turns.** A turn that fails inside the daemon never reaches a terminal, so the tracker is the only place
-it can be seen. The turn runner hands every failure to the reporter installed by
-`apps/cli/src/core/daemon/runtime.ts`, which applies the same judgement the command path applies: only failures
-that describe OpenTag are relayed — `provider_protocol_error`, `provider_teardown_failed`,
-`session_resume_failed`, and `turn_state_unknown`. The last is the important one, being the catch-all for a throw
-nothing classified. A provider that is not installed or refused the prompt, a credential the Account has not
-supplied, a sandbox this machine cannot open, a budget that ran out, and a shutdown are answers the runtime gave
-on purpose, and no release can fix them, so they stay on the log. The report names the Agent, the Session, and
-the turn, and the relay is not waited on: a slow tracker must not hold a turn open.
+it can be seen. The turn runner hands every turn that did not complete to the reporter installed by
+`apps/cli/src/core/daemon/runtime.ts` — a value the provider threw and a failed result it returned alike — and
+the reporter applies the same judgement the command path applies: only failures that describe OpenTag are
+relayed, which today means `provider_protocol_error` and `turn_state_unknown`. The first is a provider that
+answered in a shape the runtime could not read, and it keeps that name whether the provider threw it or returned
+it. The second is the important one, being the catch-all for a throw nothing classified. A provider that is not
+installed or refused the prompt, a credential the Account has not supplied, a sandbox this machine cannot open, a
+budget that ran out, and a shutdown are answers the runtime gave on purpose, and no release can fix them, so they
+stay on the log; declining them is the reporter's decision, not the runner's. `provider_teardown_failed` and
+`session_resume_failed` exist in the shared taxonomy but nothing in the Client produces them yet, so the reporter
+does not claim to relay them. The report names the Agent, the Session, the turn, and the provider the composed
+runtime ran the Session on, when it can still say; a failure filed before the runtime was prepared names no
+provider. One failure per Session and reason is relayed per 30 seconds, the same cooldown the Web App applies,
+because the daemon is long-lived and a Session whose every turn fails the same way would otherwise post one
+report per turn. The relay is not waited on: a slow tracker must not hold a turn open.
 
 A CLI report goes to the server this installation is connected to: the Account credentials' server URL, or the
 Computer identity's when only machine credentials exist. A CLI that has never logged in or connected sends
@@ -145,14 +168,17 @@ route:
    silently.
 2. Validates the body against `ErrorReportRequestSchema`; an unknown field, an oversized value, or a `url` that is
    not HTTP(S) answers `400`. Parsing also strips the URL's query string, fragment, and credentials, so the contract
-   holds even for a client that did not honour it. A body over 64 KiB answers `413` without being read: the schema
-   caps a report's useful content near 22 KiB, so an anonymous route has no reason to accept Fastify's 1 MiB
-   default.
+   holds even for a client that did not honour it. A body over 128 KiB answers `413` without being read. The
+   schema bounds each field in UTF-16 code units, not bytes, and a maximal report written entirely in CJK — the
+   product ships a Chinese UI — is roughly 71 KB on the wire, so the limit leaves room for that and for JSON
+   escaping while staying far below Fastify's 1 MiB default, which an anonymous route has no reason to accept.
 3. Redacts the report again with `redactForLog` and writes it to the server log at `warn` as
    `Client error reported` with `module=error-reporting`, `source`, `errorCode`, `reportId`, `userId`, and the
    `errorReport` payload. The two identifiers are lifted out of the payload so an operator can filter on them
-   without parsing it. This line is where a report's full context lives, because Error Reporting keeps only the
-   fields it defines; an operator without a Google Cloud project still sees every report here.
+   without parsing it, and they are lifted from the redacted copy, never from the raw event: the relay is
+   anonymous, so a caller can post a credential-shaped value as either, and it is scrubbed at the top level
+   exactly as inside the payload. This line is where a report's full context lives, because Error Reporting keeps
+   only the fields it defines; an operator without a Google Cloud project still sees every report here.
 4. Answers `202` with an empty body and `cache-control: no-store` as soon as the report is accepted. Forwarding
    runs in the background. The reporter waits at most five seconds for each forward and then logs it as failed,
    because the Google client sets no deadline of its own and retries with backoff. That bounds the wait, not the

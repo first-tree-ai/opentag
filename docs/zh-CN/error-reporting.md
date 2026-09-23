@@ -34,7 +34,8 @@ project 的 server 会把每一份报告留在自己的日志里，不转发任�
 | `occurredAt` | 两端 | ISO 8601 时间戳 |
 | `reportId` | 两端 | 每份报告一个标识，把 tracker 事件与 server 日志行对应起来 |
 | `userId` | 两端 | 客户端自认已登录的 Account |
-| `computerId`、`installationId` | CLI | 本 OpenTag home 绑定的 Computer，仅在已绑定时存在 |
+| `computerId` | CLI | 本 OpenTag home 所连接的 Account Computer——Server 与 Web App 认识的那个 uuid——读自机器凭据，仅在存在时携带 |
+| `installationId` | CLI | 本安装自己在本地生成的身份（`computer.json`），即 daemon 以同名字段记录的值；缺失时回退到机器凭据中的副本 |
 | `agentId`、`sessionId`、`turnId` | CLI | 失败发生在 Agent turn 内部时存在 |
 | `provider` | CLI | Agent 运行时 provider，例如 `claude-code` |
 
@@ -58,7 +59,13 @@ project 的 server 会把每一份报告留在自己的日志里，不转发任�
 
 在 Error Reporting 控制台中，Account 显示为 `context.user`。只有 Computer 而没有 Account 的 CLI 报告呈现为
 `computer:<computerId>`，加前缀是为了让两类标识不会被混淆。上表中的其余内容——platform、route、Agent、Computer——会被
-Error Reporting 丢弃，它只保留自己定义的字段。这些内容改为留在 server 日志行上，由 `reportId` 把两者关联起来。
+Error Reporting 丢弃，它只保留自己定义的字段。这些内容改为留在 server 日志行上，由 `reportId` 把两者关联起来：server
+会把它以 `[reportId=<id>]` 的形式写进事件自身的文本末尾——在堆栈或消息之后——因此它在控制台中可见、可搜索。放在最后
+是有意为之：Error Reporting 按异常类型与最顶部的五个帧对堆栈分组，按前三个 token 对纯消息分组，因此该标记不会改变
+任何一种分组。在 server 日志中搜索同一个 `reportId`，即可找到携带其余上下文的 `Client error reported` 行。
+
+CLI 端会分别读取各个身份文件：损坏的 `computer.json` 只让报告失去 `installationId`，不影响其他内容；仅凭有效的
+Account 凭据就足以为报告确定去向。
 
 ### Web App 失败所在的页面
 
@@ -77,8 +84,15 @@ at Module.runLogin (/path/to/apps/cli/src/core/auth/login.ts:31:21)
 ```
 
 而位于 `@opentag/client` 或 `@opentag/shared` 内部的帧只解析一跳，到该包构建产物 `dist/index.mjs` 及其中的行号，
-因为 CLI 是从这些包的构建产物打包的，而 Node 只应用一层映射、不会沿链继续。这些包现在会一并发布自己的 `.map` 文件，
-因此第二跳可以基于同一个发布解析出来。Web App 未做改动，其堆栈仍是压缩后的。
+因为 CLI 是从这些包的构建产物打包的，而 Node 只应用一层映射、不会沿链继续。CLI 的 map 以相对于 monorepo 的路径
+（`../../../packages/client/dist/index.mjs`，`@opentag/shared` 同理）指向这些文件，而该路径在最终用户的安装中并不存在，
+因此 Node 自己永远不会走第二跳。这些包会一并发布自己的 `.map` 文件，持有对应版本包 tarball 的人可以基于同一个发布
+手动解析第二跳；它不会被自动解析。Web App 未做改动，其堆栈仍是压缩后的。
+
+map 是一项被接受的体积代价：它们携带所有被打包内容（包括第三方代码）的完整源码，使 `open-tag`、`@opentag/client`
+与 `@opentag/shared` 发布的 `dist` 大约增至三倍。打包器没有办法只丢弃第三方文件的内嵌源码，而没有源码文本的 map 会
+指向读者打不开的文件，因此整个 map 一并发布。便携版发布同样在每个 chunk 旁携带 map，因为入口启用了 source map，
+且每个 chunk 都指明了自己的 map。
 
 ## 报告来源
 
@@ -100,11 +114,16 @@ code 去重而不按路径：部署之后，仍在运行旧构建的浏览器会
 并且 daemon 意外的终止性失败会在进程退出前上报。
 
 **Agent turn。** 在 daemon 内部失败的 turn 永远不会出现在终端上，因此 tracker 是唯一能看到它的地方。turn runner 把
-每一次失败都交给 `apps/cli/src/core/daemon/runtime.ts` 安装的 reporter，由它应用与命令路径相同的判断：只中继描述
-OpenTag 自身的失败——`provider_protocol_error`、`provider_teardown_failed`、`session_resume_failed` 与
-`turn_state_unknown`。最后一个最重要，它是无人分类的抛出的兜底。provider 未安装或拒绝了 prompt、Account 未提供的凭据、
-本机无法打开的沙箱、耗尽的预算以及关机，都是运行时有意给出的答复，没有任何一次发布能修复它们，因此只留在日志中。
-报告会指明 Agent、Session 与该 turn，并且不等待中继完成：缓慢的 tracker 不得占住一个 turn。
+每一个未完成的 turn——无论是 provider 抛出的值，还是它返回的失败结果——都交给 `apps/cli/src/core/daemon/runtime.ts`
+安装的 reporter，由它应用与命令路径相同的判断：只中继描述 OpenTag 自身的失败，目前即 `provider_protocol_error` 与
+`turn_state_unknown`。前者是 provider 以运行时无法读取的形式作答，无论它是抛出还是返回，都保留这个名字。后者最重要，
+它是无人分类的抛出的兜底。provider 未安装或拒绝了 prompt、Account 未提供的凭据、本机无法打开的沙箱、耗尽的预算以及
+关机，都是运行时有意给出的答复，没有任何一次发布能修复它们，因此只留在日志中；拒绝它们是 reporter 的决定，而不是
+runner 的。`provider_teardown_failed` 与 `session_resume_failed` 存在于共享分类中，但 Client 中尚无任何代码产生它们，
+因此 reporter 不会声称中继它们。报告会指明 Agent、Session、该 turn，以及组合后的运行时运行该 Session 所用的 provider
+（在它仍能回答时；在运行时准备完成之前提交的失败不携带 provider）。同一 Session 的同一原因每 30 秒只中继一次，与 Web
+App 的冷却相同，因为 daemon 是长期运行的，一个每次 turn 都以同样方式失败的 Session 否则会每个 turn 发一份报告。
+中继不被等待：缓慢的 tracker 不得占住一个 turn。
 
 CLI 报告发往本安装所连接的 server：Account 凭据中的 server URL，或仅有机器凭据时 Computer 身份中的 server URL。从未登录
 或连接过的 CLI 不会发送任何内容。每份报告最多等待中继三秒。
@@ -118,12 +137,15 @@ CLI 报告发往本安装所连接的 server：Account 凭据中的 server URL�
    应放在网关层。除非 `OPENTAG_TRUST_PROXY` 指定了反向代理（参见[位于反向代理之后](#位于反向代理之后)），该地址就是 socket
    对端；未设置时，在反向代理之后每份报告都来自代理地址，整个部署共享同一个每分钟 30 份的预算，超出预算的客户端会静默失败。
 2. 依据 `ErrorReportRequestSchema` 校验请求体；未知字段、超长值或非 HTTP(S) 的 `url` 答复 `400`。解析时还会剔除 URL 的
-   query string、fragment 与凭据，因此即便客户端没有遵守契约，契约在这里仍然成立。超过 64 KiB 的请求体不会被读取，
-   直接答复 `413`：schema 已把一份报告的有效内容限制在约 22 KiB，匿名路由没有理由接受 Fastify 默认的 1 MiB。
+   query string、fragment 与凭据，因此即便客户端没有遵守契约，契约在这里仍然成立。超过 128 KiB 的请求体不会被读取，
+   直接答复 `413`。schema 以 UTF-16 code unit 而非字节限制每个字段，一份全部用 CJK 写成的最大报告——本产品带有中文
+   UI——在线路上约为 71 KB，因此该上限为此以及 JSON 转义留出了余量，同时仍远低于 Fastify 默认的 1 MiB，匿名路由没有
+   理由接受后者。
 3. 用 `redactForLog` 再次脱敏，并以 `warn` 级别写入 server 日志：消息为 `Client error reported`，带有
    `module=error-reporting`、`source`、`errorCode`、`reportId`、`userId` 与 `errorReport` 载荷。这两个标识被提到载荷之外，
-   使运维人员无需解析载荷即可按其过滤。这一行是报告完整上下文的所在之处，因为 Error Reporting 只保留它自己定义的字段；
-   没有 Google Cloud project 的运维人员仍能在这里看到每份报告。
+   使运维人员无需解析载荷即可按其过滤；它们取自脱敏后的副本，而不是原始事件：中继是匿名的，调用者可以把形如凭据的值
+   作为其中任一标识提交，它们在顶层会像在载荷内部一样被清洗。这一行是报告完整上下文的所在之处，因为 Error Reporting
+   只保留它自己定义的字段；没有 Google Cloud project 的运维人员仍能在这里看到每份报告。
 4. 报告一经接受即答复 `202`（空 body，`cache-control: no-store`）。转发在后台进行。reporter 对每次转发最多等待五秒，
    之后记为失败，因为 Google 客户端自身不设截止时间且会带退避重试。这限制的是等待时长，而不是库自身的 HTTP 请求与重试，
    后者可能仍在后台继续；因此缓慢或被阻断的出口网络不会占住客户端连接。

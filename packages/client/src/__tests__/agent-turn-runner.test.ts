@@ -6,6 +6,7 @@ import {
   type RuntimeImSteerRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { AgentProviderError } from "../agent-runtime/errors.js";
 import type { AgentRunResult, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import { AgentRuntimeProviderUnavailableError } from "../runtime/agent-runtime-provider-registry.js";
 import {
@@ -283,6 +284,22 @@ describe("AgentTurnRunner", () => {
       executionEffects: "not_started",
       errorReason: "provider_start_failed",
     });
+    // A thrown provider error keeps its own code, as a returned one always has.
+    expect(completionForError(new AgentProviderError("provider_protocol_error", "bad frame"), undefined)).toEqual({
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "provider_protocol_error",
+    });
+    expect(completionForError(new AgentProviderError("provider_start_failed", "no binary"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "provider_start_failed",
+    });
+    expect(completionForError(new AgentProviderError("provider_error", "refused"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "may_have_occurred",
+      errorReason: "provider_failed",
+    });
     expect(completionForError(new Error("The Session Agent Runtime has not been prepared"), undefined)).toEqual({
       outcome: "unknown",
       executionEffects: "may_have_occurred",
@@ -353,6 +370,115 @@ describe("AgentTurnRunner", () => {
     runner.stop();
     runner.start({ ...owner, turnId: "stopped" });
     expect(runner.activeCount).toBe(0);
+  });
+
+  it("hands a thrown provider protocol error to the reporter under its own code", async () => {
+    const agentErrorReporter = vi.fn();
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "c".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime: async () => ({
+          prompt: async () => {
+            throw new AgentProviderError("provider_protocol_error", "malformed provider frame");
+          },
+        }),
+        cwd: () => "/workspace",
+        observe: () => () => undefined,
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+      agentErrorReporter,
+    });
+
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "unknown", errorReason: "provider_protocol_error" }),
+    );
+    expect(agentErrorReporter).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        errorReason: "provider_protocol_error",
+        outcome: "unknown",
+        error: expect.any(AgentProviderError),
+      }),
+    );
+  });
+
+  it("hands a failure the provider returned to the reporter, which is where provider_failed is declined", async () => {
+    const runWith = async (result: AgentRunResult) => {
+      const agentErrorReporter = vi.fn();
+      const runner = new AgentTurnRunner({
+        bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+        connection: { send: vi.fn(async () => undefined) },
+        custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+        reportOwner: {
+          create: vi.fn((input) => ({
+            ...input,
+            type: "turn:report",
+            requestId: randomUUID(),
+            resultHash: "d".repeat(64),
+          })),
+          submit: vi.fn(async () => undefined),
+        } as unknown as TurnReportOwner,
+        runtimeManager: {
+          ensureRuntime: async () => ({ prompt: async () => result }),
+          cwd: () => "/workspace",
+          observe: () => () => undefined,
+        } as unknown as SessionRuntimeManager,
+        credentialEnvironment: credentialEnvironment(),
+        agentErrorReporter,
+      });
+      runner.start(liveOwner(delivery()));
+      await runner.settled();
+      return agentErrorReporter;
+    };
+
+    // The runner reports it; declining `provider_failed` is the reporter's decision, not the runner's.
+    const returned = await runWith({
+      runId: "turn-1",
+      status: "failed",
+      output: [],
+      error: { code: "provider_error", message: "provider refused the prompt" },
+    });
+    expect(returned).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        agentId: "agent-1",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        errorReason: "provider_failed",
+        outcome: "failed",
+        error: expect.objectContaining({
+          name: "AgentRunError:provider_error",
+          message: "provider refused the prompt",
+        }),
+      }),
+    );
+
+    // A result the runner itself refused carries no provider error and is described by its reason.
+    const oversized = await runWith({
+      runId: "turn-1",
+      status: "completed",
+      output: [{ type: "text", text: "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1) }],
+    });
+    expect(oversized).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        errorReason: "output_too_large",
+        outcome: "failed",
+        error: expect.objectContaining({ message: "Agent run completed was classified as output_too_large" }),
+      }),
+    );
+
+    const completed = await runWith({ runId: "turn-1", status: "completed", output: [] });
+    expect(completed).not.toHaveBeenCalled();
   });
 
   it("logs a failed Turn Report submission without blocking Turn completion", async () => {

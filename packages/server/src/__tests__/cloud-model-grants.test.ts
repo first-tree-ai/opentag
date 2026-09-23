@@ -67,6 +67,8 @@ describe("CloudModelGrantService", () => {
     await expect(service.defaultModel()).resolves.toBe("model-a");
     const issued = await service.issue(issueInput());
     if (!issued) throw new Error("grant issue failed");
+    expect(issued.contextWindow).toBe(258_000);
+    expect(issued.maxTokens).toBe(8_192);
     const claims = await service.verify(issued.token);
     expect(claims).toEqual({
       executionId: "turn-1",
@@ -74,8 +76,46 @@ describe("CloudModelGrantService", () => {
       model: "model-a",
       sandboxId: SANDBOX_ID,
       sessionId: SESSION_ID,
+      maxTokens: 8_192,
     });
     expect(issued.expiresAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("selects the execution profile once from Router-verified capabilities, never from the name", async () => {
+    const catalog = createStaticCloudModelCatalog(["model-a"], {
+      "model-a": { contextWindow: 262_144, maxOutputTokens: 4_096 },
+    });
+    service = makeService({ catalog });
+    const issued = await service.issue(issueInput());
+    if (!issued) throw new Error("grant issue failed");
+    // A native window above 258,000 issues the extended tier; the output budget is the verified cap.
+    expect(issued.contextWindow).toBe(258_000);
+    expect(issued.maxTokens).toBe(4_096);
+  });
+
+  it.each([
+    { contextWindow: 258_000, expected: 258_000 },
+    { contextWindow: 258_001, expected: 258_000 },
+    { contextWindow: 257_999, expected: 64_000 },
+    { contextWindow: 64_000, expected: 64_000 },
+    { contextWindow: 256_000, expected: 64_000 },
+  ])("maps a native window of $contextWindow to the $expected tier", async ({ contextWindow, expected }) => {
+    service = makeService({
+      catalog: createStaticCloudModelCatalog(["model-a"], { "model-a": { contextWindow, maxOutputTokens: 8_192 } }),
+    });
+    const issued = await service.issue(issueInput());
+    expect(issued?.contextWindow).toBe(expected);
+  });
+
+  it.each([
+    { capabilities: undefined, note: "unknown capabilities" },
+    { capabilities: { contextWindow: 63_999, maxOutputTokens: 8_192 }, note: "a native window below 64,000" },
+  ])("never mints for a model with $note", async ({ capabilities }) => {
+    service = makeService({ catalog: createStaticCloudModelCatalog(["model-a"], { "model-a": capabilities }) });
+    // No default window is fabricated: the model stays listed but is not a valid Cloud choice.
+    await expect(service.isModelAllowed("model-a")).resolves.toBe(true);
+    expect(await service.issue(issueInput())).toBeUndefined();
+    expect(service.trackedGrantCount).toBe(0);
   });
 
   it("never mints a token for a model the Router catalog does not offer", async () => {
@@ -96,6 +136,10 @@ describe("CloudModelGrantService", () => {
     });
     service = makeService({
       catalog: {
+        capabilitiesOf: async () => {
+          await gate;
+          return { contextWindow: 258_000, maxOutputTokens: 8_192 };
+        },
         defaultModel: async () => undefined,
         isModelAllowed: async () => {
           await gate;
@@ -232,6 +276,7 @@ describe("CloudModelGrantService", () => {
       model: "model-a",
       sandboxId: SANDBOX_ID,
       sessionId: SESSION_ID,
+      maxTokens: 8_192,
     };
     const key = new TextEncoder().encode(SECRET);
     const iat = Math.floor(now.getTime() / 1_000);
@@ -484,6 +529,8 @@ describe("CloudModelGrantService", () => {
         model: "m".repeat(128),
         token: issued.token,
         expiresAt: issued.expiresAt.toISOString(),
+        contextWindow: issued.contextWindow,
+        maxTokens: issued.maxTokens,
       },
     };
     const parsed = RunnerServerFrameSchema.safeParse(frame);

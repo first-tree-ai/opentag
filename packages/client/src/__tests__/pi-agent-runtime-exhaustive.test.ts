@@ -1400,3 +1400,136 @@ it.each(["visible", "internal"])(
     expect(paths).toEqual([kind === "visible" ? `/session/tools${delimiter}${basePath}` : basePath]);
   },
 );
+
+describe("Pi compaction integration boundaries", () => {
+  it("accepts cancellation before the Pi client is created", async () => {
+    const client = new ManualPiClient();
+    const controller = new AbortController();
+    const original = client.request.bind(client);
+    client.request = async (command) => {
+      if (controller.signal.aborted) throw new PiRpcError("aborted", "cancelled before startup");
+      return original(command);
+    };
+    const runtime = await factory(client).create(
+      request((event) => {
+        if (event.type === "run_started") controller.abort();
+      }),
+    );
+    await expect(
+      runtime.prompt({ runId: "abort-before-client", input: input("work"), signal: controller.signal }),
+    ).resolves.toMatchObject({ status: "aborted" });
+    expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
+    await runtime.close();
+  });
+
+  it.each([new PiRpcError("timeout", "late abort"), new PiRpcError("aborted", "abort deadline")])(
+    "stops the owned process after an unresponsive abort (%s)",
+    async (failure) => {
+      const client = new ManualPiClient();
+      const original = client.request.bind(client);
+      client.request = async (command) => {
+        if (command.type === "abort") throw failure;
+        return original(command);
+      };
+      const close = vi.spyOn(client, "close");
+      const runtime = await factory(client).create(request(() => undefined));
+      const run = runtime.prompt({ runId: "abort-timeout", input: input("work") });
+      await client.called("prompt");
+      await runtime.abort({ expectedRunId: "abort-timeout" });
+      expect(close).toHaveBeenCalled();
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      await runtime.close();
+    },
+  );
+
+  it.each([new PiRpcError("protocol", "invalid abort"), new Error("transport fault")])(
+    "preserves non-timeout abort failures (%s)",
+    async (failure) => {
+      const client = new ManualPiClient();
+      const original = client.request.bind(client);
+      client.request = async (command) => {
+        if (command.type === "abort") throw failure;
+        return original(command);
+      };
+      const runtime = await factory(client).create(request(() => undefined));
+      const run = runtime.prompt({ runId: "abort-fault", input: input("work") });
+      await client.called("prompt");
+      await expect(runtime.abort({ expectedRunId: "abort-fault" })).rejects.toThrow(failure.message);
+      await expect(run).resolves.toMatchObject({ status: "failed" });
+      await runtime.close();
+    },
+  );
+
+  it("does not report cancellation until compaction process cleanup succeeds", async () => {
+    const client = new ManualPiClient({ closeError: new Error("process remains alive") });
+    const runtime = await factory(client).create(request(() => undefined));
+    const run = runtime.prompt({ runId: "compaction-close-fault", input: input("work") });
+    await client.called("prompt");
+    client.emit({ type: "compaction_start", reason: "threshold" });
+    await expect(runtime.abort({ expectedRunId: "compaction-close-fault" })).rejects.toThrow("process remains alive");
+    await expect(run).resolves.toMatchObject({ status: "failed" });
+    await expect(runtime.close()).rejects.toMatchObject({ code: "close_failed" });
+  });
+
+  it("honors agent_settled racing with compaction process cleanup", async () => {
+    const client = new ManualPiClient();
+    const runtime = await factory(client).create(request(() => undefined));
+    const run = runtime.prompt({ runId: "compaction-settle-race", input: input("work") });
+    await client.called("prompt");
+    client.emit({ type: "compaction_start", reason: "threshold" });
+    const close = vi.spyOn(client, "close").mockImplementationOnce(async () => client.complete());
+    await runtime.abort({ expectedRunId: "compaction-settle-race" });
+    expect(close).toHaveBeenCalled();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    await runtime.close();
+  });
+
+  it("uses one bounded local event reference for a long native tool ID", async () => {
+    const client = new ManualPiClient();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await factory(client).create(
+      request((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "long-tool", input: input("work") });
+    await client.called("prompt");
+    const id = "signed_" + "x".repeat(4200);
+    client.emit({ type: "turn_start" });
+    client.emit({ type: "tool_execution_start", toolCallId: id, toolName: "bash", args: {} });
+    client.emit({ type: "tool_execution_update", toolCallId: id, partialResult: {} });
+    client.emit({ type: "tool_execution_end", toolCallId: id, result: {} });
+    client.emit({ type: "turn_end" });
+    client.complete();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    const refs = events.filter(
+      (event) => event.type === "tool_started" || event.type === "tool_updated" || event.type === "tool_completed",
+    );
+    expect(refs).toHaveLength(3);
+    for (const event of refs)
+      expect(event).toHaveProperty("toolCallId", `pi-tool-${createHash("sha256").update(id).digest("hex")}`);
+    await runtime.close();
+  });
+
+  it.each([{ aborted: true }, { errorMessage: " " }, { errorMessage: "x".repeat(4000) }, { result: {} }])(
+    "keeps bounded compaction diagnostics without fabricated usage (%j)",
+    async (detail) => {
+      const client = new ManualPiClient();
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        request((event) => {
+          events.push(event);
+        }),
+      );
+      const run = runtime.prompt({ runId: "compaction-diagnostic", input: input("work") });
+      await client.called("prompt");
+      client.emit({ type: "compaction_end", ...detail });
+      client.complete({ usage: { input: 3, output: 1 } });
+      await expect(run).resolves.toMatchObject({ status: "completed", usage: { inputTokens: 3, outputTokens: 1 } });
+      const warnings = events.filter((event) => event.type === "provider_warning");
+      expect(warnings).toHaveLength("result" in detail ? 0 : 1);
+      for (const event of warnings) expect(Buffer.byteLength(event.message)).toBeLessThan(2100);
+      await runtime.close();
+    },
+  );
+});

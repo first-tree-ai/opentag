@@ -33,6 +33,7 @@ function trackingCatalog(models: string[] | undefined) {
       : { available: true as const, defaultModel: models[0] ?? null, models },
   );
   const catalog: CloudModelCatalog = {
+    capabilitiesOf: async () => undefined,
     defaultModel: async () => (await lists()).defaultModel ?? undefined,
     isModelAllowed: async (model) => (await lists()).models.includes(model),
     list: lists,

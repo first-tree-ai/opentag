@@ -426,6 +426,287 @@ describe("PiAgentRuntime", () => {
     await failedRuntime.close();
   });
 
+  it("keeps the run in progress through native compaction and folds its usage in exactly once", async () => {
+    const client = new ScriptedPiClient("hold");
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await piFactory(client).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "run-compaction", input: input("long task") });
+    await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+
+    // The business answer completed; Pi runs native threshold compaction BEFORE agent_settled.
+    emitAssistantAnswer(client, "final answer");
+    client.emit({ type: "compaction_start", reason: "threshold" });
+    await vi.waitFor(() => expect(providerEventPayloadTypes(events)).toContain("compaction_start"));
+    // Mid-compaction the run stays in progress: no terminal event, the Runtime reports running.
+    expect(runtime.state).toMatchObject({ phase: "running", activeRunId: "run-compaction" });
+    expect(
+      events.some((event) => ["run_completed", "run_failed", "run_aborted", "run_cancelled"].includes(event.type)),
+    ).toBe(false);
+
+    client.emit({
+      type: "compaction_end",
+      reason: "threshold",
+      aborted: false,
+      willRetry: false,
+      result: {
+        summary: "condensed history",
+        firstKeptEntryId: "entry-9",
+        tokensBefore: 241_700,
+        estimatedTokensAfter: 30_000,
+        usage: { input: 240_000, output: 900, cacheRead: 12, cacheWrite: 0 },
+      },
+    });
+    await vi.waitFor(() => expect(events.filter((event) => event.type === "usage_updated")).toHaveLength(2));
+    // Still not settled: only agent_settled ends the run.
+    expect(runtime.state.phase).toBe("running");
+    client.emit({ type: "agent_settled" });
+    await expect(run).resolves.toMatchObject({
+      status: "completed",
+      output: [{ type: "text", text: "final answer" }],
+      // The summary request's usage joined the assistant usage exactly once (240,000 + 10 + 5).
+      usage: { inputTokens: 240_015, cachedInputTokens: 14, outputTokens: 903 },
+    });
+    const usageEvents = events.filter((event) => event.type === "usage_updated");
+    expect(usageEvents).toHaveLength(2);
+    expect(usageEvents[0]).toMatchObject({ usage: { inputTokens: 15, cachedInputTokens: 2, outputTokens: 3 } });
+    expect(usageEvents[1]).toMatchObject({ usage: { inputTokens: 240_015, cachedInputTokens: 14, outputTokens: 903 } });
+    await runtime.close();
+  });
+
+  it("bounds cancellation during native compaction without waiting on the summary request", async () => {
+    const client = new ScriptedPiClient("hold");
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await piFactory(client).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "run-compaction-cancel", input: input("long task") });
+    await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+    emitAssistantAnswer(client, "final answer");
+    client.emit({ type: "compaction_start", reason: "threshold" });
+    await vi.waitFor(() => expect(providerEventPayloadTypes(events)).toContain("compaction_start"));
+
+    // Pinned Pi 0.84.2 cannot abort a native compaction over RPC (session.abort() does not reach
+    // it), so the adapter takes the bounded path instead: close the owned Pi process and settle
+    // the run as aborted once the process is gone — the cancellation never hangs on the summary
+    // request, and the completed business answer stays visible in the result.
+    await runtime.abort({ expectedRunId: "run-compaction-cancel", reason: "user stop" });
+    expect(client.commands.some((command) => command.type === "abort")).toBe(false);
+    expect(client.closed).toBe(true);
+    await expect(run).resolves.toMatchObject({
+      status: "aborted",
+      output: [{ type: "text", text: "final answer" }],
+      // The interrupted compaction never reported usage; the assistant usage stands, once.
+      usage: { inputTokens: 15, cachedInputTokens: 2, outputTokens: 3 },
+      error: { code: "run_aborted" },
+    });
+    await runtime.close();
+  });
+
+  it("survives a failed compaction, the native retry, and settles from the real outcome", async () => {
+    const client = new ScriptedPiClient("hold");
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await piFactory(client).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "run-compaction-recover", input: input("long task") });
+    await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+
+    // The first model answer overflowed the context (the proxy-classified envelope Pi recognizes).
+    const overflow = {
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: '400: {"code":"context_length_exceeded","message":"The request exceeds the model context window"}',
+      usage: { input: 250_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+    };
+    client.emit({ type: "agent_start" });
+    client.emit({ type: "turn_start" });
+    client.emit({ type: "message_start", message: { role: "user", content: "hello" } });
+    client.emit({ type: "message_end", message: { role: "user", content: "hello" } });
+    client.emit({ type: "message_start", message: { role: "assistant", content: [] } });
+    client.emit({ type: "message_end", message: overflow });
+    client.emit({ type: "turn_end", message: overflow, toolResults: [] });
+    client.emit({ type: "agent_end", messages: [overflow], willRetry: true });
+
+    // The first summarization attempt fails: a diagnostic, never the run's own verdict.
+    client.emit({ type: "compaction_start", reason: "overflow" });
+    client.emit({
+      type: "compaction_end",
+      reason: "overflow",
+      aborted: false,
+      willRetry: true,
+      errorMessage: "Compaction failed: 429 rate limit",
+    });
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.type === "provider_warning" && event.code === "pi_compaction_failed")).toBe(
+        true,
+      ),
+    );
+    expect(runtime.state.phase).toBe("running");
+
+    // Pi's native recovery: a bounded retry compacts and the agent loop continues to a real answer.
+    client.emit({ type: "compaction_start", reason: "overflow" });
+    client.emit({
+      type: "compaction_end",
+      reason: "overflow",
+      aborted: false,
+      willRetry: true,
+      result: {
+        summary: "recovered history",
+        firstKeptEntryId: "entry-3",
+        tokensBefore: 250_100,
+        estimatedTokensAfter: 28_000,
+        usage: { input: 240_000, output: 800, cacheRead: 0, cacheWrite: 0 },
+      },
+    });
+    const recovered = {
+      role: "assistant",
+      content: [{ type: "text", text: "recovered answer" }],
+      stopReason: "stop",
+      usage: { input: 31_000, output: 12, cacheRead: 4, cacheWrite: 6 },
+    };
+    client.emit({ type: "turn_start" });
+    client.emit({ type: "message_start", message: { ...recovered, content: [] } });
+    client.emit({ type: "message_update", assistantMessageEvent: { type: "start" } });
+    client.emit({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+    client.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "recovered answer" },
+    });
+    client.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_end", contentIndex: 0, content: "recovered answer" },
+    });
+    client.emit({ type: "message_update", assistantMessageEvent: { type: "done", reason: "stop" } });
+    client.emit({ type: "message_end", message: recovered });
+    client.emit({ type: "turn_end", message: recovered, toolResults: [] });
+    client.emit({ type: "agent_end", messages: [recovered], willRetry: false });
+    client.emit({ type: "agent_settled" });
+
+    await expect(run).resolves.toMatchObject({
+      status: "completed",
+      output: [{ type: "text", text: "recovered answer" }],
+      // Overflow attempt + one summary + recovered answer, each counted exactly once.
+      usage: { inputTokens: 521_006, cachedInputTokens: 4, outputTokens: 812 },
+    });
+    const warnings = events.filter((event) => event.type === "provider_warning");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      code: "pi_compaction_failed",
+      message: "Compaction failed: 429 rate limit",
+    });
+    await runtime.close();
+  });
+
+  it("never lets a compaction failure falsify the run's actual outcome", async () => {
+    // Case 1: the business output completed; a trailing compaction failure is diagnostic only.
+    const completedClient = new ScriptedPiClient("hold");
+    const completedEvents: AgentRuntimeEvent[] = [];
+    const completedRuntime = await piFactory(completedClient).create(
+      createRequest((event) => {
+        completedEvents.push(event);
+      }),
+    );
+    const completedRun = completedRuntime.prompt({ runId: "run-compaction-fail-after-stop", input: input("task") });
+    await vi.waitFor(() => expect(completedClient.commands.some((command) => command.type === "prompt")).toBe(true));
+    emitAssistantAnswer(completedClient, "final answer");
+    completedClient.emit({ type: "compaction_start", reason: "threshold" });
+    completedClient.emit({
+      type: "compaction_end",
+      reason: "threshold",
+      aborted: false,
+      willRetry: false,
+      errorMessage: "Compaction failed: upstream unavailable",
+    });
+    await vi.waitFor(() =>
+      expect(
+        completedEvents.some((event) => event.type === "provider_warning" && event.code === "pi_compaction_failed"),
+      ).toBe(true),
+    );
+    expect(completedRuntime.state.phase).toBe("running");
+    completedClient.emit({ type: "agent_settled" });
+    await expect(completedRun).resolves.toMatchObject({
+      status: "completed",
+      output: [{ type: "text", text: "final answer" }],
+    });
+    await completedRuntime.close();
+
+    // Case 2: the model call was interrupted (context overflow) and Pi's one-shot overflow
+    // recovery is already exhausted — pinned Pi 0.84.2 reports that with a compaction_end ALONE
+    // (no compaction_start on this path). The run fails with the real model error and never
+    // "completes"; the recovery diagnostic stays a warning.
+    const failedClient = new ScriptedPiClient("hold");
+    const failedEvents: AgentRuntimeEvent[] = [];
+    const failedRuntime = await piFactory(failedClient).create(
+      createRequest((event) => {
+        failedEvents.push(event);
+      }),
+    );
+    const failedRun = failedRuntime.prompt({ runId: "run-compaction-exhausted", input: input("task") });
+    await vi.waitFor(() => expect(failedClient.commands.some((command) => command.type === "prompt")).toBe(true));
+    const overflow = {
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: '400: {"code":"context_length_exceeded","message":"The request exceeds the model context window"}',
+      usage: { input: 250_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+    };
+    failedClient.emit({ type: "agent_start" });
+    failedClient.emit({ type: "turn_start" });
+    failedClient.emit({ type: "message_start", message: { role: "user", content: "hello" } });
+    failedClient.emit({ type: "message_end", message: { role: "user", content: "hello" } });
+    failedClient.emit({ type: "message_start", message: { role: "assistant", content: [] } });
+    failedClient.emit({ type: "message_end", message: overflow });
+    failedClient.emit({ type: "turn_end", message: overflow, toolResults: [] });
+    failedClient.emit({ type: "agent_end", messages: [overflow], willRetry: false });
+    failedClient.emit({
+      type: "compaction_end",
+      reason: "overflow",
+      aborted: false,
+      willRetry: false,
+      errorMessage:
+        "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+    });
+    await vi.waitFor(() =>
+      expect(
+        failedEvents.some((event) => event.type === "provider_warning" && event.code === "pi_compaction_failed"),
+      ).toBe(true),
+    );
+    expect(failedRuntime.state.phase).toBe("running");
+    failedClient.emit({ type: "agent_settled" });
+    await expect(failedRun).resolves.toMatchObject({
+      status: "failed",
+      error: {
+        code: "provider_error",
+        message: '400: {"code":"context_length_exceeded","message":"The request exceeds the model context window"}',
+      },
+    });
+    await failedRuntime.close();
+  });
+
+  it("fails closed on a malformed compaction envelope instead of guessing", async () => {
+    const client = new ScriptedPiClient("hold");
+    const runtime = await piFactory(client).create(createRequest(() => undefined));
+    const run = runtime.prompt({ runId: "run-compaction-malformed", input: input("task") });
+    await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+    emitAssistantAnswer(client, "final answer");
+    client.emit({ type: "compaction_start", reason: "threshold" });
+    client.emit({ type: "compaction_end", reason: "threshold", result: "not-an-object" });
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Pi compaction_end result is invalid" },
+    });
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+  });
+
   it("fails closed for crossed sessions and process failure", async () => {
     const crossed = await piFactory(new ScriptedPiClient("complete", "22222222-2222-4222-8222-222222222222")).create(
       createRequest(() => undefined),
@@ -607,6 +888,11 @@ class ScriptedPiClient implements PiRpcClient {
     this.#emitRun("stop", true);
   }
 
+  /** Emit one raw Pi event, for scenarios the canned sequences do not cover (e.g. compaction). */
+  emit(message: Readonly<Record<string, unknown>>): void {
+    this.#emit(message);
+  }
+
   #emitRun(stopReason: "aborted" | "error" | "stop", includeTool = false): void {
     const assistant = assistantMessage(stopReason);
     this.#emit({ type: "agent_start" });
@@ -664,6 +950,39 @@ function assistantMessage(stopReason: "aborted" | "error" | "stop"): Readonly<Re
     ...(stopReason === "error" ? { errorMessage: "model unavailable" } : {}),
     usage: { input: 10, output: 3, cacheRead: 2, cacheWrite: 5 },
   };
+}
+
+/**
+ * Emit a complete business answer through `agent_end` WITHOUT `agent_settled`, leaving the run in
+ * the exact window where pinned Pi 0.84.2 performs native auto-compaction.
+ */
+function emitAssistantAnswer(client: ScriptedPiClient, text: string): void {
+  const assistant = {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    stopReason: "stop",
+    usage: { input: 10, output: 3, cacheRead: 2, cacheWrite: 5 },
+  };
+  client.emit({ type: "agent_start" });
+  client.emit({ type: "turn_start" });
+  client.emit({ type: "message_start", message: { role: "user", content: "hello" } });
+  client.emit({ type: "message_end", message: { role: "user", content: "hello" } });
+  client.emit({ type: "message_start", message: { ...assistant, content: [] } });
+  client.emit({ type: "message_update", assistantMessageEvent: { type: "start" } });
+  client.emit({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+  client.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text } });
+  client.emit({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content: text } });
+  client.emit({ type: "message_update", assistantMessageEvent: { type: "done", reason: "stop" } });
+  client.emit({ type: "message_end", message: assistant });
+  client.emit({ type: "turn_end", message: assistant, toolResults: [] });
+  client.emit({ type: "agent_end", messages: [assistant], willRetry: false });
+}
+
+/** The payload types of the raw provider diagnostics observed so far (e.g. compaction events). */
+function providerEventPayloadTypes(events: readonly AgentRuntimeEvent[]): unknown[] {
+  return events
+    .filter((event) => event.type === "provider_event")
+    .map((event) => (event.payload as { type?: unknown }).type);
 }
 
 function piFactory(client: ScriptedPiClient): PiAgentRuntimeFactory {

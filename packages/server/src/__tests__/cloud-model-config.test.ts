@@ -70,7 +70,7 @@ describe("resolveCloudModelConfig", () => {
     expect(config).not.toHaveProperty("allowedModels");
     expect(config.tokenTtlSeconds).toBe(1_800);
     expect(config.requestTimeoutMs).toBe(600_000);
-    expect(config.maxRequestBytes).toBe(2 * 1024 * 1024);
+    expect(config.maxRequestBytes).toBe(8 * 1024 * 1024);
     expect(config.maxResponseBytes).toBe(16 * 1024 * 1024);
     expect(config.maxStreamsPerToken).toBe(4);
     // The deployment still boots with the retired variable absent entirely.

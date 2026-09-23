@@ -147,9 +147,13 @@ model/tool call. E4 does not promise uninterrupted model continuation and adds n
 protocol; that remains future work if the product requires it.
 
 The model proxy accepts a strict Pi-compatible chat-completions payload. Routing and credential
-overrides are rejected, each request has at most one completion, and output budgets are capped at
-65,536 tokens. If both output-budget fields are omitted, the proxy supplies `max_tokens: 65536`;
-omission cannot bypass the limit. These are per-request bounds, not an aggregate spend quota.
+overrides are rejected and each request has at most one completion. The Server selects a 258,000
+or 64,000 token working window from verified Router capabilities and issues an output budget of
+`min(8192, verified model output limit)`. The proxy clamps both output-budget fields to the grant's
+budget and supplies it as `max_tokens` when both are omitted. The Runner writes that window and
+budget to Pi and enables native compaction; summary work remains part of the same running
+execution until `agent_settled`. Chat history has an 8 MiB body safety bound, with no separate
+message-count cap. These bounds are not an aggregate spend quota.
 Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasoning_text` echoes,
 plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
 relax the top-level routing or credential allowlist.

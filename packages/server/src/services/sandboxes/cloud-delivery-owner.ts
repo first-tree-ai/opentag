@@ -609,7 +609,7 @@ export class CloudDeliveryOwner {
   #resolveMintOutcome(input: {
     baseUrl: string;
     connection: CloudConnectionRecord;
-    issued: { expiresAt: Date; token: string } | undefined;
+    issued: CloudModelGrantIssue | undefined;
     model: string;
     ownership: { connectionId: string; generation: number };
     turnId: string;
@@ -640,6 +640,9 @@ export class CloudDeliveryOwner {
       expiresAt: input.issued.expiresAt.toISOString(),
       model: input.model,
       token: input.issued.token,
+      // The Server-selected execution profile rides the grant verbatim; the Runner never derives it.
+      contextWindow: input.issued.contextWindow,
+      maxTokens: input.issued.maxTokens,
     };
   }
 

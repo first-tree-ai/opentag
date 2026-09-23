@@ -83,6 +83,8 @@ async function fixture() {
         model: snapshot.model ?? "fixture-model",
         baseUrl: "https://server.example.test/api/v1/cloud-model",
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        contextWindow: 258_000 as const,
+        maxTokens: 8_192,
       },
     };
     const result = await runCloudTurnWorker(request, {

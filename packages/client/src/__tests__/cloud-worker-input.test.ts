@@ -34,6 +34,8 @@ function sessionRequest(): RunnerCloudSessionWorkerRequest {
       token: "fixture-token",
       baseUrl: "https://example.test/model",
       expiresAt: new Date(Date.now() + 60000).toISOString(),
+      contextWindow: 258_000 as const,
+      maxTokens: 8_192,
     },
   };
 }

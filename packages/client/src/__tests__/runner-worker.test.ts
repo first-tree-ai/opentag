@@ -18,6 +18,8 @@ const MODEL = {
   expiresAt: new Date(Date.now() + 600_000).toISOString(),
   model: "fixture-model",
   token: "fixture-execution-token-0123456789abcdef",
+  contextWindow: 258_000 as const,
+  maxTokens: 8_192,
 };
 
 const COMPLETION: TurnCompletion = { executionEffects: "completed", finalText: "done", outcome: "completed" };

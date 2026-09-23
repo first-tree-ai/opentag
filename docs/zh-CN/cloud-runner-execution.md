@@ -109,8 +109,11 @@ master key、bootstrap token 或原始 provider 凭证。平台提供的模型�
 新增授权续期协议；如产品需要则属于后续工作。
 
 模型代理只接受兼容 Pi 的严格 chat-completions 请求，拒绝路由和凭证覆盖字段，每个请求最多一个
-completion，输出预算上限为 65,536 token。省略两个输出预算字段时，代理补充 `max_tokens: 65536`，
-因此不能通过省略参数绕过限制。这是单次请求限制，不是累计费用配额。
+completion。Server 按 Router 已验证能力选择 258,000 或 64,000 token 工作窗口，输出预算为
+`min(8192, 已验证模型输出上限)`。代理将两个输出预算字段限制在授权预算内，均省略时补入
+同一预算的 `max_tokens`。Runner 将窗口和预算写给 Pi 并开启原生压缩；摘要过程仍属于同一
+次 Running，直到 `agent_settled`。聊天历史只受 8 MiB body 安全边界约束，不另设消息条数上限。
+这些限制不代表累计费用配额。
 Assistant 历史保留 Pi 的 reasoning_content、reasoning、reasoning_text 回显，以及有大小限制的
 签名工具调用加密 reasoning_details。这些历史字段不放宽顶层路由或凭证字段白名单。
 

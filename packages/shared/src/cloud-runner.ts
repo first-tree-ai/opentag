@@ -66,6 +66,19 @@ const RUNNER_SESSION_MESSAGE_CONTEXT_REFINE = (value: {
 export const CLOUD_MODEL_PROXY_PATH = "/api/v1/cloud-model" as const;
 /** The single OpenAI-compatible operation E4 admits. */
 export const CLOUD_MODEL_CHAT_COMPLETIONS_PATH = `${CLOUD_MODEL_PROXY_PATH}/chat/completions` as const;
+/**
+ * The two Cloud working context windows (tokens). The Server selects exactly one per issued grant
+ * from the Router-verified native model window (>= 258,000 -> 258,000, >= 64,000 -> 64,000;
+ * anything smaller or unverified is never issued); the Runner writes the value to Pi verbatim and
+ * never re-derives a window from the model name.
+ */
+export const CLOUD_MODEL_CONTEXT_WINDOW_STANDARD = 64_000;
+export const CLOUD_MODEL_CONTEXT_WINDOW_EXTENDED = 258_000;
+/**
+ * Platform ceiling for one issued Cloud output budget (tokens): the Router verifies at most this
+ * native output limit, and the Server issues `min(ceiling, verified limit)` per grant.
+ */
+export const CLOUD_MODEL_OUTPUT_TOKEN_LIMIT = 8_192;
 /** Runner control frames stay small; acceptance reports are bounded separately below. */
 export const RUNNER_WS_MAX_FRAME_BYTES = 256 * 1024;
 /** Bounded credential/config payloads: each document an Account may push for one acceptance run. */
@@ -399,10 +412,24 @@ export const RunnerCloudModelGrantSchema = z
     /**
      * Opaque execution-scoped bearer token; never a platform master key. The 4096-byte budget is
      * the actual proxy bearer budget: a valid HS256 JWT with a 128-byte model id plus the wired
-     * claims measured 639 bytes, and the token must always fit the control frame.
+     * claims is well under 1 KiB, and the token must always fit the control frame.
      */
     token: z.string().min(32).max(4096),
     expiresAt: z.string().datetime(),
+    /**
+     * The working context window the Server selected once from the Router-verified native window;
+     * exactly one of the two Cloud tiers. The Runner writes it to the disposable Pi models.json
+     * verbatim — no model-name guesses anywhere downstream.
+     */
+    contextWindow: z.union([
+      z.literal(CLOUD_MODEL_CONTEXT_WINDOW_STANDARD),
+      z.literal(CLOUD_MODEL_CONTEXT_WINDOW_EXTENDED),
+    ]),
+    /**
+     * The issued output budget: `min(CLOUD_MODEL_OUTPUT_TOKEN_LIMIT, Router-verified native
+     * limit)`. The Runner writes it to Pi verbatim and the proxy clamps every request to it.
+     */
+    maxTokens: z.number().int().min(1).max(CLOUD_MODEL_OUTPUT_TOKEN_LIMIT),
   })
   .strict();
 export type RunnerCloudModelGrant = z.infer<typeof RunnerCloudModelGrantSchema>;

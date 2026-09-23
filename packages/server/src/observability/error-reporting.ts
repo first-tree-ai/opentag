@@ -62,6 +62,24 @@ export function reportedMessage(event: ErrorReportRequest): string {
 }
 
 /**
+ * The line that carries a report's own identifier into the tracker event, so the event can be
+ * joined back to the server log line holding the rest of the report's context.
+ *
+ * The SDK forwards nothing but the message text, the user, the service context, the report
+ * location, and the HTTP request, so the identifier has to ride in the text. It goes last:
+ * Error Reporting groups a stack trace by exception type and its five topmost frames, and a bare
+ * message by its first three tokens, so a trailing line changes neither grouping while staying
+ * visible in the event's message.
+ */
+export function reportIdMarker(reportId: string): string {
+  return `[reportId=${reportId}]`;
+}
+
+function withReportIdMarker(text: string, reportId: string | undefined): string {
+  return reportId ? `${text}\n${reportIdMarker(reportId)}` : text;
+}
+
+/**
  * Who the report says it came from, for `context.user`.
  *
  * The relay is anonymous, so this is what the caller claimed rather than what the server verified —
@@ -83,7 +101,7 @@ function reportedUser(event: ErrorReportRequest): string | undefined {
  * Only the fields the SDK reads reach the tracker: it copies `user`, `serviceContext` and the
  * report-location trio off this object and drops everything else. The rest of a report's context —
  * platform, route, Agent, Computer — is kept on the server's own log line instead, correlated by
- * `reportId`.
+ * `reportId`, which is why that one identifier is written into the reported text itself.
  */
 export function toReportedError(event: ErrorReportRequest): Record<string, unknown> {
   const serviceContext = {
@@ -92,9 +110,9 @@ export function toReportedError(event: ErrorReportRequest): Record<string, unkno
   };
   const user = reportedUser(event);
   const attribution = { ...(user ? { user } : {}), serviceContext };
-  if (event.stack) return { stack: reportedMessage(event), ...attribution };
+  if (event.stack) return { stack: withReportIdMarker(reportedMessage(event), event.reportId), ...attribution };
   return {
-    message: event.message,
+    message: withReportIdMarker(event.message, event.reportId),
     filePath: event.url ?? event.command ?? event.source,
     lineNumber: 0,
     functionName: event.code ?? "unknown",

@@ -5,6 +5,7 @@ import {
   createErrorReporter,
   type ErrorReportingClient,
   reportedMessage,
+  reportIdMarker,
   toReportedError,
 } from "../error-reporting.js";
 
@@ -116,6 +117,26 @@ describe("createErrorReporter", () => {
     expect(calls[0]?.[0]).toMatchObject({ user: "account-1" });
     // Prefixed, so a Computer identifier can never be read as an Account one.
     expect(calls[1]?.[0]).toMatchObject({ user: "computer:computer-1" });
+  });
+
+  it("writes the reportId into the event text, after the frames the tracker groups on", async () => {
+    const { resolve } = fakeLogger();
+    const client: ErrorReportingClient = {
+      report: vi.fn((_error, _request, callback: (error: Error | null) => void) => callback(null)),
+    };
+    const reporter = createErrorReporter({ projectId: "p", logger: resolve, createClient: () => client });
+    const reportId = "6f1c2f3a-0000-4000-8000-000000000000";
+
+    await reporter.report({ ...webEvent, reportId });
+    await reporter.report({ source: "cli", message: "boom", command: "agent create", reportId, occurredAt });
+
+    const [withStack, messageOnly] = vi.mocked(client.report).mock.calls.map((call) => call[0]);
+    // Serialized, because the SDK reads the text off the object and nothing else carries the id.
+    expect(JSON.stringify(withStack)).toContain(reportId);
+    expect(withStack).toMatchObject({ stack: `${webEvent.stack}\n${reportIdMarker(reportId)}` });
+    expect(JSON.stringify(messageOnly)).toContain(reportId);
+    expect(messageOnly).toMatchObject({ message: `boom\n${reportIdMarker(reportId)}`, filePath: "agent create" });
+    expect(reportIdMarker(reportId)).toBe(`[reportId=${reportId}]`);
   });
 
   it("logs a warning and resolves when the SDK reports a failure or throws", async () => {

@@ -140,8 +140,15 @@ async function caproverApi({ server, token, method, path, body, fetchImpl, timeo
 }
 
 /** Selects exactly one app definition by name; zero or ambiguous matches fail. */
-export async function getAppDefinition({ server, token, appName, fetchImpl = fetch }) {
-  const data = await caproverApi({ server, token, method: "GET", path: "/api/v2/user/apps/appDefinitions", fetchImpl });
+export async function getAppDefinition({ server, token, appName, fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  const data = await caproverApi({
+    server,
+    token,
+    method: "GET",
+    path: "/api/v2/user/apps/appDefinitions",
+    fetchImpl,
+    timeoutMs,
+  });
   const definitions = Array.isArray(data?.appDefinitions) ? data.appDefinitions : null;
   if (!definitions) {
     throw new Error("CapRover returned no app definition list");

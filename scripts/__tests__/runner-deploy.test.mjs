@@ -481,6 +481,122 @@ test("apply gives up when the API stays unreachable for the whole budget", async
   assert.equal(fake.updates().length, 0, "nothing is mutated against an app that was never observed");
 });
 
+/**
+ * A deterministic clock for `runDeploy(apply)`: the `refusedRead`-th appDefinitions read is refused
+ * and jumps the clock to `failAt` ms, the next one succeeds and takes `successTakes` ms, and every
+ * other request is instantaneous. Sleeps advance the clock by exactly what was requested. The
+ * observation under test starts at t=0 in both paths, because nothing before it moves the clock.
+ */
+function observationClock(fake, { refusedRead, failAt, successTakes }) {
+  let time = 0;
+  let reads = 0;
+  const fetchImpl = async (url, options) => {
+    if (url.endsWith("/api/v2/user/apps/appDefinitions")) {
+      reads += 1;
+      if (reads === refusedRead) {
+        time = failAt;
+        throw new TypeError("fetch failed");
+      }
+      if (reads === refusedRead + 1) time += successTakes;
+    }
+    return fake.fetchImpl(url, options);
+  };
+  return {
+    fetchImpl,
+    now: () => time,
+    sleep: async (ms) => {
+      time += ms;
+    },
+    time: () => time,
+  };
+}
+
+const OBSERVATION_BUDGET = { deadlineMs: 300_000, intervalMs: 500 };
+
+test("apply accepts an initial observation that succeeds inside its budget after a refused read", async () => {
+  const fake = caproverFake();
+  const clock = observationClock(fake, { refusedRead: 1, failAt: 299_000, successTakes: 250 });
+  const summary = await runDeploy(deployDeps(fake, { mode: "apply", ...clock, ...OBSERVATION_BUDGET }));
+  assert.equal(clock.time(), 299_750, "refused at 299000, slept 500, answered 250 later");
+  assert.equal(summary.updated, true);
+  assert.equal(fake.updates().length, 1, "an in-budget observation authorizes exactly one update");
+});
+
+test("apply rejects an initial observation that succeeds only after its budget expired", async () => {
+  const fake = caproverFake();
+  const clock = observationClock(fake, { refusedRead: 1, failAt: 299_000, successTakes: 1_500 });
+  await assert.rejects(
+    runDeploy(deployDeps(fake, { mode: "apply", ...clock, ...OBSERVATION_BUDGET })),
+    (error) =>
+      /answered only after the 300s budget expired while reading the app state/.test(error.message) &&
+      /fetch failed/.test(error.message) &&
+      error.cause?.name === "CaproverUnreachableError",
+  );
+  assert.equal(clock.time(), 301_000, "the late answer landed 1s past the 300s deadline");
+  assert.equal(fake.updates().length, 0, "an expired observation must never authorize a mutation");
+});
+
+test("apply accepts a post-build reread that succeeds inside its budget after a refused read", async () => {
+  const fake = caproverFake({ isBuilding: [true, false] });
+  const clock = observationClock(fake, { refusedRead: 2, failAt: 299_000, successTakes: 250 });
+  const summary = await runDeploy(deployDeps(fake, { mode: "apply", ...clock, ...OBSERVATION_BUDGET }));
+  assert.equal(clock.time(), 299_750);
+  assert.equal(summary.updated, true);
+  assert.equal(fake.updates().length, 1, "the post-build reread authorized exactly one update");
+});
+
+test("apply rejects a post-build reread that succeeds only after its budget expired", async () => {
+  const fake = caproverFake({ isBuilding: [true, false] });
+  const clock = observationClock(fake, { refusedRead: 2, failAt: 299_000, successTakes: 1_500 });
+  await assert.rejects(
+    runDeploy(deployDeps(fake, { mode: "apply", ...clock, ...OBSERVATION_BUDGET })),
+    /answered only after the 300s budget expired while re-reading the app state after its build/,
+  );
+  assert.equal(clock.time(), 301_000);
+  assert.equal(fake.updates().length, 0, "an expired post-build reread must never authorize a mutation");
+});
+
+test("observation requests are each capped to the budget remaining when they are sent", async (t) => {
+  const fake = caproverFake();
+  const clock = observationClock(fake, { refusedRead: 1, failAt: 299_000, successTakes: 100 });
+  const timeouts = [];
+  const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", (ms) => {
+    timeouts.push(ms);
+    return originalTimeout(ms);
+  });
+  // Every CapRover API request records the timeout that was just minted for it and the budget the
+  // observation still had at that moment.
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    if (url.includes("/api/v2/user/apps/")) {
+      requests.push({ url, timeoutMs: timeouts.at(-1), remaining: OBSERVATION_BUDGET.deadlineMs - clock.time() });
+    }
+    return clock.fetchImpl(url, options);
+  };
+  const summary = await runDeploy(deployDeps(fake, { mode: "apply", ...clock, fetchImpl, ...OBSERVATION_BUDGET }));
+  assert.equal(summary.updated, true);
+
+  const observation = requests.slice(0, 3);
+  assert.deepEqual(
+    observation.map((request) => request.url.split("/api/v2/user/apps/")[1].split("/")[0]),
+    ["appDefinitions", "appDefinitions", "appData"],
+    "the refused read, its retry, and the build-state read of the same observation",
+  );
+  assert.deepEqual(
+    observation.map((request) => request.timeoutMs),
+    [300_000, 500, 400],
+    "the retry at t=299500 and the build-state read at t=299600 are capped to what was left",
+  );
+  for (const request of observation) {
+    assert.ok(request.timeoutMs <= request.remaining, `${request.url} could outlive the observation deadline`);
+  }
+  assert.ok(
+    requests.slice(3).every((request) => request.timeoutMs === 30_000),
+    "reads outside the observation keep the default request timeout",
+  );
+});
+
 test("a read that precedes the update is never retried", async () => {
   const fake = caproverFake();
   let reads = 0;

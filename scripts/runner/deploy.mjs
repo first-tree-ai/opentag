@@ -141,33 +141,52 @@ export async function probeReady({
  * retried; an answer that fails a gate is the caller's to handle. Callers about to mutate must not
  * use this: a lost write is not a lost read, and this whole helper exists for the window right
  * after a redeploy, when the API is briefly unreachable while nothing about the app is yet known.
+ *
+ * The same discipline as `waitForAppIdle`: every attempt receives the deadline so its requests are
+ * capped to the remaining budget, the sleep between attempts never crosses the deadline, and an
+ * answer that arrives after the deadline is rejected rather than returned — an expired observation
+ * must never authorize what follows it.
  */
 async function whileUnreachable(operation, { sleep, deadlineMs, intervalMs, now = Date.now, label }) {
   const deadline = now() + deadlineMs;
+  const seconds = Math.round(deadlineMs / 1000);
   let last = null;
+  const deadlineError = (summary) =>
+    new Error(
+      `${summary} while ${label}${last === null ? "" : ` (last failure: ${last.message})`}`,
+      last === null ? undefined : { cause: last },
+    );
   for (;;) {
     const remaining = deadline - now();
     if (remaining <= 0) break;
+    let result;
     try {
-      return await operation();
+      result = await operation({ deadline, now });
     } catch (error) {
       if (!(error instanceof CaproverUnreachableError)) throw error;
       last = error;
       const remainingAfterFailure = deadline - now();
       if (remainingAfterFailure <= 0) break;
       await sleep(Math.min(intervalMs, remainingAfterFailure));
+      continue;
     }
+    // The requests were budgeted to the remaining time, but the clock is rechecked anyway: a late
+    // answer is not an observation the deadline authorized.
+    if (deadline - now() > 0) return result;
+    throw deadlineError(`CapRover answered only after the ${seconds}s budget expired`);
   }
-  throw new Error(
-    `CapRover stayed unreachable for ${Math.round(deadlineMs / 1000)}s while ${label}` +
-      `${last === null ? "" : ` (last failure: ${last.message})`}`,
-    last === null ? undefined : { cause: last },
-  );
+  throw deadlineError(`CapRover stayed unreachable for ${seconds}s`);
 }
 
-async function readState({ server, token, appName, fetchImpl }) {
-  const definition = await getAppDefinition({ server, token, appName, fetchImpl });
-  const isBuilding = await getAppBuildState({ server, token, appName, fetchImpl });
+/**
+ * Reads the app definition and build state. Under a `deadline`, each request is capped to the time
+ * left before it — measured just before that request, so the second read cannot inherit the budget
+ * the first one already spent.
+ */
+async function readState({ server, token, appName, fetchImpl, deadline = null, now = Date.now }) {
+  const timeoutMs = () => (deadline === null ? undefined : Math.max(1, deadline - now()));
+  const definition = await getAppDefinition({ server, token, appName, fetchImpl, timeoutMs: timeoutMs() });
+  const isBuilding = await getAppBuildState({ server, token, appName, fetchImpl, timeoutMs: timeoutMs() });
   return { definition, snapshot: snapshotAppDefinition(definition), envVars: readEnvVars(definition), isBuilding };
 }
 
@@ -364,31 +383,24 @@ export async function runDeploy({
   sleep = defaultSleep,
   deadlineMs = 300_000,
   intervalMs = 5_000,
+  now = Date.now,
 }) {
   assertFullSha(serverRevision, "--server-revision");
   const runnerHash = runnerTargetHash({ image: release.image, version: release.version });
   const password = await readCaproverPassword({ secret: config.passwordSecret, runCommand });
   const token = await caproverLogin({ server: config.server, password, fetchImpl });
   const context = { server: config.server, token, appName: config.app, fetchImpl };
+  const observe = (label) =>
+    whileUnreachable((budget) => readState({ ...context, ...budget }), { sleep, deadlineMs, intervalMs, now, label });
 
   // The Server's own redeploy has just restarted the app behind CapRover, so the first look at it
   // is the one most likely to find the API unreachable. It observes; it does not mutate.
-  let initial = await whileUnreachable(() => readState(context), {
-    sleep,
-    deadlineMs,
-    intervalMs,
-    label: "reading the app state",
-  });
+  let initial = await observe("reading the app state");
   if (mode === "apply" && initial.isBuilding) {
     // The Server deploy's own CapRover build can still be running when apply starts; only apply
     // waits for it (bounded), then every gate below runs against a fresh post-build snapshot.
-    await waitForAppIdle({ ...context, fetchImpl, sleep, deadlineMs, intervalMs });
-    initial = await whileUnreachable(() => readState(context), {
-      sleep,
-      deadlineMs,
-      intervalMs,
-      label: "re-reading the app state after its build",
-    });
+    await waitForAppIdle({ ...context, fetchImpl, sleep, deadlineMs, intervalMs, now });
+    initial = await observe("re-reading the app state after its build");
   }
   const current = validateState({ state: initial, release, serverRevision, publicUrl: config.publicUrl });
   if (mode === "apply") {
@@ -400,6 +412,7 @@ export async function runDeploy({
       deadlineMs,
       intervalMs,
       requireRunner: false,
+      now,
     });
   } else {
     assertReadyGate(await probeReady({ publicUrl: config.publicUrl, serverRevision, fetchImpl }), serverRevision);
@@ -444,6 +457,7 @@ export async function runDeploy({
     sleep,
     deadlineMs,
     intervalMs,
+    now,
   });
   return buildSummary({
     mode,

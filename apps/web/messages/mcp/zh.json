@@ -11,7 +11,7 @@
   "mcp_authorization_status_active": "已授权",
   "mcp_authorization_status_error": "需要处理",
   "mcp_authorization_status_expired": "已过期",
-  "mcp_authorization_status_none": "无",
+  "mcp_authorization_status_none": "未授权",
   "mcp_authorization_status_pending": "等待授权",
   "mcp_authorization_status_revoked": "需重新授权",
   "mcp_authorize_action": "授权",

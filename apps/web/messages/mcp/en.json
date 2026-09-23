@@ -11,7 +11,7 @@
   "mcp_authorization_status_active": "Authorized",
   "mcp_authorization_status_error": "Needs attention",
   "mcp_authorization_status_expired": "Expired",
-  "mcp_authorization_status_none": "None",
+  "mcp_authorization_status_none": "Not authorized",
   "mcp_authorization_status_pending": "Awaiting authorization",
   "mcp_authorization_status_revoked": "Reauthorization required",
   "mcp_authorize_action": "Authorize",

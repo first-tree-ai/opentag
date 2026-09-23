@@ -25,7 +25,7 @@ export function McpServerCard({
   const states = rowStates(entry);
   const authorized = states.authorizationStatus === "active";
   const discovering = probing || (states.probe === "pending" && Boolean(entry.authorization?.probedAt));
-  const canInspectTools = states.probe !== "failed" || entry.snapshot !== null;
+  const canInspectTools = states.probe === "succeeded" || entry.snapshot !== null;
 
   return (
     <li className="grid min-w-0 gap-4 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="mcp-server-row">
@@ -101,7 +101,7 @@ function AuthorizationInfo({ entry }: { entry: MCPAgentServer }) {
   const expiresAt = entry.authorization?.accessTokenExpiresAt;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-kumo-subtle">
-      <span>{describeKind(states.authorizationKind)}</span>
+      {states.authorizationKind !== "unauthorized" ? <span>{describeKind(states.authorizationKind)}</span> : null}
       <StatusIndicator label={describeStatus(states.authorizationStatus)} tone={authorized ? "success" : "warning"} />
       {expiresAt ? <time dateTime={expiresAt}>{m.mcp_expires_at({ time: formatDateTime(expiresAt) })}</time> : null}
     </div>
@@ -188,11 +188,9 @@ function ProbeErrorDetails({ error }: { error: string }) {
   );
 }
 
-function describeKind(kind: McpRowStates["authorizationKind"]): string {
+function describeKind(kind: Exclude<McpRowStates["authorizationKind"], "unauthorized">): string {
   if (kind === "bearer") return m.mcp_authorization_bearer();
   if (kind === "oauth") return m.mcp_authorization_oauth();
-  // No authorization at all, which is not the same claim as an anonymous one being in force.
-  if (kind === "unauthorized") return m.mcp_authorization_status_none();
   return m.mcp_authorization_anonymous();
 }
 

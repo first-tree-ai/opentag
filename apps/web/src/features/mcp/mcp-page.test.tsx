@@ -250,6 +250,7 @@ describe("McpPage", () => {
     const refresh = await screen.findByRole("button", { name: "Refresh tools" });
     fireEvent.click(refresh);
     expect(await screen.findByText("Discovering…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "View tools" })).toBeTruthy();
     expect(refresh.hasAttribute("disabled")).toBe(true);
     fireEvent.click(refresh);
     expect(probe).toHaveBeenCalledTimes(1);
@@ -495,7 +496,8 @@ describe("McpPage", () => {
 
     await waitFor(() => {
       const row = document.querySelector('[data-ui="mcp-server-row"]') as HTMLElement | null;
-      expect(row?.textContent).toContain("None");
+      expect(screen.getByText("Not authorized")).toBeTruthy();
+      expect(row?.textContent).not.toContain("None");
       expect(row?.textContent).not.toContain("Anonymous");
     });
   });
@@ -688,9 +690,10 @@ describe("McpPage row actions", () => {
     expect(await screen.findByText("Not discovered")).toBeTruthy();
   });
 
-  it("says discovery is in flight once a probe has been recorded", async () => {
+  it("shows initial discovery progress without offering a result that does not exist yet", async () => {
     stub([
       entry({
+        snapshot: null,
         authorization: {
           ...(entry().authorization as NonNullable<MCPAgentServer["authorization"]>),
           probeState: "pending",
@@ -702,6 +705,8 @@ describe("McpPage row actions", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("Discovering…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh tools" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("keeps discovery failure readable and reveals the Server error on request", async () => {

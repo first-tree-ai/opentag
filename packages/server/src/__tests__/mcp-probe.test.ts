@@ -1,3 +1,4 @@
+import { MCP_ERROR_CODES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { McpProbe } from "../services/mcp/mcp-probe.js";
 import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
@@ -66,6 +67,38 @@ function node(body: Response, pageTools?: (params: Record<string, unknown>) => R
 /** The one probe request every test here makes; the fixture Server is always public and anonymous. */
 function request() {
   return { accountId: ACCOUNT, url: ENDPOINT, authHeaders: {}, cachedEra: null, cachedVersion: null };
+}
+
+const LEGACY_MALFORMED_PAGES: { label: string; result: unknown }[] = [
+  { label: "a result that is not an object", result: null },
+  { label: "a result with no tools field", result: { nextCursor: "c" } },
+  { label: "a tools field that is not an array", result: { tools: { name: "a" } } },
+  { label: "a cursor that is not a string", result: { tools: [], nextCursor: { page: 2 } } },
+];
+
+/**
+ * A legacy-era Server: `server/discover` is unknown, `initialize` negotiates 2025-06-18, and every
+ * `tools/list` answers with the `result` the callback returns, verbatim.
+ */
+function legacyNode(pageResult: () => unknown): McpProbe {
+  const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+    const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
+    if (method === "server/discover") return new Response("<html>Not Found</html>", { status: 404 });
+    if (method === "initialize") {
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+        { status: 200, headers: { "content-type": "application/json", "mcp-session-id": "session-1" } },
+      );
+    }
+    if (method === "notifications/initialized") return new Response("", { status: 202 });
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: pageResult() }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof globalThis.fetch;
+  return new McpProbe({
+    fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+  });
 }
 
 function discover(body: Record<string, unknown>): Response {
@@ -332,6 +365,64 @@ describe("MCP probe success path", () => {
     }
   });
 
+  /*
+   * The page contract. `ListToolsResult` requires a `tools` array and permits only a string cursor;
+   * a successful envelope whose result breaks that used to parse as an empty, final page and
+   * overwrite the last good snapshot with a successful empty or incomplete one.
+   */
+  const MALFORMED_PAGES: { label: string; result: unknown }[] = [
+    { label: "a result that is not an object", result: "tools" },
+    { label: "a result with no tools field", result: {} },
+    { label: "a tools field that is not an array", result: { tools: "invalid" } },
+    { label: "a cursor that is not a string", result: { tools: [{ name: "a" }], nextCursor: 7 } },
+    { label: "an empty-string cursor", result: { tools: [{ name: "a" }], nextCursor: "" } },
+  ];
+
+  for (const { label, result: pageResult } of MALFORMED_PAGES) {
+    it(`fails the modern probe on ${label} instead of storing an empty snapshot`, async () => {
+      const { probe, logger } = node(discover({}), () => ({
+        status: 200,
+        body: { jsonrpc: "2.0", id: "1", result: pageResult },
+      }));
+      const result = await probe.probe(request());
+      expect(result.probeState).toBe("failed");
+      expect(result.probeError).toContain(MCP_ERROR_CODES.PROBE_FAILED);
+      expect(result.tools).toEqual([]);
+      expect(result.toolsSkipped).toBe(0);
+      // A malformed page is not a skipped tool; nothing was validated tool by tool.
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+  }
+
+  it("reads a null cursor as the end of the list rather than as a malformed page", async () => {
+    let pages = 0;
+    const { probe } = node(discover({}), () => {
+      pages += 1;
+      return {
+        status: 200,
+        body: { jsonrpc: "2.0", id: "1", result: { tools: [{ name: "only" }], nextCursor: null } },
+      };
+    });
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["only"]);
+    expect(result.toolsTruncated).toBe(false);
+    expect(pages).toBe(1);
+  });
+
+  it("fails on a malformed later page without keeping the earlier pages as a successful snapshot", async () => {
+    let page = 0;
+    const { probe } = node(discover({}), () => {
+      page += 1;
+      return page === 1
+        ? toolsPage([{ name: "first" }], "cursor-1")
+        : { status: 200, body: { jsonrpc: "2.0", id: "1", result: { tools: "invalid" } } };
+    });
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("failed");
+    expect(result.tools).toEqual([]);
+  });
+
   it("parses an SSE discovery response", async () => {
     const { probe } = node(
       {
@@ -542,6 +633,25 @@ describe("MCP probe era handling", () => {
     expect(page).toBe(3);
     expect(result.tools.map((tool) => tool.name)).toEqual(["a", "b", "c", "d"]);
     expect(result.toolsTruncated).toBe(false);
+  });
+
+  for (const { label, result: pageResult } of LEGACY_MALFORMED_PAGES) {
+    it(`fails the legacy probe on ${label}, through the same page parser as the modern path`, async () => {
+      const probe = legacyNode(() => pageResult);
+      const result = await probe.probe(request());
+      expect(result.probeState).toBe("failed");
+      expect(result.probeError).toContain(MCP_ERROR_CODES.PROBE_FAILED);
+      expect(result.tools).toEqual([]);
+    });
+  }
+
+  it("still skips an oversized tool inside a valid legacy page rather than failing it", async () => {
+    const probe = legacyNode(() => ({ tools: [{ name: "a".repeat(129) }, { name: "kept" }], nextCursor: null }));
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["kept"]);
+    expect(result.toolsSkipped).toBe(1);
+    expect(result.toolsTruncated).toBe(true);
   });
 
   it("retries with an advertised version instead of downgrading when a modern error answers 400", async () => {

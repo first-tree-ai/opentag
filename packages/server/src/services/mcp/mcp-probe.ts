@@ -264,15 +264,13 @@ export class McpProbe {
       }
       pages += 1;
       const page = readToolsPage(
-        asRecord(
-          await transport.callLegacy(
-            input.accountId,
-            input.url,
-            "tools/list",
-            cursor === undefined ? {} : { cursor },
-            input.authHeaders,
-            { ...sessionHeaders, ...(negotiatedVersion === undefined ? {} : { negotiatedVersion }) },
-          ),
+        await transport.callLegacy(
+          input.accountId,
+          input.url,
+          "tools/list",
+          cursor === undefined ? {} : { cursor },
+          input.authHeaders,
+          { ...sessionHeaders, ...(negotiatedVersion === undefined ? {} : { negotiatedVersion }) },
         ),
       );
       skipped += this.#acceptTools(input, page.tools, collected);
@@ -303,14 +301,12 @@ export class McpProbe {
       }
       pages += 1;
       const page = readToolsPage(
-        asRecord(
-          await transport.call(
-            input.accountId,
-            input.url,
-            "tools/list",
-            cursor === undefined ? {} : { cursor },
-            input.authHeaders,
-          ),
+        await transport.call(
+          input.accountId,
+          input.url,
+          "tools/list",
+          cursor === undefined ? {} : { cursor },
+          input.authHeaders,
         ),
       );
       skipped += this.#acceptTools(input, page.tools, collected);
@@ -363,10 +359,34 @@ export class McpProbe {
   }
 }
 
-function readToolsPage(payload: Record<string, unknown>): { tools: unknown[]; nextCursor: string | undefined } {
-  const tools = Array.isArray(payload.tools) ? payload.tools : [];
-  const nextCursor =
-    typeof payload.nextCursor === "string" && payload.nextCursor.length > 0 ? payload.nextCursor : undefined;
+/**
+ * Parse one `tools/list` result into a page, shared by the modern and legacy paths.
+ *
+ * The specification's `ListToolsResult` requires a `tools` array and permits `nextCursor` only as a
+ * string, and this parser holds the Server to exactly that. It used to default every malformed
+ * shape — a non-object result, a missing or non-array `tools`, a cursor of the wrong type — to an
+ * empty page with no further cursor, which turned a broken answer into a *successful* empty or
+ * incomplete snapshot that overwrote the last good one. A page that is not a page fails the probe,
+ * so the stored snapshot stays what the Server last said correctly.
+ *
+ * `nextCursor: null` is read as absent. The specification does not allow it, but it is what many
+ * JSON serializers emit for an optional field that is not set, it carries no token that could name
+ * a further page, and so "end of list" is its only possible meaning. Anything else that is present
+ * but not a non-empty string is a cursor this client cannot follow, and following nothing would
+ * report a partial list as complete.
+ */
+function readToolsPage(result: unknown): { tools: unknown[]; nextCursor: string | undefined } {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server's tools/list result is not an object");
+  }
+  const { tools, nextCursor } = result as Record<string, unknown>;
+  if (!Array.isArray(tools)) {
+    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server's tools/list result has no tools array");
+  }
+  if (nextCursor === undefined || nextCursor === null) return { tools, nextCursor: undefined };
+  if (typeof nextCursor !== "string" || nextCursor.length === 0) {
+    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server's tools/list nextCursor is not a string");
+  }
   return { tools, nextCursor };
 }
 

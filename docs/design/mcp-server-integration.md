@@ -519,13 +519,24 @@ merged: a reader can always tell an operator's words from a peer's.
 silently drops tools against a real one, so the client loops on `nextCursor` until it is absent, a
 bound is hit, or the probe budget is spent.
 
+Each page is held to the specification's `ListToolsResult`: the result must be an object with a
+`tools` array, and `nextCursor`, when present, must be a non-empty string. A page that breaks that —
+a non-object result, a missing or non-array `tools`, a cursor of another type or empty — **fails the
+probe** with `MCP_PROBE_FAILED`, on the modern and legacy paths alike, and the last good snapshot is
+left in place. It used to parse as an empty final page, which overwrote the last good snapshot with
+a successful empty or incomplete one. `nextCursor: null` is read as absent: the specification does
+not allow it, but many serializers emit it for an unset optional field, and it carries no token
+that could name a further page, so end-of-list is its only meaning.
+
 - At most 200 tools, and at most 256 KiB for the whole snapshot.
 - Per tool: `name` ≤ 128 bytes, `description` ≤ 16 KiB, `inputSchema` ≤ 64 KiB serialized, all in
   UTF-8 bytes. The three bounds live in `@opentag/shared` (`MCP_TOOL_NAME_MAX_BYTES`,
   `MCP_TOOL_DESCRIPTION_MAX_BYTES`, `MCP_TOOL_INPUT_SCHEMA_MAX_BYTES`) and `MCPToolSnapshotSchema`
-  enforces the same byte bounds on read, so a stored snapshot can never hold what a probe would not
-  have stored. They are sized for real hosted Servers: Linear and Notion ship tool descriptions of
-  several KiB and input schemas past 8 KiB.
+  enforces all three on read — the schema by the byte length of its JSON serialization, refused
+  rather than thrown on when it cannot be serialized — so the gateway's parse of a stored snapshot
+  cannot admit an oversized tool from a row written under an older bound or damaged out of band.
+  They are sized for real hosted Servers: Linear and Notion ship tool descriptions of several KiB
+  and input schemas past 8 KiB.
 - A tool that violates a per-tool bound — or has no name, or is not an object — is **skipped**, never
   stored trimmed. The probe logs one `warn` line per skipped tool (Account, URL, tool name, the
   bound it violated, the observed size), keeps every other tool on the page, keeps paginating, and
@@ -886,7 +897,7 @@ Unit tests (no network, no database):
 | Header validation | The RFC 9110 token set, CR/LF in a name or value, the count and size bounds, and each reserved name |
 | AAD | The literal format; a different Agent, a different authorization server, and the other envelope's domain all fail to open; a kind change is openable because the context never names the kind |
 | Discovery | The exact well-known order; a mismatched issuer propagates; multi-issuer ordering; the registration choice in all four cases; CIMD self-naming and same-host redirects; PKCE; `resource` on both requests; the four `iss` rows; scope priority; the refresh lead |
-| Probing | Two pages merged into one snapshot on both eras; the cursor sent only on later pages; each per-tool bound skipping the tool (in bytes, proven with multi-byte text), a nameless entry and a non-object entry skipped, a page whose every tool is skipped still succeeding, pagination continuing past a skipped tool, the `warn` line naming the bound; the cap, the budget, and a skipped tool all setting `tools_truncated`; an error page still failing the probe; SSE discovery; the era paths |
+| Probing | Two pages merged into one snapshot on both eras; the cursor sent only on later pages; each per-tool bound skipping the tool (in bytes, proven with multi-byte text), a nameless entry and a non-object entry skipped, a page whose every tool is skipped still succeeding, pagination continuing past a skipped tool, the `warn` line naming the bound; the cap, the budget, and a skipped tool all setting `tools_truncated`; an error page still failing the probe; a malformed page (non-object result, missing or non-array `tools`, non-string or empty cursor) failing both eras while a null cursor ends the list; SSE discovery; the era paths |
 
 PostgreSQL integration tests (`mcp-management.test.ts`, Docker + testcontainers) drive a loopback
 fixture Server that is also its own authorization server:

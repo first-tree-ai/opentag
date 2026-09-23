@@ -237,16 +237,46 @@ export const MCPServerUrlSchema = z
     }
   }, "Must be an HTTP(S) URL without credentials or fragment");
 
+/**
+ * Per-tool bounds on one `tools/list` entry, in UTF-8 bytes. The probe skips a tool that violates
+ * any of them and reports the snapshot as truncated; {@link MCPToolSnapshotSchema} refuses the same
+ * tool on read, so a stored snapshot can never hold what a probe would not have stored.
+ *
+ * The description and schema bounds are sized for real hosted Servers: Linear and Notion ship tool
+ * descriptions of several KiB and input schemas past 8 KiB, and a bound that fails them buys
+ * nothing over one that fits them, because the list-level caps below still bound the whole
+ * snapshot.
+ */
+export const MCP_TOOL_NAME_MAX_BYTES = 128;
+export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 16 * 1024;
+export const MCP_TOOL_INPUT_SCHEMA_MAX_BYTES = 64 * 1024;
+
+/**
+ * Bound a string in UTF-8 bytes rather than `z.string().max()`'s UTF-16 code units, so the schema
+ * agrees with the probe on multi-byte text instead of admitting up to three times its bound.
+ */
+function utf8Bounded(schema: z.ZodString, maxBytes: number, what: string): z.ZodString {
+  return schema.refine((value) => BufferByteLength(value) <= maxBytes, {
+    message: `The ${what} must be at most ${maxBytes} bytes`,
+  });
+}
+
 /** One `tools/list` entry snapshot. Bounded exactly as the probe bounds it. */
 export const MCPToolSnapshotSchema = z
   .object({
-    name: z.string().min(1).max(128),
-    description: z.string().max(1024).nullable(),
+    name: utf8Bounded(z.string().min(1), MCP_TOOL_NAME_MAX_BYTES, "tool name"),
+    description: utf8Bounded(z.string(), MCP_TOOL_DESCRIPTION_MAX_BYTES, "tool description").nullable(),
     inputSchema: z.unknown().nullable(),
   })
   .strict();
 export type MCPToolSnapshot = z.infer<typeof MCPToolSnapshotSchema>;
 
+/**
+ * List-level caps on the whole snapshot. They are deliberately not the product of the per-tool
+ * bounds and the tool count: a Server whose every tool is near the per-tool bounds stops at the byte
+ * cap long before the count cap, and the snapshot is reported as truncated, exactly as when a tool
+ * was skipped. The Account bound is the sum of every stored snapshot, so 256 such snapshots fill it.
+ */
 export const MCP_PROBE_MAX_TOOLS = 200;
 export const MCP_PROBE_MAX_TOOLS_BYTES = 256 * 1024;
 export const MCP_ACCOUNT_TOOL_SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024;

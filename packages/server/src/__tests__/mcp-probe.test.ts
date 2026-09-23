@@ -1,4 +1,3 @@
-import { MCP_ERROR_CODES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { McpProbe } from "../services/mcp/mcp-probe.js";
 import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
@@ -53,12 +52,20 @@ function node(body: Response, pageTools?: (params: Record<string, unknown>) => R
       headers: { "content-type": next.contentType ?? "application/json" },
     });
   }) as unknown as typeof globalThis.fetch;
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return {
     calls,
+    logger,
     probe: new McpProbe({
       fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+      logger,
     }),
   };
+}
+
+/** The one probe request every test here makes; the fixture Server is always public and anonymous. */
+function request() {
+  return { accountId: ACCOUNT, url: ENDPOINT, authHeaders: {}, cachedEra: null, cachedVersion: null };
 }
 
 function discover(body: Record<string, unknown>): Response {
@@ -160,41 +167,169 @@ describe("MCP probe success path", () => {
     expect(result.toolsCount).toBeLessThanOrEqual(200);
   });
 
-  it("fails the page when a tool exceeds a documented bound, rather than storing it mangled", async () => {
-    const { probe } = node(discover({}), () => toolsPage([{ name: "a".repeat(129), description: "too long a name" }]));
-    const result = await probe.probe({
-      accountId: ACCOUNT,
-      url: ENDPOINT,
-      authHeaders: {},
-      cachedEra: null,
-      cachedVersion: null,
-    });
-    expect(result.probeState).toBe("failed");
-    expect(result.probeError).toContain(MCP_ERROR_CODES.PROBE_FAILED);
+  it("skips a tool whose name is over its bound and keeps the rest of the page", async () => {
+    const { probe, logger } = node(discover({}), () =>
+      toolsPage([{ name: "a".repeat(129), description: "too long a name" }, { name: "kept" }]),
+    );
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["kept"]);
+    expect(result.toolsSkipped).toBe(1);
+    expect(result.toolsTruncated).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: ACCOUNT,
+        url: ENDPOINT,
+        tool: "a".repeat(129),
+        reason: "over_bound",
+        bound: "MCP_TOOL_NAME_MAX_BYTES",
+        limitBytes: 128,
+        observedBytes: 129,
+      }),
+      expect.any(String),
+    );
   });
 
-  it("fails the page when a tool description exceeds its bound", async () => {
-    const { probe } = node(discover({}), () => toolsPage([{ name: "ok", description: "d".repeat(1025) }]));
-    const result = await probe.probe({
-      accountId: ACCOUNT,
-      url: ENDPOINT,
-      authHeaders: {},
-      cachedEra: null,
-      cachedVersion: null,
-    });
-    expect(result.probeState).toBe("failed");
+  it("accepts the description that used to fail the probe at the old 1 KiB bound", async () => {
+    const { probe, logger } = node(discover({}), () => toolsPage([{ name: "ok", description: "d".repeat(1025) }]));
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["ok"]);
+    expect(result.toolsTruncated).toBe(false);
+    expect(result.toolsSkipped).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it("fails the page when a tool input schema exceeds its bound", async () => {
-    const { probe } = node(discover({}), () => toolsPage([{ name: "ok", inputSchema: { payload: "x".repeat(9000) } }]));
-    const result = await probe.probe({
-      accountId: ACCOUNT,
-      url: ENDPOINT,
-      authHeaders: {},
-      cachedEra: null,
-      cachedVersion: null,
+  it("bounds the description in bytes: a multi-byte text just under 16 KiB survives", async () => {
+    // "é" is two UTF-8 bytes, so 8191 of them are 16382 bytes — under the bound in bytes and far
+    // under it in code units either way; the next case is the one that tells the two apart.
+    const description = "é".repeat(8191);
+    const { probe } = node(discover({}), () => toolsPage([{ name: "ok", description }]));
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools[0]?.description).toBe(description);
+    expect(result.toolsTruncated).toBe(false);
+  });
+
+  it("bounds the description in bytes, not code units: multi-byte text just over 16 KiB is skipped", async () => {
+    // 8193 two-byte characters are 16386 bytes: over the 16384-byte bound while only 8193 code
+    // units long, which a `.max(16384)` in characters would have let through.
+    const description = "é".repeat(8193);
+    const { probe, logger } = node(discover({}), () => toolsPage([{ name: "wide", description }, { name: "kept" }]));
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["kept"]);
+    expect(result.toolsTruncated).toBe(true);
+    expect(result.toolsSkipped).toBe(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "wide",
+        bound: "MCP_TOOL_DESCRIPTION_MAX_BYTES",
+        limitBytes: 16 * 1024,
+        observedBytes: 16386,
+      }),
+      expect.any(String),
+    );
+  });
+
+  it("skips a tool whose input schema serializes to more than 64 KiB", async () => {
+    const { probe, logger } = node(discover({}), () =>
+      toolsPage([
+        { name: "kept", inputSchema: { type: "object" } },
+        { name: "huge", inputSchema: { payload: "x".repeat(65_536) } },
+      ]),
+    );
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["kept"]);
+    expect(result.toolsTruncated).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ tool: "huge", bound: "MCP_TOOL_INPUT_SCHEMA_MAX_BYTES", limitBytes: 64 * 1024 }),
+      expect.any(String),
+    );
+    const [bindings] = logger.warn.mock.calls[0] as [{ observedBytes: number }];
+    expect(bindings.observedBytes).toBeGreaterThan(64 * 1024);
+  });
+
+  it("skips a nameless entry and an entry that is not an object, without a bound to name", async () => {
+    const { probe, logger } = node(discover({}), () =>
+      toolsPage([{ description: "no name" }, "not a tool", { name: "" }, { name: "kept" }]),
+    );
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.tools.map((tool) => tool.name)).toEqual(["kept"]);
+    expect(result.toolsSkipped).toBe(3);
+    expect(result.toolsTruncated).toBe(true);
+    const reasons = logger.warn.mock.calls.map((call) => call[0] as { reason: string; tool: unknown });
+    expect(reasons).toEqual([
+      expect.objectContaining({ reason: "missing_name", tool: null }),
+      expect.objectContaining({ reason: "not_an_object", tool: null }),
+      expect.objectContaining({ reason: "missing_name", tool: null }),
+    ]);
+  });
+
+  it("still succeeds, with an empty partial snapshot, when every tool on the page is skipped", async () => {
+    const { probe } = node(discover({}), () =>
+      toolsPage([{ name: "a".repeat(129) }, { name: "b", description: "d".repeat(16_385) }]),
+    );
+    const result = await probe.probe(request());
+    expect(result.probeState).toBe("succeeded");
+    expect(result.probeError).toBeNull();
+    expect(result.tools).toEqual([]);
+    expect(result.toolsCount).toBe(0);
+    expect(result.toolsSkipped).toBe(2);
+    expect(result.toolsTruncated).toBe(true);
+  });
+
+  it("keeps paging past a skipped tool instead of stopping at that page", async () => {
+    let page = 0;
+    const { probe } = node(discover({}), () => {
+      page += 1;
+      return page === 1
+        ? toolsPage([{ name: "a".repeat(129) }, { name: "first" }], "cursor-1")
+        : toolsPage([{ name: "second" }]);
     });
-    expect(result.probeState).toBe("failed");
+    const result = await probe.probe(request());
+    expect(page).toBe(2);
+    expect(result.tools.map((tool) => tool.name)).toEqual(["first", "second"]);
+    expect(result.toolsTruncated).toBe(true);
+    expect(result.toolsSkipped).toBe(1);
+  });
+
+  it("counts skipped tools without a logger, so the probe does not depend on one", async () => {
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
+      const result = method === "tools/list" ? { tools: [{ name: "a".repeat(129) }, { name: "kept" }] } : {};
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
+    const result = await probe.probe(request());
+    expect(result.tools.map((tool) => tool.name)).toEqual(["kept"]);
+    expect(result.toolsSkipped).toBe(1);
+  });
+
+  it("still fails the probe when the tools answer is not usable at all", async () => {
+    // Skipping is for one bad tool on a usable page. A page that is itself an error — a JSON-RPC
+    // error body, a 5xx — is not a partial list, and reporting it as a healthy empty Server would
+    // hide a rejected credential or a broken Server behind `succeeded`.
+    const answers: Response[] = [
+      { status: 200, body: { jsonrpc: "2.0", id: "1", error: { code: -32603, message: "tools broke" } } },
+      { status: 500, raw: "boom", contentType: "text/plain" },
+    ];
+    for (const answer of answers) {
+      const { probe, logger } = node(discover({}), () => answer);
+      const result = await probe.probe(request());
+      expect(result.probeState).toBe("failed");
+      expect(result.probeError).not.toBeNull();
+      expect(result.tools).toEqual([]);
+      expect(result.toolsSkipped).toBe(0);
+      expect(logger.warn).not.toHaveBeenCalled();
+    }
   });
 
   it("parses an SSE discovery response", async () => {

@@ -104,6 +104,7 @@ function probeSuccess(overrides: Partial<McpProbeResult> = {}): McpProbeResult {
     tools,
     toolsCount: tools.length,
     toolsTruncated: false,
+    toolsSkipped: 0,
     probeError: null,
     eraInvalidated: false,
     ...overrides,
@@ -121,6 +122,7 @@ function probeFailure(overrides: Partial<McpProbeResult> = {}): McpProbeResult {
     tools: [],
     toolsCount: 0,
     toolsTruncated: false,
+    toolsSkipped: 0,
     probeError: "MCP_PROBE_FAILED: the Server said no",
     eraInvalidated: false,
     ...overrides,
@@ -639,6 +641,7 @@ describe("McpAuthorizationService.probe", () => {
     const ids = await seed();
     const { authorization, probe } = build({ accountSnapshotMaxBytes: 20_000 });
     await authorization.setBearerOrNone(ids.accountId, ids.agentId, ids.mcpServerId, { kind: "none" });
+    // Well within `MCP_TOOL_DESCRIPTION_MAX_BYTES`; the point is the Account budget, not the per-tool bound.
     const bulky = probeSuccess({
       tools: [{ name: "read", description: "d".repeat(2000), inputSchema: { type: "object" } }],
     });

@@ -35,7 +35,7 @@ import {
  *    decision therefore joins `agents` and excludes deleted ones. That judgement exists once, in
  *    `countLiveBindings`, so the delete guard, the aggregate counts, and the UI's "still in use by"
  *    list can never disagree and strand a definition nobody can delete.
- * 2. **Effective configuration is computed in one place.** Probes, (future) runtime calls, and the
+ * 2. **Effective configuration is computed in one place.** Probes, runtime calls, and the
  *    UI all read through `resolveEffectiveConfig`; nothing reads `mcp_servers` columns directly, so
  *    an Agent override cannot be honored in one path and ignored in another.
  */
@@ -108,50 +108,44 @@ export class McpServerService {
    * and, because probes never touch this row, a concurrent probe cannot make a user's edit conflict.
    */
   async updateServer(accountId: string, mcpServerId: string, input: UpdateMCPServerRequest): Promise<MCPServer> {
-    const row = await this.#requireServer(accountId, mcpServerId);
-    if (row.revision !== input.expectedRevision) {
-      throw new McpServiceError(
-        MCP_ERROR_CODES.SERVER_REVISION_CONFLICT,
-        "The MCP Server was changed by someone else; reload and retry",
-        { actual: row.revision },
-      );
-    }
-    const now = this.#now();
-    const definitionChanged =
-      input.url !== undefined ||
-      input.authHeader !== undefined ||
-      input.authScheme !== undefined ||
-      input.extraHeaders !== undefined ||
-      input.clearExtraHeaders === true;
-    // Only a changed endpoint moves the origin; renaming a header does not.
-    const originChanged = input.url !== undefined;
-    const [updated] = await this.#database
-      .update(mcpServers)
-      .set({
-        ...(input.description === undefined ? {} : { description: input.description }),
-        ...(input.url === undefined ? {} : { url: input.url }),
-        ...(input.defaultAuthKind === undefined ? {} : { defaultAuthKind: input.defaultAuthKind }),
-        ...(input.authHeader === undefined ? {} : { authHeader: input.authHeader }),
-        ...(input.authScheme === undefined ? {} : { authScheme: input.authScheme }),
-        ...(input.extraHeaders === undefined ? {} : { extraHeaders: normalizeExtraHeaders(input.extraHeaders) }),
-        ...(input.clearExtraHeaders === true ? { extraHeaders: {} } : {}),
-        revision: sql`${mcpServers.revision} + 1`,
-        updatedAt: now,
-      })
-      .where(and(eq(mcpServers.id, mcpServerId), eq(mcpServers.revision, input.expectedRevision)))
-      .returning();
-    if (!updated) {
-      throw new McpServiceError(MCP_ERROR_CODES.SERVER_REVISION_CONFLICT, "The MCP Server was changed by someone else");
-    }
-    /*
-     * The snapshot was taken with the old configuration, so every mount is marked pending for a
-     * re-probe, and a changed endpoint additionally drops the cached era and revokes OAuth credentials
-     * that were issued for the old origin. Existing tools stay readable until a new result lands, so
-     * the UI never goes blank.
-     */
-    if (definitionChanged) {
-      await this.markProbesPending(mcpServerId, [], { dropCredential: originChanged, invalidateEra: originChanged });
-    }
+    const updated = await this.#database.transaction(async (transaction) => {
+      // Serialize definition edits with binding edits. Keep config and authorization fencing atomic.
+      const [row] = await transaction
+        .select()
+        .from(mcpServers)
+        .where(and(eq(mcpServers.id, mcpServerId), eq(mcpServers.accountId, accountId)))
+        .for("update");
+      if (!row) throw mcpServerNotFound();
+      if (row.revision !== input.expectedRevision) {
+        throw new McpServiceError(
+          MCP_ERROR_CODES.SERVER_REVISION_CONFLICT,
+          "The MCP Server was changed by someone else; reload and retry",
+          { actual: row.revision },
+        );
+      }
+      const [next] = await transaction
+        .update(mcpServers)
+        .set(serverUpdateValues(input, this.#now()))
+        .where(eq(mcpServers.id, mcpServerId))
+        .returning();
+      if (!next) throw mcpServerNotFound();
+      const bindings = await transaction
+        .select()
+        .from(agentMcpServers)
+        .where(eq(agentMcpServers.mcpServerId, mcpServerId))
+        .for("update");
+      const { changedUrls, changedHeaders } = affectedBindings(row, next, bindings);
+      // Empty scopes historically mean all bindings, so never pass an empty affected group.
+      if (changedUrls.length)
+        await this.markProbesPending(
+          mcpServerId,
+          changedUrls,
+          { dropCredential: true, invalidateEra: true },
+          transaction,
+        );
+      if (changedHeaders.length) await this.markProbesPending(mcpServerId, changedHeaders, {}, transaction);
+      return next;
+    });
     const aggregates = await this.aggregatesFor([mcpServerId]);
     return toServerDto(updated, aggregates.get(mcpServerId));
   }
@@ -386,27 +380,38 @@ export class McpServerService {
     input: UpdateMCPBindingRequest,
   ): Promise<MCPAgentServer> {
     await this.#requireAgent(accountId, agentId);
-    const binding = await this.#requireBinding(agentId, mcpServerId);
-    await this.#requireServer(accountId, mcpServerId);
-    const patch = applyOverridePatch(binding, input);
-    const now = this.#now();
-    const [row] = await this.#database
-      .update(agentMcpServers)
-      .set({ ...(input.enabled === undefined ? {} : { enabled: input.enabled }), ...patch, updatedAt: now })
-      .where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)))
-      .returning();
-    if (!row) throw mcpBindingNotFound();
-    /*
-     * Only this Agent's probe was taken with the old values, so only this Agent is re-probed. A
-     * change of the shared definition re-probes every mount instead (see `updateServer`). An
-     * overridden endpoint moves this Agent's origin, so its cached era goes with it.
-     */
-    if (overrideChanged(patch)) {
-      await this.markProbesPending(mcpServerId, [agentId], {
-        dropCredential: "urlOverride" in patch,
-        invalidateEra: "urlOverride" in patch,
-      });
-    }
+    await this.#database.transaction(async (transaction) => {
+      const [server] = await transaction
+        .select()
+        .from(mcpServers)
+        .where(and(eq(mcpServers.id, mcpServerId), eq(mcpServers.accountId, accountId)))
+        .for("update");
+      if (!server) throw mcpServerNotFound();
+      const [binding] = await transaction
+        .select()
+        .from(agentMcpServers)
+        .where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)))
+        .for("update");
+      if (!binding) throw mcpBindingNotFound();
+      const patch = applyOverridePatch(binding, input);
+      const [row] = await transaction
+        .update(agentMcpServers)
+        .set({ ...(input.enabled === undefined ? {} : { enabled: input.enabled }), ...patch, updatedAt: this.#now() })
+        .where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)))
+        .returning();
+      if (!row) throw mcpBindingNotFound();
+      const before = McpServerService.resolveEffectiveConfig(server, binding);
+      const after = McpServerService.resolveEffectiveConfig(server, row);
+      if (connectionChanged(before, after)) {
+        const endpointChanged = before.url !== after.url;
+        await this.markProbesPending(
+          mcpServerId,
+          [agentId],
+          { dropCredential: endpointChanged, invalidateEra: endpointChanged },
+          transaction,
+        );
+      }
+    });
     return await this.readAgentServer(accountId, agentId, mcpServerId);
   }
 
@@ -432,6 +437,7 @@ export class McpServerService {
     mcpServerId: string,
     agentIds: readonly string[],
     options: { dropCredential?: boolean; invalidateEra?: boolean } = {},
+    executor: Pick<DatabaseClient, "update"> = this.#database,
   ): Promise<void> {
     const scope =
       agentIds.length === 0
@@ -455,7 +461,7 @@ export class McpServerService {
       revision: sql`${mcpServerAuthorizations.revision} + 1`,
     };
     if (options.dropCredential !== true) {
-      await this.#database.update(mcpServerAuthorizations).set(reset).where(scope);
+      await executor.update(mcpServerAuthorizations).set(reset).where(scope);
       return;
     }
     /*
@@ -470,7 +476,7 @@ export class McpServerService {
      * forbids and the reason this branch exists at all. `state` and `loginSessionHash` are paired by
      * `flow_binding_shape`, so they clear together.
      */
-    await this.#database
+    await executor
       .update(mcpServerAuthorizations)
       .set({
         ...reset,
@@ -484,7 +490,7 @@ export class McpServerService {
         loginSessionHash: null,
       })
       .where(and(scope, eq(mcpServerAuthorizations.kind, "oauth")));
-    await this.#database
+    await executor
       .update(mcpServerAuthorizations)
       .set(reset)
       .where(and(scope, ne(mcpServerAuthorizations.kind, "oauth")));
@@ -757,12 +763,44 @@ function rejectAuthHeaderCollision(
   }
 }
 
-function overrideChanged(patch: Partial<typeof agentMcpServers.$inferInsert>): boolean {
+function serverUpdateValues(input: UpdateMCPServerRequest, now: Date) {
+  return {
+    ...(input.description === undefined ? {} : { description: input.description }),
+    ...(input.url === undefined ? {} : { url: input.url }),
+    ...(input.defaultAuthKind === undefined ? {} : { defaultAuthKind: input.defaultAuthKind }),
+    ...(input.authHeader === undefined ? {} : { authHeader: input.authHeader }),
+    ...(input.authScheme === undefined ? {} : { authScheme: input.authScheme }),
+    ...(input.extraHeaders === undefined ? {} : { extraHeaders: normalizeExtraHeaders(input.extraHeaders) }),
+    ...(input.clearExtraHeaders === true ? { extraHeaders: {} } : {}),
+    revision: sql`${mcpServers.revision} + 1`,
+    updatedAt: now,
+  };
+}
+function affectedBindings(
+  row: typeof mcpServers.$inferSelect,
+  next: typeof mcpServers.$inferSelect,
+  bindings: (typeof agentMcpServers.$inferSelect)[],
+) {
+  const changedUrls: string[] = [];
+  const changedHeaders: string[] = [];
+  for (const binding of bindings) {
+    const before = McpServerService.resolveEffectiveConfig(row, binding);
+    const after = McpServerService.resolveEffectiveConfig(next, binding);
+    if (before.url !== after.url) changedUrls.push(binding.agentId);
+    else if (connectionChanged(before, after)) changedHeaders.push(binding.agentId);
+  }
+  return { changedUrls, changedHeaders };
+}
+
+/** Header order and an explicit value equal to the inherited value do not change a connection. */
+function connectionChanged(before: MCPEffectiveConfig, after: MCPEffectiveConfig): boolean {
+  const headersKey = (headers: Record<string, string>) =>
+    JSON.stringify(Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)));
   return (
-    "urlOverride" in patch ||
-    "authHeaderOverride" in patch ||
-    "authSchemeOverride" in patch ||
-    "extraHeadersOverride" in patch
+    before.url !== after.url ||
+    before.authHeader !== after.authHeader ||
+    before.authScheme !== after.authScheme ||
+    headersKey(before.extraHeaders) !== headersKey(after.extraHeaders)
   );
 }
 

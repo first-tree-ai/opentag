@@ -1,3 +1,4 @@
+import type { ListAgentMCPServersResponse } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -19,6 +20,7 @@ import {
   useUpdateMcpBinding,
   useUpdateMcpServer,
 } from "./mcp-queries.js";
+import { entry } from "./mcp-test-fixtures.js";
 
 /**
  * The Agent-scoped mutation hooks, asserted on the body they actually send.
@@ -260,8 +262,34 @@ describe("MCP write invalidation", () => {
 
     const keys = invalidate.mock.calls.map((call) => call[0]?.queryKey);
     expect(keys).toContainEqual(["mcp", "agents", AGENT_ID]);
-    expect(keys).toContainEqual(["mcp", "agents", AGENT_ID, "available"]);
+    // Prefix invalidation also retires the Agent's available-server query.
     expect(keys).toContainEqual(["mcp", "servers"]);
     expect(keys).toContainEqual(["mcp", "server"]);
+  });
+});
+
+describe("confirmed MCP writes", () => {
+  it("keeps the confirmed row and its position when the follow-up read fails", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const first = entry();
+    const second = entry({ mcpServerId: "other", name: "second" });
+    client.setQueryData(["mcp", "agents", AGENT_ID], { servers: [first, second] });
+    vi.spyOn(browserApi, "agentMcpServers").mockRejectedValue(new Error("Read unavailable"));
+    vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue({ ...first, enabled: false });
+    const { result } = renderHook(
+      () => ({ read: useAgentMcpServers(AGENT_ID), update: useUpdateMcpBinding(AGENT_ID) }),
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={client}>{children}</QueryClientProvider>
+        ),
+      },
+    );
+    await result.current.update.mutateAsync({ mcpServerId: first.mcpServerId, enabled: false });
+    await waitFor(() => expect(result.current.read.isError).toBe(true));
+    expect(client.getQueryData<ListAgentMCPServersResponse>(["mcp", "agents", AGENT_ID])?.servers).toEqual([
+      { ...first, enabled: false },
+      second,
+    ]);
+    expect(result.current.update.isSuccess).toBe(true);
   });
 });

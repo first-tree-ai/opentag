@@ -61,7 +61,13 @@ Where each identifier comes from:
   would make the file invalid for an older one, and the documented rollback (`install.sh --version <previous>`)
   would leave every Account-authenticated command refusing to run. The identity file is read only by the report
   path, records the server it was signed in to, and counts only while it names the server the report goes to; a
-  malformed one costs the report its `userId` and nothing else. **An installation that signed in
+  malformed one costs the report its `userId` and nothing else. It is also bound to the credentials it was written
+  beside by a fingerprint — a SHA-256 of the refresh token, never the token itself — and is ignored once the
+  credentials have been replaced: rollback is a supported sequence, and an older CLI signing in as another
+  Account rewrites only `credentials.json`, so without the binding the previous Account would be attributed to the
+  new tokens. Omitting the Account is the safe direction; misattributing it never is. A token refresh rotates the
+  refresh token, so the refresh path carries the fingerprint over, but only for an identity that provably
+  belonged to the credentials it just replaced; a stale one is left as it is and stays ignored. **An installation that signed in
   before this file existed reports no `userId` until it signs in again**; it still reports its Computer if one is
   connected. Signing in while the Server cannot answer `GET /me` also succeeds without recording the Account — the
   login is what matters there — and removes any identity an earlier sign-in left, so a report never names an

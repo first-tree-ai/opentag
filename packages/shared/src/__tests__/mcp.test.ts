@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MCP_TOOL_DESCRIPTION_MAX_BYTES,
+  MCP_TOOL_INPUT_SCHEMA_MAX_BYTES,
   MCP_TOOL_NAME_MAX_BYTES,
   MCPToolSnapshotSchema,
   probedServerDescription,
@@ -85,8 +86,26 @@ describe("MCPToolSnapshotSchema", () => {
     expect(MCPToolSnapshotSchema.safeParse(tool({ name: "" })).success).toBe(false);
   });
 
-  it("leaves the input schema unbounded here, since the probe bounds it before it is stored", () => {
-    const inputSchema = { type: "object", properties: { text: { type: "string", description: "x".repeat(70_000) } } };
-    expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema })).success).toBe(true);
+  it("bounds the input schema by its serialized bytes: at the bound passes, one byte over fails", () => {
+    // `{"text":"<padding>"}` serializes to the padding plus 11 bytes of punctuation and key.
+    const framing = JSON.stringify({ text: "" }).length;
+    const atBound = { text: "x".repeat(MCP_TOOL_INPUT_SCHEMA_MAX_BYTES - framing) };
+    expect(JSON.stringify(atBound).length).toBe(MCP_TOOL_INPUT_SCHEMA_MAX_BYTES);
+    expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: atBound })).success).toBe(true);
+    const oneOver = { text: "x".repeat(MCP_TOOL_INPUT_SCHEMA_MAX_BYTES - framing + 1) };
+    expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: oneOver })).success).toBe(false);
+    // In bytes of the serialization, not code units: wide characters count double.
+    const wide = { text: "é".repeat(MCP_TOOL_INPUT_SCHEMA_MAX_BYTES / 2) };
+    expect(JSON.stringify(wide).length).toBeLessThan(MCP_TOOL_INPUT_SCHEMA_MAX_BYTES);
+    expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: wide })).success).toBe(false);
+  });
+
+  it("refuses an input schema that cannot be serialized instead of throwing out of the parse", () => {
+    const circular: Record<string, unknown> = { type: "object" };
+    circular.self = circular;
+    expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: circular })).success).toBe(false);
+    expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: { max: 1n } })).success).toBe(false);
+    // Null stays a valid "takes no arguments" schema.
+    expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: null })).success).toBe(true);
   });
 });

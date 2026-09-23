@@ -261,12 +261,44 @@ function utf8Bounded(schema: z.ZodString, maxBytes: number, what: string): z.Zod
   });
 }
 
-/** One `tools/list` entry snapshot. Bounded exactly as the probe bounds it. */
+/**
+ * The UTF-8 byte length of a value's JSON serialization, or undefined when it has none: a circular
+ * structure or a BigInt makes `JSON.stringify` throw, and a value that cannot be serialized cannot
+ * be stored or sent to a Provider either, so "no length" is the honest answer rather than a crash.
+ */
+function serializedUtf8Bytes(value: unknown): number | undefined {
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? undefined : BufferByteLength(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The input schema is opaque JSON — the shape is the Server's, never this module's — so it is
+ * bounded by serialized size alone, as the probe bounds it. A null (or absent) schema is a tool that
+ * takes no arguments and is always within bound.
+ */
+const MCPToolInputSchemaSchema = z.unknown().refine(
+  (value) => {
+    if (value === null || value === undefined) return true;
+    const bytes = serializedUtf8Bytes(value);
+    return bytes !== undefined && bytes <= MCP_TOOL_INPUT_SCHEMA_MAX_BYTES;
+  },
+  { message: `The tool input schema must serialize to at most ${MCP_TOOL_INPUT_SCHEMA_MAX_BYTES} bytes` },
+);
+
+/**
+ * One `tools/list` entry snapshot. Bounded exactly as the probe bounds it, on every field: this
+ * schema is what the gateway parses a stored snapshot back through, so a row written by an older
+ * bound, or damaged out of band, cannot put an oversized tool into a live catalogue.
+ */
 export const MCPToolSnapshotSchema = z
   .object({
     name: utf8Bounded(z.string().min(1), MCP_TOOL_NAME_MAX_BYTES, "tool name"),
     description: utf8Bounded(z.string(), MCP_TOOL_DESCRIPTION_MAX_BYTES, "tool description").nullable(),
-    inputSchema: z.unknown().nullable(),
+    inputSchema: MCPToolInputSchemaSchema.nullable(),
   })
   .strict();
 export type MCPToolSnapshot = z.infer<typeof MCPToolSnapshotSchema>;

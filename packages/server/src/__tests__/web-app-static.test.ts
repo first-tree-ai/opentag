@@ -22,14 +22,22 @@ beforeAll(async () => {
 afterAll(async () => rm(root, { recursive: true, force: true }));
 
 describe("Web App static serving", () => {
-  it("serves all six registration avatars publicly as square PNG files", async () => {
+  it("serves all six registration avatars publicly as square, cross-origin-readable PNG files", async () => {
     const app = createApp({ webAppRoot: root });
     try {
       for (const name of ["developer", "engineer", "architect", "artist", "businessman", "sales"]) {
-        const response = await app.inject({ method: "GET", url: `/bot-avatars/v1/${name}.png` });
+        const response = await app.inject({
+          method: "GET",
+          url: `/bot-avatars/v1/${name}.png`,
+          headers: { origin: "https://open.feishu.cn" },
+        });
         expect(response.statusCode).toBe(200);
         expect(response.headers["content-type"]).toContain("image/png");
         expect(response.headers["cache-control"]).toContain("immutable");
+        // Feishu loads each preset with `crossOrigin="anonymous"` and crops it on a canvas before
+        // creating the App, so a response without this allowance is discarded in favour of Feishu's
+        // own default avatar.
+        expect(response.headers["access-control-allow-origin"]).toBe("*");
         expect(response.rawPayload.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
         expect(response.rawPayload.readUInt32BE(16)).toBe(512);
         expect(response.rawPayload.readUInt32BE(20)).toBe(512);
@@ -60,6 +68,8 @@ describe("Web App static serving", () => {
       const asset = await app.inject({ method: "GET", url: "/assets/app.js" });
       expect(asset.statusCode).toBe(200);
       expect(asset.headers["cache-control"]).toContain("immutable");
+      // The CORS allowance is scoped to the registration presets, not to every static response.
+      expect(asset.headers["access-control-allow-origin"]).toBeUndefined();
       expect((await app.inject({ method: "GET", url: `/invites/${"A".repeat(43)}` })).statusCode).toBe(200);
       expect((await app.inject({ method: "GET", url: "/admin" })).statusCode).toBe(404);
       expect((await app.inject({ method: "GET", url: "/invite/legacy-token" })).statusCode).toBe(404);

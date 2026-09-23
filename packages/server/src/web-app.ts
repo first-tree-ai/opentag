@@ -43,11 +43,18 @@ export function registerWebApp(app: FastifyInstance, root: string): void {
     reply.header("x-content-type-options", "nosniff");
     reply.header("x-frame-options", "DENY");
     reply.header("referrer-policy", "same-origin");
+    const registrationAvatar = /^\/bot-avatars\/v[0-9]+\//.test(path);
+    /*
+     * Feishu's app-creation page loads these presets with `crossOrigin="anonymous"`, crops them on a
+     * canvas and re-encodes them before creating the App. A preset it cannot read cross-origin is
+     * dropped in favour of Feishu's own default avatar, which is what made the picker look untouched.
+     * The request carries no credentials, so the wildcard is the entire allowance: no origin echo and
+     * no preflight.
+     */
+    if (registrationAvatar) reply.header("access-control-allow-origin", "*");
     reply.header(
       "cache-control",
-      path.startsWith("/assets/") || /^\/bot-avatars\/v[0-9]+\//.test(path)
-        ? "public, max-age=31536000, immutable"
-        : "no-store",
+      path.startsWith("/assets/") || registrationAvatar ? "public, max-age=31536000, immutable" : "no-store",
     );
   });
 

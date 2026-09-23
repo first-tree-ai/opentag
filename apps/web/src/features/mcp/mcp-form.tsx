@@ -179,3 +179,23 @@ export function McpAuthFields({
     </>
   );
 }
+
+export function McpHelp({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <Collapsible.Root className={`min-w-0 text-xs text-kumo-subtle ${className}`}>
+      <Collapsible.Trigger render={<Button className="mcp-help-trigger" variant="ghost" size="compact" />}>
+        {label}
+        <Icon name="chevron-down" className="size-3 transition-transform [[data-panel-open]_&]:rotate-180" />
+      </Collapsible.Trigger>
+      <Collapsible.Panel className="mt-2 max-w-prose leading-relaxed">{children}</Collapsible.Panel>
+    </Collapsible.Root>
+  );
+}

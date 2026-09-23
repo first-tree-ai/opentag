@@ -131,4 +131,19 @@ describe("MCP settings drafts and scope", () => {
     const remove = await screen.findByRole("button", { name: "Delete configuration" });
     expect(remove.hasAttribute("disabled")).toBe(true);
   });
+  it("reopens an explicit empty header override as Send no extra headers without creating a change", async () => {
+    stub([
+      entry({
+        overridden: { ...entry().overridden, extraHeaders: true },
+        effective: { ...entry().effective, extraHeaders: {} },
+      }),
+    ]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await menuAction("Settings");
+    click("Advanced settings");
+    expect((await screen.findByRole("radio", { name: "Send no extra headers" })).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(true);
+  });
 });

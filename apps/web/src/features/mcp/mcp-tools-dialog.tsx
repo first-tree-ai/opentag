@@ -2,8 +2,8 @@ import type { MCPAgentServer } from "@opentag/shared/browser";
 import { type RefObject, useLayoutEffect, useRef, useState } from "react";
 import { formatDateTime } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Dialog, Icon, KumoInputControl, MagnifyingGlass } from "../../ui/design-system.js";
-import { McpDisclosure } from "./mcp-form.js";
+import { Banner, Button, Dialog, Icon, KumoInputControl, MagnifyingGlass, Text } from "../../ui/design-system.js";
+import { McpDisclosure, McpHelp } from "./mcp-form.js";
 import { actionError } from "./mcp-form-model.js";
 import { useProbeMcpServer } from "./mcp-queries.js";
 
@@ -16,13 +16,9 @@ export function toolExcerpt(description: string | null, query: string): string {
 }
 export function McpPartialTools() {
   return (
-    <details className="mcp-url-help min-w-0 text-xs text-kumo-subtle">
-      <summary>
-        {m.mcp_partial()}
-        <Icon name="chevron-down" className="size-3" />
-      </summary>
-      <p className="mt-2 max-w-prose leading-relaxed">{m.mcp_partial_help()}</p>
-    </details>
+    <McpHelp label={m.mcp_partial()}>
+      <p>{m.mcp_partial_help()}</p>
+    </McpHelp>
   );
 }
 export function McpToolsDialog({
@@ -159,14 +155,14 @@ function ToolDetail({ tool: detail, server, onBack }: { tool: Tool; server: stri
   }, []);
   return (
     <>
-      <div className="shrink-0 border-b border-kumo-line pb-4">
+      <div className="shrink-0 border-b border-kumo-line pb-4 wrap-anywhere">
         <Button className="mb-4 -ml-2" size="compact" variant="ghost" onClick={() => onBack()}>
           <Icon name="arrow-left" />
           {m.mcp_tools_back()}
         </Button>
-        <h3 ref={heading} tabIndex={-1} className="wrap-anywhere text-base font-semibold">
+        <Text as="h3" variant="heading" ref={heading} tabIndex={-1}>
           {detail.name}
-        </h3>
+        </Text>
         <p className="mt-1 text-xs text-kumo-subtle">{m.mcp_tools_source({ server: server })}</p>
       </div>
       <div className="mcp-tool-detail pt-5">
@@ -235,7 +231,8 @@ function ToolList({
       <ul className="divide-y divide-kumo-line">
         {matches.map((tool) => (
           <li key={tool.name}>
-            <button
+            <Button
+              variant="ghost"
               type="button"
               data-tool={tool.name}
               className="mcp-choice"
@@ -250,7 +247,7 @@ function ToolList({
                 ) : null}
               </span>
               <Icon className="size-3.5 shrink-0 text-kumo-subtle" name="chevron-right" />
-            </button>
+            </Button>
           </li>
         ))}
       </ul>

@@ -9,6 +9,7 @@ import {
   Loader,
   StatusIndicator,
   Switch,
+  Text,
   Tooltip,
 } from "../../ui/design-system.js";
 import { canRevoke } from "./mcp-page-model.js";
@@ -48,8 +49,10 @@ export function McpServerCard({
       data-ui="mcp-server-row"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="grid min-w-0 gap-1">
-          <h2 className="wrap-anywhere text-base font-semibold">{entry.name}</h2>
+        <div className="grid min-w-0 gap-1 wrap-anywhere">
+          <Text as="h2" variant="heading">
+            {entry.name}
+          </Text>
           <p className="wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">

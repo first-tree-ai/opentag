@@ -3,7 +3,14 @@ import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog } from "../../ui/design-system.js";
 import { McpAuthFields, McpFooter } from "./mcp-form.js";
-import { type AuthDraft, actionError, authBindingPatch, authDraft, validHeaders } from "./mcp-form-model.js";
+import {
+  type AuthDraft,
+  actionError,
+  authBindingPatch,
+  authDraft,
+  connectionHeaderMode,
+  validHeaders,
+} from "./mcp-form-model.js";
 import { useMcpServerDetail, useSetMcpAuthorization, useStartMcpOAuth, useUpdateMcpBinding } from "./mcp-queries.js";
 
 export function validAuth(draft: AuthDraft, existing: boolean): boolean {
@@ -52,7 +59,7 @@ export function McpAuthorizeDialog({
 }) {
   const [draft, setDraft] = useState<AuthDraft>(() => ({
     ...authDraft(entry.effective, entry.authorization?.kind ?? "oauth"),
-    headerMode: entry.overridden.extraHeaders ? ("custom" as const) : ("inherit" as const),
+    headerMode: connectionHeaderMode(entry),
   }));
   const defaults = useMcpServerDetail(entry.authorization ? undefined : entry.mcpServerId);
   const chosen = useRef(false);

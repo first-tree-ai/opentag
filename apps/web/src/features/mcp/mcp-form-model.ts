@@ -91,11 +91,15 @@ export type SettingsDraft = Pick<MCPEffectiveConfig, ConnectionField> & {
   headerMode: HeaderMode;
   cleared: ConnectionField[];
 };
+export function connectionHeaderMode(entry: MCPAgentServer): HeaderMode {
+  if (!entry.overridden.extraHeaders) return "inherit";
+  return Object.keys(entry.effective.extraHeaders).length ? "custom" : "none";
+}
 export function settingsDraft(entry: MCPAgentServer): SettingsDraft {
   return {
     ...entry.effective,
     headers: headerRows(entry.effective.extraHeaders),
-    headerMode: entry.overridden.extraHeaders ? "custom" : "inherit",
+    headerMode: connectionHeaderMode(entry),
     cleared: [],
   };
 }

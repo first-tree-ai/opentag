@@ -101,7 +101,10 @@ describe("MCP daily use", () => {
     stub([entry({ authorization: { ...authorization(), toolsCount: 200, toolsTruncated: true } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("200 tools loaded")).toBeTruthy();
-    expect(screen.getByText("Some tools weren’t loaded").closest("details")?.open).toBe(false);
+    const disclosure = screen.getByRole("button", { name: "Some tools weren’t loaded" });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
   });
   it("searches descriptions, enters detail and restores search and focus on return", async () => {
     stub([entry()]);

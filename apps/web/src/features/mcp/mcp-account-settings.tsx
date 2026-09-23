@@ -67,7 +67,7 @@ export function McpAccountDialog({ onClose }: { onClose: () => void }) {
           <ul className="mt-6 divide-y divide-kumo-line border-y border-kumo-line">
             {matches.map((server) => (
               <li key={server.id}>
-                <button type="button" className="mcp-choice" onClick={() => setSelected(server.id)}>
+                <Button variant="ghost" type="button" className="mcp-choice" onClick={() => setSelected(server.id)}>
                   <span className="grid min-w-0 gap-1">
                     <strong className="text-sm font-medium">{server.name}</strong>
                     <span className="wrap-anywhere text-xs text-kumo-subtle">{server.url}</span>
@@ -80,7 +80,7 @@ export function McpAccountDialog({ onClose }: { onClose: () => void }) {
                     </span>
                   </span>
                   <Icon name="chevron-right" className="size-3.5 shrink-0" />
-                </button>
+                </Button>
               </li>
             ))}
           </ul>

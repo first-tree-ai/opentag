@@ -9,7 +9,7 @@ import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorize-dialog.js";
-import { McpAuthFields, McpFooter } from "./mcp-form.js";
+import { McpAuthFields, McpFooter, McpHelp } from "./mcp-form.js";
 import { actionError, authDraft, headersFromRows, headersKey, suggestServerName } from "./mcp-form-model.js";
 import { useAttachMcpServer, useCreateMcpServer, useMcpServers } from "./mcp-queries.js";
 
@@ -240,13 +240,9 @@ function AddChoices({ state, agentName, mounted, onLocate }: AddProps & { state:
           />
         </Field>
       </form>
-      <details className="mcp-url-help mt-2 text-xs leading-relaxed text-kumo-subtle">
-        <summary>
-          {m.mcp_url_help_action()}
-          <Icon className="size-3" name="chevron-down" />
-        </summary>
-        <p className="mt-2">{m.mcp_url_help()}</p>
-      </details>
+      <McpHelp className="mt-2" label={m.mcp_url_help_action()}>
+        <p>{m.mcp_url_help()}</p>
+      </McpHelp>
       {servers.length ? (
         <div className="mt-6">
           <p className="mb-2 text-xs text-kumo-subtle">
@@ -398,10 +394,10 @@ function ServerChoice({
           </Button>
         </>
       ) : (
-        <button type="button" className="mcp-choice" onClick={onChoose}>
+        <Button variant="ghost" type="button" className="mcp-choice" onClick={onChoose}>
           {copy}
           <Icon className="size-3.5 shrink-0 text-kumo-subtle" name="chevron-right" />
-        </button>
+        </Button>
       )}
     </li>
   );

@@ -192,10 +192,14 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       "README.md",
       "THIRD_PARTY_NOTICES",
       "dist/cli/index.mjs",
+      // The CLI enables source maps at startup and every chunk names its map, so the maps ship too.
+      "dist/cli/index.mjs.map",
       // The trusted Pi web tools extension must ship in the npm artifact and resolve from both
       // bundled CLI entry layouts; absence must fail the smoke rather than disable tools silently.
       "dist/pi-extensions/web-tools.mjs",
+      "dist/pi-extensions/web-tools.mjs.map",
       "dist/cli/pi-extensions/web-tools.mjs",
+      "dist/cli/pi-extensions/web-tools.mjs.map",
     ]) {
       if (!packedPaths.includes(requiredPath)) {
         throw new Error(`npm tarball is missing required path ${requiredPath}`);

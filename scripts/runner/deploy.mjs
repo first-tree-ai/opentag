@@ -28,6 +28,7 @@ import {
   APP_DEFINITION_SAFELIST,
   assertRunnerEnvironment,
   assertServerImage,
+  CaproverUnreachableError,
   caproverLogin,
   deployedImageOf,
   getAppBuildState,
@@ -135,9 +136,57 @@ export async function probeReady({
   };
 }
 
-async function readState({ server, token, appName, fetchImpl }) {
-  const definition = await getAppDefinition({ server, token, appName, fetchImpl });
-  const isBuilding = await getAppBuildState({ server, token, appName, fetchImpl });
+/**
+ * Bounded retry for a read-only CapRover observation. Only a request that never reached CapRover is
+ * retried; an answer that fails a gate is the caller's to handle. Callers about to mutate must not
+ * use this: a lost write is not a lost read, and this whole helper exists for the window right
+ * after a redeploy, when the API is briefly unreachable while nothing about the app is yet known.
+ *
+ * The same discipline as `waitForAppIdle`: every attempt receives the deadline so its requests are
+ * capped to the remaining budget, the sleep between attempts never crosses the deadline, and an
+ * answer that arrives after the deadline is rejected rather than returned — an expired observation
+ * must never authorize what follows it.
+ */
+async function whileUnreachable(operation, { sleep, deadlineMs, intervalMs, now = Date.now, label }) {
+  const deadline = now() + deadlineMs;
+  const seconds = Math.round(deadlineMs / 1000);
+  let last = null;
+  const deadlineError = (summary) =>
+    new Error(
+      `${summary} while ${label}${last === null ? "" : ` (last failure: ${last.message})`}`,
+      last === null ? undefined : { cause: last },
+    );
+  for (;;) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    let result;
+    try {
+      result = await operation({ deadline, now });
+    } catch (error) {
+      if (!(error instanceof CaproverUnreachableError)) throw error;
+      last = error;
+      const remainingAfterFailure = deadline - now();
+      if (remainingAfterFailure <= 0) break;
+      await sleep(Math.min(intervalMs, remainingAfterFailure));
+      continue;
+    }
+    // The requests were budgeted to the remaining time, but the clock is rechecked anyway: a late
+    // answer is not an observation the deadline authorized.
+    if (deadline - now() > 0) return result;
+    throw deadlineError(`CapRover answered only after the ${seconds}s budget expired`);
+  }
+  throw deadlineError(`CapRover stayed unreachable for ${seconds}s`);
+}
+
+/**
+ * Reads the app definition and build state. Under a `deadline`, each request is capped to the time
+ * left before it — measured just before that request, so the second read cannot inherit the budget
+ * the first one already spent.
+ */
+async function readState({ server, token, appName, fetchImpl, deadline = null, now = Date.now }) {
+  const timeoutMs = () => (deadline === null ? undefined : Math.max(1, deadline - now()));
+  const definition = await getAppDefinition({ server, token, appName, fetchImpl, timeoutMs: timeoutMs() });
+  const isBuilding = await getAppBuildState({ server, token, appName, fetchImpl, timeoutMs: timeoutMs() });
   return { definition, snapshot: snapshotAppDefinition(definition), envVars: readEnvVars(definition), isBuilding };
 }
 
@@ -264,10 +313,13 @@ function buildSummary({ mode, app, release, serverRevision, runnerHash, extra })
 }
 
 /**
- * Bounded wait until CapRover reports a definite `false` build state. Unknown state or read errors
- * remain fatal through getAppBuildState; a build that never finishes fails at the deadline. Every
- * poll is authorized against the remaining budget and its request timeout is capped to that
- * budget, so a slow poll can never extend the wait — or authorize an update — past its deadline.
+ * Bounded wait until CapRover reports a definite `false` build state. An answer that is not a
+ * definite `false` remains fatal through getAppBuildState; a poll that never reached CapRover is a
+ * soft failure this wait retries, the same contract `probeReady` has, because the redeploy that
+ * precedes this wait is exactly when the API is briefly unreachable. A build that never finishes,
+ * and an API that stays unreachable, both fail at the deadline. Every poll is authorized against
+ * the remaining budget and its request timeout is capped to that budget, so a slow poll can never
+ * extend the wait — or authorize an update — past its deadline.
  */
 export async function waitForAppIdle({
   server,
@@ -280,18 +332,35 @@ export async function waitForAppIdle({
   now = Date.now,
 }) {
   const deadline = now() + deadlineMs;
+  const seconds = Math.round(deadlineMs / 1000);
+  let unreachable = null;
   const deadlineError = () =>
-    new Error(`CapRover reports an ongoing app build that did not finish within ${Math.round(deadlineMs / 1000)}s`);
+    unreachable === null
+      ? new Error(`CapRover reports an ongoing app build that did not finish within ${seconds}s`)
+      : new Error(`CapRover stayed unreachable for ${seconds}s (last failure: ${unreachable.message})`, {
+          cause: unreachable,
+        });
   for (;;) {
     const remaining = deadline - now();
     if (remaining <= 0) throw deadlineError();
-    const stillBuilding = await getAppBuildState({
-      server,
-      token,
-      appName,
-      fetchImpl,
-      timeoutMs: Math.max(1, remaining),
-    });
+    let stillBuilding;
+    try {
+      stillBuilding = await getAppBuildState({
+        server,
+        token,
+        appName,
+        fetchImpl,
+        timeoutMs: Math.max(1, remaining),
+      });
+      unreachable = null;
+    } catch (error) {
+      if (!(error instanceof CaproverUnreachableError)) throw error;
+      unreachable = error;
+      const remainingAfterFailure = deadline - now();
+      if (remainingAfterFailure <= 0) throw deadlineError();
+      await sleep(Math.min(intervalMs, remainingAfterFailure));
+      continue;
+    }
     // The request is budgeted to the remaining time, but a clock still cannot be trusted to have
     // moved predictably: never report idle success after the deadline, even if the poll says so.
     if (deadline - now() <= 0) throw deadlineError();
@@ -314,19 +383,24 @@ export async function runDeploy({
   sleep = defaultSleep,
   deadlineMs = 300_000,
   intervalMs = 5_000,
+  now = Date.now,
 }) {
   assertFullSha(serverRevision, "--server-revision");
   const runnerHash = runnerTargetHash({ image: release.image, version: release.version });
   const password = await readCaproverPassword({ secret: config.passwordSecret, runCommand });
   const token = await caproverLogin({ server: config.server, password, fetchImpl });
   const context = { server: config.server, token, appName: config.app, fetchImpl };
+  const observe = (label) =>
+    whileUnreachable((budget) => readState({ ...context, ...budget }), { sleep, deadlineMs, intervalMs, now, label });
 
-  let initial = await readState(context);
+  // The Server's own redeploy has just restarted the app behind CapRover, so the first look at it
+  // is the one most likely to find the API unreachable. It observes; it does not mutate.
+  let initial = await observe("reading the app state");
   if (mode === "apply" && initial.isBuilding) {
     // The Server deploy's own CapRover build can still be running when apply starts; only apply
     // waits for it (bounded), then every gate below runs against a fresh post-build snapshot.
-    await waitForAppIdle({ ...context, fetchImpl, sleep, deadlineMs, intervalMs });
-    initial = await readState(context);
+    await waitForAppIdle({ ...context, fetchImpl, sleep, deadlineMs, intervalMs, now });
+    initial = await observe("re-reading the app state after its build");
   }
   const current = validateState({ state: initial, release, serverRevision, publicUrl: config.publicUrl });
   if (mode === "apply") {
@@ -338,6 +412,7 @@ export async function runDeploy({
       deadlineMs,
       intervalMs,
       requireRunner: false,
+      now,
     });
   } else {
     assertReadyGate(await probeReady({ publicUrl: config.publicUrl, serverRevision, fetchImpl }), serverRevision);
@@ -382,6 +457,7 @@ export async function runDeploy({
     sleep,
     deadlineMs,
     intervalMs,
+    now,
   });
   return buildSummary({
     mode,

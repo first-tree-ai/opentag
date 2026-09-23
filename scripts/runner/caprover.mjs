@@ -13,6 +13,21 @@ export const CAPROVER_NAMESPACE = "captain";
 export const EXPECTED_SERVER_IMAGE_REPOSITORY = "ghcr.io/first-tree-ai/opentag";
 
 const STATUS_OK = 100;
+
+/**
+ * A request that never reached CapRover, as opposed to one it answered. Only the transport failed,
+ * so nothing is known about the app: a caller inside a bounded wait may poll again, and one that
+ * was about to mutate must still fail.
+ */
+export class CaproverUnreachableError extends Error {
+  constructor(path, cause) {
+    const reason = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
+    super(`CapRover ${path} could not be reached (${reason})`, { cause });
+    this.name = "CaproverUnreachableError";
+    this.path = path;
+  }
+}
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
@@ -119,14 +134,21 @@ async function caproverApi({ server, token, method, path, body, fetchImpl, timeo
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    throw new Error(`CapRover ${path} could not be reached`, { cause: error });
+    throw new CaproverUnreachableError(path, error);
   }
   return readEnvelope(response, path);
 }
 
 /** Selects exactly one app definition by name; zero or ambiguous matches fail. */
-export async function getAppDefinition({ server, token, appName, fetchImpl = fetch }) {
-  const data = await caproverApi({ server, token, method: "GET", path: "/api/v2/user/apps/appDefinitions", fetchImpl });
+export async function getAppDefinition({ server, token, appName, fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  const data = await caproverApi({
+    server,
+    token,
+    method: "GET",
+    path: "/api/v2/user/apps/appDefinitions",
+    fetchImpl,
+    timeoutMs,
+  });
   const definitions = Array.isArray(data?.appDefinitions) ? data.appDefinitions : null;
   if (!definitions) {
     throw new Error("CapRover returned no app definition list");

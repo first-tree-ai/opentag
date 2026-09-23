@@ -325,6 +325,25 @@ describe("CloudTurnRunner", () => {
     await h.runner.close();
   });
 
+  it("passes the execution MCP bearer to the worker without journaling it", async () => {
+    const mcpGateway = { url: "https://server.example.com/api/v1/mcp", token: "otmg_test_cloud_secret" };
+    const h = harness({
+      runnerOptions: {
+        openExecution: async () => ({
+          executionDir: "/run/opentag-execution/turn-x",
+          mcpGateway,
+          close: async () => undefined,
+        }),
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await h.runner.waitForActive();
+    expect(JSON.parse(h.workerInputs[0]?.stdin ?? "{}").mcpGateway).toEqual(mcpGateway);
+    expect(JSON.stringify(await h.journal.read(h.delivery.deliveryId))).not.toContain(mcpGateway.token);
+    await h.runner.close();
+  });
+
   it("holds the Turn slot and publication until its workspace checkpoint succeeds", async () => {
     const saving = deferred<void>();
     const saved = deferred<void>();

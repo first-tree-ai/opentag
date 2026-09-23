@@ -13,7 +13,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown src/index.ts src/runner/bin.ts src/pi-extensions/web-tools.ts --format esm --dts --sourcemap",
+    "build": "tsdown src/index.ts src/runner/bin.ts src/pi-extensions/web-tools.ts src/pi-extensions/mcp-gateway.ts --format esm --dts --sourcemap",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1",
     "test:agent-runtime:coverage": "vitest run --config vitest.agent-runtime.config.ts",
@@ -22,7 +22,9 @@
     "test:e2e:pi-agent-runtime": "tsx src/smoke/pi-agent-runtime-e2e.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.2",
     "@opentag/shared": "workspace:*",
+    "pi-mcp-adapter": "2.36.0",
     "pino": "^10.3.1",
     "semver": "^7.8.5",
     "tar-stream": "3.2.0",

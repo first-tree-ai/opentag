@@ -56,6 +56,38 @@ function turnRequest(executionDir: string, sessionDirectory?: string) {
   return request;
 }
 
+it("mounts only the execution-scoped MCP gateway in the Cloud Pi configuration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-mcp-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "turn-mcp");
+  const mcpGateway = { url: "https://server.example.com/api/v1/mcp", token: "otmg_cloud_fixture" };
+  let provider: unknown;
+  const completion = await runCloudTurnWorker(
+    { ...turnRequest(executionDir), mcpGateway },
+    {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      createPiFactory: () => ({
+        create: async (request) => {
+          provider = request.configuration?.provider;
+          return {
+            close: async () => undefined,
+            prompt: async () => ({ runId: "fixture", status: "completed", output: [{ type: "text", text: "done" }] }),
+          };
+        },
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      }),
+    },
+  );
+  expect(completion.outcome).toBe("completed");
+  expect(provider).toEqual({
+    mcpGateway,
+  });
+});
+
 function sessionRequest(
   executionDir: string,
   overrides: Partial<RunnerCloudSessionWorkerRequest> = {},

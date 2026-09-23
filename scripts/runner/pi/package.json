@@ -4,6 +4,7 @@
   "private": true,
   "description": "Locked Pi coding-agent closure for the OpenTag Cloud Runner image. Not a workspace package.",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.2"
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "pi-mcp-adapter": "2.36.0"
   }
 }

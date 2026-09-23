@@ -110,6 +110,116 @@ describe("PiAgentRuntime", () => {
     await runtime.close();
   });
 
+  it("loads only the managed MCP extension and keeps its bearer out of Pi arguments", async () => {
+    const client = new ScriptedPiClient("hold");
+    let environment: Readonly<Record<string, string>> | undefined;
+    const factory = new PiAgentRuntimeFactory({
+      mcpAdapterEntry: "/opt/opentag/pi/node_modules/pi-mcp-adapter/index.ts",
+      createSessionId: () => SESSION_ID,
+      createClient: (_cwd, args, extra) => {
+        client.args = args;
+        environment = extra;
+        return client;
+      },
+      probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
+    });
+    const token = "otmg_test_execution_secret";
+    const runtime = await factory.create(
+      createRequest(() => undefined, {
+        provider: {
+          mcpGateway: {
+            url: "https://opentag.example/api/v1/mcp",
+            token,
+          },
+        },
+      }),
+    );
+    const pending = runtime.prompt({ runId: "run-mcp", input: input("hello") });
+    await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+    client.emit({ type: "extension_ui_request", method: "setStatus", statusKey: "mcp", statusText: "ready" });
+    client.complete();
+    await expect(pending).resolves.toMatchObject({ status: "completed" });
+    expect(client.args).toContain("--no-extensions");
+    expect(client.args.join(" ")).not.toContain(token);
+    expect(client.args.filter((arg) => arg === "--extension")).toHaveLength(1);
+    expect(client.args[client.args.indexOf("--extension") + 1]).toMatch(/mcp-gateway\.(ts|mjs)$/);
+    expect(environment).toMatchObject({
+      OPENTAG_MCP_GATEWAY_URL: "https://opentag.example/api/v1/mcp",
+      OPENTAG_MCP_GATEWAY_TOKEN: token,
+      OPENTAG_PI_MCP_ADAPTER_ENTRY: "/opt/opentag/pi/node_modules/pi-mcp-adapter/index.ts",
+    });
+    await runtime.close();
+  });
+
+  it("accepts MCP adapter status messages without exposing notices or accepting interactive UI", async () => {
+    const client = new ScriptedPiClient("hold");
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await piFactory(client).create(
+      createRequest(
+        (event) => {
+          events.push(event);
+        },
+        {
+          provider: { mcpGateway: { url: "https://opentag.example/api/v1/mcp", token: "otmg_execution" } },
+        },
+      ),
+    );
+    const pending = runtime.prompt({ runId: "run-mcp-ui", input: input("hello") });
+    await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+    client.emit({ type: "extension_ui_request", method: "setWidget", text: "connected" });
+    client.emit({ type: "extension_ui_request", method: "setTitle", title: "MCP" });
+    client.emit({ type: "extension_ui_request", method: "notify", message: "secret from server" });
+    client.complete();
+    await expect(pending).resolves.toMatchObject({ status: "completed" });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "provider_warning",
+        code: "pi_mcp_notice",
+        message: "Pi MCP adapter reported a notice",
+      }),
+    );
+    expect(JSON.stringify(events)).not.toContain("secret from server");
+    await runtime.close();
+
+    const interactiveClient = new ScriptedPiClient("hold");
+    const interactiveRuntime = await piFactory(interactiveClient).create(
+      createRequest(() => undefined, {
+        provider: { mcpGateway: { url: "https://opentag.example/api/v1/mcp", token: "otmg_execution" } },
+      }),
+    );
+    const interactiveRun = interactiveRuntime.prompt({ runId: "run-mcp-interactive", input: input("hello") });
+    await vi.waitFor(() => expect(interactiveClient.commands.some((command) => command.type === "prompt")).toBe(true));
+    interactiveClient.emit({ type: "extension_ui_request", method: "select", options: ["approve"] });
+    await expect(interactiveRun).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error" },
+    });
+    await interactiveRuntime.close();
+  });
+
+  it("rejects malformed MCP descriptors before Pi starts", async () => {
+    expect(() => new PiAgentRuntimeFactory({ mcpAdapterEntry: "relative/adapter.ts" })).toThrow(
+      "Pi mcpAdapterEntry must be an absolute path",
+    );
+    const factory = piFactory(new ScriptedPiClient("complete"));
+    const invalid: readonly unknown[] = [
+      [],
+      { token: "otmg_execution" },
+      { url: "https://opentag.example/api/v1/mcp", token: "otmg_execution", extra: true },
+      { url: "not a URL", token: "otmg_execution" },
+      { url: "file:///api/v1/mcp", token: "otmg_execution" },
+      { url: "https://opentag.example/wrong", token: "otmg_execution" },
+      { url: "https://user@opentag.example/api/v1/mcp", token: "otmg_execution" },
+      { url: "https://opentag.example/api/v1/mcp?token=bad", token: "otmg_execution" },
+      { url: "https://opentag.example/api/v1/mcp", token: "wrong" },
+    ];
+    for (const mcpGateway of invalid) {
+      await expect(
+        factory.create(createRequest(() => undefined, { provider: { mcpGateway: mcpGateway as never } })),
+      ).rejects.toMatchObject({ code: "configuration_invalid" });
+    }
+  });
+
   it("rejects malformed trusted web tools launch facts before spawning anything", async () => {
     const factory = piFactory(new ScriptedPiClient("complete"));
     const invalid: unknown[] = [

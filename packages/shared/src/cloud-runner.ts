@@ -434,6 +434,11 @@ export const RunnerCloudModelGrantSchema = z
   .strict();
 export type RunnerCloudModelGrant = z.infer<typeof RunnerCloudModelGrantSchema>;
 
+/** Credential-relay grant forwarded only in one disposable worker stdin document. */
+const RunnerCloudMcpGatewaySchema = z
+  .object({ url: z.string().url().max(1024), token: z.string().startsWith("otmg_").max(4096) })
+  .strict();
+
 export const RunnerCloudDeliveryRunFrameSchema = z
   .object({
     type: z.literal("delivery:run"),
@@ -715,6 +720,7 @@ export const RunnerCloudTurnWorkerRequestSchema = z
     delivery: DirectImMessageDeliveryRequestSchema,
     /** Execution-scoped model grant minted at the verified boundary. */
     model: RunnerCloudModelGrantSchema,
+    mcpGateway: RunnerCloudMcpGatewaySchema.optional(),
     /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
     executionDir: z.string().min(1).max(512),
     /**
@@ -757,6 +763,7 @@ export const RunnerCloudSessionWorkerRequestSchema = z
     message: SessionMessageDeliveryRequestSchema,
     /** Execution-scoped model grant minted at the verified boundary. */
     model: RunnerCloudModelGrantSchema,
+    mcpGateway: RunnerCloudMcpGatewaySchema.optional(),
     /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
     executionDir: z.string().min(1).max(512),
     /** Allocation-stable in-sandbox directory for Pi conversation continuity. */

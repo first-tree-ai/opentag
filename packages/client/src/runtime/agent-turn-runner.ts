@@ -564,7 +564,7 @@ function providerLaunchConfiguration(
 }
 
 function providerSupportsMcpGateway(providerId: string | undefined): boolean {
-  return providerId === "claude-code" || providerId === "codex";
+  return providerId === "claude-code" || providerId === "codex" || providerId === "pi";
 }
 
 export function buildAgentInput(

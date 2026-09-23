@@ -17,6 +17,7 @@ import {
   type RuntimeProxyCliMetadata,
   type RuntimeProxyProvider,
   type RuntimeProxyTicketResult,
+  type RuntimeWebGatewayResult,
   runtimeProxyErrorReason,
 } from "./runtime-credential-frames.js";
 import {
@@ -532,6 +533,48 @@ export class RuntimeCredentialRelay {
     }
     if (result.executionId !== this.#executionId || result.path !== MCP_GATEWAY_PATH) {
       this.#logger.warn({ code: "mcp_gateway_token_fence_mismatch" }, "The MCP gateway token fence does not match");
+      return undefined;
+    }
+    return { token: result.token, expiresAt: result.expiresAt };
+  }
+
+  /**
+   * Fetch this execution's web gateway bearer, if the Server granted the `web` service.
+   *
+   * The mirrored twin of {@link RuntimeCredentialRelay.acquireMcpGatewayToken}: its own request, a
+   * fence on the exact execution. A refusal, timeout, or peer that does not implement the frame
+   * returns `undefined`; the Cloud turn owner then fails an execution whose web grant cannot be
+   * fulfilled. The bearer is returned to the trusted parent only; it is never written to the
+   * worker document, the journal, or a log.
+   */
+  async acquireWebGatewayToken(signal?: AbortSignal): Promise<{ token: string; expiresAt: string } | undefined> {
+    const granted = this.#services.some((service) => service.service === "web" && service.scopes.length > 0);
+    if (!granted) return undefined;
+    let result: RuntimeWebGatewayResult;
+    try {
+      result = (await this.#controlRequest(
+        { type: "runtime:web:gateway", executionId: this.#executionId },
+        "runtime:web:gateway:result",
+        signal,
+      )) as RuntimeWebGatewayResult;
+    } catch (error) {
+      this.#logger.warn(
+        { code: "web_gateway_token_failed", reason: runtimeProxyErrorReason(error) },
+        "The web gateway token request failed",
+      );
+      return undefined;
+    }
+    if (result.status === "rejected") {
+      this.#logger.warn(
+        { code: "web_gateway_token_rejected", reason: result.code },
+        "The Server refused a web gateway token",
+      );
+      return undefined;
+    }
+    // A result naming another execution is refused rather than used: the token would be real, but
+    // binding it to the wrong execution is exactly the confusion the fence exists to prevent.
+    if (result.executionId !== this.#executionId) {
+      this.#logger.warn({ code: "web_gateway_token_fence_mismatch" }, "The web gateway token fence does not match");
       return undefined;
     }
     return { token: result.token, expiresAt: result.expiresAt };

@@ -4,10 +4,12 @@ import { RUNTIME_WEB_FETCH_PATH, RUNTIME_WEB_SEARCH_PATH } from "@opentag/shared
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { RuntimeWebError } from "../runtime-credentials/web-execution.js";
+import { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
 import type { RuntimeWebService } from "../runtime-credentials/web-service.js";
 import type { ComputerAuthContext } from "../services/computers/index.js";
 
 const COMPUTER = randomUUID();
+const CLOUD_COMPUTER = randomUUID();
 const EXECUTION = randomUUID();
 const TOOL_CALL = randomUUID();
 
@@ -24,6 +26,8 @@ function createTestApp(
     verify?: (token: string) => Promise<ComputerAuthContext>;
     search?: (input: Record<string, unknown>) => Promise<unknown>;
     fetch?: (input: Record<string, unknown>) => Promise<unknown>;
+    /** Live execution → Computer map for the bearer path; absent means no bearer is accepted. */
+    executions?: Map<string, string>;
   } = {},
 ) {
   const search = vi.fn(overrides.search ?? (async () => searchResult));
@@ -34,17 +38,27 @@ function createTestApp(
         requestId: "r-2",
       })),
   );
-  const machineAuth = {
-    verifyMachineToken:
-      overrides.verify ?? (async () => ({ credentialId: "cred", computerId: COMPUTER, installationId: randomUUID() })),
-  };
+  const verifyMachineToken = vi.fn(
+    overrides.verify ?? (async () => ({ credentialId: "cred", computerId: COMPUTER, installationId: randomUUID() })),
+  );
+  const tokens = new RuntimeWebGatewayTokenStore();
   const app = createApp({
     runtimeWeb: {
-      machineAuth,
-      service: { search, fetch } as unknown as RuntimeWebService,
+      machineAuth: { verifyMachineToken },
+      service: {
+        search,
+        fetch,
+        executionComputerId: (executionId: string) => overrides.executions?.get(executionId),
+      } as unknown as RuntimeWebService,
+      tokens,
     },
   });
-  return { app, search, fetch };
+  return { app, search, fetch, tokens, verifyMachineToken };
+}
+
+/** Issue one execution bearer through the real store, as the credential tunnel would. */
+function issueBearer(tokens: RuntimeWebGatewayTokenStore, executionId: string): string {
+  return tokens.issue({ executionId, expiresAt: Date.now() + 60_000 }).token;
 }
 
 function searchBody(): string {
@@ -56,6 +70,99 @@ function sleep(ms: number): Promise<void> {
 }
 
 describe("runtime web routes", () => {
+  it("serves a Cloud execution bearer, deriving the Computer from the live execution", async () => {
+    const executions = new Map([[EXECUTION, CLOUD_COMPUTER]]);
+    const { app, search, tokens, verifyMachineToken } = createTestApp({ executions });
+    const bearer = issueBearer(tokens, EXECUTION);
+    const response = await app.inject({
+      method: "POST",
+      url: RUNTIME_WEB_SEARCH_PATH,
+      headers: { authorization: `Bearer ${bearer}`, "x-web-timeout-ms": "9000" },
+      payload: { protocolVersion: 1, executionId: EXECUTION, toolCallId: TOOL_CALL, query: "q" },
+    });
+    expect(response.statusCode).toBe(200);
+    // The bearer never falls back to machine auth, and the Computer is the execution's own.
+    expect(vi.mocked(verifyMachineToken)).not.toHaveBeenCalled();
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ computerId: CLOUD_COMPUTER }));
+  });
+
+  it("refuses a bearer presented for an execution the body does not name", async () => {
+    const executions = new Map([[EXECUTION, CLOUD_COMPUTER]]);
+    const { app, search, tokens } = createTestApp({ executions });
+    const response = await app.inject({
+      method: "POST",
+      url: RUNTIME_WEB_SEARCH_PATH,
+      headers: { authorization: `Bearer ${issueBearer(tokens, EXECUTION)}` },
+      payload: { protocolVersion: 1, executionId: randomUUID(), toolCallId: TOOL_CALL, query: "q" },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe("execution_unknown");
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unknown, expired, or revoked bearer instead of treating it as machine auth", async () => {
+    const executions = new Map([[EXECUTION, CLOUD_COMPUTER]]);
+    const { app, search, tokens } = createTestApp({ executions });
+    const revoked = issueBearer(tokens, EXECUTION);
+    tokens.revokeExecution(EXECUTION);
+    const response = await app.inject({
+      method: "POST",
+      url: RUNTIME_WEB_SEARCH_PATH,
+      headers: { authorization: `Bearer ${revoked}` },
+      payload: { protocolVersion: 1, executionId: EXECUTION, toolCallId: TOOL_CALL, query: "q" },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("refuses every bearer when the deployment wired no web token store", async () => {
+    // The fail-closed deployment: the route exists (a Local machine token still works) but no
+    // execution bearer can ever be issued or accepted.
+    const search = vi.fn(async () => searchResult);
+    const app = createApp({
+      runtimeWeb: {
+        machineAuth: {
+          verifyMachineToken: async () => ({
+            credentialId: "cred",
+            computerId: COMPUTER,
+            installationId: randomUUID(),
+          }),
+        },
+        service: { search, fetch: vi.fn() } as unknown as RuntimeWebService,
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: RUNTIME_WEB_SEARCH_PATH,
+      headers: { authorization: `Bearer otwg_${"w".repeat(43)}` },
+      payload: { protocolVersion: 1, executionId: EXECUTION, toolCallId: TOOL_CALL, query: "q" },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("never accepts a Cloud Computer credential through the machine-auth branch", async () => {
+    // The kind-aware verifier accepts Cloud control credentials in a deployment that injected a
+    // Cloud verifier; this route must still refuse them, because a control credential is not an
+    // execution-scoped web authorization.
+    const { app, search } = createTestApp({
+      verify: async () => ({
+        credentialId: "cloud-cred",
+        computerId: CLOUD_COMPUTER,
+        installationId: randomUUID(),
+        kind: "cloud",
+      }),
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: RUNTIME_WEB_SEARCH_PATH,
+      headers: { authorization: "Bearer otcc_cloud_control" },
+      payload: { protocolVersion: 1, executionId: EXECUTION, toolCallId: TOOL_CALL, query: "q" },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(search).not.toHaveBeenCalled();
+  });
+
   it("serves a fenced search over machine auth with a no-store bounded response", async () => {
     const { app, search } = createTestApp();
     const response = await app.inject({

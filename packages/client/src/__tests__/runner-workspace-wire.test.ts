@@ -343,7 +343,6 @@ it.each([false, true])(
           workspace,
           stateDir: join(root, `private-${generation}`),
           workspacePersistence: true,
-          webTools: true,
         },
         {
           installSignalHandlers: false,
@@ -637,7 +636,6 @@ function startWireRunner(input: {
       workspace: input.workspace,
       stateDir: join(input.root, `state-${input.label}-${input.generation}`),
       workspacePersistence: true,
-      webTools: true,
     },
     {
       installSignalHandlers: false,
@@ -982,7 +980,6 @@ async function runRebindScenario(input: {
       workspace,
       stateDir: join(input.root, "private"),
       workspacePersistence: true,
-      ...(input.web ? { webTools: true } : {}),
     },
     {
       installSignalHandlers: false,

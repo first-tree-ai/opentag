@@ -15,6 +15,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { createServiceLoggerPort } from "../observability/index.js";
 import { createComputerAuthPreHandler } from "../plugins/computer-auth.js";
 import { RuntimeWebError } from "../runtime-credentials/web-execution.js";
+import type { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
+import { WEB_GATEWAY_TOKEN_PREFIX } from "../runtime-credentials/web-gateway-token-store.js";
 import type { RuntimeWebService } from "../runtime-credentials/web-service.js";
 import type { ComputerAuthVerifier } from "../services/computers/index.js";
 import { parseRequest } from "./request-validation.js";
@@ -22,7 +24,19 @@ import { parseRequest } from "./request-validation.js";
 export interface RuntimeWebRoutesOptions {
   machineAuth: ComputerAuthVerifier;
   service: RuntimeWebService;
+  /**
+   * Execution-scoped Cloud bearers. Present only when the deployment enabled web tools; absent, the
+   * two routes accept Local machine authentication alone and every Cloud request is refused.
+   */
+  tokens?: RuntimeWebGatewayTokenStore;
   logger?: ReturnType<typeof createServiceLoggerPort>;
+}
+
+/** Authenticated caller of one web route: a Local Computer, or a Cloud execution bearer. */
+declare module "fastify" {
+  interface FastifyRequest {
+    webGatewayContext?: { executionId: string };
+  }
 }
 
 /** Deterministic status per bounded error code; the envelope stays the only body. */
@@ -68,12 +82,13 @@ interface WebRequestBudget {
 const budgets = new WeakMap<FastifyRequest, WebRequestBudget>();
 
 /**
- * The two fixed runtime web routes. Inbound `Authorization` authenticates the Computer (machine
- * token or Cloud control credential); it is consumed for execution fencing only and is never
- * forwarded. Outbound Router credentials are reconstructed by the service from deployment config.
+ * The two fixed runtime web routes. Inbound `Authorization` is either a Local Computer machine
+ * token or the execution web bearer issued for one live Cloud execution; it is consumed for
+ * execution fencing only and is never forwarded. A Cloud control credential is explicitly refused
+ * here. Outbound Router credentials are reconstructed by the service from deployment config.
  */
 export function registerRuntimeWebRoutes(app: FastifyInstance, options: RuntimeWebRoutesOptions): void {
-  const authPreHandler = boundedAuthPreHandler(createComputerAuthPreHandler(options.machineAuth));
+  const authPreHandler = boundedAuthPreHandler(createRuntimeWebAuthPreHandler(options));
   // Fastify 5 route hooks must be async (or callback-style); sync hooks never settle.
   const settleOnSend = async (request: FastifyRequest, _reply: FastifyReply, payload: unknown): Promise<unknown> => {
     settleWebBudget(request);
@@ -91,9 +106,11 @@ export function registerRuntimeWebRoutes(app: FastifyInstance, options: RuntimeW
     },
     async (request, reply) => {
       reply.header("Cache-Control", "no-store");
-      const gate = prepareWebRequest(request, reply);
+      const gate = prepareWebRequest(request, reply, options);
       if (!gate) return reply;
       const body = parseRequest(WebSearchExecutionRequestSchema, request.body);
+      const mismatch = matchBearerExecution(request, reply, body.executionId);
+      if (mismatch) return mismatch;
       return runWebOperation(reply, options, gate.budget, (signal, deadlineAt, remainingMs) =>
         options.service.search({
           computerId: gate.computerId,
@@ -117,9 +134,11 @@ export function registerRuntimeWebRoutes(app: FastifyInstance, options: RuntimeW
     },
     async (request, reply) => {
       reply.header("Cache-Control", "no-store");
-      const gate = prepareWebRequest(request, reply);
+      const gate = prepareWebRequest(request, reply, options);
       if (!gate) return reply;
       const body = parseRequest(WebFetchExecutionRequestSchema, request.body);
+      const mismatch = matchBearerExecution(request, reply, body.executionId);
+      if (mismatch) return mismatch;
       return runWebOperation(reply, options, gate.budget, (signal, deadlineAt, remainingMs) =>
         options.service.fetch({
           computerId: gate.computerId,
@@ -191,7 +210,44 @@ function abortError(budget: WebRequestBudget): RuntimeWebError {
     : new RuntimeWebError("aborted", "The web request was aborted");
 }
 
-/** Races the machine-auth preHandler against the ingress deadline instead of awaiting it blindly. */
+/**
+ * Authentication for the two web routes.
+ *
+ * Two credential families are accepted and neither can stand in for the other. A Local Computer
+ * presents its machine token exactly as before. A Cloud Runner presents the execution web bearer
+ * issued over the credential tunnel for one live execution; the request body's `executionId` must
+ * then match that bearer. A Cloud control credential is never web authorization, so a machine-auth
+ * result for a Cloud Computer is refused here rather than silently accepted as a hardware token.
+ */
+function createRuntimeWebAuthPreHandler(
+  options: RuntimeWebRoutesOptions,
+): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
+  const machineAuth = createComputerAuthPreHandler(options.machineAuth);
+  return async function runtimeWebAuthPreHandler(request, reply): Promise<void> {
+    const authorization = request.headers.authorization;
+    const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
+    if (token.startsWith(WEB_GATEWAY_TOKEN_PREFIX)) {
+      // The bearer family is its own credential space: it never falls through to machine auth, so
+      // an unknown, expired, or revoked bearer cannot be reinterpreted as some other credential.
+      // All three are one answer — a caller learns only that it may not proceed, never whether the
+      // value was ever real.
+      const record = options.tokens?.resolve(token);
+      if (record) {
+        request.webGatewayContext = { executionId: record.executionId };
+        return;
+      }
+      sendWebError(reply, new RuntimeWebError("unauthenticated", "The web execution bearer is invalid"));
+      return;
+    }
+    await machineAuth(request, reply);
+    if (request.computerAuthContext?.kind === "cloud") {
+      request.computerAuthContext = undefined;
+      sendWebError(reply, new RuntimeWebError("unauthenticated", "Cloud Computers must use the execution web bearer"));
+    }
+  };
+}
+
+/** Races the auth preHandler against the ingress deadline instead of awaiting it blindly. */
 function boundedAuthPreHandler(
   preHandler: (request: FastifyRequest, reply: FastifyReply) => Promise<void>,
 ): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
@@ -221,17 +277,21 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Authenticated Computer identity plus the strict remaining-budget header, or an error reply. */
+/**
+ * Authenticated caller identity plus the strict remaining-budget header, or an error reply.
+ *
+ * A Local request uses the Computer the machine token proved. A bearer request carries no Computer
+ * of its own: the identity is read from the live execution record, and the authorizer re-fences it
+ * before dispatch and again before delivery.
+ */
 function prepareWebRequest(
   request: FastifyRequest,
   reply: FastifyReply,
+  options: RuntimeWebRoutesOptions,
 ): { computerId: string; budget: WebRequestBudget } | undefined {
-  const computer = request.computerAuthContext;
   const budget = budgets.get(request);
-  if (!computer) {
-    sendWebError(reply, new RuntimeWebError("unauthenticated", "Machine authentication is required"));
-    return undefined;
-  }
+  const computerId = request.computerAuthContext?.computerId ?? executionComputerId(request, options, reply);
+  if (!computerId) return undefined;
   if (!budget) {
     sendWebError(reply, new RuntimeWebError("unknown", "The web request budget was not initialized"));
     return undefined;
@@ -244,7 +304,41 @@ function prepareWebRequest(
     sendWebError(reply, abortError(budget));
     return undefined;
   }
-  return { computerId: computer.computerId, budget };
+  return { computerId, budget };
+}
+
+/** The live execution's Computer for a bearer request; unknown executions are not distinguishable. */
+function executionComputerId(
+  request: FastifyRequest,
+  options: RuntimeWebRoutesOptions,
+  reply: FastifyReply,
+): string | undefined {
+  const executionId = request.webGatewayContext?.executionId;
+  if (!executionId) {
+    sendWebError(reply, new RuntimeWebError("unauthenticated", "Authentication is required"));
+    return undefined;
+  }
+  const computerId = options.service.executionComputerId(executionId);
+  if (!computerId) {
+    sendWebError(reply, new RuntimeWebError("execution_unknown", "The execution is unknown"));
+    return undefined;
+  }
+  return computerId;
+}
+
+/**
+ * A bearer authorizes exactly the execution it was issued for. A request naming another execution
+ * is refused as unknown: the token is real, but binding it to a foreign body is the confusion the
+ * bearer exists to prevent, and the refusal must not confirm that the named execution exists.
+ */
+function matchBearerExecution(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  executionId: string,
+): FastifyReply | undefined {
+  const bearerExecutionId = request.webGatewayContext?.executionId;
+  if (!bearerExecutionId || bearerExecutionId === executionId) return undefined;
+  return sendWebError(reply, new RuntimeWebError("execution_unknown", "The execution is unknown"));
 }
 
 /** Run one fenced web operation with abort propagation and the bounded error envelope. */

@@ -33,6 +33,8 @@ import { turnTimeoutMs } from "../runtime/agent-turn-runner.js";
 import { truncateUtf8 } from "../runtime/provider-cli/outgoing-reply-process.js";
 import { RuntimeCredentialRelay, type RuntimeCredentialRelayOptions } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
+import { WebToolsServerClient } from "../runtime/web-tools-client.js";
+import { createExecutionWebDispatch } from "../runtime/web-tools-dispatch.js";
 import { type CloudCredentialChannel, CloudCredentialConnection } from "./cloud-credential-connection.js";
 import {
   assertCloudJournalScope,
@@ -49,6 +51,7 @@ import {
 import { CloudWorkspaceError } from "./cloud-workspace.js";
 import { NativeProviderBridge } from "./native-provider-bridge.js";
 import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
+import type { NativeSandboxWebGateway, NativeWebExecutionChannel } from "./web-gateway.js";
 
 /**
  * Trusted-parent Cloud Turn lifecycle (E4). Owns the durable journal boundary for every delivery
@@ -91,8 +94,27 @@ export interface CloudTurnRunnerOptions {
    */
   readonly publicDirectory?: string;
   readonly journal: CloudJournal;
-  readonly sandbox: Pick<NativeSandbox, "exec" | "openDuplex">;
+  readonly sandbox: Pick<NativeSandbox, "exec" | "openDuplex" | "name">;
   readonly serverUrl: string;
+  /**
+   * Native web gateway for this Sandbox. A Cloud execution that the Server granted the `web`
+   * service opens exactly one channel here; without a grant no channel, socket, listener, or Pi
+   * extension exists. Absent (Local/test composition) keeps web tools fully off.
+   */
+  readonly webGateway?: NativeSandboxWebGateway;
+  /**
+   * Fixed packaged Pi web-tools extension path inside the Sandbox. Nonsecret, resolved by the
+   * trusted Runner at startup from the packaged Client artifact; absent keeps web tools off.
+   */
+  readonly webExtensionPath?: string;
+  /** Test seam for the trusted Server web client; production uses the global fetch. */
+  readonly fetchImpl?: typeof fetch;
+  /**
+   * Test seam: relay transport injection for local fixtures (the data channel is a separate
+   * transport with its own suites). Production always dials the real ticket-authenticated data
+   * WebSocket; nothing else about the relay is replaceable.
+   */
+  readonly relayOptions?: Pick<RuntimeCredentialRelayOptions, "dataConnectionFactory">;
   readonly send: (frame: RunnerClientFrame) => void;
   /** The #633 tunnel over the current Runner connection. */
   readonly credentialChannel: () => CloudCredentialChannel;
@@ -145,6 +167,12 @@ export interface CloudTurnExecutionHandle {
   /** In-sandbox absolute path of the per-turn public material directory. */
   readonly executionDir: string;
   readonly mcpGateway?: { readonly url: string; readonly token: string };
+  /**
+   * Nonsecret web tools facts for the worker: the fixed extension path and this execution's
+   * private socket descriptor. The execution bearer that fronts the socket stays in this trusted
+   * parent process and is deliberately absent here.
+   */
+  readonly webTools?: { readonly extensionPath: string; readonly socketPath: string };
   /**
    * E8 Session CLI proof received on the execution-open result. Ephemeral: forwarded to the worker
    * via stdin and cleared with the execution; never journaled, logged, or archived.
@@ -1363,6 +1391,7 @@ export class CloudTurnRunner {
         delivery,
         executionDir: execution.executionDir,
         ...(execution.mcpGateway ? { mcpGateway: execution.mcpGateway } : {}),
+        ...(execution.webTools ? { webTools: execution.webTools } : {}),
         model,
         ...(execution.sessionCliProof
           ? { sessionCollaboration: { proof: execution.sessionCliProof, serverUrl: this.#options.serverUrl } }
@@ -1480,6 +1509,7 @@ export class CloudTurnRunner {
         message,
         executionDir: execution.executionDir,
         ...(execution.mcpGateway ? { mcpGateway: execution.mcpGateway } : {}),
+        ...(execution.webTools ? { webTools: execution.webTools } : {}),
         model,
         sessionKind: entry.sessionKind,
         deadlineAt,
@@ -1582,6 +1612,7 @@ export class CloudTurnRunner {
     let relay: Awaited<ReturnType<typeof RuntimeCredentialRelay.open>> | undefined;
     let adapter: Awaited<ReturnType<typeof RuntimeProxyLoopbackAdapter.start>> | undefined;
     let bridge: NativeProviderBridge | undefined;
+    let webChannel: NativeWebExecutionChannel | undefined;
     let privateDirectory: string | undefined;
     let publicDirectory: string | undefined;
     let cleaned = false;
@@ -1601,27 +1632,20 @@ export class CloudTurnRunner {
           failures.push(error);
         }
       };
-      const ownedBridge = bridge;
-      const ownedAdapter = adapter;
-      const ownedRelay = relay;
-      const ownedPublic = publicDirectory;
-      const ownedPrivate = privateDirectory;
-      // The bridge goes first: its helper and every in-flight parent connection stop before the
-      // trusted adapter/relay they dialed are released.
-      if (ownedBridge)
-        await step(async () => {
-          try {
-            await ownedBridge.close();
-          } catch (error) {
-            this.#sandboxUnusable = true;
-            throw error;
-          }
-        });
-      if (ownedAdapter) await step(() => ownedAdapter.close());
-      if (ownedRelay) await step(() => ownedRelay.close(reason));
-      await step(() => connection.close());
-      if (ownedPublic) await step(() => rm(ownedPublic, { recursive: true, force: true }));
-      if (ownedPrivate) await step(() => rm(ownedPrivate, { recursive: true, force: true }));
+      await releaseRelayExecutionResources({
+        step,
+        connection,
+        reason,
+        onBridgeCloseFailure: () => {
+          this.#sandboxUnusable = true;
+        },
+        webChannel,
+        bridge,
+        adapter,
+        relay,
+        publicDirectory,
+        privateDirectory,
+      });
       for (const failure of failures) {
         this.#log(`cloud bridge ${reason} cleanup step failed: ${errorMessage(failure)}`);
       }
@@ -1632,6 +1656,7 @@ export class CloudTurnRunner {
         {
           connection: connection.relayConnection,
           serverUrl: this.#options.serverUrl,
+          ...(this.#options.relayOptions ?? {}),
         } satisfies RuntimeCredentialRelayOptions,
         {
           agentId: input.agentId,
@@ -1644,7 +1669,13 @@ export class CloudTurnRunner {
           },
           sessionId: input.sessionId,
           source: input.source,
-          services: ["mcp"],
+          /*
+           * Web and MCP are both requested on every real IM and internal Session execution. The
+           * Server grants each per its own policy — web is deployment-wide, MCP depends on the
+           * Agent's mounts — and withholds silently when it does not. A request is not an
+           * authorization: without a grant on the open result neither channel below is opened.
+           */
+          services: ["mcp", "web"],
         },
         input.signal,
       );
@@ -1684,6 +1715,15 @@ export class CloudTurnRunner {
         },
       });
       const openBridge = bridge;
+      // Web is a platform default when granted. A missing local artifact or channel must surface as
+      // a failed execution, not silently remove the tools from an otherwise successful Agent turn.
+      const webTools = await this.#openGrantedWebChannel({
+        relay: openRelay,
+        signal: input.signal,
+        onOpened: (channel) => {
+          webChannel = channel;
+        },
+      });
       return {
         executionDir: inSandboxExecutionDir,
         ...(mcpGrant
@@ -1691,6 +1731,7 @@ export class CloudTurnRunner {
               mcpGateway: { url: new URL(MCP_GATEWAY_PATH, this.#options.serverUrl).toString(), token: mcpGrant.token },
             }
           : {}),
+        ...(webTools ? { webTools } : {}),
         ...(openRelay.sessionCliProof ? { sessionCliProof: openRelay.sessionCliProof } : {}),
         bridgeFailure: () => openBridge.failure,
         bridgeFailureSignal: openBridge.failureSignal,
@@ -1720,6 +1761,58 @@ export class CloudTurnRunner {
           ),
         );
       }
+      throw error;
+    }
+  }
+
+  /** A withheld grant leaves web off; a granted service must be usable or fail this execution. */
+  async #openGrantedWebChannel(input: {
+    relay: RuntimeCredentialRelay;
+    signal: AbortSignal;
+    onOpened: (channel: NativeWebExecutionChannel) => void;
+  }): Promise<{ extensionPath: string; socketPath: string } | undefined> {
+    const granted = input.relay.services?.some((service) => service.service === "web" && service.scopes.length > 0);
+    if (!granted) return undefined;
+    // The bearer is fetched separately from the open result and stays in this trusted parent.
+    const token = await input.relay.acquireWebGatewayToken(input.signal);
+    if (!token) throw new Error("The granted Cloud web service did not provide an execution credential");
+    return this.#openExecutionWebChannel({
+      executionId: input.relay.executionId,
+      signal: input.signal,
+      token: token.token,
+      onOpened: input.onOpened,
+    });
+  }
+
+  /** Open the native channel after a grant; missing Runner components fail the execution. */
+  async #openExecutionWebChannel(input: {
+    executionId: string;
+    signal: AbortSignal;
+    token: string;
+    onOpened: (channel: NativeWebExecutionChannel) => void;
+  }): Promise<{ extensionPath: string; socketPath: string }> {
+    const gateway = this.#options.webGateway;
+    const extensionPath = this.#options.webExtensionPath;
+    if (!gateway || !extensionPath) throw new Error("The Cloud web tools extension or gateway is unavailable");
+    const client = new WebToolsServerClient({
+      serverUrl: this.#options.serverUrl,
+      bearerToken: input.token,
+      ...(this.#options.fetchImpl ? { fetchImpl: this.#options.fetchImpl } : {}),
+    });
+    try {
+      const channel = await gateway.openExecution({
+        sandbox: this.#options.sandbox,
+        authority: {
+          executionIdentity: input.executionId,
+          signal: input.signal,
+          dispatch: createExecutionWebDispatch({ client, executionId: input.executionId }),
+        },
+      });
+      input.onOpened(channel);
+      return { extensionPath, socketPath: channel.socketPath };
+    } catch (error) {
+      // The outer execution cleanup revokes this bearer before a successor can open.
+      this.#log(`cloud web channel did not open: ${errorMessage(error)}`);
       throw error;
     }
   }
@@ -1781,6 +1874,52 @@ export class CloudTurnRunner {
 
 function cancelledBeforeStart(): TurnCompletion {
   return { errorReason: "client_shutdown", executionEffects: "not_started", outcome: "cancelled" };
+}
+
+/**
+ * Release every resource one relay execution acquired, in the order the teardown requires.
+ *
+ * The web channel goes first: its in-Sandbox bridge process and its request listener are removed
+ * while the trusted parent still owns the execution, so no successor execution can observe a stale
+ * socket or an inherited authority. Then the provider bridge, whose helper and every in-flight
+ * parent connection stop before the trusted adapter/relay they dialed. One failing step never stops
+ * the remaining ones; the caller records the failures.
+ */
+async function releaseRelayExecutionResources(input: {
+  readonly step: (operation: () => Promise<void> | void) => Promise<void>;
+  readonly connection: CloudCredentialConnection;
+  readonly reason: "execution_closed" | "open_failed";
+  readonly onBridgeCloseFailure: () => void;
+  readonly webChannel?: NativeWebExecutionChannel;
+  readonly bridge?: NativeProviderBridge;
+  readonly adapter?: RuntimeProxyLoopbackAdapter;
+  readonly relay?: RuntimeCredentialRelay;
+  readonly publicDirectory?: string;
+  readonly privateDirectory?: string;
+}): Promise<void> {
+  if (input.webChannel) await input.step(() => input.webChannel?.close());
+  if (input.bridge) {
+    const bridge = input.bridge;
+    await input.step(async () => {
+      try {
+        await bridge.close();
+      } catch (error) {
+        input.onBridgeCloseFailure();
+        throw error;
+      }
+    });
+  }
+  if (input.adapter) await input.step(() => input.adapter?.close());
+  if (input.relay) await input.step(() => input.relay?.close(input.reason));
+  await input.step(() => input.connection.close());
+  if (input.publicDirectory) {
+    const directory = input.publicDirectory;
+    await input.step(() => rm(directory, { recursive: true, force: true }));
+  }
+  if (input.privateDirectory) {
+    const directory = input.privateDirectory;
+    await input.step(() => rm(directory, { recursive: true, force: true }));
+  }
 }
 
 /**

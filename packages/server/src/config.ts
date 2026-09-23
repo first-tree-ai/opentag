@@ -90,52 +90,13 @@ const DownloadBaseUrlSchema = z
 
 /*
  * Web tools (Tavily via the existing Router). Off by default; enabling requires the fixed Router
- * origin and an explicit Account → Router tenant mapping. Tenant keys never appear in this
- * mapping: each entry names a `keyEnv` environment variable that holds the key material, so the
- * mapping itself stays reference-only and safe to log, while the plaintext keys live only in
- * deployment secrets. There is deliberately no shared default tenant.
+ * origin and exactly one Router web-only key. The key is one deployment secret shared by the whole
+ * deployment — there is no per-Account mapping and no per-user opt-in: enabling the deployment
+ * grants the `web` service to every valid active Account execution. The Tavily provider key itself
+ * stays in the Router and never reaches OpenTag.
  */
-const WEB_ROUTER_KEY_ENV_PATTERN = /^OPENTAG_WEB_ROUTER_KEY_[A-Z0-9_]{1,48}$/;
-const WEB_ROUTER_TENANT_ID_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,126}$/;
-
-const WebRouterTenantEntrySchema = z
-  .object({
-    accountId: z.string().uuid(),
-    tenantId: z.string().regex(WEB_ROUTER_TENANT_ID_PATTERN, "Must be a bounded Router tenant slug"),
-    keyEnv: z.string().regex(WEB_ROUTER_KEY_ENV_PATTERN, "Must name an OPENTAG_WEB_ROUTER_KEY_* variable"),
-  })
-  .strict();
-
-const WebRouterTenantsSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(64 * 1024)
-  .optional()
-  .transform((value, context) => {
-    if (value === undefined) return undefined;
-    const invalid = (message: string) => {
-      context.addIssue({ code: "custom", message });
-      return z.NEVER;
-    };
-    let raw: unknown;
-    try {
-      raw = JSON.parse(value);
-    } catch {
-      return invalid("Must be a JSON array of Account web tenant mappings");
-    }
-    const parsed = z.array(WebRouterTenantEntrySchema).max(1024).safeParse(raw);
-    if (!parsed.success) return invalid("Every web tenant mapping must be {accountId, tenantId, keyEnv}");
-    const accountIds = new Set<string>();
-    const keyEnvs = new Set<string>();
-    for (const entry of parsed.data) {
-      if (accountIds.has(entry.accountId)) return invalid("Duplicate web tenant mapping for one Account");
-      if (keyEnvs.has(entry.keyEnv)) return invalid("Two web tenant mappings cannot share one key variable");
-      accountIds.add(entry.accountId);
-      keyEnvs.add(entry.keyEnv);
-    }
-    return parsed.data;
-  });
+/** The value is trimmed like every other deployment secret in this config (see `emptyToUndefined`). */
+const WebRouterKeySchema = z.string().min(1).max(1024);
 
 const EncryptionKeySchema = z
   .string()
@@ -431,11 +392,11 @@ const ServerEnvironmentSchema = z
     OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS: z.coerce.number().int().min(300).default(86400),
     /*
      * Platform web tools: fixed Server routes forwarding to the existing Router. Off by default;
-     * enabling requires the Router origin plus an explicit Account→tenant secret-reference map.
+     * enabling requires the Router origin plus the one deployment-wide web-only Router key.
      */
     OPENTAG_WEB_ENABLED: booleanString("false"),
     OPENTAG_WEB_ROUTER_BASE_URL: z.string().trim().optional(),
-    OPENTAG_WEB_ROUTER_TENANTS: WebRouterTenantsSchema,
+    OPENTAG_WEB_ROUTER_KEY: WebRouterKeySchema.optional(),
     /*
      * Defaults to what the refresh token's lifetime was, because that is the number it replaced: how long a client
      * may be idle and still be signed in.
@@ -586,10 +547,10 @@ const ServerEnvironmentSchema = z
         });
       }
     }
-    if (!value.OPENTAG_WEB_ROUTER_TENANTS || value.OPENTAG_WEB_ROUTER_TENANTS.length === 0) {
+    if (!value.OPENTAG_WEB_ROUTER_KEY) {
       context.addIssue({
         code: "custom",
-        message: "OPENTAG_WEB_ROUTER_TENANTS must map at least one Account when web tools are enabled",
+        message: "OPENTAG_WEB_ROUTER_KEY is required when web tools are enabled",
       });
     }
   })
@@ -791,8 +752,8 @@ export interface ServerConfig {
   cloudRunner: CloudRunnerConfig;
   /**
    * Platform web tools (Tavily via the existing Router). Off by default; enabling requires the
-   * Router origin and an explicit Account→tenant mapping whose key material was resolved from
-   * referenced deployment-secret variables at startup. Keys live only in this object.
+   * Router origin and the single Router web-only key. The key lives only in this object and never
+   * leaves the Server; enabling grants the `web` service to every valid active Account execution.
    */
   web: WebToolsConfig;
   /**
@@ -835,8 +796,8 @@ export type WebToolsConfig =
       enabled: true;
       /** Credential-less Router origin; the two web paths are fixed in code. */
       routerBaseUrl: string;
-      /** accountId → Router tenant binding with live key material (never logged). */
-      tenants: ReadonlyMap<string, { tenantId: string; routerKey: string }>;
+      /** The deployment's single Router web-only key (never logged, never sent to a Sandbox). */
+      routerKey: string;
     };
 
 export type CloudIdentitiesConfig = { enabled: false } | { enabled: true; storageBase: string; runnerVersion: string };
@@ -937,7 +898,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS: environment.OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS,
     OPENTAG_WEB_ENABLED: environment.OPENTAG_WEB_ENABLED,
     OPENTAG_WEB_ROUTER_BASE_URL: emptyToUndefined(environment.OPENTAG_WEB_ROUTER_BASE_URL),
-    OPENTAG_WEB_ROUTER_TENANTS: emptyToUndefined(environment.OPENTAG_WEB_ROUTER_TENANTS),
+    OPENTAG_WEB_ROUTER_KEY: emptyToUndefined(environment.OPENTAG_WEB_ROUTER_KEY),
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
   });
 
@@ -1035,7 +996,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       parsed.OPENTAG_CLOUD_RUNNER_VERSION,
     ),
     cloudRunner,
-    web: resolveWebToolsConfig(parsed, environment),
+    web: resolveWebToolsConfig(parsed),
     cloudModel: resolveCloudModelConfig(environment, cloudRunner.enabled),
     skillStorage: resolveSkillStorageConfig(parsed),
   };
@@ -1062,25 +1023,14 @@ function resolveSkillStorageConfig(parsed: z.infer<typeof ServerEnvironmentSchem
   };
 }
 
-function resolveWebToolsConfig(
-  parsed: z.infer<typeof ServerEnvironmentSchema>,
-  environment: NodeJS.ProcessEnv,
-): WebToolsConfig {
+function resolveWebToolsConfig(parsed: z.infer<typeof ServerEnvironmentSchema>): WebToolsConfig {
   if (!parsed.OPENTAG_WEB_ENABLED) return { enabled: false };
   const routerBaseUrl = parsed.OPENTAG_WEB_ROUTER_BASE_URL;
-  const mappings = parsed.OPENTAG_WEB_ROUTER_TENANTS;
-  if (!routerBaseUrl || !mappings || mappings.length === 0) {
-    throw new Error("Web tools are enabled without a Router origin or Account tenant mapping");
+  const routerKey = parsed.OPENTAG_WEB_ROUTER_KEY;
+  if (!routerBaseUrl || !routerKey) {
+    throw new Error("Web tools are enabled without a Router origin or web-only Router key");
   }
-  const tenants = new Map<string, { tenantId: string; routerKey: string }>();
-  for (const entry of mappings) {
-    const key = environment[entry.keyEnv];
-    if (!key || key !== key.trim() || key.length > 1024) {
-      throw new Error(`Web tenant mapping for Account ${entry.accountId} references an unset or invalid key variable`);
-    }
-    tenants.set(entry.accountId, { tenantId: entry.tenantId, routerKey: key });
-  }
-  return { enabled: true, routerBaseUrl: new URL(routerBaseUrl).origin, tenants };
+  return { enabled: true, routerBaseUrl: new URL(routerBaseUrl).origin, routerKey };
 }
 
 function resolveCloudIdentitiesConfig(

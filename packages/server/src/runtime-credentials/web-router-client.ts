@@ -32,8 +32,8 @@ interface RouterDispatch {
 }
 
 /**
- * Fixed internal forwarder to the existing Router. The two paths are pinned, the tenant key is
- * supplied per dispatch by the Server policy, redirects are never followed, the upstream body is
+ * Fixed internal forwarder to the existing Router. The two paths are pinned, the deployment's
+ * Router key is supplied per dispatch by the Server policy, redirects are never followed, the upstream body is
  * bounded before parsing, and error envelopes are mapped to redacted codes — provider material and
  * upstream response bodies never cross back to the caller.
  */
@@ -319,7 +319,7 @@ function routerStatusMapping(status: number): MappedRouterError {
     return { code: "invalid_request", message: "The Router rejected the request as invalid" };
   }
   if (status === 401 || status === 403) {
-    // The tenant key or scope failed: a deployment/configuration fault, never a caller problem.
+    // The Router key or scope failed: a deployment/configuration fault, never a caller problem.
     return { code: "upstream_error", message: "The web service authorization failed at the Router" };
   }
   if (status >= 500) {

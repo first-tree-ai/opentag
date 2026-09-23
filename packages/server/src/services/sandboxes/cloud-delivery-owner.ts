@@ -1115,6 +1115,14 @@ export class CloudDeliveryOwner {
         [RUNTIME_CAPABILITY.providerProxy]: 1,
         [RUNTIME_CAPABILITY.runtimeCredential]: 1,
         /*
+         * Platform web tools are a default Cloud capability on the Runner channel, exactly like the
+         * controlled model path: the execution still only receives the `web` service when the
+         * deployment's web policy authorizes it, and the Server refuses the execution-scoped bearer
+         * for an execution that was never granted it. Without this, a Cloud Runner could negotiate
+         * the capability but never be offered the service — the feature would be silently dead.
+         */
+        [RUNTIME_CAPABILITY.webTools]: 1,
+        /*
          * Session collaboration is carried explicitly only on the exact connection that
          * negotiated it and may receive execution permission. An internal collaboration child
          * opens its scope-free execution against this fact; a report-only or legacy connection

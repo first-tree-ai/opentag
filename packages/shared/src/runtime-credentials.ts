@@ -382,6 +382,20 @@ export const RuntimeMcpGatewayRejectCodeSchema = z.enum([
 ]);
 export type RuntimeMcpGatewayRejectCode = z.infer<typeof RuntimeMcpGatewayRejectCodeSchema>;
 
+/**
+ * Web service refusal vocabulary. Deliberately its own enum rather than a reuse of the MCP one: the
+ * two services have the same failure shapes today, but a future divergence (web has no path, MCP
+ * has no scopes) should not force one service's contract to move because the other changed.
+ */
+export const RuntimeWebGatewayRejectCodeSchema = z.enum([
+  "execution_unknown",
+  "execution_closed",
+  "capability_unsupported",
+  "service_not_granted",
+  "owner_unavailable",
+]);
+export type RuntimeWebGatewayRejectCode = z.infer<typeof RuntimeWebGatewayRejectCodeSchema>;
+
 export const RuntimeMcpGatewayRequestSchema = z
   .object({
     type: z.literal("runtime:mcp:gateway"),
@@ -422,6 +436,45 @@ export const RuntimeMcpGatewayResultSchema = z.discriminatedUnion("status", [
 ]);
 export type RuntimeMcpGatewayResult = z.infer<typeof RuntimeMcpGatewayResultSchema>;
 
+export const RuntimeWebGatewayRequestSchema = z
+  .object({
+    type: z.literal("runtime:web:gateway"),
+    requestId,
+    executionId,
+  })
+  .strict();
+export type RuntimeWebGatewayRequest = z.infer<typeof RuntimeWebGatewayRequestSchema>;
+
+/**
+ * The execution-scoped web gateway bearer.
+ *
+ * Its own frame for the same reason the MCP bearer has one: the open result states the grant, and
+ * every secret in this protocol is fetched separately. Unlike the MCP result there is no single
+ * `path` field — the web service is two fixed routes that both ends already share as constants in
+ * `./web-tools.ts`, so there is no Server-supplied destination for the Client to dial.
+ */
+export const RuntimeWebGatewayResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      type: z.literal("runtime:web:gateway:result"),
+      requestId,
+      status: z.literal("succeeded"),
+      executionId,
+      token: opaqueToken,
+      expiresAt: isoDateTime,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("runtime:web:gateway:result"),
+      requestId,
+      status: z.literal("rejected"),
+      code: RuntimeWebGatewayRejectCodeSchema,
+    })
+    .strict(),
+]);
+export type RuntimeWebGatewayResult = z.infer<typeof RuntimeWebGatewayResultSchema>;
+
 export const RuntimeCredentialRevokedCodeSchema = z.enum([
   "execution_closed",
   "connection_replaced",
@@ -447,6 +500,7 @@ export const RuntimeCredentialClientFrameSchema = z.discriminatedUnion("type", [
   RuntimeExecutionCloseRequestSchema,
   RuntimeProxyTicketRequestSchema,
   RuntimeMcpGatewayRequestSchema,
+  RuntimeWebGatewayRequestSchema,
 ]);
 export type RuntimeCredentialClientFrame = z.infer<typeof RuntimeCredentialClientFrameSchema>;
 
@@ -456,6 +510,7 @@ export const RuntimeCredentialServerFrameSchema = z.discriminatedUnion("type", [
   RuntimeExecutionClosedResultSchema,
   RuntimeProxyTicketResultSchema,
   RuntimeMcpGatewayResultSchema,
+  RuntimeWebGatewayResultSchema,
   RuntimeCredentialRevokedFrameSchema,
 ]);
 export type RuntimeCredentialServerFrame = z.infer<typeof RuntimeCredentialServerFrameSchema>;

@@ -42,7 +42,8 @@
   "mcp_detach_only_label": "Remove from this Agent only",
   "mcp_detach_title": "Remove {server}?",
   "mcp_disable_action": "Disable",
-  "mcp_disabled_hint": "Disabled. The credential is kept, so enabling it again needs no reauthorization.",
+  "mcp_disabled_authorization_required_hint": "Disabled. Authorization is required to use its tools.",
+  "mcp_disabled_hint": "Disabled. Authorization is kept.",
   "mcp_discovery_failed_hint": "Tools couldn’t be loaded. Try refreshing.",
   "mcp_edit_action": "Edit",
   "mcp_edit_advanced": "Extra headers",
@@ -95,6 +96,7 @@
   "mcp_tools_action": "View tools",
   "mcp_tools_column_schema": "Input schema",
   "mcp_tools_empty": "This Server reported no tools for this Agent’s credential.",
+  "mcp_tools_previous_hint": "Showing the last successful discovery.",
   "mcp_tools_title": "Tools discovered with this Agent’s credential",
   "mcp_tools_truncated": "The list was truncated; this is not the Server’s complete tool set.",
   "mcp_url_label": "MCP endpoint URL"

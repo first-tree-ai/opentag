@@ -251,11 +251,13 @@ describe("McpPage", () => {
     fireEvent.click(refresh);
     expect(await screen.findByText("Discovering…")).toBeTruthy();
     expect(screen.getByRole("button", { name: "View tools" })).toBeTruthy();
+    expect(screen.getByText("Showing the last successful discovery.")).toBeTruthy();
     expect(refresh.hasAttribute("disabled")).toBe(true);
     fireEvent.click(refresh);
     expect(probe).toHaveBeenCalledTimes(1);
     finish();
     await waitFor(() => expect(refresh.hasAttribute("disabled")).toBe(false));
+    expect(screen.queryByText("Showing the last successful discovery.")).toBeNull();
   });
 
   it("keeps the mount and authorization states independent so a disabled Server is not read as unauthorized", async () => {
@@ -266,10 +268,32 @@ describe("McpPage", () => {
     expect(screen.getByRole("switch", { name: "Enable linear" }).getAttribute("aria-checked")).toBe("false");
     // The credential is still active, and the page says so rather than implying reauthorization.
     expect(screen.getByText("Authorized")).toBeTruthy();
-    expect(
-      screen.getByText("Disabled. The credential is kept, so enabling it again needs no reauthorization."),
-    ).toBeTruthy();
+    expect(screen.getByText("Disabled. Authorization is kept.")).toBeTruthy();
   });
+
+  it.each(["pending", "expired", "revoked", "error", null] as const)(
+    "requires authorization for a disabled Server with %s authorization",
+    async (status) => {
+      stub([
+        entry({
+          enabled: false,
+          snapshot: null,
+          authorization: status
+            ? { ...(entry().authorization as NonNullable<MCPAgentServer["authorization"]>), status }
+            : null,
+        }),
+      ]);
+      wrap(<McpPage agentId={AGENT_ID} />);
+
+      expect(await screen.findByText("Disabled. Authorization is required to use its tools.")).toBeTruthy();
+      expect(screen.queryByText("Disabled. Authorization is kept.")).toBeNull();
+      expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+      expect(screen.queryByRole("menuitem", { name: "View tools" })).toBeNull();
+    },
+  );
 
   it("shows the probe result as tool count and flags a truncated snapshot", async () => {
     stub([
@@ -500,6 +524,8 @@ describe("McpPage", () => {
       expect(row?.textContent).not.toContain("None");
       expect(row?.textContent).not.toContain("Anonymous");
     });
+    expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
   });
 
   it("takes a Bearer key through a one-way input that is never echoed back", async () => {
@@ -652,6 +678,14 @@ describe("McpPage row actions", () => {
       const row = document.querySelector('[data-ui="mcp-server-row"]') as HTMLElement | null;
       expect(row?.textContent).toContain(label);
     });
+    expect(screen.getByRole("button", { name: "View tools" })).toBeTruthy();
+    if (status !== "active") {
+      expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
+      expect(screen.getByText("Showing the last successful discovery.")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "View tools" }));
+      expect(await screen.findByText("create_issue")).toBeTruthy();
+    }
   });
 
   it.each([
@@ -840,14 +874,14 @@ describe("McpPage row actions", () => {
     );
   });
 
-  it("reports a body with no snapshot as an absent protocol rather than blank", async () => {
+  it("offers no tools entry point when a snapshot is absent", async () => {
     stub([entry({ snapshot: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
-
-    expect(await screen.findByText("- · -")).toBeTruthy();
-    expect(screen.getByText("This Server reported no tools for this Agent’s credential.")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Refresh tools" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+    expect(screen.queryByRole("menuitem", { name: "View tools" })).toBeNull();
   });
 });
 

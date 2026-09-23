@@ -25,48 +25,50 @@ export function McpServerCard({
   const states = rowStates(entry);
   const authorized = states.authorizationStatus === "active";
   const discovering = probing || (states.probe === "pending" && Boolean(entry.authorization?.probedAt));
-  const canInspectTools = states.probe === "succeeded" || entry.snapshot !== null;
+  const canInspectTools = entry.snapshot !== null;
 
   return (
-    <li className="grid min-w-0 gap-4 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="mcp-server-row">
-      <div className="flex items-start justify-between gap-3">
-        <div className="grid min-w-0 gap-1">
-          <div className="wrap-anywhere">
-            <Text as="h2" variant="heading">
-              {entry.name}
-            </Text>
+    <li className="grid min-w-0 gap-3 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="mcp-server-row">
+      <div className="grid min-w-0 gap-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="grid min-w-0 gap-1">
+            <div className="wrap-anywhere">
+              <Text as="h2" variant="heading">
+                {entry.name}
+              </Text>
+            </div>
+            <p className="wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
           </div>
-          <p className="wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
+          <div className="flex shrink-0 items-center gap-2">
+            <Switch
+              aria-label={m.mcp_toggle_label({ name: entry.name })}
+              checked={entry.enabled}
+              disabled={toggling}
+              onCheckedChange={onToggle}
+              transitioning={toggling}
+            />
+            <ServerMenu authorized={authorized} entry={entry} onAction={onAction} />
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Switch
-            aria-label={m.mcp_toggle_label({ name: entry.name })}
-            checked={entry.enabled}
-            disabled={toggling}
-            onCheckedChange={onToggle}
-            transitioning={toggling}
-          />
-          <ServerMenu authorized={authorized} entry={entry} onAction={onAction} />
-        </div>
+
+        {entry.description || entry.discoveredDescription ? (
+          <p className="wrap-anywhere text-sm text-kumo-subtle">
+            {entry.description || m.mcp_description_discovered({ value: entry.discoveredDescription ?? "" })}
+          </p>
+        ) : null}
+
+        <AuthorizationInfo entry={entry} />
       </div>
-
-      {entry.description || entry.discoveredDescription ? (
-        <p className="wrap-anywhere text-sm text-kumo-subtle">
-          {entry.description || m.mcp_description_discovered({ value: entry.discoveredDescription ?? "" })}
-        </p>
-      ) : null}
-
-      <AuthorizationInfo entry={entry} />
       {!entry.enabled ? (
         <Text as="p" size="sm" variant="secondary">
-          {m.mcp_disabled_hint()}
+          {authorized ? m.mcp_disabled_hint() : m.mcp_disabled_authorization_required_hint()}
         </Text>
       ) : null}
 
       <div className="grid gap-3 border-t border-kumo-line pt-3 @min-[36rem]/content:grid-cols-[1fr_auto] @min-[36rem]/content:items-start">
         <ToolStatus discovering={discovering} entry={entry} />
         <div className="flex flex-wrap items-center gap-2">
-          {authorized && canInspectTools ? (
+          {canInspectTools ? (
             <Button onClick={() => onAction("tools")} size="compact" variant="ghost">
               {m.mcp_tools_action()}
             </Button>
@@ -76,16 +78,18 @@ export function McpServerCard({
               {m.mcp_authorize_action()}
             </Button>
           ) : null}
-          <Button
-            aria-label={m.mcp_probe_action()}
-            disabled={discovering}
-            loading={discovering}
-            onClick={onProbe}
-            size="compact"
-            variant={authorized && states.probe === "failed" ? "secondary" : "ghost"}
-          >
-            {m.mcp_probe_action()}
-          </Button>
+          {authorized ? (
+            <Button
+              aria-label={m.mcp_probe_action()}
+              disabled={discovering}
+              loading={discovering}
+              onClick={onProbe}
+              size="compact"
+              variant={states.probe === "failed" ? "secondary" : "ghost"}
+            >
+              {m.mcp_probe_action()}
+            </Button>
+          ) : null}
         </div>
       </div>
     </li>
@@ -107,6 +111,8 @@ function AuthorizationInfo({ entry }: { entry: MCPAgentServer }) {
 
 function ToolStatus({ discovering, entry }: { discovering: boolean; entry: MCPAgentServer }) {
   const states = rowStates(entry);
+  const previousTools =
+    entry.snapshot !== null && (states.authorizationStatus !== "active" || states.probe !== "succeeded" || discovering);
   return (
     <div className="grid min-w-0 gap-2">
       <div aria-live="polite" className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -114,7 +120,11 @@ function ToolStatus({ discovering, entry }: { discovering: boolean; entry: MCPAg
           label={discovering ? m.mcp_probe_state_pending() : describeProbe(entry)}
           tone={states.probe === "failed" && !discovering ? "danger" : "neutral"}
         />
-        {states.probe === "failed" && !discovering ? (
+        {previousTools ? (
+          <Text size="sm" variant="secondary">
+            {m.mcp_tools_previous_hint()}
+          </Text>
+        ) : states.probe === "failed" && !discovering && states.authorizationStatus === "active" ? (
           <Text size="sm" variant="secondary">
             {m.mcp_discovery_failed_hint()}
           </Text>
@@ -152,9 +162,7 @@ function ServerMenu({
         <DropdownMenu.Item onClick={() => onAction("edit")}>{m.mcp_edit_action()}</DropdownMenu.Item>
         {authorized ? (
           <DropdownMenu.Item onClick={() => onAction("authorize")}>{m.mcp_authorize_action()}</DropdownMenu.Item>
-        ) : (
-          <DropdownMenu.Item onClick={() => onAction("tools")}>{m.mcp_tools_action()}</DropdownMenu.Item>
-        )}
+        ) : null}
         <DropdownMenu.Separator />
         {canRevoke(entry) ? (
           <DropdownMenu.Item variant="danger" onClick={() => onAction("revoke")}>

@@ -5,6 +5,7 @@ import {
   ERROR_REPORT_MESSAGE_MAX_LENGTH,
   ERROR_REPORT_STACK_MAX_LENGTH,
   ErrorReportRequestSchema,
+  type ShortMetadataField,
   sanitizeErrorReportUrl,
 } from "../error-report.js";
 import { HTTP_PATHS } from "../http-paths.js";
@@ -203,6 +204,35 @@ describe("createErrorReport", () => {
     expect(bounded.platform).toBe("token=[REDACTED]");
     expect(bounded.route).toBeUndefined();
     expect(ErrorReportRequestSchema.safeParse(bounded).success).toBe(true);
+  });
+
+  it("refuses, at compile time, a short field list that forgets or invents a schema field", () => {
+    // The list is a Record over the key type, so both directions are checked by `tsc`; this test
+    // pins that mechanism rather than the current set of fields.
+    const complete: Record<ShortMetadataField, true> = {
+      agentId: true,
+      command: true,
+      computerId: true,
+      environment: true,
+      installationId: true,
+      platform: true,
+      provider: true,
+      reportId: true,
+      route: true,
+      sessionId: true,
+      turnId: true,
+      userAgent: true,
+      userId: true,
+      version: true,
+    };
+    // @ts-expect-error -- a record that forgets a schema field does not compile.
+    const forgetful: Record<ShortMetadataField, true> = { ...complete, version: undefined };
+    // @ts-expect-error -- a record that names a field the schema does not have does not compile.
+    const inventive: Record<ShortMetadataField, true> = { ...complete, accessToken: true };
+    expect(Object.keys(forgetful).length + Object.keys(inventive).length).toBeGreaterThan(0);
+
+    const report = createErrorReport(new Error("boom"), { source: "cli", occurredAt });
+    for (const key of Object.keys(complete) as ShortMetadataField[]) expect(report).not.toHaveProperty(key);
   });
 
   it("describes non-Error values without inventing a stack", () => {

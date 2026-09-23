@@ -132,27 +132,40 @@ function errorParts(error: unknown): { message: string; stack?: string; code?: s
 }
 
 /**
- * Every metadata field that is carried through as a bounded, redacted string.
- *
- * Listed rather than spread one by one so that adding a diagnostic field is one entry here and one
- * entry in the schema, and so no field can be added to the schema and silently never sent.
+ * The metadata fields `createErrorReport` handles by name: the discriminator, the code it validates,
+ * the channel it passes through, the URL it sanitizes, and the timestamp it defaults. Every other
+ * field of the metadata is a short string, carried through bounded and redacted.
  */
-const SHORT_METADATA_FIELDS = [
-  "agentId",
-  "command",
-  "computerId",
-  "environment",
-  "installationId",
-  "platform",
-  "provider",
-  "reportId",
-  "route",
-  "sessionId",
-  "turnId",
-  "userAgent",
-  "userId",
-  "version",
-] as const satisfies readonly (keyof ErrorReportMetadata)[];
+type NamedMetadataField = "source" | "code" | "channel" | "url" | "occurredAt";
+export type ShortMetadataField = Exclude<keyof ErrorReportMetadata, NamedMetadataField>;
+
+/**
+ * Every short metadata field, as a record over the key type rather than a list.
+ *
+ * A `Record<ShortMetadataField, true>` literal must name every key and may name nothing else, so
+ * the compiler enforces both directions: a field added to the schema and not here fails
+ * `tsc` with the missing key, and an entry that names no schema field fails as an excess
+ * property. Adding a diagnostic field is therefore one entry in the schema and one here, and a
+ * field can no longer be added to the schema and silently never sent.
+ */
+const SHORT_METADATA_FIELD_SET: Record<ShortMetadataField, true> = {
+  agentId: true,
+  command: true,
+  computerId: true,
+  environment: true,
+  installationId: true,
+  platform: true,
+  provider: true,
+  reportId: true,
+  route: true,
+  sessionId: true,
+  turnId: true,
+  userAgent: true,
+  userId: true,
+  version: true,
+};
+
+const SHORT_METADATA_FIELDS = Object.keys(SHORT_METADATA_FIELD_SET) as readonly ShortMetadataField[];
 
 /**
  * Build a relay request from a thrown value. Message and stack are redacted and bounded here so

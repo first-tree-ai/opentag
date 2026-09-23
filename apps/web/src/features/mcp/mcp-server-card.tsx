@@ -39,9 +39,6 @@ export function McpServerCard({
           <p className="wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span className="hidden text-xs text-kumo-subtle @min-[28rem]/content:inline">
-            {entry.enabled ? m.mcp_mount_enabled() : m.mcp_mount_disabled()}
-          </span>
           <Switch
             aria-label={m.mcp_toggle_label({ name: entry.name })}
             checked={entry.enabled}

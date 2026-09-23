@@ -263,7 +263,7 @@ describe("McpPage", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("linear")).toBeTruthy();
-    expect(screen.getByText("Disabled")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Enable linear" }).getAttribute("aria-checked")).toBe("false");
     // The credential is still active, and the page says so rather than implying reauthorization.
     expect(screen.getByText("Authorized")).toBeTruthy();
     expect(

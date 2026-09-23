@@ -92,6 +92,6 @@
   "mcp_tools_column_schema": "Input schema",
   "mcp_tools_empty": "This Server reported no tools for this Agent’s credential.",
   "mcp_tools_title": "Tools discovered with this Agent’s credential",
-  "mcp_tools_truncated": "The list was truncated; this is not the Server’s complete tool set.",
+  "mcp_tools_truncated": "This is not the Server’s complete tool set: the list hit a cap, or some tools were skipped because they exceeded the size limits.",
   "mcp_url_label": "MCP endpoint URL"
 }

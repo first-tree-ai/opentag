@@ -186,7 +186,11 @@ describe("McpPage", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("Found 200 tools")).toBeTruthy();
-    expect(screen.getByText("The list was truncated; this is not the Server’s complete tool set.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "This is not the Server’s complete tool set: the list hit a cap, or some tools were skipped because they exceeded the size limits.",
+      ),
+    ).toBeTruthy();
   });
 
   it("opens the editor on this Agent, and only warns about the other Agents when the shared scope is chosen", async () => {
@@ -729,7 +733,9 @@ describe("McpPage row actions", () => {
 
     await waitFor(() =>
       expect(
-        screen.getAllByText("The list was truncated; this is not the Server’s complete tool set.").length,
+        screen.getAllByText(
+          "This is not the Server’s complete tool set: the list hit a cap, or some tools were skipped because they exceeded the size limits.",
+        ).length,
       ).toBeGreaterThanOrEqual(2),
     );
   });

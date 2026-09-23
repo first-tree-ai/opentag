@@ -1,7 +1,12 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveOpenTagHomeLayout, writeComputerIdentityAtomically, writeCredentialsAtomically } from "@opentag/client";
+import {
+  resolveOpenTagHomeLayout,
+  writeComputerIdentityAtomically,
+  writeCredentialsAtomically,
+  writeMachineCredentialsAtomically,
+} from "@opentag/client";
 import { ErrorReportRequestSchema } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNEL, CLI_VERSION } from "../build-info.js";
@@ -17,6 +22,9 @@ import {
 } from "../core/diagnostics/error-reporting.js";
 
 const COMPUTER_ID = "c0000000-0000-4000-8000-000000000000";
+const INSTALLATION_ID = "10000000-0000-4000-8000-000000000000";
+const MACHINE_INSTALLATION_ID = "20000000-0000-4000-8000-000000000000";
+const ACCOUNT_ID = "a0000000-0000-4000-8000-000000000000";
 
 const homes: string[] = [];
 afterEach(async () => {
@@ -27,6 +35,22 @@ async function temporaryHome(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), "opentag-error-reporting-"));
   homes.push(home);
   return home;
+}
+
+async function writeConfigFile(home: string, name: string, content: string): Promise<void> {
+  const layout = resolveOpenTagHomeLayout(home);
+  await mkdir(layout.config, { recursive: true, mode: 0o700 });
+  await writeFile(join(layout.config, name), content, { mode: 0o600 });
+}
+
+async function connectHome(home: string, computerId = COMPUTER_ID, installationId = MACHINE_INSTALLATION_ID) {
+  await writeMachineCredentialsAtomically(
+    {
+      version: 3,
+      computer: { computerId, installationId, machineToken: "otmc_test", serverUrl: "https://opentag.example" },
+    },
+    home,
+  );
 }
 
 async function loggedInHome(serverUrl: string, userId?: string): Promise<string> {
@@ -94,24 +118,79 @@ describe("resolveErrorReportTarget", () => {
     );
 
     const corrupt = await temporaryHome();
-    const layout = resolveOpenTagHomeLayout(corrupt);
-    await mkdir(layout.config, { recursive: true });
-    await writeFile(join(layout.config, "credentials.json"), "{not json", { mode: 0o600 });
-    expect(await resolveErrorReportTarget(corrupt)).toEqual({});
+    await writeConfigFile(corrupt, "credentials.json", "{not json");
+    await writeConfigFile(corrupt, "computer.json", '{"version":2}');
+    await writeConfigFile(corrupt, "computer-credentials.json", '{"version":3,"computer":"nope"}');
+    expect(await resolveErrorReportTarget(corrupt)).toEqual({
+      serverUrl: undefined,
+      userId: undefined,
+      computerId: undefined,
+      installationId: undefined,
+    });
   });
 
-  it("reads the Account from the credentials and the Computer from its own identity", async () => {
-    const home = await loggedInHome("https://opentag.example", "account-1");
-    await writeComputerIdentityAtomically(home, {
-      version: 2,
-      computerId: COMPUTER_ID,
+  it("reads each identity file on its own, so one malformed file silences nothing else", async () => {
+    // Valid credentials beside a malformed local identity: the Account still addresses the report.
+    const brokenIdentity = await loggedInHome("https://opentag.example", ACCOUNT_ID);
+    await writeConfigFile(brokenIdentity, "computer.json", '{"version":2,"computerId":"not-a-uuid"}');
+    await connectHome(brokenIdentity);
+    expect(await resolveErrorReportTarget(brokenIdentity)).toEqual({
       serverUrl: "https://opentag.example",
+      userId: ACCOUNT_ID,
+      computerId: COMPUTER_ID,
+      installationId: MACHINE_INSTALLATION_ID,
     });
 
-    expect(await resolveErrorReportTarget(home)).toMatchObject({
+    // Valid credentials beside a malformed machine credential.
+    const brokenMachine = await loggedInHome("https://opentag.example", ACCOUNT_ID);
+    await writeComputerIdentityAtomically(brokenMachine, {
+      version: 2,
+      computerId: INSTALLATION_ID,
       serverUrl: "https://opentag.example",
-      userId: "account-1",
+    });
+    await writeConfigFile(brokenMachine, "computer-credentials.json", "{not json");
+    expect(await resolveErrorReportTarget(brokenMachine)).toEqual({
+      serverUrl: "https://opentag.example",
+      userId: ACCOUNT_ID,
+      computerId: undefined,
+      installationId: INSTALLATION_ID,
+    });
+
+    // Malformed credentials beside a valid machine credential: the Computer still addresses it.
+    const brokenCredentials = await temporaryHome();
+    await writeConfigFile(brokenCredentials, "credentials.json", "{not json");
+    await connectHome(brokenCredentials);
+    expect(await resolveErrorReportTarget(brokenCredentials)).toEqual({
+      serverUrl: "https://opentag.example",
+      userId: undefined,
       computerId: COMPUTER_ID,
+      installationId: MACHINE_INSTALLATION_ID,
+    });
+  });
+
+  it("names the Account Computer from the machine credential and the installation from its own identity", async () => {
+    const home = await loggedInHome("https://opentag.example", ACCOUNT_ID);
+    await writeComputerIdentityAtomically(home, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: "https://opentag.example",
+    });
+    await connectHome(home, COMPUTER_ID, MACHINE_INSTALLATION_ID);
+
+    // Four distinct values, so a swap between the two records cannot pass.
+    expect(await resolveErrorReportTarget(home)).toEqual({
+      serverUrl: "https://opentag.example",
+      userId: ACCOUNT_ID,
+      computerId: COMPUTER_ID,
+      installationId: INSTALLATION_ID,
+    });
+
+    // A home whose local identity is missing still reports the installation the credential names.
+    const identityless = await temporaryHome();
+    await connectHome(identityless, COMPUTER_ID, MACHINE_INSTALLATION_ID);
+    expect(await resolveErrorReportTarget(identityless)).toMatchObject({
+      computerId: COMPUTER_ID,
+      installationId: MACHINE_INSTALLATION_ID,
     });
   });
 });
@@ -140,9 +219,10 @@ describe("reportCliError", () => {
     const home = await loggedInHome("https://opentag.example", "account-1");
     await writeComputerIdentityAtomically(home, {
       version: 2,
-      computerId: COMPUTER_ID,
+      computerId: INSTALLATION_ID,
       serverUrl: "https://opentag.example",
     });
+    await connectHome(home);
 
     await reportCliError(new Error("boom"), {
       home,
@@ -155,6 +235,7 @@ describe("reportCliError", () => {
     expect(body).toMatchObject({
       userId: "account-1",
       computerId: COMPUTER_ID,
+      installationId: INSTALLATION_ID,
       agentId: "agent-1",
       sessionId: "session-1",
       turnId: "turn-1",

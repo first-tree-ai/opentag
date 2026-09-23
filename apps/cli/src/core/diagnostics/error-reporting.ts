@@ -59,8 +59,25 @@ export interface ErrorReportTarget {
   /** `undefined` when this home has never signed in or connected; there is then nowhere to report. */
   serverUrl?: string | undefined;
   userId?: string | undefined;
+  /** The Account Computer this home is connected as; the identifier the Server and the Web App know. */
   computerId?: string | undefined;
+  /** This installation's own locally generated identity, which several Computers over time can share. */
   installationId?: string | undefined;
+}
+
+/**
+ * Read one optional identity file, treating a missing or malformed file alike as "nothing known".
+ *
+ * Each file is read on its own rather than under one shared `catch`: the readers throw on a
+ * malformed file, and a corrupt `computer.json` must not silence a report that valid Account
+ * credentials alone could still address. What is unreadable simply goes unreported.
+ */
+async function readOptionalIdentity<T>(read: () => Promise<T | undefined>): Promise<T | undefined> {
+  try {
+    return await read();
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -70,23 +87,24 @@ export interface ErrorReportTarget {
  * Account and a Computer can say so, and the two answer different questions — who hit this, and
  * which machine it was. A home that has neither reports nothing at all, which is the point of
  * returning the whole thing rather than throwing.
+ *
+ * The two machine identifiers come from different records on purpose. `computer.json` holds the
+ * installation's locally generated uuid, which the daemon logs as `installationId`; the Account's
+ * Computer uuid — the one a reader can look up — exists only in the machine credential, which is
+ * what a connected Computer received from the Server.
  */
 export async function resolveErrorReportTarget(home: string): Promise<ErrorReportTarget> {
-  try {
-    const [credentials, identity, machine] = await Promise.all([
-      client.readCredentials(home),
-      client.readComputerIdentity(home),
-      client.readMachineCredentials(home),
-    ]);
-    return {
-      serverUrl: credentials?.serverUrl ?? identity?.serverUrl ?? machine?.computer.serverUrl,
-      userId: credentials?.userId,
-      computerId: identity?.computerId ?? machine?.computer.computerId,
-      installationId: machine?.computer.installationId,
-    };
-  } catch {
-    return {};
-  }
+  const [credentials, identity, machine] = await Promise.all([
+    readOptionalIdentity(() => client.readCredentials(home)),
+    readOptionalIdentity(() => client.readComputerIdentity(home)),
+    readOptionalIdentity(() => client.readMachineCredentials(home)),
+  ]);
+  return {
+    serverUrl: credentials?.serverUrl ?? identity?.serverUrl ?? machine?.computer.serverUrl,
+    userId: credentials?.userId,
+    computerId: machine?.computer.computerId,
+    installationId: identity?.computerId ?? machine?.computer.installationId,
+  };
 }
 
 /** The Agent a failure belongs to, when it happened inside a turn rather than inside a command. */

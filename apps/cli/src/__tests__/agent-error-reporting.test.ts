@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { writeCredentialsAtomically } from "@opentag/client";
 import { ErrorReportRequestSchema, type TurnFailureReason } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAgentErrorReporter, shouldReportTurnFailure } from "../core/diagnostics/agent-error-reporting.js";
+import {
+  AGENT_ERROR_REPORT_COOLDOWN_MS,
+  createAgentErrorReporter,
+  shouldReportTurnFailure,
+} from "../core/diagnostics/agent-error-reporting.js";
 
 const homes: string[] = [];
 afterEach(async () => {
@@ -107,5 +111,30 @@ describe("createAgentErrorReporter", () => {
     // A relay that cannot be delivered is lost, not surfaced on the path that is already failing.
     expect(() => report({ ...failure, errorReason: "turn_state_unknown" })).not.toThrow();
     await expect(Promise.all(relays)).resolves.toEqual([{ ok: false }]);
+  });
+
+  it("relays one failure per Session and reason per cooldown, and every distinct one", async () => {
+    let now = 1_000;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    const relays: Promise<{ ok: boolean }>[] = [];
+    const report = createAgentErrorReporter({
+      home: await connectedHome(),
+      fetchImpl,
+      now: () => now,
+      onReported: (relay) => relays.push(relay),
+    });
+
+    report({ ...failure, errorReason: "turn_state_unknown" });
+    report({ ...failure, turnId: "turn-2", errorReason: "turn_state_unknown" });
+    // A different reason, and a different Session, are each their own failure.
+    report({ ...failure, turnId: "turn-3", errorReason: "provider_protocol_error" });
+    report({ ...failure, sessionId: "session-2", errorReason: "turn_state_unknown" });
+    now += AGENT_ERROR_REPORT_COOLDOWN_MS;
+    report({ ...failure, turnId: "turn-4", errorReason: "turn_state_unknown" });
+    await Promise.all(relays);
+
+    const turns = fetchImpl.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).turnId);
+    expect(turns).toEqual(["turn-1", "turn-3", "turn-1", "turn-4"]);
+    expect(AGENT_ERROR_REPORT_COOLDOWN_MS).toBe(30_000);
   });
 });

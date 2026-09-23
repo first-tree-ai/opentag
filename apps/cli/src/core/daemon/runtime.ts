@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { arch, hostname, platform } from "node:os";
 import {
   type ClientLogger,
+  type ComposedClientRuntime,
   configureClientLoggerForService,
   createClientRuntime,
   createLogger,
@@ -226,6 +227,13 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     onChannelTarget: (target) => context.state.channelTargetObserver?.(target),
     platform: supportedPlatform,
   });
+  /*
+   * The provider a Session ran on is known only to the composed runtime, and the reporter has to
+   * exist before the runtime does because the composition takes it as an option. The holder closes
+   * that loop: filled in once the runtime exists, empty — and answering no provider — for any
+   * failure filed before then.
+   */
+  const composed: { runtime?: Pick<ComposedClientRuntime, "runtimeManager"> } = {};
   const runtime = await createClientRuntime(connection, {
     home: context.home,
     environment: context.daemonEnvironment,
@@ -242,8 +250,10 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     agentErrorReporter: createAgentErrorReporter({
       home: context.home,
       environment: context.daemonEnvironment,
+      resolveProvider: (sessionId) => composed.runtime?.runtimeManager.providerId(sessionId),
     }),
   });
+  composed.runtime = runtime;
   context.state.updater = await attachAutoUpdater(context, runtime, runtimeLogger);
   void connection.whenRegistered(signal).then(
     () => runtimeLogger.info({}, "Computer runtime is ready"),

@@ -859,7 +859,7 @@ export async function startServer(): Promise<void> {
     });
     const mcpCipher = new McpCredentialCipher(applicationCipher);
     const mcpOAuth = new McpOAuthClient({ fetcher: mcpFetcher, publicUrl: config.publicUrl });
-    const mcpProbe = new McpProbe({ fetcher: mcpFetcher });
+    const mcpProbe = new McpProbe({ fetcher: mcpFetcher, logger: serviceLogger("mcp-probe") });
     const mcpAuthorization = new McpAuthorizationService({
       database,
       cipher: mcpCipher,

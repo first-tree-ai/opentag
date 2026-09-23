@@ -237,16 +237,78 @@ export const MCPServerUrlSchema = z
     }
   }, "Must be an HTTP(S) URL without credentials or fragment");
 
-/** One `tools/list` entry snapshot. Bounded exactly as the probe bounds it. */
+/**
+ * Per-tool bounds on one `tools/list` entry, in UTF-8 bytes. The probe skips a tool that violates
+ * any of them and reports the snapshot as truncated; {@link MCPToolSnapshotSchema} refuses the same
+ * tool on read, so a stored snapshot can never hold what a probe would not have stored.
+ *
+ * The description and schema bounds are sized for real hosted Servers: Linear and Notion ship tool
+ * descriptions of several KiB and input schemas past 8 KiB, and a bound that fails them buys
+ * nothing over one that fits them, because the list-level caps below still bound the whole
+ * snapshot.
+ */
+export const MCP_TOOL_NAME_MAX_BYTES = 128;
+export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 16 * 1024;
+export const MCP_TOOL_INPUT_SCHEMA_MAX_BYTES = 64 * 1024;
+
+/**
+ * Bound a string in UTF-8 bytes rather than `z.string().max()`'s UTF-16 code units, so the schema
+ * agrees with the probe on multi-byte text instead of admitting up to three times its bound.
+ */
+function utf8Bounded(schema: z.ZodString, maxBytes: number, what: string): z.ZodString {
+  return schema.refine((value) => BufferByteLength(value) <= maxBytes, {
+    message: `The ${what} must be at most ${maxBytes} bytes`,
+  });
+}
+
+/**
+ * The UTF-8 byte length of a value's JSON serialization, or undefined when it has none: a circular
+ * structure or a BigInt makes `JSON.stringify` throw, and a value that cannot be serialized cannot
+ * be stored or sent to a Provider either, so "no length" is the honest answer rather than a crash.
+ */
+function serializedUtf8Bytes(value: unknown): number | undefined {
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? undefined : BufferByteLength(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The input schema is opaque JSON — the shape is the Server's, never this module's — so it is
+ * bounded by serialized size alone, as the probe bounds it. A null (or absent) schema is a tool that
+ * takes no arguments and is always within bound.
+ */
+const MCPToolInputSchemaSchema = z.unknown().refine(
+  (value) => {
+    if (value === null || value === undefined) return true;
+    const bytes = serializedUtf8Bytes(value);
+    return bytes !== undefined && bytes <= MCP_TOOL_INPUT_SCHEMA_MAX_BYTES;
+  },
+  { message: `The tool input schema must serialize to at most ${MCP_TOOL_INPUT_SCHEMA_MAX_BYTES} bytes` },
+);
+
+/**
+ * One `tools/list` entry snapshot. Bounded exactly as the probe bounds it, on every field: this
+ * schema is what the gateway parses a stored snapshot back through, so a row written by an older
+ * bound, or damaged out of band, cannot put an oversized tool into a live catalogue.
+ */
 export const MCPToolSnapshotSchema = z
   .object({
-    name: z.string().min(1).max(128),
-    description: z.string().max(1024).nullable(),
-    inputSchema: z.unknown().nullable(),
+    name: utf8Bounded(z.string().min(1), MCP_TOOL_NAME_MAX_BYTES, "tool name"),
+    description: utf8Bounded(z.string(), MCP_TOOL_DESCRIPTION_MAX_BYTES, "tool description").nullable(),
+    inputSchema: MCPToolInputSchemaSchema.nullable(),
   })
   .strict();
 export type MCPToolSnapshot = z.infer<typeof MCPToolSnapshotSchema>;
 
+/**
+ * List-level caps on the whole snapshot. They are deliberately not the product of the per-tool
+ * bounds and the tool count: a Server whose every tool is near the per-tool bounds stops at the byte
+ * cap long before the count cap, and the snapshot is reported as truncated, exactly as when a tool
+ * was skipped. The Account bound is the sum of every stored snapshot, so 256 such snapshots fill it.
+ */
 export const MCP_PROBE_MAX_TOOLS = 200;
 export const MCP_PROBE_MAX_TOOLS_BYTES = 256 * 1024;
 export const MCP_ACCOUNT_TOOL_SNAPSHOT_MAX_BYTES = 64 * 1024 * 1024;

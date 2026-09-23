@@ -98,6 +98,6 @@
   "mcp_tools_empty": "该 Server 对该 Agent 的凭据未返回任何工具。",
   "mcp_tools_previous_hint": "显示上次成功探测的结果。",
   "mcp_tools_title": "使用本 Agent 凭据探测到的工具",
-  "mcp_tools_truncated": "列表已被截断；这不是该 Server 的完整工具集合。",
+  "mcp_tools_truncated": "这不是该 Server 的完整工具集合：列表触及上限，或部分工具因超过大小限制而被跳过。",
   "mcp_url_label": "MCP 端点 URL"
 }

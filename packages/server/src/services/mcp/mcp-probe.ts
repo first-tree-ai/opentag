@@ -3,7 +3,11 @@ import {
   MCP_MODERN_PROTOCOL_VERSION,
   MCP_PROBE_MAX_TOOLS,
   MCP_PROBE_MAX_TOOLS_BYTES,
+  MCP_TOOL_DESCRIPTION_MAX_BYTES,
+  MCP_TOOL_INPUT_SCHEMA_MAX_BYTES,
+  MCP_TOOL_NAME_MAX_BYTES,
 } from "@opentag/shared";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { boundedMcpSummary, MCP_ERROR_CODES, McpServiceError } from "./errors.js";
 import {
   detectEraFromRpcError,
@@ -25,10 +29,6 @@ import type { McpOutboundFetcher } from "./mcp-url-policy.js";
  * while probes run concurrently.
  */
 
-/** Per-tool bounds; a page violating any of them fails the probe rather than being truncated. */
-const MAX_TOOL_NAME_BYTES = 128;
-const MAX_TOOL_DESCRIPTION_BYTES = 1024;
-const MAX_TOOL_INPUT_SCHEMA_BYTES = 8 * 1024;
 /** Total probe budget across every page, so a Server cannot keep us paginating forever. */
 const DEFAULT_PROBE_BUDGET_MS = 30_000;
 const MAX_PROBE_PAGES = 20;
@@ -48,10 +48,30 @@ export interface McpProbeResult {
   instructions: string | null;
   tools: McpProbeTool[];
   toolsCount: number;
+  /**
+   * True when the snapshot is not the Server's whole tool set: a list-level cap was hit, pagination
+   * stopped early, or at least one tool was skipped for violating a per-tool bound.
+   */
   toolsTruncated: boolean;
+  /** How many `tools/list` entries were skipped for violating a per-tool bound. */
+  toolsSkipped: number;
   probeError: string | null;
   /** True when the cached era must be dropped and re-detected on the next attempt. */
   eraInvalidated: boolean;
+}
+
+/** Why one `tools/list` entry was skipped; the name of the bound it violated, when there is one. */
+type SkippedToolReason =
+  | { reason: "not_an_object" }
+  | { reason: "missing_name" }
+  | { reason: "over_bound"; bound: string; limitBytes: number; observedBytes: number };
+
+type ToolValidation = { ok: true; tool: McpProbeTool } | ({ ok: false; name: string | null } & SkippedToolReason);
+
+interface CollectedTools {
+  tools: McpProbeTool[];
+  truncated: boolean;
+  skipped: number;
 }
 
 export interface McpProbeInput {
@@ -70,18 +90,22 @@ export interface McpProbeOptions {
   now?: () => Date;
   probeBudgetMs?: number;
   clientInfo?: { name: string; version: string };
+  /** Receives one `warn` line per skipped tool; absent means skipped tools are counted silently. */
+  logger?: ServiceLogger;
 }
 
 export class McpProbe {
   readonly #budgetMs: number;
   readonly #clientInfo: { name: string; version: string };
   readonly #fetcher: McpOutboundFetcher;
+  readonly #logger: ServiceLogger | undefined;
   readonly #now: () => Date;
 
   constructor(options: McpProbeOptions) {
     this.#budgetMs = options.probeBudgetMs ?? DEFAULT_PROBE_BUDGET_MS;
     this.#clientInfo = options.clientInfo ?? { name: "opentag", version: "1" };
     this.#fetcher = options.fetcher;
+    this.#logger = options.logger;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -123,6 +147,7 @@ export class McpProbe {
       tools: tools.tools,
       toolsCount: tools.tools.length,
       toolsTruncated: tools.truncated,
+      toolsSkipped: tools.skipped,
       probeError: null,
       eraInvalidated: false,
     };
@@ -198,6 +223,7 @@ export class McpProbe {
       tools: tools.tools,
       toolsCount: tools.tools.length,
       toolsTruncated: tools.truncated,
+      toolsSkipped: tools.skipped,
       probeError: null,
       eraInvalidated: false,
     };
@@ -218,8 +244,9 @@ export class McpProbe {
     sessionId: string | undefined,
     negotiatedVersion: string | undefined,
     deadline: number,
-  ): Promise<{ tools: McpProbeTool[]; truncated: boolean }> {
+  ): Promise<CollectedTools> {
     const collected: McpProbeTool[] = [];
+    let skipped = 0;
     /*
      * The caller's deadline is the probe's own, not a fresh budget: this runs after the handshake has
      * already spent part of it, and starting a second window let a legacy probe run about twice the
@@ -237,23 +264,21 @@ export class McpProbe {
       }
       pages += 1;
       const page = readToolsPage(
-        asRecord(
-          await transport.callLegacy(
-            input.accountId,
-            input.url,
-            "tools/list",
-            cursor === undefined ? {} : { cursor },
-            input.authHeaders,
-            { ...sessionHeaders, ...(negotiatedVersion === undefined ? {} : { negotiatedVersion }) },
-          ),
+        await transport.callLegacy(
+          input.accountId,
+          input.url,
+          "tools/list",
+          cursor === undefined ? {} : { cursor },
+          input.authHeaders,
+          { ...sessionHeaders, ...(negotiatedVersion === undefined ? {} : { negotiatedVersion }) },
         ),
       );
-      for (const tool of page.tools) collected.push(validateTool(tool));
+      skipped += this.#acceptTools(input, page.tools, collected);
       truncated = this.#applyToolCaps(collected) || truncated;
       if (truncated || page.nextCursor === undefined) break;
       cursor = page.nextCursor;
     }
-    return { tools: collected, truncated };
+    return { tools: collected, truncated: truncated || skipped > 0, skipped };
   }
 
   /**
@@ -261,14 +286,11 @@ export class McpProbe {
    * runs out. A one-page implementation would silently drop tools, so this is the only way the
    * snapshot can be trusted as "everything the Server offered within the cap".
    */
-  async #collectTools(
-    input: McpProbeInput,
-    transport: McpTransport,
-    deadline: number,
-  ): Promise<{ tools: McpProbeTool[]; truncated: boolean }> {
+  async #collectTools(input: McpProbeInput, transport: McpTransport, deadline: number): Promise<CollectedTools> {
     const collected: McpProbeTool[] = [];
     let cursor: string | undefined;
     let truncated = false;
+    let skipped = 0;
     let pages = 0;
     for (;;) {
       if (this.#now().getTime() >= deadline || pages >= MAX_PROBE_PAGES) {
@@ -279,24 +301,46 @@ export class McpProbe {
       }
       pages += 1;
       const page = readToolsPage(
-        asRecord(
-          await transport.call(
-            input.accountId,
-            input.url,
-            "tools/list",
-            cursor === undefined ? {} : { cursor },
-            input.authHeaders,
-          ),
+        await transport.call(
+          input.accountId,
+          input.url,
+          "tools/list",
+          cursor === undefined ? {} : { cursor },
+          input.authHeaders,
         ),
       );
-      // Each page is validated as a unit: an over-limit tool fails the probe rather than being
-      // quietly dropped or stored mangled.
-      for (const tool of page.tools) collected.push(validateTool(tool));
+      skipped += this.#acceptTools(input, page.tools, collected);
       truncated = this.#applyToolCaps(collected) || truncated;
       if (truncated || page.nextCursor === undefined) break;
       cursor = page.nextCursor;
     }
-    return { tools: collected, truncated };
+    // A skipped tool does not stop pagination — the rest of the list is still usable — but the
+    // snapshot is partial all the same, and `tools_truncated` is the one flag that says so.
+    return { tools: collected, truncated: truncated || skipped > 0, skipped };
+  }
+
+  /**
+   * Validate one page's entries into the running snapshot, skipping — never storing, never
+   * failing on — any that violate a per-tool bound. Returns how many were skipped. Each skip is
+   * logged on its own line so an operator can see which tool a Server lost and why, because the UI
+   * only learns that the list is partial.
+   */
+  #acceptTools(input: McpProbeInput, entries: readonly unknown[], collected: McpProbeTool[]): number {
+    let skipped = 0;
+    for (const entry of entries) {
+      const validation = validateTool(entry);
+      if (validation.ok) {
+        collected.push(validation.tool);
+        continue;
+      }
+      skipped += 1;
+      const { ok: _ok, name, ...detail } = validation;
+      this.#logger?.warn(
+        { accountId: input.accountId, url: input.url, tool: name, ...detail },
+        "MCP probe skipped a tool that violates a per-tool bound",
+      );
+    }
+    return skipped;
   }
 
   /**
@@ -315,39 +359,70 @@ export class McpProbe {
   }
 }
 
-function readToolsPage(payload: Record<string, unknown>): { tools: unknown[]; nextCursor: string | undefined } {
-  const tools = Array.isArray(payload.tools) ? payload.tools : [];
-  const nextCursor =
-    typeof payload.nextCursor === "string" && payload.nextCursor.length > 0 ? payload.nextCursor : undefined;
+/**
+ * Parse one `tools/list` result into a page, shared by the modern and legacy paths.
+ *
+ * The specification's `ListToolsResult` requires a `tools` array and permits `nextCursor` only as a
+ * string, and this parser holds the Server to exactly that. It used to default every malformed
+ * shape — a non-object result, a missing or non-array `tools`, a cursor of the wrong type — to an
+ * empty page with no further cursor, which turned a broken answer into a *successful* empty or
+ * incomplete snapshot that overwrote the last good one. A page that is not a page fails the probe,
+ * so the stored snapshot stays what the Server last said correctly.
+ *
+ * `nextCursor: null` is read as absent. The specification does not allow it, but it is what many
+ * JSON serializers emit for an optional field that is not set, it carries no token that could name
+ * a further page, and so "end of list" is its only possible meaning. Anything else that is present
+ * but not a non-empty string is a cursor this client cannot follow, and following nothing would
+ * report a partial list as complete.
+ */
+function readToolsPage(result: unknown): { tools: unknown[]; nextCursor: string | undefined } {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server's tools/list result is not an object");
+  }
+  const { tools, nextCursor } = result as Record<string, unknown>;
+  if (!Array.isArray(tools)) {
+    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server's tools/list result has no tools array");
+  }
+  if (nextCursor === undefined || nextCursor === null) return { tools, nextCursor: undefined };
+  if (typeof nextCursor !== "string" || nextCursor.length === 0) {
+    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server's tools/list nextCursor is not a string");
+  }
   return { tools, nextCursor };
 }
 
 /**
- * Validate one tool against the documented bounds. A page that violates them fails the whole probe:
- * storing a silently mangled schema would be worse than reporting that the Server's answer was not
- * usable.
+ * Validate one tool against the documented per-tool bounds. A violation is reported, not thrown:
+ * the tool is skipped and the snapshot marked partial, the same outcome as the list-level caps.
+ * Real hosted Servers ship a few tools far larger than the rest, and failing the whole probe on
+ * one of them left the Agent with no tools at all instead of with every tool but that one. The
+ * tool is never stored mangled — an over-bound value is dropped whole, not trimmed.
  */
-function validateTool(value: unknown): McpProbeTool {
-  const tool = asRecord(value);
-  const name = tool.name;
-  if (typeof name !== "string" || name.length === 0) {
-    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server returned a tool without a name");
+function validateTool(value: unknown): ToolValidation {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, name: null, reason: "not_an_object" };
   }
-  if (Buffer.byteLength(name, "utf8") > MAX_TOOL_NAME_BYTES) {
-    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server returned a tool name over the size limit");
+  const tool = value as Record<string, unknown>;
+  const name = tool.name;
+  if (typeof name !== "string" || name.length === 0) return { ok: false, name: null, reason: "missing_name" };
+  const nameBytes = Buffer.byteLength(name, "utf8");
+  if (nameBytes > MCP_TOOL_NAME_MAX_BYTES) {
+    return overBound(name, "MCP_TOOL_NAME_MAX_BYTES", MCP_TOOL_NAME_MAX_BYTES, nameBytes);
   }
   const description = typeof tool.description === "string" ? tool.description : null;
-  if (description !== null && Buffer.byteLength(description, "utf8") > MAX_TOOL_DESCRIPTION_BYTES) {
-    throw new McpServiceError(
-      MCP_ERROR_CODES.PROBE_FAILED,
-      "The Server returned a tool description over the size limit",
-    );
+  const descriptionBytes = description === null ? 0 : Buffer.byteLength(description, "utf8");
+  if (descriptionBytes > MCP_TOOL_DESCRIPTION_MAX_BYTES) {
+    return overBound(name, "MCP_TOOL_DESCRIPTION_MAX_BYTES", MCP_TOOL_DESCRIPTION_MAX_BYTES, descriptionBytes);
   }
   const inputSchema = tool.inputSchema ?? null;
-  if (inputSchema !== null && Buffer.byteLength(JSON.stringify(inputSchema), "utf8") > MAX_TOOL_INPUT_SCHEMA_BYTES) {
-    throw new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "The Server returned a tool schema over the size limit");
+  const schemaBytes = inputSchema === null ? 0 : Buffer.byteLength(JSON.stringify(inputSchema), "utf8");
+  if (schemaBytes > MCP_TOOL_INPUT_SCHEMA_MAX_BYTES) {
+    return overBound(name, "MCP_TOOL_INPUT_SCHEMA_MAX_BYTES", MCP_TOOL_INPUT_SCHEMA_MAX_BYTES, schemaBytes);
   }
-  return { name, description, inputSchema };
+  return { ok: true, tool: { name, description, inputSchema } };
+}
+
+function overBound(name: string, bound: string, limitBytes: number, observedBytes: number): ToolValidation {
+  return { ok: false, name, reason: "over_bound", bound, limitBytes, observedBytes };
 }
 
 function serializedToolsBytes(tools: readonly McpProbeTool[]): number {
@@ -389,6 +464,7 @@ function failed(error: unknown, eraInvalidated: boolean): McpProbeResult {
     tools: [],
     toolsCount: 0,
     toolsTruncated: false,
+    toolsSkipped: 0,
     probeError: `${code}: ${summary}`,
     eraInvalidated,
   };

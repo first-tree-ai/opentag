@@ -45,7 +45,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/cli/index.ts --format esm --dts && node ../../scripts/copy-web-tools-extension.mjs",
+    "build": "tsdown src/index.ts src/cli/index.ts --format esm --dts --sourcemap && node ../../scripts/copy-web-tools-extension.mjs",
     "start": "node dist/cli/index.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1"
@@ -58,6 +58,7 @@
     "@opentag/shared": "workspace:*",
     "commander": "^15.0.0",
     "vitest": "^5.0.1",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "4.5.4"
   }
 }

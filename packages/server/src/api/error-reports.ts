@@ -8,6 +8,14 @@ import { parseRequest } from "./request-validation.js";
 /** Reports accepted from one address per minute. Generous for a browser in a crash loop, tight for a flood. */
 export const ERROR_REPORT_RATE_LIMIT = 30;
 export const ERROR_REPORT_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+/**
+ * The schema bounds a report's fields in UTF-16 code units, not bytes: a maximal report written
+ * entirely in CJK — 4096 characters of message, 16384 of stack, a full URL and the short fields —
+ * is roughly 71 KB on the wire, and the product ships a Chinese UI. 128 KiB keeps every
+ * schema-valid report readable with room for JSON escaping, while staying far below Fastify's
+ * 1 MiB default: an anonymous endpoint has no reason to read a megabyte it is guaranteed to reject.
+ */
+export const ERROR_REPORT_BODY_LIMIT_BYTES = 128 * 1024;
 
 export interface ErrorReportRoutesOptions {
   reporter?: ErrorReporter;
@@ -25,7 +33,7 @@ export function registerErrorReportRoutes(app: FastifyInstance, options: ErrorRe
   const rateLimiter =
     options.rateLimiter ?? new RouteRateLimiter(ERROR_REPORT_RATE_LIMIT, ERROR_REPORT_RATE_LIMIT_WINDOW_MS);
 
-  app.post(HTTP_PATHS.errorReports, async (request, reply) => {
+  app.post(HTTP_PATHS.errorReports, { bodyLimit: ERROR_REPORT_BODY_LIMIT_BYTES }, async (request, reply) => {
     try {
       rateLimiter.check(request.ip);
     } catch (error) {
@@ -35,9 +43,25 @@ export function registerErrorReportRoutes(app: FastifyInstance, options: ErrorRe
       throw error;
     }
     const event = parseRequest(ErrorReportRequestSchema, request.body);
-    // The log line is capped per field; the forwarded copy keeps the full stack the schema allows.
+    /*
+     * The log line is capped per field; the forwarded copy keeps the full stack the schema allows.
+     *
+     * The tracker keeps only the fields it understands, so this line is where the rest of a report's
+     * context lives. The identifiers most worth filtering on are lifted out of the nested payload:
+     * `reportId` is what ties a tracker event back to this line, and `userId` is who to ask. They are
+     * lifted from the redacted copy, never from the raw event: the relay is anonymous, so either
+     * value is whatever the caller chose to post, credential-shaped or not.
+     */
+    const errorReport = redactForLog(event);
     request.log.warn(
-      { module: "error-reporting", source: event.source, errorCode: event.code, errorReport: redactForLog(event) },
+      {
+        module: "error-reporting",
+        source: event.source,
+        errorCode: event.code,
+        reportId: errorReport.reportId,
+        userId: errorReport.userId,
+        errorReport,
+      },
       "Client error reported",
     );
     const { ip } = request;

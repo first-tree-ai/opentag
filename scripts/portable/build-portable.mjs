@@ -379,6 +379,27 @@ export function assertBuiltCliIdentity({ appDir, channelConfig, version }) {
   }
 }
 
+/** Whether a built CLI file belongs in the portable app: the ESM chunks and the maps beside them. */
+export function isPortableAppFile(fileName) {
+  return fileName.endsWith(".mjs") || fileName.endsWith(".mjs.map");
+}
+
+/**
+ * Copy the built CLI into the app tree.
+ *
+ * The runtime loads the ESM chunks and, because the entry point enables source maps, reads the
+ * `.mjs.map` beside each chunk so a stack names the source line rather than the bundle. Every
+ * chunk ends in a `sourceMappingURL` footer, so shipping the module without its map would leave a
+ * footer that points at nothing. Declaration files and build info stay out: no installed CLI ever
+ * reads them, and they would only grow the download.
+ */
+export function copyBuiltCli(distDir, appDir) {
+  cpSync(distDir, appDir, {
+    recursive: true,
+    filter: (source) => lstatSync(source).isDirectory() || isPortableAppFile(source),
+  });
+}
+
 /**
  * Assembles the channel- and version-specific app tree once, so every platform artifact ships
  * byte-identical application code and only differs in its embedded Node.js runtime.
@@ -391,12 +412,7 @@ export async function createAppTemplate({ channelConfig, version, cliRoot = CLI_
     const sourcePackage = readJson(sourceManifestPath);
     const dependencyPins = readPortableDirectDependencyPins(sourcePackage);
 
-    // The runtime only loads ESM chunks; declaration files, source maps, and build info would
-    // triple the download for bytes no installed CLI ever reads.
-    cpSync(join(cliRoot, "dist"), appDir, {
-      recursive: true,
-      filter: (source) => lstatSync(source).isDirectory() || source.endsWith(".mjs"),
-    });
+    copyBuiltCli(join(cliRoot, "dist"), appDir);
     cpSync(join(cliRoot, "LICENSE"), join(appDir, "LICENSE"));
     cpSync(join(cliRoot, "README.md"), join(appDir, "README.md"));
     cpSync(join(cliRoot, "THIRD_PARTY_NOTICES"), join(appDir, "THIRD_PARTY_NOTICES"));

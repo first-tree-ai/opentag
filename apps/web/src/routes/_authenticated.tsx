@@ -7,6 +7,7 @@ import { ApiError, browserApi } from "../api.js";
 import { Redirect } from "../features/navigation/redirect.js";
 import { AsyncState, toResourceState } from "../features/resource/resource-state.js";
 import { AccountContext } from "../features/session/session-context.js";
+import { setErrorReportUser } from "../observability/error-reporting.js";
 import { queryKeys } from "../query/keys.js";
 
 export const Route = createFileRoute("/_authenticated")({
@@ -56,6 +57,7 @@ function AuthenticatedAccountGate() {
     // signing out is a client-side navigation — without this the login page that follows, and every
     // page after it, would still be reported as the Account that just left.
     analytics.identify(null);
+    setErrorReportUser(undefined);
     queryClient.clear();
   }, [queryClient]);
   /**

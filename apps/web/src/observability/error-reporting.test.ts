@@ -1,6 +1,13 @@
 import { ErrorReportRequestSchema, HTTP_PATHS } from "@opentag/shared/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createErrorReportSink, forwardErrorReport, setErrorReportSink } from "./error-reporting.js";
+import {
+  createErrorReportSink,
+  forwardErrorReport,
+  resetErrorReportContext,
+  setErrorReportRoute,
+  setErrorReportSink,
+  setErrorReportUser,
+} from "./error-reporting.js";
 
 const target = () => ({
   location: { href: "https://opentag.example/agents/42?token=opaque-query#frag" } as Location,
@@ -10,6 +17,7 @@ const target = () => ({
 describe("web error report sink", () => {
   afterEach(() => {
     setErrorReportSink(undefined);
+    resetErrorReportContext();
   });
 
   it("posts a redacted, anonymous report to the relay", async () => {
@@ -106,6 +114,42 @@ describe("web error report sink", () => {
 
     expect(rejecting).toHaveBeenCalledTimes(1);
     expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("names the Account and route the module is holding, and stops naming them once cleared", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    const sink = createErrorReportSink({ fetchImpl, target, reportId: () => "report-1" });
+
+    setErrorReportUser("account-1");
+    setErrorReportRoute("/agents/:agentId");
+    sink({ code: "unhandled_error", message: "signed in" });
+    setErrorReportUser(undefined);
+    sink({ code: "unhandled_error", message: "signed out" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const bodies = fetchImpl.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies[0]).toMatchObject({
+      userId: "account-1",
+      route: "/agents/:agentId",
+      reportId: "report-1",
+    });
+    expect(bodies[0].url).toBe("https://opentag.example/agents/42");
+    expect(bodies[1]).not.toHaveProperty("userId");
+    // Signing out ends the session, not the page the reader is standing on.
+    expect(bodies[1]).toMatchObject({ route: "/agents/:agentId" });
+    for (const body of bodies) expect(ErrorReportRequestSchema.safeParse(body).success).toBe(true);
+  });
+
+  it("reports without an identifier when the runtime cannot produce one", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    const sink = createErrorReportSink({ fetchImpl, target, reportId: () => undefined });
+
+    sink({ code: "unhandled_error", message: "insecure context" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body).not.toHaveProperty("reportId");
+    expect(ErrorReportRequestSchema.safeParse(body).success).toBe(true);
   });
 
   it("forwards only while a sink is installed", () => {

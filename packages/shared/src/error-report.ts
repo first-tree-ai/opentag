@@ -21,8 +21,12 @@ const shortField = z.string().min(1).max(ERROR_REPORT_FIELD_MAX_LENGTH);
  * One client-side failure relayed to the server for forwarding to an error tracker.
  *
  * The client redacts before sending and the server redacts again before forwarding; the schema only
- * bounds what may cross the wire. It is deliberately anonymous: no account, token, or cookie field
- * exists, and `url` never carries a query string or fragment.
+ * bounds what may cross the wire. No token or cookie field exists, and `url` never carries a query
+ * string or fragment.
+ *
+ * The identifiers below are attribution, not authorization. The relay is anonymous, so every one of
+ * them is chosen by the caller and a report that names an Account only says that whoever posted it
+ * claimed to be that Account. Read them as a lead to follow, never as proof of who someone is.
  */
 export const ErrorReportRequestSchema = z
   .object({
@@ -33,6 +37,23 @@ export const ErrorReportRequestSchema = z
     version: shortField.optional(),
     channel: ChannelNameSchema.optional(),
     environment: shortField.optional(),
+    /** Correlates the forwarded tracker event with the server log line that holds the full context. */
+    reportId: shortField.optional(),
+    /** The Account this client believed it was signed in as; absent before sign-in. */
+    userId: shortField.optional(),
+    /** Web only: the matched route template, such as `/agents/:agentId`, which `url` cannot give. */
+    route: shortField.optional(),
+    /** CLI only: operating system, architecture, and runtime version. */
+    platform: shortField.optional(),
+    /** CLI only: the Computer this OpenTag home is bound to, when one is. */
+    computerId: shortField.optional(),
+    installationId: shortField.optional(),
+    /** CLI only: present when the failure happened inside an Agent turn. */
+    agentId: shortField.optional(),
+    sessionId: shortField.optional(),
+    turnId: shortField.optional(),
+    /** CLI only: the Agent runtime provider, such as `claude-code`. */
+    provider: shortField.optional(),
     /** Web only: an HTTP(S) document URL; query string, fragment, and credentials are stripped on parse. */
     url: z
       .string()
@@ -111,6 +132,42 @@ function errorParts(error: unknown): { message: string; stack?: string; code?: s
 }
 
 /**
+ * The metadata fields `createErrorReport` handles by name: the discriminator, the code it validates,
+ * the channel it passes through, the URL it sanitizes, and the timestamp it defaults. Every other
+ * field of the metadata is a short string, carried through bounded and redacted.
+ */
+type NamedMetadataField = "source" | "code" | "channel" | "url" | "occurredAt";
+export type ShortMetadataField = Exclude<keyof ErrorReportMetadata, NamedMetadataField>;
+
+/**
+ * Every short metadata field, as a record over the key type rather than a list.
+ *
+ * A `Record<ShortMetadataField, true>` literal must name every key and may name nothing else, so
+ * the compiler enforces both directions: a field added to the schema and not here fails
+ * `tsc` with the missing key, and an entry that names no schema field fails as an excess
+ * property. Adding a diagnostic field is therefore one entry in the schema and one here, and a
+ * field can no longer be added to the schema and silently never sent.
+ */
+const SHORT_METADATA_FIELD_SET: Record<ShortMetadataField, true> = {
+  agentId: true,
+  command: true,
+  computerId: true,
+  environment: true,
+  installationId: true,
+  platform: true,
+  provider: true,
+  reportId: true,
+  route: true,
+  sessionId: true,
+  turnId: true,
+  userAgent: true,
+  userId: true,
+  version: true,
+};
+
+const SHORT_METADATA_FIELDS = Object.keys(SHORT_METADATA_FIELD_SET) as readonly ShortMetadataField[];
+
+/**
  * Build a relay request from a thrown value. Message and stack are redacted and bounded here so
  * every client sends the same shape, and optional metadata is dropped when it is empty or invalid
  * rather than making the whole report fail validation.
@@ -119,22 +176,19 @@ export function createErrorReport(error: unknown, metadata: ErrorReportMetadata)
   const parts = errorParts(error);
   const code = metadata.code ?? parts.code;
   const url = metadata.url ? sanitizeErrorReportUrl(metadata.url) : undefined;
+  const shortFields: Record<string, string> = {};
+  for (const key of SHORT_METADATA_FIELDS) {
+    const value = metadata[key];
+    if (value) shortFields[key] = redactText(value, ERROR_REPORT_FIELD_MAX_LENGTH);
+  }
   return {
     source: metadata.source,
     message: redactText(parts.message, ERROR_REPORT_MESSAGE_MAX_LENGTH),
     ...(parts.stack ? { stack: redactText(parts.stack, ERROR_REPORT_STACK_MAX_LENGTH) } : {}),
     ...(code && StructuredErrorCodeSchema.safeParse(code).success ? { code } : {}),
-    ...optionalField("version", metadata.version),
     ...(metadata.channel ? { channel: metadata.channel } : {}),
-    ...optionalField("environment", metadata.environment),
     ...(url ? { url } : {}),
-    ...optionalField("command", metadata.command),
-    ...optionalField("userAgent", metadata.userAgent),
+    ...shortFields,
     occurredAt: metadata.occurredAt ?? new Date().toISOString(),
   };
-}
-
-function optionalField<K extends string>(key: K, value: string | undefined): Partial<Record<K, string>> {
-  if (!value) return {};
-  return { [key]: redactText(value, ERROR_REPORT_FIELD_MAX_LENGTH) } as Record<K, string>;
 }

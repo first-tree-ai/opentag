@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { arch, hostname, platform } from "node:os";
 import {
   type ClientLogger,
+  type ComposedClientRuntime,
   configureClientLoggerForService,
   createClientRuntime,
   createLogger,
@@ -19,6 +20,7 @@ import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { channelConfig } from "../channel/config.js";
 import { resolveChannelEnvironment } from "../channel/environment.js";
 import { resolveCommandContext } from "../command/context.js";
+import { createAgentErrorReporter } from "../diagnostics/agent-error-reporting.js";
 import { createPortableAutoUpdater } from "../update/auto-update.js";
 import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
 import { resolveRuntimeCredentialMode } from "./credential-mode.js";
@@ -225,6 +227,13 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     onChannelTarget: (target) => context.state.channelTargetObserver?.(target),
     platform: supportedPlatform,
   });
+  /*
+   * The provider a Session ran on is known only to the composed runtime, and the reporter has to
+   * exist before the runtime does because the composition takes it as an option. The holder closes
+   * that loop: filled in once the runtime exists, empty — and answering no provider — for any
+   * failure filed before then.
+   */
+  const composed: { runtime?: Pick<ComposedClientRuntime, "runtimeManager"> } = {};
   const runtime = await createClientRuntime(connection, {
     home: context.home,
     environment: context.daemonEnvironment,
@@ -236,7 +245,15 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     api: apiContext.api,
     machineToken: credential.machineToken,
     webTools: resolveWebToolsOptIn(context.daemonEnvironment),
+    // A turn that fails inside the daemon never reaches a terminal, so the tracker is the only place
+    // it can be seen. The reporter decides which failures are defects; the runner reports them all.
+    agentErrorReporter: createAgentErrorReporter({
+      home: context.home,
+      environment: context.daemonEnvironment,
+      resolveProvider: (sessionId) => composed.runtime?.runtimeManager.providerId(sessionId),
+    }),
   });
+  composed.runtime = runtime;
   context.state.updater = await attachAutoUpdater(context, runtime, runtimeLogger);
   void connection.whenRegistered(signal).then(
     () => runtimeLogger.info({}, "Computer runtime is ready"),

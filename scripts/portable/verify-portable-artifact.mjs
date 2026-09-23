@@ -89,9 +89,13 @@ function verify(options) {
       "app/package.json",
       APP_ENTRY,
       `bin/${manifest.binName}`,
-      // The trusted Pi web tools extension must ship inside the portable app layout too.
+      // The trusted Pi web tools extension must ship inside the portable app layout too, and every
+      // chunk's source map beside it: the runtime enables source maps and each chunk names its map.
       "app/pi-extensions/web-tools.mjs",
+      "app/pi-extensions/web-tools.mjs.map",
       "app/cli/pi-extensions/web-tools.mjs",
+      "app/cli/pi-extensions/web-tools.mjs.map",
+      `${APP_ENTRY}.map`,
     ]) {
       if (!existsSync(join(artifactDir, relativePath))) fail(`extracted artifact is missing ${relativePath}`);
     }

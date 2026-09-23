@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { setErrorReportUser } from "../observability/error-reporting.js";
 import { analytics } from "./analytics.js";
 import { ANALYTICS_EVENT, activationStep } from "./events.js";
 import { takeSignInIntent } from "./sign-in-intent.js";
@@ -110,10 +111,14 @@ export function useAccountIdentityReport({
   useEffect(() => {
     if (!sessionLost) return;
     analytics.identify(null);
+    setErrorReportUser(undefined);
   }, [sessionLost]);
   useEffect(() => {
     if (!userId) return;
     analytics.identify(userId);
+    // Attached on exactly the same evidence as the analytics identity, so a report and a funnel
+    // event can never disagree about who was on screen.
+    setErrorReportUser(userId);
     const intent = takeSignInIntent();
     if (!intent) return;
     analytics.track(intent.registering ? ANALYTICS_EVENT.signUp : ANALYTICS_EVENT.login, {

@@ -217,6 +217,56 @@ describe("daemon service runtime", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it("reports a failed Agent turn with the provider the composed runtime ran it on", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-report-"));
+    directories.push(home);
+    const signals = new EventEmitter();
+    const providerId = vi.fn((sessionId: string) => (sessionId === "session-1" ? "claude-code" : undefined));
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    clientMocks.createClientRuntime.mockResolvedValue({
+      run: vi.fn(async () => undefined),
+      stop: vi.fn(),
+      runtimeManager: { providerId },
+    });
+
+    try {
+      await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
+      const options = clientMocks.createClientRuntime.mock.calls[0]?.[1] as {
+        agentErrorReporter?: (failure: Record<string, unknown>) => void;
+      };
+      expect(options.agentErrorReporter).toBeTypeOf("function");
+
+      options.agentErrorReporter?.({
+        error: new Error("boom"),
+        agentId: "agent-1",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        errorReason: "turn_state_unknown",
+        outcome: "unknown",
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+
+      expect(providerId).toHaveBeenCalledWith("session-1");
+      const [url, init] = fetchMock.mock.calls[0] ?? [];
+      expect(String(url)).toBe(`${computerIdentity().serverUrl}/api/v1/error-reports`);
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        source: "cli",
+        command: "daemon service-run",
+        agentId: "agent-1",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        provider: "claude-code",
+        computerId: machineCredentials().computer.computerId,
+        installationId: computerIdentity().computerId,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("propagates OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy from daemon.env into the Client Runtime", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-proxy-"));
     directories.push(home);

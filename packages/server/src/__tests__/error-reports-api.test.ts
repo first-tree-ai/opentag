@@ -1,7 +1,18 @@
-import { ERROR_REPORT_STACK_MAX_LENGTH, HTTP_PATHS, STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES } from "@opentag/shared";
+import {
+  ERROR_REPORT_FIELD_MAX_LENGTH,
+  ERROR_REPORT_MESSAGE_MAX_LENGTH,
+  ERROR_REPORT_STACK_MAX_LENGTH,
+  ERROR_REPORT_URL_MAX_LENGTH,
+  HTTP_PATHS,
+  STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RouteRateLimiter } from "../api/browser-auth.js";
-import { ERROR_REPORT_RATE_LIMIT, ERROR_REPORT_RATE_LIMIT_WINDOW_MS } from "../api/error-reports.js";
+import {
+  ERROR_REPORT_BODY_LIMIT_BYTES,
+  ERROR_REPORT_RATE_LIMIT,
+  ERROR_REPORT_RATE_LIMIT_WINDOW_MS,
+} from "../api/error-reports.js";
 import { createApp } from "../app.js";
 import type { ErrorReporter } from "../observability/error-reporting.js";
 
@@ -61,6 +72,97 @@ describe("POST /api/v1/error-reports", () => {
     expect(logs()).toContain("Client error reported");
     expect(logs()).toContain('"errorCode":"unhandled_error"');
     expect(logs()).not.toContain("opaque-token");
+  });
+
+  it("lifts the identifiers an operator filters on out of the nested report", async () => {
+    const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
+    const { app, logs } = createRelayApp({ reporter });
+
+    const response = await post(app, {
+      ...validReport,
+      reportId: "6f1c2f3a-0000-4000-8000-000000000000",
+      userId: "a1b2c3d4-0000-4000-8000-000000000000",
+      route: "/agents/:agentId",
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(logs()).toContain('"reportId":"6f1c2f3a-0000-4000-8000-000000000000"');
+    expect(logs()).toContain('"userId":"a1b2c3d4-0000-4000-8000-000000000000"');
+    // The rest of the context stays where the tracker cannot keep it: the nested payload.
+    expect(logs()).toContain('"route":"/agents/:agentId"');
+  });
+
+  it("scrubs the lifted identifiers as hard as the nested payload", async () => {
+    const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
+    const { app, logs } = createRelayApp({ reporter });
+
+    // The relay is anonymous, so either identifier is whatever the caller chose to post.
+    const response = await post(app, {
+      ...validReport,
+      reportId: "token=fixture-report-secret",
+      userId: "Bearer fixture-user-secret",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(response.statusCode).toBe(202);
+    const line = logs()
+      .split("\n")
+      .find((entry) => entry.includes("Client error reported"));
+    expect(line).toBeDefined();
+    expect(line).not.toContain("fixture-report-secret");
+    expect(line).not.toContain("fixture-user-secret");
+    expect(JSON.parse(line ?? "{}")).toMatchObject({
+      reportId: "token=[REDACTED]",
+      userId: "Bearer [REDACTED]",
+      errorReport: { reportId: "token=[REDACTED]", userId: "Bearer [REDACTED]" },
+    });
+  });
+
+  it("accepts a maximal report written entirely in CJK", async () => {
+    const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
+    const { app } = createRelayApp({ reporter });
+    // Every bound is in UTF-16 code units; a CJK character costs three bytes on the wire.
+    const cjk = (length: number) => "错".repeat(length);
+    const url = `https://opentag.example/${encodeURIComponent(cjk(200))}`;
+    expect(url.length).toBeLessThanOrEqual(ERROR_REPORT_URL_MAX_LENGTH);
+    const report = {
+      source: "cli",
+      message: cjk(ERROR_REPORT_MESSAGE_MAX_LENGTH),
+      stack: cjk(ERROR_REPORT_STACK_MAX_LENGTH),
+      code: "unhandled_error",
+      version: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      environment: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      command: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      platform: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      reportId: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      userId: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      computerId: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      installationId: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      agentId: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      sessionId: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      turnId: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      provider: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      userAgent: cjk(ERROR_REPORT_FIELD_MAX_LENGTH),
+      url,
+      occurredAt: validReport.occurredAt,
+    };
+    const bytes = Buffer.byteLength(JSON.stringify(report), "utf8");
+    expect(bytes).toBeGreaterThan(64 * 1024);
+    expect(bytes).toBeLessThanOrEqual(ERROR_REPORT_BODY_LIMIT_BYTES);
+
+    const response = await post(app, report);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(response.statusCode).toBe(202);
+    expect(reporter.report).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a body far larger than any report the schema would accept", async () => {
+    const { app } = createRelayApp({ reporter: { report: vi.fn().mockResolvedValue(undefined) } });
+
+    const response = await post(app, { ...validReport, stack: "x".repeat(ERROR_REPORT_BODY_LIMIT_BYTES) });
+
+    expect(response.statusCode).toBe(413);
   });
 
   it("registers the relay without any reporter and still answers 202", async () => {

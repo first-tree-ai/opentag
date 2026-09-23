@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as client from "@opentag/client";
 import type { Command } from "commander";
 import { CHANNEL, CLI_VERSION } from "../../build-info.js";
@@ -53,19 +54,118 @@ export function resolveCommandPath(program: Command, argv: readonly string[]): s
   return path.length > 0 ? path.join(" ") : undefined;
 }
 
-/** The server this OpenTag home talks to, from whichever credential file exists; `undefined` when none does. */
-export async function resolveErrorReportServerUrl(home: string): Promise<string | undefined> {
+/** Where a report goes and who it is from, as far as this OpenTag home knows either. */
+export interface ErrorReportTarget {
+  /** `undefined` when this home has never signed in or connected; there is then nowhere to report. */
+  serverUrl?: string | undefined;
+  userId?: string | undefined;
+  /** The Account Computer this home is connected as; the identifier the Server and the Web App know. */
+  computerId?: string | undefined;
+  /** This installation's own locally generated identity, which several Computers over time can share. */
+  installationId?: string | undefined;
+}
+
+/**
+ * Read one optional identity file, treating a missing or malformed file alike as "nothing known".
+ *
+ * Each file is read on its own rather than under one shared `catch`: the readers throw on a
+ * malformed file, and a corrupt `computer.json` must not silence a report that valid Account
+ * credentials alone could still address. What is unreadable simply goes unreported.
+ */
+async function readOptionalIdentity<T>(read: () => Promise<T | undefined>): Promise<T | undefined> {
   try {
-    const credentials = await client.readCredentials(home);
-    if (credentials?.serverUrl) return credentials.serverUrl;
-    const [identity, machine] = await Promise.all([
-      client.readComputerIdentity(home),
-      client.readMachineCredentials(home),
-    ]);
-    return identity?.serverUrl ?? machine?.computer.serverUrl;
+    return await read();
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Read the identity this OpenTag home reports under, from whichever credential files exist.
+ *
+ * All three are read rather than stopping at the first server URL: an installation that has both an
+ * Account and a Computer can say so, and the two answer different questions — who hit this, and
+ * which machine it was. A home that has neither reports nothing at all, which is the point of
+ * returning the whole thing rather than throwing.
+ *
+ * The two machine identifiers come from different records on purpose. `computer.json` holds the
+ * installation's locally generated uuid, which the daemon logs as `installationId`; the Account's
+ * Computer uuid — the one a reader can look up — exists only in the machine credential, which is
+ * what a connected Computer received from the Server.
+ *
+ * The Account comes from its own file rather than from the credentials, because the credentials
+ * file is read strictly by every CLI version and an older one must keep reading it after a
+ * rollback.
+ *
+ * Every identifier is attached only from a record that names the server the report goes to. The
+ * destination is chosen first — the Account's server when signed in, else the Computer's — and each
+ * record contributes only if its server is that one. The mismatch is a supported state, not a
+ * corrupt one: a `login --server A` followed by `computer connect --server B` leaves an Account for
+ * A beside a Computer for B, and a report to A that named B's Computer would hand A's operator an
+ * identifier they cannot resolve, and carry B's identifiers across a deployment boundary. The two
+ * machine identifiers also stay a pair: a Computer uuid never travels with an installation uuid
+ * from another server.
+ */
+export async function resolveErrorReportTarget(home: string): Promise<ErrorReportTarget> {
+  const [credentials, account, identity, machine] = await Promise.all([
+    readOptionalIdentity(() => client.readCredentials(home)),
+    readOptionalIdentity(() => client.readAccountIdentity(home)),
+    readOptionalIdentity(() => client.readComputerIdentity(home)),
+    readOptionalIdentity(() => client.readMachineCredentials(home)),
+  ]);
+  // Each candidate is normalized on its own, so a record with an unusable server yields to the
+  // next rather than ending the chain: a malformed computer.json costs only what it names.
+  const serverUrl =
+    normalizedServerUrl(credentials?.serverUrl) ??
+    normalizedServerUrl(identity?.serverUrl) ??
+    normalizedServerUrl(machine?.computer.serverUrl);
+  const machineOnServer = sameServer(machine?.computer.serverUrl, serverUrl) ? machine?.computer : undefined;
+  const identityOnServer = sameServer(identity?.serverUrl, serverUrl) ? identity : undefined;
+  /*
+   * The Account counts only when its file names the destination and was provably written beside
+   * the credentials read here. Rollback is supported, and an older CLI signing in as another
+   * Account rewrites only `credentials.json`; without the fingerprint check the previous Account
+   * would be attributed to the new tokens. Omission is the safe direction, never misattribution.
+   */
+  const accountIsBound =
+    account !== undefined &&
+    credentials !== undefined &&
+    sameServer(account.serverUrl, serverUrl) &&
+    client.accountIdentityMatchesCredentials(account, credentials);
+  return {
+    serverUrl,
+    userId: accountIsBound ? account.userId : undefined,
+    computerId: machineOnServer?.computerId,
+    installationId: identityOnServer?.computerId ?? machineOnServer?.installationId,
+  };
+}
+
+/**
+ * A record's server in the form the destination is compared in, or nothing when the record names
+ * no server or one that is not an OpenTag server URL at all. `credentials.json` and the Account
+ * identity are normalized on read; `computer.json` and the machine credential are stored as they
+ * were given, so a trailing slash or a capitalised host must not read as a different server.
+ */
+function normalizedServerUrl(serverUrl: string | undefined): string | undefined {
+  if (!serverUrl) return undefined;
+  try {
+    return client.normalizeServerUrl(serverUrl);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a record names the server the report is going to. */
+function sameServer(recordServerUrl: string | undefined, destination: string | undefined): boolean {
+  return destination !== undefined && normalizedServerUrl(recordServerUrl) === destination;
+}
+
+/** The Agent a failure belongs to, when it happened inside a turn rather than inside a command. */
+export interface CliErrorReportAgent {
+  agentId?: string | undefined;
+  sessionId?: string | undefined;
+  turnId?: string | undefined;
+  provider?: string | undefined;
 }
 
 export interface CliErrorReportOptions {
@@ -73,6 +173,7 @@ export interface CliErrorReportOptions {
   environment?: NodeJS.ProcessEnv;
   home?: string;
   fetchImpl?: typeof fetch;
+  agent?: CliErrorReportAgent | undefined;
 }
 
 /**
@@ -84,7 +185,7 @@ export async function reportCliError(error: unknown, options: CliErrorReportOpti
   try {
     const environment = resolveChannelEnvironment(options.environment ?? process.env);
     const home = options.home ?? client.resolveOpenTagHome(environment);
-    const serverUrl = await resolveErrorReportServerUrl(home);
+    const { serverUrl, ...identity } = await resolveErrorReportTarget(home);
     if (!serverUrl) return { ok: false };
     return await client.reportClientError({
       serverUrl,
@@ -92,6 +193,10 @@ export async function reportCliError(error: unknown, options: CliErrorReportOpti
       version: CLI_VERSION,
       channel: CHANNEL,
       command: options.command,
+      platform: client.describePlatform(),
+      reportId: randomUUID(),
+      ...identity,
+      ...options.agent,
       fetchImpl: options.fetchImpl,
     });
   } catch {

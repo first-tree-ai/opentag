@@ -31,6 +31,9 @@ export const StoredCredentialsSchema = z
     refreshToken: nonEmptyToken,
     serverUrl: z.string().min(1),
   })
+  // Strict, and every installed CLI reads this file with the strict schema it shipped with, so a
+  // key can never be added here without breaking the documented rollback to an older CLI. Anything
+  // that is not a credential belongs in its own file; see `account-identity.ts`.
   .strict();
 
 export function credentialsPath(home = resolveOpenTagHome()): string {

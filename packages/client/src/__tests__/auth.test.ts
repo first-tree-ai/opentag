@@ -5,6 +5,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeServerUrl, OpenTagApi, OpenTagApiError } from "../api.js";
 import {
+  accountIdentityPath,
+  credentialsFingerprint,
+  readAccountIdentity,
+  writeAccountIdentityAtomically,
+} from "../auth/account-identity.js";
+import {
   credentialsPath,
   readCredentials,
   type StoredCredentials,
@@ -244,7 +250,59 @@ describe("AccessTokenProvider", () => {
       accessToken: "new-access",
       refreshToken: "new-refresh",
       accessTokenExpiresAt: "2026-08-18T00:15:00.000Z",
+      // A refresh renews the tokens and keeps the rest of the record, the server above all.
+      serverUrl: credentials.serverUrl,
     });
+  });
+
+  it("carries a bound Account identity over the refresh token rotation and leaves a stale one alone", async () => {
+    const refreshResponse = {
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      tokenType: "Bearer",
+      expiresIn: 900,
+    };
+    const identity = { userId: "account-1", serverUrl: credentials.serverUrl };
+    const debug = vi.fn();
+    const providerFor = (home: string) =>
+      new AccessTokenProvider({
+        api: { refresh: vi.fn().mockResolvedValue(refreshResponse) },
+        home,
+        now: () => new Date("2026-08-18T00:00:00.000Z"),
+        logger: { debug },
+      });
+
+    // Bound to the credentials being refreshed: follows the rotation.
+    const bound = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, bound);
+    await writeAccountIdentityAtomically(
+      { ...identity, credentialsFingerprint: credentialsFingerprint(credentials) },
+      bound,
+    );
+    await providerFor(bound).getAccessToken();
+    expect((await readAccountIdentity(bound))?.credentialsFingerprint).toBe(
+      credentialsFingerprint({ refreshToken: "new-refresh" }),
+    );
+    expect(debug).toHaveBeenCalledWith({ rotation: "rebound" }, expect.stringContaining("rotated credentials"));
+
+    // Left by other credentials: stays unprovable, and the refresh is unaffected.
+    const stale = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, stale);
+    const staleFingerprint = credentialsFingerprint({ refreshToken: "someone-elses-refresh" });
+    await writeAccountIdentityAtomically({ ...identity, credentialsFingerprint: staleFingerprint }, stale);
+    await expect(providerFor(stale).getAccessToken()).resolves.toBe("new-access");
+    expect((await readAccountIdentity(stale))?.credentialsFingerprint).toBe(staleFingerprint);
+
+    // Unreadable: the refresh still succeeds and the failure is only noted.
+    const broken = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, broken);
+    await writeFile(accountIdentityPath(broken), "{not json", { mode: 0o600 });
+    await expect(providerFor(broken).getAccessToken()).resolves.toBe("new-access");
+    expect(await readCredentials(broken)).toMatchObject({ refreshToken: "new-refresh" });
+    expect(debug).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "account_identity_rebind_failed" }),
+      expect.stringContaining("could not be rebound"),
+    );
   });
 
   it("coalesces concurrent refreshes and returns token leases", async () => {

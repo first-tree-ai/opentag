@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildClientErrorReport,
   CLIENT_ERROR_REPORT_TIMEOUT_MS,
+  describePlatform,
   installProcessErrorReporting,
   reportClientError,
 } from "../observability/error-reporting.js";
@@ -118,6 +119,21 @@ describe("reportClientError", () => {
     expect(report.message).toBe("login failed for token=[REDACTED]");
     expect(report.source).toBe("cli");
     expect(report.command).toBe("agent create");
+  });
+});
+
+describe("describePlatform", () => {
+  it("describes a machine the way doctor does", () => {
+    expect(describePlatform({ platform: "linux", arch: "arm64", version: "v24.15.0" })).toBe(
+      "linux arm64 node-v24.15.0",
+    );
+    expect(describePlatform()).toBe(`${process.platform} ${process.arch} node-${process.version}`);
+  });
+
+  it("fits the field the relay accepts", () => {
+    const report = buildClientErrorReport(new Error("boom"), { ...metadata, platform: describePlatform() });
+    expect(ErrorReportRequestSchema.safeParse(report).success).toBe(true);
+    expect(report.platform).toBe(describePlatform());
   });
 });
 

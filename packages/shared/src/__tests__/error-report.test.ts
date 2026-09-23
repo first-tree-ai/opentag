@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   createErrorReport,
+  ERROR_REPORT_FIELD_MAX_LENGTH,
   ERROR_REPORT_MESSAGE_MAX_LENGTH,
   ERROR_REPORT_STACK_MAX_LENGTH,
   ErrorReportRequestSchema,
+  type ShortMetadataField,
   sanitizeErrorReportUrl,
 } from "../error-report.js";
 import { HTTP_PATHS } from "../http-paths.js";
@@ -49,6 +51,33 @@ describe("ErrorReportRequestSchema", () => {
     ).toBe("agent create");
   });
 
+  it("accepts the diagnostic context a web report and a CLI report each carry", () => {
+    expect(
+      ErrorReportRequestSchema.parse({
+        source: "web",
+        message: "boom",
+        occurredAt,
+        reportId: "6f1c2f3a-0000-4000-8000-000000000000",
+        userId: "a1b2c3d4-0000-4000-8000-000000000000",
+        route: "/agents/:agentId",
+      }).route,
+    ).toBe("/agents/:agentId");
+    expect(
+      ErrorReportRequestSchema.parse({
+        source: "cli",
+        message: "boom",
+        occurredAt,
+        platform: "darwin arm64 node-v24.15.0",
+        computerId: "c0000000-0000-4000-8000-000000000000",
+        installationId: "i0000000-0000-4000-8000-000000000000",
+        agentId: "a0000000-0000-4000-8000-000000000000",
+        sessionId: "s0000000-0000-4000-8000-000000000000",
+        turnId: "t0000000-0000-4000-8000-000000000000",
+        provider: "claude-code",
+      }).provider,
+    ).toBe("claude-code");
+  });
+
   it("enforces the URL contract on parse: credentials, query, and fragment are stripped", () => {
     expect(
       ErrorReportRequestSchema.parse({ source: "web", message: "boom", url: urlWithCredentials(), occurredAt }).url,
@@ -64,6 +93,8 @@ describe("ErrorReportRequestSchema", () => {
     { source: "web", message: "boom", occurredAt, accessToken: "opaque" },
     { source: "web", message: "boom", occurredAt, channel: "canary" },
     { source: "web", message: "boom", occurredAt, code: "9 not a code" },
+    { source: "web", message: "boom", occurredAt, userId: "x".repeat(ERROR_REPORT_FIELD_MAX_LENGTH + 1) },
+    { source: "cli", message: "boom", occurredAt, platform: "" },
     { source: "web", message: "x".repeat(ERROR_REPORT_MESSAGE_MAX_LENGTH + 1), occurredAt },
     { source: "web", message: "boom", stack: "x".repeat(ERROR_REPORT_STACK_MAX_LENGTH + 1), occurredAt },
   ])("rejects an invalid report: %o", (value) => {
@@ -130,6 +161,78 @@ describe("createErrorReport", () => {
     expect(report.channel).toBe("prod");
     expect(Date.parse(report.occurredAt)).not.toBeNaN();
     expect(ErrorReportRequestSchema.safeParse(report).success).toBe(true);
+  });
+
+  it("carries every diagnostic field through, redacted and bounded like the rest", () => {
+    const report = createErrorReport(new Error("boom"), {
+      source: "cli",
+      reportId: "6f1c2f3a-0000-4000-8000-000000000000",
+      userId: "a1b2c3d4-0000-4000-8000-000000000000",
+      platform: "darwin arm64 node-v24.15.0",
+      computerId: "c0000000-0000-4000-8000-000000000000",
+      installationId: "i0000000-0000-4000-8000-000000000000",
+      agentId: "a0000000-0000-4000-8000-000000000000",
+      sessionId: "s0000000-0000-4000-8000-000000000000",
+      turnId: "t0000000-0000-4000-8000-000000000000",
+      provider: "claude-code",
+      route: "/agents/:agentId",
+      occurredAt,
+    });
+
+    expect(report).toMatchObject({
+      reportId: "6f1c2f3a-0000-4000-8000-000000000000",
+      userId: "a1b2c3d4-0000-4000-8000-000000000000",
+      platform: "darwin arm64 node-v24.15.0",
+      computerId: "c0000000-0000-4000-8000-000000000000",
+      installationId: "i0000000-0000-4000-8000-000000000000",
+      agentId: "a0000000-0000-4000-8000-000000000000",
+      sessionId: "s0000000-0000-4000-8000-000000000000",
+      turnId: "t0000000-0000-4000-8000-000000000000",
+      provider: "claude-code",
+      route: "/agents/:agentId",
+    });
+    expect(ErrorReportRequestSchema.safeParse(report).success).toBe(true);
+
+    const bounded = createErrorReport(new Error("boom"), {
+      source: "cli",
+      userId: "u".repeat(ERROR_REPORT_FIELD_MAX_LENGTH * 2),
+      platform: "token=opaque-platform",
+      route: "",
+      occurredAt,
+    });
+    expect(bounded.userId?.length).toBe(ERROR_REPORT_FIELD_MAX_LENGTH);
+    expect(bounded.platform).toBe("token=[REDACTED]");
+    expect(bounded.route).toBeUndefined();
+    expect(ErrorReportRequestSchema.safeParse(bounded).success).toBe(true);
+  });
+
+  it("refuses, at compile time, a short field list that forgets or invents a schema field", () => {
+    // The list is a Record over the key type, so both directions are checked by `tsc`; this test
+    // pins that mechanism rather than the current set of fields.
+    const complete: Record<ShortMetadataField, true> = {
+      agentId: true,
+      command: true,
+      computerId: true,
+      environment: true,
+      installationId: true,
+      platform: true,
+      provider: true,
+      reportId: true,
+      route: true,
+      sessionId: true,
+      turnId: true,
+      userAgent: true,
+      userId: true,
+      version: true,
+    };
+    // @ts-expect-error -- a record that forgets a schema field does not compile.
+    const forgetful: Record<ShortMetadataField, true> = { ...complete, version: undefined };
+    // @ts-expect-error -- a record that names a field the schema does not have does not compile.
+    const inventive: Record<ShortMetadataField, true> = { ...complete, accessToken: true };
+    expect(Object.keys(forgetful).length + Object.keys(inventive).length).toBeGreaterThan(0);
+
+    const report = createErrorReport(new Error("boom"), { source: "cli", occurredAt });
+    for (const key of Object.keys(complete) as ShortMetadataField[]) expect(report).not.toHaveProperty(key);
   });
 
   it("describes non-Error values without inventing a stack", () => {

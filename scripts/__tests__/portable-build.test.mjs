@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -11,9 +12,11 @@ import {
   artifactDownloadUrl,
   artifactFileName,
   buildPortableReleaseMetadata,
+  copyBuiltCli,
   DEFAULT_DOWNLOAD_BASE_URL,
   getPortableChannelConfig,
   hostPlatform,
+  isPortableAppFile,
   manifestDownloadUrl,
   normalizeDownloadBaseUrl,
   normalizeGeneratedAt,
@@ -127,6 +130,39 @@ test("normalizers fail closed on inexact release inputs", () => {
   assert.equal(normalizeGeneratedAt("2026-08-25T00:00:00Z"), "2026-08-25T00:00:00.000Z");
   assert.throws(() => normalizeGeneratedAt("not-a-date"), /valid timestamp/);
   assert.throws(() => normalizeGeneratedAt(""), /requires a timestamp value/);
+});
+
+test("the portable app carries every ESM chunk with its source map and nothing else", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-portable-copy-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const distDir = join(root, "dist");
+  await mkdir(join(distDir, "cli"), { recursive: true });
+  for (const [name, content] of [
+    ["index.mjs", "export {};\n//# sourceMappingURL=index.mjs.map\n"],
+    ["index.mjs.map", '{"version":3}'],
+    ["index.d.mts", "export {};"],
+    ["cli/index.mjs", "//# sourceMappingURL=index.mjs.map\n"],
+    ["cli/index.mjs.map", '{"version":3}'],
+    ["cli/index.d.mts", "export {};"],
+    ["tsconfig.tsbuildinfo", "{}"],
+  ]) {
+    await writeFile(join(distDir, name), content);
+  }
+
+  copyBuiltCli(distDir, join(root, "app"));
+
+  assert.deepEqual((await readdir(join(root, "app"))).sort(), ["cli", "index.mjs", "index.mjs.map"]);
+  assert.deepEqual((await readdir(join(root, "app", "cli"))).sort(), ["index.mjs", "index.mjs.map"]);
+  // Every sourceMappingURL footer in the app names a sibling that was copied with it.
+  for (const chunk of ["index.mjs", "cli/index.mjs"]) {
+    const footer = (await readFile(join(root, "app", chunk), "utf8")).match(/sourceMappingURL=(\S+)/);
+    assert.ok(footer, `${chunk} carries a sourceMappingURL footer`);
+    await access(join(root, "app", dirname(chunk), footer[1]), constants.R_OK);
+  }
+  assert.equal(isPortableAppFile("chunk-abc.mjs"), true);
+  assert.equal(isPortableAppFile("chunk-abc.mjs.map"), true);
+  assert.equal(isPortableAppFile("index.d.mts"), false);
+  assert.equal(isPortableAppFile("index.d.mts.map"), false);
 });
 
 test("the portable app manifest exposes exactly one channel binary and only supported runtime dependencies", () => {

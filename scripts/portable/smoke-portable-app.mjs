@@ -51,7 +51,13 @@ export async function smokePortableApp({ channel, version }) {
   try {
     // The trusted Pi web tools extension must ship inside the portable app layout (both CLI
     // entry depths); the smoke runs offline and fails before any release artifact is considered.
-    for (const relativePath of ["pi-extensions/web-tools.mjs", "cli/pi-extensions/web-tools.mjs"]) {
+    for (const relativePath of [
+      "pi-extensions/web-tools.mjs",
+      "pi-extensions/web-tools.mjs.map",
+      "cli/pi-extensions/web-tools.mjs",
+      "cli/pi-extensions/web-tools.mjs.map",
+      "cli/index.mjs.map",
+    ]) {
       if (!existsSync(join(template.appDir, ...relativePath.split("/")))) {
         fail(`portable app template is missing ${relativePath}`);
       }

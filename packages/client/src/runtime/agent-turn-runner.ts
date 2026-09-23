@@ -13,6 +13,7 @@ import {
   type TurnReportHashInput,
   type TurnReportRequest,
 } from "@opentag/shared";
+import { AgentProviderError } from "../agent-runtime/errors.js";
 import type {
   AgentInput,
   AgentRunConfiguration,
@@ -79,7 +80,32 @@ export interface AgentTurnRunnerOptions {
     prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
   };
   readonly outgoingReplies?: AgentTurnOutgoingReplyCollector;
+  /**
+   * Relays a turn failure to the error tracker. Given every failure without exception: deciding which
+   * of them describe a defect is the reporter's job, not this runner's, so the taxonomy can change
+   * without touching the execution path.
+   */
+  readonly agentErrorReporter?: AgentTurnErrorReporter;
 }
+
+/**
+ * One failed turn, as much of it as a reader needs to find the Agent it happened to.
+ *
+ * Only what the failure path already holds. The provider is deliberately absent: reading it means
+ * asking the runtime manager, and a turn that failed before its runtime was prepared has no answer
+ * to give — the reporter resolves it, where being unable to is not the execution path's problem.
+ */
+export interface AgentTurnFailure {
+  readonly error: unknown;
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly errorReason?: TurnFailureReason | undefined;
+  readonly outcome: TurnCompletion["outcome"];
+}
+
+/** Never throws and never awaited: a tracker that is slow or broken must not hold a turn open. */
+export type AgentTurnErrorReporter = (failure: AgentTurnFailure) => void;
 
 interface RunningTurn {
   readonly abort: AbortController;
@@ -111,6 +137,7 @@ export class AgentTurnRunner {
   readonly #credentialEnvironment: AgentTurnRunnerOptions["credentialEnvironment"];
   readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
+  readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
 
@@ -127,6 +154,9 @@ export class AgentTurnRunner {
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
     this.#outgoingReplies = options.outgoingReplies;
+    // Defaulted rather than optional so the failure path calls it unconditionally: a composition that
+    // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
+    this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
   }
 
   get activeCount(): number {
@@ -291,6 +321,9 @@ export class AgentTurnRunner {
       });
       turn.phase = "reporting";
       completion = completionForResult(result, signal.reason);
+      // A failure the provider returned rather than threw is still a failure the reporter judges.
+      if (completion.outcome !== "completed")
+        this.#reportFailure(owner, completion, returnedFailure(result, completion));
     } catch (error) {
       turn.phase = "reporting";
       completion = completionForError(error, signal.reason);
@@ -304,6 +337,7 @@ export class AgentTurnRunner {
         },
         "Turn failed",
       );
+      this.#reportFailure(owner, completion, error);
       /* v8 ignore else -- a terminal event observed before the failure already recorded the outcome. */
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {
@@ -360,6 +394,22 @@ export class AgentTurnRunner {
           "Turn Report submission failed",
         );
       });
+  }
+
+  /**
+   * Hand a turn that did not complete to the reporter, whichever way it failed: a value the
+   * provider threw, or a result it returned. Every failure goes; which of them is a defect is the
+   * reporter's judgement, so the invariant the docs state holds literally.
+   */
+  #reportFailure(owner: LiveTurnOwner, completion: TurnCompletion, error: unknown): void {
+    this.#agentErrorReporter({
+      error,
+      agentId: owner.request.agentId,
+      sessionId: owner.request.sessionId,
+      turnId: owner.turnId,
+      errorReason: completion.errorReason,
+      outcome: completion.outcome,
+    });
   }
 
   #providerLaunchConfiguration(
@@ -626,6 +676,22 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
   };
 }
 
+/**
+ * The failure a returned result carries, as the thing the reporter is given. A provider that
+ * returned a failed result threw nothing, so the reported value is built from the result's own
+ * error; a result the runner itself refused — an oversized final text, a run cut short by the
+ * signal — carries none, and is described by the reason the runner classified it under.
+ */
+function returnedFailure(result: AgentRunResult, completion: TurnCompletion): Error {
+  if (result.error) {
+    const error = new Error(result.error.message);
+    error.name = `AgentRunError:${result.error.code}`;
+    return error;
+  }
+  // Every completion the runner refuses names its reason; nothing here is reached without one.
+  return new Error(`Agent run ${result.status} was classified as ${completion.errorReason}`);
+}
+
 /** The specific pre-execution rejection code behind a typed Turn failure, for the Computer's log only. */
 function errorFieldsForLog(error: unknown): { errorCode?: string } {
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
@@ -663,7 +729,26 @@ export function completionForError(error: unknown, abortReason: unknown): TurnCo
     // The runner accesses Session metadata and ensures its runtime before dispatching the prompt.
     return { outcome: "failed", executionEffects: "not_started", errorReason: "provider_start_failed" };
   }
+  if (error instanceof AgentProviderError) return completionForProviderError(error);
   return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };
+}
+
+/**
+ * A thrown provider error keeps the code it was thrown with, the same way a returned one does.
+ *
+ * Both shipped providers throw `provider_protocol_error` rather than returning it, so without this
+ * branch a real protocol failure reached the reporter as the catch-all `turn_state_unknown` and the
+ * taxonomy's own name for it was never filed. `provider_error` is a run the provider refused or
+ * lost, which the reporter declines like any other `provider_failed`.
+ */
+function completionForProviderError(error: AgentProviderError): TurnCompletion {
+  if (error.code === "provider_start_failed") {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "provider_start_failed" };
+  }
+  if (error.code === "provider_protocol_error") {
+    return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "provider_protocol_error" };
+  }
+  return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "provider_failed" };
 }
 
 function steerResult(

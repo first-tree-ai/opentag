@@ -125,9 +125,35 @@ export function findLatestStagingVersion(sourceVersion, publishedVersions) {
   return latest?.version;
 }
 
+/**
+ * Highest staging sequence on the target release line among versions that exist somewhere other
+ * than npm — today, the Runner image tags in Artifact Registry. A Runner tag is pushed before the
+ * CLI is published, so a run that fails in between leaves a tag that npm never learns about; the
+ * next release must step over it or every later run collides with the same immutable tag.
+ * Anything that is not a staging version on this line is ignored: quarantine tags and other
+ * release lines are not sequence claims.
+ */
+export function findLatestReservedStagingSequence(sourceVersion, reservedVersions) {
+  if (!Array.isArray(reservedVersions) || reservedVersions.some((version) => typeof version !== "string")) {
+    throw new Error("reserved versions must be an array of strings");
+  }
+
+  const target = targetStagingLine(sourceVersion);
+  let latest = 0;
+  for (const version of reservedVersions) {
+    if (!STAGING_VERSION_PATTERN.test(version)) continue;
+    const parsed = parseStagingVersion(version, "reserved version");
+    if (compareVersionParts(parsed, target) === 0 && parsed.sequence > latest) {
+      latest = parsed.sequence;
+    }
+  }
+  return latest;
+}
+
 export function resolveNextPublishedStagingVersion({
   sourceVersion,
   publishedVersions,
+  reservedVersions = [],
   latestGitHead,
   releaseGitHead,
   runAttempt,
@@ -140,8 +166,9 @@ export function resolveNextPublishedStagingVersion({
   }
 
   const latestVersion = findLatestStagingVersion(sourceVersion, publishedVersions);
+  const reservedSequence = findLatestReservedStagingSequence(sourceVersion, reservedVersions);
   if (!latestVersion) {
-    return formatStagingVersion(sourceVersion, 1, runAttempt);
+    return formatStagingVersion(sourceVersion, reservedSequence + 1, runAttempt);
   }
   if (typeof latestGitHead !== "string" || latestGitHead.length === 0) {
     throw new Error(`published version ${latestVersion} is missing gitHead`);
@@ -151,7 +178,7 @@ export function resolveNextPublishedStagingVersion({
   }
 
   const latest = parseStagingVersion(latestVersion);
-  return formatStagingVersion(sourceVersion, latest.sequence + 1, runAttempt);
+  return formatStagingVersion(sourceVersion, Math.max(latest.sequence, reservedSequence) + 1, runAttempt);
 }
 
 export function resolveProductionVersion(sourceVersion, tag) {

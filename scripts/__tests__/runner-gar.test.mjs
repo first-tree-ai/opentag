@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import {
+  listRunnerTags,
   lookupRunnerTag,
   parseGarRepository,
   RUNNER_LABELS,
@@ -99,6 +100,79 @@ test("parseGarRepository accepts only untagged Artifact Registry repositories", 
   assert.throws(() => parseGarRepository(`${IMAGE}:${VERSION}`), /untagged/);
   assert.throws(() => parseGarRepository(`${IMAGE}@sha256:${"b".repeat(64)}`), /untagged/);
   assert.throws(() => parseGarRepository("opentag-runner"), /untagged|docker\.pkg\.dev/);
+});
+
+/** A fake tag listing endpoint: one response per page, in order, keyed by the `last` cursor. */
+function tagListFetch(pages, { status = 200 } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    const parsed = new URL(url);
+    assert.equal(parsed.pathname, `/v2/${PATH}/tags/list`);
+    if (status !== 200) {
+      return { status, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    const page = pages[parsed.searchParams.get("last") ?? ""];
+    const headers = new Headers();
+    if (page.next) headers.set("link", `</v2/${PATH}/tags/list?n=1000&last=${page.next}>; rel="next"`);
+    if (page.link) headers.set("link", page.link);
+    const bytes = Buffer.from(typeof page.body === "string" ? page.body : JSON.stringify(page.body));
+    return {
+      status: 200,
+      headers,
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+    };
+  };
+  return { calls, fetchImpl };
+}
+
+test("listRunnerTags follows registry pagination and returns every tag", async () => {
+  const { calls, fetchImpl } = tagListFetch({
+    "": { body: { name: PATH, tags: ["0.0.6-staging.48.1", "0.0.6-staging.49.1"] }, next: "0.0.6-staging.49.1" },
+    "0.0.6-staging.49.1": { body: { name: PATH, tags: ["quarantine-49-1"] } },
+  });
+  assert.deepEqual(await listRunnerTags({ repository, accessToken: "secret-token", fetchImpl }), [
+    "0.0.6-staging.48.1",
+    "0.0.6-staging.49.1",
+    "quarantine-49-1",
+  ]);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, `https://${HOST}/v2/${PATH}/tags/list?n=1000`);
+  assert.equal(calls[1].url, `https://${HOST}/v2/${PATH}/tags/list?n=1000&last=0.0.6-staging.49.1`);
+  for (const call of calls) {
+    const auth = call.options.headers.authorization;
+    assert.equal(Buffer.from(auth.replace("Basic ", ""), "base64").toString(), "oauth2accesstoken:secret-token");
+    assert.equal(call.options.redirect, "manual");
+  }
+});
+
+test("listRunnerTags treats an empty or never-pushed image as no tags", async () => {
+  const empty = tagListFetch({ "": { body: { name: PATH, tags: null } } });
+  assert.deepEqual(await listRunnerTags({ repository, accessToken: "t", fetchImpl: empty.fetchImpl }), []);
+  const absent = tagListFetch({}, { status: 404 });
+  assert.deepEqual(await listRunnerTags({ repository, accessToken: "t", fetchImpl: absent.fetchImpl }), []);
+});
+
+test("listRunnerTags fails closed on inconclusive, malformed, or off-origin listings", async () => {
+  for (const status of [401, 403, 429, 500]) {
+    const { fetchImpl } = tagListFetch({}, { status });
+    await assert.rejects(listRunnerTags({ repository, accessToken: "t", fetchImpl }), /inconclusive with status/);
+  }
+  const nonJson = tagListFetch({ "": { body: "not json" } });
+  await assert.rejects(listRunnerTags({ repository, accessToken: "t", fetchImpl: nonJson.fetchImpl }), /non-JSON/);
+  const badTags = tagListFetch({ "": { body: { tags: ["ok", 7] } } });
+  await assert.rejects(listRunnerTags({ repository, accessToken: "t", fetchImpl: badTags.fetchImpl }), /invalid tags/);
+  const offOrigin = tagListFetch({
+    "": { body: { tags: ["a"] }, link: `<https://evil.example/v2/${PATH}/tags/list?last=a>; rel="next"` },
+  });
+  await assert.rejects(
+    listRunnerTags({ repository, accessToken: "t", fetchImpl: offOrigin.fetchImpl }),
+    /off the registry origin/,
+  );
+  const unreachable = async () => {
+    throw new TypeError("fetch failed");
+  };
+  await assert.rejects(listRunnerTags({ repository, accessToken: "t", fetchImpl: unreachable }), /could not reach/);
 });
 
 test("lookupRunnerTag resolves a present tag with its verified digest", async () => {

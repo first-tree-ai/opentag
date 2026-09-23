@@ -8,6 +8,7 @@ import { assertCurrentStagingRevision } from "../check-staging-revision.mjs";
 import { prepareCliRelease } from "../prepare-cli-release.mjs";
 import {
   compareReleaseVersions,
+  findLatestReservedStagingSequence,
   findLatestStagingVersion,
   formatStagingVersion,
   resolveNextPublishedStagingVersion,
@@ -78,6 +79,63 @@ test("increments the registry staging sequence and keeps same-commit retries ide
       runAttempt: "2",
     }),
     "0.0.2-staging.48.2",
+  );
+});
+
+test("steps over Runner tags that an earlier attempt pushed without reaching npm", () => {
+  // 3d539179 pushed the Runner tag 0.0.2-staging.49.1 and then failed the stale-revision recheck
+  // before npm publish, so npm still ends at 48 while the registry already holds 49.
+  const publishedVersions = ["0.0.1", "0.0.2-staging.48.1"];
+  const reservedVersions = ["0.0.2-staging.48.1", "0.0.2-staging.49.1", "quarantine-49-1", "0.0.3-staging.7.1"];
+  assert.equal(findLatestReservedStagingSequence("0.0.1", reservedVersions), 49);
+  assert.equal(findLatestReservedStagingSequence("0.0.1", []), 0);
+  assert.equal(findLatestReservedStagingSequence("0.0.2", reservedVersions), 7);
+  assert.throws(() => findLatestReservedStagingSequence("0.0.1", [42]), /array of strings/);
+  assert.equal(
+    resolveNextPublishedStagingVersion({
+      sourceVersion: "0.0.1",
+      publishedVersions,
+      reservedVersions,
+      latestGitHead: "3d539179",
+      releaseGitHead: "a11c616e",
+      runAttempt: "1",
+    }),
+    "0.0.2-staging.50.1",
+  );
+  assert.equal(
+    resolveNextPublishedStagingVersion({
+      sourceVersion: "0.0.1",
+      publishedVersions: [],
+      reservedVersions,
+      releaseGitHead: "a11c616e",
+      runAttempt: "1",
+    }),
+    "0.0.2-staging.50.1",
+    "a line with no npm release yet still starts past the claimed Runner tags",
+  );
+  assert.equal(
+    resolveNextPublishedStagingVersion({
+      sourceVersion: "0.0.1",
+      publishedVersions,
+      reservedVersions,
+      latestGitHead: "same-commit",
+      releaseGitHead: "same-commit",
+      runAttempt: "2",
+    }),
+    "0.0.2-staging.48.1",
+    "a same-commit retry keeps reusing its published coordinate",
+  );
+  assert.equal(
+    resolveNextPublishedStagingVersion({
+      sourceVersion: "0.0.1",
+      publishedVersions: ["0.0.2-staging.52.1"],
+      reservedVersions,
+      latestGitHead: "other-commit",
+      releaseGitHead: "next-commit",
+      runAttempt: "1",
+    }),
+    "0.0.2-staging.53.1",
+    "npm ahead of the registry still increments from npm",
   );
 });
 

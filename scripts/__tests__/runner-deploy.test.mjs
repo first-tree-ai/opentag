@@ -591,30 +591,80 @@ test("observation requests are each capped to the budget remaining when they are
   for (const request of observation) {
     assert.ok(request.timeoutMs <= request.remaining, `${request.url} could outlive the observation deadline`);
   }
-  assert.ok(
-    requests.slice(3).every((request) => request.timeoutMs === 30_000),
-    "reads outside the observation keep the default request timeout",
+  const later = requests.slice(3);
+  assert.deepEqual(
+    later.map((request) => request.url.split("/api/v2/user/apps/")[1].split("/")[0]),
+    ["appDefinitions", "appData", "appDefinitions", "appDefinitions", "appData"],
+    "the pre-update read, the update, and the post-update verification",
+  );
+  assert.deepEqual(
+    later.map((request) => request.timeoutMs),
+    [300_000, 300_000, 30_000, 300_000, 300_000],
+    "each later read is budgeted by its own fresh observation; only the update keeps the default request timeout",
   );
 });
 
-test("a read that precedes the update is never retried", async () => {
+/** Refuses the `which`-th request whose URL matches `match`, then lets everything through. */
+function refuseNth(fake, { match, which }) {
+  let seen = 0;
+  let refused = 0;
+  const fetchImpl = async (url, options) => {
+    if (url.includes(match)) {
+      seen += 1;
+      if (seen === which) {
+        refused += 1;
+        throw new TypeError("fetch failed");
+      }
+    }
+    return fake.fetchImpl(url, options);
+  };
+  return { fetchImpl, refused: () => refused };
+}
+
+test("the pre-update read rides out a briefly unreachable API and still updates exactly once", async () => {
+  // The first appData read belongs to the initial observation; the second is the fresh pre-update
+  // read, which lands right after the readyz gate, when CapRover reloads its proxy.
+  const fake = caproverFake();
+  const flaky = refuseNth(fake, { match: "/api/v2/user/apps/appData/", which: 2 });
+  const summary = await runDeploy(
+    deployDeps(fake, { mode: "apply", fetchImpl: flaky.fetchImpl, intervalMs: 1, deadlineMs: 1_000 }),
+  );
+  assert.equal(flaky.refused(), 1, "the refused pre-update read really happened");
+  assert.equal(summary.updated, true);
+  assert.equal(fake.updates().length, 1, "the Runner still lands exactly once");
+});
+
+test("the post-update verification rides out the restart the update itself causes", async () => {
+  // The third appData read is the verification after the update, when CapRover restarts the app
+  // with its new configuration.
+  const fake = caproverFake();
+  const flaky = refuseNth(fake, { match: "/api/v2/user/apps/appData/", which: 3 });
+  const summary = await runDeploy(
+    deployDeps(fake, { mode: "apply", fetchImpl: flaky.fetchImpl, intervalMs: 1, deadlineMs: 1_000 }),
+  );
+  assert.equal(flaky.refused(), 1, "the refused verification read really happened");
+  assert.equal(summary.updated, true);
+  assert.equal(fake.updates().length, 1, "the update was sent once and never repeated");
+});
+
+test("a pre-update read that never reaches CapRover fails at its deadline without mutating", async () => {
   const fake = caproverFake();
   let reads = 0;
   const fetchImpl = async (url, options) => {
     if (url.endsWith("/api/v2/user/apps/appDefinitions")) {
       reads += 1;
-      // The first read is the observation; the second is the fresh pre-update read that must not
-      // be retried, because what follows it is a mutation.
-      if (reads === 2) throw new TypeError("fetch failed");
+      if (reads >= 2) throw new TypeError("fetch failed");
     }
     return fake.fetchImpl(url, options);
   };
   await assert.rejects(
-    runDeploy(deployDeps(fake, { mode: "apply", fetchImpl, intervalMs: 1, deadlineMs: 1_000 })),
-    /could not be reached \(TypeError: fetch failed\)/,
+    runDeploy(deployDeps(fake, { mode: "apply", fetchImpl, intervalMs: 1, deadlineMs: 50 })),
+    (error) =>
+      /stayed unreachable for 0s while re-reading the app state before the update/.test(error.message) &&
+      /fetch failed/.test(error.message),
   );
-  assert.equal(reads, 2, "it failed on the pre-update read rather than polling again");
-  assert.equal(fake.updates().length, 0);
+  assert.ok(reads > 2, "it kept polling the pre-update read until its budget ran out");
+  assert.equal(fake.updates().length, 0, "nothing is mutated on a snapshot that was never read");
 });
 
 test("the idle wait retries an unreachable poll and reports the transport cause at the deadline", async () => {

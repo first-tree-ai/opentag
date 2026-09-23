@@ -12,6 +12,8 @@
  * Server adopted the exact Runner target. If the app is still building when `apply` starts — the
  * Server deploy's own build may not have finished yet — `apply` waits (bounded) for it, then
  * re-reads a fresh snapshot and applies every gate to that; `check` stays fail-fast.
+ * Every read rides out (bounded) a CapRover API that is briefly unreachable while the app
+ * restarts; the update itself is sent once and never retried.
  * No force termination, no instance deletion, no
  * provisioning, no database access, and no rollback of arbitrary concurrent state on failure.
  *
@@ -138,9 +140,10 @@ export async function probeReady({
 
 /**
  * Bounded retry for a read-only CapRover observation. Only a request that never reached CapRover is
- * retried; an answer that fails a gate is the caller's to handle. Callers about to mutate must not
- * use this: a lost write is not a lost read, and this whole helper exists for the window right
- * after a redeploy, when the API is briefly unreachable while nothing about the app is yet known.
+ * retried; an answer that fails a gate is the caller's to handle. Every read goes through this;
+ * the update itself never does: a lost write is not a lost read. The helper exists for the windows
+ * right after a redeploy and right after the update, when CapRover restarts the app and its API is
+ * briefly unreachable while nothing about the app is yet known.
  *
  * The same discipline as `waitForAppIdle`: every attempt receives the deadline so its requests are
  * capped to the remaining budget, the sleep between attempts never crosses the deadline, and an
@@ -431,7 +434,10 @@ export async function runDeploy({
   }
 
   if (!alreadyAtTarget) {
-    const fresh = await readState(context);
+    // The readyz gate has just passed, which is when CapRover finishes the Server swap and reloads
+    // its proxy, so this read is as exposed as the first one. It is still only a read: retrying it
+    // cannot lose a write, and the update below is decided on whatever snapshot it finally returns.
+    const fresh = await observe("re-reading the app state before the update");
     validateState({ state: fresh, release, serverRevision, publicUrl: config.publicUrl });
     if (!isDeepStrictEqual(fresh.snapshot, initial.snapshot)) {
       throw new Error("the app configuration changed between validation and update; aborting without mutating");
@@ -440,7 +446,9 @@ export async function runDeploy({
       ...context,
       next: { ...fresh.snapshot, envVars: withRunnerEnv(fresh.snapshot.envVars, release) },
     });
-    const after = await readState(context);
+    // The update itself restarts the app behind CapRover, so the verification read lands in the
+    // same unreachable window. The update was sent exactly once; only its verification retries.
+    const after = await observe("verifying the app state after the update");
     if (
       after.envVars.get(RUNNER_IMAGE_KEY) !== release.image ||
       after.envVars.get(RUNNER_VERSION_KEY) !== release.version

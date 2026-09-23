@@ -75,23 +75,6 @@ jobs:
         id: revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve staging version
-        id: version
-        run: |
-          SOURCE_VERSION=$(node -p "require('./apps/cli/package.json').version")
-          node scripts/resolve-staging-release.mjs \
-            --source-version "$SOURCE_VERSION" \
-            --git-head "${{ steps.revision.outputs.sha }}" \
-            --run-attempt "${{ github.run_attempt }}"
-
-      - name: Check npm coordinate
-        id: registry
-        run: >-
-          node scripts/check-npm-version.mjs
-          --package "${{ steps.version.outputs.package_name }}"
-          --version "${{ steps.version.outputs.version }}"
-          --git-head "${{ steps.revision.outputs.sha }}"
-
       # Build before prepare-cli-release modifies the tracked manifest. Runner has the exact
       # CLI coordinate, but its release provenance must still name a clean source checkout.
       - name: Verify Runner publishing configuration
@@ -105,6 +88,9 @@ jobs:
             exit 1
           }
 
+      # Authenticated before the version is chosen: the resolver reads the Runner registry as well
+      # as npm, because a Runner tag is pushed before the CLI is published and a run that fails in
+      # between leaves a tag npm never sees.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -113,6 +99,26 @@ jobs:
 
       - name: Set up Google Cloud CLI
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Resolve staging version
+        id: version
+        env:
+          RUNNER_IMAGE: ${{ vars.OPENTAG_RUNNER_STAGING_IMAGE_REPOSITORY }}
+        run: |
+          SOURCE_VERSION=$(node -p "require('./apps/cli/package.json').version")
+          node scripts/resolve-staging-release.mjs \
+            --source-version "$SOURCE_VERSION" \
+            --git-head "${{ steps.revision.outputs.sha }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --runner-image "$RUNNER_IMAGE"
+
+      - name: Check npm coordinate
+        id: registry
+        run: >-
+          node scripts/check-npm-version.mjs
+          --package "${{ steps.version.outputs.package_name }}"
+          --version "${{ steps.version.outputs.version }}"
+          --git-head "${{ steps.revision.outputs.sha }}"
 
       - name: Publish and verify the CLI-matched Runner
         id: runner

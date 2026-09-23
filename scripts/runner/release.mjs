@@ -128,11 +128,15 @@ export async function publishRunnerRelease({
       if (!(error instanceof RunnerIdentityMismatchError)) throw error;
       throw new Error(
         `the existing Runner tag ${image}:${version} was claimed by a different release (${error.message}). ` +
-          "This version number is claimed by that earlier attempt, so this workflow cannot proceed " +
-          "until the tag is freed. Manual recovery: add a quarantine tag to the claimed image and " +
-          `then delete the exact ${image}:${version} tag in Artifact Registry, then re-run this ` +
-          "workflow to rebuild the version from this clean source. Never overwrite the existing tag " +
-          "with a different build.",
+          "This version number belongs to that earlier attempt, so this run cannot proceed. " +
+          (channel === "staging"
+            ? "The staging version resolver steps over every Runner tag already in the registry, so a " +
+              "fresh run of this workflow resolves the next free sequence; a repeat of this error means " +
+              "the version was chosen against a listing that did not yet show the tag. "
+            : "Manual recovery: add a quarantine tag to the claimed image, then delete the exact " +
+              `${image}:${version} tag in Artifact Registry, then re-run this workflow to rebuild the ` +
+              "version from this clean source. ") +
+          "Never overwrite the existing tag with a different build.",
         { cause: error },
       );
     }

@@ -1,7 +1,7 @@
 # MCP Server integration
 
-> **Status: the management plane is delivered; runtime delivery is delivered for Claude Code and
-> Codex on a local Computer.**
+> **Status: the management plane and local Claude Code/Codex runtime paths are delivered. This
+> change adds local Pi and Cloud Pi runtime paths; deployment acceptance remains separate.**
 >
 > The management plane provides MCP (Model Context Protocol) Server definitions, per-Agent bindings
 > with per-Agent overrides, per-Agent authorization (anonymous / Bearer / OAuth), capability probing,
@@ -12,9 +12,9 @@
 > upstream credential is ever delivered to a Provider** — the gateway resolves the Agent's own
 > authorization row and calls upstream itself.
 >
-> Not yet covered: the **Cloud sandbox** (its Turn worker runs Pi only; neither Claude Code nor Codex
-> runs there at all). **Pi** has no MCP configuration surface and is out of scope; a Turn that was
-> granted MCP tools on a provider that cannot mount them logs `mcp_gateway_unsupported_provider`.
+> The Cloud sandbox runs Pi only. It uses the same execution-scoped MCP gateway token and Server
+> authorization as a local Computer, through its existing Runtime Credential Relay. Claude Code
+> and Codex do not run inside the Cloud sandbox.
 >
 > An earlier revision of this page proposed a different path — push credentials down to the Client
 > and inject the real authorization header through a local `127.0.0.1` loopback proxy. The gateway
@@ -43,6 +43,26 @@ only to the sandbox" expressible.
 | Capability probing and snapshot storage | stdio transport (a hosted service cannot run a user's local subprocess) |
 | Background token refresh | The 2024-11-05 HTTP+SSE dual-endpoint transport |
 | Web UI, CLI, Server API | Cloning an Agent with its mounts |
+
+### Pi and Cloud runtime delivery
+
+Pi has no native MCP configuration surface. OpenTag pins `pi-mcp-adapter` 2.36.0 and explicitly
+loads one OpenTag wrapper extension while Pi's implicit extension discovery remains disabled. The
+wrapper supplies an isolated programmatic configuration containing only `opentag-mcp`; Pi's global
+and project MCP files are never merged. The gateway bearer travels in the Pi process environment,
+not its arguments or persisted Session binding. The adapter uses the gateway's supported legacy
+MCP handshake and exposes only the bounded `mcp` proxy tool. Direct tools, per-server namespace
+proxies, resources, Tasks and scripting are disabled. A missing Agent mount or rejected service grant
+leaves the Turn without MCP tools.
+
+For Cloud, the trusted Runner requests the existing `mcp` execution service after verified custody,
+acquires a bearer over the existing credential control tunnel, and passes the Server URL and bearer
+to the disposable Sandbox worker through its stdin document. The Sandbox uses its existing public
+egress to call the Server's `/api/v1/mcp` endpoint. The Server checks the live execution, Agent
+scope, Sandbox generation, current control connection and custody on every call. Closing the
+execution revokes the bearer. Cloud's current topology requires one Server process while Runner
+control state is process-local; this path adds no separate WebSocket proxy or multi-Server promise.
+No Account MCP schema, upstream credential flow, or management UI changes are needed.
 
 ## The protocol this speaks
 
@@ -911,7 +931,7 @@ fixture Server that is also its own authorization server:
 | P5 — lifecycle | A soft-deleted Agent drops `boundAgentCount` to 0 so the definition can be deleted; an onboarding reset leaves no mount behind; detaching releases the credential; a client registration survives its Server's deletion |
 | Constraints | The one-row-per-pair unique index, the anonymous row created on mount, mounting before authorizing, `MCP_SERVER_IN_USE`, the datastore-level header-name rules, the case-insensitive Server name, and the Account snapshot bound failing one Agent's write without disturbing another's |
 
-One path cannot be verified in this release: **an Agent actually calling an MCP tool.** Runtime
-delivery is not implemented, so no test can demonstrate it, and none pretends to. When it is built,
-the verification is a real Computer and a real Provider with an Agent that reaches an MCP tool in a
-turn.
+Runtime unit tests cover gateway authorization and revocation, Pi's explicit extension loading,
+Cloud's ephemeral handoff and journal exclusion. A production acceptance claim still requires a
+real Computer and Provider Turn that calls an MCP tool, and for Cloud a pinned Runner image and
+observed end-to-end reply. Those observations are recorded separately from source and test gates.

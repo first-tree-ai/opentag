@@ -68,6 +68,8 @@ import { assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js
 
 /** Pi custom provider name for the Server-mediated model path. */
 export const CLOUD_MODEL_PI_PROVIDER = "opentag";
+/** The locked adapter lives with the Cloud image's Pi installation. */
+const CLOUD_PI_MCP_ADAPTER_ENTRY = "/opt/opentag/pi/node_modules/pi-mcp-adapter/index.ts";
 
 const TURN_POLICY = {
   approvals: "never" as const,
@@ -356,6 +358,16 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
   return { authJson, modelsJson, settingsJson };
 }
 
+function cloudPiConfiguration(request: RunnerCloudWorkerRequest) {
+  return {
+    model: `${CLOUD_MODEL_PI_PROVIDER}/${request.model.model}`,
+    ...(request.mcpGateway ? { provider: { mcpGateway: request.mcpGateway } } : {}),
+    ...(cloudWorkerRuntime(request).reasoningEffort
+      ? { reasoningEffort: cloudWorkerRuntime(request).reasoningEffort }
+      : {}),
+  };
+}
+
 /** The exact runtime surface the Turn worker drives; the real factory satisfies it. */
 export interface CloudTurnPiFactory {
   create(request: CreateAgentRuntimeRequest): Promise<CloudTurnPiRuntime>;
@@ -558,6 +570,7 @@ export async function runCloudTurnWorker(
     const factory =
       options.createPiFactory?.({ environment: runtimeEnvironment, pids, sessionDirectory }) ??
       new PiAgentRuntimeFactory({
+        mcpAdapterEntry: CLOUD_PI_MCP_ADAPTER_ENTRY,
         process: {
           args: skillArgsOf(skillPaths),
           command: "pi",
@@ -569,12 +582,7 @@ export async function runCloudTurnWorker(
         },
       });
 
-    const configuration = {
-      model: `${CLOUD_MODEL_PI_PROVIDER}/${request.model.model}`,
-      ...(cloudWorkerRuntime(request).reasoningEffort
-        ? { reasoningEffort: cloudWorkerRuntime(request).reasoningEffort }
-        : {}),
-    };
+    const configuration = cloudPiConfiguration(request);
     const common = {
       configuration,
       eventSink: async (event: AgentRuntimeEvent) => {

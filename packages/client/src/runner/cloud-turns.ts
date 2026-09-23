@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
+  MCP_GATEWAY_PATH,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RunnerClientFrame,
@@ -143,6 +144,7 @@ export interface CloudSessionExecutionOpenInput {
 export interface CloudTurnExecutionHandle {
   /** In-sandbox absolute path of the per-turn public material directory. */
   readonly executionDir: string;
+  readonly mcpGateway?: { readonly url: string; readonly token: string };
   /**
    * E8 Session CLI proof received on the execution-open result. Ephemeral: forwarded to the worker
    * via stdin and cleared with the execution; never journaled, logged, or archived.
@@ -1360,6 +1362,7 @@ export class CloudTurnRunner {
       const stdin = serializeRunnerCloudTurnWorkerStdin({
         delivery,
         executionDir: execution.executionDir,
+        ...(execution.mcpGateway ? { mcpGateway: execution.mcpGateway } : {}),
         model,
         ...(execution.sessionCliProof
           ? { sessionCollaboration: { proof: execution.sessionCliProof, serverUrl: this.#options.serverUrl } }
@@ -1476,6 +1479,7 @@ export class CloudTurnRunner {
       const stdin = serializeRunnerCloudSessionWorkerStdin({
         message,
         executionDir: execution.executionDir,
+        ...(execution.mcpGateway ? { mcpGateway: execution.mcpGateway } : {}),
         model,
         sessionKind: entry.sessionKind,
         deadlineAt,
@@ -1640,10 +1644,15 @@ export class CloudTurnRunner {
           },
           sessionId: input.sessionId,
           source: input.source,
+          services: ["mcp"],
         },
         input.signal,
       );
       const openRelay = relay;
+      const mcpGranted = openRelay.services?.some(
+        (service) => service.service === "mcp" && service.scopes.includes("mcp:tools"),
+      );
+      const mcpGrant = mcpGranted ? await openRelay.acquireMcpGatewayToken(input.signal) : undefined;
       privateDirectory = await mkdtemp(join(this.#options.stateDirectory, "turn-private-"));
       const publicRoot = this.#options.publicDirectory ?? join(this.#options.stateDirectory, "public");
       await mkdir(publicRoot, { recursive: true, mode: 0o700 });
@@ -1677,6 +1686,11 @@ export class CloudTurnRunner {
       const openBridge = bridge;
       return {
         executionDir: inSandboxExecutionDir,
+        ...(mcpGrant
+          ? {
+              mcpGateway: { url: new URL(MCP_GATEWAY_PATH, this.#options.serverUrl).toString(), token: mcpGrant.token },
+            }
+          : {}),
         ...(openRelay.sessionCliProof ? { sessionCliProof: openRelay.sessionCliProof } : {}),
         bridgeFailure: () => openBridge.failure,
         bridgeFailureSignal: openBridge.failureSignal,

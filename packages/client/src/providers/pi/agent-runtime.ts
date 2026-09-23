@@ -1,7 +1,9 @@
 import { type ChildProcessWithoutNullStreams, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { MCP_GATEWAY_PATH } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -68,6 +70,7 @@ export const PI_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
 
 interface PiProviderConfiguration {
   readonly sessionName?: string;
+  readonly mcpGateway?: PiMcpGatewayConfiguration;
   /**
    * Trusted web tools launch (runtime opt-in, negotiated, execution-authorized). When present,
    * the fixed trusted extension artifact is loaded explicitly with `-e` for this run (implicit
@@ -84,10 +87,18 @@ type PiWebToolsConfiguration = {
   readonly socketPath: string;
 };
 
+type PiMcpGatewayConfiguration = {
+  readonly url: string;
+  readonly token: string;
+};
+
 /** Nonsecret endpoint descriptor consumed by the trusted extension artifact. */
 const PI_WEB_TOOLS_SOCKET_ENV = "OPENTAG_WEB_TOOLS_SOCKET";
+const PI_MCP_GATEWAY_EXTENSION = fileURLToPath(new URL("../../pi-extensions/mcp-gateway.ts", import.meta.url));
+const PI_MCP_GATEWAY_BUNDLED_EXTENSION = fileURLToPath(new URL("./pi-extensions/mcp-gateway.mjs", import.meta.url));
 
 interface PiRuntimeOptions {
+  readonly mcpAdapterEntry?: string;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
   readonly createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
@@ -100,6 +111,8 @@ interface PiRuntimeOptions {
 }
 
 export interface PiAgentRuntimeFactoryOptions {
+  /** Trusted Cloud image path; Local resolves its pinned Client dependency. */
+  readonly mcpAdapterEntry?: string;
   readonly process?: {
     readonly args?: readonly string[];
     readonly command?: string;
@@ -156,6 +169,7 @@ interface PiTool {
 }
 
 export class PiAgentRuntime extends BaseAgentRuntime {
+  readonly #mcpAdapterEntry?: string;
   readonly #sessionId: string;
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
@@ -185,6 +199,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #pendingSessionFileHash = "";
   #terminalClaimed = false;
   #compacting = false;
+  #mcpEnabled = false;
 
   constructor(options: PiRuntimeOptions) {
     super({
@@ -197,6 +212,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#sessionId = binding.sessionId;
     this.#sessionFileHash = binding.sessionFileHash;
     this.#policy = options.policy;
+    this.#mcpAdapterEntry = options.mcpAdapterEntry;
     this.#configuration = options.configuration;
     this.#sessionDirectory = options.sessionDirectory;
     this.#skillArgs = (options.skillPaths ?? []).flatMap((path) => ["--skill", path]);
@@ -210,11 +226,17 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     context: AgentProviderRunContext,
   ): Promise<AgentProviderRunResult> {
     this.#resetRun(context);
+    this.#mcpEnabled = Boolean(
+      parseProviderConfiguration(mergeConfiguration(this.#configuration, request.configuration)?.provider).mcpGateway,
+    );
     let client: PiRpcClient | undefined;
     let cleanupFailure: Error | undefined;
     let result: AgentProviderRunResult;
     try {
-      client = this.#createClient(this.#arguments(request), piWebToolsEnvironment(request, this.#configuration));
+      client = this.#createClient(
+        this.#arguments(request),
+        piExtensionEnvironment(request, this.#configuration, this.#mcpAdapterEntry),
+      );
       this.#client = client;
       this.#unsubscribe = client.subscribe((message) => this.#enqueue(message));
       const state = requireRecord(
@@ -383,6 +405,14 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       // Explicit `-e` extension load for actual execution only; probes/help never receive it and
       // `--no-extensions` (in PI_RESOURCE_DISABLE_ARGUMENTS) keeps implicit discovery disabled.
       ...(provider.webTools ? ["--extension", provider.webTools.extensionPath] : []),
+      ...(provider.mcpGateway
+        ? [
+            "--extension",
+            /* v8 ignore start -- source tests execute .ts; the .mjs branch is exercised by the built Pi smoke. */
+            import.meta.url.endsWith(".mjs") ? PI_MCP_GATEWAY_BUNDLED_EXTENSION : PI_MCP_GATEWAY_EXTENSION,
+            /* v8 ignore stop */
+          ]
+        : []),
       "--append-system-prompt",
       this.#systemPrompt,
       ...(provider.sessionName ? ["--name", provider.sessionName] : []),
@@ -416,9 +446,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         ? message.error
         : new AgentProviderError("provider_error", "Pi process failed");
     }
-    if (type === "extension_ui_request") {
-      throw protocolError("Pi requested extension UI while extensions are disabled");
-    }
+    if (type === "extension_ui_request") return this.#handleExtensionUiRequest(message);
     if (type === "agent_start") return;
     if (type === "turn_start") {
       if (this.#currentTurnId) throw protocolError("Pi started overlapping turns");
@@ -490,6 +518,25 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       return;
     }
     await this.#emitProviderEvent(message);
+  }
+
+  async #handleExtensionUiRequest(message: Readonly<Record<string, unknown>>): Promise<void> {
+    // pi-mcp-adapter reports status through Pi's fire-and-forget UI channel even in RPC mode.
+    // Interactive dialogs remain forbidden: this headless runtime cannot safely answer them.
+    if (
+      this.#mcpEnabled &&
+      (message.method === "setStatus" || message.method === "setWidget" || message.method === "setTitle")
+    )
+      return;
+    if (this.#mcpEnabled && message.method === "notify") {
+      await this.#requireContext().emit({
+        type: "provider_warning",
+        code: "pi_mcp_notice",
+        message: "Pi MCP adapter reported a notice",
+      });
+      return;
+    }
+    throw protocolError("Pi requested extension UI while extensions are disabled");
   }
 
   async #startMessage(message: Readonly<Record<string, unknown>>): Promise<void> {
@@ -756,6 +803,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 }
 
 export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
+  readonly #mcpAdapterEntry?: string;
   readonly manifest = PI_AGENT_RUNTIME_MANIFEST;
   readonly #createSessionId: () => string;
   readonly #createClient: (
@@ -772,6 +820,10 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly #sessionDirectory?: string;
 
   constructor(options: PiAgentRuntimeFactoryOptions = {}) {
+    if (options.mcpAdapterEntry && !isAbsolute(options.mcpAdapterEntry)) {
+      throw new AgentRuntimeError("configuration_invalid", "Pi mcpAdapterEntry must be an absolute path");
+    }
+    this.#mcpAdapterEntry = options.mcpAdapterEntry;
     this.#createSessionId = options.createSessionId ?? randomUUID;
     const environment = piAgentRuntimeEnvironment(options.process?.env ?? process.env);
     const command = options.process?.command ?? "pi";
@@ -853,6 +905,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       await request.eventSink({ type: "binding_changed", binding });
       return new PiAgentRuntime({
         binding,
+        ...(this.#mcpAdapterEntry ? { mcpAdapterEntry: this.#mcpAdapterEntry } : {}),
         configuration: request.configuration,
         createClient: (args, extraEnvironment) =>
           this.#createClient(
@@ -1097,7 +1150,7 @@ function parseProviderConfiguration(value: JsonValue | undefined): PiProviderCon
   assertJsonValue(value, "configuration.provider");
   const object = record(value);
   if (!object) throw new AgentRuntimeError("configuration_invalid", "Pi provider configuration must be an object");
-  const allowed = new Set(["sessionName", "webTools"]);
+  const allowed = new Set(["sessionName", "webTools", "mcpGateway"]);
   for (const key of Object.keys(object)) {
     if (!allowed.has(key))
       throw new AgentRuntimeError("configuration_invalid", `unknown Pi configuration field: ${key}`);
@@ -1106,7 +1159,39 @@ function parseProviderConfiguration(value: JsonValue | undefined): PiProviderCon
   return {
     ...(sessionName ? { sessionName } : {}),
     ...(object.webTools !== undefined ? { webTools: parseWebToolsConfiguration(object.webTools) } : {}),
+    ...(object.mcpGateway !== undefined ? { mcpGateway: parseMcpGatewayConfiguration(object.mcpGateway) } : {}),
   };
+}
+
+function parseMcpGatewayConfiguration(value: unknown): PiMcpGatewayConfiguration {
+  assertJsonValue(value, "configuration.provider.mcpGateway");
+  const object = record(value);
+  if (!object) throw new AgentRuntimeError("configuration_invalid", "Pi mcpGateway must be an object");
+  for (const key of Object.keys(object)) {
+    if (!new Set(["url", "token"]).has(key)) {
+      throw new AgentRuntimeError("configuration_invalid", `unknown Pi mcpGateway field: ${key}`);
+    }
+  }
+  const url = boundedConfigurationString(object.url, "mcpGateway.url", 1024);
+  const token = boundedConfigurationString(object.token, "mcpGateway.token", 4096);
+  let endpoint: URL;
+  try {
+    endpoint = new URL(url ?? "");
+  } catch {
+    throw new AgentRuntimeError("configuration_invalid", "Pi mcpGateway URL is invalid");
+  }
+  if (
+    !["http:", "https:"].includes(endpoint.protocol) ||
+    endpoint.pathname !== MCP_GATEWAY_PATH ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.search ||
+    endpoint.hash ||
+    !token?.startsWith("otmg_")
+  ) {
+    throw new AgentRuntimeError("configuration_invalid", "Pi mcpGateway URL or token is invalid");
+  }
+  return { url: endpoint.toString(), token };
 }
 
 /** Strict trusted launch facts; both are absolute trusted-local paths with hard byte bounds. */
@@ -1129,14 +1214,22 @@ function parseWebToolsConfiguration(value: unknown): PiWebToolsConfiguration {
   return { extensionPath, socketPath };
 }
 
-/** Per-run process environment for the trusted extension: only the nonsecret endpoint descriptor. */
-function piWebToolsEnvironment(
+/** Per-run process environment: the MCP bearer stays out of argv and the persisted Pi binding. */
+function piExtensionEnvironment(
   request: AgentPromptRequest,
   base: AgentRunConfiguration | undefined,
+  mcpAdapterEntry?: string,
 ): Readonly<Record<string, string>> | undefined {
   const configuration = mergeConfiguration(base, request.configuration);
   const provider = parseProviderConfiguration(configuration?.provider);
-  return provider.webTools ? { [PI_WEB_TOOLS_SOCKET_ENV]: provider.webTools.socketPath } : undefined;
+  const environment: Record<string, string> = {};
+  if (provider.webTools) environment[PI_WEB_TOOLS_SOCKET_ENV] = provider.webTools.socketPath;
+  if (provider.mcpGateway) {
+    environment.OPENTAG_MCP_GATEWAY_URL = provider.mcpGateway.url;
+    environment.OPENTAG_MCP_GATEWAY_TOKEN = provider.mcpGateway.token;
+    environment.OPENTAG_PI_MCP_ADAPTER_ENTRY = mcpAdapterEntry ?? fileURLToPath(import.meta.resolve("pi-mcp-adapter"));
+  }
+  return Object.keys(environment).length > 0 ? environment : undefined;
 }
 
 function boundedConfigurationString(

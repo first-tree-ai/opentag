@@ -722,8 +722,8 @@ describe("AgentTurnRunner", () => {
       return prompt;
     };
 
-    // Claude Code mounts the bearer per run; Codex reloads its thread with it before the turn.
-    for (const providerId of ["claude-code", "codex"]) {
+    // Claude Code mounts the bearer per run; Codex reloads its thread; Pi loads the managed adapter.
+    for (const providerId of ["claude-code", "codex", "pi"]) {
       const prompt = await runWith(providerId);
       expect(prompt).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -733,7 +733,7 @@ describe("AgentTurnRunner", () => {
         }),
       );
     }
-    for (const providerId of ["pi", undefined]) {
+    for (const providerId of [undefined]) {
       const other = await runWith(providerId);
       expect(other.mock.calls[0]?.[0]).not.toHaveProperty("configuration");
     }

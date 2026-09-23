@@ -1111,6 +1111,7 @@ export class CloudDeliveryOwner {
       installationId: connection.installationId,
       instanceId: connection.instanceId,
       negotiatedCapabilities: {
+        [RUNTIME_CAPABILITY.mcpGateway]: 1,
         [RUNTIME_CAPABILITY.providerProxy]: 1,
         [RUNTIME_CAPABILITY.runtimeCredential]: 1,
         /*

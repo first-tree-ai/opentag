@@ -1097,7 +1097,7 @@ exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
     expect(tightProbe).toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
   }, 20_000);
 
-  it("uses the default local Pi process boundary without adding a package dependency", async () => {
+  it("uses the local Pi process boundary with only the pinned MCP adapter closure", async () => {
     const dependencyFields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
     const manifests = await Promise.all(
       [new URL("../../../../package.json", import.meta.url), new URL("../../package.json", import.meta.url)].map(
@@ -1109,6 +1109,7 @@ exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
         Object.keys(manifest[field] ?? {}).filter((name) => {
           const normalized = name.toLowerCase();
           return (
+            normalized === "pi-mcp-adapter" ||
             normalized.includes("pi-coding-agent") ||
             normalized.includes("pi-agent") ||
             /^@(earendil-works|mariozechner)\/pi(?:-|$)/.test(normalized)
@@ -1116,7 +1117,12 @@ exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
         }),
       ),
     );
-    expect(forbiddenDependencies).toEqual([]);
+    expect(forbiddenDependencies.sort()).toEqual(["@earendil-works/pi-coding-agent", "pi-mcp-adapter"]);
+    const clientManifest = manifests[1];
+    expect(clientManifest?.dependencies).toMatchObject({
+      "@earendil-works/pi-coding-agent": "0.84.2",
+      "pi-mcp-adapter": "2.36.0",
+    });
 
     const localArtifactCwd = await temporaryDirectory("opentag-pi-local-artifact-");
     const launches: Array<{ command: string; args: readonly string[]; path: string | undefined }> = [];

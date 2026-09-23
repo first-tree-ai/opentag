@@ -95,8 +95,16 @@ async function readOptionalIdentity<T>(read: () => Promise<T | undefined>): Prom
  *
  * The Account comes from its own file rather than from the credentials, because the credentials
  * file is read strictly by every CLI version and an older one must keep reading it after a
- * rollback. It counts only while it names the server the credentials are for: an identity left by
- * a sign-in to another server, or by a sign-in whose credentials are gone, is treated as absent.
+ * rollback.
+ *
+ * Every identifier is attached only from a record that names the server the report goes to. The
+ * destination is chosen first — the Account's server when signed in, else the Computer's — and each
+ * record contributes only if its server is that one. The mismatch is a supported state, not a
+ * corrupt one: a `login --server A` followed by `computer connect --server B` leaves an Account for
+ * A beside a Computer for B, and a report to A that named B's Computer would hand A's operator an
+ * identifier they cannot resolve, and carry B's identifiers across a deployment boundary. The two
+ * machine identifiers also stay a pair: a Computer uuid never travels with an installation uuid
+ * from another server.
  */
 export async function resolveErrorReportTarget(home: string): Promise<ErrorReportTarget> {
   const [credentials, account, identity, machine] = await Promise.all([
@@ -105,13 +113,35 @@ export async function resolveErrorReportTarget(home: string): Promise<ErrorRepor
     readOptionalIdentity(() => client.readComputerIdentity(home)),
     readOptionalIdentity(() => client.readMachineCredentials(home)),
   ]);
-  const accountMatchesCredentials = account !== undefined && account.serverUrl === credentials?.serverUrl;
+  const serverUrl = normalizedServerUrl(credentials?.serverUrl ?? identity?.serverUrl ?? machine?.computer.serverUrl);
+  const machineOnServer = sameServer(machine?.computer.serverUrl, serverUrl) ? machine?.computer : undefined;
+  const identityOnServer = sameServer(identity?.serverUrl, serverUrl) ? identity : undefined;
   return {
-    serverUrl: credentials?.serverUrl ?? identity?.serverUrl ?? machine?.computer.serverUrl,
-    userId: accountMatchesCredentials ? account.userId : undefined,
-    computerId: machine?.computer.computerId,
-    installationId: identity?.computerId ?? machine?.computer.installationId,
+    serverUrl,
+    userId: sameServer(account?.serverUrl, serverUrl) ? account?.userId : undefined,
+    computerId: machineOnServer?.computerId,
+    installationId: identityOnServer?.computerId ?? machineOnServer?.installationId,
   };
+}
+
+/**
+ * A record's server in the form the destination is compared in, or nothing when the record names
+ * no server or one that is not an OpenTag server URL at all. `credentials.json` and the Account
+ * identity are normalized on read; `computer.json` and the machine credential are stored as they
+ * were given, so a trailing slash or a capitalised host must not read as a different server.
+ */
+function normalizedServerUrl(serverUrl: string | undefined): string | undefined {
+  if (!serverUrl) return undefined;
+  try {
+    return client.normalizeServerUrl(serverUrl);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a record names the server the report is going to. */
+function sameServer(recordServerUrl: string | undefined, destination: string | undefined): boolean {
+  return destination !== undefined && normalizedServerUrl(recordServerUrl) === destination;
 }
 
 /** The Agent a failure belongs to, when it happened inside a turn rather than inside a command. */

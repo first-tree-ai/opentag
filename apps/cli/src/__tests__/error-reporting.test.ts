@@ -46,12 +46,14 @@ async function writeConfigFile(home: string, name: string, content: string): Pro
   await writeFile(join(layout.config, name), content, { mode: 0o600 });
 }
 
-async function connectHome(home: string, computerId = COMPUTER_ID, installationId = MACHINE_INSTALLATION_ID) {
+async function connectHome(
+  home: string,
+  computerId = COMPUTER_ID,
+  installationId = MACHINE_INSTALLATION_ID,
+  serverUrl = "https://opentag.example",
+) {
   await writeMachineCredentialsAtomically(
-    {
-      version: 3,
-      computer: { computerId, installationId, machineToken: "otmc_test", serverUrl: "https://opentag.example" },
-    },
+    { version: 3, computer: { computerId, installationId, machineToken: "otmc_test", serverUrl } },
     home,
   );
 }
@@ -190,21 +192,109 @@ describe("resolveErrorReportTarget", () => {
     await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://other.example" }, elsewhere);
     expect((await resolveErrorReportTarget(elsewhere)).userId).toBeUndefined();
 
-    // An identity without credentials to belong to is not one either.
+    // Without credentials the Computer's server is the destination; an identity naming that server
+    // is still a lead worth attaching there, one naming another server is not.
     const orphaned = await temporaryHome();
     await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://opentag.example" }, orphaned);
     await connectHome(orphaned);
     expect(await resolveErrorReportTarget(orphaned)).toMatchObject({
       serverUrl: "https://opentag.example",
-      userId: undefined,
+      userId: "account-1",
       computerId: COMPUTER_ID,
     });
+    await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://other.example" }, orphaned);
+    expect((await resolveErrorReportTarget(orphaned)).userId).toBeUndefined();
 
     // Signing out is forgetting the Account: once removed, the next report names none.
     const signedOut = await loggedInHome("https://opentag.example", ACCOUNT_ID);
     expect((await resolveErrorReportTarget(signedOut)).userId).toBe(ACCOUNT_ID);
     await removeAccountIdentity(signedOut);
     expect((await resolveErrorReportTarget(signedOut)).userId).toBeUndefined();
+  });
+
+  it("attaches machine identifiers only from records naming the server the report goes to", async () => {
+    const identity = (serverUrl: string) => ({ version: 2 as const, computerId: INSTALLATION_ID, serverUrl });
+
+    // Signed in to one server, Computer connected to another: the report goes to the Account's
+    // server and must not carry the other deployment's identifiers.
+    const split = await loggedInHome("https://account.example", ACCOUNT_ID);
+    await writeComputerIdentityAtomically(split, identity("https://computer.example"));
+    await connectHome(split, COMPUTER_ID, MACHINE_INSTALLATION_ID, "https://computer.example");
+    expect(await resolveErrorReportTarget(split)).toEqual({
+      serverUrl: "https://account.example",
+      userId: ACCOUNT_ID,
+      computerId: undefined,
+      installationId: undefined,
+    });
+
+    // No Account at all: the Computer's server is the destination and both identifiers belong to it.
+    const computerOnly = await temporaryHome();
+    await writeComputerIdentityAtomically(computerOnly, identity("https://computer.example"));
+    await connectHome(computerOnly, COMPUTER_ID, MACHINE_INSTALLATION_ID, "https://computer.example");
+    expect(await resolveErrorReportTarget(computerOnly)).toEqual({
+      serverUrl: "https://computer.example",
+      userId: undefined,
+      computerId: COMPUTER_ID,
+      installationId: INSTALLATION_ID,
+    });
+
+    // Machine credential on the destination, local identity on another server: the pair comes
+    // from the machine credential alone.
+    const machineMatches = await loggedInHome("https://opentag.example", ACCOUNT_ID);
+    await writeComputerIdentityAtomically(machineMatches, identity("https://elsewhere.example"));
+    await connectHome(machineMatches);
+    expect(await resolveErrorReportTarget(machineMatches)).toEqual({
+      serverUrl: "https://opentag.example",
+      userId: ACCOUNT_ID,
+      computerId: COMPUTER_ID,
+      installationId: MACHINE_INSTALLATION_ID,
+    });
+
+    // Local identity on the destination, machine credential on another server: the installation is
+    // known, the Computer is not, and the other server's Computer uuid never fills the gap.
+    const identityMatches = await loggedInHome("https://opentag.example", ACCOUNT_ID);
+    await writeComputerIdentityAtomically(identityMatches, identity("https://opentag.example"));
+    await connectHome(identityMatches, COMPUTER_ID, MACHINE_INSTALLATION_ID, "https://elsewhere.example");
+    expect(await resolveErrorReportTarget(identityMatches)).toEqual({
+      serverUrl: "https://opentag.example",
+      userId: ACCOUNT_ID,
+      computerId: undefined,
+      installationId: INSTALLATION_ID,
+    });
+  });
+
+  it("compares servers by normalized origin, so a trailing slash or letter case is the same server", async () => {
+    const home = await loggedInHome("https://opentag.example", ACCOUNT_ID);
+    await writeComputerIdentityAtomically(home, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: "https://OpenTag.example/",
+    });
+    await connectHome(home, COMPUTER_ID, MACHINE_INSTALLATION_ID, "HTTPS://opentag.example");
+
+    expect(await resolveErrorReportTarget(home)).toEqual({
+      serverUrl: "https://opentag.example",
+      userId: ACCOUNT_ID,
+      computerId: COMPUTER_ID,
+      installationId: INSTALLATION_ID,
+    });
+
+    // A Computer record whose server is not an OpenTag server URL at all counts as another server,
+    // and a destination taken from such a record is no destination.
+    const unparseable = await loggedInHome("https://opentag.example", ACCOUNT_ID);
+    await writeComputerIdentityAtomically(unparseable, { version: 2, computerId: INSTALLATION_ID, serverUrl: "nope" });
+    expect(await resolveErrorReportTarget(unparseable)).toMatchObject({
+      userId: ACCOUNT_ID,
+      installationId: undefined,
+    });
+    const nowhere = await temporaryHome();
+    await writeComputerIdentityAtomically(nowhere, { version: 2, computerId: INSTALLATION_ID, serverUrl: "nope" });
+    expect(await resolveErrorReportTarget(nowhere)).toEqual({
+      serverUrl: undefined,
+      userId: undefined,
+      computerId: undefined,
+      installationId: undefined,
+    });
   });
 
   it("names the Account Computer from the machine credential and the installation from its own identity", async () => {

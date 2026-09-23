@@ -37,6 +37,8 @@ const MODEL = {
   expiresAt: new Date(Date.now() + 600_000).toISOString(),
   model: "deepseek-v4.1-flash-expires-on-0910",
   token: "unit-execution-token-0123456789abcdef",
+  contextWindow: 258_000 as const,
+  maxTokens: 8_192,
 };
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -200,13 +202,22 @@ describe("cloud-turn-worker", () => {
     expect(models.providers.opentag?.api).toBe("openai-completions");
     expect(models.providers.opentag?.baseUrl).toBe("https://server.example.com/api/v1/cloud-model");
     expect(models.providers.opentag?.models[0]?.id).toBe("deepseek-v4.1-flash-expires-on-0910");
+    // The Server-selected window and issued output budget reach Pi verbatim: Pi's native
+    // compaction works against the real 258,000-token window, not its 128K custom-model default.
     expect(models.providers.opentag?.models[0]).toMatchObject({
+      contextWindow: 258_000,
       maxTokens: 8_192,
       compat: { supportsStore: false },
     });
-    const settings = JSON.parse(documents.settingsJson) as { defaultProvider: string; defaultModel: string };
+    const settings = JSON.parse(documents.settingsJson) as {
+      defaultProvider: string;
+      defaultModel: string;
+      compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+    };
     expect(settings.defaultProvider).toBe("opentag");
     expect(settings.defaultModel).toBe("opentag/deepseek-v4.1-flash-expires-on-0910");
+    // Native auto-compaction is explicitly enabled; Pi's pinned reserve/keep defaults stay untouched.
+    expect(settings.compaction).toEqual({ enabled: true });
   });
 
   it("renders Cloud-true system instructions without Local Agent Home or Context Tree claims", () => {

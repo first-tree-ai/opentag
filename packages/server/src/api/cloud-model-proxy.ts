@@ -3,6 +3,7 @@ import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { CloudModelConfig } from "../cloud-model-config.js";
+import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 
 /**
@@ -34,28 +35,21 @@ import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-g
  */
 
 /**
- * Platform ceiling for one completion's output budget, above the image-pinned Pi custom-provider
- * default of 16,384. Values above it are clamped so an oversized budget need not fail the Turn;
- * when neither field is supplied, the proxy supplies the standard max_tokens limit itself.
+ * Chat history for one turn is bounded by the route's HTTP body byte cap, not by a message count:
+ * a long compacted Session legitimately holds far more than a thousand short messages, and byte
+ * accounting is the bound that protects the process. The per-message structural bounds below stay.
  */
-export const CLOUD_MODEL_MAX_OUTPUT_TOKENS = 65_536;
-
-/** Chat history for one turn stays far below these bounds; the HTTP body byte cap bounds sizes. */
-const MAX_MESSAGES_PER_REQUEST = 1_024;
 const MAX_CONTENT_PARTS_PER_MESSAGE = 64;
 const MAX_TOOLS_PER_REQUEST = 128;
 const MAX_TOOL_CALLS_PER_MESSAGE = 128;
 const MAX_REASONING_DETAILS_PER_MESSAGE = 128;
 const MAX_REASONING_DETAIL_CHARS = 64 * 1_024;
 const MAX_REASONING_DETAIL_FIELDS = 8;
-
-/** Clamp an output budget to the fixed ceiling; absent stays absent. */
-const outputTokenBudget = z
-  .number()
-  .int()
-  .min(1)
-  .optional()
-  .transform((value) => (value === undefined ? undefined : Math.min(value, CLOUD_MODEL_MAX_OUTPUT_TOKENS)));
+/**
+ * Tool call and tool result identifiers stay intact end to end: providers emit opaque ids well
+ * beyond the historical 256-byte norm, and only the request body cap — never a per-field guess —
+ * decides what fits the model window.
+ */
 
 const textContentPart = z.object({ type: z.literal("text"), text: z.string() }).strict();
 const imageContentPart = z
@@ -64,7 +58,7 @@ const imageContentPart = z
 
 const functionToolCall = z
   .object({
-    id: z.string().min(1).max(256),
+    id: z.string().min(1),
     type: z.literal("function"),
     function: z.object({ name: z.string().min(1).max(128), arguments: z.string() }).strict(),
   })
@@ -130,7 +124,7 @@ const chatMessage = z.discriminatedUnion("role", [
       reasoning_details: z.array(encryptedReasoningDetail).min(1).max(MAX_REASONING_DETAILS_PER_MESSAGE).optional(),
     })
     .strict(),
-  z.object({ role: z.literal("tool"), content: z.string(), tool_call_id: z.string().min(1).max(256) }).strict(),
+  z.object({ role: z.literal("tool"), content: z.string(), tool_call_id: z.string().min(1) }).strict(),
 ]);
 
 const chatTool = z
@@ -168,14 +162,17 @@ const chatToolChoice = z.union([
 const ChatCompletionsBodySchema = z
   .object({
     model: z.string().min(1).max(128),
-    messages: z.array(chatMessage).min(1).max(MAX_MESSAGES_PER_REQUEST),
+    // Non-empty history; the total size is bounded by the route body byte cap, not a count.
+    messages: z.array(chatMessage).min(1),
     stream: z.boolean().optional(),
     stream_options: z.object({ include_usage: z.boolean().optional() }).strict().optional(),
     store: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
     top_p: z.number().min(0).max(1).optional(),
-    max_tokens: outputTokenBudget,
-    max_completion_tokens: outputTokenBudget,
+    // Output budgets are validated structurally here and clamped to the issued grant's budget in
+    // `authorize`, once the token's Server-selected capability is known.
+    max_tokens: z.number().int().min(1).optional(),
+    max_completion_tokens: z.number().int().min(1).optional(),
     n: z.literal(1).optional(),
     tools: z.array(chatTool).max(MAX_TOOLS_PER_REQUEST).optional(),
     tool_choice: chatToolChoice.optional(),
@@ -185,13 +182,28 @@ const ChatCompletionsBodySchema = z
       .strict()
       .optional(),
   })
-  .strict()
-  .transform((body) => {
-    if (body.max_tokens === undefined && body.max_completion_tokens === undefined) {
-      return { ...body, max_tokens: CLOUD_MODEL_MAX_OUTPUT_TOKENS };
-    }
-    return body;
-  });
+  .strict();
+
+/**
+ * Apply the issued grant's output budget: each explicit budget field is clamped to it (never
+ * relayed above the issued capability), and when the caller supplied neither field the proxy
+ * supplies the issued budget itself, so omission cannot bypass the bound.
+ */
+function applyIssuedOutputBudget(
+  body: z.infer<typeof ChatCompletionsBodySchema>,
+  maxTokens: number,
+): z.infer<typeof ChatCompletionsBodySchema> {
+  const clamp = (value: number | undefined): number | undefined =>
+    value === undefined ? undefined : Math.min(value, maxTokens);
+  const budget = {
+    max_tokens: clamp(body.max_tokens),
+    max_completion_tokens: clamp(body.max_completion_tokens),
+  };
+  if (budget.max_tokens === undefined && budget.max_completion_tokens === undefined) {
+    return { ...body, max_tokens: maxTokens };
+  }
+  return { ...body, ...budget };
+}
 
 const JSON_CONTENT_TYPE = "application/json";
 const SSE_CONTENT_TYPE = "text/event-stream";
@@ -261,7 +273,7 @@ async function authorize(
     await fail(reply, 403, "CLOUD_MODEL_MODEL_DENIED", "The token does not cover the requested model");
     return undefined;
   }
-  return { claims, body: parsed.data };
+  return { claims, body: applyIssuedOutputBudget(parsed.data, claims.maxTokens) };
 }
 
 /** Call the fixed upstream with the platform master key; bounded by timeout and revocation. */
@@ -413,17 +425,139 @@ interface UpstreamRejection {
   upstreamStatus?: number;
 }
 
-/** Reject non-2xx responses (upstream error bodies are never relayed) and unusable 2xx shapes. */
+/**
+ * An upstream error envelope is tiny; anything larger is not an error document. The body is read
+ * under this cap exactly once for classification and is never relayed or logged: a provider or
+ * Router error may echo secret-bearing request material in its message or param fields.
+ */
+const UPSTREAM_ERROR_BODY_MAX_BYTES = 8 * 1024;
+
+/**
+ * The safe upstream error classification. Only the confirmed classes below change the answer; an
+ * unparseable, oversized, or unrecognized error body — and every unknown 400 — stays the generic
+ * sanitized rejection, never a false context overflow. The fixed codes and messages are chosen so
+ * the pinned Pi's own recognizers behave correctly on the literal envelope Pi receives
+ * (`<status>: {"code":..., "message":...}` inside the assistant errorMessage):
+ * `context_length_exceeded` matches Pi's overflow patterns (native compact-and-retry), the rate
+ * limit text matches Pi's bounded retry pattern, and the billing text matches Pi's non-retryable
+ * quota pattern. No upstream message or param text is ever reflected.
+ */
+type UpstreamErrorClass = "context_overflow" | "billing" | "rate_limit" | "authentication" | "invalid_request";
+
+const UPSTREAM_CONTEXT_OVERFLOW_CODE = "context_length_exceeded";
+const UPSTREAM_BILLING_CODES = new Set(["insufficient_credit", "insufficient_quota", "billing_error"]);
+const UPSTREAM_RATE_LIMIT_CODE = "rate_limit_exceeded";
+const UPSTREAM_AUTH_CODES = new Set([
+  "invalid_api_key",
+  "authentication_error",
+  "permission_denied",
+  "model_not_permitted",
+]);
+const UPSTREAM_INVALID_REQUEST = "invalid_request_error";
+
+/** Read the bounded error envelope's declared code/type; undefined for anything else. */
+function upstreamErrorEnvelope(bodyText: string | undefined): { code?: string; type?: string } | undefined {
+  if (bodyText === undefined) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(bodyText);
+  } catch {
+    return undefined;
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const error = (raw as Record<string, unknown>).error;
+  if (typeof error !== "object" || error === null || Array.isArray(error)) return undefined;
+  const { code, type } = error as Record<string, unknown>;
+  return {
+    ...(typeof code === "string" && code.length > 0 && code.length <= 128 ? { code } : {}),
+    ...(typeof type === "string" && type.length > 0 && type.length <= 128 ? { type } : {}),
+  };
+}
+
+/**
+ * Classify one rejected upstream response. Classification keys only on the HTTP status and the
+ * bounded envelope's own `code`/`type` fields — never on free-text messages. Context overflow
+ * requires the explicit confirmed code on a client-error status; rate limit is the 429 contract;
+ * billing, authentication, and permanent invalid requests keep their permanent classes.
+ */
+function classifyUpstreamError(status: number, bodyText: string | undefined): UpstreamErrorClass | undefined {
+  const envelope = upstreamErrorEnvelope(bodyText);
+  if (
+    (status === 400 || status === 413) &&
+    (envelope?.code === UPSTREAM_CONTEXT_OVERFLOW_CODE || envelope?.type === UPSTREAM_CONTEXT_OVERFLOW_CODE)
+  ) {
+    return "context_overflow";
+  }
+  if (status === 402 || (envelope?.code !== undefined && UPSTREAM_BILLING_CODES.has(envelope.code))) {
+    return "billing";
+  }
+  if (status === 429 || envelope?.code === UPSTREAM_RATE_LIMIT_CODE) return "rate_limit";
+  if (status === 401 || status === 403 || (envelope?.code !== undefined && UPSTREAM_AUTH_CODES.has(envelope.code))) {
+    return "authentication";
+  }
+  if (status === 400 && (envelope?.type === UPSTREAM_INVALID_REQUEST || envelope?.code === UPSTREAM_INVALID_REQUEST)) {
+    return "invalid_request";
+  }
+  return undefined;
+}
+
+/** The fixed client-facing rejection for one confirmed class; the upstream body never crosses. */
+function classifiedRejection(kind: UpstreamErrorClass, upstreamStatus: number): UpstreamRejection {
+  switch (kind) {
+    case "context_overflow":
+      return {
+        code: UPSTREAM_CONTEXT_OVERFLOW_CODE,
+        message: "The request exceeds the model context window",
+        status: 400,
+        upstreamStatus,
+      };
+    case "billing":
+      return {
+        code: "billing_error",
+        message: "The model upstream reports a billing or quota limit",
+        status: 402,
+        upstreamStatus,
+      };
+    case "rate_limit":
+      return {
+        code: UPSTREAM_RATE_LIMIT_CODE,
+        message: "The model upstream rate limit was reached",
+        status: 429,
+        upstreamStatus,
+      };
+    case "authentication":
+      return {
+        code: "authentication_error",
+        message: "The model upstream rejected the platform model access credential",
+        status: upstreamStatus === 401 || upstreamStatus === 403 ? upstreamStatus : 403,
+        upstreamStatus,
+      };
+    case "invalid_request":
+      return {
+        code: UPSTREAM_INVALID_REQUEST,
+        message: "The model upstream rejected the request as permanently invalid",
+        status: 400,
+        upstreamStatus,
+      };
+  }
+}
+
+/** Reject non-2xx responses (classified safely) and unusable 2xx shapes. */
 async function rejectUnusableUpstream(
   upstream: Response,
   body: z.infer<typeof ChatCompletionsBodySchema>,
   maxResponseBytes: number,
 ): Promise<UpstreamRejection | undefined> {
   if (upstream.status < 200 || upstream.status >= 300) {
-    await discardUpstreamBody(upstream);
+    // Read the bounded error body for classification; the reader releases the socket either way.
     // Preserve the upstream status class for retry semantics, but never its body or headers: a
     // broken upstream may echo the platform key in either.
     const status = upstream.status >= 400 && upstream.status <= 599 ? upstream.status : 502;
+    const classified = classifyUpstreamError(
+      upstream.status,
+      await readBoundedResponseText(upstream, UPSTREAM_ERROR_BODY_MAX_BYTES),
+    );
+    if (classified) return classifiedRejection(classified, upstream.status);
     return {
       code: "CLOUD_MODEL_UPSTREAM_ERROR",
       message: "The model upstream rejected the request",

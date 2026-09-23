@@ -24,6 +24,8 @@ const MODEL_GRANT: RunnerCloudModelGrant = {
   model: "deepseek-v4.1-flash-expires-on-0910",
   token: "unit-execution-token-0123456789abcdef",
   expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  contextWindow: 258_000,
+  maxTokens: 8_192,
 };
 
 /** The same grant shape with a chosen token, for connection-generation regressions. */

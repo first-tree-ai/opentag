@@ -1014,6 +1014,7 @@ describe("the connect-code redemption status read", () => {
 describe("Account Cloud identity routes", () => {
   it("serves the Router model choices through the shared catalog, sanitized", async () => {
     const catalog = {
+      capabilitiesOf: vi.fn(),
       defaultModel: vi.fn(),
       isModelAllowed: vi.fn(),
       list: vi.fn().mockResolvedValue({
@@ -1058,6 +1059,7 @@ describe("Account Cloud identity routes", () => {
 
   it("answers a sanitized 503 when the Router list cannot be confirmed", async () => {
     const catalog = {
+      capabilitiesOf: vi.fn(),
       defaultModel: vi.fn(),
       isModelAllowed: vi.fn(),
       list: vi.fn().mockResolvedValue({ available: false, defaultModel: null, models: [] }),

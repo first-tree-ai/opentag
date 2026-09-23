@@ -820,7 +820,15 @@ export class CloudSessionCollaborationOwner {
       type: "session:message:verified",
       requestId,
       status: "verified",
-      model: { baseUrl, expiresAt: grant.expiresAt.toISOString(), model, token: grant.token },
+      model: {
+        baseUrl,
+        expiresAt: grant.expiresAt.toISOString(),
+        model,
+        token: grant.token,
+        // The Server-selected execution profile rides the grant verbatim; the Runner never derives it.
+        contextWindow: grant.contextWindow,
+        maxTokens: grant.maxTokens,
+      },
     };
   }
 

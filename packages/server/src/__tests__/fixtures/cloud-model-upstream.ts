@@ -23,7 +23,7 @@ export type FixtureHandler =
   | { kind: "overflow"; totalBytes?: number; chunkBytes?: number }
   | { kind: "backpressure"; totalBytes?: number; chunkBytes?: number }
   | { kind: "redirect"; location: string }
-  | { kind: "error"; status: number }
+  | { kind: "error"; status: number; body?: unknown; rawBody?: string }
   | { kind: "empty" }
   | { kind: "bad-content-type" };
 
@@ -47,6 +47,19 @@ export interface CloudModelUpstream {
 
 function chunkBuffer(size: number): Buffer {
   return Buffer.alloc(size, 0x61);
+}
+
+function errorBody(handler: Extract<FixtureHandler, { kind: "error" }>, stats: CloudModelUpstreamStats): string {
+  return (
+    handler.rawBody ??
+    (handler.body !== undefined
+      ? JSON.stringify(handler.body)
+      : JSON.stringify({
+          error: {
+            message: `${FIXTURE_ERROR_BODY_MARKER} authorization=${stats.authorizations.at(-1) ?? ""} key=${FIXTURE_MASTER_KEY}`,
+          },
+        }))
+  );
 }
 
 async function respond(
@@ -130,16 +143,12 @@ async function respond(
       return;
     }
     case "error": {
-      const body = JSON.stringify({
-        error: {
-          message: `${FIXTURE_ERROR_BODY_MARKER} authorization=${stats.authorizations.at(-1) ?? ""} key=${FIXTURE_MASTER_KEY}`,
-        },
-      });
+      const payload = errorBody(handler, stats);
       response.writeHead(handler.status, {
         "content-type": "application/json",
         [FIXTURE_RESPONSE_HEADER]: FIXTURE_MASTER_KEY,
       });
-      response.write(body);
+      response.write(payload);
       response.end();
       return;
     }

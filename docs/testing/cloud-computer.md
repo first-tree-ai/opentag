@@ -223,3 +223,33 @@ E6 concurrent Session checks and the combined E4–E6 staging procedure are docu
 E7 lifecycle checks are documented in [Cloud Runner execution](../cloud-runner-execution.md#e7-idle-reclamation-and-same-account-physical-reuse);
 E8 configuration, Tree and collaboration boundaries are documented in [Cloud Context](../cloud-context.md).
 Local evidence does not complete native Cloud/IM acceptance.
+
+## Native Pi context compaction (local)
+
+```bash
+pnpm build
+npm ci --prefix scripts/runner/pi
+node scripts/e2e/pi-native-compaction.mjs
+# Optional output directory saves synthetic request fixtures for Router validation:
+node scripts/e2e/pi-native-compaction.mjs /tmp/pi-context-fixtures
+```
+
+The harness starts the real locked Pi 0.84.2 RPC process and OpenTag runtime adapter against a
+loopback-only OpenAI-compatible fixture. It supplies synthetic usage at the actual 64,000 and
+258,000 working-window thresholds; it does not claim to measure a provider tokenizer. Native
+summary requests, persisted compaction entries, same-session continuation, a real local tool
+write, cancellation, summary retry/refusal and unexpected process exit are observed rather than mocked Pi events. The execution
+must remain Running through summary I/O, and summary usage must be counted exactly once. Every
+scenario uses an isolated temporary HOME and Session directory; no user credential or paid
+provider is used. This does not establish native Cloud isolation, real IM reply delivery or
+post-deployment cold-restore acceptance.
+
+### Cloud model grant rollout
+
+The grant now requires `contextWindow` and `maxTokens`; old Runner schemas reject the new fields,
+and new Runners reject grants without them. Deploy the compatible Router first. Before the
+Server/Runner upgrade or rollback, pause Cloud ingress operationally, let in-flight work finish
+and existing allocations save/release through the normal lifecycle, then verify no old
+allocations remain. Activate the matching Server/Runner release and resume acceptance. Existing
+old-image reconnect support is not wire compatibility for this grant change. Do not delete
+Session data or discard unsaved work to force an upgrade.

@@ -19,8 +19,11 @@ const SANDBOX_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
 /** Minimal valid chat history: the strict request schema requires at least one message. */
 const CHAT_MESSAGES = [{ content: "hello", role: "user" }];
-/** Deliberate pin of the route's CLOUD_MODEL_MAX_OUTPUT_TOKENS value: clamping tests assert it. */
-const OUTPUT_TOKEN_CEILING = 65_536;
+/**
+ * The issued grant's output budget from the test catalog's verified capability (8,192 tokens):
+ * clamping tests assert it, and no independent proxy-side ceiling exists.
+ */
+const ISSUED_OUTPUT_BUDGET = 8_192;
 
 type ProxyConfig = Parameters<typeof registerCloudModelProxyRoutes>[1]["config"];
 
@@ -314,7 +317,7 @@ describe("Cloud model proxy route", () => {
     expect(upstream.stats.hits).toBe(0);
   });
 
-  it("bounds completions to a single choice and clamps output token budgets to the ceiling", async () => {
+  it("bounds completions to a single choice and clamps output token budgets to the issued budget", async () => {
     const upstream = await startFixture({ kind: "json" });
     const { grants, port } = await makeStack({ upstream });
     const issued = await issueToken(grants);
@@ -328,9 +331,9 @@ describe("Cloud model proxy route", () => {
     expect(single.status).toBe(200);
     await single.text();
     expect((upstream.stats.lastRequestBody as { n?: number }).n).toBe(1);
-    // Omitting both budget fields must not bypass the platform output ceiling.
-    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(OUTPUT_TOKEN_CEILING);
-    // An uncapped token ask is clamped to the proxy ceiling, never relayed to the master key.
+    // Omitting both budget fields must not bypass the issued budget: the proxy supplies it.
+    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(ISSUED_OUTPUT_BUDGET);
+    // An uncapped token ask is clamped to the issued budget, never relayed to the master key.
     const hugeTokens = await postModel(
       port,
       { messages: CHAT_MESSAGES, model: "model-a", max_tokens: 1_000_000_000 },
@@ -338,7 +341,7 @@ describe("Cloud model proxy route", () => {
     );
     expect(hugeTokens.status).toBe(200);
     await hugeTokens.text();
-    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(OUTPUT_TOKEN_CEILING);
+    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(ISSUED_OUTPUT_BUDGET);
     const hugeCompletion = await postModel(
       port,
       { messages: CHAT_MESSAGES, model: "model-a", max_completion_tokens: 1_000_000_000 },
@@ -347,17 +350,17 @@ describe("Cloud model proxy route", () => {
     expect(hugeCompletion.status).toBe(200);
     await hugeCompletion.text();
     expect((upstream.stats.lastRequestBody as { max_completion_tokens?: number }).max_completion_tokens).toBe(
-      OUTPUT_TOKEN_CEILING,
+      ISSUED_OUTPUT_BUDGET,
     );
-    // A budget under the ceiling is forwarded untouched.
+    // A budget under the issued budget is forwarded untouched.
     const normal = await postModel(
       port,
-      { messages: CHAT_MESSAGES, model: "model-a", max_tokens: 8_192 },
+      { messages: CHAT_MESSAGES, model: "model-a", max_tokens: 1_024 },
       issued.token,
     );
     expect(normal.status).toBe(200);
     await normal.text();
-    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(8_192);
+    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(1_024);
     // Non-positive or fractional budgets are invalid.
     for (const maxTokens of [0, -1, 1.5]) {
       const response = await postModel(
@@ -370,11 +373,81 @@ describe("Cloud model proxy route", () => {
     }
   });
 
+  it("clamps the output budget to the issued capability, not a proxy-side constant", async () => {
+    const upstream = await startFixture({ kind: "json" });
+    // This grant's model verified a 4,096-token native output ceiling at the 64K window tier.
+    const grants = new CloudModelGrantService(SECRET, {
+      catalog: createStaticCloudModelCatalog(["model-a"], {
+        "model-a": { contextWindow: 100_000, maxOutputTokens: 4_096 },
+      }),
+      maxStreamsPerToken: 1,
+      sweepIntervalMs: 0,
+      ttlSeconds: 60,
+    });
+    const { port } = await makeStack({ grants, upstream });
+    const issued = await issueToken(grants);
+    expect(issued.contextWindow).toBe(64_000);
+    expect(issued.maxTokens).toBe(4_096);
+    const omitted = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(omitted.status).toBe(200);
+    await omitted.text();
+    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(4_096);
+    const clamped = await postModel(
+      port,
+      { messages: CHAT_MESSAGES, model: "model-a", max_tokens: 8_192 },
+      issued.token,
+    );
+    expect(clamped.status).toBe(200);
+    await clamped.text();
+    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(4_096);
+  });
+
+  it("admits long tool call ids and deep histories bounded only by the body cap", async () => {
+    const upstream = await startFixture({ kind: "json" });
+    const { grants, port } = await makeStack({ upstream, configOverrides: { maxRequestBytes: 8 * 1024 * 1024 } });
+    const issued = await issueToken(grants);
+    // Provider tool call ids are opaque and can be far longer than the historical 256-char norm.
+    const longId = `call_${"t".repeat(2_048)}`;
+    const longIdBody = {
+      model: "model-a",
+      messages: [
+        { role: "user", content: "read" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: longId, type: "function", function: { name: "read", arguments: "{}" } }],
+        },
+        { role: "tool", content: "done", tool_call_id: longId },
+      ],
+    };
+    const longIdResponse = await postModel(port, longIdBody, issued.token);
+    expect(longIdResponse.status).toBe(200);
+    await longIdResponse.text();
+    expect(upstream.stats.lastRequestBody).toMatchObject({ messages: longIdBody.messages });
+    // There is no message-count ceiling: 1,500 short messages pass under the 8 MiB body cap.
+    const deepHistory = {
+      model: "model-a",
+      messages: Array.from({ length: 1_500 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `message ${index}`,
+      })),
+    };
+    const deepResponse = await postModel(port, deepHistory, issued.token);
+    expect(deepResponse.status).toBe(200);
+    await deepResponse.text();
+    expect((upstream.stats.lastRequestBody as { messages: unknown[] }).messages).toHaveLength(1_500);
+    // An empty history stays invalid, and so does a tool id beyond the structural bound.
+    const empty = await postModel(port, { model: "model-a", messages: [] }, issued.token);
+    expect(empty.status).toBe(400);
+    expect(await errorCode(empty)).toBe("CLOUD_MODEL_REQUEST_INVALID");
+  });
+
   it("forwards a realistic pinned-Pi openai-completions payload to the upstream unchanged", async () => {
     // Shape mirrored from the image-pinned Pi (scripts/runner/pi: @earendil-works/pi-coding-agent
     // 0.84.2 → pi-ai openai-completions buildParams/convertMessages for a custom provider whose
-    // model has no reasoning flag): stream with usage, store:false, the 16,384 provider-composer
-    // default budget, strict function tools, and assistant/tool/image history.
+    // model has no reasoning flag): stream with usage, store:false, the issued grant's 8,192-token
+    // output budget as the model's maxTokens, strict function tools, and assistant/tool/image
+    // history.
     const piBody = {
       model: "model-a",
       messages: [
@@ -399,7 +472,7 @@ describe("Cloud model proxy route", () => {
       stream: true,
       stream_options: { include_usage: true },
       store: false,
-      max_completion_tokens: 16_384,
+      max_completion_tokens: 8_192,
       temperature: 0.2,
       tools: [
         {
@@ -693,7 +766,7 @@ describe("Cloud model proxy route", () => {
 
   it("sanitizes upstream error bodies and never relays or logs the master key", async () => {
     const logs: string[] = [];
-    const upstream = await startFixture({ kind: "error", status: 401 });
+    const upstream = await startFixture({ kind: "error", status: 500 });
     const { grants, port } = await makeStack({
       logger: {
         level: "info",
@@ -707,10 +780,10 @@ describe("Cloud model proxy route", () => {
     });
     const issued = await issueToken(grants);
     const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(500);
     const body = await response.text();
     expect(body).toContain("CLOUD_MODEL_UPSTREAM_ERROR");
-    expect(body).toContain('"upstreamStatus":401');
+    expect(body).toContain('"upstreamStatus":500');
     expect(body).not.toContain(FIXTURE_MASTER_KEY);
     expect(body).not.toContain(FIXTURE_ERROR_BODY_MARKER);
     expect(response.headers.get(FIXTURE_RESPONSE_HEADER)).toBeNull();
@@ -770,4 +843,191 @@ describe("Cloud model proxy route", () => {
     await vi.waitFor(() => expect(upstream.stats.prematureClose).toBe(true), { interval: 10, timeout: 3_000 });
     expect(await grants.verify(issued.token)).toBeUndefined();
   }, 10_000);
+});
+
+describe("Cloud model proxy upstream error classification", () => {
+  async function classifiedResponse(status: number, body: unknown) {
+    const upstream = await startFixture({ kind: "error", status, body });
+    const { grants, port } = await makeStack({ upstream });
+    const issued = await issueToken(grants);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    return { response, text: await response.text() };
+  }
+
+  it("classifies the confirmed context overflow code into the fixed Pi-recognizable envelope", async () => {
+    // The upstream error carries secret-bearing request material in message/param: classified or
+    // not, none of it may cross the proxy boundary.
+    const upstreamBody = {
+      error: {
+        code: "context_length_exceeded",
+        type: "invalid_request_error",
+        message: `prompt too long; authorization=Bearer ${FIXTURE_MASTER_KEY}`,
+        param: `messages[3] ${FIXTURE_ERROR_BODY_MARKER}`,
+      },
+    };
+    const { response, text } = await classifiedResponse(400, upstreamBody);
+    expect(response.status).toBe(400);
+    // The exact envelope the pinned Pi 0.84.2 receives: pi-ai composes the assistant errorMessage
+    // as `<status>: <error-json>`, and `isContextOverflow` (dist/utils/overflow.js) matches both
+    // /context[_ ]length[_ ]exceeded/i and /exceeds the context window/i against it, while the
+    // non-overflow exclusions (/rate limit/i, /too many requests/i) do not match. Pi therefore
+    // runs its native compact-and-retry instead of failing the turn.
+    expect(JSON.parse(text)).toEqual({
+      error: {
+        code: "context_length_exceeded",
+        message: "The request exceeds the model context window",
+        upstreamStatus: 400,
+      },
+    });
+    expect(text).not.toContain(FIXTURE_MASTER_KEY);
+    expect(text).not.toContain(FIXTURE_ERROR_BODY_MARKER);
+    expect(text).not.toContain("prompt too long");
+
+    // The same confirmed code on the payload-size status classifies identically.
+    const from413 = await classifiedResponse(413, upstreamBody);
+    expect(from413.response.status).toBe(400);
+    expect(JSON.parse(from413.text)).toMatchObject({ error: { code: "context_length_exceeded" } });
+  });
+
+  it("keeps unknown, missing, malformed, and oversized error bodies sanitized without false overflow", async () => {
+    // The historical A9 rejection shape: the Router transport cap is a permanent invalid request,
+    // NEVER a compactable context overflow (its message/param detail stays behind the proxy).
+    const a9 = await classifiedResponse(400, {
+      error: {
+        code: "prompt_too_large",
+        type: "invalid_request_error",
+        message: `prompt content bytes exceed limit ${FIXTURE_ERROR_BODY_MARKER}`,
+        param: "messages",
+      },
+    });
+    expect(a9.response.status).toBe(400);
+    expect(JSON.parse(a9.text)).toMatchObject({ error: { code: "invalid_request_error", upstreamStatus: 400 } });
+    expect(a9.text).not.toContain("context_length_exceeded");
+    expect(a9.text).not.toContain(FIXTURE_ERROR_BODY_MARKER);
+    expect(a9.text).not.toContain("prompt content bytes");
+
+    // A genuinely unknown 400 (no recognized type or code) stays the generic sanitized error.
+    const unknown = await classifiedResponse(400, {
+      error: { code: "mystery_code", type: "mystery_type", message: FIXTURE_ERROR_BODY_MARKER },
+    });
+    expect(unknown.response.status).toBe(400);
+    expect(JSON.parse(unknown.text)).toMatchObject({
+      error: { code: "CLOUD_MODEL_UPSTREAM_ERROR", upstreamStatus: 400 },
+    });
+    expect(unknown.text).not.toContain("context_length_exceeded");
+    expect(unknown.text).not.toContain(FIXTURE_ERROR_BODY_MARKER);
+
+    // An overflow claim on a server-error status is not a confirmation: it stays generic.
+    const wrongStatus = await classifiedResponse(500, {
+      error: { code: "context_length_exceeded", message: "claims overflow" },
+    });
+    expect(JSON.parse(wrongStatus.text)).toMatchObject({ error: { code: "CLOUD_MODEL_UPSTREAM_ERROR" } });
+    expect(wrongStatus.text).not.toContain("claims overflow");
+
+    for (const body of [
+      JSON.stringify({ error: { message: `no code field ${FIXTURE_MASTER_KEY}` } }),
+      JSON.stringify({ error: "context_length_exceeded" }),
+      JSON.stringify({ code: "context_length_exceeded" }),
+      JSON.stringify({ error: { code: "x".repeat(9_000) } }),
+      JSON.stringify({ error: { code: "context_length_exceeded", pad: "x".repeat(9_000) } }),
+    ]) {
+      const { response, text } = await classifiedResponse(400, JSON.parse(body));
+      expect(response.status).toBe(400);
+      expect(JSON.parse(text)).toMatchObject({ error: { code: "CLOUD_MODEL_UPSTREAM_ERROR" } });
+      expect(text).not.toContain(FIXTURE_MASTER_KEY);
+    }
+
+    // A non-JSON error body is not an envelope at all: same generic sanitized answer.
+    const malformedUpstream = await startFixture({ kind: "error", status: 400, rawBody: "<html>not json</html>" });
+    const malformedStack = await makeStack({ upstream: malformedUpstream });
+    const malformedIssued = await issueToken(malformedStack.grants, "turn-malformed");
+    const malformed = await postModel(
+      malformedStack.port,
+      { messages: CHAT_MESSAGES, model: "model-a" },
+      malformedIssued.token,
+    );
+    expect(malformed.status).toBe(400);
+    expect(JSON.parse(await malformed.text())).toMatchObject({ error: { code: "CLOUD_MODEL_UPSTREAM_ERROR" } });
+  });
+
+  it("classifies rate limits as bounded-retryable and billing or auth failures as permanent", async () => {
+    // Pi's pinned retry policy (dist/utils/retry.js): the rate-limit text matches the retryable
+    // pattern and none of the non-retryable quota patterns, so Pi applies its own bounded retry.
+    const rateLimited = await classifiedResponse(429, {
+      error: { code: "rate_limit_exceeded", type: "rate_limit_error", message: `slow down, key=${FIXTURE_MASTER_KEY}` },
+    });
+    expect(rateLimited.response.status).toBe(429);
+    expect(JSON.parse(rateLimited.text)).toEqual({
+      error: {
+        code: "rate_limit_exceeded",
+        message: "The model upstream rate limit was reached",
+        upstreamStatus: 429,
+      },
+    });
+    expect(rateLimited.text).not.toContain(FIXTURE_MASTER_KEY);
+    // A 429 carries the class even when the envelope is absent or unparseable: the status is the
+    // contract and reflects nothing.
+    const bareRateLimit = await classifiedResponse(429, { unexpected: true });
+    expect(bareRateLimit.response.status).toBe(429);
+    expect(JSON.parse(bareRateLimit.text)).toMatchObject({ error: { code: "rate_limit_exceeded" } });
+
+    // Quota exhaustion is permanent: the billing text matches Pi's non-retryable pattern, so a
+    // 429-shaped quota rejection is never retried as a transient rate limit.
+    const quota = await classifiedResponse(429, {
+      error: { code: "insufficient_quota", type: "billing_error", message: "quota" },
+    });
+    expect(quota.response.status).toBe(402);
+    expect(JSON.parse(quota.text)).toMatchObject({ error: { code: "billing_error" } });
+    const billing = await classifiedResponse(402, {
+      error: { code: "insufficient_credit", type: "billing_error", message: FIXTURE_ERROR_BODY_MARKER },
+    });
+    expect(billing.response.status).toBe(402);
+    expect(JSON.parse(billing.text)).toEqual({
+      error: {
+        code: "billing_error",
+        message: "The model upstream reports a billing or quota limit",
+        upstreamStatus: 402,
+      },
+    });
+    expect(billing.text).not.toContain(FIXTURE_ERROR_BODY_MARKER);
+
+    const auth = await classifiedResponse(401, {
+      error: { code: "invalid_api_key", type: "authentication_error", message: `key=${FIXTURE_MASTER_KEY}` },
+    });
+    expect(auth.response.status).toBe(401);
+    expect(JSON.parse(auth.text)).toMatchObject({ error: { code: "authentication_error" } });
+    expect(auth.text).not.toContain(FIXTURE_MASTER_KEY);
+    const denied = await classifiedResponse(403, {
+      error: { code: "model_not_permitted", type: "permission_error", message: "tenant scope" },
+    });
+    expect(denied.response.status).toBe(403);
+    expect(JSON.parse(denied.text)).toMatchObject({ error: { code: "authentication_error" } });
+    expect(denied.text).not.toContain("tenant scope");
+
+    const invalid = await classifiedResponse(400, {
+      error: { code: "invalid_json", type: "invalid_request_error", message: "body" },
+    });
+    expect(invalid.response.status).toBe(400);
+    expect(JSON.parse(invalid.text)).toEqual({
+      error: {
+        code: "invalid_request_error",
+        message: "The model upstream rejected the request as permanently invalid",
+        upstreamStatus: 400,
+      },
+    });
+  });
+
+  it("does not retry the upstream: one client request produces at most one upstream call", async () => {
+    const upstream = await startFixture({
+      kind: "error",
+      status: 429,
+      body: { error: { code: "rate_limit_exceeded", type: "rate_limit_error", message: "slow down" } },
+    });
+    const { grants, port } = await makeStack({ upstream });
+    const issued = await issueToken(grants);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
+    expect(response.status).toBe(429);
+    await response.text();
+    expect(upstream.stats.hits).toBe(1);
+  });
 });

@@ -193,3 +193,28 @@ Cloud Run 命名空间、真实 IM provider 或 GCP 分配。因此原生取消�
 不能将本 E3/E4 验收工具当作持久化证据。E6 Session 并发检查与 E4–E6 staging 组合验收步骤见
 [Cloud Runner 执行](../cloud-runner-execution.md#e6cloud-session-并发)。E7 生命周期检查见同文档的空闲回收与复用部分；
 E8 配置、Tree 和协作边界见 [Cloud Context](../cloud-context.md)。本地证据不能代替原生 Cloud／IM 验收。
+
+## Pi 原生上下文压缩（本地）
+
+```bash
+pnpm build
+npm ci --prefix scripts/runner/pi
+node scripts/e2e/pi-native-compaction.mjs
+# 可选目录用于保存模拟请求，供 Router 契约验证：
+node scripts/e2e/pi-native-compaction.mjs /tmp/pi-context-fixtures
+```
+
+验收以真实固定版本 Pi 0.84.2 RPC 进程和 OpenTag 适配层连接回环 OpenAI 兼容模拟服务。
+在真实 64,000／258,000 工作窗口阈值处返回模拟 usage，不将它当成供应商 tokenizer 测量。
+观察原生摘要请求、持久化压缩记录、原 Session 续接、本地工具写入、取消、摘要重试／拒绝及意外进程退出，不伪造
+Pi 事件。摘要请求期间执行保持 Running，摘要用量恰好累计一次。各场景隔离临时 HOME 和
+Session 目录，不读取用户凭证、不调用付费模型。本地结果不代表原生 Cloud 隔离、真实 IM
+回信或部署后的冷恢复验收通过。
+
+### Cloud 模型授权材料的发布顺序
+
+授权材料新增必填 `contextWindow`、`maxTokens`：旧 Runner 的严格协议会拒绝新字段，
+新 Runner 也会拒绝缺字段的旧材料。先上线兼容 Router；升级或回滚 Server／Runner 前，
+在运维层暂停 Cloud 输入，等待正在执行的工作结束、现有分配按正常生命周期保存并释放，
+确认旧分配已清空，再启用匹配的 Server／Runner 版本并恢复验收。已有的旧镜像重连能力
+不代表此次授权协议兼容。不能删除 Session 数据或放弃未保存工作来强制升级。

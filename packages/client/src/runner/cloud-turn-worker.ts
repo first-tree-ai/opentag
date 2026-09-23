@@ -323,8 +323,19 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
         [CLOUD_MODEL_PI_PROVIDER]: {
           api: "openai-completions",
           baseUrl: model.baseUrl,
-          // Router accepts at most 8,192 output tokens and has no OpenAI `store` option.
-          models: [{ id: model.model, name: model.model, maxTokens: 8_192, compat: { supportsStore: false } }],
+          // The Server-selected window and output budget travel with the grant verbatim: Pi's
+          // native compaction works against this real contextWindow instead of Pi's 128K
+          // custom-model default, and the output budget is the issued capability (never a
+          // model-name guess).
+          models: [
+            {
+              id: model.model,
+              name: model.model,
+              contextWindow: model.contextWindow,
+              maxTokens: model.maxTokens,
+              compat: { supportsStore: false },
+            },
+          ],
         },
       },
     },
@@ -333,6 +344,9 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
   )}\n`;
   const settingsJson = `${JSON.stringify(
     {
+      // Pi native auto-compaction is explicitly enabled with its pinned defaults
+      // (reserveTokens 16,384 / keepRecentTokens 20,000 stay untouched).
+      compaction: { enabled: true },
       defaultModel: `${CLOUD_MODEL_PI_PROVIDER}/${model.model}`,
       defaultProvider: CLOUD_MODEL_PI_PROVIDER,
     },

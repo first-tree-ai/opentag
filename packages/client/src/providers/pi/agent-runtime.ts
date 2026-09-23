@@ -7,6 +7,7 @@ import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
+  AGENT_RUNTIME_ID_MAX_BYTES,
   AGENT_RUNTIME_TEXT_MAX_BYTES,
   type AgentAbortRequest,
   type AgentPromptRequest,
@@ -183,6 +184,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #sessionFileHash?: string;
   #pendingSessionFileHash = "";
   #terminalClaimed = false;
+  #compacting = false;
 
   constructor(options: PiRuntimeOptions) {
     super({
@@ -319,7 +321,23 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 
   protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
     if (this.#terminalClaimed) return;
-    await this.#client?.request({ type: "abort" }, AbortSignal.timeout(2_000));
+    const client = this.#client;
+    if (!client) return;
+    if (!this.#compacting) {
+      try {
+        await client.request({ type: "abort" }, AbortSignal.timeout(2_000));
+        return;
+      } catch (error) {
+        // Compaction can begin while the RPC abort is waiting. A bounded process
+        // stop is also safe for an unresponsive abort; other protocol errors remain failures.
+        if (!(error instanceof PiRpcError) || (error.code !== "aborted" && error.code !== "timeout")) throw error;
+      }
+    }
+    // Pi 0.84.2 RPC abort does not abort native compaction. Keep the Session on
+    // disk, and report cancellation only after the owned process has exited.
+    await client.close();
+    await this.#eventTail;
+    if (!this.#terminalClaimed) this.#terminal?.resolve({ status: "aborted", stopReason: "aborted" });
   }
 
   protected async closeProvider(): Promise<void> {
@@ -345,6 +363,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#usage = {};
     this.#tools.clear();
     this.#terminalClaimed = false;
+    this.#compacting = false;
   }
 
   #arguments(request: AgentPromptRequest): readonly string[] {
@@ -372,6 +391,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 
   #enqueue(message: Readonly<Record<string, unknown>>): void {
     this.#claimTerminalAtIngress(message);
+    if (message.type === "compaction_start") this.#compacting = true;
+    if (message.type === "compaction_end") this.#compacting = false;
     const next = this.#eventTail.then(async () => {
       /* v8 ignore next -- unsubscribe detaches the only event source before Run context cleanup. */
       if (!this.#context) return;
@@ -407,13 +428,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (type === "turn_end") {
-      const turnId = this.#currentTurnId;
-      if (!turnId) throw protocolError("Pi ended a turn that was not active");
-      if (this.#currentAssistant || this.#tools.size > 0) {
-        throw protocolError("Pi ended a turn with unfinished child events");
-      }
-      await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: turnId });
-      this.#currentTurnId = undefined;
+      await this.#endTurn();
       return;
     }
     if (type === "message_start") {
@@ -448,6 +463,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "agent_end") {
       await this.#emitProviderEvent({ type, willRetry: message.willRetry === true });
+      return;
+    }
+    if (type === "compaction_start" || type === "compaction_end") {
+      await this.#handleCompaction(type, message);
       return;
     }
     if (type === "agent_settled") {
@@ -578,6 +597,16 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     await this.#materializeSession(this.#requireContext(), this.#pendingSessionFileHash);
   }
 
+  async #endTurn(): Promise<void> {
+    const turnId = this.#currentTurnId;
+    if (!turnId) throw protocolError("Pi ended a turn that was not active");
+    if (this.#currentAssistant || this.#tools.size > 0) {
+      throw protocolError("Pi ended a turn with unfinished child events");
+    }
+    await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: turnId });
+    this.#currentTurnId = undefined;
+  }
+
   async #startTool(message: Readonly<Record<string, unknown>>): Promise<void> {
     const toolCallId = requireString(message.toolCallId, "Pi tool start has no toolCallId");
     if (this.#tools.has(toolCallId)) throw protocolError("Pi reused an active toolCallId");
@@ -585,7 +614,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#tools.set(toolCallId, { name });
     await this.#requireContext().emit({
       type: "tool_started",
-      toolCallId,
+      toolCallId: piToolEventId(toolCallId),
       name,
       ...(message.args !== undefined ? { input: toJsonValue(message.args) } : {}),
     });
@@ -596,7 +625,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (!this.#tools.has(toolCallId)) throw protocolError("Pi tool update has no active tool");
     await this.#requireContext().emit({
       type: "tool_updated",
-      toolCallId,
+      toolCallId: piToolEventId(toolCallId),
       update: toJsonValue(message.partialResult ?? {}),
     });
   }
@@ -608,11 +637,50 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#tools.delete(toolCallId);
     await this.#requireContext().emit({
       type: "tool_completed",
-      toolCallId,
+      toolCallId: piToolEventId(toolCallId),
       name: tool.name,
       status: message.isError === true ? "failed" : "completed",
       ...(message.result !== undefined ? { output: toJsonValue(message.result) } : {}),
     });
+  }
+
+  /**
+   * Pi native auto-compaction runs INSIDE the same run: the events arrive between `agent_end`
+   * and `agent_settled`, so they never resolve the terminal here — the run stays in progress
+   * through the summary request, any recovery, and the continued agent loop, and only
+   * `agent_settled` settles it. A successful `compaction_end` carries the summary request's usage
+   * in `result.usage`; it is folded into the existing usage aggregate exactly once (the serial
+   * event queue handles each event once, and Pi emits one end per compaction). A failed or
+   * cancelled compaction (`result` absent, with or without a matching start — Pi reports an
+   * already-attempted overflow recovery with an end event alone) is a diagnostic only: Pi owns
+   * the retry/continue/fail decision, so the warning can neither falsely complete an interrupted
+   * run nor falsely fail one whose business output already completed.
+   */
+  async #handleCompaction(
+    type: "compaction_start" | "compaction_end",
+    message: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    if (type === "compaction_end") {
+      const result =
+        message.result === undefined ? undefined : requireRecord(message.result, "Pi compaction_end result is invalid");
+      if (result === undefined) {
+        await this.#requireContext().emit({
+          type: "provider_warning",
+          code: message.aborted === true ? "pi_compaction_aborted" : "pi_compaction_failed",
+          message: compactionDiagnostic(message),
+        });
+      }
+      await this.#emitProviderEvent(message);
+      if (result !== undefined) {
+        const usage = parseUsage(result.usage);
+        if (usage) {
+          this.#usage = addUsage(this.#usage, usage);
+          await this.#requireContext().emit({ type: "usage_updated", usage: this.#usage });
+        }
+      }
+      return;
+    }
+    await this.#emitProviderEvent(message);
   }
 
   #settleAgent(): void {
@@ -1271,6 +1339,23 @@ function piFailedStopMessage(stopReason: string): string {
   return "Pi model request failed";
 }
 
+/**
+ * The bounded compaction diagnostic text: Pi's own message when present (already sanitized for
+ * Cloud executions by the model proxy's fixed error classes), truncated to a small bound so the
+ * provider-warning budget can never fail the run, with a fixed fallback otherwise.
+ */
+function compactionDiagnostic(message: Readonly<Record<string, unknown>>): string {
+  const raw = message.errorMessage;
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return message.aborted === true ? "Pi context compaction was cancelled" : "Pi context compaction failed";
+  }
+  const bytes = Buffer.byteLength(raw, "utf8");
+  if (bytes <= COMPACTION_DIAGNOSTIC_MAX_BYTES) return raw;
+  return `${Buffer.from(raw, "utf8").subarray(0, COMPACTION_DIAGNOSTIC_MAX_BYTES).toString("utf8")}…`;
+}
+
+const COMPACTION_DIAGNOSTIC_MAX_BYTES = 2 * 1024;
+
 function isNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -1294,4 +1379,9 @@ function requireStopReason(value: unknown, message: string): string {
 
 function fingerprint(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+/** Local event reference only; the original provider ID stays unchanged in Pi's Session and model requests. */
+function piToolEventId(id: string): string {
+  return Buffer.byteLength(id, "utf8") <= AGENT_RUNTIME_ID_MAX_BYTES ? id : `pi-tool-${fingerprint(id)}`;
 }

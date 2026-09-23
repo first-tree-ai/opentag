@@ -661,6 +661,8 @@ function modelGrantFor(
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
     model: delivery.runtime.model,
     token,
+    contextWindow: 258_000 as const,
+    maxTokens: 8_192,
   };
 }
 
@@ -1209,6 +1211,8 @@ describe("Runner cancellation and connection lifetime", () => {
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
         model: delivery.runtime.model,
         token: "unit-execution-token-0123456789abcdef",
+        contextWindow: 258_000 as const,
+        maxTokens: 8_192,
       },
     };
     // Burst duplicate verifies concurrently over the real socket: exactly one worker may start.

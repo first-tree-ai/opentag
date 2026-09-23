@@ -54,6 +54,7 @@ import {
   DotsThreeVertical,
   Eye,
   EyeSlash,
+  FileText,
   Gear,
   House,
   type IconWeight,
@@ -67,6 +68,7 @@ import {
   Shield,
   SquaresFour,
   TreeStructure,
+  UploadSimple,
   User,
   Wrench,
   X,
@@ -76,6 +78,7 @@ import {
   type ComponentPropsWithoutRef,
   type CSSProperties,
   cloneElement,
+  type ForwardRefExoticComponent,
   forwardRef,
   type HTMLAttributes,
   type InputHTMLAttributes,
@@ -83,6 +86,7 @@ import {
   type ReactElement,
   type ReactNode,
   type Ref,
+  type RefAttributes,
   type RefObject,
   type SelectHTMLAttributes,
   type SVGAttributes,
@@ -128,7 +132,45 @@ export const Input: typeof KumoInput = KumoInput;
 export const InputArea: typeof KumoInputArea = KumoInputArea;
 export const Select: typeof KumoSelect = KumoSelect;
 export const Checkbox: typeof KumoCheckbox = KumoCheckbox;
-export const Switch: typeof KumoSwitch = KumoSwitch;
+type SwitchProps = Omit<ComponentPropsWithoutRef<typeof KumoSwitch>, "variant">;
+type SwitchItemProps = Omit<ComponentPropsWithoutRef<typeof KumoSwitch.Item>, "variant">;
+
+const SwitchItem: ForwardRefExoticComponent<SwitchItemProps & RefAttributes<HTMLButtonElement>> = forwardRef<
+  HTMLButtonElement,
+  SwitchItemProps
+>(function SwitchItem({ className, ...props }, ref) {
+  return (
+    <KumoSwitch.Item
+      {...props}
+      ref={ref}
+      variant="neutral"
+      className={classes(
+        "[&_[role=switch]]:bg-kumo-fill [&_[role=switch]]:ring-kumo-line [&_[role=switch][data-checked]]:bg-kumo-brand [&_[role=switch][data-checked]]:ring-kumo-brand [&_[role=switch]:focus-visible]:ring-kumo-brand",
+        className,
+      )}
+    />
+  );
+});
+
+// Kumo's default switch uses fixed blue values rather than the theme's brand token.
+// Both standalone and grouped switches use OpenTag selection colors at this shared seam.
+export const Switch: ForwardRefExoticComponent<SwitchProps & RefAttributes<HTMLButtonElement>> &
+  Pick<typeof KumoSwitch, "Group" | "Legend"> & { Item: typeof SwitchItem } = Object.assign(
+  forwardRef<HTMLButtonElement, SwitchProps>(function Switch({ className, ...props }, ref) {
+    return (
+      <KumoSwitch
+        {...props}
+        ref={ref}
+        variant="neutral"
+        className={classes(
+          "bg-kumo-fill ring-kumo-line data-[checked]:bg-kumo-brand data-[checked]:ring-kumo-brand",
+          className,
+        )}
+      />
+    );
+  }),
+  { Group: KumoSwitch.Group, Item: SwitchItem, Legend: KumoSwitch.Legend },
+);
 
 type KumoSelectProps = ComponentPropsWithoutRef<typeof KumoSelect>;
 
@@ -425,6 +467,7 @@ export type IconName =
   | "copy"
   | "eye"
   | "eye-slash"
+  | "file"
   | "instructions"
   | "overview"
   | "home"
@@ -438,6 +481,7 @@ export type IconName =
   | "shield"
   | "sign-out"
   | "tree"
+  | "upload"
   | "user"
   | "usage";
 
@@ -452,6 +496,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   copy: Copy,
   eye: Eye,
   "eye-slash": EyeSlash,
+  file: FileText,
   instructions: List,
   home: House,
   overview: SquaresFour,
@@ -465,6 +510,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   shield: Shield,
   "sign-out": ArrowRight,
   tree: TreeStructure,
+  upload: UploadSimple,
   user: User,
   usage: ChartLine,
 };

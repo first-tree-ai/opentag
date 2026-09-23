@@ -28,6 +28,10 @@ existing product vocabulary to Kumo primitives:
 - `Field` delegates label, description, and error rendering to Kumo Field.
 - `StatusIndicator` uses Kumo Badge dot appearance. Informational status uses
   the neutral semantic token; brand green is not used for operational state.
+- `Switch` and `Switch.Item` use brand green when checked and warm-neutral colors when
+  unchecked. The adapter replaces Kumo's fixed track colors with semantic tokens while
+  preserving Kumo sizing, shape, motion, focus, disabled, and busy behavior. Color variants
+  are not exposed to callers; operational status text keeps its own semantics.
 - `Dialog` uses a permanently mounted Kumo compound dialog with controlled
   `open` state. Busy dialogs reject outside, Escape, and close-button dismissal.
 - `Icon` uses the Phosphor registry. Icon-only controls must have an accessible

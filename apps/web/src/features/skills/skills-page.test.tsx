@@ -1,6 +1,6 @@
 import { SKILL_ARCHIVE_MAX_BYTES, SKILL_ERROR_CODES, type Skill } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
@@ -47,7 +47,7 @@ function wrap(children: ReactNode, client = new QueryClient({ defaultOptions: { 
 }
 
 function uploadButton(): HTMLButtonElement {
-  return screen.getByRole("button", { name: /Upload skill/ }) as HTMLButtonElement;
+  return screen.getAllByRole("button", { name: "Upload skill" })[0] as HTMLButtonElement;
 }
 
 function fileInput(): HTMLInputElement {
@@ -60,6 +60,16 @@ function archiveFile(name: string, contents: string): File {
   return new File([contents], name, { type: "application/octet-stream" });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("SkillsPage", () => {
@@ -69,7 +79,7 @@ describe("SkillsPage", () => {
 
     expect(await screen.findByText("Release notes writer")).toBeTruthy();
     expect(screen.getByText("Turns merged changes into clear release notes")).toBeTruthy();
-    expect(screen.getByText("Uploaded here")).toBeTruthy();
+    expect(screen.getByText("Web upload")).toBeTruthy();
     expect(screen.getByText(/2 KB · 3 files · Updated/)).toBeTruthy();
     const download = screen.getByRole("link", { name: "Download" });
     expect(download.getAttribute("href")).toBe(`/api/v1/agents/${AGENT_ID}/skills/${SKILL_ID}/bundle`);
@@ -82,6 +92,32 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText(/No Skills yet/)).toBeTruthy();
+    expect(screen.getByText(".zip, .skill, .tar.gz, .tgz · Up to 16 MiB")).toBeTruthy();
+    const chooseFile = vi.spyOn(fileInput(), "click");
+    fireEvent.click(screen.getAllByRole("button", { name: "Upload skill" })[1] as HTMLButtonElement);
+    expect(chooseFile).toHaveBeenCalledOnce();
+  });
+
+  it("keeps both upload entries disabled while hashing an archive", async () => {
+    stubList([]);
+    const upload = vi
+      .spyOn(browserApi, "uploadAgentSkill")
+      .mockResolvedValue({ ...skill(), files: [], filesTruncated: false });
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    await screen.findByText(/No Skills yet/);
+    const hash = deferred<ArrayBuffer>();
+    const file = archiveFile("notes.zip", "hello");
+    Object.defineProperty(file, "arrayBuffer", { value: () => hash.promise });
+
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+
+    expect(screen.getByText("Uploading notes.zip…").getAttribute("role")).toBe("status");
+    for (const button of screen.getAllByRole("button", { name: "Upload skill" })) {
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+    }
+    expect(upload).not.toHaveBeenCalled();
+    await act(async () => hash.resolve(new TextEncoder().encode("hello").buffer));
+    await waitFor(() => expect(upload).toHaveBeenCalledOnce());
   });
 
   it("uploads an archive with the detected format, its sha256, and replace off", async () => {
@@ -172,6 +208,11 @@ describe("SkillsPage", () => {
     fireEvent.click(await screen.findByRole("switch", { name: "Enable Release notes writer" }));
 
     expect(await screen.findByText("This Skill changed while you were working. Reload and try again.")).toBeTruthy();
+    const row = screen.getByRole("heading", { name: "Release notes writer" }).closest("li");
+    expect(row).not.toBeNull();
+    expect(
+      within(row as HTMLElement).getByText("This Skill changed while you were working. Reload and try again."),
+    ).toBeTruthy();
     expect(screen.queryByText(/Replace the existing Skill/)).toBeNull();
   });
 
@@ -224,6 +265,52 @@ describe("SkillsPage", () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith(AGENT_ID, SKILL_ID));
   });
 
+  it("keeps deletion open while busy and shows a failed deletion inside its dialog", async () => {
+    stubList([skill()]);
+    const deletion = deferred<void>();
+    const remove = vi.spyOn(browserApi, "removeAgentSkill").mockReturnValue(deletion.promise);
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Skill" }));
+
+    expect(await screen.findByRole("button", { name: "Deleting…" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(remove).toHaveBeenCalledOnce();
+
+    await act(async () => deletion.reject(new ApiError(503, "Unavailable")));
+    const dialog = screen.getByRole("alertdialog");
+    expect(await within(dialog).findByText("The Skill request failed. Try again.")).toBeTruthy();
+    expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("heading", { name: "Release notes writer" })).toBeTruthy();
+  });
+
+  it("keeps replacement open while its upload is running", async () => {
+    stubList([]);
+    const replacement = deferred<Awaited<ReturnType<typeof browserApi.uploadAgentSkill>>>();
+    const upload = vi
+      .spyOn(browserApi, "uploadAgentSkill")
+      .mockRejectedValueOnce(new ApiError(409, "conflict", SKILL_ERROR_CODES.NAME_CONFLICT))
+      .mockReturnValueOnce(replacement.promise);
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    await screen.findByText(/No Skills yet/);
+    fireEvent.change(fileInput(), { target: { files: [archiveFile("notes.zip", "hello")] } });
+    fireEvent.click(await screen.findByRole("button", { name: "Replace Skill" }));
+
+    expect(await screen.findByRole("button", { name: "Replacing…" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(upload).toHaveBeenCalledTimes(2);
+
+    await act(async () => replacement.resolve({ ...skill(), files: [], filesTruncated: false }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
   /*
    * W3: unknown storage is not available storage. Before the first successful list the page knows
    * nothing, so it must fail closed — no enabled Upload, no empty text, no "unavailable" claim.
@@ -247,6 +334,20 @@ describe("SkillsPage", () => {
     expect(uploadButton().disabled).toBe(true);
     expect(screen.queryByText(/No Skills yet/)).toBeNull();
     expect(screen.queryByText(/Skill storage is not configured/)).toBeNull();
+  });
+
+  it("retries a failed initial load from the error banner", async () => {
+    const list = vi
+      .spyOn(browserApi, "agentSkills")
+      .mockRejectedValueOnce(new ApiError(503, "Skill storage unavailable"));
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    await screen.findByText("Skill storage unavailable");
+    list.mockResolvedValue({ skills: [skill()], storage: "available" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Release notes writer")).toBeTruthy();
+    expect(screen.queryByText("Skill storage unavailable")).toBeNull();
   });
 
   it("enables Upload and shows the empty state for a successful empty list", async () => {

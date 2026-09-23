@@ -131,8 +131,12 @@ describe("createAgentErrorReporter", () => {
     report({ ...failure, turnId: "turn-4", errorReason: "turn_state_unknown" });
     await Promise.all(relays);
 
-    const turns = fetchImpl.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).turnId);
-    expect(turns).toEqual(["turn-1", "turn-3", "turn-1", "turn-4"]);
+    // Each relay reads the identity files before it posts, so the posts land in no fixed order.
+    const relayed = fetchImpl.mock.calls
+      .map((call) => JSON.parse(String(call[1]?.body)) as { sessionId: string; turnId: string })
+      .map((body) => `${body.sessionId}/${body.turnId}`)
+      .sort();
+    expect(relayed).toEqual(["session-1/turn-1", "session-1/turn-3", "session-1/turn-4", "session-2/turn-1"]);
     expect(AGENT_ERROR_REPORT_COOLDOWN_MS).toBe(30_000);
   });
 });

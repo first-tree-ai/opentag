@@ -295,6 +295,18 @@ describe("resolveErrorReportTarget", () => {
       computerId: undefined,
       installationId: undefined,
     });
+
+    // Candidates are normalized one by one: an unusable computer.json yields the destination to a
+    // valid machine credential instead of silencing the report, and costs only the local identity.
+    const yielded = await temporaryHome();
+    await writeComputerIdentityAtomically(yielded, { version: 2, computerId: INSTALLATION_ID, serverUrl: "nope" });
+    await connectHome(yielded, COMPUTER_ID, MACHINE_INSTALLATION_ID, "https://computer.example");
+    expect(await resolveErrorReportTarget(yielded)).toEqual({
+      serverUrl: "https://computer.example",
+      userId: undefined,
+      computerId: COMPUTER_ID,
+      installationId: MACHINE_INSTALLATION_ID,
+    });
   });
 
   it("names the Account Computer from the machine credential and the installation from its own identity", async () => {

@@ -73,7 +73,7 @@ CLI 端会分别读取各个身份文件：损坏的 `computer.json` 只让报�
 只让它失去 `userId`，其余不受影响；仅凭有效的 Account 凭据就足以为报告确定去向。
 
 每个标识都只会取自指向报告发往的那个 server 的记录。CLI 先确定目的地——已登录时是 Account 凭据中的 server，否则是
-Computer 的 server——然后只从（按规范化 origin 比较）指向该 server 的记录中取 `userId`、`computerId` 与
+Computer 的 server，每个候选各自规范化，因此 server 不可用的记录会让位于下一个——然后只从（按规范化 origin 比较）指向该 server 的记录中取 `userId`、`computerId` 与
 `installationId`。这种不一致是受支持的状态而非文件损坏：先 `login --server A` 再 `computer connect --server B`，会让
 A 的 Account 与 B 的 Computer 并存于同一个 home；若发往 A 的报告写上 B 的 Computer，A 的运维人员会拿到一个无法解析的
 标识，而 B 的标识也会越过部署边界。这样的报告只指明 Account，不指明任何机器。两个机器标识也始终成对：来自一个

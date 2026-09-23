@@ -113,7 +113,12 @@ export async function resolveErrorReportTarget(home: string): Promise<ErrorRepor
     readOptionalIdentity(() => client.readComputerIdentity(home)),
     readOptionalIdentity(() => client.readMachineCredentials(home)),
   ]);
-  const serverUrl = normalizedServerUrl(credentials?.serverUrl ?? identity?.serverUrl ?? machine?.computer.serverUrl);
+  // Each candidate is normalized on its own, so a record with an unusable server yields to the
+  // next rather than ending the chain: a malformed computer.json costs only what it names.
+  const serverUrl =
+    normalizedServerUrl(credentials?.serverUrl) ??
+    normalizedServerUrl(identity?.serverUrl) ??
+    normalizedServerUrl(machine?.computer.serverUrl);
   const machineOnServer = sameServer(machine?.computer.serverUrl, serverUrl) ? machine?.computer : undefined;
   const identityOnServer = sameServer(identity?.serverUrl, serverUrl) ? identity : undefined;
   return {

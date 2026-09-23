@@ -83,7 +83,8 @@ The identity files are read independently on the CLI side: a malformed `computer
 credentials alone are enough to address it.
 
 Every identifier is attached only from a record that names the server the report is sent to. The CLI chooses
-the destination first — the Account credentials' server when signed in, otherwise the Computer's — and then
+the destination first — the Account credentials' server when signed in, otherwise the Computer's, each
+candidate normalized on its own so a record with an unusable server yields to the next — and then
 takes `userId`, `computerId`, and `installationId` only from records whose server, compared as a normalized
 origin, is that one. The mismatch is a supported state rather than a corrupt one: `login --server A` followed by
 `computer connect --server B` leaves an Account for A beside a Computer for B, and a report to A that named B's

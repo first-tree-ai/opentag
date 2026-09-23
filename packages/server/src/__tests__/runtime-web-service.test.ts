@@ -134,9 +134,7 @@ function createHarness(
       results: [],
     })),
   };
-  const policy = new ConfigRuntimeWebPolicy({
-    tenants: new Map([[ACCOUNT, { tenantId: "internal-test", routerKey: "tvly-test-key" }]]),
-  });
+  const policy = new ConfigRuntimeWebPolicy({ routerKey: "tvly-test-key" });
   const authorizer = new RuntimeWebExecutionAuthorizer({
     executions: registry,
     scopeResolver: resolver,
@@ -201,6 +199,61 @@ describe("RuntimeWebService", () => {
     expect(harness.resolver.loads).toBe(2);
   });
 
+  it("records the authenticated Account in structured usage logging without query content", async () => {
+    const harness = createHarness({ services: ["web:search"] });
+    const usage: Record<string, unknown>[] = [];
+    harness.service = new RuntimeWebService({
+      authorizer: harness.authorizer,
+      policy: harness.policy,
+      router: harness.router as unknown as RouterWebClient,
+      executions: harness.registry,
+      logger: { info: (context) => usage.push(context) },
+    });
+    const request = { ...searchRequest(), executionId: harness.record.executionId };
+    await harness.service.search({ computerId: COMPUTER, request });
+    // Router billing is shared in this deployment, so the Account attribution lives here: the
+    // structured record names the authenticated Account and operation, and never the query text.
+    expect(usage).toEqual([
+      { code: "WEB_DISPATCH", accountId: ACCOUNT, executionId: harness.record.executionId, operation: "search" },
+    ]);
+    expect(JSON.stringify(usage)).not.toContain(request.query);
+  });
+
+  it("attributes a failed dispatch to the Account without echoing the query", async () => {
+    const harness = createHarness({ services: ["web:search"] });
+    const failures: Record<string, unknown>[] = [];
+    harness.router.search.mockRejectedValue(new RuntimeWebError("upstream_unavailable", "Router unreachable"));
+    harness.service = new RuntimeWebService({
+      authorizer: harness.authorizer,
+      policy: harness.policy,
+      router: harness.router as unknown as RouterWebClient,
+      executions: harness.registry,
+      logger: { warn: (context) => failures.push(context) },
+    });
+    const request = { ...searchRequest(), executionId: harness.record.executionId };
+    await expect(harness.service.search({ computerId: COMPUTER, request })).rejects.toMatchObject({
+      code: "upstream_unavailable",
+    });
+    expect(failures).toEqual([
+      {
+        code: "WEB_DISPATCH_FAILED",
+        operation: "search",
+        executionId: harness.record.executionId,
+        accountId: ACCOUNT,
+        errorCode: "upstream_unavailable",
+      },
+    ]);
+    expect(JSON.stringify(failures)).not.toContain(request.query);
+  });
+
+  it("resolves the live execution's Computer for a bearer-authenticated request", () => {
+    const harness = createHarness({ services: ["web:search"] });
+    expect(harness.service.executionComputerId(harness.record.executionId)).toBe(COMPUTER);
+    expect(harness.service.executionComputerId(randomUUID())).toBeUndefined();
+    harness.registry.close(harness.record.executionId, "execution_closed");
+    expect(harness.service.executionComputerId(harness.record.executionId)).toBeUndefined();
+  });
+
   it("reuses the same idempotency key across retransmits of one tool call", async () => {
     const harness = createHarness({ services: ["web:search"] });
     const request = { ...searchRequest(), executionId: harness.record.executionId };
@@ -210,12 +263,11 @@ describe("RuntimeWebService", () => {
     expect(keys[0]).toBe(keys[1]);
   });
 
-  it("refuses when the Account has no tenant mapping (no shared default tenant)", async () => {
+  it("refuses when the deployment has no Router key (no fallback credential)", async () => {
     const harness = createHarness({ services: ["web:search"] });
-    harness.policy = new ConfigRuntimeWebPolicy({ tenants: new Map() });
     harness.service = new RuntimeWebService({
       authorizer: harness.authorizer,
-      policy: harness.policy,
+      policy: { resolveRouterKey: () => undefined },
       router: harness.router as unknown as RouterWebClient,
       executions: harness.registry,
     });
@@ -457,14 +509,13 @@ describe("RuntimeWebService", () => {
 });
 
 describe("ConfigRuntimeWebPolicy", () => {
-  it("grants scopes only for mapped Accounts", () => {
-    const policy = new ConfigRuntimeWebPolicy({
-      tenants: new Map([[ACCOUNT, { tenantId: "t", routerKey: "k" }]]),
-    });
+  it("grants both scopes to every Account and resolves the one deployment key", () => {
+    const policy = new ConfigRuntimeWebPolicy({ routerKey: "k" });
     expect(policy.authorizeWeb({ accountId: ACCOUNT })).toEqual(["web:search", "web:fetch"]);
-    expect(policy.authorizeWeb({ accountId: randomUUID() })).toBeUndefined();
-    expect(policy.resolveTenant({ accountId: ACCOUNT })).toEqual({ tenantId: "t", routerKey: "k" });
-    expect(policy.resolveTenant({ accountId: randomUUID() })).toBeUndefined();
+    // A deployment-wide default: a different Account is not a different policy decision.
+    expect(policy.authorizeWeb({ accountId: randomUUID() })).toEqual(["web:search", "web:fetch"]);
+    expect(policy.resolveRouterKey({ accountId: ACCOUNT })).toEqual({ routerKey: "k" });
+    expect(policy.resolveRouterKey({ accountId: randomUUID() })).toEqual({ routerKey: "k" });
   });
 });
 

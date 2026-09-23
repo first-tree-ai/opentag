@@ -21,12 +21,20 @@ const BRIDGE_SHUTDOWN_TIMEOUT_MS = 2_000;
  * for a live, Server-authorized execution with web scopes for this exact Sandbox. The
  * `executionIdentity` is a nonsecret per-execution value: every authority opens its own bridge
  * process and its own listener, so no successor execution can ever inherit an older endpoint or
- * an older authority field. E4 model execution exists, but it wires no web authority: the E4
- * per-turn credential bridge never requests the `web` service, no production path injects an
- * authority, and bootstrap credentials are never accepted as one. Until a real web authority
- * issuer exists, the gateway stays closed for business and every call without an opened channel
- * is refused as web_disabled.
+ * an older authority field.
+ *
+ * Production Cloud turns build this from the `runtime:web:gateway` bearer the Server issued for the
+ * exact execution; the bootstrap credential is never accepted as an authority. The E3 acceptance
+ * harness may inject its own authority through `RunnerServeOptions.webAuthority`. A call with no
+ * opened channel is refused as web_disabled.
  */
+/**
+ * The Sandbox surface a web channel needs: its name (fenced against the owning gateway) and the
+ * verified duplex entry. Narrower than the full NativeSandbox so a test double can stand in without
+ * a fake filesystem, while production still passes the real thing.
+ */
+export type NativeWebSandbox = Pick<NativeSandbox, "name" | "openDuplex">;
+
 export interface NativeWebExecutionAuthority {
   /** Nonsecret identity of the exact execution; one channel binds exactly one value. */
   readonly executionIdentity: string;
@@ -103,7 +111,7 @@ export class NativeWebExecutionChannel {
   }
 
   static async open(input: {
-    sandbox: NativeSandbox;
+    sandbox: NativeWebSandbox;
     authority: NativeWebExecutionAuthority;
     logger?: Pick<ClientLogger, "debug" | "warn">;
     now?: () => number;
@@ -411,7 +419,7 @@ export class NativeSandboxWebGateway {
    * already-revoked authority fails before any bridge process is spawned.
    */
   async openExecution(input: {
-    sandbox: NativeSandbox;
+    sandbox: NativeWebSandbox;
     authority: NativeWebExecutionAuthority;
     startupTimeoutMs?: number;
   }): Promise<NativeWebExecutionChannel> {

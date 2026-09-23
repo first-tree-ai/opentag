@@ -975,7 +975,13 @@ export async function startServer(): Promise<void> {
       runtimeAuthService: platformRuntime.auth,
       runtimeProviderProxy: { transport: platformRuntime.credentials.transport },
       ...(platformRuntime.credentials.web
-        ? { runtimeWeb: { machineAuth: platformRuntime.auth, service: platformRuntime.credentials.web } }
+        ? {
+            runtimeWeb: {
+              machineAuth: platformRuntime.auth,
+              service: platformRuntime.credentials.web.service,
+              tokens: platformRuntime.credentials.web.tokens,
+            },
+          }
         : {}),
       ...(platformRuntime.credentials.mcp
         ? {

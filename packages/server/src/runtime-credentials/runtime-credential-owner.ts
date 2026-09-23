@@ -13,6 +13,8 @@ import {
   type RuntimeMcpGatewayRejectCode,
   type RuntimeMcpGatewayResult,
   type RuntimeProxyTicketResult,
+  type RuntimeWebGatewayRejectCode,
+  type RuntimeWebGatewayResult,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
@@ -35,6 +37,7 @@ import type { RuntimeTaskPolicy } from "./task-policy.js";
 import type { RuntimeProxyTicketStore } from "./ticket-store.js";
 import type { RuntimeExecutionRecord } from "./types.js";
 import type { RuntimeValidationRunRegistry } from "./validation-runs.js";
+import type { RuntimeWebGatewayTokenStore } from "./web-gateway-token-store.js";
 import type { RuntimeWebServicePolicy } from "./web-policy.js";
 
 export { VALIDATION_EXECUTION_MAX_LIFETIME_MS } from "./runtime-validation-execution.js";
@@ -65,6 +68,8 @@ export interface RuntimeCredentialOwnerOptions {
   mcpPolicy?: RuntimeMcpServicePolicy;
   /** Execution-scoped MCP gateway bearers; absent means the token frame can never succeed. */
   mcpGatewayTokens?: RuntimeMcpGatewayTokenStore;
+  /** Execution-scoped web gateway bearers; absent means the web token frame can never succeed. */
+  webGatewayTokens?: RuntimeWebGatewayTokenStore;
   logger?: ServiceLogger;
   sweepIntervalMs?: number;
 }
@@ -162,6 +167,7 @@ export class RuntimeCredentialOwner {
     if (frame.type === "runtime:credential:renew") return this.#renew(frame, context);
     if (frame.type === "runtime:execution:close") return this.#closeExecution(frame, context);
     if (frame.type === "runtime:mcp:gateway") return this.#mcpGatewayToken(frame, context);
+    if (frame.type === "runtime:web:gateway") return this.#webGatewayToken(frame, context);
     return this.#ticket(frame, context);
   }
 
@@ -326,6 +332,53 @@ export class RuntimeCredentialOwner {
     }
   }
 
+  /**
+   * Hand this execution its web gateway bearer.
+   *
+   * The mirrored twin of {@link RuntimeCredentialOwner.#mcpGatewayToken}, and for the same reason:
+   * the open result states the grant, and the credential is fetched separately. The grant is
+   * re-read from the live execution rather than trusted from the frame, so a Client cannot ask for a
+   * web bearer for an execution that was never granted the service. The bearer itself never reaches
+   * the Sandbox; the trusted Runner parent presents it only to the Server's fixed Web HTTP routes.
+   */
+  #webGatewayToken(
+    frame: Extract<RuntimeCredentialClientFrame, { type: "runtime:web:gateway" }>,
+    context: RuntimeBusinessContext,
+  ): RuntimeWebGatewayResult {
+    const rejected = (code: RuntimeWebGatewayRejectCode) =>
+      ({
+        type: "runtime:web:gateway:result",
+        requestId: frame.requestId,
+        status: "rejected",
+        code,
+      }) satisfies RuntimeWebGatewayResult;
+    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.webTools] !== 1 || !context.connectionId) {
+      return rejected("capability_unsupported");
+    }
+    const store = this.#options.webGatewayTokens;
+    if (!store) return rejected("capability_unsupported");
+    const execution = this.#contextExecution(frame.executionId, context);
+    if (!execution) return rejected("execution_unknown");
+    const granted = execution.services?.some((service) => service.service === "web" && service.scopes.length > 0);
+    if (!granted) return rejected("service_not_granted");
+    try {
+      const { token, expiresAt } = store.issue({
+        executionId: execution.executionId,
+        expiresAt: execution.expiresAt,
+      });
+      return {
+        type: "runtime:web:gateway:result",
+        requestId: frame.requestId,
+        status: "succeeded",
+        executionId: execution.executionId,
+        token,
+        expiresAt: new Date(expiresAt).toISOString(),
+      };
+    } catch {
+      return rejected("owner_unavailable");
+    }
+  }
+
   #ticket(
     frame: Extract<RuntimeCredentialClientFrame, { type: "runtime:proxy:ticket" }>,
     context: RuntimeBusinessContext,
@@ -391,6 +444,7 @@ export class RuntimeCredentialOwner {
      * "the token dies with the turn" true for every path rather than only the polite one.
      */
     this.#options.mcpGatewayTokens?.revokeExecution(executionId);
+    this.#options.webGatewayTokens?.revokeExecution(executionId);
     if (!notify) return;
     const frame: RuntimeCredentialServerFrame = { type: "runtime:credential:revoked", executionId, code };
     try {
@@ -458,6 +512,14 @@ export class RuntimeCredentialOwner {
     if (data.type === "runtime:mcp:gateway") {
       return {
         type: "runtime:mcp:gateway:result",
+        requestId: data.requestId,
+        status: "rejected",
+        code: "owner_unavailable",
+      };
+    }
+    if (data.type === "runtime:web:gateway") {
+      return {
+        type: "runtime:web:gateway:result",
         requestId: data.requestId,
         status: "rejected",
         code: "owner_unavailable",

@@ -31,7 +31,8 @@ import { RuntimeProxyTicketStore } from "./ticket-store.js";
 import { RuntimeUrlHandleStore } from "./url-handle-store.js";
 import { RuntimeValidationRunRegistry } from "./validation-runs.js";
 import { RuntimeWebExecutionAuthorizer } from "./web-execution.js";
-import type { RuntimeWebServicePolicy, RuntimeWebTenantResolver } from "./web-policy.js";
+import { RuntimeWebGatewayTokenStore } from "./web-gateway-token-store.js";
+import type { RuntimeWebRouterKeyResolver, RuntimeWebServicePolicy } from "./web-policy.js";
 import type { RouterWebClient } from "./web-router-client.js";
 import { RuntimeWebService } from "./web-service.js";
 
@@ -39,6 +40,7 @@ export * from "./capability-store.js";
 export * from "./credential-broker.js";
 export * from "./data-transport.js";
 export * from "./execution-authority.js";
+export * from "./execution-bearer-store.js";
 export * from "./execution-registry.js";
 export * from "./feishu-operations.js";
 export * from "./feishu-tenant-token.js";
@@ -63,6 +65,7 @@ export * from "./upload-forward.js";
 export * from "./url-handle-store.js";
 export * from "./validation-runs.js";
 export * from "./web-execution.js";
+export * from "./web-gateway-token-store.js";
 export * from "./web-policy.js";
 export * from "./web-router-client.js";
 export * from "./web-service.js";
@@ -112,7 +115,7 @@ export interface RuntimeCredentialServicesOptions {
    * service fully off: no execution carries web scopes and no runtime web route exists.
    */
   web?: {
-    readonly policy: RuntimeWebServicePolicy & RuntimeWebTenantResolver;
+    readonly policy: RuntimeWebServicePolicy & RuntimeWebRouterKeyResolver;
     readonly router: RouterWebClient;
   };
   /**
@@ -133,6 +136,16 @@ export interface McpGatewayServices {
   authorizer: McpGatewayExecutionAuthorizer;
 }
 
+/**
+ * The web service and its execution-bearer store. Grouped because neither is useful without the
+ * other: the service fences requests, and the store is the only thing that can name the Cloud
+ * execution that made one.
+ */
+export interface WebGatewayServices {
+  service: RuntimeWebService;
+  tokens: RuntimeWebGatewayTokenStore;
+}
+
 export interface RuntimeCredentialServices {
   owner: RuntimeCredentialOwner;
   transport: RuntimeProviderProxyTransport;
@@ -143,7 +156,7 @@ export interface RuntimeCredentialServices {
   urlHandles: RuntimeUrlHandleStore;
   broker: RuntimeCredentialBroker;
   /** Present only when the deployment configured the web service. */
-  web?: RuntimeWebService;
+  web?: WebGatewayServices;
   /** Present only when the MCP gateway is wired; the route needs both to serve a request. */
   mcp?: McpGatewayServices;
   close(): void;
@@ -158,21 +171,25 @@ function createRuntimeWebService(
     authority: RuntimeExecutionAuthority;
     connectionFence: RuntimeConnectionFence;
   },
-): RuntimeWebService | undefined {
+): WebGatewayServices | undefined {
   const web = options.web;
   if (!web) return undefined;
-  return new RuntimeWebService({
-    authorizer: new RuntimeWebExecutionAuthorizer({
+  return {
+    tokens: new RuntimeWebGatewayTokenStore(),
+    service: new RuntimeWebService({
+      authorizer: new RuntimeWebExecutionAuthorizer({
+        executions: deps.executions,
+        scopeResolver: deps.scopeResolver,
+        authority: deps.authority,
+        connectionFence: deps.connectionFence,
+        ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
+      }),
+      policy: web.policy,
+      router: web.router,
       executions: deps.executions,
-      scopeResolver: deps.scopeResolver,
-      authority: deps.authority,
-      connectionFence: deps.connectionFence,
-      ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
+      ...(options.logger ? { logger: options.logger } : {}),
     }),
-    policy: web.policy,
-    router: web.router,
-    executions: deps.executions,
-  });
+  };
 }
 
 /**
@@ -222,6 +239,23 @@ function mcpOwnerOptions(
 ): Partial<RuntimeCredentialOwnerOptions> {
   if (!options.mcp || !mcp) return {};
   return { mcpPolicy: new LiveMcpServicePolicy(options.mcp.mounts), mcpGatewayTokens: mcp.tokens };
+}
+
+/**
+ * The owner's platform-service options as one object: the web policy and bearer store, plus the MCP
+ * policy and bearer store. Grouped for the same reason the MCP pair is — a service is either wired
+ * with both halves or not wired at all — and to keep the composition function readable.
+ */
+function gatewayOwnerOptions(
+  options: RuntimeCredentialServicesOptions,
+  mcp: McpGatewayServices | undefined,
+  web: WebGatewayServices | undefined,
+): Partial<RuntimeCredentialOwnerOptions> {
+  return {
+    ...(options.web ? { webPolicy: options.web.policy } : {}),
+    ...(web ? { webGatewayTokens: web.tokens } : {}),
+    ...mcpOwnerOptions(options, mcp),
+  };
 }
 
 /**
@@ -278,6 +312,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
   });
   const adapters = createImAdapters(options, urlHandles);
   const mcp = createMcpGatewayServices(options, { executions, scopeResolver, authority, connectionFence });
+  const web = createRuntimeWebService(options, { executions, scopeResolver, authority, connectionFence });
   const owner = new RuntimeCredentialOwner({
     registry: options.registry,
     ...(options.controlAuthority ? { controlAuthority: options.controlAuthority } : {}),
@@ -291,8 +326,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     policy,
     gitHubAdmission,
     ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
-    ...(options.web ? { webPolicy: options.web.policy } : {}),
-    ...mcpOwnerOptions(options, mcp),
+    ...gatewayOwnerOptions(options, mcp, web),
     ...(options.logger ? { logger: options.logger } : {}),
     ...(options.sweepIntervalMs !== undefined ? { sweepIntervalMs: options.sweepIntervalMs } : {}),
   });
@@ -307,7 +341,6 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
   const unsubscribeHandles = executions.onClose((event) => {
     urlHandles.revokeExecution(event.executionId);
   });
-  const web = createRuntimeWebService(options, { executions, scopeResolver, authority, connectionFence });
   return {
     owner,
     transport,

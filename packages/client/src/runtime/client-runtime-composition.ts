@@ -1334,7 +1334,7 @@ export function createCredentialEnvironment(
       ? {
           webTools: {
             extensionPath: webToolsExtensionPath,
-            machineToken: options.machineToken,
+            bearerToken: options.machineToken,
             ...(options.webTools?.fetchImpl ? { fetchImpl: options.webTools.fetchImpl } : {}),
           },
         }

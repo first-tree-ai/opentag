@@ -129,13 +129,11 @@ describe("loadRunnerServeConfig", () => {
     }
   });
 
-  it("accepts only exact booleans for the web tools opt-in", () => {
-    expect(loadRunnerServeConfig(base).webTools).toBeUndefined();
-    expect(loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WEB_TOOLS: "false" }).webTools).toBeUndefined();
-    expect(loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WEB_TOOLS: "true" }).webTools).toBe(true);
-    for (const value of ["1", "yes", "TRUE", "on", ""]) {
-      expect(() => loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WEB_TOOLS: value })).toThrow(/WEB_TOOLS/);
-    }
+  it("no longer reads the removed web tools opt-in variable", () => {
+    // Web tools are a default Server-granted capability; the Runner has no switch of its own, so a
+    // leftover variable is inert rather than a second place to configure the boundary.
+    expect(loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WEB_TOOLS: "false" })).not.toHaveProperty("webTools");
+    expect(loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WEB_TOOLS: "true" })).not.toHaveProperty("webTools");
   });
 });
 
@@ -751,17 +749,14 @@ describe("runRunnerServe", () => {
     // A real gateway startup failure is the only path that returns 4 before any sandbox work.
     const start = vi.spyOn(NativeSandboxWebGateway, "start").mockRejectedValue(new Error("web gateway unavailable"));
     const launched: string[] = [];
-    const code = await runRunnerServe(
-      { ...serveConfig("ws://127.0.0.1:1/ws"), webTools: true },
-      {
-        installSignalHandlers: false,
-        sandboxFactory: () => {
-          launched.push("sandbox");
-          return fakeSandboxFactory()("probe", "/tmp/probe");
-        },
-        stderr: output.stderr,
+    const code = await runRunnerServe(serveConfig("ws://127.0.0.1:1/ws"), {
+      installSignalHandlers: false,
+      sandboxFactory: () => {
+        launched.push("sandbox");
+        return fakeSandboxFactory()("probe", "/tmp/probe");
       },
-    );
+      stderr: output.stderr,
+    });
     expect(code).toBe(4);
     // The gateway failure short-circuits before any native sandbox is built.
     expect(launched).toEqual([]);

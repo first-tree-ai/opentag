@@ -125,7 +125,7 @@ export async function createPlatformRuntime(options: {
     ...(options.config.web.enabled
       ? {
           web: {
-            policy: new ConfigRuntimeWebPolicy({ tenants: options.config.web.tenants }),
+            policy: new ConfigRuntimeWebPolicy({ routerKey: options.config.web.routerKey }),
             router: new RouterWebClient({
               baseUrl: options.config.web.routerBaseUrl,
               ...(options.logger ? { logger: options.logger } : {}),

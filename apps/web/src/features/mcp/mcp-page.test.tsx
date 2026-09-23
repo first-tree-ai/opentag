@@ -154,24 +154,146 @@ async function chooseOption(comboboxName: string, optionName: string): Promise<v
   fireEvent.click(option);
 }
 
+async function clickServerAction(name: string): Promise<void> {
+  const visible = screen.queryByRole("button", { name });
+  if (visible) {
+    fireEvent.click(visible);
+    return;
+  }
+  const menu = await screen.findByRole("button", { name: "More actions for linear" });
+  const loadedAction = screen.queryByRole("button", { name });
+  if (loadedAction) {
+    fireEvent.click(loadedAction);
+    return;
+  }
+  fireEvent.click(menu);
+  fireEvent.click(await screen.findByRole("menuitem", { name }));
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   window.history.replaceState({}, "", "/agents");
 });
 
 describe("McpPage", () => {
+  it("keeps an active credential's maintenance actions in the server menu", async () => {
+    stub([entry()]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    expect(await screen.findByRole("button", { name: "View tools" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Authorize" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove from this Agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+    for (const name of ["Edit", "Authorize", "Revoke", "Remove from this Agent"]) {
+      expect(await screen.findByRole("menuitem", { name })).toBeTruthy();
+    }
+  });
+
+  it("prevents a second toggle until the first mount change settles", async () => {
+    stub([entry()]);
+    let finish: (value: MCPAgentServer) => void = () => {};
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    const toggle = await screen.findByRole("switch", { name: "Enable linear" });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(true));
+    fireEvent.click(toggle);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { enabled: false });
+    finish(entry({ enabled: false }));
+    await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(false));
+  });
+
+  it("prioritizes refreshing a failed discovery without offering an absent snapshot", async () => {
+    stub([
+      entry({
+        snapshot: null,
+        authorization: {
+          ...(entry().authorization as NonNullable<MCPAgentServer["authorization"]>),
+          probeState: "failed",
+        },
+      }),
+    ]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    expect(await screen.findByText("Discovery failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh tools" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Authorize" })).toBeNull();
+  });
+
+  it("announces discovery progress and prevents duplicate refresh requests", async () => {
+    stub([entry()]);
+    let finish: () => void = () => {};
+    const probe = vi.spyOn(browserApi, "probeMcpServer").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({
+              probeState: "succeeded",
+              probeError: null,
+              toolsCount: 3,
+              toolsTruncated: false,
+              protocolEra: null,
+              protocolVersion: null,
+            });
+        }),
+    );
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    const refresh = await screen.findByRole("button", { name: "Refresh tools" });
+    fireEvent.click(refresh);
+    expect(await screen.findByText("Discovering…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "View tools" })).toBeTruthy();
+    expect(screen.getByText("Showing the last successful discovery.")).toBeTruthy();
+    expect(refresh.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(refresh);
+    expect(probe).toHaveBeenCalledTimes(1);
+    finish();
+    await waitFor(() => expect(refresh.hasAttribute("disabled")).toBe(false));
+    expect(screen.queryByText("Showing the last successful discovery.")).toBeNull();
+  });
+
   it("keeps the mount and authorization states independent so a disabled Server is not read as unauthorized", async () => {
     stub([entry({ enabled: false })]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("linear")).toBeTruthy();
-    expect(screen.getByText("Disabled")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Enable linear" }).getAttribute("aria-checked")).toBe("false");
     // The credential is still active, and the page says so rather than implying reauthorization.
     expect(screen.getByText("Authorized")).toBeTruthy();
-    expect(
-      screen.getByText("Disabled. The credential is kept, so enabling it again needs no reauthorization."),
-    ).toBeTruthy();
+    expect(screen.getByText("Disabled. Authorization is kept.")).toBeTruthy();
   });
+
+  it.each(["pending", "expired", "revoked", "error", null] as const)(
+    "requires authorization for a disabled Server with %s authorization",
+    async (status) => {
+      stub([
+        entry({
+          enabled: false,
+          snapshot: null,
+          authorization: status
+            ? { ...(entry().authorization as NonNullable<MCPAgentServer["authorization"]>), status }
+            : null,
+        }),
+      ]);
+      wrap(<McpPage agentId={AGENT_ID} />);
+
+      expect(await screen.findByText("Disabled. Authorization is required to use its tools.")).toBeTruthy();
+      expect(screen.queryByText("Disabled. Authorization is kept.")).toBeNull();
+      expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+      expect(screen.queryByRole("menuitem", { name: "View tools" })).toBeNull();
+    },
+  );
 
   it("shows the probe result as tool count and flags a truncated snapshot", async () => {
     stub([
@@ -192,7 +314,7 @@ describe("McpPage", () => {
   it("opens the editor on this Agent, and only warns about the other Agents when the shared scope is chosen", async () => {
     stub([entry()], detail(2));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     // The default scope is this Agent: the shared-definition warning is absent until it is chosen.
     expect(screen.getByRole("combobox", { name: "Scope" })).toBeTruthy();
@@ -222,7 +344,7 @@ describe("McpPage", () => {
       return entry();
     }) as never);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     // Only the URL is touched here.
     fireEvent.change(screen.getByLabelText("MCP endpoint"), {
@@ -251,7 +373,7 @@ describe("McpPage", () => {
       return entry();
     }) as never);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     fireEvent.click(await screen.findByRole("button", { name: "Use the shared URL" }));
 
@@ -267,7 +389,7 @@ describe("McpPage", () => {
     stub([entry()], detail(1));
     vi.spyOn(browserApi, "updateAgentMcpServer").mockRejectedValue(new Error("network down"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     fireEvent.click(await screen.findByRole("button", { name: "Send no extra headers" }));
 
@@ -344,7 +466,7 @@ describe("McpPage", () => {
   it("does not offer to delete the definition while another Agent still uses it", async () => {
     stub([entry()], detail(2));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
 
     expect(await screen.findByText("Remove linear?")).toBeTruthy();
     // The impact text only renders once the shared definition has been read, so it is also the
@@ -398,15 +520,18 @@ describe("McpPage", () => {
 
     await waitFor(() => {
       const row = document.querySelector('[data-ui="mcp-server-row"]') as HTMLElement | null;
-      expect(row?.textContent).toContain("None");
+      expect(screen.getByText("Not authorized")).toBeTruthy();
+      expect(row?.textContent).not.toContain("None");
       expect(row?.textContent).not.toContain("Anonymous");
     });
+    expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
   });
 
   it("takes a Bearer key through a one-way input that is never echoed back", async () => {
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+    await clickServerAction("Authorize");
 
     await chooseOption("Authorization method", "Bearer");
 
@@ -476,7 +601,7 @@ describe("McpPage row actions", () => {
     vi.spyOn(browserApi, "updateAgentMcpServer").mockRejectedValue(new ApiError(400, "Binding rejected"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Enable" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable linear" }));
 
     expect(await screen.findByText("Binding rejected")).toBeTruthy();
   });
@@ -486,7 +611,7 @@ describe("McpPage row actions", () => {
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry({ enabled: false }));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Disable" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable linear" }));
 
     await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
     expect(update.mock.calls[0]?.[1]).toBe(SERVER_ID);
@@ -553,6 +678,14 @@ describe("McpPage row actions", () => {
       const row = document.querySelector('[data-ui="mcp-server-row"]') as HTMLElement | null;
       expect(row?.textContent).toContain(label);
     });
+    expect(screen.getByRole("button", { name: "View tools" })).toBeTruthy();
+    if (status !== "active") {
+      expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
+      expect(screen.getByText("Showing the last successful discovery.")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "View tools" }));
+      expect(await screen.findByText("create_issue")).toBeTruthy();
+    }
   });
 
   it.each([
@@ -591,9 +724,10 @@ describe("McpPage row actions", () => {
     expect(await screen.findByText("Not discovered")).toBeTruthy();
   });
 
-  it("says discovery is in flight once a probe has been recorded", async () => {
+  it("shows initial discovery progress without offering a result that does not exist yet", async () => {
     stub([
       entry({
+        snapshot: null,
         authorization: {
           ...(entry().authorization as NonNullable<MCPAgentServer["authorization"]>),
           probeState: "pending",
@@ -605,9 +739,11 @@ describe("McpPage row actions", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("Discovering…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh tools" }).hasAttribute("disabled")).toBe(true);
   });
 
-  it("says discovery failed, and repeats the Server's own error beside it", async () => {
+  it("keeps discovery failure readable and reveals the Server error on request", async () => {
     stub([
       entry({
         authorization: {
@@ -621,7 +757,9 @@ describe("McpPage row actions", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("Discovery failed")).toBeTruthy();
-    expect(screen.getByText("401 Unauthorized")).toBeTruthy();
+    expect(screen.queryByText("401 Unauthorized")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Error details" }));
+    expect(await screen.findByText("401 Unauthorized")).toBeTruthy();
   });
 
   it("shows when the credential expires, so an imminent renewal is visible", async () => {
@@ -638,6 +776,8 @@ describe("McpPage row actions", () => {
     await waitFor(() => {
       const row = document.querySelector('[data-ui="mcp-server-row"]') as HTMLElement | null;
       expect(row?.textContent).toMatch(/Expires/);
+      expect(row?.textContent).not.toContain("2026-09-16T08:00:00.000Z");
+      expect(row?.querySelector("time")?.dateTime).toBe("2026-09-16T08:00:00.000Z");
     });
   });
 
@@ -734,14 +874,14 @@ describe("McpPage row actions", () => {
     );
   });
 
-  it("reports a body with no snapshot as an absent protocol rather than blank", async () => {
+  it("offers no tools entry point when a snapshot is absent", async () => {
     stub([entry({ snapshot: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
-
-    expect(await screen.findByText("- · -")).toBeTruthy();
-    expect(screen.getByText("This Server reported no tools for this Agent’s credential.")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Refresh tools" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+    expect(screen.queryByRole("menuitem", { name: "View tools" })).toBeNull();
   });
 });
 
@@ -750,7 +890,7 @@ describe("McpPage revoke dialog", () => {
     stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
+    await clickServerAction("Revoke");
 
     expect(await screen.findByText("Revoke the authorization for linear?")).toBeTruthy();
     expect(
@@ -771,7 +911,8 @@ describe("McpPage revoke dialog", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("linear")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+    expect(screen.queryByRole("menuitem", { name: "Revoke" })).toBeNull();
   });
 
   it("revokes through the API and closes on success", async () => {
@@ -779,7 +920,7 @@ describe("McpPage revoke dialog", () => {
     const revoke = vi.spyOn(browserApi, "revokeMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
+    await clickServerAction("Revoke");
     const confirm = await screen.findByRole("button", { name: "Revoke" });
     fireEvent.click(confirm);
 
@@ -791,9 +932,9 @@ describe("McpPage revoke dialog", () => {
     vi.spyOn(browserApi, "revokeMcpAuthorization").mockRejectedValue(new ApiError(409, "Already revoked"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
+    await clickServerAction("Revoke");
     // The dialog's own confirmation, which is the only one reachable while it is open.
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
+    await clickServerAction("Revoke");
 
     expect(await screen.findByText("Already revoked")).toBeTruthy();
   });
@@ -803,8 +944,8 @@ describe("McpPage revoke dialog", () => {
     vi.spyOn(browserApi, "revokeMcpAuthorization").mockRejectedValue(new Error("offline"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
+    await clickServerAction("Revoke");
+    await clickServerAction("Revoke");
 
     expect(await screen.findByText("Couldn’t revoke the authorization. Try again.")).toBeTruthy();
   });
@@ -985,7 +1126,7 @@ describe("McpPage authorize dialog", () => {
     Object.defineProperty(window, "location", { configurable: true, value: { ...originalLocation, assign } });
     try {
       wrap(<McpPage agentId={AGENT_ID} />);
-      fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+      await clickServerAction("Authorize");
       fireEvent.click(await screen.findByRole("button", { name: "Start authorization" }));
 
       await waitFor(() => expect(assign).toHaveBeenCalledWith("https://mcp.linear.app/authorize?state=opaque"));
@@ -1001,7 +1142,7 @@ describe("McpPage authorize dialog", () => {
     const set = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+    await clickServerAction("Authorize");
     await chooseOption("Authorization method", "Anonymous");
     expect(await screen.findByText("No credential is sent. Choose this for a Server that needs none.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Start authorization" }));
@@ -1015,7 +1156,7 @@ describe("McpPage authorize dialog", () => {
     const set = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+    await clickServerAction("Authorize");
     await chooseOption("Authorization method", "Bearer");
 
     const submit = screen.getByRole("button", { name: "Start authorization" });
@@ -1041,7 +1182,7 @@ describe("McpPage authorize dialog", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+    await clickServerAction("Authorize");
 
     expect(await screen.findByText("No credential is sent. Choose this for a Server that needs none.")).toBeTruthy();
   });
@@ -1051,7 +1192,7 @@ describe("McpPage authorize dialog", () => {
     vi.spyOn(browserApi, "setMcpAuthorization").mockRejectedValue(new ApiError(400, "The key was rejected"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+    await clickServerAction("Authorize");
     // Named explicitly rather than left on the OAuth default, so this is the write path under test.
     await chooseOption("Authorization method", "Bearer");
     fireEvent.change(screen.getByLabelText("Bearer key"), { target: { value: "sk-live-1" } });
@@ -1066,7 +1207,7 @@ describe("McpPage authorize dialog", () => {
     vi.spyOn(browserApi, "setMcpAuthorization").mockRejectedValue(new Error("offline"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+    await clickServerAction("Authorize");
     await chooseOption("Authorization method", "Bearer");
     fireEvent.change(screen.getByLabelText("Bearer key"), { target: { value: "sk-live-1" } });
     fireEvent.click(screen.getByRole("button", { name: "Start authorization" }));
@@ -1079,7 +1220,7 @@ describe("McpPage authorize dialog", () => {
     vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "The broker is down"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+    await clickServerAction("Authorize");
     fireEvent.click(await screen.findByRole("button", { name: "Start authorization" }));
 
     expect(await screen.findByText("The broker is down")).toBeTruthy();
@@ -1089,7 +1230,7 @@ describe("McpPage authorize dialog", () => {
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Authorize" }));
+    await clickServerAction("Authorize");
 
     expect(
       await screen.findByText(
@@ -1103,7 +1244,7 @@ describe("McpPage edit dialog", () => {
   it("warns that a shared edit binds every Agent that mounts the Server", async () => {
     stub([entry()], detail(1));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     await chooseOption("Scope", "Shared definition");
 
@@ -1115,7 +1256,7 @@ describe("McpPage edit dialog", () => {
     stub([entry()], detail(1));
     const update = vi.spyOn(browserApi, "updateMcpServer").mockResolvedValue(detail(1).server);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
     await chooseOption("Scope", "Shared definition");
 
     fireEvent.change(await screen.findByLabelText("Description"), { target: { value: "  Curated  " } });
@@ -1137,7 +1278,7 @@ describe("McpPage edit dialog", () => {
     stub([entry({ description: "Written by an admin" })], detail(1));
     const update = vi.spyOn(browserApi, "updateMcpServer").mockResolvedValue(detail(1).server);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
     await chooseOption("Scope", "Shared definition");
 
     fireEvent.change(await screen.findByLabelText("Description"), { target: { value: "   " } });
@@ -1151,7 +1292,7 @@ describe("McpPage edit dialog", () => {
     stub([entry()], detail(1));
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     fireEvent.change(await screen.findByLabelText("Authorization header name"), { target: { value: "x-key" } });
     fireEvent.change(screen.getByLabelText("Authorization scheme"), { target: { value: "Token" } });
@@ -1165,7 +1306,7 @@ describe("McpPage edit dialog", () => {
     stub([entry()], detail(1));
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     expect(await screen.findByText("Effective: x-workspace-id=ws_123")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Header name"), { target: { value: "X-Team" } });
@@ -1182,7 +1323,7 @@ describe("McpPage edit dialog", () => {
     stub([entry()], detail(1));
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove header" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -1204,7 +1345,7 @@ describe("McpPage edit dialog", () => {
     stub([headers], detail(1));
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(headers);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     // Rewriting the rows in the effective order is still the same set, so nothing is sent.
     const names = screen.getAllByLabelText("Header name") as HTMLInputElement[];
@@ -1231,7 +1372,7 @@ describe("McpPage edit dialog", () => {
     stub([twoHeaders], detail(1));
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(twoHeaders);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     const names = screen.getAllByLabelText("Header name") as HTMLInputElement[];
     const values = screen.getAllByLabelText("Header value") as HTMLInputElement[];
@@ -1249,7 +1390,7 @@ describe("McpPage edit dialog", () => {
   it("offers the matching restore action for every override the Agent holds", async () => {
     stub([entry({ overridden: { url: true, authHeader: true, authScheme: true, extraHeaders: true } })], detail(1));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     expect(await screen.findByRole("button", { name: "Use the shared name" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Use the shared scheme" })).toBeTruthy();
@@ -1265,7 +1406,7 @@ describe("McpPage edit dialog", () => {
     stub([entry({ overridden: { url: true, authHeader: true, authScheme: true, extraHeaders: true } })], detail(1));
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     fireEvent.click(await screen.findByRole("button", { name: label }));
 
@@ -1277,7 +1418,7 @@ describe("McpPage edit dialog", () => {
     stub([entry({ overridden: { url: true, authHeader: false, authScheme: false, extraHeaders: false } })], detail(1));
     vi.spyOn(browserApi, "updateAgentMcpServer").mockRejectedValue(new ApiError(409, "Stale binding"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     fireEvent.click(await screen.findByRole("button", { name: "Use the shared URL" }));
 
@@ -1288,7 +1429,7 @@ describe("McpPage edit dialog", () => {
     stub([entry()], detail(1));
     vi.spyOn(browserApi, "updateAgentMcpServer").mockRejectedValue(new Error("offline"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     fireEvent.change(await screen.findByLabelText("MCP endpoint"), { target: { value: "https://x.example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -1300,7 +1441,7 @@ describe("McpPage edit dialog", () => {
     stub([entry()], detail(1));
     vi.mocked(browserApi.mcpServer).mockRejectedValue(new ApiError(500, "The definition is unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
     await chooseOption("Scope", "Shared definition");
 
     // Only that the failed definition read leaves the dialog rendered and operable.
@@ -1342,7 +1483,7 @@ describe("McpPage edit dialog", () => {
       detail(1),
     );
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     expect(await screen.findByText("Effective: -")).toBeTruthy();
   });
@@ -1351,7 +1492,7 @@ describe("McpPage edit dialog", () => {
     stub([entry()], detail(1));
     vi.spyOn(browserApi, "updateMcpServer").mockRejectedValue(new Error("offline"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
     await chooseOption("Scope", "Shared definition");
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -1362,7 +1503,7 @@ describe("McpPage edit dialog", () => {
   it("asks for confirmation before the shared definition is written", async () => {
     stub([entry()], detail(3));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await clickServerAction("Edit");
 
     // The Agent scope names no other Agent, so the warning is the signal that the scope changed.
     await chooseOption("Scope", "Shared definition");
@@ -1380,10 +1521,10 @@ describe("McpPage remove dialog", () => {
     const remove = vi.spyOn(browserApi, "removeMcpServer").mockResolvedValue(undefined);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
     fireEvent.click(await screen.findByRole("radio", { name: /Remove and delete/ }));
     // The dialog's own confirmation; the row's button is unreachable while it is open.
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith(SERVER_ID));
     expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
@@ -1395,10 +1536,10 @@ describe("McpPage remove dialog", () => {
     const remove = vi.spyOn(browserApi, "removeMcpServer").mockResolvedValue(undefined);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
     // "Remove from this Agent only" is the default, so confirming without changing it is the path
     // that must leave the shared definition alone.
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
 
     await waitFor(() => expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
     expect(remove).not.toHaveBeenCalled();
@@ -1408,7 +1549,7 @@ describe("McpPage remove dialog", () => {
     stub([entry()], detail(1));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
 
     expect(await screen.findByText("The definition stays in the Account and can be added again later.")).toBeTruthy();
   });
@@ -1417,7 +1558,7 @@ describe("McpPage remove dialog", () => {
     stub([entry()], detail(1));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
 
     expect(
       await screen.findByText(
@@ -1431,8 +1572,8 @@ describe("McpPage remove dialog", () => {
     vi.spyOn(browserApi, "detachMcpServer").mockRejectedValue(new ApiError(500, "Detach failed"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
+    await clickServerAction("Remove from this Agent");
 
     expect(await screen.findByText("Detach failed")).toBeTruthy();
   });
@@ -1443,9 +1584,9 @@ describe("McpPage remove dialog", () => {
     vi.spyOn(browserApi, "removeMcpServer").mockRejectedValue(new ApiError(409, "Another Agent still uses it"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
     fireEvent.click(await screen.findByRole("radio", { name: /Remove and delete/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
 
     expect(await screen.findByText("Another Agent still uses it")).toBeTruthy();
   });
@@ -1455,8 +1596,8 @@ describe("McpPage remove dialog", () => {
     vi.spyOn(browserApi, "detachMcpServer").mockRejectedValue(new Error("offline"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    await clickServerAction("Remove from this Agent");
+    await clickServerAction("Remove from this Agent");
 
     expect(await screen.findByText("Couldn’t remove this Server. Try again.")).toBeTruthy();
   });

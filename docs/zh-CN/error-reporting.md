@@ -53,9 +53,14 @@ project 的 server 会把每一份报告留在自己的日志里，不转发任�
 - **Web App。** 已登录 session 解析出的 Account uuid，在 `useAccountIdentityReport`
   （`apps/web/src/analytics/milestones.ts`）中与 analytics 身份一起附加，并在 session 的两种退出方式上清除——主动登出，
   以及 Server 拒绝下一次读取。登录前的失败不携带 `userId`。
-- **CLI。** 登录时记录在 `credentials.json` 中的 Account，这样在已经失败的路径上无需再发一次请求即可指出它。
-  **在该字段出现之前就已登录的安装，在重新登录之前不会上报 `userId`**；若已连接 Computer，它仍会上报 Computer。
-  在 Server 无法答复 `GET /me` 时登录同样会成功，只是不记录 Account——那条路径上重要的是登录本身。
+- **CLI。** 登录时记录在 OpenTag home 中、与 `credentials.json` 并列的 `account-identity.json` 里的 Account，这样在
+  已经失败的路径上无需再发一次请求即可指出它。它有意单独成文件：每一个已安装的 CLI 都用严格的 schema 读取
+  `credentials.json`，较新的 CLI 若往里加一个键，就会让较旧的 CLI 认为该文件无效，文档中的回滚方式
+  （`install.sh --version <previous>`）会让所有需要 Account 认证的命令拒绝运行。该身份文件只由上报路径读取，记录着登录
+  时的 server，且只在它指向与凭据相同的 server 时才生效；文件损坏只让报告失去 `userId`，不影响其他内容。**在该文件出现
+  之前就已登录的安装，在重新登录之前不会上报 `userId`**；若已连接 Computer，它仍会上报 Computer。在 Server 无法答复
+  `GET /me` 时登录同样会成功，只是不记录 Account——那条路径上重要的是登录本身——并且会删除此前登录留下的身份文件，
+  因此报告绝不会指向一个当前 token 可能并不属于的 Account。写入该文件是尽力而为：失败会被记录到日志，登录仍然成功。
 
 在 Error Reporting 控制台中，Account 显示为 `context.user`。只有 Computer 而没有 Account 的 CLI 报告呈现为
 `computer:<computerId>`，加前缀是为了让两类标识不会被混淆。上表中的其余内容——platform、route、Agent、Computer——会被
@@ -64,8 +69,8 @@ Error Reporting 丢弃，它只保留自己定义的字段。这些内容改为�
 是有意为之：Error Reporting 按异常类型与最顶部的五个帧对堆栈分组，按前三个 token 对纯消息分组，因此该标记不会改变
 任何一种分组。在 server 日志中搜索同一个 `reportId`，即可找到携带其余上下文的 `Client error reported` 行。
 
-CLI 端会分别读取各个身份文件：损坏的 `computer.json` 只让报告失去 `installationId`，不影响其他内容；仅凭有效的
-Account 凭据就足以为报告确定去向。
+CLI 端会分别读取各个身份文件：损坏的 `computer.json` 只让报告失去 `installationId`，损坏的 `account-identity.json`
+只让它失去 `userId`，其余不受影响；仅凭有效的 Account 凭据就足以为报告确定去向。
 
 ### Web App 失败所在的页面
 

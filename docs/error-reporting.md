@@ -55,10 +55,18 @@ Where each identifier comes from:
 - **Web App.** The Account uuid the signed-in session resolved, attached alongside the analytics identity in
   `useAccountIdentityReport` (`apps/web/src/analytics/milestones.ts`) and cleared on both of a session's exits —
   signing out, and the Server refusing the next read. A failure before sign-in carries no `userId`.
-- **CLI.** The Account recorded in `credentials.json` at sign-in, so a report can name it without a round trip
-  on a path that is already failing. **An installation that signed in before this field existed reports no
-  `userId` until it signs in again**; it still reports its Computer if one is connected. Signing in while the
-  Server cannot answer `GET /me` also succeeds without recording the Account — the login is what matters there.
+- **CLI.** The Account recorded at sign-in in `account-identity.json`, beside `credentials.json` in the OpenTag
+  home, so a report can name it without a round trip on a path that is already failing. It is a separate file on
+  purpose: every installed CLI reads `credentials.json` with a strict schema, so a key added there by a newer CLI
+  would make the file invalid for an older one, and the documented rollback (`install.sh --version <previous>`)
+  would leave every Account-authenticated command refusing to run. The identity file is read only by the report
+  path, records the server it was signed in to, and counts only while it names the same server as the
+  credentials; a malformed one costs the report its `userId` and nothing else. **An installation that signed in
+  before this file existed reports no `userId` until it signs in again**; it still reports its Computer if one is
+  connected. Signing in while the Server cannot answer `GET /me` also succeeds without recording the Account — the
+  login is what matters there — and removes any identity an earlier sign-in left, so a report never names an
+  Account the current tokens may not belong to. Writing the file is best effort: a failure is logged and the
+  login still succeeds.
 
 In the Error Reporting console the Account appears as `context.user`. A CLI report that names a Computer but no
 Account is presented as `computer:<computerId>`, prefixed so the two kinds of identifier can never be confused.
@@ -71,7 +79,8 @@ three tokens, so the marker changes neither grouping. Searching the server log f
 `Client error reported` line with the rest of the context.
 
 The identity files are read independently on the CLI side: a malformed `computer.json` costs the report its
-`installationId` and nothing else, and valid Account credentials alone are enough to address it.
+`installationId`, a malformed `account-identity.json` costs it its `userId`, and nothing else; valid Account
+credentials alone are enough to address it.
 
 ### The page a Web App failure happened on
 

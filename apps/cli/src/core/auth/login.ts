@@ -1,10 +1,14 @@
 import {
+  type ClientLogger,
+  createLogger,
   credentialsPath,
   normalizeServerUrl,
   type OpenTagApi,
   readComputerIdentity,
+  removeAccountIdentity,
   resolveOpenTagHome,
   type StoredCredentials,
+  writeAccountIdentityAtomically,
   writeCredentialsAtomically,
 } from "@opentag/client";
 import { resolveCommandContext } from "../command/context.js";
@@ -18,6 +22,8 @@ export interface LoginOptions {
   home?: string;
   now?: () => Date;
   serverUrl: string;
+  /** Where a best-effort step that did not change the outcome is noted. */
+  logger?: Pick<ClientLogger, "warn">;
 }
 
 export interface LoginResult {
@@ -42,9 +48,9 @@ export async function runLogin(options: LoginOptions): Promise<LoginResult> {
     accessTokenExpiresAt: new Date(now().getTime() + response.expiresIn * 1000).toISOString(),
     refreshToken: response.refreshToken,
     serverUrl,
-    ...(userId ? { userId } : {}),
   };
   await writeCredentialsAtomically(credentials, home);
+  await recordAccountIdentity(home, serverUrl, userId, options.logger ?? createLogger("login"));
   return {
     credentialsPath: credentialsPath(home),
     message: `Logged in to OpenTag at ${serverUrl}`,
@@ -64,5 +70,32 @@ async function resolveUserId(api: LoginApi, accessToken: string): Promise<string
     return (await api.me?.(accessToken))?.user.id;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Record the Account beside the credentials, in its own file, or forget the one that was there.
+ *
+ * Beside rather than inside: `credentials.json` is read strictly by every CLI already installed,
+ * and a key an older reader does not know would break the documented rollback. Best effort on
+ * purpose, for the same reason `resolveUserId` is: the credentials are already written, and a
+ * diagnostic detail must not turn a working login into a failed one. A sign-in that could not name
+ * its Account removes any identity a previous sign-in left, so a report never names an Account the
+ * current tokens may not belong to.
+ */
+async function recordAccountIdentity(
+  home: string,
+  serverUrl: string,
+  userId: string | undefined,
+  logger: Pick<ClientLogger, "warn">,
+): Promise<void> {
+  try {
+    if (userId) await writeAccountIdentityAtomically({ userId, serverUrl }, home);
+    else await removeAccountIdentity(home);
+  } catch (error) {
+    logger.warn(
+      { code: "account_identity_write_failed", reason: error instanceof Error ? error.message : String(error) },
+      "Signed in, but the Account could not be recorded for diagnostics",
+    );
   }
 }

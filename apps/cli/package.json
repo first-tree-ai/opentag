@@ -58,6 +58,7 @@
     "@opentag/shared": "workspace:*",
     "commander": "^15.0.0",
     "vitest": "^5.0.1",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "4.5.4"
   }
 }

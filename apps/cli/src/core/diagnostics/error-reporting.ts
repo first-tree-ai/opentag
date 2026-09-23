@@ -92,16 +92,23 @@ async function readOptionalIdentity<T>(read: () => Promise<T | undefined>): Prom
  * installation's locally generated uuid, which the daemon logs as `installationId`; the Account's
  * Computer uuid — the one a reader can look up — exists only in the machine credential, which is
  * what a connected Computer received from the Server.
+ *
+ * The Account comes from its own file rather than from the credentials, because the credentials
+ * file is read strictly by every CLI version and an older one must keep reading it after a
+ * rollback. It counts only while it names the server the credentials are for: an identity left by
+ * a sign-in to another server, or by a sign-in whose credentials are gone, is treated as absent.
  */
 export async function resolveErrorReportTarget(home: string): Promise<ErrorReportTarget> {
-  const [credentials, identity, machine] = await Promise.all([
+  const [credentials, account, identity, machine] = await Promise.all([
     readOptionalIdentity(() => client.readCredentials(home)),
+    readOptionalIdentity(() => client.readAccountIdentity(home)),
     readOptionalIdentity(() => client.readComputerIdentity(home)),
     readOptionalIdentity(() => client.readMachineCredentials(home)),
   ]);
+  const accountMatchesCredentials = account !== undefined && account.serverUrl === credentials?.serverUrl;
   return {
     serverUrl: credentials?.serverUrl ?? identity?.serverUrl ?? machine?.computer.serverUrl,
-    userId: credentials?.userId,
+    userId: accountMatchesCredentials ? account.userId : undefined,
     computerId: machine?.computer.computerId,
     installationId: identity?.computerId ?? machine?.computer.installationId,
   };

@@ -55,6 +55,15 @@ export {
 } from "./agent-runtime/types.js";
 export { normalizeServerUrl, OpenTagApi, OpenTagApiError } from "./api.js";
 export {
+  ACCOUNT_IDENTITY_FILE_NAME,
+  accountIdentityPath,
+  readAccountIdentity,
+  removeAccountIdentity,
+  type StoredAccountIdentity,
+  StoredAccountIdentitySchema,
+  writeAccountIdentityAtomically,
+} from "./auth/account-identity.js";
+export {
   CREDENTIALS_FILE_NAME,
   credentialsPath,
   readCredentials,

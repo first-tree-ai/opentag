@@ -2,7 +2,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ACCOUNT_IDENTITY_FILE_NAME,
+  removeAccountIdentity,
   resolveOpenTagHomeLayout,
+  writeAccountIdentityAtomically,
   writeComputerIdentityAtomically,
   writeCredentialsAtomically,
   writeMachineCredentialsAtomically,
@@ -61,10 +64,11 @@ async function loggedInHome(serverUrl: string, userId?: string): Promise<string>
       accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
       refreshToken: "refresh-token",
       serverUrl,
-      ...(userId ? { userId } : {}),
     },
     home,
   );
+  // The Account lives in its own file, beside the credentials rather than inside them.
+  if (userId) await writeAccountIdentityAtomically({ userId, serverUrl }, home);
   return home;
 }
 
@@ -166,6 +170,41 @@ describe("resolveErrorReportTarget", () => {
       computerId: COMPUTER_ID,
       installationId: MACHINE_INSTALLATION_ID,
     });
+  });
+
+  it("names the Account only from an identity file that matches the credentials' server", async () => {
+    // No identity file: signed in, but before the file existed or after it was removed.
+    const anonymous = await loggedInHome("https://opentag.example");
+    expect((await resolveErrorReportTarget(anonymous)).userId).toBeUndefined();
+
+    // Malformed identity file: costs the report its Account and nothing else.
+    const malformed = await loggedInHome("https://opentag.example");
+    await writeConfigFile(malformed, ACCOUNT_IDENTITY_FILE_NAME, '{"userId":"account-1"}');
+    expect(await resolveErrorReportTarget(malformed)).toMatchObject({
+      serverUrl: "https://opentag.example",
+      userId: undefined,
+    });
+
+    // An identity a sign-in to another server left behind is not this sign-in's Account.
+    const elsewhere = await loggedInHome("https://opentag.example");
+    await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://other.example" }, elsewhere);
+    expect((await resolveErrorReportTarget(elsewhere)).userId).toBeUndefined();
+
+    // An identity without credentials to belong to is not one either.
+    const orphaned = await temporaryHome();
+    await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://opentag.example" }, orphaned);
+    await connectHome(orphaned);
+    expect(await resolveErrorReportTarget(orphaned)).toMatchObject({
+      serverUrl: "https://opentag.example",
+      userId: undefined,
+      computerId: COMPUTER_ID,
+    });
+
+    // Signing out is forgetting the Account: once removed, the next report names none.
+    const signedOut = await loggedInHome("https://opentag.example", ACCOUNT_ID);
+    expect((await resolveErrorReportTarget(signedOut)).userId).toBe(ACCOUNT_ID);
+    await removeAccountIdentity(signedOut);
+    expect((await resolveErrorReportTarget(signedOut)).userId).toBeUndefined();
   });
 
   it("names the Account Computer from the machine credential and the installation from its own identity", async () => {

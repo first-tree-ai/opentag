@@ -11,13 +11,6 @@ export interface StoredCredentials {
   accessTokenExpiresAt: string;
   refreshToken: string;
   serverUrl: string;
-  /**
-   * Who this installation signed in as, recorded so a diagnostic report can name them without a
-   * round trip on a path that is already failing. It is optional because it was added after these
-   * files were first written: an installation that signed in before it existed keeps working and
-   * simply reports no Account until it signs in again.
-   */
-  userId?: string;
 }
 
 export const CREDENTIALS_FILE_NAME = "credentials.json";
@@ -37,8 +30,10 @@ export const StoredCredentialsSchema = z
     accessTokenExpiresAt: expiry,
     refreshToken: nonEmptyToken,
     serverUrl: z.string().min(1),
-    userId: z.string().min(1).optional(),
   })
+  // Strict, and every installed CLI reads this file with the strict schema it shipped with, so a
+  // key can never be added here without breaking the documented rollback to an older CLI. Anything
+  // that is not a credential belongs in its own file; see `account-identity.ts`.
   .strict();
 
 export function credentialsPath(home = resolveOpenTagHome()): string {

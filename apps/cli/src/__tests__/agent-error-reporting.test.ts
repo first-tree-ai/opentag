@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeCredentialsAtomically } from "@opentag/client";
+import { writeAccountIdentityAtomically, writeCredentialsAtomically } from "@opentag/client";
 import { ErrorReportRequestSchema, type TurnFailureReason } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -24,10 +24,10 @@ async function connectedHome(): Promise<string> {
       accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
       refreshToken: "refresh-token",
       serverUrl: "https://opentag.example",
-      userId: "account-1",
     },
     home,
   );
+  await writeAccountIdentityAtomically({ userId: "account-1", serverUrl: "https://opentag.example" }, home);
   return home;
 }
 

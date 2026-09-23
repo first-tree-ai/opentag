@@ -14,11 +14,53 @@ import {
   SettingsList,
   SettingsRow,
   StatusIndicator,
+  Switch,
   Tabs,
 } from "./design-system.js";
 import { kumoThemeTokens } from "./kumo-theme.tokens.js";
 
 describe("Kumo semantic adapter", () => {
+  it.each(["standalone", "grouped"] as const)("preserves %s switch control, labels, refs, and busy state", (kind) => {
+    const onChange = vi.fn();
+    const ref = createRef<HTMLButtonElement>();
+    function Example({ busy = false }: { busy?: boolean }) {
+      const [checked, setChecked] = useState(false);
+      const props = {
+        checked,
+        disabled: busy,
+        label: "Enable reviews",
+        onCheckedChange: (next: boolean) => {
+          onChange(next);
+          setChecked(next);
+        },
+        ref,
+        transitioning: busy,
+      };
+      return kind === "grouped" ? (
+        <Switch.Group legend="Review settings" controlFirst={false}>
+          <Switch.Item {...props} />
+        </Switch.Group>
+      ) : (
+        <Switch {...props} />
+      );
+    }
+
+    const { rerender } = render(<Example />);
+    const control = screen.getByRole("switch", { name: "Enable reviews" });
+    expect(ref.current).toBe(control);
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(control);
+    expect(onChange).toHaveBeenCalledWith(true);
+    expect(control.getAttribute("aria-checked")).toBe("true");
+
+    rerender(<Example busy />);
+    expect(control.getAttribute("aria-busy")).toBe("true");
+    expect(control.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(control);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(control.getAttribute("aria-checked")).toBe("true");
+  });
+
   it("maps legacy button intents to Kumo variants", () => {
     expect(buttonClassName({ variant: "danger" })).toContain("bg-");
     render(

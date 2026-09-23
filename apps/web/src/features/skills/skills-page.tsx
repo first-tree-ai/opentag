@@ -1,9 +1,9 @@
 import { SKILL_ERROR_CODES, type Skill, type SkillArchiveFormat } from "@opentag/shared/browser";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Text } from "../../ui/design-system.js";
+import { Banner, Button, Empty, Icon, Loader, Text } from "../../ui/design-system.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
 import { SkillRow } from "./skill-row.js";
 import {
@@ -65,6 +65,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
    */
   const storage = storageStateForList(skills.data);
   const storageAvailable = storage === "available";
+  const uploadBusy = uploadingName !== undefined || upload.isPending;
 
   const openFilePicker = () => {
     setActionError(undefined);
@@ -128,6 +129,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   };
 
   const onFileSelected = async (file: File) => {
+    if (uploadBusy) return;
     setActionError(undefined);
     const check = checkSkillArchiveFile(file);
     if (!check.ok) {
@@ -152,6 +154,20 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
     }
   };
 
+  const uploadAction = (
+    <Button
+      aria-label={m.skills_upload()}
+      aria-busy={uploadBusy}
+      disabled={!storageAvailable}
+      loading={uploadBusy}
+      onClick={openFilePicker}
+      variant="secondary"
+    >
+      {!uploadBusy ? <Icon name="upload" /> : null}
+      {m.skills_upload()}
+    </Button>
+  );
+
   return (
     <section className="grid gap-6" aria-labelledby="skills-page-title" data-ui="skills-page">
       <PageHeader description={m.skills_page_description()} title={m.skills_page_title()} titleId="skills-page-title">
@@ -172,27 +188,32 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           }}
           ref={fileInputRef}
         />
-        <Button
-          disabled={!storageAvailable || upload.isPending}
-          onClick={openFilePicker}
-          size="compact"
-          variant="secondary"
-        >
-          {upload.isPending ? m.skills_upload_in_progress({ name: uploadingName ?? "" }) : m.skills_upload()}
-        </Button>
+        {uploadAction}
       </PageHeader>
 
       {storage === "unavailable" ? <Banner variant="alert">{m.skills_storage_unavailable()}</Banner> : null}
       {actionError ? <Banner variant="error">{actionError}</Banner> : null}
-      {skills.isError ? <Banner variant="error">{describeLoadError(skills.error)}</Banner> : null}
+      {skills.isError ? (
+        <Banner
+          action={<Banner.Action onClick={() => void skills.refetch()}>{m.common_try_again()}</Banner.Action>}
+          description={describeLoadError(skills.error)}
+          role="alert"
+          variant="error"
+        />
+      ) : null}
+      {uploadBusy && uploadingName ? (
+        <p className="min-w-0 wrap-anywhere text-sm text-kumo-subtle" role="status">
+          {m.skills_upload_in_progress({ name: uploadingName })}
+        </p>
+      ) : null}
 
       <SkillList
         hasData={skills.data !== undefined}
         isPending={skills.isPending}
         onDelete={setDeleteTarget}
-        onError={setActionError}
         skills={skills.data?.skills ?? []}
         storageAvailable={storageAvailable}
+        uploadAction={uploadAction}
       />
 
       {pendingReplace ? (
@@ -211,7 +232,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
 /**
  * The Agent's Skills, or the reason there are none to show.
  *
- * The empty state is a statement about data that arrived: with no data yet it is loading text while
+ * The empty state is a statement about data that arrived: with no data yet it is a loading state while
  * pending and nothing at all once the request failed — the error banner already says why, and "No
  * Skills yet" beside a failure would claim a list the page never read.
  */
@@ -219,20 +240,44 @@ function SkillList({
   hasData,
   isPending,
   onDelete,
-  onError,
   skills,
   storageAvailable,
+  uploadAction,
 }: {
   hasData: boolean;
   isPending: boolean;
   onDelete: (skill: Skill) => void;
-  onError: (message: string | undefined) => void;
   skills: Skill[];
   storageAvailable: boolean;
+  uploadAction: ReactNode;
 }) {
-  if (isPending) return <Text variant="body">{m.common_loading()}</Text>;
+  if (isPending)
+    return (
+      <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+        <span aria-hidden="true">
+          <Loader size="sm" />
+        </span>
+        {m.common_loading()}
+      </div>
+    );
   if (!hasData) return null;
-  if (skills.length === 0) return <Text variant="secondary">{m.skills_empty()}</Text>;
+  if (skills.length === 0)
+    return (
+      <Empty
+        className="min-h-80 justify-center gap-4 rounded-lg bg-transparent px-4 py-10 text-sm [&_h2]:text-base"
+        icon={<Icon className="size-10 text-kumo-inactive" name="file" />}
+        title={m.skills_empty()}
+        description={m.skills_empty_description()}
+        contents={
+          <div className="flex flex-col items-center gap-5 text-center">
+            <Text as="p" size="sm" variant="secondary">
+              {m.skills_upload_requirements()}
+            </Text>
+            {storageAvailable ? uploadAction : null}
+          </div>
+        }
+      />
+    );
   return (
     <ul aria-label={m.skills_list_aria()} className="grid gap-3" data-ui="skills-list">
       {skills.map((skill) => (
@@ -240,7 +285,6 @@ function SkillList({
           downloadUrl={browserApi.agentSkillBundleUrl(skill.agentId, skill.id)}
           key={skill.id}
           onDelete={onDelete}
-          onError={onError}
           skill={skill}
           storageAvailable={storageAvailable}
         />

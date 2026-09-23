@@ -29,14 +29,21 @@ export function ReplaceSkillDialog({
       busy={busy}
       description={m.skills_replace_description()}
       onClose={onCancel}
+      role="alertdialog"
       title={m.skills_replace_title({ name: archiveName })}
     >
       <div className="flex justify-end gap-2">
-        <Button onClick={onCancel} variant="ghost">
+        <Button disabled={busy} onClick={onCancel} variant="ghost">
           {m.common_cancel()}
         </Button>
-        <Button disabled={busy} onClick={onConfirm} variant="primary">
-          {m.skills_replace_confirm()}
+        <Button
+          aria-label={busy ? m.skills_replace_in_progress() : m.skills_replace_confirm()}
+          aria-busy={busy}
+          loading={busy}
+          onClick={onConfirm}
+          variant="danger"
+        >
+          {busy ? m.skills_replace_in_progress() : m.skills_replace_confirm()}
         </Button>
       </div>
     </Dialog>
@@ -71,11 +78,17 @@ export function RemoveSkillDialog({ onClose, skill }: { onClose: () => void; ski
       <div className="grid gap-3">
         {error ? <Banner variant="error">{error}</Banner> : null}
         <div className="flex justify-end gap-2">
-          <Button onClick={onClose} variant="ghost">
+          <Button disabled={remove.isPending} onClick={onClose} variant="ghost">
             {m.common_cancel()}
           </Button>
-          <Button disabled={remove.isPending} onClick={submit} variant="danger">
-            {m.skills_delete_confirm()}
+          <Button
+            aria-label={remove.isPending ? m.skills_delete_in_progress() : m.skills_delete_confirm()}
+            aria-busy={remove.isPending}
+            loading={remove.isPending}
+            onClick={submit}
+            variant="danger"
+          >
+            {remove.isPending ? m.skills_delete_in_progress() : m.skills_delete_confirm()}
           </Button>
         </div>
       </div>

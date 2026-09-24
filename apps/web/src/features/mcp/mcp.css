@@ -1,0 +1,117 @@
+/* MCP-specific geometry; controls, colors and typography retain the shared theme. */
+.mcp-form-dialog,
+.mcp-confirm-dialog,
+.mcp-tools-dialog {
+  overflow-wrap: anywhere;
+}
+.mcp-form-dialog {
+  width: calc(100vw - 2rem);
+  max-width: 34rem;
+  max-height: calc(100dvh - 5rem);
+}
+.mcp-confirm-dialog {
+  width: calc(100vw - 2rem);
+  max-width: 28rem;
+}
+.mcp-form-dialog [data-ui="dialog-heading"],
+.mcp-tools-dialog [data-ui="dialog-heading"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mcp-fields {
+  display: grid;
+  gap: 1.25rem;
+  min-width: 0;
+}
+.mcp-radio {
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+.mcp-radio legend {
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.75rem;
+}
+.mcp-radio [role="radiogroup"] {
+  display: grid;
+  gap: 0.625rem;
+}
+.mcp-disclosure-trigger {
+  width: 100%;
+  justify-content: space-between;
+  padding: 0.875rem 0;
+  height: auto;
+}
+.mcp-token-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+.mcp-token-fields > *,
+.mcp-header-row > * {
+  min-width: 0;
+}
+.mcp-header-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.5rem;
+}
+.mcp-choice {
+  height: auto;
+  font-weight: 400;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  padding: 1rem 0.25rem;
+  text-align: left;
+  border-radius: 0.25rem;
+}
+.mcp-tool-list {
+  min-height: 0;
+  overflow: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  flex: 1;
+}
+.mcp-tools-dialog {
+  width: calc(100vw - 2.5rem);
+  max-width: 48rem;
+  max-height: calc(100dvh - 5rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.mcp-tools-body {
+  height: min(38rem, calc(100dvh - 15rem));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.mcp-tools-dialog header {
+  flex-shrink: 0;
+}
+.mcp-help-trigger {
+  height: auto;
+  padding: 0;
+  font-weight: 400;
+  white-space: normal;
+  justify-content: flex-start;
+  gap: 0.25rem;
+}
+@media (max-width: 600px) {
+  .mcp-form-dialog,
+  .mcp-tools-dialog,
+  .mcp-confirm-dialog {
+    padding: 1.25rem;
+    max-height: calc(100dvh - 2rem);
+  }
+  .mcp-tools-dialog {
+    width: calc(100vw - 1.5rem);
+  }
+  .mcp-token-fields {
+    grid-template-columns: 1fr;
+  }
+}

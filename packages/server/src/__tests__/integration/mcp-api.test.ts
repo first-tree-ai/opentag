@@ -682,6 +682,8 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
     const landed = callback.headers.location as string;
     expect(landed).toContain("mcp_oauth=error");
     expect(landed).toContain("MCP_OAUTH_DENIED");
+    expect(new URL(landed).pathname).toBe(`/agents/${harness.agentA}/mcp`);
+    expect(new URL(landed).searchParams.get("server")).toBe(definition.id);
     // Only the bounded code travels; nothing the authorization server said is echoed.
     expect(landed).not.toContain("error_description");
   }, 30_000);
@@ -723,6 +725,9 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
       });
       expect(refused.statusCode).toBe(302);
       expect(refused.headers.location as string).toContain("MCP_OAUTH_FLOW_INVALID");
+      const fallback = new URL(refused.headers.location as string);
+      expect(fallback.pathname).toBe("/agents");
+      expect(fallback.searchParams.has("server")).toBe(false);
     }
 
     const list = await harness.app.inject({

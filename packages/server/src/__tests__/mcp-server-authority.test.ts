@@ -265,3 +265,84 @@ describe("MCP management authority in the unit database", () => {
     expect(await unit.database.select().from(mcpServerAuthorizations)).toEqual([]);
   });
 });
+
+describe("effective connection changes", () => {
+  async function connectedPair() {
+    const accountId = await owner();
+    const first = await agent(accountId);
+    const second = await agent(accountId);
+    const server = await service.createServer(accountId, {
+      ...definition,
+      defaultAuthKind: "oauth",
+      extraHeaders: { "x-team": "shared", "x-mode": "tools" },
+    });
+    for (const current of [first, second]) {
+      await service.attachServer(accountId, current.id, server.id, true);
+      await unit.database.insert(mcpServerAuthorizations).values({
+        mcpServerId: server.id,
+        agentId: current.id,
+        kind: "oauth",
+        status: "active",
+        ciphertext: "sealed-test-token",
+        keyId: "test-key",
+        probeState: "succeeded",
+        protocolEra: "modern",
+        protocolVersion: "2026-07-28",
+        probedAt: new Date(),
+        toolsCount: 1,
+      });
+    }
+    return { accountId, first, second, server };
+  }
+  it("does not revoke overridden URLs when a shared endpoint changes", async () => {
+    const { accountId, first, second, server } = await connectedPair();
+    // Pin the same URL before the shared edit. This changes ownership, not the actual connection.
+    await service.updateBinding(accountId, first.id, server.id, { url: server.url });
+    const pinnedBefore = await service.readAgentServer(accountId, first.id, server.id);
+    expect(pinnedBefore.authorization).toMatchObject({
+      status: "active",
+      probeState: "succeeded",
+      hasCredential: true,
+    });
+    await service.updateServer(accountId, server.id, {
+      expectedRevision: server.revision,
+      url: "https://new.example.test/mcp",
+    });
+    const pinnedAfter = await service.readAgentServer(accountId, first.id, server.id);
+    expect(pinnedAfter.authorization).toEqual(pinnedBefore.authorization);
+    expect(pinnedAfter.effective.url).toBe(server.url);
+    const inherited = await service.readAgentServer(accountId, second.id, server.id);
+    expect(inherited.authorization).toMatchObject({ status: "revoked", probeState: "pending", hasCredential: false });
+    expect(inherited.snapshot?.protocolEra).toBeNull();
+  });
+  it("keeps successful discovery for header reorder, metadata edits and equal-value restores", async () => {
+    const { accountId, first, server } = await connectedPair();
+    const before = await service.readAgentServer(accountId, first.id, server.id);
+    await service.updateBinding(accountId, first.id, server.id, {
+      url: server.url,
+      extraHeaders: { "x-mode": "tools", "x-team": "shared" },
+    });
+    await service.updateBinding(accountId, first.id, server.id, { clearUrl: true, clearExtraHeaders: true });
+    await service.updateServer(accountId, server.id, {
+      expectedRevision: server.revision,
+      description: "Updated description",
+      extraHeaders: { "x-mode": "tools", "x-team": "shared" },
+    });
+    expect((await service.readAgentServer(accountId, first.id, server.id)).authorization).toEqual(before.authorization);
+  });
+  it("rechecks only Agents inheriting a changed header and retains their OAuth credentials", async () => {
+    const { accountId, first, second, server } = await connectedPair();
+    await service.updateBinding(accountId, first.id, server.id, { extraHeaders: server.extraHeaders });
+    const before = await service.readAgentServer(accountId, first.id, server.id);
+    await service.updateServer(accountId, server.id, {
+      expectedRevision: server.revision,
+      extraHeaders: { "x-team": "new" },
+    });
+    expect((await service.readAgentServer(accountId, first.id, server.id)).authorization).toEqual(before.authorization);
+    expect((await service.readAgentServer(accountId, second.id, server.id)).authorization).toMatchObject({
+      status: "active",
+      probeState: "pending",
+      hasCredential: true,
+    });
+  });
+});

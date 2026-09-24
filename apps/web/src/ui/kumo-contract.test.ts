@@ -153,6 +153,8 @@ describe("Kumo integration contract", () => {
       "onboarding-v2/page.tsx -> ./onboarding-v2.css",
       "setup/command-block.tsx -> ./setup.css",
       "setup/components.tsx -> ./setup.css",
+      // MCP owns bounded dialog geometry and scrolling; controls and palette stay at the Kumo seam.
+      "features/mcp/mcp-form.tsx -> ./mcp.css",
       "app.css -> @fontsource/dm-sans/400.css",
       "app.css -> @fontsource/dm-sans/500.css",
       "app.css -> @fontsource/dm-sans/600.css",

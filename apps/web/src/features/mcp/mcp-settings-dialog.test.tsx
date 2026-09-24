@@ -54,7 +54,7 @@ describe("MCP settings drafts and scope", () => {
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
     await menuAction("Settings");
-    click("Advanced settings");
+    click("Advanced connection settings");
     fireEvent.click(await screen.findByRole("radio", { name: label as string }));
     click("Save changes");
     await waitFor(() => expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, patch));
@@ -140,7 +140,7 @@ describe("MCP settings drafts and scope", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
     await menuAction("Settings");
-    click("Advanced settings");
+    click("Advanced connection settings");
     expect((await screen.findByRole("radio", { name: "Send no extra headers" })).getAttribute("aria-checked")).toBe(
       "true",
     );

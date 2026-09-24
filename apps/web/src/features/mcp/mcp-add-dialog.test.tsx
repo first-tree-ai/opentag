@@ -27,7 +27,7 @@ describe("MCP unified add journey", () => {
     expect(create).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe("https://mcp.linear.app/mcp");
-    expect(screen.getByText("Where do I find this URL?")).toBeTruthy();
+    expect(screen.getByText("Paste the MCP URL provided by the service.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(create).not.toHaveBeenCalled();
   });
@@ -188,7 +188,7 @@ describe("MCP unified add journey", () => {
     const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await menuAction("Authentication");
-    fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Advanced connection settings" }));
     fireEvent.click(await screen.findByRole("radio", { name: "Custom headers" }));
     fireEvent.change(screen.getByLabelText("Header name"), { target: { value: "x-team" } });
     fireEvent.change(screen.getByLabelText("Header value"), { target: { value: "design" } });

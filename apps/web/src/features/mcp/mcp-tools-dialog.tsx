@@ -7,12 +7,23 @@ import { McpHelp } from "./mcp-form.js";
 import { actionError } from "./mcp-form-model.js";
 import { useProbeMcpServer } from "./mcp-queries.js";
 
-/** A snippet around a description hit, so a result does not conceal why it matched. */
+const sentences = new Intl.Segmenter(undefined, { granularity: "sentence" });
+
+/** Preview complete source sentences, without rewriting provider text or clipping a search hit. */
 export function toolExcerpt(description: string | null, query: string): string {
-  const text = (description ?? "").trim();
-  const index = text.toLowerCase().indexOf(query.trim().toLowerCase());
-  const start = Math.max(0, index - 16);
-  return `${start ? "…" : ""}${text.slice(start)}`;
+  const text = (description ?? "").replace(/\s+/g, " ").trim();
+  const needle = query.trim().toLowerCase();
+  const index = needle ? text.toLowerCase().indexOf(needle) : -1;
+  const start = Math.max(0, index);
+  const end = index < 0 ? 0 : index + needle.length;
+  let excerpt = "";
+  for (const sentence of sentences.segment(text)) {
+    const boundary = sentence.index + sentence.segment.length;
+    if (boundary <= start) continue;
+    excerpt += sentence.segment;
+    if (boundary >= end) break;
+  }
+  return excerpt.trim();
 }
 export function McpPartialTools() {
   return (
@@ -133,7 +144,7 @@ function ToolRow({ tool, query }: { tool: Tool; query: string }) {
         {tool.name}
       </strong>
       {tool.description ? (
-        <p className="mt-1 truncate text-xs leading-relaxed text-kumo-subtle">{toolExcerpt(tool.description, query)}</p>
+        <p className="mt-1 text-xs leading-relaxed text-kumo-subtle">{toolExcerpt(tool.description, query)}</p>
       ) : null}
     </li>
   );

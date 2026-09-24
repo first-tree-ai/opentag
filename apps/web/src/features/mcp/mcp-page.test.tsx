@@ -126,12 +126,11 @@ describe("MCP daily use", () => {
     fireEvent.change(search, { target: { value: "needle" } });
     const tool = screen.getByRole("listitem", { name: "search_docs" });
     const excerpt = within(tool).getByText(/needle/).textContent ?? "";
-    expect(excerpt).toMatch(/^…/);
-    expect(excerpt.indexOf("needle")).toBeLessThanOrEqual(17);
+    expect(excerpt).toBe("Find the rare needle.");
     expect(within(tool).queryByRole("button")).toBeNull();
     expect(search.value).toBe("needle");
     fireEvent.change(search, { target: { value: "" } });
-    expect(within(tool).getByText(/Provider introduction/).textContent).toBe(description);
+    expect(within(tool).getByText("Provider introduction.")).toBeTruthy();
   });
   it("does not invent an action for a tool without a description or schema", async () => {
     stub([entry({ snapshot: { ...snapshot(), tools: [{ name: "ping", description: null, inputSchema: null }] } })]);

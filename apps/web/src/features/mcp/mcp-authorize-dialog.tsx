@@ -28,10 +28,19 @@ export function useMcpAuthorization(agentId: string) {
   const update = useUpdateMcpBinding(agentId);
   const authorize = useSetMcpAuthorization(agentId);
   const oauth = useStartMcpOAuth(agentId);
+  const saved = useRef<{ agentId: string; entry: MCPAgentServer }>(undefined);
   return async (entry: MCPAgentServer, draft: AuthDraft) => {
-    const patch = authBindingPatch(draft, entry.effective);
-    if (draft.headerMode === "inherit" && entry.overridden.extraHeaders) patch.clearExtraHeaders = true;
-    if (Object.keys(patch).length) await update.mutateAsync({ mcpServerId: entry.mcpServerId, ...patch });
+    // A failed authorization does not roll back the preceding connection write. Retry against
+    // that confirmed result so restoring the opening values also restores them on the Server.
+    const current =
+      saved.current?.agentId === agentId && saved.current.entry.mcpServerId === entry.mcpServerId
+        ? saved.current.entry
+        : entry;
+    const patch = authBindingPatch(draft, current.effective);
+    if (draft.headerMode === "inherit" && current.overridden.extraHeaders) patch.clearExtraHeaders = true;
+    if (Object.keys(patch).length) {
+      saved.current = { agentId, entry: await update.mutateAsync({ mcpServerId: entry.mcpServerId, ...patch }) };
+    }
     if (draft.kind === "oauth") {
       const result = await oauth.mutateAsync({ mcpServerId: entry.mcpServerId });
       window.location.assign(result.authorizationUrl);

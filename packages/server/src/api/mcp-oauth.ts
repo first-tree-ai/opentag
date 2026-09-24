@@ -71,6 +71,10 @@ export function registerMcpOAuthRoutes(app: FastifyInstance, options: McpOAuthRo
           ...(query.iss === undefined ? {} : { iss: query.iss }),
         },
         flowSecret,
+        (target) => {
+          agentId = target.agentId;
+          mcpServerId = target.mcpServerId;
+        },
       );
       agentId = result.agentId;
       mcpServerId = result.mcpServerId;

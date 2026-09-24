@@ -94,6 +94,7 @@ describe("MCP OAuth callback", () => {
     expect(flows.callback).toHaveBeenCalledWith(
       { code: "code-1", state: "state-1", iss: "https://auth.example.com" },
       FLOW_SECRET,
+      expect.any(Function),
     );
     // The probe is fired backstage, not awaited into the browser's redirect.
     expect(onCredentialStored).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER);
@@ -102,7 +103,7 @@ describe("MCP OAuth callback", () => {
   it("omits the optional query fields it was not given", async () => {
     const { app, flows } = build();
     await callback(app, { state: "state-1" }, `${BROWSER_COOKIE_NAMES.mcpOAuthContext}=${FLOW_SECRET}`);
-    expect(flows.callback).toHaveBeenCalledWith({ state: "state-1" }, FLOW_SECRET);
+    expect(flows.callback).toHaveBeenCalledWith({ state: "state-1" }, FLOW_SECRET, expect.any(Function));
   });
 
   it("clears the flow cookie on every path, including a success", async () => {
@@ -168,6 +169,25 @@ describe("MCP OAuth callback", () => {
     expect(location.searchParams.get("mcp_oauth_error")).toBe(MCP_ERROR_CODES.PROBE_FAILED);
   });
 
+  it.each([MCP_ERROR_CODES.OAUTH_DENIED, MCP_ERROR_CODES.OAUTH_FAILED, MCP_ERROR_CODES.OAUTH_FLOW_INVALID])(
+    "returns a verified flow's %s failure to its Agent without probing",
+    async (code) => {
+      const { app, flows, onCredentialStored } = build();
+      flows.callback.mockImplementation(
+        async (_query, _secret, onVerified: (target: { agentId: string; mcpServerId: string }) => void) => {
+          onVerified({ agentId: AGENT, mcpServerId: SERVER });
+          throw new McpServiceError(code, "private upstream response");
+        },
+      );
+      const { location } = await callback(app, { state: "state-1" });
+      expect(location.pathname).toBe(`/agents/${AGENT}/mcp`);
+      expect(location.searchParams.get("server")).toBe(SERVER);
+      expect(location.searchParams.get("mcp_oauth_error")).toBe(code);
+      expect(location.toString()).not.toContain("private");
+      expect(onCredentialStored).not.toHaveBeenCalled();
+    },
+  );
+
   it("leaves the Server parameter off that page when the flow reported none", async () => {
     const { app, flows, onCredentialStored } = build();
     flows.callback.mockResolvedValue({ accountId: ACCOUNT, agentId: AGENT, mcpServerId: undefined });
@@ -225,7 +245,11 @@ describe("MCP OAuth callback", () => {
     );
     expect(location.searchParams.get("mcp_oauth_error")).toBe(MCP_ERROR_CODES.OAUTH_DENIED);
     expect(location.toString()).not.toContain("script");
-    expect(flows.callback).toHaveBeenCalledWith({ state: "state-1", error: "access_denied" }, expect.any(String));
+    expect(flows.callback).toHaveBeenCalledWith(
+      { state: "state-1", error: "access_denied" },
+      expect.any(String),
+      expect.any(Function),
+    );
   });
 
   it("still completes when no probe hook is wired", async () => {

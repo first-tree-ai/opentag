@@ -24,6 +24,7 @@ import {
   mcpBindingNotFound,
   mcpServerNotFound,
 } from "./errors.js";
+import { lockMcpBindings } from "./mcp-binding-locks.js";
 
 /**
  * Server definitions, Agent mounts, effective configuration, and the aggregate views.
@@ -129,11 +130,7 @@ export class McpServerService {
         .where(eq(mcpServers.id, mcpServerId))
         .returning();
       if (!next) throw mcpServerNotFound();
-      const bindings = await transaction
-        .select()
-        .from(agentMcpServers)
-        .where(eq(agentMcpServers.mcpServerId, mcpServerId))
-        .for("update");
+      const bindings = await lockMcpBindings(transaction, eq(agentMcpServers.mcpServerId, mcpServerId));
       const { changedUrls, changedHeaders } = affectedBindings(row, next, bindings);
       // Empty scopes historically mean all bindings, so never pass an empty affected group.
       if (changedUrls.length)
@@ -156,8 +153,13 @@ export class McpServerService {
    * a definition whose only mounters were deleted could never be removed.
    */
   async deleteServer(accountId: string, mcpServerId: string): Promise<void> {
-    await this.#requireServer(accountId, mcpServerId);
     await this.#database.transaction(async (transaction) => {
+      const [server] = await transaction
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(and(eq(mcpServers.id, mcpServerId), eq(mcpServers.accountId, accountId)))
+        .for("update");
+      if (!server) throw mcpServerNotFound();
       const live = await countLiveBindings(transaction, mcpServerId);
       if (live > 0) {
         throw new McpServiceError(
@@ -170,6 +172,7 @@ export class McpServerService {
        * No live mounts remain. Whatever is left belongs to deleted Agents: history with no reader
        * once the definition is gone, so it goes with it rather than lingering as an orphan.
        */
+      await lockMcpBindings(transaction, eq(agentMcpServers.mcpServerId, mcpServerId));
       await transaction.delete(agentMcpServers).where(eq(agentMcpServers.mcpServerId, mcpServerId));
       await transaction.delete(mcpServers).where(eq(mcpServers.id, mcpServerId));
     });
@@ -356,8 +359,12 @@ export class McpServerService {
 
   async detachServer(accountId: string, agentId: string, mcpServerId: string): Promise<void> {
     await this.#requireAgent(accountId, agentId);
-    await this.#requireBinding(agentId, mcpServerId);
     await this.#database.transaction(async (transaction) => {
+      const [binding] = await lockMcpBindings(
+        transaction,
+        and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)),
+      );
+      if (!binding) throw mcpBindingNotFound();
       // The credential goes with the mount: a detached Server keeps no usable secret for this Agent.
       await transaction
         .delete(mcpServerAuthorizations)
@@ -387,11 +394,10 @@ export class McpServerService {
         .where(and(eq(mcpServers.id, mcpServerId), eq(mcpServers.accountId, accountId)))
         .for("update");
       if (!server) throw mcpServerNotFound();
-      const [binding] = await transaction
-        .select()
-        .from(agentMcpServers)
-        .where(and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)))
-        .for("update");
+      const [binding] = await lockMcpBindings(
+        transaction,
+        and(eq(agentMcpServers.agentId, agentId), eq(agentMcpServers.mcpServerId, mcpServerId)),
+      );
       if (!binding) throw mcpBindingNotFound();
       const patch = applyOverridePatch(binding, input);
       const [row] = await transaction

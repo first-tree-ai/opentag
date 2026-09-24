@@ -12,6 +12,7 @@ import {
   users,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { lockMcpBindings } from "../mcp/index.js";
 
 export type OnboardingResetErrorCode = "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT" | "ONBOARDING_RESET_UNVERIFIED";
 
@@ -151,6 +152,7 @@ export class OnboardingResetService {
     const agentIds = owned.map((agent) => agent.id);
     if (agentIds.length === 0) return;
     await this.#database.transaction(async (transaction) => {
+      await lockMcpBindings(transaction, inArray(agentMcpServers.agentId, agentIds));
       await transaction.delete(mcpServerAuthorizations).where(inArray(mcpServerAuthorizations.agentId, agentIds));
       await transaction.delete(agentMcpServers).where(inArray(agentMcpServers.agentId, agentIds));
     });

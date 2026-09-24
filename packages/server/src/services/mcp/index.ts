@@ -34,6 +34,7 @@ export {
   type McpProbeOutcome,
   type ResolvedMcpCredential,
 } from "./mcp-authorization-service.js";
+export { lockMcpBindings } from "./mcp-binding-locks.js";
 export {
   authorizationAadContext,
   type McpAuthorizationBinding,

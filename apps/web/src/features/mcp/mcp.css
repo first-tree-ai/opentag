@@ -93,10 +93,6 @@
 .mcp-tools-dialog header {
   flex-shrink: 0;
 }
-.mcp-tool-row pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
 .mcp-help-trigger {
   height: auto;
   padding: 0;

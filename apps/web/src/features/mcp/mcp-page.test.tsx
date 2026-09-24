@@ -106,57 +106,18 @@ describe("MCP daily use", () => {
     fireEvent.click(disclosure);
     expect(disclosure.getAttribute("aria-expanded")).toBe("true");
   });
-  it("shows short descriptions directly and folds technical details inside the list", async () => {
+  it("shows tools as static descriptions without row actions or parameter schemas", async () => {
     stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
     fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Search tools" }), { target: { value: "issue" } });
     const tool = screen.getByRole("listitem", { name: "create_issue" });
     expect(within(tool).getByText("Create an issue")).toBeTruthy();
-    expect(within(tool).queryByRole("button", { name: "Show full description" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /create_issue/ })).toBeNull();
-    const technical = within(tool).getByRole("button", { name: "Technical details" });
-    expect(technical.getAttribute("aria-expanded")).toBe("false");
+    expect(within(tool).queryByRole("button")).toBeNull();
     expect(within(tool).queryByText(/"type": "object"/)).toBeNull();
-    fireEvent.click(technical);
-    expect(await within(tool).findByText(/"type": "object"/)).toBeTruthy();
-    fireEvent.click(technical);
-    await waitFor(() => expect(within(tool).queryByText(/"type": "object"/)).toBeNull());
     expect((screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement).value).toBe("issue");
-    expect(screen.queryByRole("button", { name: "Back to tools" })).toBeNull();
   });
-  it("expands a clipped description in place and retains search, scroll and toggle focus", async () => {
-    const description = "Retrieve an attachment.\nUsage notes: the signed download URL expires after five minutes.";
-    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
-      return this.textContent === description ? 120 : 0;
-    });
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
-      return this.textContent === description ? 40 : 0;
-    });
-    stub([entry({ snapshot: { ...snapshot(), tools: [{ name: "get_attachment", description, inputSchema: null }] } })]);
-    wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
-    const search = screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement;
-    fireEvent.change(search, { target: { value: "attachment" } });
-    const tool = screen.getByRole("listitem", { name: "get_attachment" });
-    const list = tool.closest(".mcp-tool-list") as HTMLElement;
-    list.scrollTop = 80;
-    const toggle = within(tool).getByRole("button", { name: "Show full description" });
-    const paragraph = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
-    expect(paragraph?.classList.contains("line-clamp-2")).toBe(true);
-    toggle.focus();
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(paragraph?.classList.contains("line-clamp-2")).toBe(false);
-    expect(paragraph?.textContent).toBe(description);
-    expect(list.scrollTop).toBe(80);
-    fireEvent.click(within(tool).getByRole("button", { name: "Show less" }));
-    expect(paragraph?.classList.contains("line-clamp-2")).toBe(true);
-    expect(document.activeElement).toBe(toggle);
-    expect(search.value).toBe("attachment");
-    expect(list.scrollTop).toBe(80);
-  });
-  it("shows a search hit near the end and can still reveal the omitted beginning", async () => {
+  it("shows context around a search hit near the end of a long description", async () => {
     const description = `${"Provider introduction. ".repeat(10)}\nFind the rare needle.`;
     stub([entry({ snapshot: { ...snapshot(), tools: [{ name: "search_docs", description, inputSchema: null }] } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
@@ -164,12 +125,13 @@ describe("MCP daily use", () => {
     const search = screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement;
     fireEvent.change(search, { target: { value: "needle" } });
     const tool = screen.getByRole("listitem", { name: "search_docs" });
-    expect(within(tool).getByText(/needle/).textContent).toMatch(/^…/);
-    fireEvent.click(within(tool).getByRole("button", { name: "Show full description" }));
-    expect(within(tool).getByText(/needle/).textContent).toBe(description);
+    const excerpt = within(tool).getByText(/needle/).textContent ?? "";
+    expect(excerpt).toMatch(/^…/);
+    expect(excerpt.indexOf("needle")).toBeLessThanOrEqual(17);
+    expect(within(tool).queryByRole("button")).toBeNull();
     expect(search.value).toBe("needle");
-    fireEvent.click(within(tool).getByRole("button", { name: "Show less" }));
-    expect(within(tool).getByText(/needle/).textContent).toMatch(/^…/);
+    fireEvent.change(search, { target: { value: "" } });
+    expect(within(tool).getByText(/Provider introduction/).textContent).toBe(description);
   });
   it("does not invent an action for a tool without a description or schema", async () => {
     stub([entry({ snapshot: { ...snapshot(), tools: [{ name: "ping", description: null, inputSchema: null }] } })]);

@@ -1,16 +1,8 @@
 import type { MCPAgentServer } from "@opentag/shared/browser";
-import { type ReactNode, type RefObject, useId, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useId, useRef, useState } from "react";
 import { formatDateTime } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
-import {
-  Banner,
-  Button,
-  Collapsible,
-  Dialog,
-  Icon,
-  KumoInputControl,
-  MagnifyingGlass,
-} from "../../ui/design-system.js";
+import { Banner, Button, Dialog, KumoInputControl, MagnifyingGlass } from "../../ui/design-system.js";
 import { McpHelp } from "./mcp-form.js";
 import { actionError } from "./mcp-form-model.js";
 import { useProbeMcpServer } from "./mcp-queries.js";
@@ -19,7 +11,7 @@ import { useProbeMcpServer } from "./mcp-queries.js";
 export function toolExcerpt(description: string | null, query: string): string {
   const text = (description ?? "").trim();
   const index = text.toLowerCase().indexOf(query.trim().toLowerCase());
-  const start = Math.max(0, index - 45);
+  const start = Math.max(0, index - 16);
   return `${start ? "…" : ""}${text.slice(start)}`;
 }
 export function McpPartialTools() {
@@ -133,107 +125,16 @@ export function McpToolsDialog({
 }
 
 type Tool = NonNullable<NonNullable<MCPAgentServer["snapshot"]>["tools"]>[number];
-function ToolDescription({
-  description,
-  query,
-  nameId,
-  children,
-}: {
-  description: string | null;
-  query: string;
-  nameId: string;
-  children: ReactNode;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [truncated, setTruncated] = useState(false);
-  const paragraph = useRef<HTMLParagraphElement>(null);
-  const toggle = useRef<HTMLButtonElement>(null);
-  const descriptionId = useId();
-  const excerpt = toolExcerpt(description, query);
-  const omittedStart = excerpt !== (description ?? "").trim();
-  useLayoutEffect(() => {
-    const element = paragraph.current;
-    if (!element || expanded || !excerpt) return;
-    let active = true;
-    const measure = () => {
-      if (!active) return;
-      const clipped = element.scrollHeight > element.clientHeight + 1;
-      if (!clipped && !omittedStart && document.activeElement === toggle.current) element.focus();
-      setTruncated(clipped);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    void document.fonts?.ready.then(measure);
-    if (document.activeElement === toggle.current) toggle.current?.scrollIntoView?.({ block: "nearest" });
-    return () => {
-      active = false;
-      observer.disconnect();
-    };
-  }, [expanded, excerpt, omittedStart]);
-  const canExpand = truncated || omittedStart || expanded;
-  return (
-    <>
-      {description ? (
-        <p
-          ref={paragraph}
-          id={descriptionId}
-          tabIndex={-1}
-          className={`mt-1 whitespace-pre-wrap text-xs leading-relaxed text-kumo-subtle ${expanded ? "" : "line-clamp-2"}`}
-        >
-          {expanded ? description : excerpt}
-        </p>
-      ) : null}
-      {canExpand || children ? (
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
-          {canExpand ? (
-            <Button
-              ref={toggle}
-              className="mcp-help-trigger text-xs text-kumo-subtle"
-              size="compact"
-              variant="ghost"
-              aria-controls={descriptionId}
-              aria-expanded={expanded}
-              aria-describedby={nameId}
-              onClick={() => setExpanded(!expanded)}
-            >
-              {expanded ? m.mcp_tools_hide_description() : m.mcp_tools_show_description()}
-            </Button>
-          ) : null}
-          {children}
-        </div>
-      ) : null}
-    </>
-  );
-}
 function ToolRow({ tool, query }: { tool: Tool; query: string }) {
   const nameId = useId();
   return (
-    <li className="mcp-tool-row px-1 py-4 wrap-anywhere" aria-labelledby={nameId}>
-      <Collapsible.Root>
-        <strong id={nameId} className="text-sm font-medium">
-          {tool.name}
-        </strong>
-        <ToolDescription description={tool.description ?? null} query={query} nameId={nameId}>
-          {tool.inputSchema != null ? (
-            <Collapsible.Trigger
-              aria-describedby={nameId}
-              render={<Button className="mcp-help-trigger text-xs text-kumo-subtle" variant="ghost" size="compact" />}
-            >
-              {m.mcp_tools_technical_details()}
-              <Icon name="chevron-down" className="size-3 transition-transform [[data-panel-open]_&]:rotate-180" />
-            </Collapsible.Trigger>
-          ) : null}
-        </ToolDescription>
-        {tool.inputSchema != null ? (
-          <Collapsible.Panel className="mt-3 min-w-0">
-            <p className="mb-2 text-xs font-medium">{m.mcp_tools_column_schema()}</p>
-            <pre className="rounded bg-kumo-recessed p-4 text-xs leading-relaxed">
-              {JSON.stringify(tool.inputSchema, null, 2)}
-            </pre>
-          </Collapsible.Panel>
-        ) : null}
-      </Collapsible.Root>
+    <li className="min-w-0 px-1 py-4 wrap-anywhere" aria-labelledby={nameId}>
+      <strong id={nameId} className="text-sm font-medium">
+        {tool.name}
+      </strong>
+      {tool.description ? (
+        <p className="mt-1 truncate text-xs leading-relaxed text-kumo-subtle">{toolExcerpt(tool.description, query)}</p>
+      ) : null}
     </li>
   );
 }

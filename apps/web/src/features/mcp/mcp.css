@@ -93,12 +93,7 @@
 .mcp-tools-dialog header {
   flex-shrink: 0;
 }
-.mcp-tool-detail {
-  min-height: 0;
-  overflow: auto;
-  overflow-wrap: anywhere;
-}
-.mcp-tool-detail pre {
+.mcp-tool-row pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

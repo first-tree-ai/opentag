@@ -207,7 +207,7 @@ function ToolList({
             {query ? m.mcp_tools_search_help() : truncated ? m.mcp_tools_partial_empty() : m.mcp_tools_empty()}
           </p>
           {query ? (
-            <Button className="mt-3" size="compact" variant="ghost" onClick={onClear}>
+            <Button className="mx-auto mt-3" size="compact" variant="ghost" onClick={onClear}>
               {m.mcp_tools_clear()}
             </Button>
           ) : null}

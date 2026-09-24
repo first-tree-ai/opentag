@@ -48,13 +48,10 @@ export function McpServerCard({
       className={`grid min-w-0 gap-3 rounded-lg border border-kumo-line bg-kumo-base p-5 outline-offset-4 ${highlighted ? "outline-2 outline-kumo-ring" : ""}`}
       data-ui="mcp-server-row"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="grid min-w-0 gap-1 wrap-anywhere">
-          <Text as="h2" variant="heading">
-            {entry.name}
-          </Text>
-          <p className="wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
-        </div>
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 wrap-anywhere">
+        <Text as="h2" variant="heading">
+          {entry.name}
+        </Text>
         <div className="flex shrink-0 items-center gap-2">
           <Tooltip
             content={m.mcp_toggle_label({ agent: agentName, name: entry.name })}
@@ -72,6 +69,7 @@ export function McpServerCard({
           />
           <ServerMenu entry={entry} onAction={onAction} />
         </div>
+        <p className="col-span-2 wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
       </div>
       {entry.description ? (
         <p className="wrap-anywhere line-clamp-2 text-sm text-kumo-subtle">{entry.description}</p>

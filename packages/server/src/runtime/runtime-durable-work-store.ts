@@ -3,7 +3,7 @@ import {
   type RuntimeDurableWorkRecord,
   RuntimeDurableWorkRecordSchema,
   RuntimeDurableWorkStatusSchema,
-  SessionMessageDeliveryRequestSchema,
+  SessionMessageDeliveryRequestV3Schema,
   TurnReportRequestSchema,
 } from "@opentag/shared";
 import { and, asc, eq, gt, inArray, lt, or } from "drizzle-orm";
@@ -58,7 +58,7 @@ export type CloudWorkAllocation = z.infer<typeof CloudWorkAllocationSchema>;
 export const CloudSessionWorkEnvelopeSchema = z
   .object({
     type: z.literal("cloud-session-message-work"),
-    request: SessionMessageDeliveryRequestSchema,
+    request: SessionMessageDeliveryRequestV3Schema,
     allocation: CloudWorkAllocationSchema,
     turnId: z.string().min(1).max(256),
   })
@@ -548,7 +548,7 @@ function rowToRecord(row: RuntimeDurableWorkRow): RuntimeDurableWorkRecord {
 function validatePayload(record: RuntimeDurableWorkRecord): void {
   const valid =
     record.kind === "session-message"
-      ? SessionMessageDeliveryRequestSchema.safeParse(record.payload).success ||
+      ? SessionMessageDeliveryRequestV3Schema.safeParse(record.payload).success ||
         CloudSessionWorkEnvelopeSchema.safeParse(record.payload).success
       : TurnReportRequestSchema.safeParse(record.payload).success;
   if (!valid) throw new Error(`Invalid ${record.kind} durable payload`);

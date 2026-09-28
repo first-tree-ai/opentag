@@ -13,12 +13,12 @@ import {
   type RunnerCloudDeliveryRunFrame,
   type RunnerCloudDeliveryVerifiedFrame,
   type RunnerCloudModelGrant,
-  type RunnerCloudSessionMessageRunFrame,
+  type RunnerCloudSessionMessageRunFrameV2,
   type RunnerCloudSessionMessageSettledAckFrame,
   type RunnerCloudSessionMessageVerifiedFrame,
   RuntimeUsageSchema,
   type SessionCliProofGrant,
-  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
   serializeRunnerCloudSessionWorkerStdin,
   serializeRunnerCloudTurnWorkerStdin,
   TurnFailureReasonSchema,
@@ -157,7 +157,7 @@ export interface CloudTurnExecutionOpenInput {
 }
 
 export interface CloudSessionExecutionOpenInput {
-  readonly message: SessionMessageDeliveryRequest;
+  readonly message: SessionMessageDeliveryRequestV3;
   readonly scope: CloudTurnScope;
   readonly turnId: string;
   readonly signal: AbortSignal;
@@ -418,7 +418,7 @@ export class CloudTurnRunner {
   }
 
   /** Journal + fsync one Session message, THEN acknowledge receipt. Idempotent across redispatch. */
-  async handleSessionMessageRun(frame: RunnerCloudSessionMessageRunFrame): Promise<void> {
+  async handleSessionMessageRun(frame: RunnerCloudSessionMessageRunFrameV2): Promise<void> {
     await this.#enqueue(async () => {
       if (this.#closed) return;
       const message = frame.message;
@@ -452,7 +452,7 @@ export class CloudTurnRunner {
    * refused. Every write is fsynced before the caller may send the receipt.
    */
   async #journalSessionDispatch(
-    frame: RunnerCloudSessionMessageRunFrame,
+    frame: RunnerCloudSessionMessageRunFrameV2,
     journalScope: CloudJournalScope,
   ): Promise<CloudJournalSessionEntry | undefined> {
     const message = frame.message;
@@ -484,7 +484,7 @@ export class CloudTurnRunner {
    */
   #sessionDispatchDecision(
     existing: CloudJournalEntry | undefined,
-    frame: RunnerCloudSessionMessageRunFrame,
+    frame: RunnerCloudSessionMessageRunFrameV2,
     journalScope: CloudJournalScope,
   ):
     | { kind: "fresh" }
@@ -1483,7 +1483,7 @@ export class CloudTurnRunner {
   }
 
   async #runSessionInSandbox(
-    message: SessionMessageDeliveryRequest,
+    message: SessionMessageDeliveryRequestV3,
     model: RunnerCloudModelGrant,
     entry: CloudJournalSessionEntry,
     signal: AbortSignal,

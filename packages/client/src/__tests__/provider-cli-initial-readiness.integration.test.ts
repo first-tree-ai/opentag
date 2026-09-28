@@ -198,6 +198,7 @@ describe("provider CLI initial readiness", () => {
       admission: new AdmissionController(),
       credentialEnvironment: harness.credentials,
       imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
       reconciler: {
         checkSessionMessageDelivery: () => undefined,
         clearActivity: () => true,

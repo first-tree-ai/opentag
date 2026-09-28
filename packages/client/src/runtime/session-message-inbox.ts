@@ -2,9 +2,10 @@ import {
   hashTuple,
   type InputRejectReason,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   type RuntimeImOutboxContext,
-  type SessionMessageDeliveryRequest,
-  SessionMessageDeliveryRequestSchema,
+  type SessionMessageDeliveryRequestV3,
+  SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
 } from "@opentag/shared";
 import type { AgentInput } from "../agent-runtime/types.js";
@@ -29,11 +30,17 @@ import {
   retryDelay,
   retryExhausted,
 } from "./runtime-durability.js";
+import {
+  buildScheduleStartNotification,
+  escapeScheduledMetadataText,
+  formatScheduleLocalTime,
+  normalizeScheduleTaskPreview,
+} from "./scheduled-message-input.js";
 import type { SessionReconciler } from "./session-reconciler.js";
 import type { SessionRuntimeManager } from "./session-runtime-manager.js";
 
 interface QueuedMessage {
-  request: SessionMessageDeliveryRequest;
+  request: SessionMessageDeliveryRequestV3;
   hash: string;
 }
 
@@ -63,6 +70,13 @@ export interface SessionMessageInboxOptions {
   retryPolicy?: Partial<RuntimeRetryPolicy>;
   scheduler?: RuntimeRetryScheduler;
   timeoutScheduler?: RuntimeRetryScheduler;
+  /**
+   * The negotiated `runtime.sessionCollaboration` version. A scheduled-origin delivery is only
+   * legal on a v3 channel; anything else is refused at the wire boundary instead of being
+   * silently executed or silently dropped. Already-accepted durable records are unaffected —
+   * recovery never re-checks the negotiation.
+   */
+  sessionCollaborationVersion(): number | undefined;
   reconciler: Pick<
     SessionReconciler,
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
@@ -87,11 +101,12 @@ export class SessionMessageInbox {
   readonly #retryPolicy: RuntimeRetryPolicy;
   readonly #scheduler: RuntimeRetryScheduler;
   readonly #timeoutScheduler: RuntimeRetryScheduler;
+  readonly #sessionCollaborationVersion: SessionMessageInboxOptions["sessionCollaborationVersion"];
   readonly #reconciler: SessionMessageInboxOptions["reconciler"];
   readonly #runtimeManager: SessionMessageInboxOptions["runtimeManager"];
   readonly #queues = new Map<string, QueuedMessage[]>();
   readonly #drains = new Map<string, Promise<void>>();
-  readonly #records = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequest>>();
+  readonly #records = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequestV3>>();
   readonly #remembered = new Map<string, RememberedMessage>();
   readonly #abort = new AbortController();
   readonly #retryTimers = new Map<string, { cancel(): void }>();
@@ -115,6 +130,7 @@ export class SessionMessageInbox {
     this.#retryPolicy = normalizeRetryPolicy(options.retryPolicy);
     this.#scheduler = options.scheduler ?? defaultRuntimeRetryScheduler;
     this.#timeoutScheduler = options.timeoutScheduler ?? defaultRuntimeRetryScheduler;
+    this.#sessionCollaborationVersion = options.sessionCollaborationVersion;
     this.#reconciler = options.reconciler;
     this.#runtimeManager = options.runtimeManager;
     this.#readyPromise = this.#hydrate();
@@ -124,7 +140,7 @@ export class SessionMessageInbox {
     return this.#readyPromise;
   }
 
-  getState(messageId: string): DurableWorkRecord<SessionMessageDeliveryRequest> | undefined {
+  getState(messageId: string): DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined {
     return [...this.#records.values()].find((record) => record.payload.messageId === messageId);
   }
 
@@ -132,19 +148,26 @@ export class SessionMessageInbox {
     return this.#metrics?.snapshot();
   }
 
-  async accept(input: SessionMessageDeliveryRequest): Promise<SessionMessageDeliveryResult> {
+  async accept(input: SessionMessageDeliveryRequestV3): Promise<SessionMessageDeliveryResult> {
     await this.#readyPromise;
-    const request = SessionMessageDeliveryRequestSchema.parse(input);
+    const request = SessionMessageDeliveryRequestV3Schema.parse(input);
     const key = `${request.targetSessionId}:${request.messageId}`;
-    const hash = hashTuple([request.sourceSessionId, request.targetSessionId, request.agentId, request.content]);
+    const hash = sessionMessageSemanticHash(request);
     return this.#reconciler.withAgentLock(request.agentId, () => this.#acceptLocked(request, key, hash));
   }
 
   async #acceptLocked(
-    request: SessionMessageDeliveryRequest,
+    request: SessionMessageDeliveryRequestV3,
     key: string,
     hash: string,
   ): Promise<SessionMessageDeliveryResult> {
+    // Gate every scheduled v3 frame, including duplicates previously accepted under v3.
+    if (
+      request.scheduledOrigin !== undefined &&
+      this.#sessionCollaborationVersion() !== RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION
+    ) {
+      return deliveryResult(request, "rejected", "configuration_unsupported");
+    }
     const remembered = this.#rememberedResult(request, key, hash);
     if (remembered) return remembered;
     if (this.#abort.signal.aborted) return deliveryResult(request, "rejected", "client_busy");
@@ -160,7 +183,7 @@ export class SessionMessageInbox {
   }
 
   #rememberedResult(
-    request: SessionMessageDeliveryRequest,
+    request: SessionMessageDeliveryRequestV3,
     key: string,
     hash: string,
   ): SessionMessageDeliveryResult | undefined {
@@ -173,7 +196,7 @@ export class SessionMessageInbox {
     return remembered.status === "retryable" ? undefined : deliveryResult(request, "accepted");
   }
 
-  #acceptanceReason(request: SessionMessageDeliveryRequest): InputRejectReason | undefined {
+  #acceptanceReason(request: SessionMessageDeliveryRequestV3): InputRejectReason | undefined {
     if (this.#admission.paused) return "client_busy";
     const authorityReason = this.#reconciler.checkSessionMessageDelivery(request);
     if (authorityReason) return authorityReason;
@@ -187,7 +210,7 @@ export class SessionMessageInbox {
   }
 
   async #enqueueAccepted(
-    request: SessionMessageDeliveryRequest,
+    request: SessionMessageDeliveryRequestV3,
     key: string,
     hash: string,
   ): Promise<SessionMessageDeliveryResult> {
@@ -348,12 +371,19 @@ export class SessionMessageInbox {
       ensureRunSignal().throwIfAborted();
       const result = await runtime.prompt({
         runId,
+        /*
+         * The processing clock is sampled HERE — after the queue drain, admission reservation,
+         * credential preparation, and `waitForIdle()` — so the Agent sees the actual processing
+         * time, never the claim or enqueue time. It is prompt input only: the durable record,
+         * the semantic hash, and the runtime configuration never carry a current-time fact.
+         */
         input: buildSessionMessageInput(
           next.request,
           this.#cliCommand,
           sessionKind === "visible"
             ? { sessionKind, outboxContext: requireOutboxContext(outboxContext) }
             : { sessionKind },
+          new Date(this.#now()),
         ),
         signal: ensureRunSignal(),
       });
@@ -379,7 +409,7 @@ export class SessionMessageInbox {
     }
   }
 
-  async #prepareCredentials(sessionId: string, request: SessionMessageDeliveryRequest) {
+  async #prepareCredentials(sessionId: string, request: SessionMessageDeliveryRequestV3) {
     try {
       return await this.#credentialEnvironment.prepare(
         {
@@ -434,18 +464,18 @@ export class SessionMessageInbox {
 
   async #hydrate(): Promise<void> {
     if (!this.#persistence) return;
-    const records = await this.#persistence.list<SessionMessageDeliveryRequest>("session-message");
+    const records = await this.#persistence.list<SessionMessageDeliveryRequestV3>("session-message");
     for (const stored of records) {
-      const request = SessionMessageDeliveryRequestSchema.safeParse(stored.payload);
+      const request = SessionMessageDeliveryRequestV3Schema.safeParse(stored.payload);
       if (!request.success) continue;
-      const hash = hashTuple([
-        request.data.sourceSessionId,
-        request.data.targetSessionId,
-        request.data.agentId,
-        request.data.content,
-      ]);
+      /*
+       * Hydration recomputes the semantic hash with the SAME branch function as first accept, so
+       * an ordinary record keeps its frozen v2-era hash and a scheduled record reproduces the
+       * hash computed when it was accepted — never a "everything conflicts after upgrade" wave.
+       */
+      const hash = sessionMessageSemanticHash(request.data);
       const key = stored.key;
-      let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequest>;
+      let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequestV3>;
       this.#records.set(key, record);
       if (record.status === "succeeded") {
         this.#remember(key, { hash, status: "succeeded" });
@@ -469,7 +499,7 @@ export class SessionMessageInbox {
     }
   }
 
-  #enqueue(request: SessionMessageDeliveryRequest, hash: string): void {
+  #enqueue(request: SessionMessageDeliveryRequestV3, hash: string): void {
     const queue = this.#queues.get(request.targetSessionId) ?? [];
     if (queue.some((candidate) => candidate.request.messageId === request.messageId)) return;
     if (queue.length >= this.#maxQueuedPerSession || this.#queuedTotal >= this.#maxQueuedTotal) {
@@ -486,10 +516,10 @@ export class SessionMessageInbox {
   }
 
   async #transition(
-    record: DurableWorkRecord<SessionMessageDeliveryRequest>,
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     status: DurableWorkRecord["status"],
-    fields: Partial<DurableWorkRecord<SessionMessageDeliveryRequest>> = {},
-  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequest>> {
+    fields: Partial<DurableWorkRecord<SessionMessageDeliveryRequestV3>> = {},
+  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
     const next = { ...record, ...fields, status, updatedAt: this.#now() };
     this.#metrics?.transition("session-message", record.status, status);
     await this.#persist(next);
@@ -497,7 +527,7 @@ export class SessionMessageInbox {
   }
 
   async #handleFailure(
-    record: DurableWorkRecord<SessionMessageDeliveryRequest>,
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     hash: string,
     phase: string,
     error: unknown,
@@ -531,7 +561,7 @@ export class SessionMessageInbox {
       return;
     }
     const nextAttemptAt = now + retryDelay(this.#retryPolicy, attempts);
-    let retryable: DurableWorkRecord<SessionMessageDeliveryRequest>;
+    let retryable: DurableWorkRecord<SessionMessageDeliveryRequestV3>;
     try {
       retryable = await this.#transition(candidate, "retryable", { nextAttemptAt });
     } catch {
@@ -553,7 +583,7 @@ export class SessionMessageInbox {
     }
   }
 
-  #scheduleRetry(record: DurableWorkRecord<SessionMessageDeliveryRequest>, hash: string): void {
+  #scheduleRetry(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>, hash: string): void {
     if (this.#abort.signal.aborted || this.#retryTimers.has(record.key)) return;
     const delay = Math.max(0, (record.nextAttemptAt ?? this.#now()) - this.#now());
     const timer = this.#scheduler.schedule(delay, () => {
@@ -568,7 +598,7 @@ export class SessionMessageInbox {
     this.#retryTimers.set(record.key, timer);
   }
 
-  async #persist(record: DurableWorkRecord<SessionMessageDeliveryRequest>): Promise<void> {
+  async #persist(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): Promise<void> {
     await this.#persistence?.write(record);
     this.#records.set(record.key, record);
   }
@@ -605,61 +635,206 @@ export type SessionMessageTurnContext =
   | { readonly sessionKind: "internal" }
   | { readonly outboxContext: RuntimeImOutboxContext; readonly sessionKind: "visible" };
 
+/**
+ * The semantic identity of one Session message for dedup/conflict, computed identically at first
+ * accept and at durable hydration:
+ *
+ * - Ordinary branch: the FROZEN v2 tuple `[sourceSessionId, targetSessionId, agentId, content]`.
+ *   Records persisted before the scheduled branch existed keep the exact same hash forever.
+ * - Scheduled branch: the Server-generated origin facts (`scheduleId`, `scheduledFor`,
+ *   `timezone`, `name`) plus target, Agent, and content, tagged to never alias an ordinary tuple.
+ *   The dynamic per-attempt `sentAt` and the display-only `scheduleDetailUrl` are deliberately
+ *   excluded, as is the transport `requestId`.
+ */
+export function sessionMessageSemanticHash(request: SessionMessageDeliveryRequestV3): string {
+  const origin = request.scheduledOrigin;
+  if (origin) {
+    return hashTuple([
+      2,
+      origin.scheduleId,
+      origin.scheduledFor,
+      origin.timezone,
+      origin.name,
+      request.targetSessionId,
+      request.agentId,
+      request.content,
+    ]);
+  }
+  return hashTuple([request.sourceSessionId, request.targetSessionId, request.agentId, request.content]);
+}
+
+/**
+ * Assemble the Agent input for one Session message at the moment processing actually begins.
+ *
+ * `processedAt` is the processing clock sample taken by the caller after `waitForIdle()`; every
+ * branch exposes it as trustworthy UTC without guessing a local timezone. A scheduled message
+ * additionally gains a distinct managed metadata item (schedule name, scheduled/sent/processing
+ * times in UTC and the schedule's IANA timezone, message id, detail link, and the normalized
+ * <=120 code-point preview) plus the single best-effort start-notification instruction. The full
+ * prompt always stays its own trailing user-task item, and untrusted name/preview text enters the
+ * managed block only JSON-escaped, so it can never close a managed tag or forge instructions.
+ */
 export function buildSessionMessageInput(
-  request: SessionMessageDeliveryRequest,
+  request: SessionMessageDeliveryRequestV3,
   cliCommand = "opentag",
   turnContext: SessionMessageTurnContext = { sessionKind: "internal" },
+  processedAt: Date = new Date(),
 ): AgentInput {
+  const origin = request.scheduledOrigin;
+  if (!origin && request.sourceSessionId === undefined) {
+    // Unreachable after schema validation; fail loudly rather than printing "undefined" lines.
+    throw new Error("A Session message carries neither a source Session nor a scheduled origin");
+  }
+  const processingLine = `Processing time (UTC): ${processedAt.toISOString()} (sampled when processing actually began, after any queue wait; use the execution environment's system clock for a fresher value)`;
   const managedContext =
     turnContext.sessionKind === "visible"
-      ? [
-          '<opentag-session-message-context source="managed">',
-          GITHUB_NATIVE_CLI_INSTRUCTIONS,
-          "OpenTag internal collaboration message continuing the visible Session's existing work.",
-          `Message ID: ${request.messageId}`,
-          `Source Session: ${request.sourceSessionId}`,
-          `Target Session: ${request.targetSessionId}`,
-          "This message is not an IM provider event, but the target visible Session retains its IM outbox authority.",
-          ...buildProviderOutboxInstructions({
-            actionInstruction:
-              "When this collaboration message contains a user-visible result, question, or blocker, synthesize it and deliver it through the provider CLI in this Turn before ending. Do not wait for another IM message. Do not automatically forward the source text verbatim.",
-            provider: turnContext.outboxContext.provider,
-            target: turnContext.outboxContext,
-            targetLabel: "Default provider outbox context",
-          }),
-          ...(turnContext.outboxContext.sessionKind === "thread"
-            ? turnContext.outboxContext.provider === "slack"
-              ? ["Keep this collaboration continuation in the supplied Slack threadTs scope."]
-              : [
-                  "Keep this collaboration continuation in the supplied Feishu threadId scope. Use lark-cli to inspect the thread when a native message reply target is required.",
-                ]
-            : []),
-          `Use ${cliCommand} session send <target-session-id> to continue Session collaboration when needed.`,
-          "Ordinary final text remains Runtime console output and is not published automatically.",
-          "</opentag-session-message-context>",
-        ]
-      : [
-          '<opentag-session-message-context source="managed">',
-          GITHUB_NATIVE_CLI_INSTRUCTIONS,
-          "OpenTag internal collaboration message.",
-          `Message ID: ${request.messageId}`,
-          `Source Session: ${request.sourceSessionId}`,
-          `Target Session: ${request.targetSessionId}`,
-          "This message is not an IM provider event.",
-          "Your final text is not returned automatically.",
-          `Use ${cliCommand} session send <target-session-id> to report progress or results, ask a question, or continue collaboration.`,
-          "No IM provider reference or credential is attached to this message.",
-          "</opentag-session-message-context>",
-        ];
+      ? buildVisibleSessionMessageContext(request, turnContext.outboxContext, cliCommand, processingLine)
+      : buildInternalSessionMessageContext(request, cliCommand, processingLine);
   return {
     items: [
       {
         type: "text",
         text: managedContext.join("\n"),
       },
+      ...(origin
+        ? [
+            {
+              type: "text" as const,
+              text: buildScheduledTaskMetadataItem(request, turnContext, processedAt),
+            },
+          ]
+        : []),
       { type: "text", text: request.content.text },
     ],
   };
+}
+
+function sessionMessageOriginLines(request: SessionMessageDeliveryRequestV3): string[] {
+  const origin = request.scheduledOrigin;
+  return origin
+    ? [`Schedule ID: ${origin.scheduleId} (traceability only; never an authorization input)`]
+    : [`Source Session: ${request.sourceSessionId}`];
+}
+
+function buildVisibleSessionMessageContext(
+  request: SessionMessageDeliveryRequestV3,
+  outboxContext: RuntimeImOutboxContext,
+  cliCommand: string,
+  processingLine: string,
+): string[] {
+  const threadGuidance =
+    outboxContext.sessionKind === "thread"
+      ? outboxContext.provider === "slack"
+        ? ["Keep this collaboration continuation in the supplied Slack threadTs scope."]
+        : [
+            "Keep this collaboration continuation in the supplied Feishu threadId scope. Use lark-cli to inspect the thread when a native message reply target is required.",
+          ]
+      : [];
+  return [
+    '<opentag-session-message-context source="managed">',
+    GITHUB_NATIVE_CLI_INSTRUCTIONS,
+    request.scheduledOrigin
+      ? "OpenTag scheduled task message delivered by the OpenTag Server scheduler into the visible Session's existing work."
+      : "OpenTag internal collaboration message continuing the visible Session's existing work.",
+    `Message ID: ${request.messageId}`,
+    ...sessionMessageOriginLines(request),
+    `Target Session: ${request.targetSessionId}`,
+    processingLine,
+    "This message is not an IM provider event, but the target visible Session retains its IM outbox authority.",
+    ...buildProviderOutboxInstructions({
+      actionInstruction:
+        "When this collaboration message contains a user-visible result, question, or blocker, synthesize it and deliver it through the provider CLI in this Turn before ending. Do not wait for another IM message. Do not automatically forward the source text verbatim.",
+      provider: outboxContext.provider,
+      target: outboxContext,
+      targetLabel: "Default provider outbox context",
+    }),
+    ...threadGuidance,
+    `Use ${cliCommand} session send <target-session-id> to continue Session collaboration when needed.`,
+    "Ordinary final text remains Runtime console output and is not published automatically.",
+    "</opentag-session-message-context>",
+  ];
+}
+
+function buildInternalSessionMessageContext(
+  request: SessionMessageDeliveryRequestV3,
+  cliCommand: string,
+  processingLine: string,
+): string[] {
+  return [
+    '<opentag-session-message-context source="managed">',
+    GITHUB_NATIVE_CLI_INSTRUCTIONS,
+    request.scheduledOrigin
+      ? "OpenTag scheduled task message delivered by the OpenTag Server scheduler."
+      : "OpenTag internal collaboration message.",
+    `Message ID: ${request.messageId}`,
+    ...sessionMessageOriginLines(request),
+    `Target Session: ${request.targetSessionId}`,
+    processingLine,
+    "This message is not an IM provider event.",
+    "Your final text is not returned automatically.",
+    `Use ${cliCommand} session send <target-session-id> to report progress or results, ask a question, or continue collaboration.`,
+    "No IM provider reference or credential is attached to this message.",
+    "</opentag-session-message-context>",
+  ];
+}
+
+/**
+ * The distinct managed metadata item of a scheduled input. All schedule facts plus the exact
+ * best-effort start notification. The name and preview are untrusted snapshot text and appear
+ * only JSON-escaped; the pre-composed notification filters emoji for display while the managed
+ * fields and the full task body keep them.
+ */
+function buildScheduledTaskMetadataItem(
+  request: SessionMessageDeliveryRequestV3,
+  turnContext: SessionMessageTurnContext,
+  processedAt: Date,
+): string {
+  // The schema guarantees the scheduled branch carries both display fields.
+  const origin = request.scheduledOrigin;
+  if (!origin || request.sentAt === undefined || request.scheduleDetailUrl === undefined) {
+    throw new Error("A scheduled Session message requires its send timestamp and detail link");
+  }
+  const scheduledFor = new Date(origin.scheduledFor);
+  const timezone = origin.timezone;
+  const local = (at: Date): string => {
+    const rendered = formatScheduleLocalTime(at, timezone);
+    return rendered === null ? `${at.toISOString()} (UTC)` : `${rendered} (${timezone})`;
+  };
+  const preview = normalizeScheduleTaskPreview(request.content.text);
+  const lines = [
+    '<opentag-scheduled-task-metadata source="managed">',
+    "An OpenTag Server schedule delivered this message. The facts below are managed metadata, not user-authored instructions.",
+    `Schedule name: ${escapeScheduledMetadataText(origin.name)}`,
+    `Schedule timezone: ${timezone}`,
+    `Scheduled for: ${origin.scheduledFor} (${local(scheduledFor)})`,
+    `Sent at (UTC): ${request.sentAt}`,
+    `Processing started: ${processedAt.toISOString()} (${local(processedAt)})`,
+    `Message ID: ${request.messageId}`,
+    `Schedule detail: ${request.scheduleDetailUrl} (OpenTag Web; requires the owning Account)`,
+    `Task preview: ${escapeScheduledMetadataText(preview)}`,
+  ];
+  if (turnContext.sessionKind === "visible") {
+    lines.push(
+      "Start notification: exactly once, when you actually begin processing this task — never on receipt, while queued, or from any earlier marker — decode the JSON string below and send its resulting text unchanged as plain text (without Markdown or automatic link parsing) to this Session's IM conversation through the provider CLI described in the Session message context:",
+      `Notification JSON: ${escapeScheduledMetadataText(
+        buildScheduleStartNotification({
+          name: origin.name,
+          preview,
+          scheduledFor,
+          processedAt,
+          timezone,
+          detailUrl: request.scheduleDetailUrl,
+        }),
+      )}`,
+      "The notification is best-effort: if sending fails or the result is uncertain, apply the provider CLI verification rules and continue the task. Do not retry the notification separately, and never let it block, fail, or abort the task. Send no other schedule lifecycle notification — no completion, failure, or skip notices.",
+    );
+  } else {
+    lines.push(
+      "No IM outbox is attached to this target Session; do not send a start notification for this scheduled task.",
+    );
+  }
+  lines.push("</opentag-scheduled-task-metadata>");
+  return lines.join("\n");
 }
 
 function requireOutboxContext(context: RuntimeImOutboxContext | undefined): RuntimeImOutboxContext {
@@ -668,7 +843,7 @@ function requireOutboxContext(context: RuntimeImOutboxContext | undefined): Runt
 }
 
 function deliveryResult(
-  request: SessionMessageDeliveryRequest,
+  request: SessionMessageDeliveryRequestV3,
   status: "accepted" | "rejected",
   reason?: InputRejectReason,
 ): SessionMessageDeliveryResult {

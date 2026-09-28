@@ -1136,7 +1136,13 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
   RuntimeImSteerRequestSchema,
-  SessionMessageDeliveryRequestSchema,
+  /*
+   * The receiver-side arm is the v3 superset: it parses the frozen v2 ordinary wire unchanged
+   * (the ordinary branch is field-identical) plus the scheduled-origin branch. Senders keep
+   * using `SessionMessageDeliveryRequestSchema` for ordinary frames; a peer that negotiated
+   * only `runtime.sessionCollaboration` v2 never receives a scheduled frame at all.
+   */
+  SessionMessageDeliveryRequestV3Schema,
   TurnReportResultSchema,
   RuntimeImCredentialGrantResultSchema,
   AgentRuntimeTestRequestFrameSchema,

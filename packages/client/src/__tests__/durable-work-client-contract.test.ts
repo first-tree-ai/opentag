@@ -675,6 +675,7 @@ describe("Real-scheduler Client durable-work contract", () => {
         now: () => ++now,
         credentialEnvironment: { cleanup: vi.fn(), prepare: vi.fn() },
         imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 3,
         logger: { warn: vi.fn() },
         retryPolicy: {
           baseDelayMs: 10,

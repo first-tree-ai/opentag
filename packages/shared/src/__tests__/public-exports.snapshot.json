@@ -566,6 +566,7 @@
   "RunnerCloudSessionMessageCancelFrameSchema",
   "RunnerCloudSessionMessageReceivedFrameSchema",
   "RunnerCloudSessionMessageRunFrameSchema",
+  "RunnerCloudSessionMessageRunFrameV2Schema",
   "RunnerCloudSessionMessageSettledAckFrameSchema",
   "RunnerCloudSessionMessageSettledFrameSchema",
   "RunnerCloudSessionMessageVerifiedFrameSchema",

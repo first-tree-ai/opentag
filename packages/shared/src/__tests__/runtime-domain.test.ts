@@ -571,6 +571,45 @@ describe("runtime domain contract", () => {
     ).toBe(false);
   });
 
+  it("R01/R05 parses ordinary and scheduled deliver wires through the receiver-side frame union", () => {
+    const agentId = randomUUID();
+    const runtime = { ...snapshot(), agentId };
+    const ordinary = {
+      type: "session:message:deliver" as const,
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      targetSessionId: randomUUID(),
+      agentId,
+      placementGeneration: 1,
+      content: { kind: "text" as const, text: "Done" },
+      runtime,
+    };
+    // The frozen v2 ordinary wire parses through the receiver union byte-for-byte.
+    const ordinaryParsed = ServerRuntimeBusinessFrameSchema.parse(ordinary);
+    expect(ordinaryParsed).toEqual(ordinary);
+    expect(ordinaryParsed.type).toBe("session:message:deliver");
+    // The scheduled v3 wire parses through the same union with its origin snapshot intact.
+    const scheduled = {
+      ...(({ sourceSessionId: _omitted, ...rest }) => rest)(ordinary),
+      scheduledOrigin: {
+        scheduleId: randomUUID(),
+        scheduledFor: "2026-09-28T01:00:00.000Z",
+        timezone: "Asia/Shanghai",
+        name: "Daily check",
+      },
+      sentAt: "2026-09-28T01:00:00.010Z",
+      scheduleDetailUrl: "https://opentag.example.com/agents/00000000-0000-4000-8000-000000000001?schedule=x",
+    };
+    expect(ServerRuntimeBusinessFrameSchema.parse(scheduled)).toEqual(scheduled);
+    // A frame carrying neither or both sources is refused at the union boundary.
+    const { scheduledOrigin: _origin, ...noSource } = scheduled;
+    expect(ServerRuntimeBusinessFrameSchema.safeParse(noSource).success).toBe(false);
+    expect(ServerRuntimeBusinessFrameSchema.safeParse({ ...scheduled, sourceSessionId: randomUUID() }).success).toBe(
+      false,
+    );
+  });
+
   it("accepts optional Slack authorUserId without treating it as required identity", () => {
     const slackRef = {
       provider: "slack" as const,

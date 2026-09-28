@@ -24,6 +24,7 @@ import {
   serializeRunnerCloudSessionWorkerStdin,
   serializeRunnerCloudTurnWorkerStdin,
 } from "../cloud-runner.js";
+import { SessionMessageDeliveryRequestV3Schema } from "../runtime-domain.js";
 
 const utf8Bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
 
@@ -396,7 +397,7 @@ describe("E8 Session collaboration protocol", () => {
    * worker document, so a journaled scheduled message reaches the worker intact.
    */
   it("parses ordinary and scheduled run frames and worker documents through the v2 superset", () => {
-    const scheduledMessage = {
+    const scheduledMessage = SessionMessageDeliveryRequestV3Schema.parse({
       ...(({ sourceSessionId: _omitted, ...rest }) => rest)(sessionMessage),
       scheduledOrigin: {
         scheduleId: "0b12b3c0-0000-4000-8000-000000000010",
@@ -406,7 +407,7 @@ describe("E8 Session collaboration protocol", () => {
       },
       sentAt: "2026-09-28T01:00:05.000Z",
       scheduleDetailUrl: "https://opentag.example.com/agents/0b12b3c0-0000-4000-8000-000000000004?schedule=x",
-    };
+    });
     const scheduledRun = {
       type: "session:message:run" as const,
       requestId: scheduledMessage.requestId,

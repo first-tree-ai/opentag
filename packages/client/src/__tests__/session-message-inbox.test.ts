@@ -55,6 +55,52 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("samples scheduled processing time and exposes the start notice only after waitForIdle", async () => {
+    let releaseIdle: () => void = () => undefined;
+    const idle = new Promise<void>((resolve) => {
+      releaseIdle = resolve;
+    });
+    let clock = Date.parse("2026-09-28T01:00:01.000Z");
+    const runtime = {
+      waitForIdle: vi.fn(() => idle),
+      prompt: vi.fn(async (_request: { input: { items: readonly { text: string }[] } }) => ({
+        runId: "run",
+        status: "completed" as const,
+        output: [],
+      })),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext: { provider: "feishu" as const, sessionKind: "channel" as const, chatId: "oc_visible" },
+        })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
+      now: () => clock,
+      reconciler: inboxReconciler(),
+      runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never), sessionKind: () => "visible" as const },
+    });
+    const request = scheduledDelivery({ text: "Check status, then report the result" });
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await vi.waitFor(() => expect(runtime.waitForIdle).toHaveBeenCalledOnce());
+    expect(runtime.prompt).not.toHaveBeenCalled();
+
+    clock = Date.parse("2026-09-28T01:12:34.000Z");
+    releaseIdle();
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledOnce());
+    const input = runtime.prompt.mock.calls[0]?.[0].input;
+    expect(input?.items[1]?.text).toContain("Processing started: 2026-09-28T01:12:34.000Z");
+    expect(input?.items[1]?.text).toContain("Notification JSON:");
+    expect(input?.items[2]?.text).toBe(request.content.text);
+    await inbox.settled();
+    inbox.stop();
+  });
+
   it("rejects new messages while quiesced but drains messages accepted before the pause", async () => {
     const admission = new AdmissionController();
     const targetSessionId = randomUUID();

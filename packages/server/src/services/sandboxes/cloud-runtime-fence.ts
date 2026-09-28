@@ -32,6 +32,8 @@ export interface CloudConnectionRecord {
    * echoed it; a legacy E7 Runner keeps existing IM delivery with no unknown field or frame.
    */
   readonly sessionCollaborationEligible: boolean;
+  /** Exact negotiated Runner collaboration version; 0 means the capability was not negotiated. */
+  readonly sessionCollaborationVersion: 0 | 1 | 2;
   /**
    * Whether this connection may receive execution permission. A report-only reconnect (the active
    * authority chain was inactive at handshake) sets false: existing custody may still be settled
@@ -68,8 +70,12 @@ export class CloudRuntimeFence {
     socket?: RunnerControlSocket;
     executionEligible?: boolean;
     sessionCollaborationEligible?: boolean;
+    sessionCollaborationVersion?: 1 | 2;
   }): CloudConnectionRecord {
     this.detachSandbox(input.scope.sandboxId);
+    // Legacy test/recovery callers that only supplied eligibility represent a v1 connection.
+    const sessionCollaborationVersion =
+      input.sessionCollaborationVersion ?? (input.sessionCollaborationEligible === true ? 1 : 0);
     const record: CloudConnectionRecord = {
       computerId: input.computerId,
       connectionId: randomUUID(),
@@ -78,7 +84,8 @@ export class CloudRuntimeFence {
       scope: input.scope,
       ...(input.socket ? { socket: input.socket } : {}),
       executionEligible: input.executionEligible !== false,
-      sessionCollaborationEligible: input.sessionCollaborationEligible === true,
+      sessionCollaborationEligible: sessionCollaborationVersion > 0,
+      sessionCollaborationVersion,
     };
     this.#byConnection.set(record.connectionId, record);
     this.#bySandbox.set(input.scope.sandboxId, record.connectionId);

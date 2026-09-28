@@ -11,16 +11,34 @@ import {
   writeAggregateReports,
 } from "./unit-coverage.mjs";
 
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isValidStatement(statement) {
+  if (!isRecord(statement) || !isRecord(statement.start) || !isRecord(statement.end)) return false;
+  const { line: start } = statement.start;
+  const { line: end } = statement.end;
+  return Number.isSafeInteger(start) && start > 0 && Number.isSafeInteger(end) && end >= start;
+}
+
 function assertIstanbulEntry(coverage, file) {
-  if (
-    !coverage ||
-    typeof coverage !== "object" ||
-    !coverage.statementMap ||
-    !coverage.s ||
-    typeof coverage.statementMap !== "object" ||
-    typeof coverage.s !== "object"
-  ) {
+  if (!isRecord(coverage) || !isRecord(coverage.statementMap) || !isRecord(coverage.s)) {
     throw new Error(`Invalid Istanbul coverage entry: ${file}`);
+  }
+  const statements = Object.entries(coverage.statementMap);
+  if (statements.length !== Object.keys(coverage.s).length) {
+    throw new Error(`Invalid Istanbul coverage entry: ${file} (statement/hit keys differ)`);
+  }
+  for (const [id, statement] of statements) {
+    if (
+      !Object.hasOwn(coverage.s, id) ||
+      !isValidStatement(statement) ||
+      !Number.isFinite(coverage.s[id]) ||
+      coverage.s[id] < 0
+    ) {
+      throw new Error(`Invalid Istanbul coverage entry: ${file} (statement ${id})`);
+    }
   }
 }
 

@@ -9,6 +9,7 @@ import { summarizeShardTimings } from "../ci-test-timing.mjs";
 import { aggregateCoverageArtifacts, rebaseCoverageMap } from "../coverage-artifacts.mjs";
 import { requiresPatchCoverage } from "../patch-coverage-plan.mjs";
 import { COVERAGE_PROJECTS } from "../unit-coverage.mjs";
+import { evaluatePatchCoverage } from "../unit-coverage-gate.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -229,12 +230,109 @@ test("CI requires the PR scoreboard but accepts its deliberate skip on main", ()
   assert.equal(runShell(program, { ...env, EVENT_NAME: "pull_request", QUALITY_SCOREBOARD_RESULT: "skipped" }), 1);
 });
 
-test("coverage aggregation rejects malformed file entries instead of interpreting them as non-executable", () =>
+function writeCliCoverage(directory, entry) {
+  writeFileSync(
+    join(directory, "patch-coverage-cli/coverage-final.json"),
+    JSON.stringify({ "/producer/checkout/apps/cli/src/fixture.ts": entry }),
+  );
+}
+
+function evaluateArtifactPatch(options, content = "export const answer = 42;") {
+  const coverage = aggregateCoverageArtifacts(options);
+  return evaluatePatchCoverage({
+    coverage,
+    diff: ["--- a/apps/cli/src/fixture.ts", "+++ b/apps/cli/src/fixture.ts", "@@ -1,0 +2 @@", `+${content}`, ""].join(
+      "\n",
+    ),
+    repositoryRoot: options.repositoryRoot,
+    threshold: 80,
+  });
+}
+
+const validStatement = { start: { line: 2 }, end: { line: 2 } };
+const validEntry = { statementMap: { 0: validStatement }, s: { 0: 1 } };
+const malformedEntries = [
+  ["missing records", {}],
+  ["array entry", []],
+  ["array statement and hit records", { statementMap: [], s: [] }],
+  ["array statement record", { ...validEntry, statementMap: [] }],
+  ["array hit record", { ...validEntry, s: [] }],
+  ["null statement record", { ...validEntry, statementMap: null }],
+  ["primitive hit record", { ...validEntry, s: 1 }],
+  ["missing hit key", { ...validEntry, s: {} }],
+  ["orphaned hit key", { statementMap: {}, s: { 0: 1 } }],
+  ["different statement and hit keys", { ...validEntry, s: { 1: 1 } }],
+  ["extra hit key", { ...validEntry, s: { 0: 1, 1: 1 } }],
+  ["null statement", { ...validEntry, statementMap: { 0: null } }],
+  ["array statement", { ...validEntry, statementMap: { 0: [] } }],
+  ["missing location", { ...validEntry, statementMap: { 0: {} } }],
+  ["missing end", { ...validEntry, statementMap: { 0: { start: { line: 2 } } } }],
+  ["zero start line", { ...validEntry, statementMap: { 0: { start: { line: 0 }, end: { line: 2 } } } }],
+  ["negative start line", { ...validEntry, statementMap: { 0: { start: { line: -1 }, end: { line: 2 } } } }],
+  ["fractional start line", { ...validEntry, statementMap: { 0: { start: { line: 1.5 }, end: { line: 2 } } } }],
+  ["string start line", { ...validEntry, statementMap: { 0: { start: { line: "2" }, end: { line: 2 } } } }],
+  ["reversed line range", { ...validEntry, statementMap: { 0: { start: { line: 2 }, end: { line: 1 } } } }],
+  ["fractional end line", { ...validEntry, statementMap: { 0: { start: { line: 2 }, end: { line: 2.5 } } } }],
+  ["unsafe end line", { ...validEntry, statementMap: { 0: { start: { line: 2 }, end: { line: 1e20 } } } }],
+  ["negative hit count", { ...validEntry, s: { 0: -1 } }],
+  ["null hit count", { ...validEntry, s: { 0: null } }],
+  ["string hit count", { ...validEntry, s: { 0: "1" } }],
+];
+
+for (const [name, entry] of malformedEntries) {
+  test(`artifact aggregation and patch evaluation reject ${name}`, () =>
+    withFixture((directory) => {
+      const options = createCoverageFixture(directory);
+      writeCliCoverage(directory, entry);
+      assert.throws(() => evaluateArtifactPatch(options), /Invalid Istanbul coverage entry/);
+    }));
+}
+
+test("valid artifact statements still count executable changed lines", () =>
   withFixture((directory) => {
     const options = createCoverageFixture(directory);
-    writeFileSync(
-      join(directory, "patch-coverage-cli/coverage-final.json"),
-      JSON.stringify({ "/producer/checkout/apps/cli/src/fixture.ts": {} }),
-    );
-    assert.throws(() => aggregateCoverageArtifacts(options), /Invalid Istanbul coverage entry/);
+    const covered = evaluateArtifactPatch(options);
+    assert.equal(covered.total, 1);
+    assert.equal(covered.covered, 1);
+    assert.equal(covered.passed, true);
+
+    writeCliCoverage(directory, { ...validEntry, s: { 0: 0 } });
+    const summaryPath = join(directory, "patch-coverage-cli/coverage-summary.json");
+    const summary = JSON.parse(readFileSync(summaryPath));
+    for (const metrics of Object.values(summary)) {
+      for (const metric of Object.values(metrics)) {
+        metric.covered = 0;
+        metric.pct = 0;
+      }
+    }
+    writeFileSync(summaryPath, JSON.stringify(summary));
+    options.floors.cli = { lines: 0, statements: 0, functions: 0, branches: 0 };
+    const uncovered = evaluateArtifactPatch(options);
+    assert.equal(uncovered.total, 1);
+    assert.equal(uncovered.covered, 0);
+    assert.equal(uncovered.passed, false);
+    assert.deepEqual(uncovered.uncovered, ["apps/cli/src/fixture.ts:2"]);
   }));
+
+test("valid empty statement records keep the explicit pass for type-only files", () =>
+  withFixture((directory) => {
+    const options = createCoverageFixture(directory);
+    writeCliCoverage(directory, { statementMap: {}, s: {} });
+    const result = evaluateArtifactPatch(options, "export interface Example { value: string }");
+    assert.equal(result.total, 0);
+    assert.equal(result.passed, true);
+  }));
+
+test("coverage records reject non-finite hit counts before patch evaluation", () => {
+  for (const hits of [NaN, Infinity, -Infinity]) {
+    assert.throws(
+      () =>
+        rebaseCoverageMap(
+          { "/repo/apps/cli/src/fixture.ts": { ...validEntry, s: { 0: hits } } },
+          COVERAGE_PROJECTS[0],
+          "/repo",
+        ),
+      /Invalid Istanbul coverage entry/,
+    );
+  }
+});

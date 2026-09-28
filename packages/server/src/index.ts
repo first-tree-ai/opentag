@@ -36,11 +36,16 @@ import {
 import { createPlatformRuntime } from "./platform-runtime.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { type AgentSessionStopDependencies, stopAgentSessions } from "./runtime/agent-session-stopper.js";
+import { loadApprovalAuthority } from "./runtime/approval-authority.js";
+import { ApprovalMessenger } from "./runtime/approval-messenger.js";
+import { PostgresApprovalStore } from "./runtime/approval-store.js";
 import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ContextTreeOperationOwner } from "./runtime/context-tree-operation-owner.js";
+import { handleFeishuApprovalAction } from "./runtime/feishu-approval-action.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
 import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owner.js";
+import { RuntimeApprovalOwner } from "./runtime/runtime-approval-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
@@ -690,6 +695,14 @@ export async function startServer(): Promise<void> {
       prepareReconcile: (computerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
+    const approvalOwner = new RuntimeApprovalOwner({
+      store: new PostgresApprovalStore(database),
+      registry,
+      serverInstanceId: instanceId,
+      authority: (request, context) => loadApprovalAuthority(database, request, context),
+      messenger: new ApprovalMessenger(imBindingService, imCallPolicy),
+      onError: () => reportDiagnostic("RUNTIME_APPROVAL_FAILED"),
+    });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
     providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
       listActiveProviderCliRequirements: (computerId) => imBindingService.listActiveProviderCliRequirements(computerId),
@@ -739,6 +752,8 @@ export async function startServer(): Promise<void> {
       ...optionalCloudModelTester(cloudModelRuntime),
     });
     const feishuConnections = new FeishuConnectionManager({
+      onCardAction: (event, bindingId, generation) =>
+        handleFeishuApprovalAction(approvalOwner, event, bindingId, generation),
       database,
       inbox: imMessageInbox,
       instanceId,
@@ -1014,6 +1029,7 @@ export async function startServer(): Promise<void> {
           }
         : {}),
       runtime: {
+        approvalOwner,
         runtimeCredentialOwner: platformRuntime.credentials.owner,
         registry,
         domainOwner,
@@ -1041,6 +1057,7 @@ export async function startServer(): Promise<void> {
       },
       skills: { service: skillRuntime.service, proofs: sessionCliProofService },
       slackEvents: {
+        approvalOwner,
         imBindings: imBindingService,
         inbox: imMessageInbox,
         receipts: slackWebhookReceipts,
@@ -1068,6 +1085,7 @@ export async function startServer(): Promise<void> {
     });
     feishuSetupService.start();
     feishuConnections.start();
+    approvalOwner.start();
     imDeliveryWorker.start();
     scheduleScheduler.start();
     sandboxIdleReclaimer?.start();

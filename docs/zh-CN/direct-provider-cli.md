@@ -27,8 +27,9 @@ OpenTag-managed artifact，并在上报 ready 前用真实 binding 凭证验证�
 `opentag doctor` 与 portable installer 只报告 account-global 静态安装状态，不安装、不修复、不验证凭证，也不推断登录或订阅状态。
 
 每个可以写入 IM 的有效可见 Session Turn（包括 IM delivery 与 Internal Session 协作回调）开始前，Client 创建私有的
-`0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent source 该文件后直接调用官方
-`lark-cli` 或 `slack api`。Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的
+`0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent 直接调用官方
+`lark-cli` 或 `slack api`，受管 launcher 自动加载凭据。只有直接发送提供者 HTTP 请求时才需要 source 此文件。
+Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的
 文件由下次启动恢复清理。Internal Session 永远不会收到该文件。
 
 OpenTag Codex Runtime 的默认启动参数对所有使用该默认参数的 Session 禁用 Shell 快照。

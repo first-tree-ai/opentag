@@ -19,6 +19,7 @@ import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.j
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
+import { codexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
@@ -722,9 +723,20 @@ describe("createClientRuntime production composition", () => {
     expect(launches).toContain("--version");
     expect(launches).toContain("app-server --help");
     expect(launches).toContain("login status");
-    expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(3);
+    const baseSessionArgs = [
+      ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      'approvals_reviewer="user"',
+      "-c",
+      `projects.${JSON.stringify(process.cwd())}.trust_level="trusted"`,
+    ];
+    expect(launches.filter((line) => line === baseSessionArgs.join(" "))).toHaveLength(3);
     const managedSessionArgs = [
       ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      'approvals_reviewer="user"',
+      "-c",
+      `projects.${JSON.stringify(await runtime.runtimeManager.cwd("session-1"))}.trust_level="trusted"`,
       "-c",
       `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`,
     ];
@@ -977,6 +989,22 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       provider: "claude-code",
       execution: { approvalPolicy: "never", networkAccess: true },
     };
+    expect(
+      codexRuntimePolicy({
+        ...claudeSnapshot,
+        provider: "codex",
+        execution: {
+          approvalPolicy: "on-request",
+          networkAccess: false,
+          permissions: { approverExternalId: "owner", rules: "[]" },
+        },
+      }),
+    ).toMatchObject({
+      fileSystem: "workspace-write",
+      network: "disabled",
+      approvals: "on-request",
+      permissionRules: "[]",
+    });
     expect(claudeCodeRuntimePolicy(claudeSnapshot)).toEqual({
       fileSystem: "unrestricted",
       network: "enabled",
@@ -989,7 +1017,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         ...claudeSnapshot,
         execution: { approvalPolicy: "on-request", networkAccess: true },
       } as unknown as EffectiveRuntimeSnapshot),
-    ).toBe("configuration_unsupported");
+    ).toBeUndefined();
     expect(
       validateClaudeCodeRuntimePolicy({
         ...claudeSnapshot,

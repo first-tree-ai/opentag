@@ -1,4 +1,4 @@
-import type { ContextTreeConnection } from "@opentag/shared";
+import type { AgentPermissions, ContextTreeConnection } from "@opentag/shared";
 import { relations, sql } from "drizzle-orm";
 import { bigint, check, integer, jsonb, pgSequence, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
@@ -23,6 +23,10 @@ export const agentRuntimeConfigs = pgTable(
     reasoningEffort: text("reasoning_effort"),
     instructions: text("instructions").notNull(),
     maxDurationMs: integer("max_duration_ms"),
+    permissions: jsonb("permissions")
+      .$type<AgentPermissions>()
+      .notNull()
+      .default(sql`'{"approverExternalId":null,"rules":""}'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

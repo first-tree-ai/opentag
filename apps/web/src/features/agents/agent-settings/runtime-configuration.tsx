@@ -1,6 +1,8 @@
 import {
   type AgentAdminConfig,
+  DEFAULT_AGENT_PERMISSIONS,
   getRuntimeConfigurationOptions,
+  parseAgentPermissionRules,
   type UpdateAgentRequest,
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
@@ -13,6 +15,7 @@ import { liveResourceQueryOptions } from "../../../query/live.js";
 import { Banner, InputArea, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
 import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
+import { PermissionsField } from "./permissions-field.js";
 import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./runtime-model-field.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
@@ -68,6 +71,9 @@ function RuntimeConfigurationEditor({
     initialConfig.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION,
   );
   const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
+  const [permissionsDraft, setPermissionsDraft] = useState(
+    initialConfig.runtimeConfig.permissions ?? DEFAULT_AGENT_PERMISSIONS,
+  );
   const [message, setMessage] = useState<{
     kind: "error" | "success";
     section: "runtime" | "instructions";
@@ -86,9 +92,13 @@ function RuntimeConfigurationEditor({
     reasoningSelection !== PROVIDER_DEFAULT_OPTION &&
     !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningSelection);
   const reasoningDraft = reasoningSelection === PROVIDER_DEFAULT_OPTION ? "" : reasoningSelection;
+  const permissionsDirty =
+    !cloud &&
+    JSON.stringify(permissionsDraft) !== JSON.stringify(config.runtimeConfig.permissions ?? DEFAULT_AGENT_PERMISSIONS);
   const runtimeDirty =
     modelDraft !== (config.runtimeConfig.model ?? "") ||
-    reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
+    reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "") ||
+    permissionsDirty;
   const instructionsDirty = instructionsDraft !== config.runtimeConfig.instructions;
 
   async function saveRuntime(event: FormEvent<HTMLFormElement>) {
@@ -97,13 +107,16 @@ function RuntimeConfigurationEditor({
     setSaving("runtime");
     setMessage(undefined);
     try {
+      if (!cloud) parseAgentPermissionRules(config.runtimeProvider, permissionsDraft.rules);
       const runtimeConfig: UpdateAgentRuntimeConfig = {
+        ...(permissionsDirty ? { permissions: permissionsDraft } : {}),
         model: nullableText(modelDraft),
         reasoningEffort: nullableText(reasoningDraft),
       };
       const updated = await save({ expectedRevision: config.revision, runtimeConfig });
       const updatedOptions = getRuntimeConfigurationOptions(updated.runtimeProvider);
       setConfig(updated);
+      setPermissionsDraft(updated.runtimeConfig.permissions ?? DEFAULT_AGENT_PERMISSIONS);
       setModelDraft(updated.runtimeConfig.model ?? "");
       setModelSelection(modelSelectionFor(updated.runtimeConfig.model, updatedOptions.modelSuggestions));
       setReasoningSelection(updated.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
@@ -136,6 +149,7 @@ function RuntimeConfigurationEditor({
   }
 
   function discardRuntimeChanges() {
+    setPermissionsDraft(config.runtimeConfig.permissions ?? DEFAULT_AGENT_PERMISSIONS);
     setModelDraft(config.runtimeConfig.model ?? "");
     setModelSelection(modelSelectionFor(config.runtimeConfig.model, runtimeOptions.modelSuggestions));
     setReasoningSelection(config.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
@@ -212,6 +226,13 @@ function RuntimeConfigurationEditor({
                   </Select>
                 </div>
               </SettingsRow>
+              {cloud ? null : (
+                <PermissionsField
+                  provider={config.runtimeProvider}
+                  value={permissionsDraft}
+                  onChange={setPermissionsDraft}
+                />
+              )}
             </SettingsList>
             {runtimeDirty ? (
               <SettingsSaveActions

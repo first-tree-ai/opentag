@@ -14,7 +14,7 @@ export function buildProviderOutboxInstructions(options: ProviderOutboxInstructi
     `The IM participant is a separate audience. The official ${providerCommand} CLI is your outbox and the only path from this Turn to that audience.`,
     "The console addresses OpenTag; running the provider CLI performs the provider action. Describing a reply, reaction, or proactive message in your output only records it in OpenTag; it does not deliver it.",
     options.actionInstruction,
-    `To write to this ${options.provider} conversation, load the credentials from $OPENTAG_PROVIDER_ENV_FILE in your shell, then use the official ${providerCommand} CLI directly.`,
+    `To write to this ${options.provider} conversation, run the official ${providerCommand} CLI directly. The launcher loads this Turn's credentials automatically; do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands.`,
     ...providerBodyInstructions(options.provider),
     "OpenTag has no message send, reply, or reaction interface, and you do not report provider send results to OpenTag.",
     "Use the provider-native identifiers below. Do not substitute an OpenTag Session or message ID.",

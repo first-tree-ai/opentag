@@ -478,7 +478,8 @@ describe("migration 0052 upgrade path (M04)", () => {
         const [journalRow] = await sql<{ count: string }[]>`
           select count(*)::text as count from drizzle.__drizzle_migrations
         `;
-        expect(Number(journalRow?.count)).toBe(PRE_SCHEDULES_LAST_INDEX + 2);
+        const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as Journal;
+        expect(Number(journalRow?.count)).toBe(journal.entries.length);
       });
     } finally {
       await rm(truncated, { force: true, recursive: true });

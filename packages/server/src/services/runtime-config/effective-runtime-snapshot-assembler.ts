@@ -9,11 +9,12 @@ import {
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { agentRuntimeConfigs, agents, imBindings, sessions } from "../../db/schema/index.js";
+import { agentRuntimeConfigs, agents, computers, imBindings, sessions } from "../../db/schema/index.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "./errors.js";
 import { isServerAdmittedAgentRuntimeProvider, serverAgentRuntimeProviderPolicy } from "./provider-admission.js";
 
 interface EffectiveRuntimeSnapshotAuthority {
+  computerKind?: "local" | "cloud";
   agentStatus: string;
   agentId: string;
   agentName: string;
@@ -55,7 +56,7 @@ export class EffectiveRuntimeSnapshotAssembler {
     if (!isServerAdmittedAgentRuntimeProvider(authority.runtimeProvider)) {
       throw new EffectiveRuntimeSnapshotAssemblerError("UNSUPPORTED_PROVIDER");
     }
-    const providerPolicy = serverAgentRuntimeProviderPolicy(authority.runtimeProvider);
+    const providerPolicy = serverAgentRuntimeProviderPolicy(authority.runtimeProvider, authority.computerKind);
     if (authority.runtimeConfig === null) {
       throw new EffectiveRuntimeSnapshotAssemblerError("RUNTIME_CONFIG_MISSING");
     }
@@ -80,6 +81,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       // The exact rendered platform string, so a slug change produces a new Agent revision.
       platformInstructions,
       config.instructions,
+      config.permissions,
       normalizeContextTrees(config.contextTrees),
       authority.agentId,
       "empty_on_create",
@@ -125,7 +127,10 @@ export class EffectiveRuntimeSnapshotAssembler {
         platform: platformInstructions,
         agent: config.instructions,
       },
-      execution: providerPolicy.execution,
+      execution: {
+        ...providerPolicy.execution,
+        ...(providerPolicy.execution.approvalPolicy === "on-request" ? { permissions: config.permissions } : {}),
+      },
       workspace: { workspaceId: authority.agentId, mode: "empty_on_create", sharing: "agent" },
       ...(maxDurationMs !== null ? { budget: { maxDurationMs } } : {}),
     });
@@ -159,15 +164,19 @@ async function loadAuthority(
       configReasoningEffort: agentRuntimeConfigs.reasoningEffort,
       configInstructions: agentRuntimeConfigs.instructions,
       configMaxDurationMs: agentRuntimeConfigs.maxDurationMs,
+      configPermissions: agentRuntimeConfigs.permissions,
+      computerKind: computers.kind,
     })
     .from(sessions)
     .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
     .innerJoin(agents, eq(agents.id, imBindings.agentId))
+    .innerJoin(computers, eq(computers.id, agents.computerId))
     .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
     .where(eq(sessions.id, sessionId))
     .limit(1);
   if (!row) return undefined;
   return {
+    computerKind: row.computerKind,
     agentStatus: row.agentStatus,
     agentId: row.agentId,
     agentName: row.agentName,
@@ -182,6 +191,7 @@ async function loadAuthority(
             reasoningEffort: row.configReasoningEffort,
             instructions: row.configInstructions,
             maxDurationMs: row.configMaxDurationMs,
+            permissions: row.configPermissions,
           },
     runtimeProvider: row.runtimeProvider,
     sessionEndedAt: row.sessionEndedAt,

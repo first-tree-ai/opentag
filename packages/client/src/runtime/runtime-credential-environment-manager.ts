@@ -92,7 +92,7 @@ export interface PreparedMcpGatewayLaunch {
 export interface PreparedRuntimeCredentialEnvironment {
   /** Present in proxy mode; exact-execution cleanup token. */
   readonly executionId?: string;
-  /** Proxy mode: execution environment manifest merged by the Turn launcher. */
+  /** Execution environment manifest merged by the Turn launcher. */
   readonly environmentManifest?: string;
   readonly outboxContext?: RuntimeImOutboxContext;
   readonly path: string;

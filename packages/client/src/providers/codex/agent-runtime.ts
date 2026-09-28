@@ -46,6 +46,7 @@ import {
   assertSystemPrompt,
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
+import { prepareCodexPermissionRules } from "../native-permissions.js";
 import {
   CodexAppServerError,
   type CodexAppServerMessage,
@@ -104,8 +105,6 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "shell_snapshot",
   "--disable",
   "skill_mcp_dependency_install",
-  "--disable",
-  "tool_call_mcp_elicitation",
   "-c",
   "mcp_servers={}",
   "-c",
@@ -359,7 +358,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const request = this.#wireInteractions.get(response.requestId);
     /* v8 ignore next -- Base and the serial Codex envelope queue fence this map with the public interaction. */
     if (!request) throw new AgentRuntimeError("interaction_not_found", "Codex interaction is no longer pending");
-    const result = codexInteractionResult(request.method, response);
+    const result = codexInteractionResult(
+      request.method,
+      response,
+      requireRecord(request.params, `${request.method} has invalid params`),
+    );
     await this.#client.respondServerRequest(request.id, result);
     this.#wireInteractions.delete(response.requestId);
   }
@@ -423,7 +426,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const attachBudgetMs = Math.floor(this.#mcpAttachTimeoutMs * CODEX_MCP_ATTACH_BUDGET_SHARE);
     try {
       await this.#rebindThread(
-        codexMcpServersConfig(endpoint),
+        codexMcpServersConfig(endpoint, this.#policy.approvals),
         context,
         AbortSignal.any([deadline, AbortSignal.timeout(attachBudgetMs)]),
       );
@@ -934,6 +937,10 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       const shellHome = pathPrepend ? workspaceEnvironment?.OPENTAG_HOME : undefined;
       const managedArgs = [
         ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+        "-c",
+        'approvals_reviewer="user"',
+        "-c",
+        `projects.${JSON.stringify(cwd)}.trust_level="trusted"`,
         ...(shellHome ? ["-c", `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(shellHome)}`] : []),
       ];
       return new CodexAppServerProcess({
@@ -1127,6 +1134,8 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
   ): Promise<CodexAgentRuntime> {
     validateFactoryRequest(request);
     validateConfiguration(request.configuration);
+    if (request.policy.approvals !== "never" && request.policy.permissionRules !== undefined)
+      await prepareCodexPermissionRules(request.workspace.cwd, request.policy.permissionRules);
     const providerConfiguration = parseProviderConfiguration(request.configuration?.provider);
     const binding = mode === "resume" && "binding" in request ? request.binding : undefined;
     if (binding) assertBinding(binding, this.manifest);
@@ -1397,14 +1406,17 @@ function parseMcpGatewayConfiguration(value: unknown): CodexMcpGatewayEndpoint |
  * the launch arguments exclude them. Gateway tools are pre-approved as a server, matching the Claude
  * Code allow rule; Codex otherwise rejects every MCP call under the `never` approval policy.
  */
-function codexMcpServersConfig(endpoint: CodexMcpGatewayEndpoint | undefined): Record<string, unknown> {
+function codexMcpServersConfig(
+  endpoint: CodexMcpGatewayEndpoint | undefined,
+  approvals: AgentRuntimePolicy["approvals"] = "never",
+): Record<string, unknown> {
   if (!endpoint) return { mcp_servers: {} };
   return {
     mcp_servers: {
       [MCP_GATEWAY_SERVER_NAME]: {
         url: endpoint.url,
         http_headers: { Authorization: `Bearer ${endpoint.token}` },
-        default_tools_approval_mode: "approve",
+        default_tools_approval_mode: approvals === "never" ? "approve" : "writes",
         startup_timeout_sec: CODEX_MCP_STARTUP_TIMEOUT_SEC,
       },
     },
@@ -1473,8 +1485,8 @@ function codexInput(items: readonly { readonly type: "text"; readonly text: stri
 }
 
 function codexApprovalPolicy(policy: AgentRuntimePolicy["approvals"]): string {
-  if (policy === "on-request") return "onRequest";
-  if (policy === "unless-trusted") return "unlessTrusted";
+  if (policy === "on-request") return "on-request";
+  if (policy === "unless-trusted") return "untrusted";
   return "never";
 }
 
@@ -1538,12 +1550,21 @@ function codexInteractionRequest(
     return {
       requestId,
       kind: "approval",
-      title: request.method === "item/fileChange/requestApproval" ? "Approve file changes" : "Approve tool action",
+      title: {
+        "item/fileChange/requestApproval": "Approve file changes",
+        "item/commandExecution/requestApproval": "Approve command",
+        "item/permissions/requestApproval": "Approve permissions",
+      }[request.method],
       ...(typeof params.reason === "string" ? { message: params.reason } : {}),
       details,
     };
   }
-  if (request.method === "item/tool/requestUserInput" || request.method === "mcpServer/elicitation/request") {
+  if (
+    request.method === "item/tool/requestUserInput" ||
+    request.method === "tool/requestUserInput" ||
+    request.method === "mcpServer/elicitation/request"
+  ) {
+    if (mcpApprovalQuestion(params)) return { requestId, kind: "approval", title: "Approve MCP tool action", details };
     const message = typeof params.message === "string" ? params.message : undefined;
     return {
       requestId,
@@ -1556,21 +1577,53 @@ function codexInteractionRequest(
   return undefined;
 }
 
-function codexInteractionResult(method: string, response: AgentInteractionResponse): unknown {
-  if (response.kind === "approval") return codexApprovalResult(method, response);
+function mcpApprovalQuestion(params: Record<string, unknown>): { id: string } | undefined {
+  if (!Array.isArray(params.questions) || params.questions.length !== 1) return undefined;
+  const question = record(params.questions[0]);
+  const options = Array.isArray(question?.options) ? question.options.map((option) => record(option)?.label) : [];
+  if (
+    typeof question?.id !== "string" ||
+    question.isOther === true ||
+    options.length !== 3 ||
+    !["Accept", "Decline", "Cancel"].every((label) => options.includes(label))
+  )
+    return undefined;
+  return { id: question.id };
+}
+
+function codexInteractionResult(
+  method: string,
+  response: AgentInteractionResponse,
+  params: Record<string, unknown>,
+): unknown {
+  if (response.kind === "approval") return codexApprovalResult(method, response, params);
   return codexQuestionResult(method, response);
 }
 
-function codexApprovalResult(method: string, response: AgentApprovalResponse): unknown {
-  if (method === "item/permissions/requestApproval") {
-    if (response.decision !== "accept") return { permissions: [], scope: "turn" };
-    const value = record(response.value);
-    const permissions = Array.isArray(value?.permissions) ? value.permissions : [];
-    return { permissions, scope: response.scope === "runtime" ? "session" : "turn" };
+function codexApprovalResult(
+  method: string,
+  response: AgentApprovalResponse,
+  params: Record<string, unknown>,
+): unknown {
+  if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
+    const question = mcpApprovalQuestion(params);
+    return {
+      answers: question ? { [question.id]: { answers: [response.decision === "accept" ? "Accept" : "Decline"] } } : {},
+    };
   }
+  if (method === "item/permissions/requestApproval") return codexPermissionsResult(response, params);
   const decision =
     response.decision === "accept" ? (response.scope === "runtime" ? "acceptForSession" : "accept") : response.decision;
   return { decision };
+}
+
+function codexPermissionsResult(response: AgentApprovalResponse, params?: Record<string, unknown>): unknown {
+  if (response.decision !== "accept") return { permissions: record(params?.permissions) ? {} : [], scope: "turn" };
+  const value = record(response.value);
+  return {
+    permissions: value?.permissions ?? params?.permissions ?? [],
+    scope: response.scope === "runtime" ? "session" : "turn",
+  };
 }
 
 function codexQuestionResult(method: string, response: AgentQuestionResponse): unknown {

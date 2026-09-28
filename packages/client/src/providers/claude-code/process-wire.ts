@@ -41,6 +41,7 @@ export interface ClaudeCodeProcessResult {
 }
 
 export interface ClaudeCodeProcessClient {
+  send?(message: Readonly<Record<string, unknown>>): Promise<void>;
   execute(
     input: Readonly<Record<string, unknown>>,
     onMessage: (message: Readonly<Record<string, unknown>>) => void,
@@ -72,8 +73,12 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   #spawned = false;
   #terminalReceived = false;
   #signal?: AbortSignal;
+  readonly #permissionControl: boolean;
+  #pendingInput?: string;
+  #initializeTimer?: ReturnType<typeof setTimeout>;
 
   constructor(options: ClaudeCodeSpawnOptions) {
+    this.#permissionControl = options.args.includes("--permission-prompt-tool");
     this.#maxLineBytes = options.maxLineBytes ?? CLAUDE_CODE_MAX_LINE_BYTES;
     this.#maxStderrBytes = options.maxStderrBytes ?? CLAUDE_CODE_MAX_STDERR_BYTES;
     this.#logger = options.logger ?? createLogger("provider-claude-code");
@@ -134,7 +139,18 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       this.#fail(new ClaudeCodeProcessError("protocol", "Claude Code input exceeds the JSONL line limit"));
       return this.#execution;
     }
-    this.#child.stdin.write(line, (error) => {
+    const firstLine = this.#permissionControl
+      ? `${JSON.stringify({ type: "control_request", request_id: "opentag_initialize", request: { subtype: "initialize", hooks: null } })}\n`
+      : line;
+    if (this.#permissionControl) {
+      this.#pendingInput = line;
+      this.#initializeTimer = setTimeout(
+        () => this.#fail(new ClaudeCodeProcessError("protocol", "Claude Code permission initialization timed out")),
+        60_000,
+      );
+      this.#initializeTimer.unref();
+    }
+    this.#child.stdin.write(firstLine, (error) => {
       if (error) this.#fail(new ClaudeCodeProcessError("write", "Claude Code input could not be written"));
     });
     return this.#execution;
@@ -144,6 +160,19 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     if (this.#closed || this.#terminalReceived) return;
     this.#closing = true;
     signalWatchedProcess(this.#child, "SIGINT");
+  }
+
+  async send(message: Readonly<Record<string, unknown>>): Promise<void> {
+    if (this.#failure || this.#closed || this.#terminalReceived)
+      throw new ClaudeCodeProcessError("exited", "Claude Code is closed");
+    const line = `${JSON.stringify(message)}\n`;
+    if (Buffer.byteLength(line) > this.#maxLineBytes)
+      throw new ClaudeCodeProcessError("protocol", "Claude Code input exceeds the JSONL line limit");
+    await new Promise<void>((resolve, reject) =>
+      this.#child.stdin.write(line, (error) =>
+        error ? reject(new ClaudeCodeProcessError("write", "Claude Code response could not be written")) : resolve(),
+      ),
+    );
   }
 
   async close(graceMs = 1_000): Promise<void> {
@@ -183,29 +212,54 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
         this.#fail(new ClaudeCodeProcessError("protocol", "Claude Code emitted a non-object message"));
         return;
       }
-      try {
-        this.#listener?.(parsed);
-      } catch (error) {
-        this.#logger.debug(
-          { code: "protocol_listener_failed", error: String(error) },
-          "Claude Code protocol listener failed",
-        );
-        this.#fail(
-          error instanceof Error
-            ? error
-            : new ClaudeCodeProcessError("protocol", "Claude Code message listener failed"),
-        );
-        return;
-      }
-      if (parsed.type === "result") {
-        this.#terminalReceived = true;
-        this.#closing = true;
-        signalWatchedProcess(this.#child, "SIGTERM");
-      }
+      if (this.#handleInitialize(parsed)) continue;
+      this.#deliverMessage(parsed);
+      if (this.#failure) return;
     }
     if (this.#buffer.byteLength > this.#maxLineBytes) {
       this.#fail(new ClaudeCodeProcessError("protocol", "Claude Code output exceeds the JSONL line limit"));
     }
+  }
+
+  #deliverMessage(parsed: Record<string, unknown>): void {
+    try {
+      this.#listener?.(parsed);
+    } catch (error) {
+      this.#logger.debug(
+        { code: "protocol_listener_failed", error: String(error) },
+        "Claude Code protocol listener failed",
+      );
+      this.#fail(
+        error instanceof Error ? error : new ClaudeCodeProcessError("protocol", "Claude Code message listener failed"),
+      );
+      return;
+    }
+    if (parsed.type === "result") {
+      this.#terminalReceived = true;
+      this.#closing = true;
+      signalWatchedProcess(this.#child, "SIGTERM");
+    }
+  }
+
+  #handleInitialize(parsed: Record<string, unknown>): boolean {
+    if (
+      !this.#pendingInput ||
+      parsed.type !== "control_response" ||
+      !isRecord(parsed.response) ||
+      parsed.response.request_id !== "opentag_initialize"
+    )
+      return false;
+    clearTimeout(this.#initializeTimer);
+    if (parsed.response.subtype !== "success") {
+      this.#fail(new ClaudeCodeProcessError("protocol", "Claude Code permission initialization failed"));
+      return true;
+    }
+    const input = this.#pendingInput;
+    this.#pendingInput = undefined;
+    this.#child.stdin.write(input, (error) => {
+      if (error) this.#fail(new ClaudeCodeProcessError("write", "Claude Code input could not be written"));
+    });
+    return true;
   }
 
   #onStderr(chunk: Buffer): void {
@@ -255,6 +309,8 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   }
 
   #clearExecution(): void {
+    clearTimeout(this.#initializeTimer);
+    this.#pendingInput = undefined;
     this.#listener = undefined;
     this.#resolveExecution = undefined;
     this.#rejectExecution = undefined;

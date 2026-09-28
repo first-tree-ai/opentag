@@ -32,12 +32,12 @@ describe("Pi runtime policy", () => {
     expect(validatePiRuntimePolicy(snapshot({ networkAccess: false }))).toBe("configuration_unsupported");
   });
 
-  it("rejects a runtime-invalid approval policy instead of ignoring it", () => {
+  it("accepts local approvals using the permission extension", () => {
     expect(
       validatePiRuntimePolicy({
         ...snapshot(),
         execution: { approvalPolicy: "on-request", networkAccess: true },
       } as unknown as EffectiveRuntimeSnapshot),
-    ).toBe("configuration_unsupported");
+    ).toBeUndefined();
   });
 });

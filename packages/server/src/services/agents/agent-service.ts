@@ -18,6 +18,7 @@ import {
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
   normalizeContextTrees,
+  parseAgentPermissionRules,
   RUNTIME_MAX_DURATION_MS,
   runtimeUsageTotalTokens,
   type UpdateAgentRequest,
@@ -164,6 +165,7 @@ function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
     reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
     maxDurationMs: row.maxDurationMs,
+    permissions: row.permissions,
   });
 }
 
@@ -279,6 +281,41 @@ function addUsageTokenCounts(
   }
 }
 
+function assertLocalPermissions(kind: "local" | "cloud" | undefined, permissions: unknown) {
+  if (kind === "cloud" && permissions !== undefined)
+    throw new AgentServiceError(
+      "VALIDATION_ERROR",
+      "deterministic",
+      "Cloud agents always run with full permissions",
+      400,
+    );
+}
+
+function validatePermissionRules(provider: AgentRuntimeProvider, rules: string | undefined) {
+  if (rules === undefined) return;
+  try {
+    parseAgentPermissionRules(provider, rules);
+  } catch {
+    throw new AgentServiceError(
+      "VALIDATION_ERROR",
+      "deterministic",
+      "Permission rules must be valid native provider JSON",
+      400,
+    );
+  }
+}
+
+function mergeRuntimeConfig(current: AgentRuntimeConfig, input: UpdateAgentRequest["runtimeConfig"]) {
+  return resolveAgentRuntimeConfig({
+    permissions: input?.permissions ?? current.permissions,
+    contextTrees: current.contextTrees,
+    model: input?.model !== undefined ? input.model : current.model,
+    reasoningEffort: input?.reasoningEffort !== undefined ? input.reasoningEffort : current.reasoningEffort,
+    instructions: input?.instructions ?? current.instructions,
+    maxDurationMs: input?.maxDurationMs !== undefined ? input.maxDurationMs : current.maxDurationMs,
+  });
+}
+
 function runtimeConfigsEqual(
   left: AgentRuntimeConfigRow,
   right: ReturnType<typeof resolveAgentRuntimeConfig>,
@@ -289,7 +326,9 @@ function runtimeConfigsEqual(
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.instructions === right.instructions &&
-    left.maxDurationMs === right.maxDurationMs
+    left.maxDurationMs === right.maxDurationMs &&
+    left.permissions.approverExternalId === right.permissions.approverExternalId &&
+    left.permissions.rules === right.permissions.rules
   );
 }
 
@@ -302,6 +341,7 @@ function creationIntentFingerprint(input: CreateAgentRequest): string {
           maxDurationMs: runtimeConfig.maxDurationMs,
           model: runtimeConfig.model,
           reasoningEffort: runtimeConfig.reasoningEffort,
+          permissions: runtimeConfig.permissions,
         }
       : undefined;
   return createHash("sha256")
@@ -417,6 +457,7 @@ export class AgentService {
   }
 
   async #create(callerUserId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
+    validatePermissionRules(input.runtimeProvider, input.runtimeConfig?.permissions?.rules);
     const runtimeConfig = resolveAgentRuntimeConfig(input.runtimeConfig);
     const intentFingerprint = input.creationIntentId ? creationIntentFingerprint(input) : undefined;
     let result: { config: AgentAdminConfig; created: boolean };
@@ -427,6 +468,7 @@ export class AgentService {
           ? await this.#lockOwnedComputer(transaction, callerUserId, input.computerId)
           : undefined;
         assertCloudAgentBinding(this.#cloudIdentitiesEnabled, input.runtimeProvider, computer?.kind);
+        assertLocalPermissions(computer?.kind, input.runtimeConfig?.permissions);
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${callerUserId}:${input.name}`}, 0))`,
         );
@@ -901,6 +943,12 @@ export class AgentService {
     // Validate an explicit Cloud model choice BEFORE the mutation transaction: no Agent row lock is
     // held across the catalog's network read, and a rejected choice leaves no revision writes.
     await this.#assertExplicitCloudModelChoiceForAgent(callerUserId, agentId, input.runtimeConfig?.model);
+    if (input.runtimeConfig?.permissions) {
+      const scope = await this.#resolveAgentScope(this.#database, callerUserId, agentId);
+      const kind = scope.computerId ? await this.#computerKind(this.#database, scope.computerId) : "local";
+      assertLocalPermissions(kind, input.runtimeConfig.permissions);
+      validatePermissionRules(scope.agent.runtimeProvider, input.runtimeConfig.permissions.rules);
+    }
     const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
@@ -913,47 +961,10 @@ export class AgentService {
         );
       }
       const now = this.#now();
-      if (input.receiveMode !== undefined) {
-        const [imBinding] = await transaction
-          .select({
-            provider: imBindings.provider,
-            capabilities: imBindings.grantedCapabilities,
-          })
-          .from(imBindings)
-          .where(and(eq(imBindings.agentId, agentId), isNull(imBindings.disabledAt)))
-          .limit(1)
-          .for("update");
-        if (
-          input.receiveMode !== scope.agent.receiveMode &&
-          input.receiveMode === "all_message" &&
-          imBinding?.provider === "feishu"
-        ) {
-          const missingRequiredCapabilities = !hasRequiredFeishuTenantScopes(imBinding.capabilities);
-          if (missingRequiredCapabilities) {
-            throw new AgentServiceError(
-              "IM_BINDING_SCOPE_REAUTH_REQUIRED",
-              "deterministic",
-              "The IM binding must be reauthorized before enabling all-message receive mode",
-              409,
-            );
-          }
-        }
-      }
+      await this.#assertReceiveModeAllowed(transaction, agentId, input.receiveMode, scope.agent.receiveMode);
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
-      const nextRuntimeConfig = resolveAgentRuntimeConfig({
-        contextTrees: currentRuntimeProjection.contextTrees,
-        model: input.runtimeConfig?.model !== undefined ? input.runtimeConfig.model : currentRuntimeProjection.model,
-        reasoningEffort:
-          input.runtimeConfig?.reasoningEffort !== undefined
-            ? input.runtimeConfig.reasoningEffort
-            : currentRuntimeProjection.reasoningEffort,
-        instructions: input.runtimeConfig?.instructions ?? currentRuntimeProjection.instructions,
-        maxDurationMs:
-          input.runtimeConfig?.maxDurationMs !== undefined
-            ? input.runtimeConfig.maxDurationMs
-            : currentRuntimeProjection.maxDurationMs,
-      });
+      const nextRuntimeConfig = mergeRuntimeConfig(currentRuntimeProjection, input.runtimeConfig);
       const runtimeConfigChanged = !runtimeConfigsEqual(currentRuntimeConfig, nextRuntimeConfig);
       const [updated] = await transaction
         .update(agents)
@@ -967,15 +978,8 @@ export class AgentService {
         .returning();
       if (updated) {
         let runtimeConfig = currentRuntimeConfig;
-        if (runtimeConfigChanged) {
-          const [updatedRuntimeConfig] = await transaction
-            .update(agentRuntimeConfigs)
-            .set({ ...nextRuntimeConfig, revision: sql`nextval('runtime_config_revision_sequence')`, updatedAt: now })
-            .where(eq(agentRuntimeConfigs.agentId, agentId))
-            .returning();
-          if (!updatedRuntimeConfig) throw new Error("Agent runtime config update did not return a row");
-          runtimeConfig = updatedRuntimeConfig;
-        }
+        if (runtimeConfigChanged)
+          runtimeConfig = await this.#updateRuntimeConfig(transaction, agentId, nextRuntimeConfig, now);
         return { config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId) };
       }
 
@@ -989,6 +993,49 @@ export class AgentService {
       );
     });
     return result.config;
+  }
+
+  async #assertReceiveModeAllowed(
+    transaction: DatabaseTransaction,
+    agentId: string,
+    receiveMode: UpdateAgentRequest["receiveMode"],
+    currentMode: AgentAdminConfig["receiveMode"],
+  ): Promise<void> {
+    if (receiveMode === undefined) return;
+    const [binding] = await transaction
+      .select({ provider: imBindings.provider, capabilities: imBindings.grantedCapabilities })
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, agentId), isNull(imBindings.disabledAt)))
+      .limit(1)
+      .for("update");
+    if (
+      receiveMode !== currentMode &&
+      receiveMode === "all_message" &&
+      binding?.provider === "feishu" &&
+      !hasRequiredFeishuTenantScopes(binding.capabilities)
+    ) {
+      throw new AgentServiceError(
+        "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+        "deterministic",
+        "The IM binding must be reauthorized before enabling all-message receive mode",
+        409,
+      );
+    }
+  }
+
+  async #updateRuntimeConfig(
+    transaction: DatabaseTransaction,
+    agentId: string,
+    next: ReturnType<typeof resolveAgentRuntimeConfig>,
+    now: Date,
+  ): Promise<AgentRuntimeConfigRow> {
+    const [updated] = await transaction
+      .update(agentRuntimeConfigs)
+      .set({ ...next, revision: sql`nextval('runtime_config_revision_sequence')`, updatedAt: now })
+      .where(eq(agentRuntimeConfigs.agentId, agentId))
+      .returning();
+    if (!updated) throw new Error("Agent runtime config update did not return a row");
+    return updated;
   }
 
   async updateContextTreeSelection(

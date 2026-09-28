@@ -16,6 +16,19 @@ afterEach(async () => {
 });
 
 describe("PiRpcProcess", () => {
+  it("sends an uncorrelated extension UI response without allocating an RPC request", async () => {
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = fakeProcess(child);
+    await process.send({ type: "extension_ui_response", id: "permission-1", value: "Yes" });
+    expect(writes.map((line) => JSON.parse(line))).toEqual([
+      { type: "extension_ui_response", id: "permission-1", value: "Yes" },
+    ]);
+    child.emit("close", 0, null);
+    await process.close();
+  });
+
   it("exchanges correlated strict JSONL responses and events", async () => {
     const process = await rpcProcess("normal");
     const events: Readonly<Record<string, unknown>>[] = [];

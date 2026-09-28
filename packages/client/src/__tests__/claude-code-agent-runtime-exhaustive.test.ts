@@ -368,7 +368,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: { ...createRequest(() => undefined), workspace: { cwd: "/workspace", writableRoots: ["relative"] } },
         message: "writable roots",
       },
-      { request: withPolicy({ approvals: "on-request" }), message: "approvals=never" },
+      { request: withPolicy({ approvals: "unless-trusted" }), message: "approvals=never or on-request" },
       {
         request: withPolicy({ fileSystem: "read-only" }),
         message: "constrained filesystem",

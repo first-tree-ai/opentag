@@ -121,7 +121,7 @@ const CONTENT_HASH = "a".repeat(64);
 function messageRow(input: {
   id?: string;
   sourceSessionId?: string | null;
-  scheduledOrigin?: unknown;
+  scheduledOrigin?: postgres.JSONValue;
   targetSessionId: string;
   content?: string;
 }) {
@@ -148,7 +148,7 @@ function scheduleRow(input: {
   targetSessionId: string;
   name?: string;
   prompt?: string;
-  schedule?: unknown;
+  schedule?: postgres.JSONValue;
   timezone?: string;
   enabled?: boolean;
   nextTriggerAt?: Date | null;
@@ -213,7 +213,7 @@ describe("session_messages origin constraint (M03)", () => {
       for (const badOrigin of [null, "scheduled", 42, [] as unknown[]]) {
         const violation = await sql`
           insert into session_messages (id, target_session_id, content, content_hash, scheduled_origin)
-          values (${randomUUID()}, ${seed.threadSessionId}, 'Check the build.', ${CONTENT_HASH}, ${sql.json(badOrigin)})
+          values (${randomUUID()}, ${seed.threadSessionId}, 'Check the build.', ${CONTENT_HASH}, ${sql.json(badOrigin as postgres.JSONValue)})
         `.then(
           () => null,
           (cause: unknown) => cause,
@@ -329,7 +329,7 @@ describe("agent_schedules table contract (M02 database half)", () => {
         await insert(scheduleRow({ ...base, schedule: { kind: "cron", expression: "0 9 * * MON-FRI" } })),
       ).toBeNull();
 
-      const invalid: Array<{ label: string; schedule?: unknown; rawJsonb?: string }> = [
+      const invalid: Array<{ label: string; schedule?: postgres.JSONValue; rawJsonb?: string }> = [
         { label: "unknown kind", schedule: { kind: "daily", at: "2026-09-29T01:00:00.000Z" } },
         { label: "JSON null kind", schedule: { kind: null, at: "2026-09-29T01:00:00.000Z" } },
         { label: "at without time", schedule: { kind: "at" } },

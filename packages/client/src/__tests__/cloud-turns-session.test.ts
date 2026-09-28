@@ -8,11 +8,13 @@ import type {
   RunnerCloudDeliveryVerifiedFrame,
   RunnerCloudModelGrant,
   RunnerCloudSessionMessageRunFrame,
+  RunnerCloudSessionMessageRunFrameV2,
   RunnerCloudSessionMessageSettledAckFrame,
   RunnerCloudSessionMessageVerifiedFrame,
   RuntimeImOutboxContext,
   SessionCliProofGrant,
   SessionMessageDeliveryRequest,
+  SessionMessageDeliveryRequestV3,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudJournal } from "../runner/cloud-journal.js";
@@ -93,6 +95,21 @@ function sessionMessage(overrides: Partial<SessionMessageDeliveryRequest> = {}):
   };
 }
 
+function scheduledSessionMessage(message: SessionMessageDeliveryRequest): SessionMessageDeliveryRequestV3 {
+  const { sourceSessionId: _sourceSessionId, ...ordinary } = message;
+  return {
+    ...ordinary,
+    scheduledOrigin: {
+      scheduleId: randomUUID(),
+      scheduledFor: "2026-09-28T01:00:00.000Z",
+      timezone: "Asia/Shanghai",
+      name: "Daily check",
+    },
+    sentAt: "2026-09-28T01:00:05.000Z",
+    scheduleDetailUrl: "https://opentag.example.com/agents/agent-1?schedule=schedule-1",
+  };
+}
+
 function sessionRunFrame(
   message: SessionMessageDeliveryRequest,
   sessionKind: "internal" | "visible" = "internal",
@@ -105,6 +122,10 @@ function sessionRunFrame(
     sessionKind,
     ...(outboxContext ? { outboxContext } : {}),
   };
+}
+
+function scheduledRunFrame(message: SessionMessageDeliveryRequestV3): RunnerCloudSessionMessageRunFrameV2 {
+  return { type: "session:message:run", requestId: message.requestId, message, sessionKind: "internal" };
 }
 
 function sessionVerifiedFrame(requestId: string, model: RunnerCloudModelGrant | undefined = MODEL_GRANT) {
@@ -562,6 +583,50 @@ describe("CloudTurnRunner Session collaboration", () => {
       status: "recorded",
     });
     expect(await journal.read(h.message.messageId)).toBeUndefined();
+    await h.runner.close();
+  });
+
+  it("re-correlates scheduled display changes but refuses a changed occurrence snapshot", async () => {
+    const h = harness();
+    const scheduled = scheduledSessionMessage(h.message);
+    await h.runner.handleSessionMessageRun(scheduledRunFrame(scheduled));
+    const [first] = sessionReceiptsOf(h.sent);
+    if (first?.status !== "accepted") throw new Error("missing scheduled receipt");
+    const retried = {
+      ...scheduled,
+      requestId: randomUUID(),
+      sentAt: "2026-09-28T01:00:59.000Z",
+      scheduleDetailUrl: "https://opentag.example.com/agents/agent-1?schedule=updated",
+    };
+    await h.runner.handleSessionMessageRun(scheduledRunFrame(retried));
+    expect(sessionReceiptsOf(h.sent)[1]).toMatchObject({
+      requestId: retried.requestId,
+      turnId: first.turnId,
+      status: "accepted",
+    });
+
+    const origin = scheduled.scheduledOrigin;
+    if (!origin) throw new Error("missing scheduled origin");
+    const changedOrigins = [
+      { ...origin, scheduleId: randomUUID() },
+      { ...origin, scheduledFor: "2026-09-28T02:00:00.000Z" },
+      { ...origin, name: "Changed name" },
+      { ...origin, timezone: "America/New_York" },
+    ];
+    for (const scheduledOrigin of changedOrigins) {
+      await h.runner.handleSessionMessageRun(
+        scheduledRunFrame({ ...retried, requestId: randomUUID(), scheduledOrigin }),
+      );
+    }
+    expect(sessionReceiptsOf(h.sent)).toHaveLength(2);
+    expect(await journal.read(h.message.messageId)).toMatchObject({
+      requestId: retried.requestId,
+      turnId: first.turnId,
+      phase: "received",
+    });
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(retried.requestId));
+    await h.runner.waitForActive();
+    expect(h.workerInputs).toHaveLength(1);
     await h.runner.close();
   });
 

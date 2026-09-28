@@ -1,8 +1,8 @@
 # Web UI contract
 
 This document defines the interface that OpenTag Web feature code uses to build consistent, accessible product UI. It
-complements the implementation notes in [`apps/web/src/ui/KUMO.md`](../../apps/web/src/ui/KUMO.md). Kumo owns the visual
-primitives; this contract owns OpenTag's product semantics, composition rules, and acceptance criteria.
+complements the implementation notes in [`apps/web/src/ui/KUMO.md`](../../apps/web/src/ui/KUMO.md). Kumo supplies accessible
+primitives; [design.md](../../design.md) owns the visual rules and shared recipes; this contract owns OpenTag's product semantics, composition rules, and acceptance criteria.
 
 ## Ownership and dependency seam
 
@@ -16,7 +16,8 @@ The Web UI has one third-party implementation and two product-facing seams:
                                   └─ may reuse the semantic adapter
 ```
 
-- Kumo owns primitive appearance, spacing, radii, shadows, and baseline interaction behavior.
+- Kumo owns primitive semantics and baseline interaction behavior. OpenTag tokens and shared recipes own appearance,
+  type, spacing, radii, and elevation.
 - `src/ui/design-system.tsx` is the semantic adapter and the normal interface for product code. It owns OpenTag intent
   names, accessibility corrections, compatibility behavior, icon registration, and other rules that must remain
   consistent across callers.
@@ -38,7 +39,8 @@ Create an owned reusable block when either condition is true:
 - the same product composition has at least three real callers; or
 - the interaction or accessibility behavior is important and easy for callers to implement inconsistently.
 
-Do not create a wrapper that only renames props or forwards styling. A reusable block should hide meaningful behavior
+Shared primitive style wrappers belong in the adapter, preserving the complete control API. Do not create page-level
+wrappers that merely forward styling. A reusable block should hide meaningful behavior
 behind a smaller interface. Test it through that interface rather than through Kumo implementation details.
 
 ## Page and interaction states
@@ -110,10 +112,10 @@ or future work, but their presence does not make dark mode a supported acceptanc
 define complete surface, text, status, illustration, chart, and browser-level behavior before changing this policy.
 
 Feature code must use Kumo semantic utilities or the OpenTag variables defined at the theme seam. Raw color literals are
-limited to theme sources and explicitly reviewed module-owned styles. Brand green communicates brand or selection; it
+limited to theme sources and explicitly reviewed module-owned styles. Brand violet communicates brand or selection; it
 must not replace success, warning, danger, or informational status colors.
 
-Switches use brand green for the checked state and warm-neutral colors for the unchecked state. The semantic adapter
+Switches use brand violet for the checked state and warm-neutral colors for the unchecked state. The semantic adapter
 owns this rule for both standalone and grouped switches; feature pages do not choose a color variant. Kumo continues
 to own their size, shape, motion, and interaction behavior.
 
@@ -125,7 +127,8 @@ movement.
 
 `src/app.css` is the application stylesheet entry. Product layout and appearance normally use Kumo and Tailwind
 utilities. A module-owned stylesheet is an exception reserved for behavior that utilities cannot express clearly, such
-as attribute-driven state, measured layout stability, or a specialized terminal surface.
+as attribute-driven state or measured layout stability. Shared recipes and generated theme CSS are approved application
+seams documented in design.md.
 
 Every module-owned stylesheet must:
 

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
+import { designTokens } from "./design.tokens.js";
 import {
   Button,
   buttonClassName,
@@ -17,7 +18,6 @@ import {
   Switch,
   Tabs,
 } from "./design-system.js";
-import { kumoThemeTokens } from "./kumo-theme.tokens.js";
 
 describe("Kumo semantic adapter", () => {
   it.each(["standalone", "grouped"] as const)("preserves %s switch control, labels, refs, and busy state", (kind) => {
@@ -90,13 +90,13 @@ describe("Kumo semantic adapter", () => {
     );
     const primary = screen.getByRole("button", { name: "Create" });
     const danger = screen.getByRole("button", { name: "Delete" });
-    expect(primary.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#3a5c04)]");
+    expect(primary.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#5638d8)]");
     expect(danger.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg,#b42318)]");
     expect(primary.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe(
-      `var(--opentag-button-primary-bg, ${kumoThemeTokens.light.buttonBackground})`,
+      `var(--opentag-button-primary-bg, ${designTokens.light.action})`,
     );
     expect(danger.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe(
-      `var(--opentag-button-danger-bg, ${kumoThemeTokens.light.dangerButtonBackground})`,
+      `var(--opentag-button-danger-bg, ${designTokens.light.danger})`,
     );
   });
 

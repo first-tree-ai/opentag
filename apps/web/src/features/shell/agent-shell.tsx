@@ -8,6 +8,7 @@ import { useAgentIdentityList } from "../agents/agent-queries.js";
 import {
   agentContextTreeLink,
   agentDetailLink,
+  agentInstructionsLink,
   agentIntegrationsLink,
   agentMcpLink,
   agentSkillsLink,
@@ -27,6 +28,12 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
   const items = [
     { section: "home", icon: "overview", label: m.shell_overview(), link: agentDetailLink(agentId) },
     { section: "tasks", icon: "instructions", label: m.shell_tasks(), link: agentTasksLink(agentId) },
+    {
+      section: "instructions",
+      icon: "instructions",
+      label: m.agent_settings_instructions_title(),
+      link: agentInstructionsLink(agentId),
+    },
     {
       section: "context-tree",
       icon: "tree",
@@ -94,6 +101,7 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
 /** Preserve the reader's section across Agents, but never a Task or Settings detail. */
 function agentSwitchLink(pathname: string, agentId: string) {
   if (pathname.includes("/tasks")) return agentTasksLink(agentId);
+  if (pathname.includes("/instructions")) return agentInstructionsLink(agentId);
   if (pathname.includes("/context-tree")) return agentContextTreeLink(agentId);
   if (pathname.includes("/mcp")) return agentMcpLink(agentId);
   if (pathname.includes("/skills")) return agentSkillsLink(agentId);
@@ -196,7 +204,7 @@ function AgentSwitcher({
 export function isAgentSectionActive(
   pathname: string,
   agentId: string,
-  section: "home" | "context-tree" | "integrations" | "mcp" | "skills" | "tasks" | "usage",
+  section: "home" | "instructions" | "context-tree" | "integrations" | "mcp" | "skills" | "tasks" | "usage",
 ): boolean {
   const root = `/agents/${agentId}`;
   if (section === "home") return isAgentHome(pathname, agentId);

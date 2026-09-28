@@ -83,10 +83,7 @@ it("disconnects an offline, unbound Agent", async () => {
       onChanged={vi.fn()}
     />,
   );
-  click(
-    screen.getByRole("heading", { name: "Context Tree" }).parentElement?.parentElement as HTMLElement,
-    "Disconnect",
-  );
+  click(screen.getByRole("heading", { name: "Memory" }).parentElement?.parentElement as HTMLElement, "Disconnect");
   await waitFor(() =>
     expect(operation).toHaveBeenCalledWith(
       "agent-a",

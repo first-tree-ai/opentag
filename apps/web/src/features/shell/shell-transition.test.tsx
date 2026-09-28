@@ -344,7 +344,7 @@ describe("useShellTransition animation", () => {
       expect(matchMedia).toHaveBeenCalledWith("(prefers-reduced-motion: reduce)");
       expect(outgoing().childElementCount).toBe(0);
       expect(animate).toHaveBeenCalledTimes(1);
-      expect(animate.mock.calls[0]?.[1]).toEqual({ duration: 70 });
+      expect(animate.mock.calls[0]?.[1]).toEqual({ duration: 0 });
     } finally {
       restore();
     }

@@ -46,7 +46,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * `root` mirrors that project's own `root` in `vitest.coverage.config.ts`, because a `coverage.include`
  * glob is resolved against it -- see `projectCoverageInclude` below.
  */
-const PROJECTS = [
+export const COVERAGE_PROJECTS = [
   { name: "cli", root: "apps/cli", sources: "apps/cli/src" },
   { name: "web", root: "apps/web", sources: "apps/web/src" },
   { name: "shared", root: "packages/shared", sources: "packages/shared/src" },
@@ -553,10 +553,12 @@ function enforceFloors({ floorDocument, options, selected, summaries }) {
 
 function main() {
   const options = parseArguments(process.argv.slice(2));
-  const selected = options.project ? PROJECTS.filter((entry) => entry.name === options.project) : PROJECTS;
+  const selected = options.project
+    ? COVERAGE_PROJECTS.filter((entry) => entry.name === options.project)
+    : COVERAGE_PROJECTS;
 
   if (selected.length === 0) {
-    throw new Error(`Unknown project "${options.project}". Known: ${PROJECTS.map((p) => p.name).join(", ")}`);
+    throw new Error(`Unknown project "${options.project}". Known: ${COVERAGE_PROJECTS.map((p) => p.name).join(", ")}`);
   }
 
   assertRepositoryCoverageManifest();

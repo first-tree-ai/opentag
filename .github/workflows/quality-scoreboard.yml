@@ -40,8 +40,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/check-doc-mirrors.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
 
+  # Pull requests reuse unit-test timings inside CI; this job owns baseline measurements.
   scoreboard:
-    name: Generate Quality Scoreboard
+    name: Generate Baseline Quality Scoreboard
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

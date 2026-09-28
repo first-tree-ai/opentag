@@ -45,7 +45,7 @@ export function McpServerCard({
     <li
       id={`mcp-server-${entry.mcpServerId}`}
       tabIndex={-1}
-      className={`grid min-w-0 gap-3 rounded-lg border border-kumo-line bg-kumo-base p-5 outline-offset-4 ${highlighted ? "outline-2 outline-kumo-ring" : ""}`}
+      className={`grid min-w-0 gap-3 p-4 outline-offset-[-2px] ${highlighted ? "outline-2 outline-kumo-ring" : ""}`}
       data-ui="mcp-server-row"
     >
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 wrap-anywhere">

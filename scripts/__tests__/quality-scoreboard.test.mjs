@@ -110,3 +110,13 @@ test("renderMarkdown includes bundle and largest-file details", () => {
   assert.match(markdown, /app\.js/);
   assert.match(markdown, /README\.md/);
 });
+
+test("scoreboard labels reused shard timing instead of presenting it as a fresh baseline", () => {
+  const scoreboard = createScoreboard({
+    repositoryRoot: "/repo",
+    testDurationMs: 1234,
+    testDurationNote: "Slowest Node 24 workspace unit shard; reused from this CI run.",
+  });
+  assert.match(scoreboard.metrics.testDurationMs.note, /reused from this CI run/);
+  assert.match(renderMarkdown(scoreboard), /Slowest Node 24 workspace unit shard/);
+});

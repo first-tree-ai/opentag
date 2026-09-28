@@ -20,7 +20,11 @@ export function ShellMain({
         className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-5 md:px-8 md:py-8 [scrollbar-gutter:stable]"
         data-ui="content"
       >
-        <div className="@container/content mx-auto w-full min-w-0 max-w-5xl" data-ui="content-page-frame">
+        <div
+          className="@container/content mx-auto w-full min-w-0 max-w-5xl"
+          data-ui="content-page-frame"
+          style={{ maxWidth: "var(--ui-frame-width)" }}
+        >
           {children}
         </div>
       </main>

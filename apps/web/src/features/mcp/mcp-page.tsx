@@ -83,7 +83,10 @@ export function McpPage({ agentId }: { agentId: string }) {
       {mounted.isPending ? (
         <Loader />
       ) : servers.length ? (
-        <ul className="grid gap-3" data-ui="mcp-server-list">
+        <ul
+          className="ui-surface grid divide-y divide-kumo-line overflow-hidden bg-kumo-base"
+          data-ui="mcp-server-list"
+        >
           {servers.map((entry) => (
             <McpRow
               key={entry.mcpServerId}

@@ -90,7 +90,7 @@ function TaskEntry({
     >
       {!compact ? (
         <span
-          className="grid size-8 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+          className="grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-strong"
           aria-hidden="true"
         >
           {task.agent.displayName.charAt(0)}
@@ -272,7 +272,7 @@ function TaskCapturedReplyEntry({
       data-task-entry-id={entry.id}
     >
       <span
-        className="grid size-8 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+        className="grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-strong"
         aria-hidden="true"
       >
         {task.agent.displayName.charAt(0)}

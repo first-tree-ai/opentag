@@ -115,7 +115,7 @@ function BoundaryCard({ children, ...props }: { children: ReactNode } & HTMLAttr
   return (
     <section
       {...props}
-      className="app-error-boundary__card grid w-full gap-3 rounded-lg bg-kumo-base p-6 shadow-sm ring ring-kumo-line"
+      className="app-error-boundary__card grid w-full gap-3 rounded-xl bg-kumo-base p-6 ring ring-kumo-line"
     >
       {children}
     </section>

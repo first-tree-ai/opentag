@@ -12,6 +12,7 @@ const moduleSourceFiles = readdirSync(root, { recursive: true, withFileTypes: tr
 const sourceFiles = moduleSourceFiles.filter((file) => file.endsWith(".tsx"));
 const source = sourceFiles.map((file) => readFileSync(resolve(root, file), "utf8")).join("\n");
 const appCss = readFileSync(resolve(root, "app.css"), "utf8");
+const themeCss = readFileSync(resolve(root, "ui/theme.css"), "utf8");
 const main = readFileSync(resolve(root, "main.tsx"), "utf8");
 const viteConfig = readFileSync(resolve(root, "..", "vite.config.ts"), "utf8");
 const productModules = moduleSourceFiles
@@ -120,10 +121,10 @@ describe("Kumo integration contract", () => {
   });
 
   it("keeps generic Kumo surfaces neutral and reserves brand soft for selection", () => {
-    expect(appCss).toContain("--color-kumo-recessed: var(--surface-recessed)");
-    expect(appCss).toContain("--color-kumo-tint: var(--surface-tint)");
-    expect(appCss).toContain("--color-kumo-fill-hover: var(--surface-hover)");
-    expect(appCss).not.toMatch(/--color-kumo-(?:recessed|tint|fill-hover): var\(--brand-soft\)/);
+    expect(themeCss).toContain("--color-kumo-recessed: var(--surface-recessed)");
+    expect(themeCss).toContain("--color-kumo-tint: var(--surface-tint)");
+    expect(themeCss).toContain("--color-kumo-fill-hover: var(--surface-hover)");
+    expect(themeCss).not.toMatch(/--color-kumo-(?:recessed|tint|fill-hover): var\(--brand-soft\)/);
   });
 
   it("uses the semantic adapter and real Kumo controls", () => {
@@ -155,15 +156,14 @@ describe("Kumo integration contract", () => {
       "setup/components.tsx -> ./setup.css",
       // MCP owns bounded dialog geometry and scrolling; controls and palette stay at the Kumo seam.
       "features/mcp/mcp-form.tsx -> ./mcp.css",
-      "app.css -> @fontsource/dm-sans/400.css",
-      "app.css -> @fontsource/dm-sans/500.css",
-      "app.css -> @fontsource/dm-sans/600.css",
-      "app.css -> @fontsource/sora/600.css",
-      "app.css -> @fontsource/sora/700.css",
+      "app.css -> @fontsource/manrope/400.css",
+      "app.css -> @fontsource/manrope/500.css",
+      "app.css -> @fontsource/manrope/600.css",
+      "app.css -> @fontsource/manrope/700.css",
       "app.css -> @cloudflare/kumo/styles/tailwind",
       "app.css -> tailwindcss",
-      "app.css -> ./ui/kumo-theme.css",
-      "app.css -> ./ui/typography.css",
+      "app.css -> ./ui/theme.css",
+      "app.css -> ./ui/primitives.css",
     ]);
     const moduleImports = productModules.flatMap(({ imports, path }) =>
       imports.filter(isStylesheetSpecifier).map((specifier) => `${path} -> ${specifier}`),
@@ -180,10 +180,10 @@ describe("Kumo integration contract", () => {
     const allowedFiles = new Set([
       "app.css",
       "setup/setup.css",
-      "ui/kumo-theme.css",
-      "ui/kumo-theme.tokens.ts",
+      "ui/theme.css",
+      "ui/design.tokens.ts",
       // Button emphasis fallbacks must be literal because Tailwind only scans static class
-      // strings; theme-identity.test pins them to the canonical kumoThemeTokens.light values.
+      // strings; theme-identity.test pins them to the canonical designTokens.light values.
       "ui/design-system.tsx",
       // Google's provider identity has reviewed colors independent of the OpenTag semantic palette.
       "features/auth/google-sign-in.css",
@@ -235,9 +235,7 @@ describe("Kumo integration contract", () => {
     expect(shell).toContain('data-scope={agentId ? "agent" : "workspace"}');
     expect(shell).toContain('<AccountMenu placement={agentId ? "sidebar" : "dock"} />');
     expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto");
-    expect(shell).toContain(
-      'className="@container/content mx-auto w-full min-w-0 max-w-5xl" data-ui="content-page-frame"',
-    );
+    expect(shell).toContain('className="@container/content mx-auto w-full min-w-0 max-w-5xl"');
     expect(shell).not.toContain('data-ui="sidebar-content"');
   });
 

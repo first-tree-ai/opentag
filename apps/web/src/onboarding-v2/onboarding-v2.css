@@ -401,9 +401,9 @@
  * marker, never on the row geometry, so a fixed-height row cannot change shape with its state.
  */
 .otv2-readiness__line[data-state="passed"] .otv2-readiness__marker {
-  border-color: var(--brand-ink);
-  background: var(--brand-soft);
-  color: var(--brand-ink);
+  border-color: var(--color-kumo-success);
+  background: var(--color-kumo-success-tint);
+  color: var(--text-color-kumo-success);
 }
 
 .otv2-readiness__line[data-state="failed"] .otv2-readiness__marker,
@@ -431,18 +431,14 @@
   max-width: min(24rem, calc(100vw - 1.5rem));
   overflow: hidden;
   border-color: var(--border-strong);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--fg) 10%, transparent);
+  box-shadow: none;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition:
-    transform 160ms ease,
-    box-shadow 160ms ease,
-    background-color 160ms ease;
+  transition: background-color 120ms ease;
 }
 
 .otv2-lab-control__trigger:hover {
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--fg) 14%, transparent);
-  transform: translateY(-1px);
+  background: var(--surface-hover);
 }
 
 .otv2-lab-control__panel {
@@ -461,14 +457,12 @@
   top: 0;
   padding: 1.125rem;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--card) 94%, transparent);
-  backdrop-filter: blur(14px);
+  background: var(--card);
 }
 
 .otv2-lab-control__primary {
   padding: 1rem 1.125rem 1.125rem;
-  background:
-    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--brand) 12%, transparent), transparent 42%), var(--card);
+  background: var(--card);
 }
 
 .otv2-lab-control__segmented {
@@ -484,7 +478,7 @@
 
 .otv2-lab-control__segmented button[aria-pressed="true"] {
   background: var(--card);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--fg) 10%, transparent);
+  box-shadow: 0 0 0 1px var(--border);
 }
 
 .otv2-lab-control__next {

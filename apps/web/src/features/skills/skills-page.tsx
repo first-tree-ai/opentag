@@ -1,5 +1,5 @@
 import { SKILL_ERROR_CODES, type Skill, type SkillArchiveFormat } from "@opentag/shared/browser";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
@@ -213,7 +213,6 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
         onDelete={setDeleteTarget}
         skills={skills.data?.skills ?? []}
         storageAvailable={storageAvailable}
-        uploadAction={uploadAction}
       />
 
       {pendingReplace ? (
@@ -242,14 +241,12 @@ function SkillList({
   onDelete,
   skills,
   storageAvailable,
-  uploadAction,
 }: {
   hasData: boolean;
   isPending: boolean;
   onDelete: (skill: Skill) => void;
   skills: Skill[];
   storageAvailable: boolean;
-  uploadAction: ReactNode;
 }) {
   if (isPending)
     return (
@@ -264,22 +261,22 @@ function SkillList({
   if (skills.length === 0)
     return (
       <Empty
-        className="min-h-80 justify-center gap-4 rounded-lg bg-transparent px-4 py-10 text-sm [&_h2]:text-base"
-        icon={<Icon className="size-10 text-kumo-inactive" name="file" />}
+        className="ui-surface min-h-48 justify-center gap-3 bg-kumo-base px-4 py-6 text-sm"
         title={m.skills_empty()}
         description={m.skills_empty_description()}
         contents={
-          <div className="flex flex-col items-center gap-5 text-center">
-            <Text as="p" size="sm" variant="secondary">
-              {m.skills_upload_requirements()}
-            </Text>
-            {storageAvailable ? uploadAction : null}
-          </div>
+          <Text as="p" size="sm" variant="secondary">
+            {m.skills_upload_requirements()}
+          </Text>
         }
       />
     );
   return (
-    <ul aria-label={m.skills_list_aria()} className="grid gap-3" data-ui="skills-list">
+    <ul
+      aria-label={m.skills_list_aria()}
+      className="ui-surface grid divide-y divide-kumo-line overflow-hidden bg-kumo-base"
+      data-ui="skills-list"
+    >
       {skills.map((skill) => (
         <SkillRow
           downloadUrl={browserApi.agentSkillBundleUrl(skill.agentId, skill.id)}

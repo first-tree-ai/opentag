@@ -19,10 +19,11 @@ import {
   InputArea as KumoInputArea,
   type InputAreaProps as KumoInputAreaProps,
   type InputProps as KumoInputProps,
+  LayerCard as KumoLayerCard,
   Select as KumoSelect,
   Switch as KumoSwitch,
   Tabs as KumoTabs,
-  LayerCard,
+  Text as KumoText,
   Link,
   LinkButton,
   Loader,
@@ -34,7 +35,6 @@ import {
   SkeletonLine,
   Surface,
   Table,
-  Text,
   TimeseriesChart,
   Tooltip,
   TooltipProvider,
@@ -96,7 +96,7 @@ import {
   useRef,
 } from "react";
 import * as m from "../paraglide/messages.js";
-import { kumoThemeTokens } from "./kumo-theme.tokens.js";
+import { designTokens } from "./design.tokens.js";
 
 export {
   Banner,
@@ -109,7 +109,6 @@ export {
   Flow,
   KumoBadge as Badge,
   KumoSwitch,
-  LayerCard,
   Link,
   LinkButton,
   Loader,
@@ -121,16 +120,73 @@ export {
   SkeletonLine,
   Surface,
   Table,
-  Text,
   TimeseriesChart,
   Tooltip,
   TooltipProvider,
   useSidebar,
 };
 
-export const Input: typeof KumoInput = KumoInput;
-export const InputArea: typeof KumoInputArea = KumoInputArea;
-export const Select: typeof KumoSelect = KumoSelect;
+// Kumo's conditional generic props distribute differently through JSX. The implementation accepts
+// their complete union; retain the original generic call signature for product callers.
+export const Text = ((props: Parameters<typeof KumoText>[0]) => (
+  <KumoText
+    {...props}
+    data-text-size={props.size ?? "base"}
+    data-text-variant={props.variant ?? "body"}
+    DANGEROUS_className={classes("ui-text", props.DANGEROUS_className)}
+  />
+)) as typeof KumoText;
+
+export const Input: typeof KumoInput = forwardRef<HTMLInputElement, KumoInputProps>(function Input(
+  { className, size = "base", ...props },
+  ref,
+) {
+  return (
+    <KumoInput
+      {...props}
+      ref={ref}
+      size={size}
+      data-control-size={size}
+      className={
+        typeof className === "function"
+          ? (state) => classes("ui-control ring-kumo-interact", className(state))
+          : classes("ui-control ring-kumo-interact", className)
+      }
+    />
+  );
+});
+export const InputArea: typeof KumoInputArea = forwardRef<HTMLTextAreaElement, KumoInputAreaProps>(function InputArea(
+  { className, ...props },
+  ref,
+) {
+  return <KumoInputArea {...props} ref={ref} className={classes("ui-control ring-kumo-interact", className)} />;
+});
+function ProductSelect<T, Multiple extends boolean | undefined = false>(
+  props: Parameters<typeof KumoSelect<T, Multiple>>[0],
+) {
+  return (
+    <KumoSelect
+      {...props}
+      data-control-size={props.size ?? "base"}
+      className={classes("ui-control ring-kumo-interact", props.className)}
+    />
+  );
+}
+export const Select: typeof KumoSelect = Object.assign(ProductSelect, {
+  Option: KumoSelect.Option,
+  Group: KumoSelect.Group,
+  GroupLabel: KumoSelect.GroupLabel,
+  Separator: KumoSelect.Separator,
+});
+export const LayerCard: typeof KumoLayerCard = Object.assign(
+  forwardRef<HTMLDivElement, ComponentPropsWithoutRef<typeof KumoLayerCard>>(function LayerCard(
+    { className, ...props },
+    ref,
+  ) {
+    return <KumoLayerCard {...props} ref={ref} className={classes("ui-surface", className)} />;
+  }),
+  { Primary: KumoLayerCard.Primary, Secondary: KumoLayerCard.Secondary },
+);
 export const Checkbox: typeof KumoCheckbox = KumoCheckbox;
 type SwitchProps = Omit<ComponentPropsWithoutRef<typeof KumoSwitch>, "variant">;
 type SwitchItemProps = Omit<ComponentPropsWithoutRef<typeof KumoSwitch.Item>, "variant">;
@@ -215,22 +271,19 @@ export function buttonClassName({
   size?: ButtonProps["size"];
   variant?: ButtonVariant;
 } = {}): string {
-  // Tailwind arbitrary properties must stay static strings, so the literal fallbacks below
-  // repeat the reviewed light palette from kumo-theme.tokens.ts; the theme identity test
-  // rejects any drift. The fallback keeps an emphasis button on an accessible surface even
-  // when no ancestor resolves the OpenTag token (for example a portal mounted outside the
-  // themed root, or third-party markup sitting above it).
+  // Flat fills also replace Kumo's decorative gradient endpoints. Literal fallbacks keep
+  // portal-mounted links usable when theme inheritance is unavailable; tests pin them to design.tokens.ts.
   return classes(
     buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
-    "justify-center",
+    "ui-button justify-center shadow-none",
+    size === "compact" && "ui-button--compact",
     variant === "primary" &&
-      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#3a5c04)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-gradient-end,#3a5c04)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-gradient-start,#4b7308)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring,#2f4a03)]",
+      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#5638d8)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-bg,#5638d8)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-bg,#5638d8)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-bg,#5638d8)]",
     variant === "danger" &&
-      "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg,#b42318)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-danger-gradient-end,#a61b13)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-danger-gradient-start,#c12c20)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-ring,#88180f)]",
+      "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg,#b42318)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-danger-bg,#b42318)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-danger-bg,#b42318)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-bg,#b42318)]",
     className,
   );
 }
-
 type EmphasisButtonStyle = CSSProperties & {
   "--kumo-button-emphasis-bg": string;
   "--kumo-button-emphasis-gradient-end": string;
@@ -238,33 +291,16 @@ type EmphasisButtonStyle = CSSProperties & {
   "--kumo-button-emphasis-ring": string;
 };
 
-/* Literal fallbacks come from the canonical light palette so the inline custom properties stay
- * as accessible as the themed value when the token itself cannot resolve. Dark scopes keep
- * working because a defined token always wins over the fallback. */
-const emphasisFallbacks = {
-  primary: {
-    bg: kumoThemeTokens.light.buttonBackground,
-    gradientEnd: kumoThemeTokens.light.buttonGradientEnd,
-    gradientStart: kumoThemeTokens.light.buttonGradientStart,
-    ring: kumoThemeTokens.light.buttonRing,
-  },
-  danger: {
-    bg: kumoThemeTokens.light.dangerButtonBackground,
-    gradientEnd: kumoThemeTokens.light.dangerButtonGradientEnd,
-    gradientStart: kumoThemeTokens.light.dangerButtonGradientStart,
-    ring: kumoThemeTokens.light.dangerButtonRing,
-  },
-} as const;
-
 function emphasisButtonStyle(variant: ButtonVariant): EmphasisButtonStyle | undefined {
   const intent = variant === "primary" ? "primary" : variant === "danger" ? "danger" : undefined;
   if (!intent) return undefined;
-  const fallback = emphasisFallbacks[intent];
+  const fallback = intent === "primary" ? designTokens.light.action : designTokens.light.danger;
+  const surface = `var(--opentag-button-${intent}-bg, ${fallback})`;
   return {
-    "--kumo-button-emphasis-bg": `var(--opentag-button-${intent}-bg, ${fallback.bg})`,
-    "--kumo-button-emphasis-gradient-end": `var(--opentag-button-${intent}-gradient-end, ${fallback.gradientEnd})`,
-    "--kumo-button-emphasis-gradient-start": `var(--opentag-button-${intent}-gradient-start, ${fallback.gradientStart})`,
-    "--kumo-button-emphasis-ring": `var(--opentag-button-${intent}-ring, ${fallback.ring})`,
+    "--kumo-button-emphasis-bg": surface,
+    "--kumo-button-emphasis-gradient-end": surface,
+    "--kumo-button-emphasis-gradient-start": surface,
+    "--kumo-button-emphasis-ring": surface,
   };
 }
 
@@ -273,9 +309,18 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   ref,
 ) {
   const emphasisStyle = emphasisButtonStyle(variant);
+  const shape = props.shape;
   const kumoProps: KumoButtonProps = {
     ...props,
-    className: buttonClassName({ className, size, variant }),
+    className: buttonClassName({
+      className: classes(
+        shape && shape !== "base" && "ui-button--icon",
+        shape === "circle" && "ui-button--round",
+        className,
+      ),
+      size,
+      variant,
+    }),
     size: size === "compact" ? "sm" : "base",
     style: emphasisStyle ? { ...style, ...emphasisStyle } : style,
     type,
@@ -332,10 +377,7 @@ export function Tabs({
 export function SettingsList({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div
-      className={classes(
-        "grid divide-y divide-kumo-line overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line",
-        className,
-      )}
+      className={classes("ui-surface grid divide-y divide-kumo-line overflow-hidden bg-kumo-base", className)}
       data-ui="settings-list"
     >
       {children}
@@ -399,6 +441,9 @@ export function Field({
   const isKumoControl =
     child?.type === KumoInputControl ||
     child?.type === KumoInputAreaControl ||
+    child?.type === Input ||
+    child?.type === InputArea ||
+    child?.type === Select ||
     child?.type === KumoSelect ||
     child?.type === KumoSelectControl;
   const labelledChildren =
@@ -536,7 +581,7 @@ export type KumoInputControlProps = Omit<InputHTMLAttributes<HTMLInputElement>, 
 
 export const KumoInputControl = forwardRef<HTMLInputElement, KumoInputControlProps>(
   function KumoInputControl(props, ref) {
-    return <KumoInput {...props} ref={ref} />;
+    return <Input {...props} ref={ref} />;
   },
 );
 
@@ -545,7 +590,7 @@ export type KumoInputAreaControlProps = TextareaHTMLAttributes<HTMLTextAreaEleme
 
 export const KumoInputAreaControl = forwardRef<HTMLTextAreaElement, KumoInputAreaControlProps>(
   function KumoInputAreaControl(props, ref) {
-    return <KumoInputArea {...props} ref={ref} />;
+    return <InputArea {...props} ref={ref} />;
   },
 );
 
@@ -606,13 +651,13 @@ export function KumoSelectControl({
     },
   };
   return (
-    <KumoSelect {...kumoProps}>
+    <Select {...kumoProps}>
       {normalizedOptions.map(({ option, value: optionValue }) => (
         <KumoSelect.Option disabled={option.props.disabled} key={optionValue} value={optionValue}>
           {option.props.children}
         </KumoSelect.Option>
       ))}
-    </KumoSelect>
+    </Select>
   );
 }
 
@@ -665,7 +710,7 @@ export function Dialog({
       }}
       role={role === "alertdialog" ? "alertdialog" : "dialog"}
     >
-      <KumoDialog className={classes("max-h-[min(90vh,42rem)] overflow-y-auto p-6", className)}>
+      <KumoDialog className={classes("ui-dialog max-h-[min(90vh,42rem)] overflow-y-auto p-6", className)}>
         <header className="mb-4 flex items-start justify-between gap-4">
           <div className="grid gap-1 outline-none" data-ui="dialog-heading" ref={headingRef} tabIndex={-1}>
             {eyebrow ? <span className="text-xs font-medium text-kumo-subtle">{eyebrow}</span> : null}

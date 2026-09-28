@@ -62,7 +62,8 @@ describe("Agent list creation order", () => {
     rerender(<AgentList agents={updatedAgents} />);
     expect(shownAgents()).toEqual(["Open Reviewer", "Open Renamed Helper"]);
     expect(screen.getByRole("link", { name: "Open Reviewer" })).toBe(originalRow);
-    expect(screen.getByText("100 tasks")).toBeTruthy();
+    expect(screen.getByText(/Working/)).toBeTruthy();
+    expect(screen.queryByText("100 tasks")).toBeNull();
 
     rerender(<AgentList agents={updatedAgents} key="reopened" />);
     expect(shownAgents()).toEqual(["Open Reviewer", "Open Renamed Helper"]);

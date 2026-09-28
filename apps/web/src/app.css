@@ -1,140 +1,71 @@
-@import "@fontsource/dm-sans/400.css";
-@import "@fontsource/dm-sans/500.css";
-@import "@fontsource/dm-sans/600.css";
-@import "@fontsource/sora/600.css";
-@import "@fontsource/sora/700.css";
+@import "@fontsource/manrope/400.css";
+@import "@fontsource/manrope/500.css";
+@import "@fontsource/manrope/600.css";
+@import "@fontsource/manrope/700.css";
 @import "@cloudflare/kumo/styles/tailwind";
 @import "tailwindcss";
-@import "./ui/kumo-theme.css";
-@import "./ui/typography.css";
+@import "./ui/theme.css";
+@import "./ui/primitives.css";
 @source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
 
-/* OpenTag brand tokens. Keep usage constraints next to the values so a new surface does not
- * accidentally turn an inaccessible accent into body copy.
- * The namespaced attribute is the theme identity: third-party code that rewrites the generic
- * data-theme or data-mode attributes must not be able to strip the OpenTag palette. */
-:root[data-opentag-theme="opentag"],
-[data-opentag-theme="opentag"] {
-  --brand: #8fdd14; /* logo green — fills, color blocks, icons ONLY; never a text color */
-  --brand-display: #649a0e; /* display green — text at >= 24px only (large headings) */
-  --brand-ink: #3a5c04; /* body-level green — green text at normal sizes uses this */
-  --brand-soft: #edf5dc; /* selected/current surfaces only; never a generic hover or stripe */
-  --bg: #f8f7f0; /* main app background (warm off-white, NOT pure white) */
-  --card: #fdfcf6; /* card / surface background */
-  --surface-elevated: #fbfaf4; /* raised surfaces between the canvas and cards */
-  --surface-recessed: #f0efe7; /* code, disabled, and inset surfaces */
-  --surface-tint: #f6f5ee; /* table stripes and quiet neutral emphasis */
-  --surface-hover: #eeede5; /* transient hover/pressed feedback */
-  --fg: #16211b; /* primary text */
-  --fg-2: #3a453e; /* secondary text */
-  --muted-fg: #626b60; /* muted text */
-  --border: #e0e2d3; /* default border */
-  --border-strong: #c9ccbb; /* strong border */
-  --dark: #0b101d; /* dark section background */
-  --on-dark: #f8f7f0; /* text on dark sections */
-}
-
-/* Kumo semantic base. These aliases make the application canvas, surfaces, text, and borders
- * inherit the OpenTag palette without changing Kumo component internals. */
-:root[data-opentag-theme="opentag"],
-[data-opentag-theme="opentag"] {
-  --color-kumo-canvas: var(--bg);
-  --color-kumo-elevated: var(--surface-elevated);
-  --color-kumo-recessed: var(--surface-recessed);
-  --color-kumo-base: var(--card);
-  --color-kumo-tint: var(--surface-tint);
-  --color-kumo-contrast: var(--fg);
-  --color-kumo-overlay: var(--card);
-  --color-kumo-control: var(--card);
-  --color-kumo-interact: var(--border-strong);
-  --color-kumo-fill: var(--border);
-  --color-kumo-fill-hover: var(--surface-hover);
-  --color-kumo-line: var(--border);
-  --color-kumo-hairline: var(--border);
-  --color-kumo-focus: var(--brand-ink);
-  --text-color-kumo-default: var(--fg);
-  --text-color-kumo-inverse: var(--on-dark);
-  --text-color-kumo-strong: var(--fg);
-  --text-color-kumo-subtle: var(--fg-2);
-  --text-color-kumo-inactive: var(--muted-fg);
-  --text-color-kumo-placeholder: var(--muted-fg);
-  --text-color-kumo-link: var(--brand-ink);
-}
-
-/* Select the supplied artwork from the app theme, including locally themed surfaces. The :root
- * default keeps the light artwork readable when the namespaced theme identity is missing. */
+/* Layout, artwork selection, and browser defaults. Product recipes live in ui/primitives.css. */
 :root,
 [data-opentag-mode="light"] {
   --opentag-logo-light-display: block;
   --opentag-logo-dark-display: none;
   --opentag-logo-text: var(--fg);
 }
-
 [data-opentag-mode="dark"] {
   --opentag-logo-light-display: none;
   --opentag-logo-dark-display: block;
-  --opentag-logo-text: var(--on-dark);
+  --opentag-logo-text: var(--fg);
 }
-
 .opentag-logo {
   display: inline-flex;
   align-items: center;
-  gap: 9px; /* Match the homepage brand lockup. */
+  gap: 9px;
   color: var(--opentag-logo-text);
   flex-shrink: 0;
   vertical-align: middle;
 }
-
 .opentag-logo--lockup {
   height: 3rem;
 }
-
 .opentag-logo--mark {
   height: 2rem;
 }
-
 .opentag-logo--wordmark {
   height: 1.75rem;
 }
-
 .opentag-logo > img {
   width: auto;
   height: 100%;
 }
-
-/* The homepage pairs a 26px mark with Sora 700 lettering at 19px. */
 .opentag-logo--lockup > img {
   width: 26px;
   height: 26px;
 }
-
 .opentag-logo__text {
-  font-family: "Sora", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--ui-font);
   font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1;
   white-space: nowrap;
 }
-
 .opentag-logo__light {
   display: var(--opentag-logo-light-display);
 }
-
 .opentag-logo__dark {
   display: var(--opentag-logo-dark-display);
 }
 
-/* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {
   color: var(--fg);
   background: var(--bg);
-  font-family:
-    "DM Sans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", ui-sans-serif, system-ui, -apple-system,
-    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--ui-font);
   font-synthesis: none;
 }
-
 html,
 body,
 #root {
@@ -142,7 +73,6 @@ body,
   min-width: 320px;
   min-height: 100%;
 }
-
 body {
   margin: 0;
   background: var(--bg);
@@ -150,49 +80,20 @@ body {
   font-size: 14px;
   line-height: 1.5;
 }
-
 #root {
   min-height: 100dvh;
 }
-
 .app-mobile-header {
   display: flex;
 }
-
 .app-error-boundary {
   min-height: 100%;
   place-items: center;
 }
-
 .app-error-boundary__card {
   width: 100%;
   max-width: 36rem;
   margin-inline: auto;
-}
-
-@media (min-width: 48rem) {
-  .app-mobile-header {
-    display: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto;
-  }
-}
-
-/* Both scopes allocate the same column. The empty surface can change bounds without
- * reflowing the content, while navigation controls retain their natural text size. */
-.app-workspace-shell {
-  --navigation-duration: 220ms;
-  --navigation-easing: cubic-bezier(0.2, 0, 0, 1);
-}
-
-.app-workspace-shell[data-scope="agent"] {
-  --navigation-duration: 260ms;
 }
 
 .app-home-link {
@@ -201,276 +102,159 @@ body {
   min-height: 2.75rem;
   align-items: center;
   gap: 0.75rem;
-  border-radius: 0.5rem;
+  border-radius: var(--ui-control-radius);
   padding: 0.5rem 0.75rem;
   color: var(--text-color-kumo-strong);
   font-weight: 500;
   white-space: nowrap;
 }
-
-.app-home-link:hover {
-  background: var(--color-kumo-fill-hover);
+.app-home-link:hover,
+.app-account-trigger:hover,
+.app-account-trigger[aria-expanded="true"] {
+  background: var(--surface-hover);
 }
-
 .app-home-link[aria-current="page"] {
   background: var(--brand-soft);
+  color: var(--text-color-kumo-brand);
 }
-
 .app-home-link:focus-visible,
 .app-account-trigger:focus-visible {
   outline: 2px solid var(--color-kumo-focus);
   outline-offset: -2px;
 }
-
 .app-global-navigation {
-  position: relative;
   display: flex;
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-  padding: 0.75rem 0.375rem;
+  padding: 0.75rem;
 }
-
 .app-global-navigation > :first-child {
   flex: 1;
 }
-
+.app-brand-mark {
+  display: flex;
+  min-height: 4rem;
+  align-items: center;
+  justify-content: center;
+}
 .app-agent-navigation {
-  position: relative;
   display: flex;
   min-height: 0;
   flex: 1;
   flex-direction: column;
 }
-
 .app-account-navigation {
-  position: relative;
-  border-top: 0;
+  margin-top: auto;
+  border-top: 1px solid var(--border);
   background: transparent;
 }
-
-.app-account-trigger:hover,
-.app-account-trigger[aria-expanded="true"] {
-  background: var(--color-kumo-fill-hover);
-}
-
-.app-account-trigger[aria-expanded="true"] .app-account-avatar {
-  background: var(--color-kumo-base);
-  box-shadow: 0 0 0 1px var(--color-kumo-line);
-}
-
 .app-account-menu {
   min-width: max(11rem, var(--anchor-width));
 }
-
 .app-account-menu,
 .app-agent-menu {
-  border: 1px solid var(--color-kumo-line);
-  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-surface-radius);
   padding: 0.375rem;
-  box-shadow:
-    0 4px 16px color-mix(in srgb, var(--fg) 8%, transparent),
-    0 1px 3px color-mix(in srgb, var(--fg) 4%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--fg) 8%, transparent);
 }
-
 .app-account-menu [role="menuitem"],
 .app-agent-menu [role="menuitem"] {
   min-height: 2.25rem;
-  border-radius: 0.5rem;
+  border-radius: var(--ui-control-radius);
   padding: 0.375rem;
 }
-
 .app-account-menu [role="menuitem"][data-highlighted],
 .app-agent-menu [role="menuitem"][data-highlighted]:not([aria-current="true"]) {
-  background: var(--color-kumo-fill-hover);
+  background: var(--surface-hover);
 }
-
 .app-account-menu [role="separator"],
 .app-agent-menu [role="separator"] {
   margin: 0.375rem;
 }
 
 @media (min-width: 48rem) {
-  .app-main {
-    margin-left: 0.5rem;
+  .app-mobile-header {
+    display: none;
   }
-
   .app-navigation[data-sidebar="sidebar"] {
-    width: 15rem;
-    height: calc(100% - 1.5rem);
-    margin: 0.75rem 0 0.75rem 0.75rem;
-    border: 0;
-    box-shadow: none;
-    background: transparent;
-  }
-
-  .app-navigation .app-navigation-container {
-    overflow: visible;
-    border: 0;
-    background: transparent;
-  }
-
-  .app-navigation-surface {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 15rem;
+    width: var(--sidebar-width);
     height: 100%;
-    border: 1px solid color-mix(in srgb, var(--color-kumo-line) 70%, transparent);
-    border-radius: 1rem;
-    background: var(--color-kumo-elevated);
-    box-shadow: 0 2px 6px color-mix(in srgb, var(--fg) 2%, transparent);
-    transition:
-      top var(--navigation-duration) var(--navigation-easing),
-      left var(--navigation-duration) var(--navigation-easing),
-      width var(--navigation-duration) var(--navigation-easing),
-      height var(--navigation-duration) var(--navigation-easing),
-      border-radius var(--navigation-duration) var(--navigation-easing),
-      border-color var(--navigation-duration) var(--navigation-easing),
-      background-color var(--navigation-duration) var(--navigation-easing),
-      box-shadow var(--navigation-duration) var(--navigation-easing);
+    margin: 0;
+    border: 0;
+    border-right: 1px solid var(--border);
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--card);
   }
-
-  .app-global-navigation,
-  .app-account-navigation {
-    position: absolute;
-    left: 0.375rem;
-    width: 14.25rem;
-    height: 2.75rem;
-    padding: 0;
-    transition:
-      top var(--navigation-duration) var(--navigation-easing),
-      width var(--navigation-duration) var(--navigation-easing),
-      left var(--navigation-duration) var(--navigation-easing);
+  .app-navigation .app-navigation-container {
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: var(--card);
   }
-
-  .app-global-navigation {
-    top: 0.375rem;
-  }
-
-  .app-account-navigation {
-    top: calc(100% - 3.125rem);
-  }
-
   .app-account-trigger {
     min-height: 2.75rem;
     padding-inline: 0.75rem;
   }
-
-  .app-agent-navigation {
-    position: absolute;
-    inset: 3.875rem 0 3.875rem;
-    opacity: 1;
-    transition: opacity 150ms ease-out 90ms;
-  }
-
-  .app-nav-label {
-    opacity: 1;
-    transition: opacity 150ms ease-out 90ms;
-  }
-
-  .app-workspace-shell[data-scope="workspace"] .app-navigation-surface {
-    top: calc(50% - 4rem);
-    left: 0.75rem;
-    width: 4rem;
-    height: 8rem;
-    border-color: var(--color-kumo-line);
-    border-radius: 1.25rem;
-    background: var(--color-kumo-base);
-    box-shadow: none;
-  }
-
-  .app-workspace-shell[data-scope="workspace"] .app-global-navigation,
-  .app-workspace-shell[data-scope="workspace"] .app-account-navigation {
-    left: 1.25rem;
-    width: 3rem;
-    height: 3rem;
-  }
-
   .app-workspace-shell[data-scope="workspace"] .app-global-navigation {
-    top: calc(50% - 3.5rem);
+    padding: 0.25rem 0.75rem;
   }
-
   .app-workspace-shell[data-scope="workspace"] .app-account-navigation {
-    top: calc(50% + 0.5rem);
+    padding: 0.5rem 0.75rem;
+    height: auto;
   }
-
   .app-workspace-shell[data-scope="workspace"] .app-agent-navigation {
-    opacity: 0;
-    visibility: hidden;
-    transition:
-      opacity 80ms ease-out,
-      visibility 0s 80ms;
+    display: none;
   }
-
   .app-workspace-shell[data-scope="workspace"] .app-nav-label {
-    opacity: 0;
-    width: 0;
-    flex: 0;
-    overflow: hidden;
-    transition: opacity 80ms ease-out;
+    display: none;
   }
-
   .app-home-link[data-compact="true"],
   .app-account-trigger[data-compact="true"] {
-    min-height: 3rem;
-    border-radius: 0.75rem;
+    min-height: 2.75rem;
+    border-radius: var(--ui-control-radius);
     padding-inline: 0.5rem;
   }
-
   .app-home-link[data-compact="true"] {
     justify-content: center;
     gap: 0;
   }
-
-  .app-home-link[data-compact="true"] .app-home-icon > svg {
-    width: 1.375rem;
-    height: 1.375rem;
-  }
-
   .app-account-trigger[data-compact="true"] > div {
     gap: 0;
     translate: none;
   }
-
   .app-account-trigger[data-compact="true"] .app-account-icon {
-    width: 2rem;
-    height: 2rem;
+    width: 1.75rem;
+    height: 1.75rem;
   }
-
   .app-account-trigger[data-compact="true"] .app-account-avatar {
     width: 1.75rem;
     height: 1.75rem;
   }
 }
-
 @media (max-width: 47.999rem) {
   .app-account-menu [role="menuitem"],
   .app-agent-menu [role="menuitem"] {
     min-height: 2.75rem;
   }
-
   .app-mobile-header .app-account-trigger {
     min-height: 2.75rem;
     padding: 0.375rem;
   }
-
   .app-navigation[data-mobile="true"] {
     margin: 0;
     border-radius: 0;
   }
-
-  .app-navigation-surface {
+  .app-brand-mark {
     display: none;
   }
 }
-
 @media (prefers-reduced-motion: reduce) {
-  .app-navigation-surface,
-  .app-global-navigation,
-  .app-account-navigation,
-  .app-agent-navigation,
-  .app-nav-label {
-    transition: none;
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
   }
 }

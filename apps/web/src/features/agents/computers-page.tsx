@@ -146,10 +146,7 @@ function FirstComputer({
   onConnected: () => void;
 }) {
   return (
-    <section
-      aria-labelledby="first-computer-heading"
-      className="grid gap-6 rounded-lg border border-kumo-line bg-kumo-base p-6"
-    >
+    <section aria-labelledby="first-computer-heading" className="grid gap-6 ui-surface bg-kumo-base p-6">
       <div className="grid gap-3">
         <span aria-hidden="true" className="grid size-12 place-items-center rounded-lg bg-kumo-tint">
           <Icon name="laptop" className="size-6" />

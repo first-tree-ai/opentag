@@ -33,7 +33,7 @@ export function LegacyAgentCapabilityPage({
       {(agent) => (
         <section className="grid gap-6">
           <AgentObjectHeader agent={agent} />
-          <div className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
+          <div className="grid gap-4 ui-surface bg-kumo-base p-4 ring ring-kumo-line">
             <header className="grid gap-2">
               <Text as="h2" variant="heading">
                 Agent {label} are not available here

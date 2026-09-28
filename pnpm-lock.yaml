@@ -80,12 +80,9 @@ importers:
       '@cloudflare/kumo':
         specifier: 2.13.1
         version: 2.13.1(patch_hash=49b076bbc7ddb6a0c227bf441dfd6747d73fe7783f3cbb8f5bf3bef774a94021)(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(echarts@6.1.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.6.5)
-      '@fontsource/dm-sans':
-        specifier: 5.3.0
-        version: 5.3.0
-      '@fontsource/sora':
-        specifier: 5.3.0
-        version: 5.3.0
+      '@fontsource/manrope':
+        specifier: 5.2.8
+        version: 5.2.8
       '@opentag/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -1270,11 +1267,8 @@ packages:
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
 
-  '@fontsource/dm-sans@5.3.0':
-    resolution: {integrity: sha512-lYJtMXXO28q1z+yz+z8XKd0s4hXaa9QdkETzkyD760sidCv5heI86weYA0sx0Nc4pAMAQTUuyf4gO44cYKKS9g==}
-
-  '@fontsource/sora@5.3.0':
-    resolution: {integrity: sha512-SqW3OpKxxfKvxDLPlbdrWf2KooPfbd+W3jaYn483o+Y/JrmU87vjFPNptDqwP428c3vY+gnranLhjcbRaXB0Jw==}
+  '@fontsource/manrope@5.2.8':
+    resolution: {integrity: sha512-gJHJmcuUk7qWcNCfcAri/DJQtXtBYqi9yKratr4jXhSo0I3xUtNNKI+igQIcw5c+m95g0vounk8ZnX/kb8o0TA==}
 
   '@google-cloud/common@8.1.0':
     resolution: {integrity: sha512-fusI7kgJ17G3v9DprG5FaU38bjm5U0AJ7qjHj+oD4uWMdVeIBftKTYUUXL8MPU/XYY5cRgAH0Eoy5debk/YRdA==}
@@ -6831,9 +6825,7 @@ snapshots:
 
   '@floating-ui/utils@0.2.12': {}
 
-  '@fontsource/dm-sans@5.3.0': {}
-
-  '@fontsource/sora@5.3.0': {}
+  '@fontsource/manrope@5.2.8': {}
 
   '@google-cloud/common@8.1.0':
     dependencies:

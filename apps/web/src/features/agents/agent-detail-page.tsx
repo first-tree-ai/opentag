@@ -119,7 +119,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   return (
     <section
-      className="grid rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      className="grid ui-surface bg-kumo-base p-4 ring ring-kumo-line"
       aria-label={m.agents_status_region()}
       data-ui="agent-status-overview"
     >

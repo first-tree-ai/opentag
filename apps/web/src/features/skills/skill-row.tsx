@@ -41,7 +41,7 @@ export function SkillRow({
   };
 
   return (
-    <li className="grid gap-3 rounded-lg border border-kumo-line p-4" data-ui="skill-row">
+    <li className="grid gap-3 p-4" data-ui="skill-row">
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2">
         <div className="min-w-0 wrap-anywhere">
           <Text as="h2" variant="heading">

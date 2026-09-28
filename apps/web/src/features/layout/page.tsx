@@ -27,7 +27,7 @@ export function Page({
 
 export function EmptyState({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line" data-ui="empty">
+    <section className="grid gap-2 ui-surface bg-kumo-base p-8 text-center ring ring-kumo-line" data-ui="empty">
       <Text as="h2" variant="heading">
         {title}
       </Text>

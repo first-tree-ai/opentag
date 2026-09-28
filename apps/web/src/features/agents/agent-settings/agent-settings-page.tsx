@@ -143,7 +143,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                       {label}
                     </Text>
                   ) : null}
-                  <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
+                  <div className="grid overflow-hidden ui-surface bg-kumo-base ring ring-kumo-line">
                     {agentSettingsSections
                       .filter((item) => item.group === group.key)
                       .map((item) => {

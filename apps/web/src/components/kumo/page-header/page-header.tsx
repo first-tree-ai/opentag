@@ -1,5 +1,6 @@
-import { cn, Tabs, Text } from "@cloudflare/kumo";
+import { cn, Tabs } from "@cloudflare/kumo";
 import type { ReactNode } from "react";
+import { Text } from "../../../ui/design-system.js";
 
 export const KUMO_PAGE_HEADER_VARIANTS = {
   spacing: {
@@ -70,7 +71,7 @@ export function PageHeader({
       {breadcrumbs ? <div className="border-b border-kumo-line">{breadcrumbs}</div> : null}
 
       {(title || description || (!tabs && children)) && (
-        <div className="flex flex-wrap items-start justify-between gap-4 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 flex-col gap-1">
             {eyebrow ? (
               <Text as="span" size="xs" variant="secondary">

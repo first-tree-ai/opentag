@@ -126,7 +126,8 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Everything ready");
     await waitFor(() => expect(document.querySelector('[data-ui="agent-setup-ready"]')).not.toBeNull());
-    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Set up Reviewer" })).toBeNull();
   });
 
   it("switches the production preview directly from the Screen control", async () => {

@@ -131,7 +131,7 @@ function McpServerList({
   if (isPending) return <Text variant="body">{m.common_loading()}</Text>;
   if (servers.length === 0) return <Text variant="secondary">{m.mcp_empty()}</Text>;
   return (
-    <ul className="grid gap-3" data-ui="mcp-server-list">
+    <ul className="ui-surface grid divide-y divide-kumo-line overflow-hidden bg-kumo-base" data-ui="mcp-server-list">
       {servers.map((entry) => (
         <McpRow agentId={agentId} entry={entry} key={entry.mcpServerId} onAction={onAction} onError={onError} />
       ))}

@@ -36,9 +36,9 @@
 - [国际化](./i18n.md)
 - [Web App 分析](./web-analytics.md)
 
-## 设计文档（英文）
+## 设计文档
 
-- [App design guide and reskin plan](../../design.md)
+- [应用设计指南](design.md)
 - [MCP Server integration](../design/mcp-server-integration.md)
 - [Web UI contract](../design/web-ui-contract.md)
 - [Doctor product specification](../design/doctor-product-spec.md)

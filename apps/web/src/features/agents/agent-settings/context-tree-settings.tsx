@@ -233,7 +233,8 @@ function RepositoryMode({
     <div className="flex flex-wrap gap-2">
       <Button
         type="button"
-        variant={activeMode === "connect" ? "primary" : "secondary"}
+        variant="ghost"
+        className={activeMode === "connect" ? "bg-(--brand-soft) text-kumo-link" : undefined}
         aria-pressed={activeMode === "connect"}
         disabled={pending}
         onClick={() => switchMode("connect")}
@@ -243,7 +244,8 @@ function RepositoryMode({
       {cloud ? null : (
         <Button
           type="button"
-          variant={activeMode === "create" ? "primary" : "secondary"}
+          variant="ghost"
+          className={activeMode === "create" ? "bg-(--brand-soft) text-kumo-link" : undefined}
           aria-pressed={activeMode === "create"}
           disabled={pending}
           onClick={() => switchMode("create")}

@@ -375,7 +375,7 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
   return (
     <section className="grid gap-4" aria-labelledby="agent-github-title" data-ui="agent-github-repositories">
       <div className="grid gap-1">
-        <Text as="h2" id="agent-github-title" variant="heading">
+        <Text as="h1" id="agent-github-title" variant="heading">
           {m.integrations_agent_github_title()}
         </Text>
         <Text as="p" variant="secondary">
@@ -636,7 +636,7 @@ function RepositoryRow({
   const canWrite = repository.permissions.push;
 
   return (
-    <li className="grid gap-3 rounded-lg border border-kumo-line p-4" data-ui="agent-github-repository">
+    <li className="ui-surface grid gap-3 bg-kumo-base p-4" data-ui="agent-github-repository">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="grid gap-1">
           <Text as="span">

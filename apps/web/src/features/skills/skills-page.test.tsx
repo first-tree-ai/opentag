@@ -94,11 +94,11 @@ describe("SkillsPage", () => {
     expect(await screen.findByText(/No Skills yet/)).toBeTruthy();
     expect(screen.getByText(".zip, .skill, .tar.gz, .tgz · Up to 16 MiB")).toBeTruthy();
     const chooseFile = vi.spyOn(fileInput(), "click");
-    fireEvent.click(screen.getAllByRole("button", { name: "Upload skill" })[1] as HTMLButtonElement);
+    fireEvent.click(screen.getByRole("button", { name: "Upload skill" }) as HTMLButtonElement);
     expect(chooseFile).toHaveBeenCalledOnce();
   });
 
-  it("keeps both upload entries disabled while hashing an archive", async () => {
+  it("keeps upload disabled while hashing an archive", async () => {
     stubList([]);
     const upload = vi
       .spyOn(browserApi, "uploadAgentSkill")

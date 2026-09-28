@@ -19,6 +19,7 @@ import {
   Tooltip,
   useSidebar,
 } from "../../ui/design-system.js";
+import { OpenTagLogo } from "../../ui/opentag-logo.js";
 import { AccountMenu } from "./account-menu.js";
 import { ShellMain } from "./shell-main.js";
 import { ShellMemoryProvider } from "./shell-memory.js";
@@ -29,6 +30,9 @@ const AgentNavigation = lazy(() => import("./agent-shell.js"));
 /** Keep one content track mounted; only the navigation surface changes scope. */
 export function AppShell() {
   const isMobile = useSyncExternalStore(subscribeViewport, mobileViewport, () => false);
+  const agentId = useRouterState({
+    select: (state) => agentIdFromPathname(state.resolvedLocation?.pathname ?? state.location.pathname),
+  });
   return (
     <ShellMemoryProvider>
       <SidebarProvider
@@ -36,7 +40,11 @@ export function AppShell() {
         collapsible={isMobile ? "icon" : "none"}
         defaultOpen
         mobileBreakpoint={768}
-        style={{ "--sidebar-width": "15rem" } as CSSProperties}
+        style={
+          {
+            "--sidebar-width": agentId || isMobile ? "var(--ui-navigation-width)" : "var(--ui-rail-width)",
+          } as CSSProperties
+        }
         variant="floating"
       >
         <WorkspaceShell />
@@ -72,7 +80,11 @@ function WorkspaceShell() {
           onKeyDown={isMobile ? containMobileFocus : undefined}
           fullScreenOnMobile
         >
-          <div aria-hidden="true" className="app-navigation-surface" />
+          {!agentId && (
+            <div className="app-brand-mark" aria-hidden="true">
+              <OpenTagLogo variant="mark" label="" />
+            </div>
+          )}
           <nav className="app-global-navigation" aria-label={m.shell_account_agents()}>
             <GlobalHome compact={!agentId && !isMobile} active={isHome} />
             {isMobile && <Sidebar.Close />}

@@ -1,0 +1,105 @@
+/* Shared OpenTag recipes. Only the semantic adapter attaches these classes. */
+.ui-text {
+  font-family: var(--ui-font);
+  line-height: 1.5;
+}
+.ui-text[data-text-variant^="mono"] {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+.ui-text[data-text-size="base"],
+.ui-text[data-text-size="sm"] {
+  font-size: 0.875rem;
+}
+.ui-text[data-text-size="xs"] {
+  font-size: 0.75rem;
+}
+.ui-text[data-text-size="lg"] {
+  font-size: 1rem;
+}
+.ui-text[data-text-size]:is(h1, h2, h3, h4, h5, h6) {
+  color: var(--fg);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.ui-text[data-text-size]:is(h1) {
+  font-size: var(--ui-page-title);
+  letter-spacing: -0.025em;
+}
+.ui-text[data-text-size]:is(h2) {
+  font-size: var(--ui-section-title);
+}
+.ui-text[data-text-size]:is(h3) {
+  font-size: 1rem;
+}
+.ui-text[data-text-size]:is(h4, h5, h6) {
+  font-size: 0.875rem;
+}
+.ui-button {
+  height: var(--ui-control-height);
+  border-radius: var(--ui-control-radius);
+  font-size: 0.875rem;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.ui-button--compact {
+  height: var(--ui-control-height-compact);
+}
+.ui-button--icon {
+  width: var(--ui-control-height);
+}
+.ui-button--compact.ui-button--icon {
+  width: var(--ui-control-height-compact);
+}
+.ui-button--round {
+  border-radius: 50%;
+}
+[data-opentag-theme="opentag"] .ui-button:hover:not(:disabled) {
+  --opentag-button-primary-bg: var(--opentag-button-primary-hover);
+  --opentag-button-danger-bg: var(--opentag-button-danger-hover);
+}
+[data-opentag-theme="opentag"] .ui-button:active:not(:disabled) {
+  --opentag-button-primary-bg: var(--opentag-button-primary-pressed);
+  transform: none;
+}
+.ui-control {
+  border-radius: var(--ui-control-radius);
+  font-size: 0.875rem;
+}
+.ui-control:not(textarea) {
+  min-height: var(--ui-control-height);
+}
+.ui-control[data-control-size="sm"],
+.ui-control[data-control-size="xs"] {
+  min-height: var(--ui-control-height-compact);
+}
+.ui-surface {
+  border-radius: var(--ui-surface-radius);
+  box-shadow: 0 0 0 1px var(--border);
+}
+.ui-dialog {
+  border-radius: var(--ui-dialog-radius);
+}
+.ui-button:focus-visible,
+.ui-control:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 2px;
+}
+@media (max-width: 47.999rem) {
+  .ui-text[data-text-size]:is(h1) {
+    font-size: var(--ui-page-title-compact);
+  }
+  .ui-button--icon {
+    min-width: 2.75rem;
+  }
+  .ui-button,
+  .ui-control[data-control-size]:not(textarea),
+  .ui-control:not(textarea) {
+    min-height: 2.75rem;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-button {
+    transition: none;
+  }
+}

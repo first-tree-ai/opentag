@@ -28,7 +28,7 @@ export function McpServerCard({
   const canInspectTools = entry.snapshot !== null;
 
   return (
-    <li className="grid min-w-0 gap-3 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="mcp-server-row">
+    <li className="grid min-w-0 gap-3 p-4" data-ui="mcp-server-row">
       <div className="grid min-w-0 gap-2">
         <div className="flex items-start justify-between gap-3">
           <div className="grid min-w-0 gap-1">

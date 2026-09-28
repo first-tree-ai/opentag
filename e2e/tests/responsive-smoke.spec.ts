@@ -30,6 +30,7 @@ test.describe("390px primary mobile width", () => {
     await expect(page.getByRole("heading", { name: "All Agents", exact: true })).toBeVisible();
     const trigger = page.getByRole("link", { name: "New Agent", exact: true });
     await expectWithinViewport(trigger);
+    await expect(trigger).toHaveCSS("min-height", "44px");
     await expectNoPageOverflow(page);
 
     await trigger.tap();
@@ -78,6 +79,9 @@ test.describe("1440px desktop width", () => {
     const action = page.getByRole("link", { name: "New Agent", exact: true });
     await expect(heading).toBeVisible();
     await expect(action).toBeVisible();
+    await expect(heading).toHaveCSS("font-size", "28px");
+    await expect(heading).toHaveCSS("font-family", /Manrope/);
+    await expect(action).toHaveCSS("height", "40px");
     await expectNoPageOverflow(page);
 
     const frame = page.locator('[data-ui="content-page-frame"]');

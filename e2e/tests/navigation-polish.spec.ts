@@ -84,12 +84,8 @@ internalToolsTest(
     await page.getByRole("menuitem", { name: "Internal tools" }).click();
     await expect(page).toHaveURL(/\/internal$/);
     await expect(page.getByRole("heading", { name: "Internal tools", exact: true })).toBeVisible();
-    const skills = page.getByRole("switch", { name: "Show Skills", exact: true });
-    await expect(skills).not.toBeChecked();
-    await skills.click();
-    await expect(skills).toBeChecked();
-    await expect(skills).toBeEnabled();
     const integrations = page.getByRole("switch", { name: "Show Integrations", exact: true });
+    await expect(integrations).not.toBeChecked();
     await integrations.click();
     await expect(integrations).toBeChecked();
     await expect(integrations).toBeEnabled();
@@ -98,9 +94,6 @@ internalToolsTest(
     await expect(page.getByRole("link", { name: "Integrations", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByRole("menuitem", { name: "Internal tools" }).click();
-    await skills.click();
-    await expect(skills).not.toBeChecked();
-    await expect(skills).toBeEnabled();
     await integrations.click();
     await expect(integrations).not.toBeChecked();
     await expect(integrations).toBeEnabled();

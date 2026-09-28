@@ -82,6 +82,8 @@ export default defineConfig({
     setupFiles: ["./src/__tests__/setup.ts"],
   },
   build: {
+    // Fonts must remain same-origin files: the server CSP intentionally disallows data: fonts.
+    assetsInlineLimit: (filePath) => (/\.woff2?$/i.test(filePath) ? false : undefined),
     rollupOptions: {
       output: {
         // Keep ECharts and its renderer attributable to one independently budgeted chunk.

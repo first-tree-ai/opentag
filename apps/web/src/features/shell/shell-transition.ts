@@ -153,7 +153,7 @@ function animateContent(node: HTMLElement, outgoing: HTMLDivElement | null, cros
 }
 
 function contentTiming(reduced: boolean, crossScope: boolean, scope: Scope): KeyframeAnimationOptions {
-  if (reduced) return { duration: 70 };
+  if (reduced) return { duration: 0 };
   return {
     duration: crossScope ? 150 : 120,
     delay: crossScope ? (scope === "agent" ? 90 : 60) : 0,

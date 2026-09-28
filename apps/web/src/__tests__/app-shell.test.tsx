@@ -40,7 +40,7 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     render(<App />);
     const pageHeading = await screen.findByRole("heading", { level: 1, name: "All Agents" });
-    expect(pageHeading.classList.contains("text-xl")).toBe(true);
+    expect(pageHeading.classList.contains("ui-text")).toBe(true);
     expect(window.location.pathname).toBe("/agents");
     expect(screen.queryByText("Infrastructure")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Agent runtime" })).toBeNull();
@@ -68,9 +68,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/currently working/)).toBeNull();
     expect(screen.queryByText("Choose an Agent to continue, or create a new one.")).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("@reviewer")).toBeNull();
-    expect(within(agentRow as HTMLElement).getByText("Last 30 days · IM tasks")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("32 tasks")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("428K tokens")).toBeTruthy();
+    expect(agentRow?.querySelector('[data-ui="agent-row-usage"]')).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("Tasks (30d)")).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("Tokens (30d)")).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("Last checked")).toBeNull();

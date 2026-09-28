@@ -64,7 +64,7 @@ export function ComputerManagement({
           <section
             ref={cardRef}
             tabIndex={-1}
-            className="grid min-w-0 gap-5 rounded-lg border border-kumo-line bg-kumo-base p-5 outline-none focus-visible:outline-2 focus-visible:outline-kumo-focus wrap-anywhere"
+            className="grid min-w-0 gap-5 ui-surface bg-kumo-base p-5 outline-none focus-visible:outline-2 focus-visible:outline-kumo-focus wrap-anywhere"
             data-ui="computer-management"
           >
             <ComputerIdentity

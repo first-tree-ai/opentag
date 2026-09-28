@@ -7,7 +7,7 @@ implementation choices behind that interface.
 OpenTag uses Kumo `2.13.1` with Tailwind CSS v4. `src/app.css` is the only
 application stylesheet entry: it registers Kumo's distribution as a Tailwind
 source, imports Kumo's Tailwind styles before Tailwind itself, then loads the
-generated OpenTag theme and the small application boundary stylesheet.
+generated OpenTag theme and shared primitive recipes. The small shell/browser boundary follows in app.css.
 The authenticated application shell keeps its navigation and scroll viewport
 fluid. Its route outlet sits inside a centered `max-w-5xl` content frame, so
 Application pages share one 1024px maximum width while still filling the available
@@ -16,6 +16,9 @@ page grids respond to its available width instead of the viewport width that
 still includes the Sidebar. Login and onboarding live outside that shell and
 keep their task-specific layouts. Horizontal overflow belongs to the nearest
 table, code, or log surface rather than the application scroll viewport.
+
+The workspace has a full-height 72px rail, expanding to 240px for an Agent. Mobile uses the existing compact header
+and drawer without remounting route content.
 
 ## Component boundary
 
@@ -27,8 +30,8 @@ existing product vocabulary to Kumo primitives:
   to `ghost`.
 - `Field` delegates label, description, and error rendering to Kumo Field.
 - `StatusIndicator` uses Kumo Badge dot appearance. Informational status uses
-  the neutral semantic token; brand green is not used for operational state.
-- `Switch` and `Switch.Item` use brand green when checked and warm-neutral colors when
+  the neutral semantic token; brand violet is not used for operational state.
+- `Switch` and `Switch.Item` use brand violet when checked and warm-neutral colors when
   unchecked. The adapter replaces Kumo's fixed track colors with semantic tokens while
   preserving Kumo sizing, shape, motion, focus, disabled, and busy behavior. Color variants
   are not exposed to callers; operational status text keeps its own semantics.
@@ -37,7 +40,7 @@ existing product vocabulary to Kumo primitives:
 - `Icon` uses the Phosphor registry. Icon-only controls must have an accessible
   name or title.
 - `PageHeader` is the owned Kumo block in `src/components/kumo/page-header`.
-  It uses Kumo `Text` for semantic `h1` titles and secondary descriptions, and
+  It uses the adapter’s semantic `Text` for semantic `h1` titles and secondary descriptions, and
   keeps page actions in the header row when tabs are not present.
 - `Tabs`, `SettingsList`, and `SettingsRow` retain their semantic API while
   emitting Kumo tabs and semantic utility classes.
@@ -56,15 +59,13 @@ expose Kumo-specific types or composition to callers.
 
 ## Theme
 
-`kumo-theme.tokens.ts` is the source configuration. `kumo-theme.css` is its
-generated output and only overrides Kumo semantic variables. OpenTag keeps the
-existing green direction for brand emphasis while Kumo success, warning,
-danger, and info tokens remain independent. Generic recessed, tint, table-row,
-disabled, and hover surfaces stay in one warm-neutral family; `--brand-soft` is
-reserved for explicit selected and current states. Kumo lightens emphasis
-buttons at runtime, so the adapter replaces that mix with reviewed primary and
-danger gradients. The theme contrast test verifies every rendered gradient
-endpoint for normal-text WCAG AA, not only the source accent.
+[design.md](../../../../design.md) is the visual specification. `design.tokens.ts` is the canonical palette and measurement
+source; `pnpm theme:generate` produces `theme.css`. The repository check rejects stale output. `primitives.css`
+applies the shared Manrope hierarchy, control sizing, flat button fills, and surface radii through adapter classes.
+Violet is reserved for actions and selection. Kumo success, warning, danger, and info semantics remain independent.
+Generic recessed, tint, table-row, disabled, and hover surfaces stay neutral; `--brand-soft` is reserved for explicit
+selected/current states. The button adapter assigns the same reviewed fill to Kumo's gradient endpoints and ring,
+removing the decorative treatment. Tests verify normal text, action fills, and meaningful control boundaries.
 
 The theme uses explicit `data-opentag-theme="opentag"` and `data-opentag-mode="light|dark"`
 attributes, set statically on `<html>` in `index.html`. The namespacing keeps third-party code

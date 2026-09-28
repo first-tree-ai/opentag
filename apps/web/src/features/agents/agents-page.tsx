@@ -2,7 +2,6 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useFirstConversationReport } from "../../analytics/milestones.js";
 import { orderAgentIds } from "../../features/agent-list-order.js";
-import { formatCompactNumber } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import { slackConfigurationMessage } from "../../im/slack-configuration.js";
 import * as m from "../../paraglide/messages.js";
@@ -37,7 +36,7 @@ export function AgentsPage() {
     <Page
       action={
         <div data-ui="agents-page-action">
-          <Link className={buttonClassName({ variant: "secondary" })} search={{ action: "create" }} to="/agents/setup">
+          <Link className={buttonClassName({ variant: "primary" })} search={{ action: "create" }} to="/agents/setup">
             <Icon name="plus" weight="bold" /> {m.agents_new_agent()}
           </Link>
         </div>
@@ -72,7 +71,10 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
   return (
     <section className="grid gap-4" aria-label={m.agents_title()} data-ui="agent-list">
       <p className="text-sm text-kumo-subtle">{agentListSummary(agents.length, workingCount)}</p>
-      <div className="@container/agent-roster grid gap-3" data-ui="agent-roster">
+      <div
+        className="@container/agent-roster ui-surface grid divide-y divide-kumo-line overflow-hidden bg-kumo-base"
+        data-ui="agent-roster"
+      >
         {order.map((id) => {
           const agent = byId.get(id);
           return agent ? <AgentRow agent={agent} key={agent.id} /> : null;
@@ -88,7 +90,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article
-      className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[42rem]/agent-roster:grid-cols-[minmax(0,1.2fr)_minmax(11rem,1fr)_auto_1rem] @min-[42rem]/agent-roster:items-center"
+      className="relative grid gap-3 px-5 py-4 transition-colors hover:bg-kumo-tint focus-within:outline-2 focus-within:outline-offset-[-2px] focus-within:outline-kumo-focus @min-[42rem]/agent-roster:grid-cols-[minmax(0,1.5fr)_minmax(11rem,1fr)_1rem] @min-[42rem]/agent-roster:items-center"
       data-tone={status.tone}
       data-ui="agent-row"
     >
@@ -131,46 +133,17 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           </Link>
         ) : null}
       </div>
-      <AgentUsageSummary agent={agent} />
       <Icon
         className="absolute right-5 top-5 text-kumo-subtle @min-[42rem]/agent-roster:static @min-[42rem]/agent-roster:justify-self-end"
         name="chevron-right"
       />
       <Link
         aria-label={m.agents_open_agent({ name: agent.displayName })}
-        className="absolute inset-0 rounded-lg focus:outline-none"
+        className="absolute inset-0 focus:outline-none"
         data-ui="agent-row-open"
         {...agentDetailLink(agent.id)}
       />
     </article>
-  );
-}
-
-function AgentUsageSummary({ agent }: { agent: AgentListItem }) {
-  const tasks = formatCompactNumber(agent.usage.tasks);
-  const tokens = formatCompactNumber(agent.usage.tokens);
-  return (
-    <dl
-      className="grid gap-0.5 pl-13 @min-[42rem]/agent-roster:w-48 @min-[42rem]/agent-roster:justify-self-end @min-[42rem]/agent-roster:pl-0"
-      data-ui="agent-row-usage"
-    >
-      <dt className="text-xs text-kumo-subtle">{m.agents_list_usage_window({ days: agent.usage.windowDays })}</dt>
-      <dd className="flex items-baseline gap-1.5 whitespace-nowrap text-sm font-medium text-kumo-strong tabular-nums">
-        <span>
-          {agent.usage.tasks === 1
-            ? m.agents_list_usage_task_single({ count: tasks })
-            : m.agents_list_usage_task_plural({ count: tasks })}
-        </span>
-        <span aria-hidden="true" className="text-kumo-subtle">
-          ·
-        </span>
-        <span>
-          {agent.usage.tokens === 1
-            ? m.agents_list_usage_token_single({ count: tokens })
-            : m.agents_list_usage_token_plural({ count: tokens })}
-        </span>
-      </dd>
-    </dl>
   );
 }
 

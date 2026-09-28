@@ -144,7 +144,87 @@ jobs:
       - name: Test workspace packages
         env:
           TEST_SHARD: ${{ matrix.shard }}/3
-        run: pnpm exec turbo run test --concurrency=2 -- --shard="$TEST_SHARD"
+        run: node scripts/ci-test-timing.mjs "$RUNNER_TEMP/test-duration.json" "$TEST_SHARD" pnpm exec turbo run test --concurrency=2 -- --shard="$TEST_SHARD"
+
+      - name: Upload Node 24 test timing
+        if: always() && matrix.node == '24'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-test-timing-24-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-duration.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  quality-scoreboard:
+    name: Generate Quality Scoreboard
+    if: github.event_name == 'pull_request'
+    needs: [checks, unit-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Download CI test timings
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: ci-test-timing-24-*
+          path: ${{ runner.temp }}/ci-timings
+
+      - name: Summarize existing unit test execution
+        run: |
+          node scripts/ci-test-timing.mjs --summarize "$RUNNER_TEMP/test-duration.json" \
+            "$RUNNER_TEMP/ci-timings/ci-test-timing-24-1/test-duration.json" \
+            "$RUNNER_TEMP/ci-timings/ci-test-timing-24-2/test-duration.json" \
+            "$RUNNER_TEMP/ci-timings/ci-test-timing-24-3/test-duration.json"
+
+      - name: Build bundle metrics
+        run: pnpm build
+
+      - name: Collect open high-risk issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue list --state open --label high-risk --json number > "$RUNNER_TEMP/high-risk-items.json" || true
+
+      - name: Write quality scoreboard
+        run: |
+          node scripts/quality-scoreboard.mjs \
+            --json-path "$RUNNER_TEMP/quality-scoreboard.json" \
+            --markdown-path "$RUNNER_TEMP/quality-scoreboard.md" \
+            --test-duration-path "$RUNNER_TEMP/test-duration.json" \
+            --high-risk-path "$RUNNER_TEMP/high-risk-items.json" \
+            --revision "$GITHUB_SHA"
+
+      - name: Append scoreboard summary
+        run: cat "$RUNNER_TEMP/quality-scoreboard.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload scoreboard artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quality-scoreboard-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/quality-scoreboard.json
+            ${{ runner.temp }}/quality-scoreboard.md
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 90
 
   integration-tests:
     name: PostgreSQL Integration
@@ -778,6 +858,7 @@ jobs:
     needs:
       - checks
       - unit-tests
+      - quality-scoreboard
       - integration-tests
       - agent-runtime-coverage
       - node-compatibility
@@ -790,6 +871,8 @@ jobs:
     steps:
       - name: Verify required jobs
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          QUALITY_SCOREBOARD_RESULT: ${{ needs.quality-scoreboard.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           INTEGRATION_TESTS_RESULT: ${{ needs.integration-tests.result }}
@@ -801,6 +884,11 @@ jobs:
           WORKFLOW_VALIDATION_RESULT: ${{ needs.workflow-validation.result }}
           SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
         run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            test "$QUALITY_SCOREBOARD_RESULT" = success
+          else
+            test "$QUALITY_SCOREBOARD_RESULT" = skipped
+          fi
           for result in "$CHECKS_RESULT" "$UNIT_TESTS_RESULT" "$INTEGRATION_TESTS_RESULT" \
             "$AGENT_RUNTIME_COVERAGE_RESULT" "$NODE_COMPATIBILITY_RESULT" "$CLI_PACK_RESULT" "$CONTAINER_RESULT" \
             "$BROWSER_SMOKE_RESULT" "$WORKFLOW_VALIDATION_RESULT" "$SECRET_SCAN_RESULT"; do

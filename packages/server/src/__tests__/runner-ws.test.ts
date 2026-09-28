@@ -1241,6 +1241,7 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     expect((await bare.waitFor("auth:result")).ok).toBe(true);
     expect((await bare.waitFor("server:welcome")).sessionCollaborationVersion).toBeUndefined();
     expect(bareStack.fence.connectionForSandbox(sandbox.sandboxId)?.sessionCollaborationEligible).toBe(false);
+    expect(bareStack.fence.connectionForSandbox(sandbox.sandboxId)?.sessionCollaborationVersion).toBe(0);
     const messageId = randomUUID();
     bare.send({
       type: "session:message:received",
@@ -1273,6 +1274,7 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     expect((await client.waitFor("server:welcome")).sessionCollaborationVersion).toBe(1);
     const connection = stack.fence.connectionForSandbox(sandbox.sandboxId);
     expect(connection?.sessionCollaborationEligible).toBe(true);
+    expect(connection?.sessionCollaborationVersion).toBe(1);
 
     client.send({
       type: "session:message:received",
@@ -1298,6 +1300,22 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     client.socket.close();
     await client.closed;
     await vi.waitFor(() => expect(detachConnection).toHaveBeenCalledWith(connection?.connectionId));
+
+    // A v2 Runner receives the exact version it requested and the Cloud fence retains it. The
+    // v1 connection above stays v1; scheduled frames can later be gated on this exact number.
+    const v2 = await connectRunner(stack.address);
+    v2.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token: await stack.tokens.issue(claims),
+      cloudDeliveryVersion: 1,
+      sessionCollaborationVersion: 2,
+    });
+    expect((await v2.waitFor("auth:result")).ok).toBe(true);
+    expect((await v2.waitFor("server:welcome")).sessionCollaborationVersion).toBe(2);
+    expect(stack.fence.connectionForSandbox(sandbox.sandboxId)?.sessionCollaborationVersion).toBe(2);
+    v2.socket.close();
+    await v2.closed;
   });
 
   it("never lets a server heartbeat reach an E4 Runner ahead of its auth:result", async () => {

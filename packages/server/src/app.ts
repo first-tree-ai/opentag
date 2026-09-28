@@ -9,6 +9,12 @@ import {
   type InternalNavigationVisibilityService,
   registerAccountRoutes,
 } from "./api/account.js";
+import {
+  type AccountAgentScheduleRoutesOptions,
+  type RuntimeAgentScheduleRoutesOptions,
+  registerAccountAgentScheduleRoutes,
+  registerRuntimeAgentScheduleRoutes,
+} from "./api/agent-schedules.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import {
@@ -77,6 +83,7 @@ import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
 import type { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-service.js";
 import { DEFAULT_CLOUD_CAPACITY_LIMITS } from "./services/sandboxes/sandbox-capacity.js";
 import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
+import { ScheduleServiceError } from "./services/schedules/index.js";
 import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
 import { type SkillService, SkillServiceError } from "./services/skills/index.js";
@@ -180,6 +187,10 @@ export interface CreateAppOptions {
   runtimeSessions?: RuntimeSessionRoutesOptions;
   /** Session-proof-authenticated Agent self-configuration (`opentag agent self`). */
   runtimeAgent?: RuntimeAgentRoutesOptions;
+  /** Session-proof-authenticated Agent Schedule management (`opentag agent self schedule`). */
+  runtimeAgentSchedules?: RuntimeAgentScheduleRoutesOptions;
+  /** Account-facing Schedule list/show/pause/resume/delete; no Account create or update exists. */
+  agentSchedules?: AccountAgentScheduleRoutesOptions;
   runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
   /** Fixed runtime web routes; present only when the deployment enabled the web service. */
   runtimeWeb?: RuntimeWebRoutesOptions;
@@ -226,6 +237,7 @@ type AccountFacingError =
   | SandboxServiceError
   | McpServiceError
   | GitHubConnectionServiceError
+  | ScheduleServiceError
   | SkillServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
@@ -240,6 +252,7 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof SandboxServiceError ||
     error instanceof McpServiceError ||
     error instanceof GitHubConnectionServiceError ||
+    error instanceof ScheduleServiceError ||
     error instanceof SkillServiceError
   );
 }
@@ -473,10 +486,11 @@ export function safeInboundRequestId(header: string | string[] | undefined): str
 /** Routes authenticated by the Session CLI proof rather than an Account or machine credential. */
 function registerSessionProofRoutes(
   app: FastifyInstance,
-  options: Pick<CreateAppOptions, "runtimeAgent" | "runtimeSessions">,
+  options: Pick<CreateAppOptions, "runtimeAgent" | "runtimeAgentSchedules" | "runtimeSessions">,
 ): void {
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeAgent) registerRuntimeAgentRoutes(app, options.runtimeAgent);
+  if (options.runtimeAgentSchedules) registerRuntimeAgentScheduleRoutes(app, options.runtimeAgentSchedules);
 }
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -796,6 +810,7 @@ function registerAvailableAccountRoutes(
   if (
     !(
       options.agentService ||
+      options.agentSchedules ||
       options.cloudAvailability ||
       options.cloudModelCatalog ||
       options.taskService ||
@@ -809,6 +824,9 @@ function registerAvailableAccountRoutes(
   )
     return;
   const cloudModelCatalog = options.cloudModelCatalog;
+  if (options.agentSchedules) {
+    registerAccountAgentScheduleRoutes(app, authService, { ...options.agentSchedules, authOptions });
+  }
   registerAccountRoutes(app, authService, {
     ...(options.cloudAvailability ? { cloudAvailability: options.cloudAvailability } : {}),
     ...(cloudModelCatalog ? { cloudModelOptions: () => cloudModelCatalog.list() } : {}),

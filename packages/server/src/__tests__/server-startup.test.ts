@@ -38,6 +38,9 @@ const state = vi.hoisted(() => ({
   workerOptions: undefined as unknown,
   workerStart: vi.fn(),
   workerStop: vi.fn(),
+  schedulerOptions: undefined as unknown,
+  schedulerStart: vi.fn(),
+  schedulerStop: vi.fn(),
   domainOptions: undefined as unknown,
   issueRuntimeCredentialGrant: vi.fn(),
   devAuthArgs: undefined as unknown,
@@ -286,6 +289,23 @@ vi.mock("../services/runtime-config/index.js", () => ({ EffectiveRuntimeSnapshot
 vi.mock("../services/setup/index.js", () => ({
   AccountSetupService: class {},
 }));
+vi.mock("../services/schedules/index.js", () => ({
+  ScheduleService: class {},
+  ScheduleServiceError: class extends Error {},
+  ScheduleScheduler: class {
+    constructor(options: unknown) {
+      state.schedulerOptions = options;
+    }
+    start() {
+      state.events.push("scheduler:start");
+      state.schedulerStart();
+    }
+    async stop() {
+      state.events.push("scheduler:stop");
+      await state.schedulerStop();
+    }
+  },
+}));
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
 import { startServer } from "../index.js";
@@ -441,6 +461,7 @@ describe("Server startup", () => {
       "feishu-setup:start",
       "feishu-connections:start",
       "worker:start",
+      "scheduler:start",
       "ready:application",
       "listen",
       "ready:listen",
@@ -562,8 +583,11 @@ describe("Server startup", () => {
     const app = state.app as { addHook: ReturnType<typeof vi.fn>; close(): Promise<void> };
     expect(app.addHook).toHaveBeenCalledWith("onClose", expect.any(Function));
     await app.close();
-    expect(state.events.slice(-6)).toEqual([
+    // The schedule scanner stops first: no new claims and no late hand-off frames once the
+    // Runtime and the database begin their own shutdown.
+    expect(state.events.slice(-7)).toEqual([
       "app:close",
+      "scheduler:stop",
       "worker:stop",
       "platform:close",
       "feishu-setup:stop",
@@ -685,8 +709,9 @@ describe("Server startup", () => {
     expect(process.exitCode).toBe(1);
     expect(app.close).toHaveBeenCalledTimes(1);
     expect(state.events).not.toContain("ready:listen");
-    expect(state.events.slice(-6)).toEqual([
+    expect(state.events.slice(-7)).toEqual([
       "app:close",
+      "scheduler:stop",
       "worker:stop",
       "platform:close",
       "feishu-setup:stop",

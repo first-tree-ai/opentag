@@ -9,14 +9,23 @@ export function cloudWorkerRuntime(request: RunnerCloudWorkerRequest) {
   return request.kind === "turn" ? request.delivery.runtime : request.message.runtime;
 }
 
-export function cloudWorkerInput(request: RunnerCloudWorkerRequest): AgentInput {
-  if (request.kind === "turn") return buildAgentInput(request.delivery);
-  if (request.sessionKind === "internal") return buildSessionMessageInput(request.message);
+export function cloudWorkerInput(request: RunnerCloudWorkerRequest, processedAt: Date = new Date()): AgentInput {
+  // The in-sandbox worker samples the processing clock when it actually constructs the input —
+  // after every Server-side queue wait — so scheduled and ordinary inputs alike carry the true
+  // processing time. It never enters the journaled message, a hash, or any durable state.
+  if (request.kind === "turn") return buildAgentInput(request.delivery, undefined, undefined, processedAt);
+  if (request.sessionKind === "internal")
+    return buildSessionMessageInput(request.message, "opentag", undefined, processedAt);
   if (!request.outboxContext) throw new Error("Visible Cloud Session collaboration requires outbox context");
-  return buildSessionMessageInput(request.message, "opentag", {
-    sessionKind: "visible",
-    outboxContext: request.outboxContext,
-  });
+  return buildSessionMessageInput(
+    request.message,
+    "opentag",
+    {
+      sessionKind: "visible",
+      outboxContext: request.outboxContext,
+    },
+    processedAt,
+  );
 }
 
 export function cloudWorkerTimeout(request: RunnerCloudWorkerRequest, now: number): number {

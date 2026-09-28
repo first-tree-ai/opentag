@@ -7,8 +7,8 @@ import {
   DirectImMessageDeliveryRequestSchema,
   type RuntimeImOutboxContext,
   RuntimeImOutboxContextSchema,
-  type SessionMessageDeliveryRequest,
-  SessionMessageDeliveryRequestSchema,
+  type SessionMessageDeliveryRequestV3,
+  SessionMessageDeliveryRequestV3Schema,
   type TurnReportRequest,
   TurnReportRequestSchema,
 } from "@opentag/shared";
@@ -79,7 +79,12 @@ const CloudJournalSessionEntrySchema = z
   .object({
     version: z.literal(CLOUD_JOURNAL_VERSION),
     kind: z.literal("session-message"),
-    message: SessionMessageDeliveryRequestSchema,
+    /*
+     * The v3 superset message contract: ordinary entries persisted before the scheduled branch
+     * existed parse unchanged (the ordinary branch is field-identical to the frozen v2 wire),
+     * and scheduled entries round-trip their origin snapshot and display metadata.
+     */
+    message: SessionMessageDeliveryRequestV3Schema,
     sessionKind: z.enum(["internal", "visible"]),
     outboxContext: RuntimeImOutboxContextSchema.optional(),
     inputHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -142,7 +147,7 @@ export interface CloudJournalDeliveryEntry {
 export interface CloudJournalSessionEntry {
   readonly kind: "session-message";
   /** The exact Session message the Server dispatched and this Runner journaled. */
-  readonly message: SessionMessageDeliveryRequest;
+  readonly message: SessionMessageDeliveryRequestV3;
   /** The target Session's actual role, carried from the dispatched run frame. */
   readonly sessionKind: "internal" | "visible";
   /** Nonsecret outbox context, present exactly for a visible target. */
@@ -205,15 +210,21 @@ export function computeCloudDeliveryInputHash(delivery: DirectImMessageDeliveryR
   return createHash("sha256").update(canonicalJson(delivery)).digest("hex");
 }
 
-/** Stable identity of one Session run-frame payload (message plus its target envelope). */
+/**
+ * Stable identity of one Session run-frame payload (message plus its target envelope).
+ *
+ * The transport `requestId` was always excluded (a retry of the same logical message under a
+ * fresh request id must still match). The scheduled branch additionally excludes the dynamic
+ * `sentAt` and the display-only `scheduleDetailUrl`; those keys never exist on an ordinary
+ * message, so an ordinary payload hashes byte-identically to the pre-scheduled algorithm and a
+ * scheduled payload hashes identically on first accept and on post-recovery re-dispatch.
+ */
 export function computeCloudSessionInputHash(input: {
-  message: SessionMessageDeliveryRequest;
+  message: SessionMessageDeliveryRequestV3;
   sessionKind: "internal" | "visible";
   outboxContext?: RuntimeImOutboxContext;
 }): string {
-  // The request id is the per-attempt correlation identity, not input: a retry of the same
-  // logical message under a fresh request id must still match the journaled entry's input.
-  const { requestId: _requestId, ...message } = input.message;
+  const { requestId: _requestId, sentAt: _sentAt, scheduleDetailUrl: _detailUrl, ...message } = input.message;
   return createHash("sha256")
     .update(
       canonicalJson({
@@ -252,7 +263,7 @@ export function assertCloudJournalScope(entry: CloudJournalEntry, scope: CloudJo
 
 /** One bounded Session-message record request; the message id is the durable entry key. */
 export interface CloudJournalSessionRecordInput {
-  readonly message: SessionMessageDeliveryRequest;
+  readonly message: SessionMessageDeliveryRequestV3;
   readonly sessionKind: "internal" | "visible";
   readonly outboxContext?: RuntimeImOutboxContext;
   readonly scope: CloudJournalScope;

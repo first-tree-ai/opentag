@@ -6,7 +6,7 @@ import type {
   RuntimeExecutionService,
   RuntimeExecutionSource,
 } from "@opentag/shared";
-import { RUNTIME_CAPABILITY, RUNTIME_SERVER_CAPABILITY_OFFERS } from "@opentag/shared";
+import { RUNTIME_CAPABILITY } from "@opentag/shared";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
@@ -177,8 +177,9 @@ function internalCollaborationAuthorized(
     snapshot.sessionKind === "internal" &&
     snapshot.computer.kind === "cloud" &&
     frame.source.kind === "session-message" &&
-    context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionCollaboration] ===
-      RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration].max
+    // Any negotiated Session-collaboration version qualifies: the capability's minimum (2) is the
+    // version that introduced Session messages; newer versions only widen the message vocabulary.
+    context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionCollaboration] !== undefined
   );
 }
 

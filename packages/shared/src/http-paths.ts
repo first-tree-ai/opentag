@@ -117,6 +117,20 @@ export const RUNTIME_SKILL_BUNDLE_TEMPLATE = `${RUNTIME_SKILLS_PATH}/:name/bundl
  * is always the one the proof resolves to, so a request cannot reach a different Agent.
  */
 export const RUNTIME_AGENT_PATH = `${API_V1_PREFIX}/runtime/agent`;
+/*
+ * Agent Schedules. The runtime prefix is Session-proof authenticated and never addressed by
+ * Agent id (the proof resolves the Agent); the Account prefix is scoped to an owned Agent and
+ * offers read/pause/resume/delete only.
+ */
+export const RUNTIME_AGENT_SCHEDULES_PATH = `${RUNTIME_AGENT_PATH}/schedules`;
+export const RUNTIME_AGENT_SCHEDULE_TEMPLATE = `${RUNTIME_AGENT_SCHEDULES_PATH}/:scheduleId`;
+export const RUNTIME_AGENT_SCHEDULE_PAUSE_TEMPLATE = `${RUNTIME_AGENT_SCHEDULE_TEMPLATE}/pause`;
+export const RUNTIME_AGENT_SCHEDULE_RESUME_TEMPLATE = `${RUNTIME_AGENT_SCHEDULE_TEMPLATE}/resume`;
+export const RUNTIME_AGENT_SCHEDULE_PREVIEW_PATH = `${RUNTIME_AGENT_SCHEDULES_PATH}/preview`;
+export const AGENT_SCHEDULES_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/schedules`;
+export const AGENT_SCHEDULE_TEMPLATE = `${AGENT_SCHEDULES_TEMPLATE}/:scheduleId`;
+export const AGENT_SCHEDULE_PAUSE_TEMPLATE = `${AGENT_SCHEDULE_TEMPLATE}/pause`;
+export const AGENT_SCHEDULE_RESUME_TEMPLATE = `${AGENT_SCHEDULE_TEMPLATE}/resume`;
 export const RUNTIME_AGENT_MCP_SERVERS_PATH = `${RUNTIME_AGENT_PATH}/mcp-servers`;
 export const RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH = `${RUNTIME_AGENT_MCP_SERVERS_PATH}/available`;
 export const RUNTIME_AGENT_MCP_SERVER_TEMPLATE = `${RUNTIME_AGENT_MCP_SERVERS_PATH}/:mcpServerId`;
@@ -222,6 +236,34 @@ export function accountComputerDisconnectPath(computerId: string): string {
 
 export function agentByIdPath(agentId: string): string {
   return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}`;
+}
+
+export function agentSchedulesPath(agentId: string): string {
+  return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}/schedules`;
+}
+
+export function agentSchedulePath(agentId: string, scheduleId: string): string {
+  return `${agentSchedulesPath(agentId)}/${encodeURIComponent(scheduleId)}`;
+}
+
+export function agentSchedulePausePath(agentId: string, scheduleId: string): string {
+  return `${agentSchedulePath(agentId, scheduleId)}/pause`;
+}
+
+export function agentScheduleResumePath(agentId: string, scheduleId: string): string {
+  return `${agentSchedulePath(agentId, scheduleId)}/resume`;
+}
+
+export function runtimeAgentSchedulePath(scheduleId: string): string {
+  return `${RUNTIME_AGENT_SCHEDULES_PATH}/${encodeURIComponent(scheduleId)}`;
+}
+
+export function runtimeAgentSchedulePausePath(scheduleId: string): string {
+  return `${runtimeAgentSchedulePath(scheduleId)}/pause`;
+}
+
+export function runtimeAgentScheduleResumePath(scheduleId: string): string {
+  return `${runtimeAgentSchedulePath(scheduleId)}/resume`;
 }
 
 export function accountAgentCreationIntentPath(creationIntentId: string): string {

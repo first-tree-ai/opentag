@@ -136,6 +136,21 @@ describe("AgentTurnRunner", () => {
     expect(() => buildAgentInput(steerRequest())).toThrow("A steer input requires the root runtime snapshot");
   });
 
+  it("uses processing-time UTC for ordinary IM and steer inputs", () => {
+    const processedAt = new Date("2026-09-28T01:01:30.000Z");
+    const message = delivery();
+    const first = buildAgentInput(message, undefined, undefined, new Date("2026-09-28T01:00:00.000Z"));
+    const second = buildAgentInput(message, undefined, undefined, processedAt);
+    expect(first.items[0]?.text).toContain("Processing time (UTC): 2026-09-28T01:00:00.000Z");
+    expect(second.items[0]?.text).toContain("Processing time (UTC): 2026-09-28T01:01:30.000Z");
+    expect(second.items[0]?.text).not.toContain("Asia/Shanghai");
+    expect(first.items.slice(1)).toEqual(second.items.slice(1));
+
+    const steer = buildAgentInput(steerRequest(), undefined, message.runtime, processedAt);
+    expect(steer.items[0]?.text).toContain("Processing time (UTC): 2026-09-28T01:01:30.000Z");
+    expect(steer.items[0]?.text).not.toContain("Asia/Shanghai");
+  });
+
   it("preserves ambient attention beside the provider reference without disabling provider credentials", () => {
     const request = { ...delivery(), attention: "ambient" as const };
     const context = buildAgentInput(request).items[0]?.text;

@@ -12,6 +12,7 @@ import {
   RuntimeModelSchema,
   RuntimeOpaqueIdSchema,
   SessionMessageDeliveryRequestSchema,
+  SessionMessageDeliveryRequestV3Schema,
   TurnReportRequestSchema,
 } from "./runtime-domain.js";
 import { SandboxLifecycleSchema } from "./sandbox.js";
@@ -55,6 +56,19 @@ export const RUNNER_REUSE_VERSION = 1 as const;
  * without collaboration authority.
  */
 export const RUNNER_SESSION_COLLABORATION_VERSION = 1 as const;
+/**
+ * E8 version 2: the Runner additionally understands the Server-scheduled Session-message origin
+ * (`SessionMessageDeliveryRequestV3Schema`). Auth/welcome negotiate the exact version: a Runner
+ * that requested only version 1 never receives a scheduled message, and the Cloud fence records
+ * the negotiated number rather than a bare eligible boolean. Deployment order stays Server-first
+ * with a pinned Runner image: a version-2 Runner against an older Server fails its strict auth
+ * handshake instead of executing without collaboration authority.
+ */
+export const RUNNER_SESSION_COLLABORATION_V2 = 2 as const;
+export const RunnerSessionCollaborationVersionSchema = z.union([
+  z.literal(RUNNER_SESSION_COLLABORATION_VERSION),
+  z.literal(RUNNER_SESSION_COLLABORATION_V2),
+]);
 
 /** The Cloud Session-collaboration frame budget; mirrors the delivery run frame bound. */
 const RUNNER_SESSION_MESSAGE_CONTEXT_REFINE = (value: {
@@ -339,11 +353,13 @@ export const RunnerAuthFrameSchema = z
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /**
-     * E8: opt in to Cloud Session collaboration. Only sent by a Runner build that can journal and
-     * execute `session:message:*` frames; the Server echoes it in the welcome before any session
-     * frame, proof-bearing open result, or Session-collaboration capability is used.
+     * E8: opt in to Cloud Session collaboration at a specific version. Only sent by a Runner
+     * build that can journal and execute `session:message:*` frames; the Server echoes the
+     * negotiated version in the welcome before any session frame, proof-bearing open result, or
+     * Session-collaboration capability is used. Version 2 Runners also accept the
+     * Server-scheduled message origin.
      */
-    sessionCollaborationVersion: z.literal(RUNNER_SESSION_COLLABORATION_VERSION).optional(),
+    sessionCollaborationVersion: RunnerSessionCollaborationVersionSchema.optional(),
     /** Opt in to renewal-only replies for an expired token of a still-live allocation. */
     renewExpired: z.literal(true).optional(),
     /**
@@ -603,6 +619,46 @@ export const RunnerCloudSessionMessageRunFrameSchema = z
   });
 export type RunnerCloudSessionMessageRunFrame = z.infer<typeof RunnerCloudSessionMessageRunFrameSchema>;
 
+/*
+ * Runner Session-collaboration version 2: the same `session:message:run` envelope carrying the v3
+ * message contract (`SessionMessageDeliveryRequestV3Schema`), which additionally admits the
+ * Server-scheduled origin plus its display metadata. This schema is the receiver-side superset —
+ * the ordinary branch parses the frozen v1 wire byte-for-byte — and the Server selects the
+ * message branch from the negotiated auth/welcome version, never from the frame itself. A Runner
+ * keeps treating a scheduled origin on a version-1 channel as a protocol violation.
+ */
+export const RunnerCloudSessionMessageRunFrameV2Schema = z
+  .object({
+    type: z.literal("session:message:run"),
+    requestId: RequestIdSchema,
+    message: SessionMessageDeliveryRequestV3Schema,
+    /** The target Session's actual role; same Server-derived envelope as the v1 frame. */
+    sessionKind: z.enum(["internal", "visible"]),
+    /** Nonsecret bridge-derived IM outbox context; present exactly for a visible target. */
+    outboxContext: RuntimeImOutboxContextSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.message.requestId !== value.requestId) {
+      context.addIssue({ code: "custom", path: ["requestId"], message: "Session message request id mismatch" });
+    }
+    if (!RUNNER_SESSION_MESSAGE_CONTEXT_REFINE(value)) {
+      context.addIssue({
+        code: "custom",
+        path: ["outboxContext"],
+        message: "A visible Session message requires outbox context and an internal one forbids it",
+      });
+    }
+    if (runtimeUtf8Length(JSON.stringify(value)) > RUNNER_WS_MAX_FRAME_BYTES) {
+      context.addIssue({
+        code: "custom",
+        path: ["message"],
+        message: "The Session message frame exceeds the channel budget",
+      });
+    }
+  });
+export type RunnerCloudSessionMessageRunFrameV2 = z.infer<typeof RunnerCloudSessionMessageRunFrameV2Schema>;
+
 /**
  * Runner -> Server receipt for one Session message dispatch. `accepted` means the message is
  * durably journaled (fsynced) under the exact allocation scope — the custody boundary the
@@ -773,8 +829,12 @@ export type RunnerCloudTurnWorkerRequest = z.infer<typeof RunnerCloudTurnWorkerR
 export const RunnerCloudSessionWorkerRequestSchema = z
   .object({
     kind: z.literal("session-message"),
-    /** The exact Session message the Server dispatched and the Runner journaled. */
-    message: SessionMessageDeliveryRequestSchema,
+    /**
+     * The exact Session message the Server dispatched and the Runner journaled. The v3 superset
+     * contract carries ordinary and scheduled origins alike; parent and worker are the same
+     * pinned build, so the journaled message round-trips without a version gate of its own.
+     */
+    message: SessionMessageDeliveryRequestV3Schema,
     /** Execution-scoped model grant minted at the verified boundary. */
     model: RunnerCloudModelGrantSchema,
     mcpGateway: RunnerCloudMcpGatewaySchema.optional(),
@@ -886,8 +946,8 @@ export const RunnerWelcomeFrameSchema = z
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /** E7: echo of the physical-reuse capability for a control-authenticated Runner. */
     reuseVersion: z.literal(RUNNER_REUSE_VERSION).optional(),
-    /** E8: echo of the Session-collaboration capability for a requesting, fenced connection. */
-    sessionCollaborationVersion: z.literal(RUNNER_SESSION_COLLABORATION_VERSION).optional(),
+    /** E8: echo of the negotiated Session-collaboration version for a requesting, fenced connection. */
+    sessionCollaborationVersion: RunnerSessionCollaborationVersionSchema.optional(),
     heartbeatIntervalMs: z.number().int().positive(),
     heartbeatTimeoutMs: z.number().int().positive(),
   })
@@ -971,7 +1031,12 @@ export const RunnerServerFrameSchema = z.discriminatedUnion("type", [
   RunnerCloudDeliveryCancelFrameSchema,
   RunnerCloudDeliveryQueryFrameSchema,
   RunnerCloudDeliveryReportAckFrameSchema,
-  RunnerCloudSessionMessageRunFrameSchema,
+  /*
+   * The receiver-side arm is the version-2 superset: it parses the frozen version-1 ordinary
+   * wire unchanged and additionally admits the scheduled-origin message branch. The negotiated
+   * auth/welcome version — never this schema — decides whether a scheduled origin is legal.
+   */
+  RunnerCloudSessionMessageRunFrameV2Schema,
   RunnerCloudSessionMessageVerifiedFrameSchema,
   RunnerCloudSessionMessageCancelFrameSchema,
   RunnerCloudSessionMessageSettledAckFrameSchema,

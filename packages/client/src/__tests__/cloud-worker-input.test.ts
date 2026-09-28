@@ -68,6 +68,34 @@ it("visible callbacks retain their exact outbox and never infer it from message 
   expect(text).toContain("deliver it through the provider CLI");
 });
 
+it("builds scheduled Cloud input at worker processing time with a separate full task", () => {
+  const ordinary = sessionRequest();
+  const request: RunnerCloudSessionWorkerRequest = {
+    ...ordinary,
+    sessionKind: "visible",
+    outboxContext: { provider: "feishu", sessionKind: "channel", chatId: "oc_visible" },
+    message: {
+      ...ordinary.message,
+      sourceSessionId: undefined,
+      scheduledOrigin: {
+        scheduleId: randomUUID(),
+        scheduledFor: "2026-09-28T01:00:00.000Z",
+        timezone: "Asia/Shanghai",
+        name: "Daily check",
+      },
+      sentAt: "2026-09-28T01:00:01.000Z",
+      scheduleDetailUrl: "https://example.test/schedules/detail",
+      content: { kind: "text", text: "Full scheduled task tail marker" },
+    },
+  };
+  const input = cloudWorkerInput(request, new Date("2026-09-28T01:12:34.000Z"));
+  expect(input.items[0]?.text).toContain("Processing time (UTC): 2026-09-28T01:12:34.000Z");
+  expect(input.items[1]?.text).toContain("Processing started: 2026-09-28T01:12:34.000Z");
+  expect(input.items[1]?.text).toContain("2026-09-28 09:00:00 +08:00");
+  expect(input.items[1]?.text).toContain("Notification JSON:");
+  expect(input.items[2]?.text).toBe("Full scheduled task tail marker");
+});
+
 it("derives the Session worker timeout from the shared execution deadline when present", () => {
   const request = sessionRequest();
   // No deadline from the parent: the relative runtime budget applies as before.

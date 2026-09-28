@@ -31,6 +31,8 @@ export const queryKeys = {
     imBindingHandoff: (agentId: string) => ["agents", agentId, "imBindingHandoff"] as const,
     usage: (agentId: string, windowDays: AgentUsageWindowDays) => ["agents", agentId, "usage", windowDays] as const,
     progressNotice: (agentId: string) => ["agents", agentId, "progress-notice"] as const,
+    schedules: (agentId: string) => ["agents", agentId, "schedules"] as const,
+    schedule: (agentId: string, scheduleId: string) => ["agents", agentId, "schedules", scheduleId] as const,
     /** Everything held for one Agent, for a write that invalidates the Agent as a whole. */
     all: (agentId: string) => ["agents", agentId] as const,
   },

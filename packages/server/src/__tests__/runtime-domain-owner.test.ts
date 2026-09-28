@@ -891,6 +891,56 @@ describe("RuntimeDomainOwner", () => {
     expect((await fixture.owner.getTurn(report.turnId))?.instanceId).toBe(replacement.instanceId);
   });
 
+  it("never sends an aborted SessionMessage request and rejects it at the send boundary", async () => {
+    const fixture = await ownerFixture();
+    const controller = new AbortController();
+    controller.abort();
+    const delivery = sessionMessageDelivery();
+    expect(() =>
+      fixture.owner.requestSessionMessageDelivery(
+        fixture.computerId,
+        fixture.instanceId,
+        delivery,
+        undefined,
+        undefined,
+        controller.signal,
+      ),
+    ).toThrow("The runtime request was aborted before it was sent");
+    expect(fixture.frames).not.toContainEqual(delivery);
+  });
+
+  it("never sends a reconcile whose preparation outlived the abort", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const frames: unknown[] = [];
+    await registry.register(
+      {
+        computerId,
+        installationId: computerId,
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: socketFixture(frames),
+      },
+      async () => undefined,
+    );
+    const controller = new AbortController();
+    let releasePreparation: (request: SessionReconcileRequest) => void = () => undefined;
+    const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), {
+      prepareReconcile: (_computerId, _instanceId, request) =>
+        new Promise<SessionReconcileRequest>((resolve) => {
+          releasePreparation = () => resolve(request);
+        }),
+    });
+    const request = reconcileRequest(computerId);
+    const pending = owner.requestReconcile(computerId, instanceId, request, undefined, undefined, controller.signal);
+    // The preparation is still pending when the abort lands; releasing it must not send.
+    controller.abort();
+    releasePreparation(request);
+    await expect(pending).rejects.toMatchObject({ code: "aborted" });
+    expect(frames).toHaveLength(0);
+  });
+
   it("correlates SessionMessage delivery results and ignores unmatched results", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();

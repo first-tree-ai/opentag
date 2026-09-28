@@ -9,7 +9,7 @@ import {
   type RuntimeDurableFailure,
   type RuntimeDurableWorkRecord,
   type RuntimeImOutboxContext,
-  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
 } from "@opentag/shared";
 import { and, eq, inArray, like } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -37,8 +37,11 @@ import type {
   SessionCliCloudProofConnection,
   SessionCliProofService,
 } from "../sessions/session-cli-proof-service.js";
-import type { CloudSessionMessageOutcome } from "../sessions/session-collaboration-service.js";
-import type { AuthorizedSessionMessageRoute, SessionService } from "../sessions/session-service.js";
+import type {
+  CloudSessionMessageDeliveryInput,
+  CloudSessionMessageOutcome,
+} from "../sessions/session-collaboration-service.js";
+import type { SessionService } from "../sessions/session-service.js";
 import type { CloudModelGrantPort } from "./cloud-delivery-owner.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
 import { CloudCapacityExceededError } from "./errors.js";
@@ -360,6 +363,16 @@ class CloudSessionDispatchUnavailableError extends Error {
   }
 }
 
+/** The connection was current but negotiated only the ordinary-message v1 contract. */
+class CloudScheduledOriginUnsupportedError extends Error {
+  readonly code = "unsupported_schedule_origin";
+
+  constructor() {
+    super("The Sandbox Runner did not negotiate scheduled Session messages");
+    this.name = "CloudScheduledOriginUnsupportedError";
+  }
+}
+
 /** The Runner's custody answer did not arrive within the bounded request window. */
 class CloudSessionDispatchTimeoutError extends Error {
   readonly code = "delivery_timeout";
@@ -376,12 +389,13 @@ export interface CloudSessionTargetEnvelope {
   readonly outboxContext?: RuntimeImOutboxContext;
 }
 
-export interface CloudSessionDeliveryInput {
-  route: AuthorizedSessionMessageRoute;
-  message: { id: string; content: string };
-  runtime: EffectiveRuntimeSnapshot;
-  /** The durable attempt fencing token from the dispatch authorization transaction. */
-  attemptCount: number;
+/** The owner and dispatcher share one Cloud delivery input contract. */
+export type CloudSessionDeliveryInput = CloudSessionMessageDeliveryInput;
+
+function isScheduledCloudDelivery(
+  input: CloudSessionDeliveryInput,
+): input is Extract<CloudSessionDeliveryInput, { message: { scheduledOrigin: object } }> {
+  return "scheduledOrigin" in input.message;
 }
 
 export class CloudSessionCollaborationOwner {
@@ -487,14 +501,20 @@ export class CloudSessionCollaborationOwner {
     if (ready.kind !== "ready") return ready.outcome;
     const sandbox = ready.sandbox;
 
-    const request: SessionMessageDeliveryRequest = {
+    const scheduled = isScheduledCloudDelivery(input);
+    const request: SessionMessageDeliveryRequestV3 = {
       type: "session:message:deliver",
       // A fresh request-attempt identity per dispatch: the Runner correlates this exact attempt
       // while its journal and execution dedup stay on the logical messageId. A retry with a stale
       // journaled entry can then be told apart from this attempt instead of timing out silently.
       requestId: randomUUID(),
       messageId: message.id,
-      sourceSessionId: route.sourceSessionId,
+      ...(scheduled
+        ? {
+            scheduledOrigin: input.message.scheduledOrigin,
+            scheduleDetailUrl: input.message.scheduleDetailUrl,
+          }
+        : { sourceSessionId: input.route.sourceSessionId }),
       targetSessionId: route.targetSessionId,
       agentId: route.agentId,
       placementGeneration: route.targetPlacementGeneration,
@@ -519,9 +539,13 @@ export class CloudSessionCollaborationOwner {
         // only legal dispatch target, and the admission's row locks prove the route's authority.
         const connection = this.#dispatchableConnection(sandbox);
         if (!connection) throw new CloudSessionDispatchUnavailableError();
+        if (scheduled && connection.sessionCollaborationVersion !== 2) {
+          throw new CloudScheduledOriginUnsupportedError();
+        }
         const socket = this.#socketFor(connection);
         if (!socket) throw new CloudSessionDispatchUnavailableError();
         const receiptPromise = this.#registerPending(connection, request.requestId);
+        if (scheduled) request.sentAt = new Date(this.#now()).toISOString();
         const sent = this.#hub.sendToCurrent(sandbox.id, socket, {
           type: "session:message:run",
           requestId: request.requestId,
@@ -533,8 +557,8 @@ export class CloudSessionCollaborationOwner {
           this.#failPending(request.requestId, new CloudSessionDispatchUnavailableError());
           throw new CloudSessionDispatchUnavailableError();
         }
-        await this.#recordActivity(sandbox.id);
         onDispatched();
+        await this.#recordActivity(sandbox.id);
         return receiptPromise;
       });
       if (!admitted.admitted) {
@@ -546,6 +570,9 @@ export class CloudSessionCollaborationOwner {
       this.#work.settleUnassigned(workAllocation, message.id);
       if (error instanceof CloudSessionDispatchUnavailableError) {
         return { status: "unreachable", code: "runtime_not_ready" };
+      }
+      if (error instanceof CloudScheduledOriginUnsupportedError) {
+        return { status: "unreachable", code: "unsupported_schedule_origin" };
       }
       if (error instanceof CloudSessionDispatchTimeoutError) {
         return { status: "unknown", code: "delivery_timeout" };
@@ -568,7 +595,7 @@ export class CloudSessionCollaborationOwner {
   async #settleReceipt(
     sandbox: typeof sandboxes.$inferSelect,
     receipt: RunnerCloudSessionMessageReceivedFrame,
-    request: SessionMessageDeliveryRequest,
+    request: SessionMessageDeliveryRequestV3,
     attemptCount: number,
   ): Promise<CloudSessionMessageOutcome> {
     if (receipt.status === "rejected") {
@@ -658,7 +685,7 @@ export class CloudSessionCollaborationOwner {
    */
   async #ensureAcceptedCustody(
     connection: CloudConnectionRecord,
-    request: SessionMessageDeliveryRequest,
+    request: SessionMessageDeliveryRequestV3,
     attemptCount: number,
     turnId: string,
   ): Promise<"accepted" | "unavailable" | "refused"> {
@@ -693,7 +720,7 @@ export class CloudSessionCollaborationOwner {
    */
   async #writeDurableAccepted(
     connection: CloudConnectionRecord,
-    request: SessionMessageDeliveryRequest,
+    request: SessionMessageDeliveryRequestV3,
     turnId: string,
   ): Promise<RuntimeDurableWorkRecord | "refused" | undefined> {
     const store = this.#durableWork;
@@ -1137,7 +1164,7 @@ export class CloudSessionCollaborationOwner {
       });
       return;
     }
-    await this.#reverifyAcceptedCustody(connection, frame, row);
+    await this.#reverifyAcceptedCustody(connection, frame, row, envelope.request.scheduledOrigin !== undefined);
   }
 
   async #loadMessageAuthority(messageId: string): Promise<MessageAuthorityRow | undefined> {
@@ -1171,11 +1198,15 @@ export class CloudSessionCollaborationOwner {
     connection: CloudConnectionRecord,
     frame: Extract<RunnerCloudSessionMessageReceivedFrame, { status: "accepted" }>,
     row: MessageAuthorityRow,
+    scheduled: boolean,
   ): Promise<void> {
     const runtime = await this.#assembleRuntime(connection.scope.sessionId);
     const budgetMs = runtime ? turnBudgetMs(runtime) : RUNTIME_DEFAULT_MAX_DURATION_MS;
     this.#work.register(connection.scope, frame.messageId, frame.turnId);
     if (frame.phase === "started") return;
+    // A downgraded Runner retains accepted custody, but receives no execution grant for a
+    // scheduled entry until a v2 reconnect can understand its journal and managed input.
+    if (scheduled && connection.sessionCollaborationVersion !== 2) return;
     if (row.bindingStatus !== "active") {
       // A transient IM reauthorization pauses new grants but never erases accepted custody: keep
       // the entry pending; the restored authority re-handshakes the Runner and re-announces.

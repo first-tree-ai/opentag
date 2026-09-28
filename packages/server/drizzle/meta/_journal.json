@@ -365,6 +365,13 @@
       "when": 1790075260147,
       "tag": "0051_computer_disconnect",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790577932191,
+      "tag": "0052_agent_schedules",
+      "breakpoints": true
     }
   ]
 }

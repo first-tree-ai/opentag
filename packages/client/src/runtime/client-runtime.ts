@@ -16,7 +16,7 @@ import {
   RuntimeImSteerResultSchema,
   type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,
-  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
   SessionMessageDeliveryResultSchema,
   type SessionReconcileRequest,
@@ -61,7 +61,7 @@ export interface ClientRuntimeOptions {
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
   handleSessionMessageDelivery?(
-    request: SessionMessageDeliveryRequest,
+    request: SessionMessageDeliveryRequestV3,
   ): Promise<SessionMessageDeliveryResult> | SessionMessageDeliveryResult;
   availabilityTester?: {
     run(

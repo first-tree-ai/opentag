@@ -15,6 +15,7 @@ import {
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
   type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
@@ -33,6 +34,27 @@ type DomainBusinessFrame = Exclude<
   ClientRuntimeBusinessFrame,
   { type: "context-tree:operation:result" | "approval:request" | "approval:result" }
 >;
+
+/**
+ * The Session-message delivery request on the wire: the frozen v2 ordinary shape or the v3 shape
+ * that additionally permits the Server-generated scheduled origin. Only the scheduled branch may
+ * carry `scheduledOrigin`/`sentAt`/`scheduleDetailUrl`; the schema enforces exactly one origin.
+ */
+export type AnySessionMessageDeliveryRequest = SessionMessageDeliveryRequest | SessionMessageDeliveryRequestV3;
+
+/*
+ * The origin half of the request identity: the ordinary branch hashes the bare source Session id
+ * exactly as before; the scheduled branch hashes the immutable origin snapshot. The display
+ * metadata `sentAt`/`scheduleDetailUrl` stay out of the identity, exactly like the per-attempt
+ * requestId.
+ */
+function sessionMessageRequestOriginKey(request: AnySessionMessageDeliveryRequest): unknown {
+  if ("scheduledOrigin" in request && request.scheduledOrigin !== undefined) {
+    const origin = request.scheduledOrigin;
+    return ["scheduled", origin.scheduleId, origin.scheduledFor, origin.timezone, origin.name];
+  }
+  return request.sourceSessionId;
+}
 
 type ProviderCliResultFrame = Extract<
   ClientRuntimeBusinessFrame,
@@ -53,6 +75,7 @@ export class RuntimeDomainConflictError extends Error {
 export class RuntimeDomainRequestError extends Error {
   constructor(
     readonly code:
+      | "aborted"
       | "authority_unavailable"
       | "capacity"
       | "not_pending"
@@ -113,7 +136,7 @@ interface PendingSteer extends PendingBase<RuntimeImSteerRequest, RuntimeImSteer
   semanticHash: string;
 }
 
-interface PendingSessionMessage extends PendingBase<SessionMessageDeliveryRequest, SessionMessageDeliveryResult> {
+interface PendingSessionMessage extends PendingBase<AnySessionMessageDeliveryRequest, SessionMessageDeliveryResult> {
   kind: "session-message";
 }
 
@@ -134,6 +157,55 @@ interface CompletedRequest {
   instanceId: string;
   kind: "reconcile" | "delivery" | "steer" | "session-message";
   result: SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult;
+}
+
+type PendingRequestBase = {
+  computerId: string;
+  hash: string;
+  instanceId: string;
+  request:
+    | SessionReconcileRequest
+    | DirectImMessageDeliveryRequest
+    | RuntimeImSteerRequest
+    | AnySessionMessageDeliveryRequest;
+  promise: Promise<
+    SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult
+  >;
+  reject(error: Error): void;
+  resolve(
+    result: SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult,
+  ): void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+/** Narrow the pending entry onto its kind; extracted so the request path stays flat. */
+function createPendingRequest(
+  kind: PendingRequest["kind"],
+  base: PendingRequestBase,
+  inputHash: string | undefined,
+  semanticHash: string | undefined,
+): PendingRequest {
+  if (kind === "reconcile") {
+    return { ...base, kind, request: base.request as SessionReconcileRequest } as PendingReconcile;
+  }
+  if (kind === "delivery") {
+    return {
+      ...base,
+      kind,
+      request: base.request as DirectImMessageDeliveryRequest,
+      inputHash: inputHash ?? "",
+    } as PendingDelivery;
+  }
+  if (kind === "steer") {
+    return {
+      ...base,
+      kind,
+      request: base.request as RuntimeImSteerRequest,
+      inputHash: inputHash ?? "",
+      semanticHash: semanticHash ?? "",
+    } as PendingSteer;
+  }
+  return { ...base, kind, request: base.request as AnySessionMessageDeliveryRequest } as PendingSessionMessage;
 }
 
 interface StartingDelivery {
@@ -211,6 +283,7 @@ export class RuntimeDomainOwner {
     request: SessionReconcileRequest,
     onDispatched?: () => void,
     admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
+    signal?: AbortSignal,
   ): Promise<SessionReconcileResult> {
     const attrs = runtimeAttrs({
       requestId: request.requestId,
@@ -238,6 +311,7 @@ export class RuntimeDomainOwner {
               undefined,
               undefined,
               admissionDispatched,
+              signal,
             ) as Promise<SessionReconcileResult>,
           onDispatched,
         );
@@ -254,6 +328,8 @@ export class RuntimeDomainOwner {
             this.#withDispatchAdmission(
               admission,
               (admissionDispatched) =>
+                // The preparation was asynchronous: the final send boundary re-checks the budget
+                // signal, so a request cancelled mid-preparation never leaves late.
                 this.#request(
                   "reconcile",
                   computerId,
@@ -263,6 +339,7 @@ export class RuntimeDomainOwner {
                   undefined,
                   undefined,
                   admissionDispatched,
+                  signal,
                 ) as Promise<SessionReconcileResult>,
               onDispatched,
             ),
@@ -388,9 +465,10 @@ export class RuntimeDomainOwner {
   requestSessionMessageDelivery(
     computerId: string,
     instanceId: string,
-    request: SessionMessageDeliveryRequest,
+    request: AnySessionMessageDeliveryRequest,
     onDispatched?: () => void,
     admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+    signal?: AbortSignal,
   ): Promise<SessionMessageDeliveryResult> {
     return this.#withDispatchAdmission(
       admission,
@@ -402,7 +480,7 @@ export class RuntimeDomainOwner {
           request,
           hashTuple([
             request.messageId,
-            request.sourceSessionId,
+            sessionMessageRequestOriginKey(request),
             request.targetSessionId,
             request.agentId,
             request.placementGeneration,
@@ -412,6 +490,7 @@ export class RuntimeDomainOwner {
           undefined,
           undefined,
           admissionDispatched,
+          signal,
         ) as Promise<SessionMessageDeliveryResult>,
       onDispatched,
     );
@@ -698,11 +777,12 @@ export class RuntimeDomainOwner {
       | SessionReconcileRequest
       | DirectImMessageDeliveryRequest
       | RuntimeImSteerRequest
-      | SessionMessageDeliveryRequest,
+      | AnySessionMessageDeliveryRequest,
     hash: string,
     inputHash?: string,
     semanticHash?: string,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
     const existing = this.#pending.get(request.requestId);
     if (existing) {
@@ -745,6 +825,11 @@ export class RuntimeDomainOwner {
     if (this.#pending.size >= this.#options.maxPendingRequests) {
       throw new RuntimeDomainRequestError("capacity", "The runtime request owner is full");
     }
+    // The final send boundary honors the caller's budget: an aborted request never leaves, even
+    // when preparation or an admission wait delayed it past the abort.
+    if (signal?.aborted) {
+      throw new RuntimeDomainRequestError("aborted", "The runtime request was aborted before it was sent");
+    }
     if (expired) this.#expiredDeliveries.delete(request.requestId);
 
     let resolvePromise: (
@@ -781,25 +866,7 @@ export class RuntimeDomainOwner {
       resolve: resolvePromise,
       timer,
     };
-    const pending: PendingRequest =
-      kind === "reconcile"
-        ? ({ ...base, kind, request: request as SessionReconcileRequest } as PendingReconcile)
-        : kind === "delivery"
-          ? ({
-              ...base,
-              kind,
-              request: request as DirectImMessageDeliveryRequest,
-              inputHash: inputHash ?? "",
-            } as PendingDelivery)
-          : kind === "steer"
-            ? ({
-                ...base,
-                kind,
-                request: request as RuntimeImSteerRequest,
-                inputHash: inputHash ?? "",
-                semanticHash: semanticHash ?? "",
-              } as PendingSteer)
-            : ({ ...base, kind, request: request as SessionMessageDeliveryRequest } as PendingSessionMessage);
+    const pending = createPendingRequest(kind, base, inputHash, semanticHash);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request);
     onDispatched?.();
@@ -1058,6 +1125,7 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
   } else if (error instanceof RuntimeDomainRequestError) {
     code =
       {
+        aborted: "RUNTIME_REQUEST_ABORTED",
         authority_unavailable: "RUNTIME_AUTHORITY_UNAVAILABLE",
         capacity: "RUNTIME_OWNER_CAPACITY",
         not_pending: "RUNTIME_REQUEST_NOT_PENDING",

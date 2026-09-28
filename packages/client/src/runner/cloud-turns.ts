@@ -13,12 +13,12 @@ import {
   type RunnerCloudDeliveryRunFrame,
   type RunnerCloudDeliveryVerifiedFrame,
   type RunnerCloudModelGrant,
-  type RunnerCloudSessionMessageRunFrame,
+  type RunnerCloudSessionMessageRunFrameV2,
   type RunnerCloudSessionMessageSettledAckFrame,
   type RunnerCloudSessionMessageVerifiedFrame,
   RuntimeUsageSchema,
   type SessionCliProofGrant,
-  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
   serializeRunnerCloudSessionWorkerStdin,
   serializeRunnerCloudTurnWorkerStdin,
   TurnFailureReasonSchema,
@@ -157,7 +157,7 @@ export interface CloudTurnExecutionOpenInput {
 }
 
 export interface CloudSessionExecutionOpenInput {
-  readonly message: SessionMessageDeliveryRequest;
+  readonly message: SessionMessageDeliveryRequestV3;
   readonly scope: CloudTurnScope;
   readonly turnId: string;
   readonly signal: AbortSignal;
@@ -418,7 +418,7 @@ export class CloudTurnRunner {
   }
 
   /** Journal + fsync one Session message, THEN acknowledge receipt. Idempotent across redispatch. */
-  async handleSessionMessageRun(frame: RunnerCloudSessionMessageRunFrame): Promise<void> {
+  async handleSessionMessageRun(frame: RunnerCloudSessionMessageRunFrameV2): Promise<void> {
     await this.#enqueue(async () => {
       if (this.#closed) return;
       const message = frame.message;
@@ -452,7 +452,7 @@ export class CloudTurnRunner {
    * refused. Every write is fsynced before the caller may send the receipt.
    */
   async #journalSessionDispatch(
-    frame: RunnerCloudSessionMessageRunFrame,
+    frame: RunnerCloudSessionMessageRunFrameV2,
     journalScope: CloudJournalScope,
   ): Promise<CloudJournalSessionEntry | undefined> {
     const message = frame.message;
@@ -479,12 +479,13 @@ export class CloudTurnRunner {
   /**
    * How one Session run frame relates to the journaled entry, if any. The request id is the
    * per-attempt identity and the input hash ignores it, so a retry of the same logical message
-   * reuses its entry, a changed snapshot supersedes a never-started entry, and any started or
-   * reported entry is left to converge through its own settlement — never a second execution.
+   * reuses its entry. Ordinary messages may supersede a changed snapshot before execution;
+   * scheduled messages have a fixed occurrence identity and reject every changed snapshot.
+   * Any started or reported entry is left to converge through its own settlement.
    */
   #sessionDispatchDecision(
     existing: CloudJournalEntry | undefined,
-    frame: RunnerCloudSessionMessageRunFrame,
+    frame: RunnerCloudSessionMessageRunFrameV2,
     journalScope: CloudJournalScope,
   ):
     | { kind: "fresh" }
@@ -516,6 +517,12 @@ export class CloudTurnRunner {
       // A new attempt for identical input reuses the entry. A still-`received` entry is first
       // re-correlated to the new attempt; a started/reported entry keeps its settlement identity.
       return existing.phase === "received" ? { kind: "rekey", entry: existing } : { kind: "reuse", entry: existing };
+    }
+    if (existing.message.scheduledOrigin !== undefined || frame.message.scheduledOrigin !== undefined) {
+      // A schedule message ID is derived from its occurrence. Replacing the same ID with another
+      // origin, target, runtime, or outbox would turn a conflict into an unauthorized new Turn.
+      this.#log(`refusing re-dispatch of ${messageId}: scheduled message snapshot differs`);
+      return { kind: "refuse" };
     }
     if (existing.phase === "received") {
       // The journaled input is outdated and the Turn never started: retire the stale entry and
@@ -1483,7 +1490,7 @@ export class CloudTurnRunner {
   }
 
   async #runSessionInSandbox(
-    message: SessionMessageDeliveryRequest,
+    message: SessionMessageDeliveryRequestV3,
     model: RunnerCloudModelGrant,
     entry: CloudJournalSessionEntry,
     signal: AbortSignal,

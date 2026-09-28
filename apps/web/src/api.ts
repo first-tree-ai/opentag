@@ -14,6 +14,10 @@ import {
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
   AgentRuntimeTestResponseSchema,
+  type AgentSchedule,
+  type AgentScheduleListResponse,
+  AgentScheduleListResponseSchema,
+  AgentScheduleSchema,
   type AgentSetupSnapshot,
   AgentSetupSnapshotSchema,
   type AgentUsageDetail,
@@ -42,6 +46,10 @@ import {
   agentMcpServersPath,
   agentReactivatePath,
   agentRuntimeTestPath,
+  agentSchedulePath,
+  agentSchedulePausePath,
+  agentScheduleResumePath,
+  agentSchedulesPath,
   agentSetupPath,
   agentSetupRefreshPath,
   agentSkillBundlePath,
@@ -324,6 +332,42 @@ export class BrowserApi {
 
   agent(agentId: string): Promise<AgentDetail> {
     return this.request(agentByIdPath(agentId), AgentDetailSchema);
+  }
+
+  agentSchedules(agentId: string, query: { limit?: number; cursor?: string } = {}): Promise<AgentScheduleListResponse> {
+    const params = new URLSearchParams();
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request(`${agentSchedulesPath(agentId)}${suffix}`, AgentScheduleListResponseSchema);
+  }
+
+  agentSchedule(agentId: string, scheduleId: string): Promise<AgentSchedule> {
+    return this.request(agentSchedulePath(agentId, scheduleId), AgentScheduleSchema);
+  }
+
+  pauseAgentSchedule(agentId: string, scheduleId: string, expectedRevision: number): Promise<AgentSchedule> {
+    return this.request(agentSchedulePausePath(agentId, scheduleId), AgentScheduleSchema, {
+      method: "POST",
+      body: JSON.stringify({ expectedRevision }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  resumeAgentSchedule(agentId: string, scheduleId: string, expectedRevision: number): Promise<AgentSchedule> {
+    return this.request(agentScheduleResumePath(agentId, scheduleId), AgentScheduleSchema, {
+      method: "POST",
+      body: JSON.stringify({ expectedRevision }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  deleteAgentSchedule(agentId: string, scheduleId: string, expectedRevision: number): Promise<void> {
+    const query = new URLSearchParams({ expectedRevision: String(expectedRevision) });
+    return this.requestNoContent(`${agentSchedulePath(agentId, scheduleId)}?${query.toString()}`, {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
   }
 
   agentUsage(agentId: string, windowDays: AgentUsageWindowDays): Promise<AgentUsageDetail> {

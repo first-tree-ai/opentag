@@ -726,6 +726,7 @@ export class TaskService {
       collaborationMessages: collaborationRows.map((message) => ({
         id: message.id,
         sourceSessionId: message.sourceSessionId,
+        scheduledOrigin: message.scheduledOrigin,
         targetSessionId: message.targetSessionId,
         content: message.content,
         outcome: message.lastOutcome,

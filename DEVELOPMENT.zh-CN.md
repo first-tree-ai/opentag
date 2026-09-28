@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-09-09
+> 同步日期：2026-09-28
 
 ## 从源码在本地运行
 
@@ -124,6 +124,26 @@ pnpm --filter @opentag/server test:integration
 
 服务器集成测试需要 Docker。修改覆盖率配置或排查覆盖率缺口时，运行 `pnpm test:coverage`。
 浏览器测试见 [E2E 指南](./e2e/README.md)。
+
+CI 将格式检查、构建、类型检查、仓库脚本测试、PostgreSQL 集成测试和 Agent Runtime 覆盖率检查放在并行任务中执行。
+工作区单元测试在 Node.js 22.22.2、24 和 26 上运行，每个版本使用三个 Vitest 分片。
+仓库脚本测试也会在这三个版本上运行；兼容性任务在 Node.js 22.22.2 和 26 上验证打包后的 CLI，
+`CLI Pack Smoke` 则覆盖 Node.js 24。汇总的 `CI` 检查要求所有任务和分片都成功。
+Patch Coverage 在安装依赖之前先检查变更路径。现有可覆盖源码范围之外的变更会明确通过检查；
+源码删除和重命名仍会触发覆盖率测量。源码变更由五个并行任务分别测量各工作区，并检查现有覆盖率下限。
+最终任务要求所有报告齐全，拼接互不重叠的文件覆盖率数据，并执行不变的 80% 变更行覆盖率门槛。
+缺失报告、测试失败或源码归属重叠都会使检查失败。每周的 Unit Coverage 工作流仍测量完整基线。
+
+PR 的 Quality Scoreboard 在 CI 内运行，复用三个 Node 24 单元测试分片的耗时，不再重复运行测试。
+耗时指标明确标为最慢工作区分片的耗时，不包含仓库脚本测试和 runner 排队时间；它与定时或手动运行时
+测量的完整套件耗时不同。现有静态质量指标仍可用，汇总的 `CI` 状态要求 PR 的质量报告成功。
+
+本地 `pnpm test` 仍以有限并发运行完整测试套件。可使用以下命令在本地重现一个工作区单元测试分片：
+
+```bash
+pnpm build
+pnpm exec turbo run test --concurrency=2 -- --shard=1/3
+```
 
 ## Git hooks 与 worktree
 

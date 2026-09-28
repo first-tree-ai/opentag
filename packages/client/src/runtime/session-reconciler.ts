@@ -5,7 +5,7 @@ import {
   type EffectiveRuntimeSnapshot,
   type InputRejectReason,
   type RuntimeSnapshotHashes,
-  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
   type SessionReconcileRequest,
   SessionReconcileRequestSchema,
   type SessionReconcileResult,
@@ -175,7 +175,7 @@ export class SessionReconciler {
     return this.#checkRuntimeTarget(input.sessionId, input.agentId, input.placementGeneration, input.runtime);
   }
 
-  checkSessionMessageDelivery(input: SessionMessageDeliveryRequest): InputRejectReason | undefined {
+  checkSessionMessageDelivery(input: SessionMessageDeliveryRequestV3): InputRejectReason | undefined {
     if (input.agentId !== input.runtime.agentId) return "target_mismatch";
     return this.#checkRuntimeTarget(input.targetSessionId, input.agentId, input.placementGeneration, input.runtime);
   }

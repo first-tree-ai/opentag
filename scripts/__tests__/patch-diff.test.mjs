@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { captureMergeBaseDiff } from "../patch-diff.mjs";
+import { captureMergeBaseChangedPaths, captureMergeBaseDiff } from "../patch-diff.mjs";
 import { evaluatePatchCoverage } from "../unit-coverage-gate.mjs";
 
 const gitEnvironment = {
@@ -217,5 +217,25 @@ test("the workflow's inline gate program fails an uncovered changed line and pas
       `a covered changed line must pass the gate:\nstdout:\n${covered.stdout}\nstderr:\n${covered.stderr}`,
     );
     assert.match(covered.stdout, /Patch coverage: 1\/1 lines/, "the nonzero denominator must survive a pass too");
+  });
+});
+
+test("coverage planning detects deleted and renamed source files without quoted path loss", async () => {
+  await withRepository(async (repository) => {
+    const source = "packages/shared/src/source with space.ts";
+    await mkdir(join(repository, "packages/shared/src"), { recursive: true });
+    await writeFile(join(repository, source), "export const value = 1;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "base source"]);
+    const baseSha = git(repository, ["rev-parse", "HEAD"]).trim();
+    git(repository, ["mv", source, "packages/shared/src/renamed.md"]);
+    git(repository, ["commit", "-m", "rename source to documentation"]);
+    const paths = captureMergeBaseChangedPaths({ baseSha, repositoryRoot: repository });
+    assert.ok(paths.includes(source));
+    assert.ok(paths.includes("packages/shared/src/renamed.md"));
+    assert.throws(
+      () => captureMergeBaseChangedPaths({ baseSha: "f".repeat(40), repositoryRoot: repository }),
+      /git diff.*failed/,
+    );
   });
 });

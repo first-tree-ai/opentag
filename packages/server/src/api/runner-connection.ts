@@ -1,6 +1,7 @@
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_REUSE_VERSION,
+  RUNNER_SESSION_COLLABORATION_V2,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_CLOSE,
@@ -267,7 +268,7 @@ export class RunnerConnection {
     renewExpired: boolean,
     controlToken: string | undefined,
     reuseVersion: number | undefined,
-    wantsSessionCollaboration: boolean,
+    requestedSessionCollaborationVersion: 1 | 2 | undefined,
   ): Promise<void> {
     if (this.#scope) {
       this.#closeWith(RUNNER_WS_CLOSE.protocolError, "duplicate authentication frame");
@@ -284,7 +285,7 @@ export class RunnerConnection {
         wantsCloudDelivery,
         wantsWorkspace,
         renewExpired,
-        wantsSessionCollaboration,
+        requestedSessionCollaborationVersion,
       );
       return;
     }
@@ -299,7 +300,7 @@ export class RunnerConnection {
       wantsWorkspace,
       resolved.reportOnly,
       undefined,
-      wantsSessionCollaboration,
+      requestedSessionCollaborationVersion,
     );
   }
 
@@ -314,7 +315,7 @@ export class RunnerConnection {
     wantsCloudDelivery: boolean,
     wantsWorkspace: boolean,
     renewExpired: boolean,
-    wantsSessionCollaboration: boolean,
+    requestedSessionCollaborationVersion: 1 | 2 | undefined,
   ): Promise<void> {
     let controlClaims: RunnerBootstrapClaims;
     try {
@@ -351,7 +352,7 @@ export class RunnerConnection {
       wantsWorkspace,
       resolved.reportOnly,
       { reuseCapable: wantsWorkspace && this.#options.service.workspacePersistenceEnabled },
-      wantsSessionCollaboration,
+      requestedSessionCollaborationVersion,
     );
   }
 
@@ -465,7 +466,7 @@ export class RunnerConnection {
     wantsWorkspace: boolean,
     reportOnly: boolean,
     control: { reuseCapable: boolean } | undefined,
-    wantsSessionCollaboration: boolean,
+    requestedSessionCollaborationVersion: 1 | 2 | undefined,
   ): Promise<void> {
     const cloudNegotiated = wantsCloudDelivery && this.#options.cloudDelivery !== undefined;
     // E5 capability negotiation is independent of delivery: echo only when the Runner requested
@@ -474,8 +475,8 @@ export class RunnerConnection {
     // E8 Session collaboration requires the E4 Cloud channel first: without the fence there is no
     // allocation to bind a proof or session frame to, so the echo is withheld and the connection
     // keeps the exact E7 behavior.
-    const sessionCollaborationNegotiated = this.#negotiateSessionCollaboration(
-      wantsSessionCollaboration,
+    const sessionCollaborationVersion = this.#negotiateSessionCollaboration(
+      requestedSessionCollaborationVersion,
       cloudNegotiated,
       this.#options.cloudSession !== undefined,
     );
@@ -522,7 +523,7 @@ export class RunnerConnection {
         executionEligible: !reportOnly,
         // E8: gated on the explicit auth opt-in, so a legacy E7 Runner's fence record never
         // receives a Session-CLI proof field or a session:message frame.
-        sessionCollaborationEligible: sessionCollaborationNegotiated,
+        sessionCollaborationVersion: sessionCollaborationVersion || undefined,
       });
     }
     this.#sendAuthResult(true, requestId);
@@ -531,7 +532,7 @@ export class RunnerConnection {
         cloudNegotiated,
         control,
         fence,
-        sessionCollaborationNegotiated,
+        sessionCollaborationVersion,
         validated,
         workspaceNegotiated,
       }),
@@ -550,11 +551,14 @@ export class RunnerConnection {
   /** Negotiate E8 only when the Runner asks for it, the E4 Cloud channel exists, and this Server
    * actually composed a collaboration owner. */
   #negotiateSessionCollaboration(
-    wantsSessionCollaboration: boolean,
+    requestedVersion: 1 | 2 | undefined,
     cloudNegotiated: boolean,
     ownerPresent: boolean,
-  ): boolean {
-    return wantsSessionCollaboration && cloudNegotiated && ownerPresent;
+  ): 0 | 1 | 2 {
+    if (!cloudNegotiated || !ownerPresent) return 0;
+    if (requestedVersion === RUNNER_SESSION_COLLABORATION_V2) return RUNNER_SESSION_COLLABORATION_V2;
+    if (requestedVersion === RUNNER_SESSION_COLLABORATION_VERSION) return RUNNER_SESSION_COLLABORATION_VERSION;
+    return 0;
   }
 
   /**
@@ -565,7 +569,7 @@ export class RunnerConnection {
     cloudNegotiated: boolean;
     control: { reuseCapable: boolean } | undefined;
     fence: { resourceUid: string | null } | undefined;
-    sessionCollaborationNegotiated: boolean;
+    sessionCollaborationVersion: 0 | 1 | 2;
     validated: RunnerScope;
     workspaceNegotiated: boolean;
   }): RunnerServerFrame {
@@ -580,9 +584,7 @@ export class RunnerConnection {
       ...(input.cloudNegotiated && input.fence?.resourceUid ? { resourceUid: input.fence.resourceUid } : {}),
       ...(input.workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
       ...(input.control?.reuseCapable === true ? { reuseVersion: RUNNER_REUSE_VERSION } : {}),
-      ...(input.sessionCollaborationNegotiated
-        ? { sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_VERSION }
-        : {}),
+      ...(input.sessionCollaborationVersion ? { sessionCollaborationVersion: input.sessionCollaborationVersion } : {}),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       heartbeatTimeoutMs: this.#heartbeatTimeoutMs,
     };
@@ -1072,7 +1074,7 @@ export class RunnerConnection {
       data.renewExpired === true,
       data.controlToken,
       data.reuseVersion,
-      data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION,
+      data.sessionCollaborationVersion,
     );
   }
 

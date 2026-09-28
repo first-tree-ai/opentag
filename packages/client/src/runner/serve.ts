@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_REUSE_VERSION,
+  RUNNER_SESSION_COLLABORATION_V2,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
@@ -444,8 +445,17 @@ class RunnerChannelBridge implements CloudCredentialChannel {
   scope?: CloudTurnScope;
   /** True only after a negotiated `cloudDeliveryVersion: 1` welcome. Legacy E3 stays Cloud-free. */
   cloudEnabled = false;
+  /*
+   * The negotiated E8 Session-collaboration version echoed at the current welcome (0 when the
+   * Server did not echo the capability). The exact number is the fence: a scheduled-origin
+   * dispatch requires version 2, an ordinary one version 1 — never a bare eligible boolean.
+   */
+  sessionCollaborationVersion: 0 | 1 | 2 = 0;
+
   /** True only when the Server echoed the E8 Session-collaboration capability at the same welcome. */
-  sessionCollaborationEnabled = false;
+  get sessionCollaborationEnabled(): boolean {
+    return this.sessionCollaborationVersion >= RUNNER_SESSION_COLLABORATION_VERSION;
+  }
   readonly credentialListeners = new Set<(frame: RuntimeCredentialServerFrame) => void>();
   readonly stateListeners = new Set<(state: "registered" | "closed") => void>();
 
@@ -909,7 +919,7 @@ async function serveOnce(
       bridge.sendFn = undefined;
       bridge.scope = undefined;
       bridge.cloudEnabled = false;
-      bridge.sessionCollaborationEnabled = false;
+      bridge.sessionCollaborationVersion = 0;
       bridge.emitState("closed");
       state.turns.onChannelClosed();
       state.active?.abort.abort();
@@ -965,7 +975,12 @@ async function serveOnce(
         requestId: randomUUID(),
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
-        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_VERSION,
+        /*
+         * This build speaks Session collaboration v2 (scheduled origin). An older Server whose
+         * auth schema only admits v1 fails the strict handshake; a foundation Server that parses
+         * but does not echo simply leaves collaboration off — the Runner never pretends.
+         */
+        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V2,
         ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION, renewExpired: true } : {}),
         ...(state.controlToken && config.workspacePersistence
           ? { controlToken: state.controlToken, reuseVersion: RUNNER_REUSE_VERSION }
@@ -973,28 +988,22 @@ async function serveOnce(
       }),
     );
     const onWelcome = (data: RunnerWelcomeFrame) => {
-      if (
-        welcome ||
-        data.protocolVersion !== RUNNER_WS_PROTOCOL_VERSION ||
-        !data.resourceName.endsWith(`/instances/${config.sandboxName}`)
-      ) {
-        finish();
-        return;
+      const rejection = runnerWelcomeRejection(
+        data,
+        welcome !== undefined,
+        config.sandboxName,
+        config.workspacePersistence,
+      );
+      if (rejection === "invalid") return finish();
+      if (rejection === "workspace") {
+        logLine(options.stderr, "Server does not support required workspace persistence");
+        return finish("auth_failed");
+      }
+      if (rejection === "resource") {
+        logLine(options.stderr, "cloud welcome has no tracked allocation UID; retrying attachment");
+        return finish();
       }
       const cloudCapable = data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION;
-      if (config.workspacePersistence && data.workspaceVersion !== RUNNER_WORKSPACE_VERSION) {
-        logLine(options.stderr, "Server does not support required workspace persistence");
-        finish("auth_failed");
-        return;
-      }
-      // A Cloud-capable welcome must carry the verified current allocation UID. A null UID means
-      // the create caller has not tracked it yet: retry transiently instead of running Cloud
-      // journal reconciliation against an unbound allocation.
-      if (cloudCapable && !data.resourceUid) {
-        logLine(options.stderr, "cloud welcome has no tracked allocation UID; retrying attachment");
-        finish();
-        return;
-      }
       welcome = data;
       welcomeAt = Date.now();
       clearTimeout(authTimer);
@@ -1006,7 +1015,7 @@ async function serveOnce(
         resourceUid: data.resourceUid ?? null,
       };
       bridge.cloudEnabled = cloudCapable;
-      bridge.sessionCollaborationEnabled = data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION;
+      bridge.sessionCollaborationVersion = negotiatedRunnerSessionCollaborationVersion(data);
       bridge.sendFn = send;
       bridge.emitState("registered");
       armSilence();
@@ -1448,6 +1457,34 @@ function installRunnerSignals(requestStop: (code: number) => void, options: Runn
   };
 }
 
+function runnerWelcomeRejection(
+  data: RunnerWelcomeFrame,
+  alreadyWelcomed: boolean,
+  sandboxName: string,
+  workspacePersistence: boolean | undefined,
+): "invalid" | "workspace" | "resource" | undefined {
+  if (
+    alreadyWelcomed ||
+    data.protocolVersion !== RUNNER_WS_PROTOCOL_VERSION ||
+    !data.resourceName.endsWith(`/instances/${sandboxName}`)
+  ) {
+    return "invalid";
+  }
+  if (workspacePersistence && data.workspaceVersion !== RUNNER_WORKSPACE_VERSION) return "workspace";
+  // A Cloud-capable welcome must carry the verified current allocation UID. A null UID means
+  // the create caller has not tracked it yet: retry transiently before journal reconciliation.
+  if (data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION && !data.resourceUid) return "resource";
+  return undefined;
+}
+
+function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 {
+  if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V2) return RUNNER_SESSION_COLLABORATION_V2;
+  if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION) {
+    return RUNNER_SESSION_COLLABORATION_VERSION;
+  }
+  return 0;
+}
+
 interface FrameDispatch {
   closed: boolean;
   authenticated: boolean;
@@ -1584,6 +1621,17 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
     return;
   }
   if (data.type.startsWith("session:message:") && !c.bridge.sessionCollaborationEnabled) {
+    c.finish();
+    return;
+  }
+  if (
+    data.type === "session:message:run" &&
+    data.message.scheduledOrigin !== undefined &&
+    c.bridge.sessionCollaborationVersion < RUNNER_SESSION_COLLABORATION_V2
+  ) {
+    // A scheduled-origin dispatch is only legal on a negotiated version-2 channel. Anything
+    // else — including a version-1 echo with a scheduled frame — is a protocol violation and
+    // cycles the connection instead of executing an unnegotiated origin.
     c.finish();
     return;
   }

@@ -8,11 +8,13 @@ import type {
   RunnerCloudDeliveryVerifiedFrame,
   RunnerCloudModelGrant,
   RunnerCloudSessionMessageRunFrame,
+  RunnerCloudSessionMessageRunFrameV2,
   RunnerCloudSessionMessageSettledAckFrame,
   RunnerCloudSessionMessageVerifiedFrame,
   RuntimeImOutboxContext,
   SessionCliProofGrant,
   SessionMessageDeliveryRequest,
+  SessionMessageDeliveryRequestV3,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudJournal } from "../runner/cloud-journal.js";
@@ -93,11 +95,40 @@ function sessionMessage(overrides: Partial<SessionMessageDeliveryRequest> = {}):
   };
 }
 
+function scheduledSessionMessage(message: SessionMessageDeliveryRequest): SessionMessageDeliveryRequestV3 {
+  const { sourceSessionId: _sourceSessionId, ...ordinary } = message;
+  return {
+    ...ordinary,
+    scheduledOrigin: {
+      scheduleId: randomUUID(),
+      scheduledFor: "2026-09-28T01:00:00.000Z",
+      timezone: "Asia/Shanghai",
+      name: "Daily check",
+    },
+    sentAt: "2026-09-28T01:00:05.000Z",
+    scheduleDetailUrl: "https://opentag.example.com/agents/agent-1?schedule=schedule-1",
+  };
+}
+
 function sessionRunFrame(
   message: SessionMessageDeliveryRequest,
   sessionKind: "internal" | "visible" = "internal",
   outboxContext?: RuntimeImOutboxContext,
 ): RunnerCloudSessionMessageRunFrame {
+  return {
+    type: "session:message:run",
+    requestId: message.requestId,
+    message,
+    sessionKind,
+    ...(outboxContext ? { outboxContext } : {}),
+  };
+}
+
+function scheduledRunFrame(
+  message: SessionMessageDeliveryRequestV3,
+  sessionKind: "internal" | "visible" = "internal",
+  outboxContext?: RuntimeImOutboxContext,
+): RunnerCloudSessionMessageRunFrameV2 {
   return {
     type: "session:message:run",
     requestId: message.requestId,
@@ -562,6 +593,85 @@ describe("CloudTurnRunner Session collaboration", () => {
       status: "recorded",
     });
     expect(await journal.read(h.message.messageId)).toBeUndefined();
+    await h.runner.close();
+  });
+
+  it("journals a scheduled message before receipt and restores its settlement without a second worker", async () => {
+    const outboxContext: RuntimeImOutboxContext = { provider: "feishu", sessionKind: "channel", chatId: "oc_sched" };
+    const h = harness({ sessionKind: "visible", outboxContext });
+    const scheduled = scheduledSessionMessage(h.message);
+    await h.runner.handleSessionMessageRun(scheduledRunFrame(scheduled, "visible", outboxContext));
+    expect(sessionReceiptsOf(h.sent)).toMatchObject([
+      { requestId: scheduled.requestId, messageId: scheduled.messageId, status: "accepted", phase: "received" },
+    ]);
+    const received = await journal.read(scheduled.messageId);
+    if (received?.kind !== "session-message") throw new Error("missing scheduled journal entry");
+    expect(received.message).toEqual(scheduled);
+    expect(h.workerInputs).toHaveLength(0);
+
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(scheduled.requestId));
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent)).toHaveLength(1);
+    expect(h.workerInputs).toHaveLength(1);
+    const [workerInput] = h.workerInputs;
+    if (!workerInput) throw new Error("missing scheduled worker input");
+    const stdin = JSON.parse(workerInput.stdin) as {
+      kind: string;
+      message: SessionMessageDeliveryRequestV3;
+      outboxContext?: RuntimeImOutboxContext;
+    };
+    expect(stdin.kind).toBe("session-message");
+    expect(stdin.message).toEqual(scheduled);
+    expect(stdin.outboxContext).toEqual(outboxContext);
+
+    h.sent.length = 0;
+    await h.runner.reconcile();
+    expect(settledOf(h.sent)).toHaveLength(1);
+    expect(h.workerInputs).toHaveLength(1);
+    await h.runner.close();
+  });
+
+  it("re-correlates scheduled display changes but refuses a changed occurrence snapshot", async () => {
+    const h = harness();
+    const scheduled = scheduledSessionMessage(h.message);
+    await h.runner.handleSessionMessageRun(scheduledRunFrame(scheduled));
+    const [first] = sessionReceiptsOf(h.sent);
+    if (first?.status !== "accepted") throw new Error("missing scheduled receipt");
+    const retried = {
+      ...scheduled,
+      requestId: randomUUID(),
+      sentAt: "2026-09-28T01:00:59.000Z",
+      scheduleDetailUrl: "https://opentag.example.com/agents/agent-1?schedule=updated",
+    };
+    await h.runner.handleSessionMessageRun(scheduledRunFrame(retried));
+    expect(sessionReceiptsOf(h.sent)[1]).toMatchObject({
+      requestId: retried.requestId,
+      turnId: first.turnId,
+      status: "accepted",
+    });
+
+    const origin = scheduled.scheduledOrigin;
+    if (!origin) throw new Error("missing scheduled origin");
+    const changedOrigins = [
+      { ...origin, scheduleId: randomUUID() },
+      { ...origin, scheduledFor: "2026-09-28T02:00:00.000Z" },
+      { ...origin, name: "Changed name" },
+      { ...origin, timezone: "America/New_York" },
+    ];
+    for (const scheduledOrigin of changedOrigins) {
+      await h.runner.handleSessionMessageRun(
+        scheduledRunFrame({ ...retried, requestId: randomUUID(), scheduledOrigin }),
+      );
+    }
+    expect(sessionReceiptsOf(h.sent)).toHaveLength(2);
+    expect(await journal.read(h.message.messageId)).toMatchObject({
+      requestId: retried.requestId,
+      turnId: first.turnId,
+      phase: "received",
+    });
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(retried.requestId));
+    await h.runner.waitForActive();
+    expect(h.workerInputs).toHaveLength(1);
     await h.runner.close();
   });
 

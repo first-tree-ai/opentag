@@ -125,6 +125,28 @@ pnpm --filter @opentag/server test:integration
 The server integration tests need Docker. Run `pnpm test:coverage` when changing coverage configuration or
 investigating coverage gaps. See the [E2E guide](./e2e/README.md) for browser tests.
 
+CI runs formatting, builds, type checks, repository script tests, PostgreSQL integration tests, and Agent Runtime
+coverage in parallel jobs. Workspace unit tests run on Node.js 22.22.2, 24, and 26, with three Vitest shards per version.
+Repository script tests also run on all three versions; the compatibility jobs verify the packed CLI on Node.js 22.22.2
+and 26, while `CLI Pack Smoke` covers Node.js 24. The aggregate `CI` check requires every job and shard to succeed.
+Patch Coverage checks changed paths before installing dependencies. Changes outside the existing coverable-source policy
+receive an explicit pass; source deletions and renames still require measurement. For source changes, five parallel jobs
+measure one workspace each and enforce its existing floors. The final job requires every report, concatenates disjoint
+file maps, and enforces the unchanged 80% changed-line threshold. Missing reports, failed suites, and overlapping source
+ownership fail the check. The weekly Unit Coverage workflow still measures the complete baseline.
+
+On pull requests, Quality Scoreboard runs inside CI and reuses the three Node 24 unit shard timings instead of rerunning
+tests. Its duration metric is explicitly the slowest workspace shard, excluding repository script tests and runner queue
+time; it is distinct from the full-suite duration measured by scheduled and manual scoreboard runs. All existing static
+scoreboard metrics remain available. The aggregate `CI` status requires the PR scoreboard to succeed.
+
+Local `pnpm test` still runs the complete suite with limited concurrency. To reproduce a workspace unit shard locally:
+
+```bash
+pnpm build
+pnpm exec turbo run test --concurrency=2 -- --shard=1/3
+```
+
 ## Git hooks and worktrees
 
 `pnpm install` installs hooks that format and lint staged files before commits and check the repository before pushes.

@@ -263,7 +263,12 @@
     },
     {
       "idx": 52,
-      "tag": "0052_agent_permissions",
+      "tag": "0052_agent_schedules",
+      "sha256": "e25c1fd92d2f17022ffc8bb9fe983a3c46ca01e62e9e4ecb5885d6f709529a99"
+    },
+    {
+      "idx": 53,
+      "tag": "0053_agent_permissions",
       "sha256": "a0be57300d3b7168c67675e53735f3fbb96d8f547725d590e9473f6f39bdd835"
     }
   ]

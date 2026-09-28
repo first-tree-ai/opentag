@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
-export function captureMergeBaseDiff({ baseSha, repositoryRoot = process.cwd() }) {
+function captureDiff({ baseSha, repositoryRoot = process.cwd(), args }) {
   if (typeof baseSha !== "string" || !FULL_SHA.test(baseSha)) {
     throw new Error("A full 40-character base SHA is required to compare the pull request");
   }
@@ -26,7 +26,7 @@ export function captureMergeBaseDiff({ baseSha, repositoryRoot = process.cwd() }
     const descriptor = openSync(diffPath, "w");
     let result;
     try {
-      result = spawnSync("git", ["diff", "--unified=0", "--no-color", "--find-renames", `${baseSha}...HEAD`], {
+      result = spawnSync("git", ["diff", ...args, `${baseSha}...HEAD`], {
         cwd: repositoryRoot,
         encoding: "utf8",
         stdio: ["ignore", descriptor, "pipe"],
@@ -43,4 +43,15 @@ export function captureMergeBaseDiff({ baseSha, repositoryRoot = process.cwd() }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+export function captureMergeBaseDiff(options) {
+  return captureDiff({ ...options, args: ["--unified=0", "--no-color", "--find-renames"] });
+}
+
+/** Include both sides of renames and deletions, without Git's quoted-path escaping. */
+export function captureMergeBaseChangedPaths(options) {
+  return captureDiff({ ...options, args: ["--name-only", "--no-renames", "--no-color", "-z"] })
+    .split("\0")
+    .filter(Boolean);
 }

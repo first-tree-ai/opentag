@@ -1,5 +1,5 @@
 {
-  "id": "acd01c27-26bf-42eb-a84f-9a52cb1f7d88",
+  "id": "d2b1f419-8ec0-4d77-8236-23c2a05d0c2f",
   "prevId": "187fa35e-e6c5-40b8-a80f-ae1d8dc634ec",
   "version": "7",
   "dialect": "postgresql",
@@ -52,13 +52,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "permissions": {
-          "name": "permissions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{\"approverExternalId\":null,\"rules\":\"\"}'::jsonb"
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -101,6 +94,219 @@
         "agent_runtime_configs_max_duration_valid": {
           "name": "agent_runtime_configs_max_duration_valid",
           "value": "\"agent_runtime_configs\".\"max_duration_ms\" is null or (\"agent_runtime_configs\".\"max_duration_ms\" > 0 and \"agent_runtime_configs\".\"max_duration_ms\" <= 86400000)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.agent_schedules": {
+      "name": "agent_schedules",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_session_id": {
+          "name": "target_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prompt": {
+          "name": "prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "schedule": {
+          "name": "schedule",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "next_trigger_at": {
+          "name": "next_trigger_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "last_dispatch": {
+          "name": "last_dispatch",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "agent_schedules_due_idx": {
+          "name": "agent_schedules_due_idx",
+          "columns": [
+            {
+              "expression": "next_trigger_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"agent_schedules\".\"enabled\" and \"agent_schedules\".\"next_trigger_at\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_schedules_agent_created_idx": {
+          "name": "agent_schedules_agent_created_idx",
+          "columns": [
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_schedules_target_session_idx": {
+          "name": "agent_schedules_target_session_idx",
+          "columns": [
+            {
+              "expression": "target_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "agent_schedules_agent_id_agents_id_fk": {
+          "name": "agent_schedules_agent_id_agents_id_fk",
+          "tableFrom": "agent_schedules",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "agent_schedules_target_session_id_sessions_id_fk": {
+          "name": "agent_schedules_target_session_id_sessions_id_fk",
+          "tableFrom": "agent_schedules",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "target_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "agent_schedules_name_bounds": {
+          "name": "agent_schedules_name_bounds",
+          "value": "char_length(\"agent_schedules\".\"name\") between 1 and 120"
+        },
+        "agent_schedules_prompt_bounds": {
+          "name": "agent_schedules_prompt_bounds",
+          "value": "octet_length(\"agent_schedules\".\"prompt\") between 1 and 16384"
+        },
+        "agent_schedules_revision_positive": {
+          "name": "agent_schedules_revision_positive",
+          "value": "\"agent_schedules\".\"revision\" >= 1"
+        },
+        "agent_schedules_disabled_next_null": {
+          "name": "agent_schedules_disabled_next_null",
+          "value": "\"agent_schedules\".\"enabled\" or \"agent_schedules\".\"next_trigger_at\" is null"
+        },
+        "agent_schedules_timezone_shape": {
+          "name": "agent_schedules_timezone_shape",
+          "value": "\"agent_schedules\".\"timezone\" ~ '^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$'"
+        },
+        "agent_schedules_schedule_shape": {
+          "name": "agent_schedules_schedule_shape",
+          "value": "jsonb_typeof(\"agent_schedules\".\"schedule\") = 'object'\n        and jsonb_typeof(\"agent_schedules\".\"schedule\"->'kind') = 'string' and (\n        (\n          \"agent_schedules\".\"schedule\"->>'kind' = 'at'\n          and \"agent_schedules\".\"schedule\" ?& array['kind', 'at']\n          and (\"agent_schedules\".\"schedule\" - 'kind' - 'at') = '{}'::jsonb\n          and jsonb_typeof(\"agent_schedules\".\"schedule\"->'at') = 'string'\n          and length(\"agent_schedules\".\"schedule\"->>'at') > 0\n        ) or (\n          \"agent_schedules\".\"schedule\"->>'kind' = 'every'\n          and \"agent_schedules\".\"schedule\" ?& array['kind', 'intervalSeconds', 'anchorAt']\n          and (\"agent_schedules\".\"schedule\" - 'kind' - 'intervalSeconds' - 'anchorAt') = '{}'::jsonb\n          and case when jsonb_typeof(\"agent_schedules\".\"schedule\"->'intervalSeconds') = 'number'\n            then ((\"agent_schedules\".\"schedule\"->>'intervalSeconds')::numeric >= 60\n              and (\"agent_schedules\".\"schedule\"->>'intervalSeconds')::numeric <= 9007199254740991\n              and (\"agent_schedules\".\"schedule\"->>'intervalSeconds')::numeric = floor((\"agent_schedules\".\"schedule\"->>'intervalSeconds')::numeric))\n            else false end\n          and jsonb_typeof(\"agent_schedules\".\"schedule\"->'anchorAt') = 'string'\n          and length(\"agent_schedules\".\"schedule\"->>'anchorAt') > 0\n        ) or (\n          \"agent_schedules\".\"schedule\"->>'kind' = 'cron'\n          and \"agent_schedules\".\"schedule\" ?& array['kind', 'expression']\n          and (\"agent_schedules\".\"schedule\" - 'kind' - 'expression') = '{}'::jsonb\n          and jsonb_typeof(\"agent_schedules\".\"schedule\"->'expression') = 'string'\n          and length(\"agent_schedules\".\"schedule\"->>'expression') > 0\n        )\n      )"
         }
       },
       "isRLSEnabled": false
@@ -4153,141 +4359,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.runtime_approvals": {
-      "name": "runtime_approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "server_instance_id": {
-          "name": "server_instance_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "computer_id": {
-          "name": "computer_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "instance_id": {
-          "name": "instance_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "im_binding_id": {
-          "name": "im_binding_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request": {
-          "name": "request",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority": {
-          "name": "authority",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "message_id": {
-          "name": "message_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "runtime_approvals_dispatch_idx": {
-          "name": "runtime_approvals_dispatch_idx",
-          "columns": [
-            {
-              "expression": "server_instance_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "runtime_approvals_computer_id_computers_id_fk": {
-          "name": "runtime_approvals_computer_id_computers_id_fk",
-          "tableFrom": "runtime_approvals",
-          "tableTo": "computers",
-          "columnsFrom": [
-            "computer_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "runtime_approvals_im_binding_id_im_bindings_id_fk": {
-          "name": "runtime_approvals_im_binding_id_im_bindings_id_fk",
-          "tableFrom": "runtime_approvals",
-          "tableTo": "im_bindings",
-          "columnsFrom": [
-            "im_binding_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.sandboxes": {
       "name": "sandboxes",
       "schema": "",
@@ -4683,7 +4754,13 @@
           "name": "source_session_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "scheduled_origin": {
+          "name": "scheduled_origin",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "target_session_id": {
           "name": "target_session_id",
@@ -4840,6 +4917,10 @@
         "session_messages_content_bounds": {
           "name": "session_messages_content_bounds",
           "value": "octet_length(\"session_messages\".\"content\") between 1 and 16384"
+        },
+        "session_messages_source_shape": {
+          "name": "session_messages_source_shape",
+          "value": "(\"session_messages\".\"source_session_id\" is not null and \"session_messages\".\"scheduled_origin\" is null)\n        or (\"session_messages\".\"source_session_id\" is null\n          and \"session_messages\".\"scheduled_origin\" is not null\n          and jsonb_typeof(\"session_messages\".\"scheduled_origin\") = 'object'\n          and \"session_messages\".\"scheduled_origin\" ?& array['scheduleId', 'scheduledFor', 'timezone', 'name']\n          and (\"session_messages\".\"scheduled_origin\" - 'scheduleId' - 'scheduledFor' - 'timezone' - 'name') = '{}'::jsonb\n          and jsonb_typeof(\"session_messages\".\"scheduled_origin\"->'scheduleId') = 'string'\n          and \"session_messages\".\"scheduled_origin\"->>'scheduleId' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'\n          and jsonb_typeof(\"session_messages\".\"scheduled_origin\"->'scheduledFor') = 'string'\n          and length(\"session_messages\".\"scheduled_origin\"->>'scheduledFor') > 0\n          and jsonb_typeof(\"session_messages\".\"scheduled_origin\"->'timezone') = 'string'\n          and length(\"session_messages\".\"scheduled_origin\"->>'timezone') > 0\n          and jsonb_typeof(\"session_messages\".\"scheduled_origin\"->'name') = 'string'\n          and char_length(\"session_messages\".\"scheduled_origin\"->>'name') between 1 and 120)"
         },
         "session_messages_error_code_shape": {
           "name": "session_messages_error_code_shape",

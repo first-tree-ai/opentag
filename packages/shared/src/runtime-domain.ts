@@ -22,6 +22,7 @@ import {
   runtimeUtf8Length as utf8Length,
 } from "./runtime-config.js";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
+import { SessionMessageScheduledOriginSchema } from "./schedules.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
 export {
@@ -650,6 +651,65 @@ export const SessionMessageDeliveryResultSchema = z
       context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
     }
   });
+/*
+ * Session-collaboration v3: the scheduled-origin branch. The v2
+ * `SessionMessageDeliveryRequestSchema` above is frozen forever; ordinary messages keep flowing
+ * with it to any peer that negotiated `runtime.sessionCollaboration` >= 2. A v3 frame carries
+ * exactly one source — the ordinary `sourceSessionId` or the Server-generated `scheduledOrigin`
+ * snapshot — and only the scheduled branch carries the display metadata `sentAt` /
+ * `scheduleDetailUrl`, which never participate in the semantic conflict hash.
+ */
+export const SessionMessageDeliveryRequestV3Schema = z
+  .object({
+    type: z.literal("session:message:deliver"),
+    requestId: RuntimeRequestIdSchema,
+    messageId: z.string().uuid(),
+    sourceSessionId: z.string().uuid().optional(),
+    scheduledOrigin: SessionMessageScheduledOriginSchema.optional(),
+    /** Assigned immediately before the transport send of the scheduled branch; a per-attempt fact. */
+    sentAt: z.string().datetime({ offset: true }).optional(),
+    /** Deep link to the current Schedule detail page, from the deployment public URL. */
+    scheduleDetailUrl: z.string().url().max(2048).optional(),
+    targetSessionId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    placementGeneration: RuntimeSequenceSchema,
+    content: SessionMessageContentSchema,
+    runtime: EffectiveRuntimeSnapshotSchema,
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.runtime.agentId !== frame.agentId) {
+      context.addIssue({ code: "custom", path: ["runtime", "agentId"], message: "Agent identity does not match" });
+    }
+    const ordinary = frame.sourceSessionId !== undefined;
+    const scheduled = frame.scheduledOrigin !== undefined;
+    if (ordinary === scheduled) {
+      context.addIssue({
+        code: "custom",
+        message: "Exactly one of sourceSessionId or scheduledOrigin must be present",
+      });
+    }
+    if (scheduled && frame.sentAt === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["sentAt"],
+        message: "A scheduled delivery requires the send timestamp",
+      });
+    }
+    if (scheduled && frame.scheduleDetailUrl === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["scheduleDetailUrl"],
+        message: "A scheduled delivery requires the Schedule detail link",
+      });
+    }
+    if (ordinary && (frame.sentAt !== undefined || frame.scheduleDetailUrl !== undefined)) {
+      context.addIssue({
+        code: "custom",
+        message: "An ordinary delivery forbids scheduled display metadata",
+      });
+    }
+  });
 
 const TraceEventBaseSchema = z.object({
   sequence: z.number().int().safe().positive(),
@@ -1104,7 +1164,13 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
   RuntimeImSteerRequestSchema,
-  SessionMessageDeliveryRequestSchema,
+  /*
+   * The receiver-side arm is the v3 superset: it parses the frozen v2 ordinary wire unchanged
+   * (the ordinary branch is field-identical) plus the scheduled-origin branch. Senders keep
+   * using `SessionMessageDeliveryRequestSchema` for ordinary frames; a peer that negotiated
+   * only `runtime.sessionCollaboration` v2 never receives a scheduled frame at all.
+   */
+  SessionMessageDeliveryRequestV3Schema,
   TurnReportResultSchema,
   RuntimeImCredentialGrantResultSchema,
   AgentRuntimeTestRequestFrameSchema,
@@ -1158,6 +1224,7 @@ export type RuntimeImOutboxContext = z.infer<typeof RuntimeImOutboxContextSchema
 export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSchema>;
 export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRuntimeOverridesSchema>;
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;
+export type SessionMessageDeliveryRequestV3 = z.infer<typeof SessionMessageDeliveryRequestV3Schema>;
 export type SessionMessageDeliveryResult = z.infer<typeof SessionMessageDeliveryResultSchema>;
 export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;

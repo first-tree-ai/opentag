@@ -706,6 +706,117 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await runtime.close();
   });
 
+  it("bridges MCP choices and the exact requested permission object", async () => {
+    const client = new ManualCodexClient();
+    const events: AgentRuntimeEvent[] = [];
+    const cwd = await temporaryDirectory("opentag-codex-rules-");
+    const request = createRequest((event) => {
+      events.push(event);
+    });
+    const runtime = await factory(client).create({
+      ...request,
+      workspace: { cwd },
+      policy: { ...request.policy, permissionRules: "[]" },
+    });
+    const run = runtime.prompt({ runId: "interactions", input: input("interact") });
+    await client.called("turn/start");
+    const choices = { id: "approval", options: [{ label: "Accept" }, { label: "Decline" }, { label: "Cancel" }] };
+    await interact(
+      runtime,
+      client,
+      events,
+      20,
+      "item/tool/requestUserInput",
+      { kind: "approval", decision: "accept" },
+      true,
+      { questions: [choices] },
+    );
+    await interact(
+      runtime,
+      client,
+      events,
+      21,
+      "tool/requestUserInput",
+      { kind: "approval", decision: "decline" },
+      true,
+      { questions: [choices] },
+    );
+    client.emitRequest({
+      id: 22,
+      method: "tool/requestUserInput",
+      params: { threadId: "thread-1", turnId: "turn-1", questions: [choices] },
+    });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "interaction_requested",
+          request: expect.objectContaining({ requestId: "number:22" }),
+        }),
+      ),
+    );
+    // A changed native request cannot turn the original approval into a new answer.
+    const originalOptions = choices.options;
+    choices.options = [];
+    await runtime.respond({
+      expectedRunId: "interactions",
+      requestId: "number:22",
+      kind: "approval",
+      decision: "accept",
+    });
+    choices.options = originalOptions;
+    for (const [index, question] of [
+      null,
+      { id: "invalid", options: null },
+      { ...choices, isOther: true },
+      { ...choices, options: [{ label: "Accept" }, { label: "wrong" }, { label: "Cancel" }] },
+    ].entries()) {
+      await interact(
+        runtime,
+        client,
+        events,
+        30 + index,
+        "tool/requestUserInput",
+        { kind: "question", decision: "cancel" },
+        true,
+        { questions: [question] },
+      );
+    }
+    await interact(
+      runtime,
+      client,
+      events,
+      40,
+      "item/permissions/requestApproval",
+      { kind: "approval", decision: "accept" },
+      true,
+      { permissions: { network: { enabled: true } } },
+    );
+    await interact(
+      runtime,
+      client,
+      events,
+      41,
+      "item/permissions/requestApproval",
+      { kind: "approval", decision: "decline" },
+      true,
+      { permissions: { network: { enabled: true } } },
+    );
+    expect(client.serverResponses.map((response) => response.result)).toEqual([
+      { answers: { approval: { answers: ["Accept"] } } },
+      { answers: { approval: { answers: ["Decline"] } } },
+      { answers: {} },
+      { answers: {} },
+      { answers: {} },
+      { answers: {} },
+      { answers: {} },
+      { permissions: { network: { enabled: true } }, scope: "turn" },
+      { permissions: {}, scope: "turn" },
+    ]);
+    client.complete();
+    await run;
+    await runtime.close();
+  });
+
   it("expires interactions and rejects unsupported, duplicate, and foreign server requests", async () => {
     const expiringClient = new ManualCodexClient();
     const events: AgentRuntimeEvent[] = [];
@@ -1352,7 +1463,17 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await runtime.close();
 
     expect(launches).toEqual([
-      { command: "codex", args: [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS], path: process.env.PATH },
+      {
+        command: "codex",
+        args: [
+          ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+          "-c",
+          'approvals_reviewer="user"',
+          "-c",
+          `projects.${JSON.stringify(cwd)}.trust_level="trusted"`,
+        ],
+        path: process.env.PATH,
+      },
     ]);
   });
 
@@ -1824,6 +1945,7 @@ async function interact(
     | Omit<AgentApprovalResponse, "expectedRunId" | "requestId">
     | Omit<AgentQuestionResponse, "expectedRunId" | "requestId">,
   includeMessage = true,
+  extraParams: Record<string, unknown> = {},
 ): Promise<void> {
   const before = events.filter((event) => event.type === "interaction_requested").length;
   client.emitRequest({
@@ -1833,6 +1955,7 @@ async function interact(
       threadId: "thread-1",
       turnId: "turn-1",
       ...(includeMessage ? { reason: "reason", message: "message" } : {}),
+      ...extraParams,
     },
   });
   await vi.waitFor(() =>

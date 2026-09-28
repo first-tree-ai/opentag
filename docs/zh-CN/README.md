@@ -13,6 +13,7 @@
 - [IM Channel 与 Thread Session](./thread-sessions.md)
 - [直连 provider CLI 消息](./direct-provider-cli.md)
 - [内部 Session 协作](./internal-session-collaboration.md)
+- [Agent 权限与聊天审批](./agent-permissions.md)
 - [Agent 自我配置](./agent-self-configuration.md)
 - [任务](./tasks.md)
 - [错误分类](./error-taxonomy.md)

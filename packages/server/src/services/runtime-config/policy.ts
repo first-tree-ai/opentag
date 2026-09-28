@@ -2,6 +2,7 @@ import {
   AgentRuntimeConfigSchema,
   type ContextTreeConnection,
   type CreateAgentRuntimeConfig,
+  DEFAULT_AGENT_PERMISSIONS,
   OPENTAG_PLATFORM_INSTRUCTIONS,
 } from "@opentag/shared";
 
@@ -15,13 +16,15 @@ export const DEFAULT_AGENT_RUNTIME_CONFIG = Object.freeze({
   reasoningEffort: null,
   instructions: DEFAULT_AGENT_INSTRUCTIONS,
   maxDurationMs: null,
+  permissions: DEFAULT_AGENT_PERMISSIONS,
 }) satisfies Readonly<Required<CreateAgentRuntimeConfig> & { contextTrees: ContextTreeConnection[] }>;
 
 export function resolveAgentRuntimeConfig(
   input: (CreateAgentRuntimeConfig & { contextTrees?: ContextTreeConnection[] }) | undefined,
 ): Readonly<Required<CreateAgentRuntimeConfig> & { contextTrees: ContextTreeConnection[] }> {
-  return AgentRuntimeConfigSchema.omit({ revision: true }).parse({
+  const config = AgentRuntimeConfigSchema.omit({ revision: true }).parse({
     ...DEFAULT_AGENT_RUNTIME_CONFIG,
     ...input,
   });
+  return { ...config, permissions: config.permissions ?? DEFAULT_AGENT_PERMISSIONS };
 }

@@ -91,6 +91,8 @@ describe("Cloud model settings", () => {
     });
     mount(config, save);
     await screen.findByText("Platform default (router-model-a)");
+    expect(screen.queryByLabelText("Approval user ID")).toBeNull();
+    expect(screen.queryByLabelText("Permission rules (JSON)")).toBeNull();
     fireEvent.click(screen.getByRole("combobox", { name: "Model" }));
     expect((await screen.findAllByRole("option")).map((option) => option.textContent?.trim())).toEqual([
       "Platform default (router-model-a)",

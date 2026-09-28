@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, execFile } from "node:child_proces
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
-import { getRuntimeConfigurationOptions } from "@opentag/shared";
+import { ClaudePermissionRulesSchema, getRuntimeConfigurationOptions } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -11,6 +11,7 @@ import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
   type AgentHostedTools,
+  type AgentInteractionResponse,
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
@@ -73,6 +74,7 @@ interface ClaudeCodeProviderConfiguration {
 }
 
 interface ClaudeCodeRuntimeOptions {
+  readonly policy: AgentRuntimePolicy;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
   readonly createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
@@ -140,6 +142,8 @@ interface ToolState {
 }
 
 export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
+  readonly #policy: AgentRuntimePolicy;
+  readonly #permissions = new Map<string, Readonly<Record<string, unknown>>>();
   readonly #sessionId: string;
   readonly #configuration?: AgentRunConfiguration;
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
@@ -164,11 +168,12 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   constructor(options: ClaudeCodeRuntimeOptions) {
     super({
       manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
-      capabilities: { steer: "unsupported", interactions: "unsupported" },
+      capabilities: { steer: "unsupported", interactions: "supported" },
       eventSink: options.eventSink,
       binding: options.binding,
     });
     this.#sessionId = parseClaudeCodeBinding(options.binding);
+    this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#createProcess = options.createProcess;
     this.#emptyNativeToolAllowList = options.emptyNativeToolAllowList === true;
@@ -258,6 +263,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       this.#textBlocks.clear();
       this.#tools.clear();
       this.#toolBlocks.clear();
+      this.#permissions.clear();
     }
   }
 
@@ -268,6 +274,24 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
 
   protected async closeProvider(): Promise<void> {
     await this.#process?.close();
+  }
+
+  protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {
+    const input = this.#permissions.get(response.requestId);
+    if (!input || !this.#process?.send || response.kind !== "approval")
+      throw new AgentRuntimeError("interaction_not_found", "Claude Code approval is no longer pending");
+    await this.#process.send({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: response.requestId,
+        response:
+          response.decision === "accept"
+            ? { behavior: "allow", updatedInput: input }
+            : { behavior: "deny", message: "The user declined this action." },
+      },
+    });
+    this.#permissions.delete(response.requestId);
   }
 
   #arguments(request: AgentPromptRequest, hostedToolBridge: ClaudeCodeHostedToolBridge): readonly string[] {
@@ -287,14 +311,28 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       // settings, hooks, agents, commands, and CLAUDE.md, all scoped to OpenTag's own private
       // workspace; project MCP servers stay excluded by `--strict-mcp-config` below.
       "--setting-sources",
-      "project",
+      this.#policy.approvals === "never" ? "project" : "user,project",
       "--strict-mcp-config",
       "--mcp-config",
       hostedToolBridge.configPath,
-      ...(hostedToolBridge.allowedTools.length > 0 ? ["--allowedTools", ...hostedToolBridge.allowedTools] : []),
+      ...(this.#policy.approvals === "never" && hostedToolBridge.allowedTools.length > 0
+        ? ["--allowedTools", ...hostedToolBridge.allowedTools]
+        : []),
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
-      "bypassPermissions",
+      this.#policy.approvals === "never" ? "bypassPermissions" : "acceptEdits",
+      ...(this.#policy.approvals === "never"
+        ? []
+        : [
+            "--permission-prompt-tool",
+            "stdio",
+            "--settings",
+            JSON.stringify({
+              permissions: ClaudePermissionRulesSchema.parse(
+                this.#policy.permissionRules?.trim() ? JSON.parse(this.#policy.permissionRules) : {},
+              ),
+            }),
+          ]),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
@@ -310,7 +348,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#claimTerminalAtIngress(message);
     const next = this.#eventTail.then(async () => {
       if (!this.#context || this.#providerFailure) return;
-      await this.#handleMessage(message);
+      if (message.type === "control_request" || message.type === "control_cancel_request")
+        await this.#handleControlMessage(message);
+      else await this.#handleMessage(message);
     });
     this.#eventTail = next.catch((error: unknown) => {
       logger.debug({ code: "event_processing_failed", error: String(error) }, "Claude Code event processing failed");
@@ -331,6 +371,28 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       );
       // The serial event queue preserves the authoritative fail-closed error path.
     }
+  }
+
+  async #handleControlMessage(message: Readonly<Record<string, unknown>>): Promise<void> {
+    const type = message.type;
+    if (type === "control_request") {
+      const id = requireString(message.request_id, "Claude Code control request has no id");
+      const request = requireRecord(message.request, "Claude Code control request is invalid");
+      if (request.subtype !== "can_use_tool" || !this.#process?.send)
+        throw protocolError("Unsupported Claude Code control request");
+      const input = requireRecord(request.input, "Claude Code permission input is invalid");
+      this.#permissions.set(id, input);
+      await this.#requireContext().requestInteraction({
+        requestId: id,
+        kind: "approval",
+        title: `Approve ${requireString(request.tool_name, "Claude Code permission tool is invalid")}`,
+        details: toJsonValue(input),
+      });
+      return;
+    }
+    const id = requireString(message.request_id, "Claude Code cancelled request has no id");
+    this.#permissions.delete(id);
+    await this.#requireContext().resolveInteraction(id, "cancel");
   }
 
   async #handleMessage(message: Readonly<Record<string, unknown>>): Promise<void> {
@@ -714,6 +776,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new ClaudeCodeAgentRuntime({
+        policy: request.policy,
         binding,
         configuration: request.configuration,
         createProcess: (args) =>
@@ -877,11 +940,8 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   for (const root of request.workspace.writableRoots ?? []) {
     if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
   }
-  if (request.policy.approvals !== "never") {
-    throw new AgentRuntimeError(
-      "configuration_invalid",
-      "Claude Code requires approvals=never because interactive control is unsupported",
-    );
+  if (!["never", "on-request"].includes(request.policy.approvals)) {
+    throw new AgentRuntimeError("configuration_invalid", "Claude Code supports approvals=never or on-request");
   }
   if (request.policy.fileSystem !== "unrestricted") {
     throw new AgentRuntimeError(

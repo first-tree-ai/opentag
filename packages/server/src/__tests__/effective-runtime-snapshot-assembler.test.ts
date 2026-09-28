@@ -41,6 +41,26 @@ function assembler(loadAuthority: (value: string) => Promise<ReturnType<typeof a
 }
 
 describe("EffectiveRuntimeSnapshotAssembler", () => {
+  it.each(["codex", "claude-code", "pi"] as const)(
+    "keeps %s local permissions configurable and Cloud fully permissive",
+    async (runtimeProvider) => {
+      const permissions = { approverExternalId: "owner", rules: "" };
+      const config = { ...authority().runtimeConfig, permissions };
+      const local = await assembler(async () =>
+        authority({ runtimeProvider, computerKind: "local", runtimeConfig: config }),
+      ).assembleForSession(sessionId);
+      const cloud = await assembler(async () =>
+        authority({ runtimeProvider, computerKind: "cloud", runtimeConfig: config }),
+      ).assembleForSession(sessionId);
+      expect(local.execution).toEqual({
+        approvalPolicy: "on-request",
+        networkAccess: runtimeProvider !== "codex",
+        permissions,
+      });
+      expect(cloud.execution).toEqual({ approvalPolicy: "never", networkAccess: true });
+    },
+  );
+
   it("compiles one deterministic effective snapshot from Server authority", async () => {
     const first = await assembler(async (value) => {
       expect(value).toBe(sessionId);
@@ -144,7 +164,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
 
     expect(snapshot).toMatchObject({
       provider: "claude-code",
-      execution: { approvalPolicy: "never", networkAccess: true },
+      execution: { approvalPolicy: "on-request", networkAccess: true },
     });
   });
 

@@ -312,16 +312,32 @@ describe("runtime domain contract", () => {
     ).toThrow();
   });
 
+  it("includes native permission rules in snapshot and delivery identity", () => {
+    const original = snapshot();
+    const changed = {
+      ...original,
+      execution: {
+        ...original.execution,
+        approvalPolicy: "on-request" as const,
+        permissions: { approverExternalId: "U_OWNER", rules: "[]" },
+      },
+    };
+    expect(computeRuntimeSnapshotHashes(changed).sessionConfigHash).not.toBe(
+      computeRuntimeSnapshotHashes(original).sessionConfigHash,
+    );
+    expect(computeDirectInputHash(directDelivery(changed))).not.toBe(computeDirectInputHash(directDelivery(original)));
+  });
+
   it("B-04/B-05 produces stable golden hashes from fixed tuples", () => {
     const runtime = snapshot();
     const hashes = computeRuntimeSnapshotHashes(runtime);
     expect(hashes).toEqual({
       agentConfigHash: "7007eb64403d2aa5ff3a4b03ffd18b77b4bf2f9e059cde1a785586aceb783ba4",
-      sessionConfigHash: "9b51b9872c3617a33b57b2068500c3c645be5f1ed4662e613101b8c20546eea6",
-      effectiveSnapshotHash: "4d2eef9ffaef9670ab63911c88fd76f822cab84f8fae2216a5641d8c033053cc",
+      sessionConfigHash: "29e21fcb7e9545ba048d4bcef339a9870395e0df2a9530c48b6b7172c9660a18",
+      effectiveSnapshotHash: "a465324e400b107697a575e55f3d0635c3141849ca745ee22e48cf8b0d924668",
     });
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "2f5773b56951456e484642608eb3ca5382fbea0f551af9e4152c3a26e7dde771",
+      "013a9a4e05cc7d5bfad7bed5c0e24514e3104ee5026dfb381173422679247fc6",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
     const withReplies = turnReport({
@@ -437,7 +453,7 @@ describe("runtime domain contract", () => {
       runtime: snapshot(),
     };
     expect(computeReconcilePayloadHash(request)).toBe(
-      "fd29f85893f3c8fc102de9bdfeed6fde66ff36b4f5bc8be7b3dca05fbff3df1e",
+      "6e98de4f47cabf4d27f54b8f0948cde8df30b2e61b57765a561e6d39a7f31152",
     );
     expect(
       computeReconcilePayloadHash({ ...request, installationId: "77777777-7777-4777-8777-777777777777" }),

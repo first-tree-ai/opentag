@@ -13,6 +13,93 @@ const SESSION_FILE = `/sessions/${SESSION_ID}.jsonl`;
 const SESSION_FILE_HASH = createHash("sha256").update(SESSION_FILE).digest("hex");
 
 describe("PiAgentRuntime", () => {
+  it.each(["accept", "decline"] as const)(
+    "bridges a local permission decision (%s) without restarting the prompt",
+    async (decision) => {
+      const client = new ScriptedPiClient("hold");
+      const events: AgentRuntimeEvent[] = [];
+      const request = createRequest((event) => {
+        events.push(event);
+      });
+      const runtime = await piFactory(client).create({
+        ...request,
+        policy: { ...request.policy, approvals: "on-request" },
+      });
+      const run = runtime.prompt({ runId: "local-run", input: input("/permission-system reset") });
+      await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+      expect(client.args).toContain("npm:@gotgenes/pi-permission-system@35.0.1");
+      expect(client.args).toContain("--no-approve");
+      expect(client.commands).toContainEqual({ type: "prompt", message: "User request:\n/permission-system reset" });
+      client.emitApproval();
+      await vi.waitFor(() => expect(events.some((event) => event.type === "interaction_requested")).toBe(true));
+      await runtime.respond({
+        expectedRunId: "local-run",
+        requestId: "permission-1",
+        kind: "approval",
+        decision,
+        scope: "run",
+      });
+      expect(client.commands).toContainEqual({
+        type: "extension_ui_response",
+        id: "permission-1",
+        value: decision === "accept" ? "Yes" : "No",
+      });
+      await expect(
+        runtime.respond({ expectedRunId: "local-run", requestId: "permission-1", kind: "approval", decision }),
+      ).rejects.toBeDefined();
+      client.complete();
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      expect(client.commands.filter((command) => command.type === "prompt")).toHaveLength(1);
+      await runtime.close();
+    },
+  );
+
+  it("fails closed before prompting when the permission extension is missing", async () => {
+    const client = new ScriptedPiClient("complete");
+    client.permissionCommands = [];
+    const request = createRequest(() => undefined);
+    const runtime = await piFactory(client).create({
+      ...request,
+      policy: { ...request.policy, approvals: "on-request" },
+    });
+    await expect(runtime.prompt({ runId: "local-run", input: input("work") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Pi permission extension did not load" },
+    });
+    expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
+    await runtime.close();
+  });
+
+  it("refuses stale native responses, extension failures, and cleans up a failed local create", async () => {
+    const client = new ScriptedPiClient("hold");
+    const request = createRequest(() => undefined);
+    const runtime = await piFactory(client).create({
+      ...request,
+      policy: { ...request.policy, approvals: "on-request" },
+    });
+    const run = runtime.prompt({ runId: "local-run", input: input("work") });
+    await vi.waitFor(() => expect(client.commands.some((command) => command.type === "prompt")).toBe(true));
+    await expect(
+      (runtime as unknown as { respondProvider(response: unknown): Promise<void> }).respondProvider({
+        kind: "approval",
+        requestId: "stale",
+        decision: "accept",
+      }),
+    ).rejects.toMatchObject({ code: "interaction_not_found" });
+    client.emit({ type: "extension_error", error: "policy failed" });
+    await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_protocol_error" } });
+    await runtime.close();
+    await expect(
+      piFactory(client).create({
+        ...request,
+        policy: { ...request.policy, approvals: "on-request" },
+        eventSink: () => {
+          throw new Error("sink failed");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "create_failed" });
+  });
+
   it("creates a persistent session and translates a complete Pi RPC run", async () => {
     const client = new ScriptedPiClient("complete");
     const events: AgentRuntimeEvent[] = [];
@@ -838,7 +925,7 @@ describe("PiAgentRuntime", () => {
   it("rejects policies Pi cannot enforce and incompatible bindings", async () => {
     const factory = piFactory(new ScriptedPiClient("complete"));
     for (const policy of [
-      { ...basePolicy(), approvals: "on-request" as const },
+      { ...basePolicy(), approvals: "unless-trusted" as const },
       { ...basePolicy(), fileSystem: "workspace-write" as const },
       {
         ...basePolicy(),
@@ -937,6 +1024,7 @@ type Scenario = "complete" | "error" | "failure" | "hold";
 
 class ScriptedPiClient implements PiRpcClient {
   args: readonly string[] = [];
+  permissionCommands: unknown[] = [{ name: "permission-system" }];
   readonly commands: Readonly<Record<string, unknown>>[] = [];
   readonly #listeners = new Set<(message: Readonly<Record<string, unknown>>) => void>();
   readonly #scenario: Scenario;
@@ -963,6 +1051,7 @@ class ScriptedPiClient implements PiRpcClient {
         model: { id: "fixture-model", provider: "fixture" },
       };
     }
+    if (command.type === "get_commands") return { commands: this.permissionCommands };
     if (command.type === "steer") return undefined;
     if (command.type === "abort") {
       this.#emitRun("aborted");
@@ -983,6 +1072,19 @@ class ScriptedPiClient implements PiRpcClient {
     if (this.#scenario === "error") this.#emitRun("error");
     if (this.#scenario === "failure") this.#emit({ type: "opentag/process_error", error: new Error("process exited") });
     return undefined;
+  }
+
+  async send(message: Readonly<Record<string, unknown>>): Promise<void> {
+    this.commands.push(message);
+  }
+  emitApproval(): void {
+    this.#emit({
+      type: "extension_ui_request",
+      id: "permission-1",
+      method: "select",
+      title: "Allow bash: git push?",
+      options: ["Yes", "No"],
+    });
   }
 
   subscribe(listener: (message: Readonly<Record<string, unknown>>) => void): () => void {

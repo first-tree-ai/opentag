@@ -12,6 +12,84 @@ import type { ClaudeCodeProcessClient, ClaudeCodeProcessResult } from "../provid
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("ClaudeCodeAgentRuntime", () => {
+  it.each(["accept", "decline"] as const)(
+    "bridges a local permission decision (%s) to the original process",
+    async (decision) => {
+      const processes: ScriptedClaudeCodeProcess[] = [];
+      const events: AgentRuntimeEvent[] = [];
+      const request = createRequest((event) => {
+        events.push(event);
+      });
+      const runtime = await claudeFactory(processes, "approval").create({
+        ...request,
+        policy: { ...request.policy, approvals: "on-request", permissionRules: '{"deny":["Bash(rm *)"]}' },
+      });
+      const run = runtime.prompt({ runId: "local-run", input: input("work") });
+      await vi.waitFor(() => expect(events.some((event) => event.type === "interaction_requested")).toBe(true));
+      expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("acceptEdits");
+      expect(argumentAfter(processes[0]?.args ?? [], "--permission-prompt-tool")).toBe("stdio");
+      expect(argumentAfter(processes[0]?.args ?? [], "--settings")).toBe('{"permissions":{"deny":["Bash(rm *)"]}}');
+      await runtime.respond({
+        expectedRunId: "local-run",
+        requestId: "permission-1",
+        kind: "approval",
+        decision,
+        scope: "run",
+      });
+      expect(processes[0]?.sent).toContainEqual({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: "permission-1",
+          response:
+            decision === "accept"
+              ? { behavior: "allow", updatedInput: { command: "git push" } }
+              : { behavior: "deny", message: "The user declined this action." },
+        },
+      });
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      expect(processes).toHaveLength(1);
+      await runtime.close();
+    },
+  );
+
+  it("cancels native permission requests and rejects stale native replies", async () => {
+    const processes: ScriptedClaudeCodeProcess[] = [];
+    const events: AgentRuntimeEvent[] = [];
+    const request = createRequest((event) => {
+      events.push(event);
+    });
+    const runtime = await claudeFactory(processes, "approval").create({
+      ...request,
+      policy: { ...request.policy, approvals: "on-request" },
+    });
+    const run = runtime.prompt({ runId: "local-run", input: input("work") });
+    await vi.waitFor(() => expect(events.some((event) => event.type === "interaction_requested")).toBe(true));
+    processes[0]?.emit({ type: "control_cancel_request", request_id: "permission-1" });
+    await vi.waitFor(() => expect(events.some((event) => event.type === "interaction_resolved")).toBe(true));
+    await expect(
+      (runtime as unknown as { respondProvider(response: unknown): Promise<void> }).respondProvider({
+        kind: "approval",
+        requestId: "permission-1",
+        decision: "accept",
+      }),
+    ).rejects.toMatchObject({ code: "interaction_not_found" });
+    processes[0]?.complete();
+    await run;
+    await runtime.close();
+  });
+
+  it("refuses an unsupported native control request", async () => {
+    const processes: ScriptedClaudeCodeProcess[] = [];
+    const runtime = await claudeFactory(processes, "approval").create(createRequest(() => undefined));
+    const run = runtime.prompt({ runId: "control-run", input: input("work") });
+    await vi.waitFor(() => expect(processes[0]?.executing).toBe(true));
+    processes[0]?.emit({ type: "control_request", request_id: "unsupported", request: { subtype: "unknown" } });
+    processes[0]?.complete();
+    await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_protocol_error" } });
+    await runtime.close();
+  });
+
   it("creates a bound session and maps streamed text, tools, usage, and the terminal result", async () => {
     const events: AgentRuntimeEvent[] = [];
     const processes: ScriptedClaudeCodeProcess[] = [];
@@ -26,7 +104,7 @@ describe("ClaudeCodeAgentRuntime", () => {
 
     expect(runtime).toBeInstanceOf(ClaudeCodeAgentRuntime);
     expect(runtime.manifest).toEqual(CLAUDE_CODE_AGENT_RUNTIME_MANIFEST);
-    expect(runtime.capabilities).toEqual({ steer: "unsupported", interactions: "unsupported" });
+    expect(runtime.capabilities).toEqual({ steer: "unsupported", interactions: "supported" });
     expect(runtime.binding).toEqual({
       providerId: "claude-code",
       schemaVersion: 1,
@@ -219,7 +297,7 @@ describe("ClaudeCodeAgentRuntime", () => {
   });
 });
 
-type Scenario = "complete" | "error" | "foreign" | "hold";
+type Scenario = "complete" | "error" | "foreign" | "hold" | "approval";
 
 class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly args: readonly string[];
@@ -229,6 +307,9 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   interruptCount = 0;
   closeCount = 0;
   #reject?: (error: Error) => void;
+  readonly sent: Readonly<Record<string, unknown>>[] = [];
+  #complete?: () => void;
+  #onMessage?: (message: Readonly<Record<string, unknown>>) => void;
 
   constructor(args: readonly string[], scenario: Scenario) {
     this.args = args;
@@ -240,8 +321,22 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
     onMessage: (message: Readonly<Record<string, unknown>>) => void,
     signal: AbortSignal,
   ): Promise<ClaudeCodeProcessResult> {
+    this.#onMessage = onMessage;
     this.input = inputValue;
     this.executing = true;
+    if (this.#scenario === "approval") {
+      onMessage({
+        type: "control_request",
+        request_id: "permission-1",
+        request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "git push" } },
+      });
+      return new Promise((resolve) => {
+        this.#complete = () => {
+          for (const message of messages("complete")) onMessage(message);
+          resolve({ stderr: "" });
+        };
+      });
+    }
     if (this.#scenario === "hold") {
       return new Promise((_, reject) => {
         this.#reject = reject;
@@ -250,6 +345,17 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
     }
     for (const message of messages(this.#scenario)) onMessage(message);
     return Promise.resolve({ stderr: "" });
+  }
+
+  emit(message: Readonly<Record<string, unknown>>): void {
+    this.#onMessage?.(message);
+  }
+  complete(): void {
+    this.#complete?.();
+  }
+  async send(message: Readonly<Record<string, unknown>>): Promise<void> {
+    this.sent.push(message);
+    this.#complete?.();
   }
 
   async interrupt(): Promise<void> {

@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -12,6 +13,7 @@ import {
   AGENT_RUNTIME_ID_MAX_BYTES,
   AGENT_RUNTIME_TEXT_MAX_BYTES,
   type AgentAbortRequest,
+  type AgentInteractionResponse,
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
@@ -36,6 +38,7 @@ import {
   runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
+import { preparePiPermissionHome } from "../native-permissions.js";
 import { type PiRpcClient, PiRpcError, PiRpcProcess, type PiRpcProcessSpawnOptions } from "./rpc-wire.js";
 
 const execFileAsync = promisify(execFile);
@@ -98,6 +101,7 @@ const PI_MCP_GATEWAY_EXTENSION = fileURLToPath(new URL("../../pi-extensions/mcp-
 const PI_MCP_GATEWAY_BUNDLED_EXTENSION = fileURLToPath(new URL("./pi-extensions/mcp-gateway.mjs", import.meta.url));
 
 interface PiRuntimeOptions {
+  readonly permissionHome?: string;
   readonly mcpAdapterEntry?: string;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
@@ -169,6 +173,8 @@ interface PiTool {
 }
 
 export class PiAgentRuntime extends BaseAgentRuntime {
+  readonly #permissionHome?: string;
+  readonly #permissions = new Set<string>();
   readonly #mcpAdapterEntry?: string;
   readonly #sessionId: string;
   readonly #policy: AgentRuntimePolicy;
@@ -204,7 +210,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   constructor(options: PiRuntimeOptions) {
     super({
       manifest: PI_AGENT_RUNTIME_MANIFEST,
-      capabilities: { steer: "supported", interactions: "unsupported" },
+      capabilities: { steer: "supported", interactions: "supported" },
       eventSink: options.eventSink,
       binding: options.binding,
     });
@@ -212,6 +218,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#sessionId = binding.sessionId;
     this.#sessionFileHash = binding.sessionFileHash;
     this.#policy = options.policy;
+    this.#permissionHome = options.permissionHome;
     this.#mcpAdapterEntry = options.mcpAdapterEntry;
     this.#configuration = options.configuration;
     this.#sessionDirectory = options.sessionDirectory;
@@ -243,8 +250,12 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         await client.request({ type: "get_state" }, context.signal),
         "Pi get_state returned invalid data",
       );
+      await this.#verifyPermissions(client, context.signal);
       await this.#restoreSessionState(state, context);
-      await client.request({ type: "prompt", message: piInput(request) }, context.signal);
+      await client.request(
+        { type: "prompt", message: piInput(request, Boolean(this.#permissionHome)) },
+        context.signal,
+      );
       this.#promptAccepted?.resolve();
       const terminal = await this.#terminal?.promise;
       /* v8 ignore next -- resetRun always creates the terminal before Provider I/O begins. */
@@ -273,6 +284,20 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       throw new AgentProviderError("provider_error", cleanupFailure.message, { cause: cleanupFailure });
     }
     return result;
+  }
+
+  async #verifyPermissions(client: PiRpcClient, signal: AbortSignal): Promise<void> {
+    if (!this.#permissionHome) return;
+    const response = requireRecord(
+      await client.request({ type: "get_commands" }, signal),
+      "Pi command list is invalid",
+    );
+    if (
+      !Array.isArray(response.commands) ||
+      !response.commands.some((command) => record(command)?.name === "permission-system")
+    ) {
+      throw protocolError("Pi permission extension did not load");
+    }
   }
 
   async #restoreSessionState(
@@ -327,6 +352,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#currentTurnId = undefined;
     this.#currentAssistant = undefined;
     this.#tools.clear();
+    this.#permissions.clear();
     if (failure) this.closeForProviderFailure();
     return failure;
   }
@@ -363,6 +389,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   protected async closeProvider(): Promise<void> {
+    if (this.#permissionHome) await rm(this.#permissionHome, { recursive: true, force: true });
     await this.#client?.close();
   }
 
@@ -400,6 +427,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       this.#sessionId,
       ...(this.#sessionDirectory ? ["--session-dir", this.#sessionDirectory] : []),
       ...piPolicyArguments(this.#policy),
+      ...(this.#permissionHome ? ["--no-approve", "--extension", "npm:@gotgenes/pi-permission-system@35.0.1"] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--thinking", configuration.reasoningEffort] : []),
       // Explicit `-e` extension load for actual execution only; probes/help never receive it and
@@ -502,6 +530,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (type === "extension_error") {
+      if (this.#permissionHome) throw protocolError("Pi extension failed while permission enforcement was required");
       await this.#requireContext().emit({
         type: "provider_warning",
         code: "pi_extension_error",
@@ -521,14 +550,31 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   async #handleExtensionUiRequest(message: Readonly<Record<string, unknown>>): Promise<void> {
+    if (
+      this.#permissionHome &&
+      message.method === "select" &&
+      Array.isArray(message.options) &&
+      message.options.includes("Yes") &&
+      message.options.includes("No")
+    ) {
+      const id = requireString(message.id, "Pi approval has no id");
+      this.#permissions.add(id);
+      await this.#requireContext().requestInteraction({
+        requestId: id,
+        kind: "approval",
+        title: "Approve Pi action",
+        message: requireString(message.title, "Pi approval has no title"),
+      });
+      return;
+    }
     // pi-mcp-adapter reports status through Pi's fire-and-forget UI channel even in RPC mode.
     // Interactive dialogs remain forbidden: this headless runtime cannot safely answer them.
     if (
-      this.#mcpEnabled &&
+      (this.#mcpEnabled || this.#permissionHome) &&
       (message.method === "setStatus" || message.method === "setWidget" || message.method === "setTitle")
     )
       return;
-    if (this.#mcpEnabled && message.method === "notify") {
+    if ((this.#mcpEnabled || this.#permissionHome) && message.method === "notify") {
       await this.#requireContext().emit({
         type: "provider_warning",
         code: "pi_mcp_notice",
@@ -537,6 +583,17 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       return;
     }
     throw protocolError("Pi requested extension UI while extensions are disabled");
+  }
+
+  protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {
+    if (!this.#permissions.has(response.requestId) || !this.#client?.send || response.kind !== "approval")
+      throw new AgentRuntimeError("interaction_not_found", "Pi approval is no longer pending");
+    await this.#client.send({
+      type: "extension_ui_response",
+      id: response.requestId,
+      value: response.decision === "accept" ? "Yes" : "No",
+    });
+    this.#permissions.delete(response.requestId);
   }
 
   async #startMessage(message: Readonly<Record<string, unknown>>): Promise<void> {
@@ -803,6 +860,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 }
 
 export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
+  readonly #permissionSourceHome?: string;
   readonly #mcpAdapterEntry?: string;
   readonly manifest = PI_AGENT_RUNTIME_MANIFEST;
   readonly #createSessionId: () => string;
@@ -820,6 +878,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly #sessionDirectory?: string;
 
   constructor(options: PiAgentRuntimeFactoryOptions = {}) {
+    this.#permissionSourceHome = options.process?.env?.PI_CODING_AGENT_DIR;
     if (options.mcpAdapterEntry && !isAbsolute(options.mcpAdapterEntry)) {
       throw new AgentRuntimeError("configuration_invalid", "Pi mcpAdapterEntry must be an absolute path");
     }
@@ -901,19 +960,31 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
         : piBinding(requireUuid(this.#createSessionId(), "generated Pi session id"));
     assertBinding(binding, this.manifest);
     parsePiBinding(binding);
+    const permissionHome =
+      request.policy.approvals === "on-request"
+        ? await preparePiPermissionHome(
+            request.policy.permissionRules ?? "",
+            request.workspace.environment?.PI_CODING_AGENT_DIR ??
+              this.#permissionSourceHome ??
+              process.env.PI_CODING_AGENT_DIR,
+          )
+        : undefined;
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new PiAgentRuntime({
         binding,
+        ...(permissionHome ? { permissionHome } : {}),
         ...(this.#mcpAdapterEntry ? { mcpAdapterEntry: this.#mcpAdapterEntry } : {}),
         configuration: request.configuration,
         createClient: (args, extraEnvironment) =>
           this.#createClient(
             request.workspace.cwd,
             args,
-            extraEnvironment
-              ? { ...request.workspace.environment, ...extraEnvironment }
-              : request.workspace.environment,
+            {
+              ...request.workspace.environment,
+              ...extraEnvironment,
+              ...(permissionHome ? { PI_CODING_AGENT_DIR: permissionHome } : {}),
+            },
             request.workspace.pathPrepend,
           ),
         eventSink: request.eventSink,
@@ -925,6 +996,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       });
     } catch (error) {
       logger.debug({ code: "runtime_create_failed", error: String(error) }, "Pi runtime creation failed");
+      if (permissionHome) await rm(permissionHome, { recursive: true, force: true });
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Pi ${mode} failed`, {
         cause: error,
       });
@@ -1097,8 +1169,8 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   for (const root of request.workspace.writableRoots ?? []) {
     if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
   }
-  if (request.policy.approvals !== "never") {
-    throw new AgentRuntimeError("configuration_invalid", "Pi requires approvals=never because it has no approval gate");
+  if (request.policy.approvals !== "never" && request.policy.approvals !== "on-request") {
+    throw new AgentRuntimeError("configuration_invalid", "Pi supports approvals=never or on-request");
   }
   if (request.policy.fileSystem === "workspace-write") {
     throw new AgentRuntimeError(
@@ -1272,8 +1344,10 @@ function piPolicyArguments(policy: AgentRuntimePolicy): readonly string[] {
   return [];
 }
 
-function piInput(request: AgentPromptRequest): string {
-  return piItems(request.input.items);
+function piInput(request: AgentPromptRequest, literal: boolean): string {
+  const message = piItems(request.input.items);
+  // IM text must not dispatch extension commands that can change the managed policy.
+  return literal ? `User request:\n${message}` : message;
 }
 
 function piItems(items: readonly { readonly text: string }[]): string {

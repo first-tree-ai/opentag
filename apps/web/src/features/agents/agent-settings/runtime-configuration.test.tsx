@@ -56,6 +56,33 @@ describe("RuntimeConfigurationForm", () => {
     vi.restoreAllMocks();
   });
 
+  it("saves the designated approval user and validates native rules before saving", async () => {
+    const permissions = { approverExternalId: "U_OWNER", rules: '[{"pattern":["git","push"],"decision":"prompt"}]' };
+    const save = vi.fn(async () => ({
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, permissions },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Approval user ID" }), { target: { value: "U_OWNER" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Permission rules (JSON)" }), {
+      target: { value: '{"deny":["Bash(*)"]}' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("textbox", { name: "Permission rules (JSON)" }), {
+      target: { value: permissions.rules },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        expectedRevision: 4,
+        runtimeConfig: { model: null, reasoningEffort: null, permissions },
+      }),
+    );
+  });
+
   it("presents model suggestions and the complete Codex reasoning list", async () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
 

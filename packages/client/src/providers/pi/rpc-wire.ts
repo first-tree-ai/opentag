@@ -41,6 +41,7 @@ export interface PiRpcSpawnOptions {
 }
 
 export interface PiRpcClient {
+  send?(message: Readonly<Record<string, unknown>>): Promise<void>;
   request(command: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<unknown>;
   subscribe(listener: (message: Readonly<Record<string, unknown>>) => void): () => void;
   close(graceMs?: number): Promise<void>;
@@ -163,6 +164,10 @@ export class PiRpcProcess implements PiRpcClient {
         this.#pending.get(id)?.reject(error as Error);
       });
     });
+  }
+
+  async send(message: Readonly<Record<string, unknown>>): Promise<void> {
+    await this.#write(message);
   }
 
   async close(graceMs = 1_000): Promise<void> {

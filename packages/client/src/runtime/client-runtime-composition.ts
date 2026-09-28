@@ -857,6 +857,7 @@ export async function createClientRuntime(
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
+    handleApproval: runner.respondToApproval.bind(runner),
     availabilityTester,
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });

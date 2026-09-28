@@ -3,15 +3,16 @@ import type { AgentRuntimePolicy } from "../../agent-runtime/types.js";
 
 export function codexRuntimePolicy(snapshot: EffectiveRuntimeSnapshot): AgentRuntimePolicy {
   return {
-    fileSystem: "workspace-write",
+    fileSystem: snapshot.execution.approvalPolicy === "never" ? "unrestricted" : "workspace-write",
     network: snapshot.execution.networkAccess ? "enabled" : "disabled",
-    approvals: "never",
+    approvals: snapshot.execution.approvalPolicy,
+    permissionRules: snapshot.execution.permissions?.rules,
     tools: { mode: "provider-default" },
   };
 }
 
 export function validateCodexRuntimePolicy(snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined {
-  if (snapshot.execution.approvalPolicy !== "never" || !snapshot.execution.networkAccess) {
+  if (snapshot.execution.approvalPolicy === "never" && !snapshot.execution.networkAccess) {
     return "configuration_unsupported";
   }
   return undefined;

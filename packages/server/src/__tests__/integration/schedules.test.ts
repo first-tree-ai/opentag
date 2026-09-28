@@ -277,7 +277,7 @@ describe("agent_schedules table contract (M02 database half)", () => {
       );
       expectDatabaseError(await insert(scheduleRow({ ...base, name: "" })), "23514", "agent_schedules_name_bounds");
       // Prompt bounds are UTF-8 bytes.
-      expect(await insert(scheduleRow({ ...base, prompt: "你".repeat(5461) + "x" }))).toBeNull();
+      expect(await insert(scheduleRow({ ...base, prompt: `${"你".repeat(5461)}x` }))).toBeNull();
       expectDatabaseError(
         await insert(scheduleRow({ ...base, prompt: "x".repeat(16_385) })),
         "23514",

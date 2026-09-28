@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type {
+  AgentScheduleLastDispatch,
   CloudModelOptions,
   ImConversationKind,
   InternalSessionRuntimeOverrides,
@@ -13,6 +14,7 @@ import type {
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
+  agentSchedules,
   agents,
   computers,
   imBindings,
@@ -108,6 +110,43 @@ export interface SessionMessageAttempt {
   deduplicated: boolean;
   attemptCount: number | null;
 }
+
+/*
+ * Scheduled dispatch authority. A Server-scheduled message has NO source Session: the trusted
+ * claim already wrote the durable message row, so the dispatch route carries only the pinned
+ * target's authority facts, and the final admission re-verifies them under the existing lock
+ * order — Agent -> IM binding -> target Session -> placement -> Computer — extended with the
+ * schedule row LAST. Management mutations take only the schedule row lock, so the two lock
+ * directions can never deadlock, and whichever side holds the schedule row first decides the
+ * pause/delete versus send race.
+ */
+export interface AuthorizedScheduledMessageRoute {
+  agentId: string;
+  imBindingId: string;
+  targetSessionId: string;
+  targetSessionKind: SessionKind;
+  targetInstallationId: string;
+  targetComputerId: string;
+  targetComputerKind: "local" | "cloud";
+  targetPlacementGeneration: number;
+}
+
+/** Permanent target failures auto-disable the schedule; temporary ones skip only this occurrence. */
+export type ScheduledTargetPermanentCode = "agent_deleted" | "binding_invalid" | "target_invalid";
+export type ScheduledTargetTemporaryCode = "agent_suspended" | "authority_unavailable";
+
+export type ScheduledMessageRouteResolution =
+  | { kind: "route"; route: AuthorizedScheduledMessageRoute }
+  | { kind: "permanent"; code: ScheduledTargetPermanentCode }
+  | { kind: "temporary"; code: ScheduledTargetTemporaryCode };
+
+/** Why the final scheduled-dispatch admission refused the send; every value is a stable code. */
+export type ScheduledDispatchAdmissionFailure =
+  | "schedule_deleted"
+  | "schedule_disabled"
+  | "schedule_changed"
+  | ScheduledTargetPermanentCode
+  | ScheduledTargetTemporaryCode;
 
 export interface CreateInternalSessionWithMessageResult extends SessionMessageAttempt {
   session: Session;
@@ -636,6 +675,12 @@ export class SessionService {
     attemptCount: number;
     outcome: SessionMessageOutcome;
     errorCode?: string;
+    /**
+     * Scheduled hand-off summary write-back: applied only while the schedule's latest summary
+     * still points at exactly this occurrence (scheduleId + scheduledFor + messageId), so a late
+     * receipt can never overwrite a newer claim's summary. Never touches enabled/revision/next.
+     */
+    scheduleSummary?: { scheduleId: string; scheduledFor: string; attemptedAt: string };
   }): Promise<boolean> {
     return this.#database.transaction(async (transaction) => {
       const now = this.#now();
@@ -653,8 +698,230 @@ export class SessionService {
         .update(sessionDescendants)
         .set({ lastDeliveryOutcome: input.outcome })
         .where(eq(sessionDescendants.lastMessageId, input.messageId));
+      if (input.scheduleSummary) {
+        const summary: AgentScheduleLastDispatch = {
+          scheduledFor: input.scheduleSummary.scheduledFor,
+          attemptedAt: input.scheduleSummary.attemptedAt,
+          messageId: input.messageId,
+          outcome: input.outcome,
+          code: input.errorCode ?? null,
+        };
+        await transaction
+          .update(agentSchedules)
+          .set({ lastDispatch: summary })
+          .where(
+            and(
+              eq(agentSchedules.id, input.scheduleSummary.scheduleId),
+              sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${input.scheduleSummary.scheduledFor}`,
+              sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${input.messageId}`,
+            ),
+          );
+      }
       return true;
     });
+  }
+
+  /* ------------------------------------------------------------------------------------------
+   * Scheduled dispatch (Server-scheduled origin): the trusted one-shot hand-off helpers. None of
+   * these accept a caller-supplied origin; only the internal scheduler constructs them.
+   * ---------------------------------------------------------------------------------------- */
+
+  /**
+   * The scheduled one-shot fence: the single hand-off attempt moves `attempt_count` 0 -> 1
+   * atomically. Unlike the ordinary path there is no retry ladder — a fenced message is never
+   * dispatched again, and a missing, ordinary-origin, or already-fenced row answers `undefined`
+   * so the caller can never send it.
+   */
+  async beginScheduledMessageAttempt(messageId: string): Promise<SessionMessageRow | undefined> {
+    const now = this.#now();
+    const [updated] = await this.#database
+      .update(sessionMessages)
+      .set({ attemptCount: 1, lastAttemptAt: now, lastOutcome: "unknown", lastErrorCode: null, updatedAt: now })
+      .where(
+        and(
+          eq(sessionMessages.id, messageId),
+          eq(sessionMessages.attemptCount, 0),
+          isNotNull(sessionMessages.scheduledOrigin),
+        ),
+      )
+      .returning();
+    return updated;
+  }
+
+  /**
+   * Resolve the pinned target's dispatch route without taking any lock. Used by the claim (inside
+   * its transaction, where it must never take authority locks while holding the schedule row) and
+   * by the dispatch (whose final admission re-verifies every fact under locks). Classification is
+   * deliberate: a deleted Agent, a disabled or foreign binding, and an ended or missing target are
+   * permanent and auto-disable the schedule; a suspended Agent or a binding mid-reauthorization
+   * skips only this occurrence.
+   */
+  async resolveScheduledMessageRoute(
+    targetSessionId: string,
+    agentId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<ScheduledMessageRouteResolution> {
+    const [row] = await executor
+      .select({
+        sessionId: sessions.id,
+        sessionKind: sessions.kind,
+        sessionEndedAt: sessions.endedAt,
+        bindingId: imBindings.id,
+        bindingAgentId: imBindings.agentId,
+        bindingStatus: imBindings.status,
+        bindingDisabledAt: imBindings.disabledAt,
+        agentStatus: agents.status,
+        placementComputerId: sessionPlacements.computerId,
+        placementGeneration: sessionPlacements.generation,
+        computerKind: computers.kind,
+        computerInstallationId: computers.currentInstallationId,
+      })
+      .from(sessions)
+      .leftJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .leftJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .leftJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(eq(sessions.id, targetSessionId))
+      .limit(1);
+    if (!row) return { kind: "permanent", code: "target_invalid" };
+    if (row.agentStatus === null || row.agentStatus === "deleted") return { kind: "permanent", code: "agent_deleted" };
+    if (
+      row.bindingId === null ||
+      row.bindingAgentId !== agentId ||
+      row.bindingStatus === "disabled" ||
+      row.bindingDisabledAt !== null
+    ) {
+      return { kind: "permanent", code: "binding_invalid" };
+    }
+    if (row.sessionEndedAt !== null) return { kind: "permanent", code: "target_invalid" };
+    if (
+      row.placementComputerId === null ||
+      row.placementGeneration === null ||
+      row.computerKind === null ||
+      row.computerInstallationId === null
+    ) {
+      return { kind: "permanent", code: "target_invalid" };
+    }
+    if (row.agentStatus === "suspended") return { kind: "temporary", code: "agent_suspended" };
+    if (row.bindingStatus !== "active") return { kind: "temporary", code: "authority_unavailable" };
+    return {
+      kind: "route",
+      route: {
+        agentId,
+        imBindingId: row.bindingId,
+        targetSessionId: row.sessionId,
+        targetSessionKind: row.sessionKind,
+        targetInstallationId: row.computerInstallationId,
+        targetComputerId: row.placementComputerId,
+        targetComputerKind: row.computerKind,
+        targetPlacementGeneration: row.placementGeneration,
+      },
+    };
+  }
+
+  /**
+   * Auto-disable when a permanently invalid fixed target is found outside the admission (the route
+   * could not even be built). Only the schedule row lock is taken — never authority locks — and the
+   * permanent facts are re-verified before the disable; the revision bumps exactly like a
+   * management edit. The occurrence summary itself is written by the conditional outcome
+   * write-back that follows.
+   */
+  async disableScheduleForInvalidTarget(scheduleId: string): Promise<void> {
+    await this.#database.transaction(async (transaction) => {
+      const [row] = await transaction
+        .select({
+          id: agentSchedules.id,
+          agentId: agentSchedules.agentId,
+          targetSessionId: agentSchedules.targetSessionId,
+          enabled: agentSchedules.enabled,
+          nextTriggerAt: agentSchedules.nextTriggerAt,
+          revision: agentSchedules.revision,
+        })
+        .from(agentSchedules)
+        .where(eq(agentSchedules.id, scheduleId))
+        .limit(1)
+        .for("update");
+      if (!row) return;
+      if (!row.enabled && row.nextTriggerAt === null) return;
+      const resolution = await this.resolveScheduledMessageRoute(row.targetSessionId, row.agentId, transaction);
+      if (resolution.kind !== "permanent") return;
+      await transaction
+        .update(agentSchedules)
+        .set({ enabled: false, nextTriggerAt: null, revision: row.revision + 1, updatedAt: this.#now() })
+        .where(eq(agentSchedules.id, row.id));
+    });
+  }
+
+  /**
+   * The final pre-send admission for a scheduled hand-off. Reuses the existing dispatch lock order
+   * — Agent, IM binding, target Session, placement, Computer — and extends it with the schedule
+   * row LAST, verifying the target authority chain and that the schedule still exists, is enabled,
+   * and carries exactly the revision the claim froze. The locks are held only until the transport
+   * marks its send (`onDispatched`), never across the Runtime receipt or business execution, so a
+   * concurrent pause/delete waits only through the send mark and a committed pause/delete makes
+   * the admission reject with zero frames sent. Permanent target failures auto-disable the
+   * schedule in place.
+   */
+  async withScheduledDispatchAdmission<T>(
+    route: AuthorizedScheduledMessageRoute,
+    fence: { scheduleId: string; revision: number },
+    operation: (onDispatched: () => void) => Promise<T>,
+  ): Promise<{ admitted: true; result: Promise<T> } | { admitted: false; reason: ScheduledDispatchAdmissionFailure }> {
+    return this.#database.transaction(async (transaction) => {
+      const rows = await lockScheduledAdmissionRows(transaction, route, fence.scheduleId);
+      const verdict = verdictScheduledAdmission(rows, route, fence);
+      if (verdict.kind === "disable") {
+        // Permanent target failure: auto-disable in place; the row is never resurrected. The
+        // verdict guarantees the row exists for this branch.
+        const row = rows.scheduleRow;
+        if (row && (row.enabled || row.nextTriggerAt !== null)) {
+          await transaction
+            .update(agentSchedules)
+            .set({
+              enabled: false,
+              nextTriggerAt: null,
+              revision: row.revision + 1,
+              updatedAt: this.#now(),
+            })
+            .where(eq(agentSchedules.id, row.id));
+        }
+        return this.#rejectScheduledAdmission(route, fence, verdict.code);
+      }
+      if (verdict.kind === "reject") return this.#rejectScheduledAdmission(route, fence, verdict.reason);
+
+      let markDispatched: () => void = () => undefined;
+      const dispatched = new Promise<void>((resolve) => {
+        markDispatched = resolve;
+      });
+      let result: Promise<T>;
+      try {
+        result = operation(markDispatched);
+      } catch (error) {
+        markDispatched();
+        throw error;
+      }
+      void result.catch(() => markDispatched());
+      await dispatched;
+      return { admitted: true, result } as const;
+    });
+  }
+
+  #rejectScheduledAdmission(
+    route: AuthorizedScheduledMessageRoute,
+    fence: { scheduleId: string; revision: number },
+    reason: ScheduledDispatchAdmissionFailure,
+  ): { admitted: false; reason: ScheduledDispatchAdmissionFailure } {
+    this.#logger?.info(
+      {
+        agentId: route.agentId,
+        code: reason,
+        scheduleId: fence.scheduleId,
+        targetComputerId: route.targetComputerId,
+        targetSessionId: route.targetSessionId,
+      },
+      "Scheduled message dispatch admission rejected",
+    );
+    return { admitted: false, reason };
   }
 
   async listInternalSessions(sourceSessionId: string, query: SessionCliListQuery): Promise<SessionCliListResponse> {
@@ -1108,6 +1375,130 @@ export class SessionService {
     if (!converged) throw new Error("Session placement ensure did not converge");
     return { session: toSession(session), placement: toPlacement(converged) };
   }
+}
+
+/** The locked rows behind one scheduled dispatch admission, taken in the global lock order. */
+interface ScheduledAdmissionRows {
+  agent: { createdByUserId: string; status: "active" | "suspended" | "deleted" } | undefined;
+  binding:
+    | {
+        agentId: string;
+        disabledAt: Date | null;
+        status: "provisioning" | "active" | "reauthorization_required" | "error" | "disabled";
+      }
+    | undefined;
+  target: { endedAt: Date | null; imBindingId: string } | undefined;
+  placement: { computerId: string; generation: number } | undefined;
+  computer: { ownerAccountId: string } | undefined;
+  scheduleRow: { id: string; enabled: boolean; nextTriggerAt: Date | null; revision: number } | undefined;
+}
+
+/**
+ * Lock the full dispatch authority chain in the existing order — Agent, IM binding, target
+ * Session, placement, Computer — and the schedule row LAST. The claim never takes these locks, so
+ * there is no reverse order anywhere in the schedule feature.
+ */
+async function lockScheduledAdmissionRows(
+  transaction: DatabaseTransaction,
+  route: AuthorizedScheduledMessageRoute,
+  scheduleId: string,
+): Promise<ScheduledAdmissionRows> {
+  const [agent] = await transaction
+    .select({ createdByUserId: agents.createdByUserId, status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, route.agentId))
+    .limit(1)
+    .for("update");
+  const [binding] = await transaction
+    .select({ agentId: imBindings.agentId, disabledAt: imBindings.disabledAt, status: imBindings.status })
+    .from(imBindings)
+    .where(eq(imBindings.id, route.imBindingId))
+    .limit(1)
+    .for("update");
+  const [target] = await transaction
+    .select({ endedAt: sessions.endedAt, imBindingId: sessions.imBindingId })
+    .from(sessions)
+    .where(eq(sessions.id, route.targetSessionId))
+    .limit(1)
+    .for("update");
+  const [placement] = await transaction
+    .select({ computerId: sessionPlacements.computerId, generation: sessionPlacements.generation })
+    .from(sessionPlacements)
+    .where(eq(sessionPlacements.sessionId, route.targetSessionId))
+    .limit(1)
+    .for("update");
+  const [computer] = await transaction
+    .select({ ownerAccountId: computers.ownerAccountId })
+    .from(computers)
+    .where(eq(computers.id, route.targetComputerId))
+    .limit(1)
+    .for("update");
+  const [scheduleRow] = await transaction
+    .select({
+      id: agentSchedules.id,
+      enabled: agentSchedules.enabled,
+      nextTriggerAt: agentSchedules.nextTriggerAt,
+      revision: agentSchedules.revision,
+    })
+    .from(agentSchedules)
+    .where(eq(agentSchedules.id, scheduleId))
+    .limit(1)
+    .for("update");
+  return { agent, binding, target, placement, computer, scheduleRow };
+}
+
+type ScheduledAdmissionVerdict =
+  | { kind: "admit" }
+  | { kind: "reject"; reason: ScheduledDispatchAdmissionFailure }
+  | { kind: "disable"; code: ScheduledTargetPermanentCode };
+
+/** Permanent target failure: a deleted Agent, a disabled/foreign binding, or an ended target Session. */
+function permanentScheduledAdmissionFailure(
+  agent: ScheduledAdmissionRows["agent"],
+  binding: ScheduledAdmissionRows["binding"],
+  target: ScheduledAdmissionRows["target"],
+  route: AuthorizedScheduledMessageRoute,
+): ScheduledTargetPermanentCode | undefined {
+  if (!agent || agent.status === "deleted") return "agent_deleted";
+  if (!binding || binding.agentId !== route.agentId || binding.status === "disabled" || binding.disabledAt !== null) {
+    return "binding_invalid";
+  }
+  if (!target || target.endedAt !== null || target.imBindingId !== route.imBindingId) return "target_invalid";
+  return undefined;
+}
+
+/**
+ * The admission verdict. The schedule gate (exists, enabled, frozen revision) is checked after the
+ * permanent-target classification and before transient authority gaps, so a committed pause,
+ * resume, edit, or delete always wins against a not-yet-sent dispatch.
+ */
+function verdictScheduledAdmission(
+  rows: ScheduledAdmissionRows,
+  route: AuthorizedScheduledMessageRoute,
+  fence: { scheduleId: string; revision: number },
+): ScheduledAdmissionVerdict {
+  const permanent = permanentScheduledAdmissionFailure(rows.agent, rows.binding, rows.target, route);
+  if (permanent) {
+    return rows.scheduleRow ? { kind: "disable", code: permanent } : { kind: "reject", reason: "schedule_deleted" };
+  }
+  const { scheduleRow, placement, computer, agent, binding } = rows;
+  if (!scheduleRow) return { kind: "reject", reason: "schedule_deleted" };
+  if (!scheduleRow.enabled) return { kind: "reject", reason: "schedule_disabled" };
+  if (scheduleRow.revision !== fence.revision) return { kind: "reject", reason: "schedule_changed" };
+  // The permanent classification above already returned when any of these rows is absent.
+  if (agent?.status !== "active") return { kind: "reject", reason: "agent_suspended" };
+  if (binding?.status !== "active") return { kind: "reject", reason: "authority_unavailable" };
+  if (
+    !placement ||
+    placement.computerId !== route.targetComputerId ||
+    placement.generation !== route.targetPlacementGeneration
+  ) {
+    return { kind: "reject", reason: "authority_unavailable" };
+  }
+  if (!computer || computer.ownerAccountId !== agent.createdByUserId) {
+    return { kind: "reject", reason: "authority_unavailable" };
+  }
+  return { kind: "admit" };
 }
 
 function encodeListCursor(at: Date, messageId: string, sessionId: string): string {

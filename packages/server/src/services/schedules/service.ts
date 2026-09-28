@@ -65,7 +65,7 @@ export interface ScheduleClock {
   now(executor: Pick<DatabaseClient, "execute">): Promise<Date>;
 }
 
-const databaseClock: ScheduleClock = {
+export const scheduleDatabaseClock: ScheduleClock = {
   async now(executor) {
     const rows = await executor.execute<{ at: Date | string }>(sql`select clock_timestamp() as at`);
     const raw = rows[0]?.at;
@@ -143,7 +143,7 @@ export class ScheduleService {
 
   constructor(options: ScheduleServiceOptions) {
     this.#options = options;
-    this.#clock = options.clock ?? databaseClock;
+    this.#clock = options.clock ?? scheduleDatabaseClock;
   }
 
   /* ------------------------------------------------------------------------------------------

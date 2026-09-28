@@ -467,13 +467,23 @@ describe("CloudSessionCollaborationOwner", () => {
   it("sends the frozen scheduled origin only on v2 and persists its durable custody", async () => {
     const fixture = await seedCloudSession();
     const messageId = randomUUID();
-    await insertMessage(messageId, fixture);
+    const input = await scheduledDeliveryInput(fixture, messageId);
+    if (!("scheduledOrigin" in input.message)) throw new Error("scheduled fixture missing origin");
+    await db.database.insert(sessionMessages).values({
+      id: messageId,
+      scheduledOrigin: input.message.scheduledOrigin,
+      targetSessionId: fixture.sessionId,
+      content: input.message.content,
+      contentHash: "a".repeat(64),
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+    });
     const stack = makeStack(fixture);
     const { sent } = await attachRunner(stack, fixture, {
       sessionCollaborationVersion: 2,
       onFrame: answeringOnFrame(stack, fixture),
     });
-    const outcome = await stack.owner.deliver(await scheduledDeliveryInput(fixture, messageId), allowAdmission);
+    const outcome = await stack.owner.deliver(input, allowAdmission);
     expect(outcome).toEqual({ status: "accepted" });
     const run = sent.find((frame) => frame.type === "session:message:run");
     expect(run).toMatchObject({

@@ -10,7 +10,6 @@ import {
   type RuntimeDurableWorkRecord,
   type RuntimeImOutboxContext,
   type SessionMessageDeliveryRequestV3,
-  type SessionMessageScheduledOrigin,
 } from "@opentag/shared";
 import { and, eq, inArray, like } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -38,8 +37,11 @@ import type {
   SessionCliCloudProofConnection,
   SessionCliProofService,
 } from "../sessions/session-cli-proof-service.js";
-import type { CloudSessionMessageOutcome } from "../sessions/session-collaboration-service.js";
-import type { AuthorizedSessionMessageRoute, SessionService } from "../sessions/session-service.js";
+import type {
+  CloudSessionMessageDeliveryInput,
+  CloudSessionMessageOutcome,
+} from "../sessions/session-collaboration-service.js";
+import type { SessionService } from "../sessions/session-service.js";
 import type { CloudModelGrantPort } from "./cloud-delivery-owner.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
 import { CloudCapacityExceededError } from "./errors.js";
@@ -387,38 +389,8 @@ export interface CloudSessionTargetEnvelope {
   readonly outboxContext?: RuntimeImOutboxContext;
 }
 
-/** The scheduled route carries only pinned target authority; it has no source Session. */
-type AuthorizedScheduledMessageRoute = Pick<
-  AuthorizedSessionMessageRoute,
-  | "agentId"
-  | "imBindingId"
-  | "targetSessionId"
-  | "targetSessionKind"
-  | "targetInstallationId"
-  | "targetComputerId"
-  | "targetComputerKind"
-  | "targetPlacementGeneration"
->;
-
-export type CloudSessionDeliveryInput =
-  | {
-      route: AuthorizedSessionMessageRoute;
-      message: { id: string; content: string };
-      runtime: EffectiveRuntimeSnapshot;
-      /** The durable attempt fencing token from the dispatch authorization transaction. */
-      attemptCount: number;
-    }
-  | {
-      route: AuthorizedScheduledMessageRoute;
-      message: {
-        id: string;
-        content: string;
-        scheduledOrigin: SessionMessageScheduledOrigin;
-        scheduleDetailUrl: string;
-      };
-      runtime: EffectiveRuntimeSnapshot;
-      attemptCount: number;
-    };
+/** The owner and dispatcher share one Cloud delivery input contract. */
+export type CloudSessionDeliveryInput = CloudSessionMessageDeliveryInput;
 
 function isScheduledCloudDelivery(
   input: CloudSessionDeliveryInput,

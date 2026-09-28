@@ -124,8 +124,18 @@ function sessionRunFrame(
   };
 }
 
-function scheduledRunFrame(message: SessionMessageDeliveryRequestV3): RunnerCloudSessionMessageRunFrameV2 {
-  return { type: "session:message:run", requestId: message.requestId, message, sessionKind: "internal" };
+function scheduledRunFrame(
+  message: SessionMessageDeliveryRequestV3,
+  sessionKind: "internal" | "visible" = "internal",
+  outboxContext?: RuntimeImOutboxContext,
+): RunnerCloudSessionMessageRunFrameV2 {
+  return {
+    type: "session:message:run",
+    requestId: message.requestId,
+    message,
+    sessionKind,
+    ...(outboxContext ? { outboxContext } : {}),
+  };
 }
 
 function sessionVerifiedFrame(requestId: string, model: RunnerCloudModelGrant | undefined = MODEL_GRANT) {
@@ -583,6 +593,41 @@ describe("CloudTurnRunner Session collaboration", () => {
       status: "recorded",
     });
     expect(await journal.read(h.message.messageId)).toBeUndefined();
+    await h.runner.close();
+  });
+
+  it("journals a scheduled message before receipt and restores its settlement without a second worker", async () => {
+    const outboxContext: RuntimeImOutboxContext = { provider: "feishu", sessionKind: "channel", chatId: "oc_sched" };
+    const h = harness({ sessionKind: "visible", outboxContext });
+    const scheduled = scheduledSessionMessage(h.message);
+    await h.runner.handleSessionMessageRun(scheduledRunFrame(scheduled, "visible", outboxContext));
+    expect(sessionReceiptsOf(h.sent)).toMatchObject([
+      { requestId: scheduled.requestId, messageId: scheduled.messageId, status: "accepted", phase: "received" },
+    ]);
+    const received = await journal.read(scheduled.messageId);
+    if (received?.kind !== "session-message") throw new Error("missing scheduled journal entry");
+    expect(received.message).toEqual(scheduled);
+    expect(h.workerInputs).toHaveLength(0);
+
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(scheduled.requestId));
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent)).toHaveLength(1);
+    expect(h.workerInputs).toHaveLength(1);
+    const [workerInput] = h.workerInputs;
+    if (!workerInput) throw new Error("missing scheduled worker input");
+    const stdin = JSON.parse(workerInput.stdin) as {
+      kind: string;
+      message: SessionMessageDeliveryRequestV3;
+      outboxContext?: RuntimeImOutboxContext;
+    };
+    expect(stdin.kind).toBe("session-message");
+    expect(stdin.message).toEqual(scheduled);
+    expect(stdin.outboxContext).toEqual(outboxContext);
+
+    h.sent.length = 0;
+    await h.runner.reconcile();
+    expect(settledOf(h.sent)).toHaveLength(1);
+    expect(h.workerInputs).toHaveLength(1);
     await h.runner.close();
   });
 

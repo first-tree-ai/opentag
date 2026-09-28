@@ -335,6 +335,7 @@ test("global return, local return, history, and dirty settings keep their own de
     "settings/identity",
     "settings/messaging",
     "settings/computer",
+    "instructions",
     "settings/instructions",
     "settings/execution",
     "settings/manage",

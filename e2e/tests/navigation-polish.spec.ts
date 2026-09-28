@@ -138,6 +138,33 @@ test("long Agent names stay bounded in the switcher and preserve the current sec
   await expect(page.getByRole("link", { name: "Usage", exact: true })).toHaveAttribute("aria-current", "page");
 });
 
+test("Instructions saves on its own page and preserves the section when switching Agents", async ({ page }) => {
+  const firstId = await createAgent(page, "Instructions Review");
+  const secondId = await createAgent(page, "Instructions destination");
+  await page.goto(`/agents/${firstId}/settings`, { waitUntil: "networkidle" });
+  await expect(page.getByRole("main").getByRole("link", { name: /^Instructions/ })).toHaveCount(0);
+  const navigation = page.getByRole("navigation", { name: "Agent", exact: true });
+  await expect(navigation.getByRole("link", { name: "Memory", exact: true })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "MCP", exact: true })).toBeVisible();
+  await navigation.getByRole("link", { name: "Instructions", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${firstId}/instructions$`));
+  const editor = page.getByRole("textbox", { name: "Instructions", exact: true });
+  await editor.fill("Be concise and explain the evidence.");
+  await navigation.getByRole("link", { name: "Overview", exact: true }).click();
+  await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+  await expect(editor).toHaveValue("Be concise and explain the evidence.");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Instructions saved.");
+  await page.goto(`/agents/${firstId}/settings/instructions`, { waitUntil: "networkidle" });
+  await expect(page).toHaveURL(new RegExp(`/agents/${firstId}/instructions$`));
+  await expect(editor).toHaveValue("Be concise and explain the evidence.");
+  await expectAccessible(page);
+  await page.getByRole("button", { name: /Switch Agent/ }).click();
+  await page.getByRole("menuitem", { name: "Instructions destination", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${secondId}/instructions$`));
+  await expect(editor).toHaveValue("");
+});
+
 for (const width of [320, 390]) {
   test.describe(`${width}px touch account menu`, () => {
     test.use({ hasTouch: true, viewport: { width, height: 720 } });
@@ -159,7 +186,9 @@ for (const width of [320, 390]) {
       await expect(page).toHaveURL(/\/agents$/);
 
       const agentId = await createAgent(page, "Mobile navigation");
-      await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
+      await page.goto(`/agents/${agentId}/instructions`, { waitUntil: "networkidle" });
+      await expect(page.getByRole("textbox", { name: "Instructions", exact: true })).toBeVisible();
+      await expectNoPageOverflow(page);
       await page.getByRole("button", { name: "Open Agent navigation", exact: true }).tap();
       const switcher = page.getByRole("button", { name: /Switch Agent/ });
       await switcher.tap();

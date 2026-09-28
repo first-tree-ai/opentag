@@ -92,7 +92,7 @@ Buttons use solid fills, never glossy gradients.
 ## Navigation and screen composition
 
 The workspace uses a full-height 72px rail with a small mark above Home and Account at the bottom.
-Opening an Agent expands navigation to 240px, adding its switcher, sections, and Settings.
+Opening an Agent expands navigation to 240px, adding its switcher and sections. Instructions has its own sidebar page; Settings is opened from the Agent overview.
 On mobile, use the compact header and Agent drawer. Preserve the mounted route and unsaved input
 during viewport and scope changes.
 
@@ -103,9 +103,10 @@ during viewport and scope changes.
 | Tasks | Compact header, search and status controls, aligned rows on wide layouts and stacked summaries on narrow layouts. Preserve source, title, state, activity, cancellation, pagination, and retry behavior. |
 | Task detail | Title and state followed by the conversation/activity timeline. Keep speakers, replies, attachments, and logs readable; group dense metadata without introducing an app chat composer. |
 | Usage | Compact title, window controls, totals, and existing charts/tables. Quiet borders and tabular numbers; no promotional statistics or duplicate summaries. |
-| Context Tree | Connection identity and state, then the relevant connect/configure/operation controls. Commands use the neutral inset recipe. |
+| Memory | Connection identity and state, then the relevant connect/configure/operation controls. Commands use the neutral inset recipe. |
 | MCP / Skills / integrations | Group related items with dividers, concise identity and state, then relevant actions. Forms and dialogs reuse controls and labels from the adapter. |
-| Agent settings | Grouped settings, short labels, necessary hints, field-local errors. Keep execution, instructions, model, messaging, and destructive management distinct. |
+| Instructions | Dedicated sidebar page with one editor, necessary guidance, save/discard actions when changed, and unsaved-change protection. |
+| Agent settings | Grouped settings, short labels, necessary hints, field-local errors. Keep model, messaging, computer, identity, and destructive management distinct. |
 | Account / Computers | Simple grouped configuration and connected-computer information. Account menus retain every current destination. |
 | Login | Small centered form, identity, providers, language, and essential feedback. No splash artwork or large headings. Preserve provider-specific sign-in requirements. |
 | Setup / onboarding | Task-focused steps and compact choices. Preserve readiness/repair, reserved-height stability, QR/copy controls, expiry, validation, and progress. No decorative gradients or hover lift. |

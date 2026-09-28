@@ -99,7 +99,7 @@ export function AgentConfigSettingsContent({
         if (section === "identity") {
           return <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />;
         }
-        if (section === "instructions" || section === "execution") {
+        if (section === "execution") {
           return (
             <RuntimeConfigurationForm
               computerKind={agent.computerKind}

@@ -474,14 +474,6 @@ describe("Agent availability model and presentation", () => {
       createdAt: agent.updatedAt,
       updatedAt: agent.updatedAt,
     } satisfies AgentAdminConfig;
-    expect(agentSettingsSummary(detail(base.availability), config, "instructions")).toBe("Custom instructions");
-    expect(
-      agentSettingsSummary(
-        detail(base.availability),
-        { ...config, runtimeConfig: { ...config.runtimeConfig, instructions: " " } },
-        "instructions",
-      ),
-    ).toBe("No custom instructions");
     expect(agentSettingsSummary(detail(base.availability), config, "execution")).toContain("Provider defaults");
     expect(
       agentSettingsSummary(

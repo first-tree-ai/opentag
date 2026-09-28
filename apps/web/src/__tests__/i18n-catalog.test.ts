@@ -45,6 +45,7 @@ const allowedUntranslatedValues = new Set([
   "Token",
   "Tokens",
   "Context Tree",
+  "MCP",
   "refs/heads/master",
 ]);
 

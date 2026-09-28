@@ -13,6 +13,7 @@ import {
   type RunnerCloudModelGrant,
   RunnerCloudModelGrantSchema,
   RunnerCloudSessionMessageRunFrameSchema,
+  RunnerCloudSessionMessageRunFrameV2Schema,
   RunnerCloudSessionWorkerRequestSchema,
   RunnerCloudTurnWorkerRequestSchema,
   RunnerCloudWorkerRequestSchema,
@@ -386,6 +387,68 @@ describe("E8 Session collaboration protocol", () => {
         outboxContext: { ...feishuOutbox, sessionKind: "thread" },
       }).success,
     ).toBe(false);
+  });
+
+  /*
+   * R02 (frame/worker part): the version-2 run frame is the receiver-side superset — the frozen
+   * v1 ordinary wire parses through it byte-for-byte, and the scheduled-origin branch parses only
+   * through it, never through the frozen v1 schema. The same superset carries the in-sandbox
+   * worker document, so a journaled scheduled message reaches the worker intact.
+   */
+  it("parses ordinary and scheduled run frames and worker documents through the v2 superset", () => {
+    const scheduledMessage = {
+      ...(({ sourceSessionId: _omitted, ...rest }) => rest)(sessionMessage),
+      scheduledOrigin: {
+        scheduleId: "0b12b3c0-0000-4000-8000-000000000010",
+        scheduledFor: "2026-09-28T01:00:00.000Z",
+        timezone: "Asia/Shanghai",
+        name: "Daily check",
+      },
+      sentAt: "2026-09-28T01:00:05.000Z",
+      scheduleDetailUrl: "https://opentag.example.com/agents/0b12b3c0-0000-4000-8000-000000000004?schedule=x",
+    };
+    const scheduledRun = {
+      type: "session:message:run" as const,
+      requestId: scheduledMessage.requestId,
+      message: scheduledMessage,
+      sessionKind: "visible" as const,
+      outboxContext: feishuOutbox,
+    };
+    // The frozen v1 schema rejects the scheduled branch and keeps the ordinary wire.
+    expect(RunnerCloudSessionMessageRunFrameSchema.safeParse(scheduledRun).success).toBe(false);
+    expect(RunnerCloudSessionMessageRunFrameSchema.safeParse({ ...runFrame, sessionKind: "internal" }).success).toBe(
+      true,
+    );
+    // The v2 superset parses both; the receiver union dispatches on the same frame type.
+    expect(RunnerCloudSessionMessageRunFrameV2Schema.parse(scheduledRun)).toEqual(scheduledRun);
+    const ordinaryRun = { ...runFrame, sessionKind: "internal" as const };
+    expect(RunnerCloudSessionMessageRunFrameV2Schema.parse(ordinaryRun)).toEqual(ordinaryRun);
+    expect(RunnerServerFrameSchema.parse(scheduledRun)).toEqual(scheduledRun);
+    expect(RunnerServerFrameSchema.parse(ordinaryRun)).toEqual(ordinaryRun);
+    // The outbox fence survives in the v2 frame: a visible target without context is refused.
+    const { outboxContext: _outbox, ...noOutbox } = scheduledRun;
+    expect(RunnerCloudSessionMessageRunFrameV2Schema.safeParse(noOutbox).success).toBe(false);
+    // The worker document admits the journaled scheduled message and serializes within budget.
+    const grant = {
+      baseUrl: "https://server.example.com/api/v1/cloud-model",
+      expiresAt: new Date(1_900_000_000_000).toISOString(),
+      model: "deepseek-v4.1-flash-expires-on-0910",
+      token: "unit-execution-token-0123456789abcdef",
+      contextWindow: 258_000 as const,
+      maxTokens: 8_192,
+    };
+    const workerDocument = {
+      kind: "session-message" as const,
+      message: scheduledMessage,
+      model: grant,
+      executionDir: "/run/opentag-execution/turn-1",
+      outboxContext: feishuOutbox,
+      sessionKind: "visible" as const,
+    };
+    expect(RunnerCloudSessionWorkerRequestSchema.parse(workerDocument)).toEqual(workerDocument);
+    expect(RunnerCloudWorkerRequestSchema.parse(workerDocument)).toEqual(workerDocument);
+    const serialized = serializeRunnerCloudSessionWorkerStdin(workerDocument);
+    expect(RunnerCloudWorkerRequestSchema.parse(JSON.parse(serialized))).toEqual(workerDocument);
   });
 
   it("keeps the worker document union backward compatible and role-accurate", () => {

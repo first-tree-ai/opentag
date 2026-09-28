@@ -199,6 +199,7 @@ export interface SessionCollaborationServiceOptions {
     | "beginScheduledMessageAttempt"
     | "createInternalSessionWithMessage"
     | "disableScheduleForInvalidTarget"
+    | "hasAcceptedScheduledMessage"
     | "recordMessageOutcome"
     | "resolveScheduledMessageRoute"
     | "withCollaborationDispatchAdmission"
@@ -623,6 +624,9 @@ export class SessionCollaborationService {
         },
       });
       if (updated) return { outcome, code: code ?? null };
+      if (await this.#sessions.hasAcceptedScheduledMessage(snapshot.messageId, 1)) {
+        return { outcome: "accepted", code: null };
+      }
     } catch {
       // The durable outcome remains unknown; scheduled hand-offs never replay automatically.
     }

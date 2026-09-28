@@ -561,6 +561,108 @@ describe("message identity (D12, D13)", () => {
 });
 
 describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => {
+  it("keeps Cloud custody accepted when the budget expires before verification completes", async () => {
+    const seed = await seedStack({ computerKind: "cloud" });
+    const stack = makeStack(seed, { scheduledBudgets: { cloudMs: 250 } });
+    const row = await insertSchedule(seed, {
+      schedule: { kind: "at", at: T0.toISOString() },
+      nextTriggerAt: T0,
+    });
+    const claimed = await claimOf(stack, row.id);
+    if (claimed.kind !== "claimed") throw new Error("expected a claim");
+
+    let acceptedCommitted: () => void = () => undefined;
+    const accepted = new Promise<void>((resolve) => (acceptedCommitted = resolve));
+    let releaseVerification: () => void = () => undefined;
+    const verification = new Promise<void>((resolve) => (releaseVerification = resolve));
+    let verified = false;
+    stack.cloud.deliver.mockImplementation(async (_input, admission) => {
+      const admitted = await admission(async (onDispatched: () => void) => {
+        onDispatched();
+        return { status: "accepted" };
+      });
+      if (!admitted.admitted) return { status: "unreachable", code: "runtime_unavailable" };
+      await admitted.result;
+      // The real Cloud owner commits this receipt before minting execution permission.
+      await stack.sessions.recordMessageOutcome({
+        messageId: claimed.snapshot.messageId,
+        attemptCount: 1,
+        outcome: "accepted",
+      });
+      acceptedCommitted();
+      await verification;
+      verified = true;
+      return { status: "accepted" };
+    });
+
+    const dispatching = stack.collaboration.dispatchScheduledMessage(claimed.snapshot);
+    try {
+      await accepted;
+      await expect(dispatching).resolves.toEqual({ outcome: "accepted", code: null });
+      expect(verified).toBe(false);
+      expect(await messageRow(claimed.snapshot.messageId)).toMatchObject({
+        lastOutcome: "accepted",
+        lastErrorCode: null,
+      });
+      expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({
+        messageId: claimed.snapshot.messageId,
+        outcome: "accepted",
+        code: null,
+      });
+    } finally {
+      releaseVerification();
+    }
+  });
+
+  it("upgrades a timed-out Cloud attempt when the Runner acceptance commits later", async () => {
+    const seed = await seedStack({ computerKind: "cloud" });
+    const stack = makeStack(seed, { scheduledBudgets: { cloudMs: 250 } });
+    const row = await insertSchedule(seed, { schedule: { kind: "at", at: T0.toISOString() }, nextTriggerAt: T0 });
+    const claimed = await claimOf(stack, row.id);
+    if (claimed.kind !== "claimed") throw new Error("expected a claim");
+
+    let releaseReceipt: () => void = () => undefined;
+    const receipt = new Promise<void>((resolve) => (releaseReceipt = resolve));
+    let acceptedCommitted: () => void = () => undefined;
+    const accepted = new Promise<void>((resolve) => (acceptedCommitted = resolve));
+    stack.cloud.deliver.mockImplementation(async (_input, admission) => {
+      const admitted = await admission(async (onDispatched: () => void) => {
+        onDispatched();
+        return { status: "accepted" };
+      });
+      if (!admitted.admitted) return { status: "unreachable", code: "runtime_unavailable" };
+      await admitted.result;
+      await receipt;
+      await stack.sessions.recordMessageOutcome({
+        messageId: claimed.snapshot.messageId,
+        attemptCount: 1,
+        outcome: "accepted",
+      });
+      acceptedCommitted();
+      return { status: "accepted" };
+    });
+
+    try {
+      await expect(stack.collaboration.dispatchScheduledMessage(claimed.snapshot)).resolves.toEqual({
+        outcome: "unknown",
+        code: "delivery_timeout",
+      });
+      expect((await messageRow(claimed.snapshot.messageId))?.lastOutcome).toBe("unknown");
+    } finally {
+      releaseReceipt();
+    }
+    await accepted;
+    expect(await messageRow(claimed.snapshot.messageId)).toMatchObject({
+      lastOutcome: "accepted",
+      lastErrorCode: null,
+    });
+    expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({
+      messageId: claimed.snapshot.messageId,
+      outcome: "accepted",
+      code: null,
+    });
+  });
+
   it("keeps a sent-but-unconfirmed hand-off unknown and never retries it (D09)", async () => {
     const seed = await seedStack();
     const stack = makeStack(seed);

@@ -691,8 +691,18 @@ export class SessionService {
           lastErrorCode: input.errorCode ?? null,
           updatedAt: now,
         })
-        .where(and(eq(sessionMessages.id, input.messageId), eq(sessionMessages.attemptCount, input.attemptCount)))
-        .returning({ id: sessionMessages.id });
+        .where(
+          and(
+            eq(sessionMessages.id, input.messageId),
+            eq(sessionMessages.attemptCount, input.attemptCount),
+            // A scheduled Runner receipt is durable custody. A later dispatch timeout or
+            // transport error cannot revoke that fact, even if authorization is still minting.
+            input.outcome === "accepted"
+              ? undefined
+              : or(isNull(sessionMessages.scheduledOrigin), sql`${sessionMessages.lastOutcome} <> 'accepted'`),
+          ),
+        )
+        .returning({ id: sessionMessages.id, scheduledOrigin: sessionMessages.scheduledOrigin });
       if (!updated) return false;
       await transaction
         .update(sessionDescendants)
@@ -716,9 +726,41 @@ export class SessionService {
               sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${input.messageId}`,
             ),
           );
+      } else if (input.outcome === "accepted" && updated.scheduledOrigin) {
+        // Cloud records accepted custody before sending the verified frame. It can finish
+        // after the dispatch budget expires, so update the latest summary here as well.
+        await transaction
+          .update(agentSchedules)
+          .set({
+            lastDispatch: sql`${agentSchedules.lastDispatch} || jsonb_build_object('outcome', 'accepted', 'code', null)`,
+          })
+          .where(
+            and(
+              eq(agentSchedules.id, updated.scheduledOrigin.scheduleId),
+              sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${updated.scheduledOrigin.scheduledFor}`,
+              sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${input.messageId}`,
+            ),
+          );
       }
       return true;
     });
+  }
+
+  /** Read the terminal custody fact after an uncertain write lost its race to acceptance. */
+  async hasAcceptedScheduledMessage(messageId: string, attemptCount: number): Promise<boolean> {
+    const [row] = await this.#database
+      .select({ id: sessionMessages.id })
+      .from(sessionMessages)
+      .where(
+        and(
+          eq(sessionMessages.id, messageId),
+          eq(sessionMessages.attemptCount, attemptCount),
+          isNotNull(sessionMessages.scheduledOrigin),
+          eq(sessionMessages.lastOutcome, "accepted"),
+        ),
+      )
+      .limit(1);
+    return row !== undefined;
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -868,7 +910,7 @@ export class SessionService {
     operation: (onDispatched: () => void) => Promise<T>,
   ): Promise<{ admitted: true; result: Promise<T> } | { admitted: false; reason: ScheduledDispatchAdmissionFailure }> {
     return this.#database.transaction(async (transaction) => {
-      const rows = await lockScheduledAdmissionRows(transaction, route, fence.scheduleId);
+      const rows = await lockScheduledAdmissionRows(transaction, route, fence.scheduleId, this.#afterPlacementLock);
       const verdict = verdictScheduledAdmission(rows, route, fence);
       if (verdict.kind === "disable") {
         // Permanent target failure: auto-disable in place; the row is never resurrected. The
@@ -1395,13 +1437,16 @@ interface ScheduledAdmissionRows {
 
 /**
  * Lock the full dispatch authority chain in the existing order — Agent, IM binding, target
- * Session, placement, Computer — and the schedule row LAST. The claim never takes these locks, so
- * there is no reverse order anywhere in the schedule feature.
+ * Session, placement, Computer — and the schedule row LAST. A claim inserts a message while
+ * holding the schedule row, which implicitly takes a KEY SHARE lock on the target Session for
+ * its foreign key. The admission takes NO KEY UPDATE on that Session, compatible with KEY SHARE,
+ * while still excluding Session end/delete; the separate placement lock protects placement changes.
  */
 async function lockScheduledAdmissionRows(
   transaction: DatabaseTransaction,
   route: AuthorizedScheduledMessageRoute,
   scheduleId: string,
+  afterPlacementLock?: () => Promise<void>,
 ): Promise<ScheduledAdmissionRows> {
   const [agent] = await transaction
     .select({ createdByUserId: agents.createdByUserId, status: agents.status })
@@ -1420,13 +1465,14 @@ async function lockScheduledAdmissionRows(
     .from(sessions)
     .where(eq(sessions.id, route.targetSessionId))
     .limit(1)
-    .for("update");
+    .for("no key update");
   const [placement] = await transaction
     .select({ computerId: sessionPlacements.computerId, generation: sessionPlacements.generation })
     .from(sessionPlacements)
     .where(eq(sessionPlacements.sessionId, route.targetSessionId))
     .limit(1)
     .for("update");
+  await afterPlacementLock?.();
   const [computer] = await transaction
     .select({ ownerAccountId: computers.ownerAccountId })
     .from(computers)

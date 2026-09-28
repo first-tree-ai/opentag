@@ -141,8 +141,12 @@ interface DispatchStack {
   };
 }
 
-function makeDispatchStack(database: DatabaseClient, seedValue: Seed): DispatchStack {
-  const sessionsService = new SessionService(database);
+function makeDispatchStack(
+  database: DatabaseClient,
+  seedValue: Seed,
+  options: { afterPlacementLock?: () => Promise<void> } = {},
+): DispatchStack {
+  const sessionsService = new SessionService(database, options);
   const deliveryFrames: SessionMessageDeliveryRequestV3[] = [];
   const pendingReceipts: Array<(result: SessionMessageDeliveryResult) => void> = [];
   const sendMarks: Array<() => void> = [];
@@ -478,6 +482,86 @@ describe("dispatch admission races against management mutations", () => {
     expect(placement).toMatchObject({ computerId: computerB, generation: 2 });
     expect(stack.deliveryFrames).toHaveLength(1);
   }, 30_000);
+
+  it("claims the next occurrence of the same plan while its earlier send holds Session admission locks", async () => {
+    const seedValue = await seed(clientA.database);
+    let admissionEntered: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => (admissionEntered = resolve));
+    let releaseAdmission: () => void = () => undefined;
+    const admissionGate = new Promise<void>((resolve) => (releaseAdmission = resolve));
+    const stack = makeDispatchStack(clientA.database, seedValue, {
+      afterPlacementLock: async () => {
+        admissionEntered();
+        await admissionGate;
+      },
+    });
+    const [nowRow] = await clientA.database.execute<{ at: Date }>(sqlTag`select clock_timestamp() as at`);
+    if (!nowRow) throw new Error("database clock missing");
+    const firstDue = new Date(nowRow.at);
+    let claimNow = firstDue;
+    let secondClaim = false;
+    let rowLocked: () => void = () => undefined;
+    const nextRowLocked = new Promise<void>((resolve) => (rowLocked = resolve));
+    let messageInserted: () => void = () => undefined;
+    const nextMessageInserted = new Promise<void>((resolve) => (messageInserted = resolve));
+    const scheduler = new ScheduleScheduler({
+      database: clientA.database,
+      dispatch: stack.collaboration,
+      sessions: stack.sessions,
+      publicUrl: PUBLIC_URL,
+      clock: { now: async () => claimNow },
+      afterRowLock: async () => {
+        if (secondClaim) rowLocked();
+      },
+      afterMessageInsert: async () => {
+        if (secondClaim) messageInserted();
+      },
+    });
+    const [row] = await clientA.database
+      .insert(agentSchedules)
+      .values({
+        agentId: seedValue.agentId,
+        targetSessionId: seedValue.targetSessionId,
+        name: "Same plan",
+        prompt: "Check the build.",
+        schedule: { kind: "every", intervalSeconds: 60, anchorAt: firstDue.toISOString() },
+        timezone: "UTC",
+        enabled: true,
+        nextTriggerAt: firstDue,
+      })
+      .returning();
+    if (!row) throw new Error("schedule fixture missing");
+    const first = await scheduler.claimOccurrence(row.id, { allowDispatch: true });
+    if (first.kind !== "claimed") throw new Error("expected the first claim");
+    const dispatching = stack.collaboration.dispatchScheduledMessage(first.snapshot);
+    await entered;
+
+    // Admission holds the Session and placement locks. Claim locks this SAME Schedule, then its
+    // message insert checks the target Session FK. That KEY SHARE must be compatible with the
+    // admission's Session lock, otherwise releasing admission would form a two-row deadlock.
+    claimNow = new Date(firstDue.getTime() + 60_000);
+    secondClaim = true;
+    const claiming = scheduler.claimOccurrence(row.id, { allowDispatch: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let insertedBeforeRelease = false;
+    try {
+      await nextRowLocked;
+      insertedBeforeRelease = await Promise.race([
+        nextMessageInserted.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), 3_000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      releaseAdmission();
+    }
+    const [dispatchResult, claimResult] = await Promise.allSettled([dispatching, claiming]);
+    expect(insertedBeforeRelease).toBe(true);
+    expect(dispatchResult).toMatchObject({ status: "fulfilled", value: { outcome: "accepted" } });
+    expect(claimResult).toMatchObject({ status: "fulfilled", value: { kind: "claimed" } });
+    expect(stack.deliveryFrames).toHaveLength(1);
+  }, 20_000);
 });
 
 describe("execution authority for scheduled messages (P13, P14)", () => {

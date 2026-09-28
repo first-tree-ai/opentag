@@ -1,5 +1,7 @@
 # OpenTag application design
 
+<!-- doc-mirror: allow-divergence -->
+
 Canonical style guide for OpenTag Web.
 The app is a working tool: minimal, clean, and restrained. Every visible detail must help someone
 choose an Agent, understand its state, follow its work, or configure it.

@@ -12,14 +12,42 @@ permissions:
   contents: read
 
 jobs:
-  patch:
-    name: Enforce Patch Coverage
+  plan:
+    name: Determine Coverage Scope
     runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.diff.outputs.required }}
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Inspect changed paths
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/patch-coverage-plan.mjs
+
+  measure:
+    name: Measure Coverage (${{ matrix.project }})
+    needs: plan
+    if: needs.plan.outputs.required == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [cli, web, shared, client, server]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up pnpm
@@ -33,59 +61,88 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
-      - name: Verify toolchain
-        run: pnpm toolchain:check
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.engine-strict=true
 
-      - name: Measure unit coverage
+      - name: Verify toolchain
+        run: pnpm toolchain:check
+
+      - name: Build test dependencies
+        run: pnpm build
+
+      - name: Measure workspace coverage
+        env:
+          COVERAGE_PROJECT: ${{ matrix.project }}
+        run: node scripts/unit-coverage.mjs --project "$COVERAGE_PROJECT"
+
+      - name: Upload workspace reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: patch-coverage-${{ matrix.project }}
+          path: coverage/unit/${{ matrix.project }}/*.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  patch:
+    name: Enforce Patch Coverage
+    needs: [plan, measure]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify coverage prerequisites
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          COVERAGE_REQUIRED: ${{ needs.plan.outputs.required }}
+          MEASUREMENT_RESULT: ${{ needs.measure.result }}
         run: |
-          pnpm exec turbo run build --summarize
-          pnpm --silent bundle:report
-          node scripts/unit-coverage.mjs
+          test "$PLAN_RESULT" = success
+          case "$COVERAGE_REQUIRED" in
+            true) test "$MEASUREMENT_RESULT" = success ;;
+            false) test "$MEASUREMENT_RESULT" = skipped ;;
+            *) echo "Missing coverage scope decision" >&2; exit 1 ;;
+          esac
+
+      - name: Explicit pass for changes outside coverage scope
+        if: needs.plan.outputs.required == 'false'
+        run: echo "Patch coverage passed; no coverable source files changed. Measurement was not needed."
+
+      - name: Check out repository
+        if: needs.plan.outputs.required == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        if: needs.plan.outputs.required == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Download workspace reports
+        if: needs.plan.outputs.required == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: patch-coverage-*
+          path: coverage/unit
+
+      - name: Aggregate coverage and enforce floors
+        if: needs.plan.outputs.required == 'true'
+        run: node scripts/coverage-artifacts.mjs
 
       - name: Summarize coverage provenance
-        if: always()
+        if: needs.plan.outputs.required == 'true'
         run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
-          import { join } from "node:path";
-
-          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-          if (!summaryPath) process.exit(0);
-          const runsDirectory = ".turbo/runs";
-          const rows = new Map();
-          try {
-            const files = readdirSync(runsDirectory)
-              .filter((file) => file.endsWith(".json"))
-              .map((file) => ({ file, mtime: statSync(join(runsDirectory, file)).mtimeMs }))
-              .sort((left, right) => left.mtime - right.mtime);
-            for (const { file } of files) {
-              const run = JSON.parse(readFileSync(join(runsDirectory, file), "utf8"));
-              for (const task of run.tasks ?? []) {
-                rows.set(`${run.execution?.command ?? "turbo run"}:${task.taskId}`, {
-                  result: task.cache?.status === "HIT" ? "cache hit" : "executed",
-                  task: task.taskId,
-                });
-              }
-            }
-          } catch {
-            // The explicit fresh-execution line below remains useful when no build summary exists.
-          }
-          const table = [...rows.values()]
-            .sort((left, right) => left.task.localeCompare(right.task))
-            .map(({ task, result }) => `| ${task} | ${result} |`)
-            .join("\n");
-          appendFileSync(
-            summaryPath,
-            `\n### Coverage provenance\n\nCoverage measurement: **fresh execution** (\`node scripts/unit-coverage.mjs\`).\n\n` +
-              `Turbo build identity (from the run summary):\n\n| Task | Result |\n| --- | --- |\n${table || "| (summary unavailable) | executed |"}\n`,
-          );
-          NODE
+          {
+            echo "### Coverage provenance"
+            echo
+            echo 'Fresh per-workspace measurements from this workflow run; reports are concatenated without merging overlapping files.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize test duration and retry diagnostics
-        if: always()
+        if: always() && needs.plan.outputs.required == 'true'
         run: |
           node --input-type=module <<'NODE'
           import { appendFileSync, existsSync, readFileSync } from "node:fs";
@@ -121,6 +178,7 @@ jobs:
           NODE
 
       - name: Enforce changed-line coverage
+        if: needs.plan.outputs.required == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PATCH_COVERAGE_THRESHOLD: "80"

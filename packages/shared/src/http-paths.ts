@@ -238,6 +238,34 @@ export function agentByIdPath(agentId: string): string {
   return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}`;
 }
 
+export function agentSchedulesPath(agentId: string): string {
+  return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}/schedules`;
+}
+
+export function agentSchedulePath(agentId: string, scheduleId: string): string {
+  return `${agentSchedulesPath(agentId)}/${encodeURIComponent(scheduleId)}`;
+}
+
+export function agentSchedulePausePath(agentId: string, scheduleId: string): string {
+  return `${agentSchedulePath(agentId, scheduleId)}/pause`;
+}
+
+export function agentScheduleResumePath(agentId: string, scheduleId: string): string {
+  return `${agentSchedulePath(agentId, scheduleId)}/resume`;
+}
+
+export function runtimeAgentSchedulePath(scheduleId: string): string {
+  return `${RUNTIME_AGENT_SCHEDULES_PATH}/${encodeURIComponent(scheduleId)}`;
+}
+
+export function runtimeAgentSchedulePausePath(scheduleId: string): string {
+  return `${runtimeAgentSchedulePath(scheduleId)}/pause`;
+}
+
+export function runtimeAgentScheduleResumePath(scheduleId: string): string {
+  return `${runtimeAgentSchedulePath(scheduleId)}/resume`;
+}
+
 export function accountAgentCreationIntentPath(creationIntentId: string): string {
   return `${ACCOUNT_AGENTS_PATH}/creation-intents/${encodeURIComponent(creationIntentId)}`;
 }

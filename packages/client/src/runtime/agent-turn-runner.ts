@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   computeRuntimeImMessageSemanticHash,
   type DirectImMessageDeliveryRequest,
@@ -112,6 +113,7 @@ export type AgentTurnErrorReporter = (failure: AgentTurnFailure) => void;
 
 interface RunningTurn {
   readonly abort: AbortController;
+  readonly approvals: Map<string, string>;
   readonly owner: LiveTurnOwner;
   readonly captureInReport: boolean;
   phase: "starting" | "running" | "reporting";
@@ -172,6 +174,7 @@ export class AgentTurnRunner {
     const abort = new AbortController();
     const turn: RunningTurn = {
       abort,
+      approvals: new Map(),
       owner,
       // Negotiation is cleared on disconnect. Keep this Turn's report contract
       // until its durable report can be replayed after reconnection.
@@ -248,8 +251,10 @@ export class AgentTurnRunner {
   async respondToApproval(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult> {
     const { type: _type, decision: _decision, ...identity } = request;
     const turn = this.#turns.get(request.turnId);
+    const providerRequestId = turn?.approvals.get(request.requestId);
     if (
       !turn?.runtime ||
+      providerRequestId === undefined ||
       turn.phase !== "running" ||
       turn.owner.request.sessionId !== request.sessionId ||
       turn.owner.request.deliveryId !== request.deliveryId ||
@@ -258,10 +263,11 @@ export class AgentTurnRunner {
       Date.parse(turn.expiresAt) <= this.#now()
     )
       return { ...identity, type: "approval:result", status: "stale" };
+    turn.approvals.delete(request.requestId);
     try {
       await turn.runtime.respond({
         expectedRunId: request.turnId,
-        requestId: request.requestId,
+        requestId: providerRequestId,
         kind: "approval",
         decision: request.decision,
         scope: "run",
@@ -315,14 +321,18 @@ export class AgentTurnRunner {
     request: import("../agent-runtime/types.js").AgentInteractionRequest,
   ): Promise<void> {
     const owner = turn.owner;
+    const details = request.details;
+    const action =
+      details && typeof details === "object" && !Array.isArray(details)
+        ? (details.command ?? details.permissions ?? details.grantRoot ?? details)
+        : details;
     const description = [
-      request.message,
-      request.details ? JSON.stringify(redactSensitive(request.details)) : undefined,
+      ...new Set([request.message, action ? describeApprovalAction(redactSensitive(action)) : undefined]),
     ]
       .filter(Boolean)
-      .join("\n");
-    if (request.kind !== "approval" || description.length > 6000) {
-      // Cancel unsupported dialogs and refuse requests too large to review in an IM card.
+      .join("\n\n");
+    if (request.kind !== "approval" || description.length === 0 || description.length > 6000) {
+      // Cancel unsupported dialogs and refuse requests without a reviewable action.
       const response =
         request.kind === "approval"
           ? { kind: "approval" as const, decision: "decline" as const }
@@ -335,9 +345,11 @@ export class AgentTurnRunner {
       );
       return;
     }
+    const requestId = randomUUID();
+    turn.approvals.set(requestId, request.requestId);
     await this.#connection.send({
       type: "approval:request",
-      requestId: request.requestId,
+      requestId,
       turnId: owner.turnId,
       deliveryId: owner.request.deliveryId,
       sessionId: owner.request.sessionId,
@@ -811,6 +823,35 @@ export function completionForError(error: unknown, abortReason: unknown): TurnCo
   }
   if (error instanceof AgentProviderError) return completionForProviderError(error);
   return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };
+}
+
+function describeApprovalAction(value: JsonValue): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(describeApprovalAction).join("\n");
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .filter(
+        ([key]) =>
+          ![
+            "threadId",
+            "turnId",
+            "itemId",
+            "approvalId",
+            "environmentId",
+            "reason",
+            "cwd",
+            "commandActions",
+            "availableDecisions",
+            "proposedExecpolicyAmendment",
+          ].includes(key),
+      )
+      .map(
+        ([key, entry]) =>
+          `${key.replaceAll(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")}: ${describeApprovalAction(entry)}`,
+      )
+      .join("\n");
+  }
+  return String(value);
 }
 
 /**

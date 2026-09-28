@@ -54,6 +54,8 @@ describe("provider outbox instructions", () => {
     expect(text).toContain("slack api chat.postMessage --json");
     expect(text).toContain("Pass exactly one JSON object");
     expect(text).toContain("never key=value pairs");
+    expect(text).toContain("The launcher loads this Turn's credentials automatically");
+    expect(text).toContain("do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands");
     expect(text).not.toContain("OPENTAG_LARK_BODY");
   });
 });

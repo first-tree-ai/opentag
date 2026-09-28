@@ -14,7 +14,7 @@ export class ApprovalMessenger {
 
   async post(approval: Approval): Promise<string> {
     const { authority, request, id } = approval;
-    const summary = `${request.title}\n${request.description}\nOnly ${authority.approverExternalId} can answer. Expires ${request.expiresAt}.`;
+    const summary = `${request.title}\n\n${request.description}`;
     if (authority.provider === "slack") {
       const material = await this.bindings.getSlackConnectionMaterial(approval.imBindingId);
       if (!material || material.generation !== authority.generation) throw new Error("APPROVAL_BINDING_STALE");
@@ -68,7 +68,7 @@ export class ApprovalMessenger {
               config: { wide_screen_mode: true },
               header: { title: { tag: "plain_text", content: request.title } },
               elements: [
-                { tag: "div", text: { tag: "plain_text", content: summary } },
+                { tag: "div", text: { tag: "plain_text", content: request.description } },
                 {
                   tag: "action",
                   actions: [

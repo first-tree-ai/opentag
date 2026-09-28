@@ -162,7 +162,7 @@ describe("Agent persistence and authorization", () => {
       if (!delivery) throw new Error("Delivery fixture missing");
       const request: RuntimeApprovalRequest = {
         type: "approval:request",
-        requestId: "native-1",
+        requestId: crypto.randomUUID(),
         sessionId: session.id,
         deliveryId: delivery.id,
         placementGeneration: 1,
@@ -218,7 +218,7 @@ describe("Agent persistence and authorization", () => {
       expect(sent).toEqual([
         expect.objectContaining({
           type: "approval:decision",
-          requestId: "native-1",
+          requestId: request.requestId,
           turnId: "turn-live",
           decision: "accept",
         }),

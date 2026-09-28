@@ -65,7 +65,7 @@ function setup(provider: "slack" | "feishu" = "slack") {
   const owner = new RuntimeApprovalOwner(options);
   const request: RuntimeApprovalRequest = {
     type: "approval:request",
-    requestId: "native-request",
+    requestId: randomUUID(),
     sessionId: randomUUID(),
     deliveryId: randomUUID(),
     placementGeneration: 1,
@@ -122,7 +122,7 @@ describe("Runtime approvals", () => {
         expect.objectContaining({
           type: "approval:decision",
           turnId: "turn",
-          requestId: "native-request",
+          requestId: s.request.requestId,
           decision: "accept",
         }),
       );

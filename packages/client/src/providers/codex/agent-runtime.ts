@@ -1485,8 +1485,8 @@ function codexInput(items: readonly { readonly type: "text"; readonly text: stri
 }
 
 function codexApprovalPolicy(policy: AgentRuntimePolicy["approvals"]): string {
-  if (policy === "on-request") return "onRequest";
-  if (policy === "unless-trusted") return "unlessTrusted";
+  if (policy === "on-request") return "on-request";
+  if (policy === "unless-trusted") return "untrusted";
   return "never";
 }
 
@@ -1550,7 +1550,11 @@ function codexInteractionRequest(
     return {
       requestId,
       kind: "approval",
-      title: request.method === "item/fileChange/requestApproval" ? "Approve file changes" : "Approve tool action",
+      title: {
+        "item/fileChange/requestApproval": "Approve file changes",
+        "item/commandExecution/requestApproval": "Approve command",
+        "item/permissions/requestApproval": "Approve permissions",
+      }[request.method],
       ...(typeof params.reason === "string" ? { message: params.reason } : {}),
       details,
     };

@@ -1074,7 +1074,7 @@ export const ProviderCliValidationResultFrameSchema = z
   });
 
 const RuntimeApprovalIdentitySchema = z.object({
-  requestId: RuntimeOpaqueIdSchema,
+  requestId: RuntimeRequestIdSchema,
   turnId: RuntimeOpaqueIdSchema,
   sessionId: RuntimeOpaqueIdSchema,
   deliveryId: RuntimeOpaqueIdSchema,

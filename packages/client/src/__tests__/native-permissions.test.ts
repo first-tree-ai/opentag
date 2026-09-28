@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { prepareCodexPermissionRules, preparePiPermissionHome } from "../providers/native-permissions.js";
+import {
+  claudePermissionRules,
+  prepareCodexPermissionRules,
+  preparePiPermissionHome,
+} from "../providers/native-permissions.js";
 import { PiRpcProcess } from "../providers/pi/rpc-wire.js";
 
 describe("Native permission configuration", () => {
@@ -30,11 +34,14 @@ describe("Native permission configuration", () => {
     const root = await mkdtemp(join(tmpdir(), "opentag-native-rules-"));
     try {
       await prepareCodexPermissionRules(root, '[{"pattern":["git","push"],"decision":"prompt"}]');
-      expect(await readFile(join(root, ".codex", "rules", "opentag.rules"), "utf8")).toBe(
-        'prefix_rule(pattern=["git","push"], decision="prompt")',
-      );
+      const rules = await readFile(join(root, ".codex", "rules", "opentag.rules"), "utf8");
+      expect(rules).toContain('prefix_rule(pattern=["lark-cli","im","+messages-reply"], decision="allow")');
+      expect(rules).toContain('prefix_rule(pattern=["slack","api","chat.postMessage"], decision="allow")');
+      expect(rules).toContain('prefix_rule(pattern=["git","push"], decision="prompt")');
       await prepareCodexPermissionRules(root, "");
-      expect(await readFile(join(root, ".codex", "rules", "opentag.rules"), "utf8")).toBe("");
+      expect(await readFile(join(root, ".codex", "rules", "opentag.rules"), "utf8")).not.toContain(
+        'pattern=["git","push"]',
+      );
       await rm(join(root, ".codex"), { recursive: true });
       await symlink(root, join(root, ".codex"));
       await expect(prepareCodexPermissionRules(root, "")).rejects.toThrow("real directory");
@@ -42,6 +49,35 @@ describe("Native permission configuration", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps explicit Claude restrictions alongside routine reply defaults", () => {
+    expect(claudePermissionRules('{"ask":["Bash(slack *)"],"deny":["Bash(lark-cli *)"]}')).toMatchObject({
+      allow: expect.arrayContaining(["Bash(lark-cli im +messages-reply *)", "Bash(slack api chat.postMessage *)"]),
+      ask: ["Bash(slack *)"],
+      deny: ["Bash(lark-cli *)"],
+    });
+  });
+
+  it.each(["", '{"bash":{"lark-cli *":"deny"}}', '{"bash":"deny"}'])(
+    "allows routine Pi replies while preserving custom bash restrictions: %s",
+    async (rules) => {
+      const home = await preparePiPermissionHome(rules, "/existing/pi");
+      try {
+        const { permission } = JSON.parse(
+          await readFile(join(home, "extensions/pi-permission-system/config.json"), "utf8"),
+        );
+        if (rules.includes('"bash":"deny"')) expect(permission.bash).toBe("deny");
+        else {
+          expect(permission.bash["lark-cli im +messages-reply *"]).toBe("allow");
+          expect(permission.bash["slack api chat.postMessage *"]).toBe("allow");
+          if (rules) expect(Object.entries(permission.bash).at(-1)).toEqual(["lark-cli *", "deny"]);
+          else expect(permission.bash["*"]).toBe("ask");
+        }
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("loads the real pinned Pi permission package over RPC offline with writable workspace defaults", async () => {
     const home = await preparePiPermissionHome('{"bash":{"*":"ask","git status":"allow"}}', "/existing/pi");

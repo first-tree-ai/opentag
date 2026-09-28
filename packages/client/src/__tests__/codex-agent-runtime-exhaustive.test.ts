@@ -327,7 +327,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     expect(client.call("thread/start")?.params).toEqual({
       cwd: "/workspace",
       developerInstructions: "OpenTag managed system prompt",
-      approvalPolicy: "unlessTrusted",
+      approvalPolicy: "untrusted",
       sandbox: "workspace-write",
       model: "base-model",
       personality: "friendly",
@@ -349,7 +349,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       threadId: "thread-1",
       input: [{ type: "text", text: "hello" }],
       cwd: "/workspace",
-      approvalPolicy: "unlessTrusted",
+      approvalPolicy: "untrusted",
       sandboxPolicy: {
         type: "workspaceWrite",
         writableRoots: ["/workspace/one", "/workspace/two"],

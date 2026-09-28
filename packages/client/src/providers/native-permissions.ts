@@ -1,10 +1,26 @@
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { CodexPermissionRulesSchema, PiPermissionRulesSchema } from "@opentag/shared";
+import { ClaudePermissionRulesSchema, CodexPermissionRulesSchema, PiPermissionRulesSchema } from "@opentag/shared";
+
+// Native gates still inspect compound shell commands; only routine message writes are allowed.
+const REPLY_COMMANDS = [
+  ["lark-cli", "im", "+messages-reply"],
+  ["lark-cli", "im", "+messages-send"],
+  ["slack", "api", "chat.postMessage"],
+] as const;
+
+export function claudePermissionRules(rules: string) {
+  const custom = ClaudePermissionRulesSchema.parse(rules.trim() ? JSON.parse(rules) : {});
+  return {
+    ...custom,
+    allow: [...REPLY_COMMANDS.map((command) => `Bash(${command.join(" ")} *)`), ...(custom.allow ?? [])],
+  };
+}
 
 export async function prepareCodexPermissionRules(cwd: string, rules: string): Promise<void> {
-  const parsed = CodexPermissionRulesSchema.parse(rules.trim() ? JSON.parse(rules) : []);
+  const custom = CodexPermissionRulesSchema.parse(rules.trim() ? JSON.parse(rules) : []);
+  const parsed = [...REPLY_COMMANDS.map((pattern) => ({ pattern, decision: "allow" })), ...custom];
   const directory = join(cwd, ".codex");
   for (const path of [directory, join(directory, "rules")]) {
     await mkdir(path, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
@@ -29,6 +45,7 @@ export async function preparePiPermissionHome(rules: string, sourceHome?: string
     const config = join(directory, "extensions", "pi-permission-system", "config.json");
     await mkdir(dirname(config), { recursive: true, mode: 0o700 });
     const custom = PiPermissionRulesSchema.parse(rules.trim() ? JSON.parse(rules) : {});
+    const customBash = typeof custom.bash === "object" ? custom.bash : {};
     await writeFile(
       config,
       JSON.stringify({
@@ -47,8 +64,18 @@ export async function preparePiPermissionHome(rules: string, sourceHome?: string
           skill: "allow",
           path: "allow",
           external_directory: "ask",
-          bash: "ask",
           ...custom,
+          bash:
+            typeof custom.bash === "string"
+              ? custom.bash
+              : {
+                  ...Object.fromEntries(
+                    [["*", "ask"], ...REPLY_COMMANDS.map((command) => [`${command.join(" ")} *`, "allow"])].filter(
+                      ([pattern]) => pattern !== undefined && !(pattern in customBash),
+                    ),
+                  ),
+                  ...customBash,
+                },
           path_write: {
             ...(typeof custom.path_write === "object" ? custom.path_write : { "*": custom.path_write ?? "allow" }),
             [`${directory}/*`]: "deny",

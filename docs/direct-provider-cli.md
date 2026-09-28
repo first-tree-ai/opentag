@@ -32,7 +32,8 @@ repair, validate credentials, or infer login/subscription state.
 
 For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
 the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent
-sources that file and calls the official `lark-cli` or `slack api` command directly. The file is removed when the Turn
+calls the official `lark-cli` or `slack api` command directly; the managed launcher loads its credentials automatically.
+Only raw provider HTTP requests need to source the environment file. The file is removed when the Turn
 finishes, retried during Session or Client shutdown if removal fails, and recovered by the next Client startup after a
 crash. Internal Sessions never receive the file.
 

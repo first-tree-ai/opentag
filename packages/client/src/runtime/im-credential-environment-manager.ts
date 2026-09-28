@@ -9,7 +9,7 @@ import type { RuntimeBusinessFrame, RuntimeConnection } from "./runtime-connecti
 
 const GRANT_TIMEOUT_MS = 10_000;
 const MANAGED_CREDENTIAL_ARTIFACT =
-  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.sh|\.ps1|-lark-config|-slack-config)|\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.sh|\.ps1|\.json|-lark-config|-slack-config)|\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
 
 export class ImCredentialEnvironmentError extends Error {
   constructor(readonly code: string) {
@@ -45,6 +45,7 @@ export interface ImCredentialGrantSubject {
 }
 
 export interface PreparedImCredentialEnvironment {
+  readonly environmentManifest: string;
   readonly outboxContext?: RuntimeImOutboxContext;
   readonly path: string;
   readonly provider: "feishu" | "slack";
@@ -110,6 +111,7 @@ export class ImCredentialEnvironmentManager {
         await this.#writeEnvironmentFile(path, serializeEnvironment(environment, this.#platform), 0o600);
         return {
           path,
+          environmentManifest: await this.#writeManifest(request.sessionId, environment),
           provider: result.grant.provider,
           ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
         };
@@ -119,6 +121,7 @@ export class ImCredentialEnvironmentManager {
       this.#activeSlackConfigDirs.set(request.sessionId, slack.configDir);
       return {
         path,
+        environmentManifest: await this.#writeManifest(request.sessionId, slack.environment),
         provider: result.grant.provider,
         slackConfigDir: slack.configDir,
         ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
@@ -146,6 +149,7 @@ export class ImCredentialEnvironmentManager {
     this.#activeSlackConfigDirs.delete(sessionId);
     const results = await Promise.allSettled([
       this.#removePath(this.pathForSession(sessionId), { force: true }),
+      this.#removePath(this.#artifactPath(`${sessionId}.json`), { force: true }),
       this.#removePath(this.#larkConfigDirPath(sessionId), { recursive: true, force: true }),
       this.#removePath(slackConfigDir, { recursive: true, force: true }),
     ]);
@@ -169,6 +173,20 @@ export class ImCredentialEnvironmentManager {
     const startupFailure = await this.#startupCleanup;
     await Promise.all([...this.#activeSessions].map((sessionId) => this.cleanup(sessionId)));
     if (startupFailure) throw startupFailure;
+  }
+
+  async #writeManifest(sessionId: string, environment: Readonly<Record<string, string | undefined>>): Promise<string> {
+    const path = this.#artifactPath(`${sessionId}.json`);
+    await this.#writeEnvironmentFile(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        executionId: randomUUID(),
+        environment: Object.fromEntries(Object.entries(environment).map(([key, value]) => [key, value ?? null])),
+      }),
+      0o600,
+    );
+    return path;
   }
 
   async #cleanupStaleArtifacts(): Promise<void> {

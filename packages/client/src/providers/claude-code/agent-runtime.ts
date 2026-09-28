@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, execFile } from "node:child_proces
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
-import { ClaudePermissionRulesSchema, getRuntimeConfigurationOptions } from "@opentag/shared";
+import { getRuntimeConfigurationOptions } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -35,6 +35,7 @@ import {
   runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
+import { claudePermissionRules } from "../native-permissions.js";
 import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
 import {
   ClaudeCodeProcess,
@@ -328,9 +329,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
             "stdio",
             "--settings",
             JSON.stringify({
-              permissions: ClaudePermissionRulesSchema.parse(
-                this.#policy.permissionRules?.trim() ? JSON.parse(this.#policy.permissionRules) : {},
-              ),
+              permissions: claudePermissionRules(this.#policy.permissionRules ?? ""),
             }),
           ]),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),

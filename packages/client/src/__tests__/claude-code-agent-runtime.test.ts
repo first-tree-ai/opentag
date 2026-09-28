@@ -28,7 +28,16 @@ describe("ClaudeCodeAgentRuntime", () => {
       await vi.waitFor(() => expect(events.some((event) => event.type === "interaction_requested")).toBe(true));
       expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("acceptEdits");
       expect(argumentAfter(processes[0]?.args ?? [], "--permission-prompt-tool")).toBe("stdio");
-      expect(argumentAfter(processes[0]?.args ?? [], "--settings")).toBe('{"permissions":{"deny":["Bash(rm *)"]}}');
+      expect(JSON.parse(argumentAfter(processes[0]?.args ?? [], "--settings") as string)).toEqual({
+        permissions: {
+          allow: [
+            "Bash(lark-cli im +messages-reply *)",
+            "Bash(lark-cli im +messages-send *)",
+            "Bash(slack api chat.postMessage *)",
+          ],
+          deny: ["Bash(rm *)"],
+        },
+      });
       await runtime.respond({
         expectedRunId: "local-run",
         requestId: "permission-1",

@@ -21,6 +21,10 @@ import {
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_OUTGOING_REPLY_SNAPSHOT_MAX_BYTES,
   RUNTIME_TRACE_EVENT_MAX_BYTES,
+  RuntimeApprovalDecisionSchema,
+  RuntimeApprovalRequestSchema,
+  RuntimeApprovalResultSchema,
+  RuntimeFrameEnvelopeSchema,
   RuntimeImCredentialGrantResultSchema,
   RuntimeImSteerRequestSchema,
   RuntimeImSteerResultSchema,
@@ -39,6 +43,35 @@ import {
 } from "../index.js";
 
 describe("runtime domain contract", () => {
+  it("uses transport request IDs for approval requests, decisions, and acknowledgements", () => {
+    const identity = {
+      requestId: randomUUID(),
+      turnId: "turn-1",
+      sessionId: "session-1",
+      deliveryId: "delivery-1",
+      placementGeneration: 1,
+    };
+    const request = {
+      ...identity,
+      type: "approval:request",
+      title: "Approve command",
+      description: "curl -I https://example.com",
+      expiresAt: new Date().toISOString(),
+    };
+    const decision = { ...identity, type: "approval:decision", decision: "accept" };
+    const result = { ...identity, type: "approval:result", status: "applied" };
+    expect(RuntimeApprovalRequestSchema.parse(request)).toEqual(request);
+    expect(RuntimeApprovalDecisionSchema.parse(decision)).toEqual(decision);
+    expect(RuntimeApprovalResultSchema.parse(result)).toEqual(result);
+    for (const frame of [request, decision, result]) {
+      expect(RuntimeFrameEnvelopeSchema.parse(frame).requestId).toBe(identity.requestId);
+    }
+    expect(ClientRuntimeBusinessFrameSchema.parse(request)).toEqual(request);
+    expect(ServerRuntimeBusinessFrameSchema.parse(decision)).toEqual(decision);
+    expect(ClientRuntimeBusinessFrameSchema.parse(result)).toEqual(result);
+    expect(RuntimeApprovalRequestSchema.safeParse({ ...request, requestId: "number:0" }).success).toBe(false);
+  });
+
   it("B-01 validates every V0 domain request and result through the public schema surface", () => {
     const runtime = snapshot();
     expect(

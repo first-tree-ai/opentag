@@ -10,6 +10,11 @@ and other tools. Claude and Pi permission gates do not provide an OS sandbox.
 Pi ignores project-scoped permission configuration and treats IM messages as literal requests;
 its permission policy comes from Agent execution settings.
 
+Routine Feishu reply/send commands and Slack `chat.postMessage` are allowed by default through
+native command rules. Run these CLIs directly: the managed launcher loads the Turn credentials.
+Explicit custom rules can still ask for approval or deny these commands. Other shell actions keep
+the provider's permission checks.
+
 In Agent execution settings, enter the designated approver’s Slack user ID (`U…`) or Feishu app-specific
 open ID (`ou_…`) as the approval user. Only that user can answer the Agent's approval requests.
 Without an approval user, actions requiring approval are denied. Cloud Agents always run with full
@@ -39,6 +44,7 @@ Feishu Apps must subscribe to the `card.action.trigger` callback through the exi
 New QR registrations include this callback; existing Apps need it enabled in their developer console.
 
 Approval requests appear in the originating IM thread with **Approve once** and **Deny** buttons.
+Cards show the reason and action, without provider transport metadata or approver IDs.
 The provider remains paused; clicking a button answers the same live turn. Decisions are stored long
 enough to reach the server replica holding the runtime socket, and the card is resolved after the
 runtime acknowledges the answer. Duplicate clicks, wrong users, expired requests, changed bindings,

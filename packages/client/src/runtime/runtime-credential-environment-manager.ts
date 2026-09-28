@@ -1,10 +1,5 @@
 import { rm } from "node:fs/promises";
 import type { RuntimeImOutboxContext } from "@opentag/shared";
-import {
-  WEB_TOOLS_PROTOCOL_VERSION,
-  type WebFetchExecutionRequest,
-  type WebSearchExecutionRequest,
-} from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
   ImCredentialEnvironmentError,
@@ -40,8 +35,9 @@ import {
   RuntimeProxyMaterialStore,
   runtimeProxyOutboxContext,
 } from "./runtime-proxy-material.js";
-import { WebToolsClientError, WebToolsServerClient } from "./web-tools-client.js";
-import { allocateWebGatewaySocket, WebGatewayDispatchError, WebToolsGatewayServer } from "./web-tools-gateway.js";
+import { WebToolsServerClient } from "./web-tools-client.js";
+import { createExecutionWebDispatch } from "./web-tools-dispatch.js";
+import { allocateWebGatewaySocket, WebToolsGatewayServer } from "./web-tools-gateway.js";
 
 export type RuntimeCredentialMode = "legacy" | "proxy";
 
@@ -145,7 +141,8 @@ export interface RuntimeCredentialEnvironmentManagerOptions {
    */
   readonly webTools?: {
     readonly extensionPath: string;
-    readonly machineToken: string;
+    /** The Local Computer's machine token; used as the web-route bearer for this execution. */
+    readonly bearerToken: string;
     readonly fetchImpl?: typeof fetch;
   };
 }
@@ -617,46 +614,16 @@ export class RuntimeCredentialEnvironmentManager {
     if (!webGrant || webGrant.scopes.length === 0) return undefined;
     const client = new WebToolsServerClient({
       serverUrl: this.#options.serverUrl ?? "",
-      machineToken: options.machineToken,
+      bearerToken: options.bearerToken,
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     });
-    const executionId = relay.executionId;
     let socketDirectory: string | undefined;
     try {
       const allocated = await allocateWebGatewaySocket();
       socketDirectory = allocated.directory;
       const gateway = await WebToolsGatewayServer.start({
         socketPath: allocated.socketPath,
-        dispatch: async (input, signal) => {
-          // The gateway injects the execution identity itself; the Sandbox only ever supplies
-          // the runtime-generated toolCallId and validated business parameters.
-          const request = {
-            protocolVersion: WEB_TOOLS_PROTOCOL_VERSION,
-            executionId,
-            toolCallId: input.toolCallId,
-            ...input.params,
-          };
-          try {
-            return input.operation === "search"
-              ? await client.search({
-                  request: request as WebSearchExecutionRequest,
-                  remainingMs: input.remainingMs,
-                  signal,
-                })
-              : await client.fetch({
-                  request: request as WebFetchExecutionRequest,
-                  remainingMs: input.remainingMs,
-                  signal,
-                });
-          } catch (error) {
-            if (error instanceof WebToolsClientError) {
-              throw new WebGatewayDispatchError(error.code, error.message, {
-                ...(error.retryable !== undefined ? { retryable: error.retryable } : {}),
-              });
-            }
-            throw error;
-          }
-        },
+        dispatch: createExecutionWebDispatch({ client, executionId: relay.executionId }),
       });
       return { gateway, socketDirectory };
     } catch (error) {

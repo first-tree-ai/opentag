@@ -185,6 +185,7 @@ describe("CloudTurnRunner Session collaboration", () => {
         return options.worker?.(input, signal) ?? Promise.resolve(completedExec());
       },
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unexpected native seam")),
         openDuplex: () => {
           throw new Error("unexpected native duplex seam");
@@ -917,6 +918,7 @@ describe("CloudTurnRunner Session collaboration", () => {
       }),
       runWorker: async () => completedExec(),
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unused native seam")),
         openDuplex: () => {
           throw new Error("unused native duplex seam");

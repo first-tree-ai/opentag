@@ -38,7 +38,7 @@
 
 ## 设计文档
 
-- [应用设计指南](design.md)
+- [应用设计指南（英文）](../../design.md)
 - [MCP Server integration](../design/mcp-server-integration.md)
 - [Web UI contract](../design/web-ui-contract.md)
 - [Doctor product specification](../design/doctor-product-spec.md)

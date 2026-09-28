@@ -39,6 +39,7 @@ import {
   users,
 } from "../../db/schema/index.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
+import { lockMcpBindings } from "../mcp/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
@@ -1229,6 +1230,7 @@ export class AgentService {
        * longer see, reach, or revoke through any route. Onboarding reset already cleaned them up
        * explicitly for the same reason; this is the other deletion path.
        */
+      await lockMcpBindings(transaction, eq(agentMcpServers.agentId, agentId));
       await transaction.delete(mcpServerAuthorizations).where(eq(mcpServerAuthorizations.agentId, agentId));
       await transaction.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
       const [deleted] = await transaction

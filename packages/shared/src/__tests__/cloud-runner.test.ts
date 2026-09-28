@@ -404,6 +404,27 @@ describe("E8 Session collaboration protocol", () => {
       model: grant,
     };
     expect(RunnerCloudWorkerRequestSchema.safeParse(turnWorker).success).toBe(true);
+
+    /*
+     * Web tools facts are two nonsecret absolute in-Sandbox paths and nothing else. A worker
+     * document carrying a bearer, a relative path, or an unknown field is rejected before any Pi
+     * process starts, so the extension can never be pointed outside the Sandbox or fed a secret
+     * through stdin.
+     */
+    const webTools = {
+      extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
+      socketPath: "/tmp/opentag-web-1.sock",
+    };
+    expect(RunnerCloudWorkerRequestSchema.safeParse({ ...sessionWorker, webTools }).success).toBe(true);
+    expect(RunnerCloudWorkerRequestSchema.safeParse({ ...turnWorker, webTools }).success).toBe(true);
+    expect(
+      RunnerCloudWorkerRequestSchema.safeParse({ ...turnWorker, webTools: { ...webTools, socketPath: "tmp/web.sock" } })
+        .success,
+    ).toBe(false);
+    expect(
+      RunnerCloudWorkerRequestSchema.safeParse({ ...turnWorker, webTools: { ...webTools, token: "otwg_secret" } })
+        .success,
+    ).toBe(false);
   });
 
   it("carries cancellation of journaled Session work as its own frame", () => {

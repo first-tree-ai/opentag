@@ -1,50 +1,54 @@
 import type { RuntimeWebServiceScope } from "@opentag/shared";
 
 /**
- * Platform `web` service policy. The service is deployment-gated: an Account becomes web-capable
- * only through explicit configuration mapping the Account to its Router tenant. There is no
- * shared default tenant — a missing mapping denies the service rather than falling back.
+ * Platform `web` service policy. The service is a deployment-wide default: when the deployment
+ * configured a Router origin and web-only key, every valid active Account execution is web-capable
+ * exactly like platform LLM access. There is no per-Account mapping, no per-user opt-in, and no
+ * user-facing setting; a deployment with no configured Router key denies the service rather than
+ * falling back.
  */
 export interface RuntimeWebServicePolicy {
-  /** Exact scopes granted at execution open; undefined when the Account has no web mapping. */
+  /** Exact scopes granted at execution open; undefined when the deployment has no web config. */
   authorizeWeb(input: { accountId: string }): readonly RuntimeWebServiceScope[] | undefined;
 }
 
-/** Router tenant binding for one dispatch. The key is live deployment secret material. */
-export interface RuntimeWebTenantResolution {
-  tenantId: string;
-  routerKey: string;
+export interface RuntimeWebRouterKeyResolution {
+  /**
+   * The one deployment-wide Router web-only key. Live secret material: it is read from deployment
+   * config per dispatch and is never cached onto an execution record or sent to a Sandbox.
+   */
+  readonly routerKey: string;
 }
 
-export interface RuntimeWebTenantResolver {
-  /** Fresh per-request tenant resolution; keys are never cached onto execution records. */
-  resolveTenant(input: { accountId: string }): RuntimeWebTenantResolution | undefined;
+export interface RuntimeWebRouterKeyResolver {
+  /** Fresh per-request key resolution from deployment config, or undefined when disabled. */
+  resolveRouterKey(input: { accountId: string }): RuntimeWebRouterKeyResolution | undefined;
 }
 
 export const RUNTIME_WEB_SERVICE_SCOPES: readonly RuntimeWebServiceScope[] = ["web:search", "web:fetch"];
 
 export interface RuntimeWebPolicyConfig {
-  /** accountId → Router tenant binding. Key material lives only in this deployment config. */
-  readonly tenants: ReadonlyMap<string, RuntimeWebTenantResolution>;
+  /** The deployment's single Router web-only key. Key material lives only in this config. */
+  readonly routerKey: string;
 }
 
 /**
- * The configured web policy. Both directions come from the same map so an Account that can open
- * a web execution always resolves its own tenant at dispatch, and no other Account's tenant can
- * ever be selected — there is no caller-controlled tenant input anywhere in the chain.
+ * The configured web policy. Both directions come from the same deployment config, so a grant and
+ * the credential that serves it can never disagree, and no caller-controlled tenant, key, or target
+ * exists anywhere in the chain.
  */
-export class ConfigRuntimeWebPolicy implements RuntimeWebServicePolicy, RuntimeWebTenantResolver {
-  readonly #tenants: ReadonlyMap<string, RuntimeWebTenantResolution>;
+export class ConfigRuntimeWebPolicy implements RuntimeWebServicePolicy, RuntimeWebRouterKeyResolver {
+  readonly #routerKey: string;
 
   constructor(config: RuntimeWebPolicyConfig) {
-    this.#tenants = config.tenants;
+    this.#routerKey = config.routerKey;
   }
 
-  authorizeWeb(input: { accountId: string }): readonly RuntimeWebServiceScope[] | undefined {
-    return this.#tenants.has(input.accountId) ? RUNTIME_WEB_SERVICE_SCOPES : undefined;
+  authorizeWeb(_input: { accountId: string }): readonly RuntimeWebServiceScope[] | undefined {
+    return RUNTIME_WEB_SERVICE_SCOPES;
   }
 
-  resolveTenant(input: { accountId: string }): RuntimeWebTenantResolution | undefined {
-    return this.#tenants.get(input.accountId);
+  resolveRouterKey(_input: { accountId: string }): RuntimeWebRouterKeyResolution | undefined {
+    return { routerKey: this.#routerKey };
   }
 }

@@ -199,6 +199,7 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
       runWorker: input.runWorker,
       onPersistenceError: input.onPersistenceError,
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unused native seam")),
         openDuplex: () => {
           throw new Error("unused native duplex seam");

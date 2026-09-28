@@ -278,6 +278,7 @@ describe("CloudTurnRunner", () => {
         return options.worker?.(input, signal) ?? Promise.resolve(completedExec());
       },
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unexpected native seam")),
         openDuplex: () => {
           throw new Error("unexpected native duplex seam");
@@ -695,6 +696,7 @@ describe("CloudTurnRunner", () => {
       openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-x" }),
       runWorker: () => new Promise<ExecResult>(() => undefined),
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unused native seam")),
         openDuplex: () => {
           throw new Error("unused native duplex seam");
@@ -723,6 +725,7 @@ describe("CloudTurnRunner", () => {
         return completedExec();
       },
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unused native seam")),
         openDuplex: () => {
           throw new Error("unused native duplex seam");
@@ -765,6 +768,7 @@ describe("CloudTurnRunner", () => {
         return completedExec("recovered");
       },
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unused native seam")),
         openDuplex: () => {
           throw new Error("unused native duplex seam");
@@ -802,6 +806,7 @@ describe("CloudTurnRunner", () => {
       openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-x" }),
       runWorker: async () => completedExec(),
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unused native seam")),
         openDuplex: () => {
           throw new Error("unused native duplex seam");
@@ -1832,6 +1837,7 @@ describe("CloudTurnRunner", () => {
         }),
         runWorker: undefined,
         sandbox: {
+          name: "ots-cloud-turn-test",
           exec: (_file: string, args: readonly string[], options: { stdin?: unknown }) => {
             execInputs.push({ args, stdin: options.stdin });
             return Promise.resolve(completedExec("native"));
@@ -2012,6 +2018,7 @@ describe("CloudTurnRunner", () => {
       openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-x" }),
       runWorker: async () => completedExec(),
       sandbox: {
+        name: "ots-cloud-turn-test",
         exec: () => Promise.reject(new Error("unused native seam")),
         openDuplex: () => {
           throw new Error("unused native duplex seam");

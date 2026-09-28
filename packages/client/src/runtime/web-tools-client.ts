@@ -46,8 +46,13 @@ export class WebToolsClientError extends Error {
 export interface WebToolsServerClientOptions {
   /** Base Server URL from the trusted daemon configuration; never caller input. */
   readonly serverUrl: string;
-  /** The Computer machine token; presented only to the fixed runtime web routes. */
-  readonly machineToken: string;
+  /**
+   * The bearer presented to the two fixed runtime web routes. A Local daemon passes its Computer
+   * machine token; a Cloud Runner parent passes the short-lived execution web bearer the Server
+   * issued over the credential tunnel. Either way the value stays in the trusted process: the
+   * Sandbox and the Pi extension only ever see the private socket that fronts it.
+   */
+  readonly bearerToken: string;
   readonly fetchImpl?: typeof fetch;
   readonly logger?: Pick<ClientLogger, "debug" | "warn">;
 }
@@ -61,14 +66,14 @@ interface WebCallInput {
 }
 
 /**
- * Trusted Runner → Server web client. The path set is fixed, the machine token is the only
- * credential, the body is the strict execution request, and the response is byte-bounded and
- * schema-validated before anything returns to the Sandbox-facing gateway. One combined deadline
- * spans request headers AND the full response body.
+ * Trusted runner → Server web client. The path set is fixed, the bearer is the only credential, the
+ * body is the strict execution request, and the response is byte-bounded and schema-validated before
+ * anything returns to the Sandbox-facing gateway. One combined deadline spans request headers AND
+ * the full response body.
  */
 export class WebToolsServerClient {
   readonly #baseUrl: string;
-  readonly #machineToken: string;
+  readonly #bearerToken: string;
   readonly #fetch: typeof fetch;
   readonly #logger: Pick<ClientLogger, "debug" | "warn">;
 
@@ -76,7 +81,7 @@ export class WebToolsServerClient {
     const url = new URL(options.serverUrl);
     if (url.username || url.password) throw new Error("The Server URL must not carry credentials");
     this.#baseUrl = url.origin;
-    this.#machineToken = options.machineToken;
+    this.#bearerToken = options.bearerToken;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#logger = options.logger ?? createLogger("web-tools-client");
   }
@@ -129,7 +134,7 @@ export class WebToolsServerClient {
           method: "POST",
           headers: {
             accept: "application/json",
-            authorization: `Bearer ${this.#machineToken}`,
+            authorization: `Bearer ${this.#bearerToken}`,
             "content-type": "application/json",
             [WEB_TIMEOUT_HEADER]: String(budgetMs),
           },

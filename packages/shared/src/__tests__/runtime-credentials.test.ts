@@ -33,6 +33,8 @@ import {
   RuntimeProviderProxyServerFrameSchema,
   RuntimeProxyTicketRequestSchema,
   RuntimeProxyTicketResultSchema,
+  RuntimeWebGatewayRequestSchema,
+  RuntimeWebGatewayResultSchema,
 } from "../runtime-credentials.js";
 import { RUNTIME_CAPABILITY, RUNTIME_SERVER_CAPABILITY_OFFERS } from "../runtime-protocol.js";
 
@@ -305,6 +307,45 @@ describe("runtime credential control frames", () => {
         path: "/api/v1/other",
       }),
     ).toThrow();
+  });
+
+  it("round-trips the execution web gateway bearer frame", () => {
+    const request = RuntimeWebGatewayRequestSchema.parse({
+      type: "runtime:web:gateway",
+      requestId,
+      executionId,
+    });
+    expect(request).toMatchObject({ type: "runtime:web:gateway", executionId });
+    const result = RuntimeWebGatewayResultSchema.parse({
+      type: "runtime:web:gateway:result",
+      requestId,
+      status: "succeeded",
+      executionId,
+      token: `otwg_${capability}`,
+      expiresAt: "2026-09-16T00:10:00Z",
+    });
+    expect(result.status).toBe("succeeded");
+    // The web result fixes no destination: both routes are shared constants, so no `path` exists
+    // for a Server to point the Client at.
+    expect(() =>
+      RuntimeWebGatewayResultSchema.parse({
+        type: "runtime:web:gateway:result",
+        requestId,
+        status: "succeeded",
+        executionId,
+        token: `otwg_${capability}`,
+        expiresAt: "2026-09-16T00:10:00Z",
+        path: "/api/v1/elsewhere",
+      }),
+    ).toThrow();
+    expect(
+      RuntimeWebGatewayResultSchema.parse({
+        type: "runtime:web:gateway:result",
+        requestId,
+        status: "rejected",
+        code: "service_not_granted",
+      }),
+    ).toMatchObject({ code: "service_not_granted" });
   });
 
   it("carries the E8 Session CLI proof only on a succeeded execution open", () => {

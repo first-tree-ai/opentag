@@ -1,6 +1,7 @@
 import type {
   ListAgentMCPServersResponse,
   ListAvailableMCPServersResponse,
+  MCPAgentServer,
   MCPServer,
   MCPServerDetail,
 } from "@opentag/shared/browser";
@@ -58,12 +59,11 @@ export function useAvailableMcpServers(agentId: string, enabled: boolean) {
  * definition edit also invalidates every other Agent that uses it, which the pool invalidation and
  * the live cadence between them cover.
  */
-function useMcpInvalidation(agentId: string) {
+function useMcpInvalidation(agentId?: string) {
   const queryClient = useQueryClient();
   return async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.agentServers(agentId) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.availableServers(agentId) }),
+      queryClient.invalidateQueries({ queryKey: agentId ? queryKeys.mcp.agentServers(agentId) : ["mcp", "agents"] }),
       queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers() }),
       queryClient.invalidateQueries({ queryKey: queryKeys.mcp.serverRoot() }),
     ]);
@@ -78,8 +78,8 @@ export function useCreateMcpServer(agentId: string) {
   });
 }
 
-export function useUpdateMcpServer(agentId: string) {
-  const invalidate = useMcpInvalidation(agentId);
+export function useUpdateMcpServer(_agentId?: string) {
+  const invalidate = useMcpInvalidation();
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.updateMcpServer>[1]) =>
       browserApi.updateMcpServer(input.mcpServerId, bodyOf(input)),
@@ -87,8 +87,8 @@ export function useUpdateMcpServer(agentId: string) {
   });
 }
 
-export function useRemoveMcpServer(agentId: string) {
-  const invalidate = useMcpInvalidation(agentId);
+export function useRemoveMcpServer(_agentId?: string) {
+  const invalidate = useMcpInvalidation();
   return useMutation({
     mutationFn: (mcpServerId: string) => browserApi.removeMcpServer(mcpServerId),
     onSuccess: invalidate,
@@ -97,43 +97,74 @@ export function useRemoveMcpServer(agentId: string) {
 
 export function useAttachMcpServer(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (mcpServerId: string) => browserApi.attachMcpServer(agentId, { mcpServerId, enabled: true }),
-    onSuccess: invalidate,
+    onSuccess: async (entry) => {
+      queryClient.setQueryData<ListAgentMCPServersResponse>(queryKeys.mcp.agentServers(agentId), (previous) =>
+        mergeAgentServer(previous, entry),
+      );
+      await invalidate();
+    },
   });
 }
 
 export function useDetachMcpServer(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (mcpServerId: string) => browserApi.detachMcpServer(agentId, mcpServerId),
-    onSuccess: invalidate,
+    onSuccess: async (_result, mcpServerId) => {
+      queryClient.setQueryData<ListAgentMCPServersResponse>(
+        queryKeys.mcp.agentServers(agentId),
+        (previous) => previous && { servers: previous.servers.filter((server) => server.mcpServerId !== mcpServerId) },
+      );
+      await invalidate();
+    },
   });
 }
 
 export function useUpdateMcpBinding(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.updateAgentMcpServer>[2]) =>
       browserApi.updateAgentMcpServer(agentId, input.mcpServerId, bodyOf(input)),
-    onSuccess: invalidate,
+    onSuccess: async (entry) => {
+      queryClient.setQueryData<ListAgentMCPServersResponse>(queryKeys.mcp.agentServers(agentId), (previous) =>
+        mergeAgentServer(previous, entry),
+      );
+      await invalidate();
+    },
   });
 }
 
 export function useSetMcpAuthorization(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.setMcpAuthorization>[2]) =>
       browserApi.setMcpAuthorization(agentId, input.mcpServerId, bodyOf(input)),
-    onSuccess: invalidate,
+    onSuccess: async (entry) => {
+      queryClient.setQueryData<ListAgentMCPServersResponse>(queryKeys.mcp.agentServers(agentId), (previous) =>
+        mergeAgentServer(previous, entry),
+      );
+      await invalidate();
+    },
   });
 }
 
 export function useRevokeMcpAuthorization(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (mcpServerId: string) => browserApi.revokeMcpAuthorization(agentId, mcpServerId),
-    onSuccess: invalidate,
+    onSuccess: async (entry) => {
+      queryClient.setQueryData<ListAgentMCPServersResponse>(queryKeys.mcp.agentServers(agentId), (previous) =>
+        mergeAgentServer(previous, entry),
+      );
+      await invalidate();
+    },
   });
 }
 
@@ -171,3 +202,13 @@ export function useProbeMcpServer(agentId: string) {
 
 /** The polling cadence, re-exported so a test can assert the page's actual refresh behavior. */
 export const MCP_PAGE_REFETCH_INTERVAL_MS = LIVE_REFETCH_INTERVAL_MS;
+
+/** Keep rows in place when a confirmed write is displayed before its follow-up read completes. */
+function mergeAgentServer(
+  previous: ListAgentMCPServersResponse | undefined,
+  entry: MCPAgentServer,
+): ListAgentMCPServersResponse {
+  const servers = previous?.servers ?? [];
+  if (!servers.some((server) => server.mcpServerId === entry.mcpServerId)) return { servers: [...servers, entry] };
+  return { servers: servers.map((server) => (server.mcpServerId === entry.mcpServerId ? entry : server)) };
+}

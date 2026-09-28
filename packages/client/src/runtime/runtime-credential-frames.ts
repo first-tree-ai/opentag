@@ -55,6 +55,9 @@ export type {
   RuntimeProxyTicketRejectCode,
   RuntimeProxyTicketRequest,
   RuntimeProxyTicketResult,
+  RuntimeWebGatewayRejectCode,
+  RuntimeWebGatewayRequest,
+  RuntimeWebGatewayResult,
 } from "@opentag/shared";
 export {
   decodeProviderProxyDataFrame,

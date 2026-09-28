@@ -88,6 +88,76 @@ it("mounts only the execution-scoped MCP gateway in the Cloud Pi configuration",
   });
 });
 
+it("registers the trusted web extension only when the execution was granted web tools", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-web-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "turn-web");
+  const webTools = {
+    extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
+    socketPath: "/tmp/opentag-web-fixture.sock",
+  };
+  let provider: unknown;
+  const completion = await runCloudTurnWorker(
+    { ...turnRequest(executionDir), webTools },
+    {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      createPiFactory: () => ({
+        create: async (request) => {
+          provider = request.configuration?.provider;
+          return {
+            close: async () => undefined,
+            prompt: async () => ({ runId: "fixture", status: "completed", output: [{ type: "text", text: "done" }] }),
+          };
+        },
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      }),
+    },
+  );
+  expect(completion.outcome).toBe("completed");
+  expect(provider).toEqual({ webTools });
+  // The nonsecret descriptor and packaged path are the only web facts the worker document can
+  // carry; the execution bearer stays in the trusted Runner parent.
+  expect(JSON.stringify(provider)).not.toContain("otwg_");
+});
+
+it("configures both platform gateways together for one execution", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-both-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "turn-both");
+  const mcpGateway = { url: "https://server.example.com/api/v1/mcp", token: "otmg_cloud_fixture" };
+  const webTools = {
+    extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
+    socketPath: "/tmp/opentag-web-fixture.sock",
+  };
+  let provider: unknown;
+  const completion = await runCloudTurnWorker(
+    { ...turnRequest(executionDir), mcpGateway, webTools },
+    {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      createPiFactory: () => ({
+        create: async (request) => {
+          provider = request.configuration?.provider;
+          return {
+            close: async () => undefined,
+            prompt: async () => ({ runId: "fixture", status: "completed", output: [{ type: "text", text: "done" }] }),
+          };
+        },
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      }),
+    },
+  );
+  expect(completion.outcome).toBe("completed");
+  expect(provider).toEqual({ mcpGateway, webTools });
+});
+
 function sessionRequest(
   executionDir: string,
   overrides: Partial<RunnerCloudSessionWorkerRequest> = {},

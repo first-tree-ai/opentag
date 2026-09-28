@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { parseServerConfig } from "../config.js";
 
@@ -10,32 +9,27 @@ const required = {
   OPENTAG_PUBLIC_URL: "http://localhost:8000",
 };
 
-const ACCOUNT = randomUUID();
-
 describe("web tools server config", () => {
   it("is disabled by default with no Router wiring", () => {
     const config = parseServerConfig(required);
     expect(config.web).toEqual({ enabled: false });
   });
 
-  it("resolves tenant keys from referenced secret variables only when enabled", () => {
+  it("resolves one deployment-wide Router web-only key when enabled", () => {
     const config = parseServerConfig({
       ...required,
       OPENTAG_WEB_ENABLED: "true",
       OPENTAG_WEB_ROUTER_BASE_URL: "https://router.internal",
-      OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-        { accountId: ACCOUNT, tenantId: "internal-test", keyEnv: "OPENTAG_WEB_ROUTER_KEY_INTERNAL" },
-      ]),
-      OPENTAG_WEB_ROUTER_KEY_INTERNAL: "tvly-test-secret",
+      OPENTAG_WEB_ROUTER_KEY: "tvly-test-secret",
     });
     expect(config.web.enabled).toBe(true);
     if (config.web.enabled) {
       expect(config.web.routerBaseUrl).toBe("https://router.internal");
-      expect(config.web.tenants.get(ACCOUNT)).toEqual({ tenantId: "internal-test", routerKey: "tvly-test-secret" });
+      expect(config.web.routerKey).toBe("tvly-test-secret");
     }
   });
 
-  it("requires the Router origin and at least one tenant mapping when enabled", () => {
+  it("requires the Router origin and the Router key when enabled", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_WEB_ENABLED: "true" })).toThrow(
       /ROUTER_BASE_URL|Router origin/,
     );
@@ -45,7 +39,7 @@ describe("web tools server config", () => {
         OPENTAG_WEB_ENABLED: "true",
         OPENTAG_WEB_ROUTER_BASE_URL: "https://router.internal",
       }),
-    ).toThrow(/TENANTS|tenant mapping/);
+    ).toThrow(/ROUTER_KEY|Router key/);
   });
 
   it("rejects credential-bearing or pathed Router origins", () => {
@@ -55,10 +49,7 @@ describe("web tools server config", () => {
           ...required,
           OPENTAG_WEB_ENABLED: "true",
           OPENTAG_WEB_ROUTER_BASE_URL: bad,
-          OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-            { accountId: ACCOUNT, tenantId: "t", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
-          ]),
-          OPENTAG_WEB_ROUTER_KEY_A: "k",
+          OPENTAG_WEB_ROUTER_KEY: "k",
         }),
       ).toThrow();
     }
@@ -72,89 +63,44 @@ describe("web tools server config", () => {
         OPENTAG_PUBLIC_URL: "https://app.example.com",
         OPENTAG_WEB_ENABLED: "true",
         OPENTAG_WEB_ROUTER_BASE_URL: "http://router.internal",
-        OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-          { accountId: ACCOUNT, tenantId: "t", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
-        ]),
-        OPENTAG_WEB_ROUTER_KEY_A: "k",
+        OPENTAG_WEB_ROUTER_KEY: "k",
       }),
     ).toThrow(/HTTPS/);
   });
 
-  it("fails startup when a referenced key variable is missing or malformed", () => {
-    expect(() =>
-      parseServerConfig({
-        ...required,
-        OPENTAG_WEB_ENABLED: "true",
-        OPENTAG_WEB_ROUTER_BASE_URL: "https://router.internal",
-        OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-          { accountId: ACCOUNT, tenantId: "t", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
-        ]),
-      }),
-    ).toThrow(/key variable/);
-    expect(() =>
-      parseServerConfig({
-        ...required,
-        OPENTAG_WEB_ENABLED: "true",
-        OPENTAG_WEB_ROUTER_BASE_URL: "https://router.internal",
-        OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-          { accountId: ACCOUNT, tenantId: "t", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
-        ]),
-        OPENTAG_WEB_ROUTER_KEY_A: " padded ",
-      }),
-    ).toThrow(/key variable/);
-  });
-
-  it("rejects duplicate Accounts, shared key variables, and malformed mappings", () => {
+  it("fails startup when the Router key is missing, empty, or malformed", () => {
     const enabled = {
       ...required,
       OPENTAG_WEB_ENABLED: "true",
       OPENTAG_WEB_ROUTER_BASE_URL: "https://router.internal",
     };
-    expect(() =>
-      parseServerConfig({
-        ...enabled,
-        OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-          { accountId: ACCOUNT, tenantId: "a", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
-          { accountId: ACCOUNT, tenantId: "b", keyEnv: "OPENTAG_WEB_ROUTER_KEY_B" },
-        ]),
-      }),
-    ).toThrow(/Duplicate/);
-    expect(() =>
-      parseServerConfig({
-        ...enabled,
-        OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-          { accountId: ACCOUNT, tenantId: "a", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
-          { accountId: randomUUID(), tenantId: "b", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
-        ]),
-      }),
-    ).toThrow(/share one key variable/);
-    expect(() =>
-      parseServerConfig({
-        ...enabled,
-        OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-          { accountId: ACCOUNT, tenantId: "a", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A", key: "inline" },
-        ]),
-      }),
-    ).toThrow();
-    expect(() => parseServerConfig({ ...enabled, OPENTAG_WEB_ROUTER_TENANTS: "not json" })).toThrow(/JSON/);
+    expect(() => parseServerConfig(enabled)).toThrow(/ROUTER_KEY/);
+    // An explicitly empty variable is indistinguishable from an absent one.
+    expect(() => parseServerConfig({ ...enabled, OPENTAG_WEB_ROUTER_KEY: "" })).toThrow(/ROUTER_KEY/);
   });
 
-  it("validates tenant shape but stays disabled-tolerant when off", () => {
+  it("tolerates a staged base URL while disabled and never reads a key", () => {
+    const config = parseServerConfig({
+      ...required,
+      OPENTAG_WEB_ROUTER_BASE_URL: "https://router.internal",
+      OPENTAG_WEB_ROUTER_KEY: "staged-but-unused",
+    });
+    expect(config.web.enabled).toBe(false);
+  });
+
+  it("fails closed for a deployment that still carries only the removed tenant mapping", () => {
+    // The per-Account map is gone. A deployment that left the old variable set and enabled web
+    // tools has no Router key, so startup refuses instead of silently serving a stale config.
     expect(() =>
       parseServerConfig({
         ...required,
+        OPENTAG_WEB_ENABLED: "true",
+        OPENTAG_WEB_ROUTER_BASE_URL: "https://router.internal",
         OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-          { accountId: "not-a-uuid", tenantId: "t", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
+          { accountId: "00000000-0000-4000-8000-000000000001", tenantId: "t", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
         ]),
+        OPENTAG_WEB_ROUTER_KEY_A: "k",
       }),
-    ).toThrow();
-    // A disabled deployment may carry staged mapping config without requiring key material.
-    const config = parseServerConfig({
-      ...required,
-      OPENTAG_WEB_ROUTER_TENANTS: JSON.stringify([
-        { accountId: ACCOUNT, tenantId: "t", keyEnv: "OPENTAG_WEB_ROUTER_KEY_A" },
-      ]),
-    });
-    expect(config.web.enabled).toBe(false);
+    ).toThrow(/ROUTER_KEY/);
   });
 });

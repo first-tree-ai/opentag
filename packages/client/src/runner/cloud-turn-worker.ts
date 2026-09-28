@@ -358,10 +358,22 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
   return { authJson, modelsJson, settingsJson };
 }
 
+/**
+ * Pi's provider block for one Cloud execution. Only the services the trusted parent actually opened
+ * appear here: a missing `webTools`/`mcpGateway` field means the corresponding extension is not
+ * registered at all, and Pi's own `--no-extensions` default keeps implicit discovery off.
+ */
 function cloudPiConfiguration(request: RunnerCloudWorkerRequest) {
   return {
     model: `${CLOUD_MODEL_PI_PROVIDER}/${request.model.model}`,
-    ...(request.mcpGateway ? { provider: { mcpGateway: request.mcpGateway } } : {}),
+    ...(request.mcpGateway || request.webTools
+      ? {
+          provider: {
+            ...(request.mcpGateway ? { mcpGateway: request.mcpGateway } : {}),
+            ...(request.webTools ? { webTools: request.webTools } : {}),
+          },
+        }
+      : {}),
     ...(cloudWorkerRuntime(request).reasoningEffort
       ? { reasoningEffort: cloudWorkerRuntime(request).reasoningEffort }
       : {}),

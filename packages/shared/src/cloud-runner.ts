@@ -439,6 +439,19 @@ const RunnerCloudMcpGatewaySchema = z
   .object({ url: z.string().url().max(1024), token: z.string().startsWith("otmg_").max(4096) })
   .strict();
 
+/**
+ * Web tools facts for one Cloud worker: the nonsecret per-execution socket descriptor inside the
+ * Sandbox and the fixed packaged Pi extension path. Both are absolute in-Sandbox paths; no bearer,
+ * Router key, or provider key is ever carried here — the trusted Runner parent holds the execution
+ * bearer and the extension speaks only to its private socket.
+ */
+const RunnerCloudWebToolsSchema = z
+  .object({
+    extensionPath: z.string().startsWith("/").max(512),
+    socketPath: z.string().startsWith("/").max(200),
+  })
+  .strict();
+
 export const RunnerCloudDeliveryRunFrameSchema = z
   .object({
     type: z.literal("delivery:run"),
@@ -721,6 +734,7 @@ export const RunnerCloudTurnWorkerRequestSchema = z
     /** Execution-scoped model grant minted at the verified boundary. */
     model: RunnerCloudModelGrantSchema,
     mcpGateway: RunnerCloudMcpGatewaySchema.optional(),
+    webTools: RunnerCloudWebToolsSchema.optional(),
     /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
     executionDir: z.string().min(1).max(512),
     /**
@@ -764,6 +778,7 @@ export const RunnerCloudSessionWorkerRequestSchema = z
     /** Execution-scoped model grant minted at the verified boundary. */
     model: RunnerCloudModelGrantSchema,
     mcpGateway: RunnerCloudMcpGatewaySchema.optional(),
+    webTools: RunnerCloudWebToolsSchema.optional(),
     /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
     executionDir: z.string().min(1).max(512),
     /** Allocation-stable in-sandbox directory for Pi conversation continuity. */

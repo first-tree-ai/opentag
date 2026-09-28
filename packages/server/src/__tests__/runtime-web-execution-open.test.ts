@@ -16,7 +16,8 @@ import type { RuntimeScopeResolverPort, RuntimeScopeSnapshot } from "../runtime-
 import { DefaultRuntimeTaskPolicy } from "../runtime-credentials/task-policy.js";
 import { RuntimeProxyTicketStore } from "../runtime-credentials/ticket-store.js";
 import { RuntimeValidationRunRegistry } from "../runtime-credentials/validation-runs.js";
-import { ConfigRuntimeWebPolicy } from "../runtime-credentials/web-policy.js";
+import { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
+import { ConfigRuntimeWebPolicy, type RuntimeWebServicePolicy } from "../runtime-credentials/web-policy.js";
 
 const ACCOUNT = "00000000-0000-4000-8000-0000000000e1";
 const AGENT = "00000000-0000-4000-8000-0000000000a1";
@@ -87,11 +88,12 @@ afterEach(() => {
 });
 
 async function fixture(options: {
-  webPolicy?: ConfigRuntimeWebPolicy;
+  webPolicy?: RuntimeWebServicePolicy;
   negotiateWebTools?: boolean;
   bindingActive?: boolean;
   negotiateMcpGateway?: boolean;
   mcpPolicy?: RuntimeMcpServicePolicy;
+  webGatewayTokens?: RuntimeWebGatewayTokenStore;
   logger?: ServiceLogger;
 }) {
   const registry = new ConnectionRegistry();
@@ -158,6 +160,7 @@ async function fixture(options: {
     gitHubAdmission: new UnavailableRuntimeGitHubAdmission(),
     ...(options.webPolicy ? { webPolicy: options.webPolicy } : {}),
     ...(options.mcpPolicy ? { mcpPolicy: options.mcpPolicy } : {}),
+    ...(options.webGatewayTokens ? { webGatewayTokens: options.webGatewayTokens } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
     sweepIntervalMs: 60_000,
   });
@@ -170,7 +173,7 @@ async function fixture(options: {
     negotiatedCapabilities,
     signal: new AbortController().signal,
   };
-  return { owner, executions, context };
+  return { owner, executions, context, scopeResolver };
 }
 
 type OwnerHandleResult = Awaited<ReturnType<RuntimeCredentialOwner["handle"]>>;
@@ -188,7 +191,7 @@ describe("execution open web services", () => {
   it("attaches exact web scopes when requested, negotiated, and policy-authorized", async () => {
     const state = await fixture({
       negotiateWebTools: true,
-      webPolicy: new ConfigRuntimeWebPolicy({ tenants: new Map([[ACCOUNT, { tenantId: "t", routerKey: "k" }]]) }),
+      webPolicy: new ConfigRuntimeWebPolicy({ routerKey: "k" }),
     });
     const result = executionFrame(await state.owner.handle(openFrame({ services: ["web"] }), state.context));
     expect(result).toMatchObject({
@@ -200,11 +203,34 @@ describe("execution open web services", () => {
     expect(record?.services).toEqual([{ service: "web", scopes: ["web:search", "web:fetch"] }]);
   });
 
+  it("grants the same default scopes to two Accounts with no per-Account mapping", async () => {
+    const state = await fixture({
+      negotiateWebTools: true,
+      webPolicy: new ConfigRuntimeWebPolicy({ routerKey: "k" }),
+    });
+    const first = executionFrame(await state.owner.handle(openFrame({ services: ["web"] }), state.context));
+    expect(first).toMatchObject({
+      status: "succeeded",
+      services: [{ service: "web", scopes: ["web:search", "web:fetch"] }],
+    });
+    // A different Account is not a different decision: the deployment config is the only input.
+    const otherAccount = randomUUID();
+    state.scopeResolver.session = sessionSnapshot({
+      agent: { id: AGENT, status: "active", revision: 4, computerId: COMPUTER, createdByUserId: otherAccount },
+      computer: { id: COMPUTER, kind: "local", ownerAccountId: otherAccount },
+    });
+    const second = executionFrame(await state.owner.handle(openFrame({ services: ["web"] }), state.context));
+    expect(second).toMatchObject({
+      status: "succeeded",
+      services: [{ service: "web", scopes: ["web:search", "web:fetch"] }],
+    });
+  });
+
   it("opens a web-only execution when every provider binding is unavailable", async () => {
     const state = await fixture({
       negotiateWebTools: true,
       bindingActive: false,
-      webPolicy: new ConfigRuntimeWebPolicy({ tenants: new Map([[ACCOUNT, { tenantId: "t", routerKey: "k" }]]) }),
+      webPolicy: new ConfigRuntimeWebPolicy({ routerKey: "k" }),
     });
     const result = await state.owner.handle(openFrame({ services: ["web"] }), state.context);
     expect(result).toMatchObject({
@@ -218,7 +244,7 @@ describe("execution open web services", () => {
     // Not negotiated: the request field is ignored and the wire result never carries services.
     const silent = await fixture({
       negotiateWebTools: false,
-      webPolicy: new ConfigRuntimeWebPolicy({ tenants: new Map([[ACCOUNT, { tenantId: "t", routerKey: "k" }]]) }),
+      webPolicy: new ConfigRuntimeWebPolicy({ routerKey: "k" }),
     });
     const silentResult = executionFrame(await silent.owner.handle(openFrame({ services: ["web"] }), silent.context));
     expect(silentResult.status).toBe("succeeded");
@@ -227,15 +253,15 @@ describe("execution open web services", () => {
     // Negotiated but not requested: nothing is granted implicitly.
     const unrequested = await fixture({
       negotiateWebTools: true,
-      webPolicy: new ConfigRuntimeWebPolicy({ tenants: new Map([[ACCOUNT, { tenantId: "t", routerKey: "k" }]]) }),
+      webPolicy: new ConfigRuntimeWebPolicy({ routerKey: "k" }),
     });
     const unrequestedResult = await unrequested.owner.handle(openFrame(), unrequested.context);
     expect(unrequestedResult).not.toHaveProperty("services");
 
-    // Negotiated and requested but the Account has no mapping: denied, never defaulted.
+    // Negotiated and requested but the deployment policy denies it: withheld, never defaulted.
     const denied = await fixture({
       negotiateWebTools: true,
-      webPolicy: new ConfigRuntimeWebPolicy({ tenants: new Map() }),
+      webPolicy: { authorizeWeb: () => undefined },
     });
     const deniedResult = await denied.owner.handle(openFrame({ services: ["web"] }), denied.context);
     expect(deniedResult).not.toHaveProperty("services");
@@ -244,6 +270,73 @@ describe("execution open web services", () => {
     const off = await fixture({ negotiateWebTools: true });
     const offResult = await off.owner.handle(openFrame({ services: ["web"] }), off.context);
     expect(offResult).not.toHaveProperty("services");
+  });
+});
+
+describe("execution web gateway bearer", () => {
+  const webPolicy = { authorizeWeb: () => ["web:search", "web:fetch"] as const };
+
+  it("issues one execution-scoped bearer for a granted execution and revokes it on close", async () => {
+    const tokens = new RuntimeWebGatewayTokenStore();
+    const state = await fixture({ negotiateWebTools: true, webPolicy, webGatewayTokens: tokens });
+    const opened = executionFrame(await state.owner.handle(openFrame({ services: ["web"] }), state.context));
+    if (opened.status !== "succeeded") throw new Error("Expected the open to succeed");
+    const result = await state.owner.handle(
+      { type: "runtime:web:gateway", requestId: REQUEST_ID, executionId: opened.executionId },
+      state.context,
+    );
+    expect(result).toMatchObject({ type: "runtime:web:gateway:result", status: "succeeded" });
+    if (result?.type !== "runtime:web:gateway:result" || result.status !== "succeeded") {
+      throw new Error("Expected the web bearer to be issued");
+    }
+    expect(result.token.startsWith("otwg_")).toBe(true);
+    expect(result.executionId).toBe(opened.executionId);
+    expect(tokens.resolve(result.token)?.executionId).toBe(opened.executionId);
+    // The bearer lives exactly as long as the execution: the close path every revocation route
+    // funnels through drops it, so a stale token can never outlive its turn.
+    await state.owner.handle(
+      { type: "runtime:execution:close", requestId: REQUEST_ID, executionId: opened.executionId },
+      state.context,
+    );
+    expect(tokens.resolve(result.token)).toBeUndefined();
+  });
+
+  it("refuses the bearer when the execution was never granted web, negotiated it, or a store exists", async () => {
+    const granting = await fixture({ negotiateWebTools: true, webGatewayTokens: new RuntimeWebGatewayTokenStore() });
+    const ungranted = executionFrame(await granting.owner.handle(openFrame(), granting.context));
+    if (ungranted.status !== "succeeded") throw new Error("Expected the open to succeed");
+    expect(
+      await granting.owner.handle(
+        { type: "runtime:web:gateway", requestId: REQUEST_ID, executionId: ungranted.executionId },
+        granting.context,
+      ),
+    ).toMatchObject({ status: "rejected", code: "service_not_granted" });
+
+    // Not negotiated: the frame is not even representable to this connection's peer.
+    const unnegotiated = await fixture({ webPolicy, webGatewayTokens: new RuntimeWebGatewayTokenStore() });
+    const opened = executionFrame(
+      await unnegotiated.owner.handle(openFrame({ services: ["web"] }), unnegotiated.context),
+    );
+    if (opened.status !== "succeeded") throw new Error("Expected the open to succeed");
+    expect(
+      await unnegotiated.owner.handle(
+        { type: "runtime:web:gateway", requestId: REQUEST_ID, executionId: opened.executionId },
+        unnegotiated.context,
+      ),
+    ).toMatchObject({ status: "rejected", code: "capability_unsupported" });
+
+    // A deployment with no web store can never mint one, regardless of the grant on the wire.
+    const storeless = await fixture({ negotiateWebTools: true, webPolicy });
+    const storedlessOpen = executionFrame(
+      await storeless.owner.handle(openFrame({ services: ["web"] }), storeless.context),
+    );
+    if (storedlessOpen.status !== "succeeded") throw new Error("Expected the open to succeed");
+    expect(
+      await storeless.owner.handle(
+        { type: "runtime:web:gateway", requestId: REQUEST_ID, executionId: storedlessOpen.executionId },
+        storeless.context,
+      ),
+    ).toMatchObject({ status: "rejected", code: "capability_unsupported" });
   });
 });
 

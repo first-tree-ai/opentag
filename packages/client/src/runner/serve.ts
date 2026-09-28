@@ -21,6 +21,7 @@ import {
 } from "@opentag/shared";
 import WebSocket, { type ClientOptions } from "ws";
 import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
+import { resolveWebToolsExtensionPath } from "../runtime/web-tools-artifact.js";
 import {
   assignmentsMatch,
   hasUnmarkedAssignmentState,
@@ -89,11 +90,6 @@ export interface RunnerServeConfig {
   readonly controlToken?: string;
   /** Set by a persistence-enabled Server; legacy E3 acceptance does not negotiate storage. */
   readonly workspacePersistence?: boolean;
-  /**
-   * Web tools opt-in: enable the fail-closed native web gateway boundary. Off by default; no
-   * listener exists until a trusted parent execution opens its own dedicated channel.
-   */
-  readonly webTools?: boolean;
 }
 
 export interface RunnerServeOptions {
@@ -113,8 +109,9 @@ export interface RunnerServeOptions {
   readonly onWebGateway?: (gateway: NativeSandboxWebGateway) => void;
   /**
    * Acceptance-harness seam: a trusted, Server-authorized execution authority supplied by the
-   * caller. Production never sets it, so the gateway stays closed for business; no bootstrap
-   * credential is ever treated as an authority.
+   * caller for the E3 acceptance run. Cloud turns do not use it; they build their own authority
+   * per granted execution from the Server-issued execution bearer, and no bootstrap credential is
+   * ever treated as an authority.
    */
   readonly webAuthority?: NativeWebExecutionAuthority;
   /** Acceptance-harness observation of the opened per-execution channel descriptor. */
@@ -195,18 +192,7 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
     stateDir: env.OPENTAG_RUNNER_STATE_DIR ?? defaultRunnerStateDir(sandboxName),
     healthPort,
     ...(persistence === "1" ? { workspacePersistence: true } : {}),
-    ...parseRunnerWebTools(env.OPENTAG_RUNNER_WEB_TOOLS),
   };
-}
-
-/**
- * The native web boundary opt-in accepts only the exact strings `true`/`false` (or absence).
- * Any other value is a configuration error instead of a silent posture change.
- */
-function parseRunnerWebTools(value: string | undefined): { readonly webTools?: boolean } {
-  if (value === undefined || value === "false") return {};
-  if (value === "true") return { webTools: true };
-  throw new Error("OPENTAG_RUNNER_WEB_TOOLS must be true or false");
 }
 
 /**
@@ -399,6 +385,8 @@ function createCloudTurnRunner(input: {
   sandbox: NativeSandbox;
   serverUrl: string;
   state: () => WorkState | undefined;
+  webExtensionPath: string | undefined;
+  webGateway: NativeSandboxWebGateway | undefined;
   workspacePersistence: boolean;
 }): CloudTurnRunner {
   const server = new URL(input.serverUrl);
@@ -418,6 +406,8 @@ function createCloudTurnRunner(input: {
     onPersistenceError: (error) => input.state()?.persistenceFailure?.(error),
     publicDirectory: input.publicRoot,
     sandbox: input.sandbox,
+    ...(input.webGateway ? { webGateway: input.webGateway } : {}),
+    ...(input.webExtensionPath ? { webExtensionPath: input.webExtensionPath } : {}),
     // A non-completed Cloud Turn may leave native processes behind; only a verified
     // delete/relaunch/probe reopens the single-Sandbox occupation boundary.
     sandboxReset: async () => {
@@ -494,6 +484,7 @@ function attachWorkspace(
   current: WorkState,
   sandbox: NativeSandbox,
   bridge: RunnerChannelBridge,
+  web: { gateway: NativeSandboxWebGateway | undefined; extensionPath: string | undefined },
 ): void {
   current.turns = createCloudTurnRunner({
     bridge,
@@ -504,6 +495,8 @@ function attachWorkspace(
     sandbox,
     serverUrl: config.backendUrl,
     state: () => current,
+    webExtensionPath: web.extensionPath,
+    webGateway: web.gateway,
     workspacePersistence: config.workspacePersistence === true,
   });
   if (!config.workspacePersistence) return;
@@ -560,10 +553,10 @@ async function discardSealedAssignment(input: {
   current: WorkState;
   sandbox: NativeSandbox;
   bridge: RunnerChannelBridge;
-  webGateway: NativeSandboxWebGateway | undefined;
+  web: WebGatewayRuntime;
   assignment: RunnerAssignment;
 }): Promise<void> {
-  const { config, options, current, sandbox, bridge, webGateway, assignment } = input;
+  const { config, options, current, sandbox, bridge, web, assignment } = input;
   await current.turns.close();
   await current.webExecution?.close();
   current.webExecution = undefined;
@@ -590,14 +583,29 @@ async function discardSealedAssignment(input: {
   await resetDirectory(current.publicRoot);
   current.workspace = undefined;
   current.journal = await CloudJournal.open(current.journalDir);
-  attachWorkspace(config, options, current, sandbox, bridge);
-  await prepareServeWebExecution(current, webGateway, sandbox, options);
+  attachWorkspace(config, options, current, sandbox, bridge, web);
+  await prepareServeWebExecution(current, web.gateway, sandbox, options);
+}
+
+/**
+ * The Runner's native web boundary. The gateway is always constructed — it opens no listener and
+ * no socket until a Server-granted Cloud execution asks for one — and the extension path is the
+ * packaged artifact resolved at startup. A missing artifact leaves web tools off for every turn;
+ * it never fails startup, because the feature is optional to a turn that does not use it.
+ */
+interface WebGatewayRuntime {
+  readonly gateway: NativeSandboxWebGateway | undefined;
+  readonly extensionPath: string | undefined;
 }
 
 export async function runRunnerServe(config: RunnerServeConfig, options: RunnerServeOptions): Promise<number> {
-  const webStartup = await startServeWebGateway(config, options);
-  if (webStartup.exitCode !== undefined) return webStartup.exitCode;
-  const webGateway = webStartup.gateway;
+  const gatewayStartup = await startServeWebGateway(config.sandboxName, options);
+  if (gatewayStartup.exitCode !== undefined) return gatewayStartup.exitCode;
+  const web: WebGatewayRuntime = {
+    gateway: gatewayStartup.gateway,
+    extensionPath: await resolveServeWebExtensionPath(options),
+  };
+  const webGateway = web.gateway;
   // E4 trusted state root: PRIVATE journal + per-turn credential material roots that are NEVER
   // mounted, plus the public-only root that becomes the read-only Sandbox mount.
   const { journalDir, privateTurnRoot, publicRoot } = cloudRunnerDirectories(config.stateDir);
@@ -646,7 +654,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     if (assignment) {
       // Sealed previous assignment: its durable work is settled, so discard the completed local
       // state rather than accumulating it. Any failure here fails closed for the new assignment.
-      await discardSealedAssignment({ config, options, current, sandbox, bridge, webGateway, assignment });
+      await discardSealedAssignment({ config, options, current, sandbox, bridge, web, assignment });
       // The old Session bearer is invalid for the new assignment: the restore path below must
       // receive the Server's credential for the holder before any workspace HTTP claim.
       current.assignmentRequired = true;
@@ -701,7 +709,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       assignment: await readRunnerAssignment(config.stateDir),
       turns: undefined as unknown as CloudTurnRunner,
     };
-    attachWorkspace(config, options, state, sandbox, bridge);
+    attachWorkspace(config, options, state, sandbox, bridge, web);
     await prepareServeWebExecution(state, webGateway, sandbox, options);
     // The platform's default TCP startup probe needs a listening socket on the declared port,
     // which `loadRunnerServeConfig` always supplies (declared 8080 unless PORT overrides). Start
@@ -731,7 +739,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   return result;
 }
 
-/** Acceptance-harness path only: production never supplies an authority, so no channel opens. */
+/** Acceptance-harness path: opens the acceptance run's own channel when an authority was injected. */
 async function prepareServeWebExecution(
   state: WorkState,
   webGateway: NativeSandboxWebGateway | undefined,
@@ -777,20 +785,40 @@ interface WebGatewayStartup {
   readonly exitCode?: number;
 }
 
-/** No listener exists until an execution opens its own channel; opt-in only marks the boundary. */
-async function startServeWebGateway(
-  config: RunnerServeConfig,
-  options: RunnerServeOptions,
-): Promise<WebGatewayStartup> {
-  if (!config.webTools) return {};
+/** No listener exists until a Server-granted execution opens its own channel. */
+async function startServeWebGateway(sandboxName: string, options: RunnerServeOptions): Promise<WebGatewayStartup> {
   try {
-    const gateway = await NativeSandboxWebGateway.start({ sandboxName: config.sandboxName });
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName });
     options.onWebGateway?.(gateway);
     return { gateway };
   } catch (error) {
     reportStartupError(error, options);
     return { exitCode: 4 };
   }
+}
+
+/**
+ * Fixed packaged location of the Pi web-tools extension in the Runner image. `scripts/runner`
+ * assembles `packages/client/dist` to `/opt/opentag/client/dist`, and the Client build emits the
+ * extension to `dist/pi-extensions/web-tools.mjs`. It is named here as well as resolved
+ * automatically because the running module may be a shared build chunk.
+ */
+const PACKAGED_WEB_EXTENSION_PATH = "/opt/opentag/client/dist/pi-extensions/web-tools.mjs";
+
+/**
+ * Resolve the fixed packaged Pi web-tools extension for Cloud turns. The packaged path is tried
+ * first, then the artifact's own resolution (which covers development and a relocated build);
+ * `resolveWebToolsExtensionPath` verifies the result is a real file and never follows environment
+ * variables or cwd, so an Agent cannot substitute its own extension. A missing artifact is a logged
+ * fail-closed (web tools stay off), never a guessed path.
+ */
+async function resolveServeWebExtensionPath(options: RunnerServeOptions): Promise<string | undefined> {
+  const path =
+    (await resolveWebToolsExtensionPath({ explicitPath: PACKAGED_WEB_EXTENSION_PATH })) ??
+    (await resolveWebToolsExtensionPath());
+  if (path) return path;
+  options.stderr.write("[opentag-runner serve] the trusted web tools extension artifact is missing\n");
+  return undefined;
 }
 interface ConnectionOutcome {
   /**

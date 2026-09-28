@@ -84,7 +84,7 @@ async function manager(home: string): Promise<RuntimeCredentialEnvironmentManage
     serverUrl: "https://server.example.test",
     webTools: {
       extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
-      machineToken: "machine-token",
+      bearerToken: "machine-token",
     },
   });
   return created;

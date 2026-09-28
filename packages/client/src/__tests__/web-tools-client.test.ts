@@ -31,7 +31,7 @@ const searchResult = {
 function client(options: { fetchImpl: typeof fetch }): WebToolsServerClient {
   return new WebToolsServerClient({
     serverUrl: "https://server.example.test",
-    machineToken: "machine-token",
+    bearerToken: "machine-token",
     fetchImpl: options.fetchImpl,
   });
 }

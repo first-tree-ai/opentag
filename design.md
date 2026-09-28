@@ -1,6 +1,6 @@
 # OpenTag application design
 
-Canonical style guide for OpenTag Web. Selected direction: **Concept 1 — Quiet Workspace**.
+Canonical style guide for OpenTag Web.
 The app is a working tool: minimal, clean, and restrained. Every visible detail must help someone
 choose an Agent, understand its state, follow its work, or configure it.
 
@@ -125,6 +125,9 @@ Keep visible labels, field association, disabled and busy states, meaningful hov
 Escape and focus return, and localized copy. Native file/hidden inputs are the existing browser
 exception. Avoid page-level control styling and hand-built substitutes for accessible primitives.
 
+MCP-specific CSS may own bounded dialog geometry and tool-list scrolling. Palette, typography,
+control sizes, and focus states still come from the shared theme and adapter.
+
 Use semantic selected state, not a general lilac background. Motion should explain a state change.
 Reduced motion removes nonessential transitions.
 
@@ -140,11 +143,3 @@ Reduced motion removes nonessential transitions.
 Text requires at least 4.5:1 contrast; meaningful controls and focus require 3:1.
 The theme tests check text, action fills, and control boundaries. Static contracts enforce palette,
 stylesheet, and import seams. Browser review remains necessary for layout and interaction.
-
-## Selected reference
-
-![Concept 1 — Quiet Workspace](docs/design/concepts/quiet-workspace.png)
-
-This image records the selected direction. Its oversized heading, glossy action, sample avatars,
-and illustrative data are not production specifications. The compact, flat, real-data implementation
-and this guide take precedence.

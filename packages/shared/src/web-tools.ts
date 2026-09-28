@@ -6,11 +6,11 @@ import { runtimeByteString as byteString, runtimeUtf8Length } from "./runtime-co
  *
  * Chain: Pi extension → trusted Runner/Client gateway (local Unix socket where supported; the
  * native Cloud sandbox uses the verified dedicated sandbox-exec duplex pipe, never a mounted
- * parent socket) → OpenTag Server (`POST /api/v1/runtime/web/search|fetch`, machine-token
- * authenticated, execution-fenced) → existing Router (`POST /v1/web/search|fetch`, tenant Bearer
- * key held only by the Server). Every object here is strict: unknown fields are rejected at each
- * hop and never forwarded. Nothing in this module carries a supplier key, a Router tenant id, or
- * a tenant key — those never cross the OpenTag wire.
+ * parent socket) → OpenTag Server (`POST /api/v1/runtime/web/search|fetch`, authenticated by a Local
+ * machine token or a Cloud execution bearer, execution-fenced) → existing Router
+ * (`POST /v1/web/search|fetch`, one deployment-wide Bearer key held only by the Server). Every object here is strict: unknown fields are rejected at each
+ * hop and never forwarded. Nothing in this module carries a supplier key or the deployment's Router
+ * web-only key — those never cross the OpenTag wire.
  */
 
 export const WEB_TOOLS_PROTOCOL_VERSION = 1 as const;
@@ -452,7 +452,7 @@ export const WebFetchExecutionRequestSchema = z
   .strict();
 export type WebFetchExecutionRequest = z.infer<typeof WebFetchExecutionRequestSchema>;
 
-/** Server → Router business payload: parameters only, no identity, tenant, or timeout fields. */
+/** Server → Router business payload: parameters only — no identity, Account, or timeout fields. */
 export const RouterWebSearchRequestSchema = WebSearchParamsSchema;
 export const RouterWebFetchRequestSchema = WebFetchParamsSchema;
 

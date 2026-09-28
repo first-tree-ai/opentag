@@ -125,6 +125,17 @@ pnpm --filter @opentag/server test:integration
 The server integration tests need Docker. Run `pnpm test:coverage` when changing coverage configuration or
 investigating coverage gaps. See the [E2E guide](./e2e/README.md) for browser tests.
 
+CI runs formatting, builds, type checks, repository script tests, PostgreSQL integration tests, and Agent Runtime
+coverage in parallel jobs. Workspace unit tests run on Node.js 22.22.2, 24, and 26, with three Vitest shards per version.
+Repository script tests also run on all three versions; the compatibility jobs verify the packed CLI on Node.js 22.22.2
+and 26, while `CLI Pack Smoke` covers Node.js 24. The aggregate `CI` check requires every job and shard to succeed.
+Local `pnpm test` still runs the complete suite with limited concurrency. To reproduce a workspace unit shard locally:
+
+```bash
+pnpm build
+pnpm exec turbo run test --concurrency=2 -- --shard=1/3
+```
+
 ## Git hooks and worktrees
 
 `pnpm install` installs hooks that format and lint staged files before commits and check the repository before pushes.

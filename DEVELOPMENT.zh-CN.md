@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-09-09
+> 同步日期：2026-09-28
 
 ## 从源码在本地运行
 
@@ -124,6 +124,17 @@ pnpm --filter @opentag/server test:integration
 
 服务器集成测试需要 Docker。修改覆盖率配置或排查覆盖率缺口时，运行 `pnpm test:coverage`。
 浏览器测试见 [E2E 指南](./e2e/README.md)。
+
+CI 将格式检查、构建、类型检查、仓库脚本测试、PostgreSQL 集成测试和 Agent Runtime 覆盖率检查放在并行任务中执行。
+工作区单元测试在 Node.js 22.22.2、24 和 26 上运行，每个版本使用三个 Vitest 分片。
+仓库脚本测试也会在这三个版本上运行；兼容性任务在 Node.js 22.22.2 和 26 上验证打包后的 CLI，
+`CLI Pack Smoke` 则覆盖 Node.js 24。汇总的 `CI` 检查要求所有任务和分片都成功。
+本地 `pnpm test` 仍以有限并发运行完整测试套件。可使用以下命令在本地重现一个工作区单元测试分片：
+
+```bash
+pnpm build
+pnpm exec turbo run test --concurrency=2 -- --shard=1/3
+```
 
 ## Git hooks 与 worktree
 

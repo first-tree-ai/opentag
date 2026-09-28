@@ -45,6 +45,18 @@ import {
 const execFileAsync = promisify(execFile);
 const CLAUDE_CODE_BINDING_SCHEMA_VERSION = 1;
 const CLAUDE_CODE_PROVIDER_ID = "claude-code";
+
+/**
+ * The setting sources every Claude Code invocation loads. Runtime turns and the credential probe
+ * must interrogate exactly the same configuration: probing the CLI defaults would read user-level
+ * settings the runtime never loads and report a false-positive `ready` while every turn fails
+ * authentication.
+ *
+ * There is no flag for adding a skill directory, so `project` is what lets a Session see the
+ * Context Tree skills in `<workspace>/.claude/skills`. It also admits that directory's settings,
+ * hooks, agents, commands, and CLAUDE.md, all scoped to OpenTag's own private workspace.
+ */
+const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", "project"] as const;
 const logger = createLogger("provider-claude-code-runtime");
 
 export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
@@ -282,12 +294,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "--verbose",
       "--include-partial-messages",
       "--no-chrome",
-      // There is no flag for adding a skill directory, so `project` is what lets a Session see the
-      // Context Tree skills in `<workspace>/.claude/skills`. It also admits that directory's
-      // settings, hooks, agents, commands, and CLAUDE.md, all scoped to OpenTag's own private
-      // workspace; project MCP servers stay excluded by `--strict-mcp-config` below.
-      "--setting-sources",
-      "project",
+      // Project MCP servers admitted by these sources stay excluded by `--strict-mcp-config` below.
+      ...CLAUDE_CODE_SETTING_SOURCES,
       "--strict-mcp-config",
       "--mcp-config",
       hostedToolBridge.configPath,
@@ -824,7 +832,8 @@ async function probeClaudeCodeCredential(
 ): Promise<boolean> {
   let output: string;
   try {
-    output = (await execFileAsync(command, ["auth", "status", "--json"], execution)).stdout;
+    output = (await execFileAsync(command, [...CLAUDE_CODE_SETTING_SOURCES, "auth", "status", "--json"], execution))
+      .stdout;
   } catch (error) {
     if (signal?.aborted) throw error;
     logger.debug(

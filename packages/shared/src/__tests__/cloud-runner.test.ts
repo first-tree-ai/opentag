@@ -4,6 +4,7 @@ import {
   RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES,
   RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES,
   RUNNER_PI_CONFIG_DOCUMENT_MAX_BYTES,
+  RUNNER_SESSION_COLLABORATION_V2,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WS_MAX_FRAME_BYTES,
   RunnerAcceptanceRunFrameSchema,
@@ -17,6 +18,7 @@ import {
   RunnerCloudWorkerRequestSchema,
   RunnerPiConfigInputSchema,
   RunnerServerFrameSchema,
+  RunnerWelcomeFrameSchema,
   serializeRunnerAcceptanceWorkerStdin,
   serializeRunnerCloudSessionWorkerStdin,
   serializeRunnerCloudTurnWorkerStdin,
@@ -296,10 +298,10 @@ describe("E8 Session collaboration protocol", () => {
     };
     expect(RunnerAuthFrameSchema.safeParse(auth).success).toBe(true);
     expect(RunnerClientFrameSchema.safeParse(auth).success).toBe(true);
-    // Legacy E7 auth (no E8 field) keeps parsing unchanged, and a bogus version is rejected.
+    // Legacy E7 auth (no E8 field) keeps parsing unchanged, and an unknown version is rejected.
     const { sessionCollaborationVersion: _capability, ...legacy } = auth;
     expect(RunnerAuthFrameSchema.safeParse(legacy).success).toBe(true);
-    expect(RunnerAuthFrameSchema.safeParse({ ...auth, sessionCollaborationVersion: 2 }).success).toBe(false);
+    expect(RunnerAuthFrameSchema.safeParse({ ...auth, sessionCollaborationVersion: 3 }).success).toBe(false);
     const welcome = {
       cloudDeliveryVersion: 1,
       environmentGeneration: 1,
@@ -317,6 +319,45 @@ describe("E8 Session collaboration protocol", () => {
     // The E7 welcome shape (no E8 echo) stays parseable; the field is not required.
     const { sessionCollaborationVersion: _echo, ...e7Welcome } = welcome;
     expect(RunnerServerFrameSchema.safeParse(e7Welcome).success).toBe(true);
+  });
+
+  /*
+   * R02 (shared part): the Cloud Session-collaboration axis is an explicit version negotiation,
+   * not a boolean. Version 1 is the ordinary-message contract; version 2 adds the
+   * Server-scheduled origin. A v2 Runner request parses, the welcome echoes the exact negotiated
+   * version, and unknown versions stay rejected so a mismatched pair fails the handshake instead
+   * of silently degrading.
+   */
+  it("negotiates Session collaboration versions 1 and 2 explicitly", () => {
+    const base = {
+      cloudDeliveryVersion: 1 as const,
+      requestId: uuid,
+      token: "bootstrap-token",
+      type: "auth" as const,
+    };
+    for (const version of [RUNNER_SESSION_COLLABORATION_VERSION, RUNNER_SESSION_COLLABORATION_V2] as const) {
+      expect(RunnerAuthFrameSchema.safeParse({ ...base, sessionCollaborationVersion: version }).success).toBe(true);
+    }
+    expect(RunnerAuthFrameSchema.safeParse({ ...base, sessionCollaborationVersion: 3 }).success).toBe(false);
+    expect(RunnerAuthFrameSchema.safeParse({ ...base, sessionCollaborationVersion: "2" }).success).toBe(false);
+    const welcome = {
+      cloudDeliveryVersion: 1 as const,
+      environmentGeneration: 1,
+      heartbeatIntervalMs: 15_000,
+      heartbeatTimeoutMs: 45_000,
+      protocolVersion: 1 as const,
+      resourceName: "projects/p/locations/r/instances/ots-s-x",
+      resourceUid: "uid-1",
+      sandboxId: "0b12b3c0-0000-4000-8000-000000000008",
+      sessionId: "0b12b3c0-0000-4000-8000-000000000009",
+      type: "server:welcome" as const,
+    };
+    for (const version of [RUNNER_SESSION_COLLABORATION_VERSION, RUNNER_SESSION_COLLABORATION_V2] as const) {
+      const echoed = { ...welcome, sessionCollaborationVersion: version };
+      expect(RunnerServerFrameSchema.safeParse(echoed).success).toBe(true);
+      expect(RunnerWelcomeFrameSchema.parse(echoed).sessionCollaborationVersion).toBe(version);
+    }
+    expect(RunnerWelcomeFrameSchema.safeParse({ ...welcome, sessionCollaborationVersion: 3 }).success).toBe(false);
   });
 
   it("carries the target role and strictly requires outbox context only for visible Sessions", () => {

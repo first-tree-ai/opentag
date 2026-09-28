@@ -55,6 +55,19 @@ export const RUNNER_REUSE_VERSION = 1 as const;
  * without collaboration authority.
  */
 export const RUNNER_SESSION_COLLABORATION_VERSION = 1 as const;
+/**
+ * E8 version 2: the Runner additionally understands the Server-scheduled Session-message origin
+ * (`SessionMessageDeliveryRequestV3Schema`). Auth/welcome negotiate the exact version: a Runner
+ * that requested only version 1 never receives a scheduled message, and the Cloud fence records
+ * the negotiated number rather than a bare eligible boolean. Deployment order stays Server-first
+ * with a pinned Runner image: a version-2 Runner against an older Server fails its strict auth
+ * handshake instead of executing without collaboration authority.
+ */
+export const RUNNER_SESSION_COLLABORATION_V2 = 2 as const;
+export const RunnerSessionCollaborationVersionSchema = z.union([
+  z.literal(RUNNER_SESSION_COLLABORATION_VERSION),
+  z.literal(RUNNER_SESSION_COLLABORATION_V2),
+]);
 
 /** The Cloud Session-collaboration frame budget; mirrors the delivery run frame bound. */
 const RUNNER_SESSION_MESSAGE_CONTEXT_REFINE = (value: {
@@ -339,11 +352,13 @@ export const RunnerAuthFrameSchema = z
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /**
-     * E8: opt in to Cloud Session collaboration. Only sent by a Runner build that can journal and
-     * execute `session:message:*` frames; the Server echoes it in the welcome before any session
-     * frame, proof-bearing open result, or Session-collaboration capability is used.
+     * E8: opt in to Cloud Session collaboration at a specific version. Only sent by a Runner
+     * build that can journal and execute `session:message:*` frames; the Server echoes the
+     * negotiated version in the welcome before any session frame, proof-bearing open result, or
+     * Session-collaboration capability is used. Version 2 Runners also accept the
+     * Server-scheduled message origin.
      */
-    sessionCollaborationVersion: z.literal(RUNNER_SESSION_COLLABORATION_VERSION).optional(),
+    sessionCollaborationVersion: RunnerSessionCollaborationVersionSchema.optional(),
     /** Opt in to renewal-only replies for an expired token of a still-live allocation. */
     renewExpired: z.literal(true).optional(),
     /**
@@ -886,8 +901,8 @@ export const RunnerWelcomeFrameSchema = z
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /** E7: echo of the physical-reuse capability for a control-authenticated Runner. */
     reuseVersion: z.literal(RUNNER_REUSE_VERSION).optional(),
-    /** E8: echo of the Session-collaboration capability for a requesting, fenced connection. */
-    sessionCollaborationVersion: z.literal(RUNNER_SESSION_COLLABORATION_VERSION).optional(),
+    /** E8: echo of the negotiated Session-collaboration version for a requesting, fenced connection. */
+    sessionCollaborationVersion: RunnerSessionCollaborationVersionSchema.optional(),
     heartbeatIntervalMs: z.number().int().positive(),
     heartbeatTimeoutMs: z.number().int().positive(),
   })

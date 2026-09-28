@@ -34,6 +34,16 @@ export const RUNTIME_V0_CAPABILITIES = {
   imCredentialGrant: 1,
 } as const;
 
+/*
+ * `runtime.sessionCollaboration` versions. Version 2 is the frozen ordinary Session-message
+ * contract (`SessionMessageDeliveryRequestSchema`). Version 3 additionally understands the
+ * Server-scheduled origin (`SessionMessageDeliveryRequestV3Schema`): a peer that negotiated only
+ * version 2 must never receive a scheduled message. The outer Runtime protocol version does not
+ * move for this capability extension.
+ */
+export const RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION = 2 as const;
+export const RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION = 3 as const;
+
 export const RUNTIME_CAPABILITY = {
   contextTreeSettings: "runtime.contextTreeSettings",
   agentRuntimeTest: "runtime.agentRuntimeTest",
@@ -65,7 +75,10 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.providerProxy]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.runtimeCredential]: { min: 1, max: 1 },
-  [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 },
+  [RUNTIME_CAPABILITY.sessionCollaboration]: {
+    min: RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
+    max: RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
+  },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },

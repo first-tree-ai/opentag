@@ -310,6 +310,22 @@ the Client package.
 The categories carry the retry meaning the rest of the platform uses: `validation` and
 `deterministic` failures will fail again unchanged, while `transient` failures are worth retrying.
 
+## First-party Skill bundles in this repository
+
+A Skill the platform's own team owns lives under `skills/<name>/`, with a root `SKILL.md` and any
+supporting files — the same shape an operator authors. `mcp-onboarding` is the first: it tells an
+Agent how to find, mount, and verify an MCP Server for itself, and which of those steps only a human
+may take.
+
+Nothing here ships a Skill automatically. An operator uploads one with
+`opentag skill push skills/<name>`, which stores it as that Agent's Skill like any other upload; the
+repository is where the content is reviewed and versioned, not a delivery channel.
+
+`pnpm check` runs `scripts/check-skill-bundles.mjs` over every bundle, so the contract an upload
+enforces — a readable manifest, a name that matches its directory, no reserved name, no symlink
+member, and the entry and size bounds — fails in the pull request that wrote the bundle rather than
+at an operator's upload.
+
 ## Verification
 
 Unit tests in `packages/shared/src/__tests__/skill.test.ts` (no network, no database):

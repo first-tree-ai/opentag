@@ -160,7 +160,9 @@ interface Stack {
 function makeStack(
   fixture: CloudFixture,
   overrides: {
+    allocation?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["allocation"];
     durableWork?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["durableWork"];
+    ensureTimeoutMs?: number;
     modelGrants?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["modelGrants"];
     noteActivity?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["noteActivity"];
     recordMessageOutcome?: (input: { messageId: string }) => Promise<boolean>;
@@ -192,8 +194,10 @@ function makeStack(
       return true;
     });
   const owner = new CloudSessionCollaborationOwner({
+    ...(overrides.allocation ? { allocation: overrides.allocation } : {}),
     assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
     database: db.database,
+    ...(overrides.ensureTimeoutMs !== undefined ? { ensureTimeoutMs: overrides.ensureTimeoutMs } : {}),
     ...(overrides.durableWork !== undefined
       ? { durableWork: overrides.durableWork }
       : { durableWork: new PostgresRuntimeDurableWorkStore(db.database) }),
@@ -1789,6 +1793,112 @@ describe("CloudSessionCollaborationOwner", () => {
       vi.useRealTimers();
     }
     void sent;
+  });
+
+  it.each(["ordinary", "scheduled"] as const)(
+    "waits for a pending cold allocation before sending one %s message",
+    async (kind) => {
+      const fixture = await seedCloudSession();
+      const messageId = randomUUID();
+      await insertMessage(messageId, fixture);
+      await db.database.update(sandboxes).set({ lifecycle: "preparing" }).where(eq(sandboxes.id, fixture.sandboxId));
+      const ensureEnvironmentAllocated = vi.fn(async () => "pending" as const);
+      const stack = makeStack(fixture, {
+        allocation: {
+          ensureEnvironmentAllocated,
+          ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+        },
+        ensureTimeoutMs: 2_000,
+      });
+      const input =
+        kind === "scheduled"
+          ? await scheduledDeliveryInput(fixture, messageId)
+          : await deliveryInput(fixture, messageId);
+      if ("scheduledOrigin" in input.message) {
+        await db.database
+          .update(sessionMessages)
+          .set({
+            sourceSessionId: null,
+            scheduledOrigin: input.message.scheduledOrigin,
+            content: input.message.content,
+          })
+          .where(eq(sessionMessages.id, messageId));
+      }
+      let settled = false;
+      const delivering = stack.owner.deliver(input, allowAdmission).then((outcome) => {
+        settled = true;
+        return outcome;
+      });
+      await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce());
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(settled).toBe(false);
+      expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+
+      await db.database.update(sandboxes).set({ lifecycle: "ready" }).where(eq(sandboxes.id, fixture.sandboxId));
+      const { sent } = await attachRunner(stack, fixture, {
+        onFrame: answeringOnFrame(stack, fixture),
+        sessionCollaborationVersion: 2,
+      });
+      await expect(delivering).resolves.toEqual({ status: "accepted" });
+      expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce();
+      expect(sent.filter((frame) => frame.type === "session:message:run")).toHaveLength(1);
+      expect(sent.filter((frame) => frame.type === "session:message:verified")).toHaveLength(1);
+      stack.grants.close();
+    },
+  );
+
+  it("waits for the current Runner connection even after allocation reports ready", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const ensureEnvironmentAllocated = vi.fn(async () => "ready" as const);
+    const stack = makeStack(fixture, {
+      allocation: {
+        ensureEnvironmentAllocated,
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      ensureTimeoutMs: 2_000,
+    });
+    let settled = false;
+    const delivering = stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission).then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+    await vi.waitFor(() => expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(settled).toBe(false);
+    const { sent } = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(delivering).resolves.toEqual({ status: "accepted" });
+    expect(sent.filter((frame) => frame.type === "session:message:run")).toHaveLength(1);
+    stack.grants.close();
+  });
+
+  it("expires the preparation budget without sending later when a cold Runner becomes ready", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    await db.database.update(sandboxes).set({ lifecycle: "preparing" }).where(eq(sandboxes.id, fixture.sandboxId));
+    const ensureEnvironmentAllocated = vi.fn(async () => "pending" as const);
+    const stack = makeStack(fixture, {
+      allocation: {
+        ensureEnvironmentAllocated,
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      ensureTimeoutMs: 50,
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    expect(stack.owner.activeDispatchTargets).toBe(0);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    await db.database.update(sandboxes).set({ lifecycle: "ready" }).where(eq(sandboxes.id, fixture.sandboxId));
+    const { sent } = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(sent).toHaveLength(0);
+    expect(ensureEnvironmentAllocated).toHaveBeenCalledOnce();
+    stack.grants.close();
   });
 
   it("keeps a capacity-blocked cold child retryable without taking execution custody", async () => {

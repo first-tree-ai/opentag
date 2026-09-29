@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   type EffectiveRuntimeSnapshot,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
@@ -861,9 +862,9 @@ export class CloudSessionCollaborationOwner {
 
   /**
    * Ensure the target Session's Sandbox row exists and its current allocation is dispatch-ready.
-   * A cold target is woken through the existing ingress allocation path; an environment that
-   * cannot be ready yet is a truthful `runtime_not_ready` — the reservation is durable and the
-   * next attempt picks it up.
+   * A cold target is woken through the existing ingress allocation path, then waits within the
+   * same preparation budget for its exact Runner to become dispatchable. This does not resend
+   * the message or require another scheduled occurrence to finish a normal cold start.
    */
   async #ensureReady(
     targetSessionId: string,
@@ -885,11 +886,11 @@ export class CloudSessionCollaborationOwner {
       if (!owned) return notReady;
     }
     const row = owned.sandbox;
-    if (isDispatchReadySandbox(row)) return { kind: "ready", sandbox: row };
+    if (this.#isRunnerReady(row)) return { kind: "ready", sandbox: row };
     if (!allocation) return notReady;
     const accountId = await this.#accountForSession(targetSessionId);
     if (!accountId) return notReady;
-    const outcome = await this.#convergeAllocation(allocation, accountId, row.id);
+    const outcome = await this.#convergeAllocation(allocation, accountId, row.id, targetSessionId);
     if (outcome === "restore_required") {
       // Previously used storage with no persistence: allocating would be a blank replacement.
       return { kind: "unreachable", outcome: { status: "rejected", code: "restore_required" } };
@@ -934,15 +935,23 @@ export class CloudSessionCollaborationOwner {
   }
 
   /**
-   * Bounded cold-start convergence: the HTTP caller waits at most `ensureTimeoutMs`, while the
-   * durable allocation reservation keeps converging for the next attempt.
+   * One preparation budget covers both allocation and asynchronous Runner readiness. A pending
+   * allocation is normal startup progress; it is not a delivery failure until that budget expires.
    */
   async #convergeAllocation(
     allocation: CloudSessionCollaborationAllocationPort,
     accountId: string,
     sandboxId: string,
+    targetSessionId: string,
   ): Promise<IngressAllocationOutcome | "timeout" | "failed" | "capacity"> {
-    const convergence = allocation.ensureEnvironmentAllocated({ accountId, sandboxId });
+    const controller = new AbortController();
+    const convergence = allocation
+      .ensureEnvironmentAllocated({ accountId, sandboxId })
+      .then((outcome) =>
+        outcome === "pending" || outcome === "ready"
+          ? this.#waitForRunnerReady(targetSessionId, controller.signal)
+          : outcome,
+      );
     // A rejected convergence is transient here: the durable reservation stays retryable.
     void convergence.catch(() => {
       this.#logger?.warn(
@@ -962,9 +971,28 @@ export class CloudSessionCollaborationOwner {
         }),
       ]);
     } finally {
-      // The race timer must not outlive a convergence that won first.
       clearTimeout(timer);
+      controller.abort();
     }
+  }
+
+  /** Observe readiness only: never repeat allocation or send while waiting for a cold Runner. */
+  async #waitForRunnerReady(targetSessionId: string, signal: AbortSignal): Promise<IngressAllocationOutcome> {
+    while (!signal.aborted) {
+      const owned = await loadManagedSandboxBySessionId(this.#database, targetSessionId);
+      if (!owned || owned.sandbox.lifecycle === "releasing") return "stopped";
+      if (this.#isRunnerReady(owned.sandbox)) return "ready";
+      try {
+        await delay(100, undefined, { signal, ref: false });
+      } catch (error) {
+        if (!signal.aborted) throw error;
+      }
+    }
+    return "pending";
+  }
+
+  #isRunnerReady(row: typeof sandboxes.$inferSelect): boolean {
+    return isDispatchReadySandbox(row) && this.#dispatchableConnection(row) !== undefined;
   }
 
   async #accountForSession(sessionId: string): Promise<string | undefined> {

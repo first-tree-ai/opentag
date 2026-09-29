@@ -1,6 +1,7 @@
 import { lstat, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  checkOutboundUrl,
   type RemoteSkillSource,
   SKILL_SOURCE_GIT_TIMEOUT_MS,
   SKILL_SOURCE_SNAPSHOT_MAX_BYTES,
@@ -8,11 +9,7 @@ import {
 } from "@opentag/shared";
 import { GitPublicationError } from "../../github-proxy/git-packets.js";
 import { runTrustedProcess } from "../../github-proxy/git-process.js";
-import {
-  classifyOutboundDestination,
-  classifyOutboundUrl,
-  resolveAllAddresses,
-} from "../../outbound/address-policy.js";
+import { classifyOutboundDestination, resolveAllAddresses } from "../../outbound/destination-policy.js";
 import type { SkillServiceError } from "../errors.js";
 import { skillSourceBlocked, skillSourceInvalid, skillSourceTooLarge, skillSourceUnreachable } from "../errors.js";
 import type { SkillSourceFile, SkillSourceSnapshot } from "./source-snapshot.js";
@@ -161,8 +158,8 @@ export async function assertGitRemoteAllowed(
     resolveAddresses?: (hostname: string) => Promise<string[]>;
   },
 ): Promise<void> {
-  const target = classifyOutboundUrl(source.url, { allowLoopback: options.allowLoopback });
-  if (!target.ok) throw skillSourceBlocked();
+  const target = checkOutboundUrl(source.url, { allowLoopback: options.allowLoopback });
+  if ("failure" in target) throw skillSourceBlocked();
   const destination = await classifyOutboundDestination(target.url, options.resolveAddresses ?? resolveAllAddresses);
   if (!destination.ok) {
     throw destination.failure.kind === "blocked" ? skillSourceBlocked() : skillSourceUnreachable();

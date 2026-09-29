@@ -1,12 +1,5 @@
-import { MCP_ERROR_CODES } from "@opentag/shared";
-import {
-  classifyOutboundDestination,
-  classifyOutboundUrl,
-  type OutboundAddressFailure,
-  type OutboundAddressPolicy,
-  REDIRECT_MODE,
-  resolveAllAddresses,
-} from "../outbound/address-policy.js";
+import { checkOutboundUrl, isLoopbackHostname, MCP_ERROR_CODES } from "@opentag/shared";
+import { classifyOutboundDestination, resolveAllAddresses } from "../outbound/destination-policy.js";
 import { McpServiceError } from "./errors.js";
 
 /**
@@ -24,15 +17,31 @@ import { McpServiceError } from "./errors.js";
  * `fetchOutbound` from here, which keeps the gate unavoidable by construction. A regression test
  * scans those three files for a direct `fetch(` call.
  *
- * The address rules themselves live in `services/outbound/address-policy.ts`, because they are not
- * about MCP: the remote Skill source fetcher applies the same ones. This module keeps the MCP
- * vocabulary — the error codes and the wording the MCP surface has always used — over that shared
- * verdict, so nothing about MCP's observable behaviour changed when the rules moved.
+ * Deliberately not attempted: pinning the validated address at the socket layer, which would also
+ * close DNS rebinding (a name that resolves to a public address during validation and a private one
+ * at connect time). The resolution check below is at least the half that stops the ordinary cases:
+ * a public name that simply points at `127.0.0.1`, and the split-horizon names. See
+ * `McpOutboundFetcher.#assertPublicDestination` for the upgrade path.
  */
 
-export { isLoopbackHost } from "../outbound/address-policy.js";
+/**
+ * Every address a hostname holds, A and AAAA together.
+ *
+ * `all: true` because a single-record lookup would make the verdict depend on resolver order: a
+ * name with one public and one private address must be refused, and checking only the first would
+ * admit it whenever the public record came back first.
+ */
+/** The request never follows a redirect: a 3xx is a refusal, and its `Location` is never read. */
+const REDIRECT_MODE = "manual" as const;
 
-export interface McpOutboundPolicy extends OutboundAddressPolicy {
+export interface McpOutboundPolicy {
+  /**
+   * Whether plain HTTP to a loopback host is allowed at all. The server sets this only from
+   * `OPENTAG_MCP_ALLOW_LOOPBACK` and only in a non-hosted environment; in a hosted environment it
+   * is always false. A hosted deployment's `127.0.0.1` is the server's own loopback, so allowing it
+   * would hand every Account an internal port scanner.
+   */
+  allowLoopback: boolean;
   /** Per-request deadline. */
   timeoutMs?: number;
   /** Maximum response body size, enforced while reading so a huge body cannot exhaust memory. */
@@ -77,38 +86,36 @@ function blocked(message: string, detail?: Record<string, unknown>): McpServiceE
   return new McpServiceError(MCP_ERROR_CODES.URL_BLOCKED, message, detail);
 }
 
-function invalid(message: string): McpServiceError {
-  return new McpServiceError(MCP_ERROR_CODES.SERVER_URL_INVALID, message);
-}
-
-function unreachable(detail: Record<string, unknown>): McpServiceError {
-  return new McpServiceError(MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, "The MCP endpoint could not be reached", detail);
-}
-
-/** Renders one shared address verdict as the MCP error the surface has always raised. */
-function errorForFailure(failure: OutboundAddressFailure): McpServiceError {
-  switch (failure.kind) {
-    case "invalid":
-      return invalid(failure.message);
-    case "blocked":
-      return blocked(failure.message, failure.detail);
-    case "unreachable":
-      return unreachable({
-        ...(failure.cause === undefined ? {} : { cause: failure.cause }),
-        host: failure.host,
-      });
-  }
+function invalid(message: string, detail?: Record<string, unknown>): McpServiceError {
+  return new McpServiceError(MCP_ERROR_CODES.SERVER_URL_INVALID, message, detail);
 }
 
 /**
- * Validate one outbound URL and return it, throwing the MCP error the caller renders. A loopback
- * plain-HTTP URL is admitted only when the policy allows loopback — the local development case
- * where a CLI points at a fixture Server on `127.0.0.1`.
+ * Whether a hostname names the local machine.
+ *
+ * Exported so a module that must accept loopback plain HTTP for the local fixture — without adopting
+ * the whole outbound policy — can ask the same question the policy asks, instead of re-deriving the
+ * `.localhost` tree, the trailing dot, and the literal forms and getting one of them wrong.
+ */
+export function isLoopbackHost(hostname: string): boolean {
+  return isLoopbackHostname(hostname);
+}
+
+/**
+ * Validate one outbound URL against every rule at once. Throws rather than returning a verdict so a
+ * caller cannot forget to check the result.
+ *
+ * The rules themselves live in `@opentag/shared` (`mcp-outbound-url.ts`) because build-time tooling
+ * must apply the same ones to the marketplace catalog without depending on a built Server. This
+ * function only maps their verdict onto this feature's error vocabulary.
  */
 export function assertOutboundUrl(rawUrl: string, policy: McpOutboundPolicy): URL {
-  const verdict = classifyOutboundUrl(rawUrl, policy);
-  if (verdict.ok) return verdict.url;
-  throw errorForFailure(verdict.failure);
+  const result = checkOutboundUrl(rawUrl, { allowLoopback: policy.allowLoopback });
+  if ("failure" in result) {
+    const { kind, message, detail } = result.failure;
+    throw kind === "invalid" ? invalid(message, detail) : blocked(message, detail);
+  }
+  return result.url;
 }
 
 export interface McpOutboundFetchOptions extends McpOutboundPolicy {
@@ -173,10 +180,40 @@ export class McpOutboundFetcher {
     }
   }
 
-  /** Refuses a hostname that resolves to a private address; see the shared address policy. */
+  /**
+   * Refuse a hostname that resolves to a private address.
+   *
+   * `assertOutboundUrl` can only judge what the URL spells, and a hostname spells nothing about where
+   * it points: `localtest.me` is public DNS that answers `127.0.0.1`, `metadata.google.internal` is a
+   * split-horizon name, and a renamed `*.localhost` still lands on loopback. Since the probe stores
+   * and displays whatever answers — instructions, capabilities, and tool lists — plus any extra
+   * headers the Account configured, admitting these made the gate's promise ("non-public
+   * destinations are refused") untrue for the common case of a name rather than a literal.
+   *
+   * Every A and AAAA record is checked, not just the first: a name with one public and one private
+   * address would otherwise be admitted or refused depending on resolver order.
+   *
+   * ponytail: resolve-then-dial, so a record that changes between this lookup and the connection
+   * (DNS rebinding) is not covered. Closing that needs the connection pinned to the validated
+   * address, which Node's `fetch` cannot express without adding an undici `Agent` with a custom
+   * `connect.lookup`. Add it when a deployment faces a hostile resolver rather than a hostile Server.
+   */
   async #assertPublicDestination(url: URL): Promise<void> {
+    /*
+     * The resolution rules are shared with the Skill source transport, so there is one answer to
+     * "does this name point somewhere private". This method only renders that answer in MCP's own
+     * vocabulary; the verdict's pin is deliberately unused here, which is the rebinding gap the note
+     * above describes.
+     */
     const verdict = await classifyOutboundDestination(url, this.#resolveAddresses);
-    if (!verdict.ok) throw errorForFailure(verdict.failure);
+    if (verdict.ok) return;
+    if (verdict.failure.kind === "unreachable") {
+      throw new McpServiceError(MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, "The MCP endpoint could not be reached", {
+        ...(verdict.failure.cause === undefined ? {} : { cause: verdict.failure.cause }),
+        host: verdict.failure.host,
+      });
+    }
+    throw blocked("The outbound URL resolves to a non-public address", { host: verdict.failure.host });
   }
 
   async #perform(url: URL, init: McpFetchInit): Promise<McpFetchResponse> {

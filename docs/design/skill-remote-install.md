@@ -119,12 +119,13 @@ listed without the binding the selection contract promises.
 
 ## Outbound policy
 
-Every network operation goes through the shared address rules in
-`packages/server/src/services/outbound/address-policy.ts` — the same rules the MCP gate uses, which
-is why they were extracted from `mcp-url-policy.ts` rather than copied. A public destination only,
-resolved and judged on every A and AAAA record; HTTPS only (plain HTTP only for a loopback
-development opt-in); no credentials in the URL; no redirect followed, because a redirect is a
-destination the peer chose.
+Every network operation goes through the same rules the MCP gate uses, in the two layers that make
+them up. `packages/shared/src/mcp-outbound-url.ts` holds the pure URL rules — HTTPS only (plain HTTP
+only for a loopback development opt-in), no credentials in the URL, literals judged against the
+non-public ranges — because build-time tooling applies them too. `packages/server/src/services/outbound/destination-policy.ts`
+holds the half that needs a resolver: a public destination only, judged on every A and AAAA record,
+returning the address to dial. No redirect is followed, because a redirect names a destination the
+policy never saw.
 
 The address rules produce the address to dial, and the two transports bind that address to the
 connection rather than resolving again:

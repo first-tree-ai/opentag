@@ -1,10 +1,10 @@
-import { SKILL_SOURCE_DOWNLOAD_MAX_BYTES, SKILL_SOURCE_HTTP_TIMEOUT_MS } from "@opentag/shared";
 import {
-  classifyOutboundDestination,
-  classifyOutboundUrl,
-  type OutboundAddressFailure,
-  resolveAllAddresses,
-} from "../../outbound/address-policy.js";
+  checkOutboundUrl,
+  type McpOutboundUrlFailure,
+  SKILL_SOURCE_DOWNLOAD_MAX_BYTES,
+  SKILL_SOURCE_HTTP_TIMEOUT_MS,
+} from "@opentag/shared";
+import { classifyOutboundDestination, resolveAllAddresses } from "../../outbound/destination-policy.js";
 import type { SkillServiceError } from "../errors.js";
 import { skillSourceBlocked, skillSourceInvalid, skillSourceUnreachable } from "../errors.js";
 import { nodeSkillSourceTransport, type SkillSourceTransport } from "./source-transport.js";
@@ -43,15 +43,8 @@ export interface SkillSourceFetchResult {
   bytes: Uint8Array;
 }
 
-function sourceFailure(failure: OutboundAddressFailure): SkillServiceError {
-  switch (failure.kind) {
-    case "invalid":
-      return skillSourceInvalid();
-    case "blocked":
-      return skillSourceBlocked();
-    case "unreachable":
-      return skillSourceUnreachable();
-  }
+function sourceFailure(failure: McpOutboundUrlFailure): SkillServiceError {
+  return failure.kind === "invalid" ? skillSourceInvalid() : skillSourceBlocked();
 }
 
 export class SkillSourceFetcher {
@@ -91,10 +84,12 @@ export class SkillSourceFetcher {
 
   async #request(url: string, maxBytes: number): Promise<SkillSourceFetchResult> {
     const policy = { allowLoopback: this.#options.allowLoopback };
-    const target = classifyOutboundUrl(url, policy);
-    if (!target.ok) throw sourceFailure(target.failure);
+    const target = checkOutboundUrl(url, policy);
+    if ("failure" in target) throw sourceFailure(target.failure);
     const destination = await classifyOutboundDestination(target.url, this.#resolveAddresses);
-    if (!destination.ok) throw sourceFailure(destination.failure);
+    if (!destination.ok) {
+      throw destination.failure.kind === "blocked" ? skillSourceBlocked() : skillSourceUnreachable();
+    }
     if (maxBytes > this.#maxBytes) maxBytes = this.#maxBytes;
     const response = await this.#transport({
       url: target.url,

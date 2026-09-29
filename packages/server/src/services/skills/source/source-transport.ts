@@ -1,7 +1,7 @@
 import { request as httpRequest, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { SKILL_SOURCE_HTTP_TIMEOUT_MS } from "@opentag/shared";
-import type { OutboundDestinationPin } from "../../outbound/address-policy.js";
+import type { OutboundDestinationPin } from "../../outbound/destination-policy.js";
 import { skillSourceTooLarge, skillSourceUnreachable } from "../errors.js";
 
 /**

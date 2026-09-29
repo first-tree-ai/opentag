@@ -1,10 +1,6 @@
 import { createServer, connect as netConnect, type Server, type Socket } from "node:net";
-import {
-  classifyOutboundDestination,
-  classifyOutboundUrl,
-  type OutboundAddressPolicy,
-  resolveAllAddresses,
-} from "../../outbound/address-policy.js";
+import { checkOutboundUrl } from "@opentag/shared";
+import { classifyOutboundDestination, resolveAllAddresses } from "../../outbound/destination-policy.js";
 
 /**
  * A loopback proxy that pins the address every upstream connection is made to.
@@ -52,7 +48,7 @@ export interface SkillSourceTunnelOptions {
 export class SkillSourceTunnel {
   readonly #server: Server;
   readonly #port: number;
-  readonly #policy: OutboundAddressPolicy;
+  readonly #policy: { allowLoopback: boolean };
   readonly #resolveAddresses: (hostname: string) => Promise<string[]>;
   readonly #sockets = new Set<Socket>();
   #closed = false;
@@ -181,8 +177,8 @@ export class SkillSourceTunnel {
   /** Resolves a `host:port` or URL target to an address the policy approves. */
   async #approve(rawUrl: string): Promise<{ address: string; family: number; port: number; hostname: string }> {
     const url = new URL(rawUrl);
-    const approved = classifyOutboundUrl(url.toString(), this.#policy);
-    if (!approved.ok) throw new Error("blocked");
+    const approved = checkOutboundUrl(url.toString(), this.#policy);
+    if ("failure" in approved) throw new Error("blocked");
     const destination = await classifyOutboundDestination(approved.url, this.#resolveAddresses);
     if (!destination.ok) throw new Error("blocked");
     const port = url.port === "" ? (DEFAULT_PORTS.get(url.protocol) ?? 80) : Number(url.port);

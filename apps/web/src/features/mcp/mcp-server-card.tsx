@@ -30,14 +30,11 @@ export function McpServerCard({
   return (
     <li className="grid min-w-0 gap-3 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="mcp-server-row">
       <div className="grid min-w-0 gap-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="grid min-w-0 gap-1">
-            <div className="wrap-anywhere">
-              <Text as="h2" variant="heading">
-                {entry.name}
-              </Text>
-            </div>
-            <p className="wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
+          <div className="wrap-anywhere min-w-0">
+            <Text as="h2" variant="heading">
+              {entry.name}
+            </Text>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Switch
@@ -47,8 +44,15 @@ export function McpServerCard({
               onCheckedChange={onToggle}
               transitioning={toggling}
             />
-            <ServerMenu authorized={authorized} entry={entry} onAction={onAction} />
+            <ServerMenu
+              authorized={authorized}
+              discovering={discovering}
+              entry={entry}
+              onAction={onAction}
+              onProbe={onProbe}
+            />
           </div>
+          <p className="wrap-anywhere col-span-2 text-sm text-kumo-subtle">{entry.effective.url}</p>
         </div>
 
         {entry.description || entry.discoveredDescription ? (
@@ -65,29 +69,32 @@ export function McpServerCard({
         </Text>
       ) : null}
 
-      <div className="grid gap-3 border-t border-kumo-line pt-3 @min-[36rem]/content:grid-cols-[1fr_auto] @min-[36rem]/content:items-start">
-        <ToolStatus discovering={discovering} entry={entry} />
-        <div className="flex flex-wrap items-center gap-2">
-          {canInspectTools ? (
-            <Button onClick={() => onAction("tools")} size="compact" variant="ghost">
-              {m.mcp_tools_action()}
-            </Button>
-          ) : null}
+      <div className="grid gap-3 border-t border-kumo-line pt-3 @min-[36rem]/content:grid-cols-[minmax(0,1fr)_auto] @min-[36rem]/content:items-start">
+        <div className="grid min-w-0 gap-2 empty:hidden">
+          <ToolStatus discovering={discovering} entry={entry} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 @min-[36rem]/content:col-start-2 @min-[36rem]/content:row-start-1">
           {!authorized ? (
             <Button onClick={() => onAction("authorize")} size="compact" variant="secondary">
               {m.mcp_authorize_action()}
             </Button>
           ) : null}
-          {authorized ? (
+          {authorized && states.probe === "failed" ? (
             <Button
-              aria-label={m.mcp_probe_action()}
+              aria-label={m.common_retry()}
               disabled={discovering}
               loading={discovering}
               onClick={onProbe}
               size="compact"
-              variant={states.probe === "failed" ? "secondary" : "ghost"}
+              variant="secondary"
             >
-              {m.mcp_probe_action()}
+              {m.common_retry()}
+            </Button>
+          ) : null}
+          {canInspectTools ? (
+            <Button onClick={() => onAction("tools")} size="compact" variant="ghost">
+              {m.mcp_tools_action({ count: entry.snapshot?.tools?.length ?? 0 })}
+              <Icon name="chevron-right" />
             </Button>
           ) : null}
         </div>
@@ -110,30 +117,50 @@ function AuthorizationInfo({ entry }: { entry: MCPAgentServer }) {
 }
 
 function ToolStatus({ discovering, entry }: { discovering: boolean; entry: MCPAgentServer }) {
+  return (
+    <>
+      <DiscoveryStatus discovering={discovering} entry={entry} />
+      {entry.authorization?.probeError ? <ProbeErrorDetails error={entry.authorization.probeError} /> : null}
+      {entry.snapshot !== null && entry.authorization?.toolsTruncated ? (
+        <Collapsible.Root className="min-w-0">
+          <Collapsible.Trigger render={<Button className="-ml-2 text-kumo-warning" size="compact" variant="ghost" />}>
+            <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-current" />
+            {m.mcp_tools_incomplete()}
+            <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
+          </Collapsible.Trigger>
+          <Collapsible.Panel className="pt-2">
+            <p className="wrap-anywhere rounded bg-kumo-recessed p-3 text-sm text-kumo-subtle">
+              {m.mcp_tools_truncated()}
+            </p>
+          </Collapsible.Panel>
+        </Collapsible.Root>
+      ) : null}
+    </>
+  );
+}
+
+function DiscoveryStatus({ discovering, entry }: { discovering: boolean; entry: MCPAgentServer }) {
   const states = rowStates(entry);
   const previousTools =
     entry.snapshot !== null && (states.authorizationStatus !== "active" || states.probe !== "succeeded" || discovering);
+  const showProbe = discovering || states.probe !== "succeeded" || entry.snapshot === null;
+  if (!showProbe && !previousTools) return null;
+
+  const failed = states.probe === "failed" && !discovering;
+  let hint = previousTools ? m.mcp_tools_previous_hint() : null;
+  if (!hint && failed && states.authorizationStatus === "active") hint = m.mcp_discovery_failed_hint();
+
   return (
-    <div className="grid min-w-0 gap-2">
-      <div aria-live="polite" className="flex flex-wrap items-center gap-x-3 gap-y-2">
+    <div aria-live="polite" className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      {showProbe ? (
         <StatusIndicator
           label={discovering ? m.mcp_probe_state_pending() : describeProbe(entry)}
-          tone={states.probe === "failed" && !discovering ? "danger" : "neutral"}
+          tone={failed ? "danger" : "neutral"}
         />
-        {previousTools ? (
-          <Text size="sm" variant="secondary">
-            {m.mcp_tools_previous_hint()}
-          </Text>
-        ) : states.probe === "failed" && !discovering && states.authorizationStatus === "active" ? (
-          <Text size="sm" variant="secondary">
-            {m.mcp_discovery_failed_hint()}
-          </Text>
-        ) : null}
-      </div>
-      {entry.authorization?.probeError ? <ProbeErrorDetails error={entry.authorization.probeError} /> : null}
-      {entry.authorization?.toolsTruncated ? (
-        <Text as="p" size="sm" variant="secondary">
-          {m.mcp_tools_truncated()}
+      ) : null}
+      {hint ? (
+        <Text size="sm" variant="secondary">
+          {hint}
         </Text>
       ) : null}
     </div>
@@ -142,12 +169,16 @@ function ToolStatus({ discovering, entry }: { discovering: boolean; entry: MCPAg
 
 function ServerMenu({
   authorized,
+  discovering,
   entry,
   onAction,
+  onProbe,
 }: {
   authorized: boolean;
+  discovering: boolean;
   entry: MCPAgentServer;
   onAction: (action: ServerAction) => void;
+  onProbe: () => void;
 }) {
   return (
     <DropdownMenu>
@@ -161,7 +192,12 @@ function ServerMenu({
       <DropdownMenu.Content align="end">
         <DropdownMenu.Item onClick={() => onAction("edit")}>{m.mcp_edit_action()}</DropdownMenu.Item>
         {authorized ? (
-          <DropdownMenu.Item onClick={() => onAction("authorize")}>{m.mcp_authorize_action()}</DropdownMenu.Item>
+          <>
+            <DropdownMenu.Item onClick={() => onAction("authorize")}>{m.mcp_authorize_action()}</DropdownMenu.Item>
+            <DropdownMenu.Item disabled={discovering} onClick={onProbe}>
+              {m.mcp_probe_action()}
+            </DropdownMenu.Item>
+          </>
         ) : null}
         <DropdownMenu.Separator />
         {canRevoke(entry) ? (

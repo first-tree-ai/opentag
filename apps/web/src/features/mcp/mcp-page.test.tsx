@@ -1,6 +1,6 @@
 import type { MCPAgentServer, MCPServerDetail } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
@@ -180,11 +180,15 @@ describe("McpPage", () => {
     stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    expect(await screen.findByRole("button", { name: "View tools" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "View tools (1)" })).toBeTruthy();
+    expect(screen.queryByText(/Found \d+ tools/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Tool list incomplete" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Authorize" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove from this Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
-    for (const name of ["Edit", "Authorize", "Revoke", "Remove from this Agent"]) {
+    for (const name of ["Edit", "Authorize", "Refresh tools", "Revoke", "Remove from this Agent"]) {
       expect(await screen.findByRole("menuitem", { name })).toBeTruthy();
     }
   });
@@ -210,7 +214,7 @@ describe("McpPage", () => {
     await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(false));
   });
 
-  it("prioritizes refreshing a failed discovery without offering an absent snapshot", async () => {
+  it("offers retry for a failed discovery without offering an absent snapshot", async () => {
     stub([
       entry({
         snapshot: null,
@@ -223,42 +227,57 @@ describe("McpPage", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("Discovery failed")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Refresh tools" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Authorize" })).toBeNull();
   });
 
-  it("announces discovery progress and prevents duplicate refresh requests", async () => {
-    stub([entry()]);
-    let finish: () => void = () => {};
-    const probe = vi.spyOn(browserApi, "probeMcpServer").mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          finish = () =>
-            resolve({
-              probeState: "succeeded",
-              probeError: null,
-              toolsCount: 3,
-              toolsTruncated: false,
-              protocolEra: null,
-              protocolVersion: null,
-            });
+  it.each(["succeeded", "failed"] as const)(
+    "announces progress and prevents duplicate discovery from %s",
+    async (probeState) => {
+      stub([
+        entry({
+          authorization: { ...(entry().authorization as NonNullable<MCPAgentServer["authorization"]>), probeState },
         }),
-    );
-    wrap(<McpPage agentId={AGENT_ID} />);
+      ]);
+      let finish: () => void = () => {};
+      const probe = vi.spyOn(browserApi, "probeMcpServer").mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = () =>
+              resolve({
+                probeState: "succeeded",
+                probeError: null,
+                toolsCount: 3,
+                toolsTruncated: false,
+                protocolEra: null,
+                protocolVersion: null,
+              });
+          }),
+      );
+      wrap(<McpPage agentId={AGENT_ID} />);
 
-    const refresh = await screen.findByRole("button", { name: "Refresh tools" });
-    fireEvent.click(refresh);
-    expect(await screen.findByText("Discovering…")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "View tools" })).toBeTruthy();
-    expect(screen.getByText("Showing the last successful discovery.")).toBeTruthy();
-    expect(refresh.hasAttribute("disabled")).toBe(true);
-    fireEvent.click(refresh);
-    expect(probe).toHaveBeenCalledTimes(1);
-    finish();
-    await waitFor(() => expect(refresh.hasAttribute("disabled")).toBe(false));
-    expect(screen.queryByText("Showing the last successful discovery.")).toBeNull();
-  });
+      await clickServerAction(probeState === "failed" ? "Retry" : "Refresh tools");
+      expect(await screen.findByText("Discovering…")).toBeTruthy();
+      expect(screen.getByRole("button", { name: /^View tools/ })).toBeTruthy();
+      expect(screen.getByText("Showing the last successful discovery.")).toBeTruthy();
+      if (probeState === "failed") {
+        const retry = screen.getByRole("button", { name: "Retry" });
+        expect(retry.hasAttribute("disabled")).toBe(true);
+        fireEvent.click(retry);
+      }
+      fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+      const refresh = await screen.findByRole("menuitem", { name: "Refresh tools" });
+      expect(refresh.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(refresh);
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
+      vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [entry()] });
+      finish();
+      await waitFor(() => expect(refresh.getAttribute("aria-disabled")).not.toBe("true"));
+      expect(screen.queryByText("Showing the last successful discovery.")).toBeNull();
+    },
+  );
 
   it("keeps the mount and authorization states independent so a disabled Server is not read as unauthorized", async () => {
     stub([entry({ enabled: false })]);
@@ -289,13 +308,14 @@ describe("McpPage", () => {
       expect(screen.queryByText("Disabled. Authorization is kept.")).toBeNull();
       expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
-      expect(screen.queryByRole("menuitem", { name: "View tools" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: /^View tools/ })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Refresh tools" })).toBeNull();
     },
   );
 
-  it("shows the probe result as tool count and flags a truncated snapshot", async () => {
+  it("counts the displayed tools and explains an incomplete list only when expanded", async () => {
     stub([
       entry({
         authorization: {
@@ -307,12 +327,20 @@ describe("McpPage", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    expect(await screen.findByText("Found 200 tools")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "This is not the Server’s complete tool set: the list hit a cap, or some tools were skipped because they exceeded the size limits.",
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "View tools (1)" })).toBeTruthy();
+    expect(screen.queryByText(/Found \d+ tools/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+    const warning = screen.getByRole("button", { name: "Tool list incomplete" });
+    const explanation =
+      "The tool list may be incomplete, so this Agent may not have access to all of this Server’s tools.";
+    expect(warning.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(explanation)).toBeNull();
+
+    fireEvent.click(warning);
+
+    expect(warning.getAttribute("aria-expanded")).toBe("true");
+    expect(await screen.findByText(explanation)).toBeTruthy();
   });
 
   it("opens the editor on this Agent, and only warns about the other Agents when the shared scope is chosen", async () => {
@@ -627,7 +655,7 @@ describe("McpPage row actions", () => {
     vi.spyOn(browserApi, "probeMcpServer").mockRejectedValue(new ApiError(502, "The MCP Server did not answer"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh tools" }));
+    await clickServerAction("Refresh tools");
 
     expect(await screen.findByText("The MCP Server did not answer")).toBeTruthy();
   });
@@ -637,7 +665,7 @@ describe("McpPage row actions", () => {
     vi.spyOn(browserApi, "probeMcpServer").mockRejectedValue(new Error("offline"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh tools" }));
+    await clickServerAction("Refresh tools");
 
     expect(
       await screen.findByText("Couldn’t discover the tools. Check the URL and credential, then try again."),
@@ -656,7 +684,7 @@ describe("McpPage row actions", () => {
     });
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh tools" }));
+    await clickServerAction("Refresh tools");
 
     await waitFor(() => expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
   });
@@ -682,12 +710,12 @@ describe("McpPage row actions", () => {
       const row = document.querySelector('[data-ui="mcp-server-row"]') as HTMLElement | null;
       expect(row?.textContent).toContain(label);
     });
-    expect(screen.getByRole("button", { name: "View tools" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^View tools/ })).toBeTruthy();
     if (status !== "active") {
       expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
       expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
       expect(screen.getByText("Showing the last successful discovery.")).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: "View tools" }));
+      fireEvent.click(screen.getByRole("button", { name: /^View tools/ }));
       expect(await screen.findByText("create_issue")).toBeTruthy();
     }
   });
@@ -743,8 +771,11 @@ describe("McpPage row actions", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("Discovering…")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Refresh tools" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+    expect((await screen.findByRole("menuitem", { name: "Refresh tools" })).getAttribute("aria-disabled")).toBe("true");
   });
 
   it("keeps discovery failure readable and reveals the Server error on request", async () => {
@@ -818,7 +849,7 @@ describe("McpPage row actions", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^View tools/ }));
 
     expect(await screen.findByText("modern · 2026-07-28")).toBeTruthy();
     expect(screen.getByText("create_issue")).toBeTruthy();
@@ -829,7 +860,7 @@ describe("McpPage row actions", () => {
     expect(await screen.findByText(/{/)).toBeTruthy();
   });
 
-  it("says a Server reported no tools rather than rendering an empty list", async () => {
+  it.each([[], null])("shows an empty catalogue for a snapshot with tools=%j", async (tools) => {
     stub([
       entry({
         snapshot: {
@@ -838,13 +869,13 @@ describe("McpPage row actions", () => {
           serverInfo: null,
           capabilities: null,
           instructions: null,
-          tools: [],
+          tools,
         },
       }),
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View tools (0)" }));
 
     expect(await screen.findByText("- · -")).toBeTruthy();
     expect(screen.getByText("This Server reported no tools for this Agent’s credential.")).toBeTruthy();
@@ -869,25 +900,25 @@ describe("McpPage row actions", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^View tools/ }));
 
-    await waitFor(() =>
-      expect(
-        screen.getAllByText(
-          "This is not the Server’s complete tool set: the list hit a cap, or some tools were skipped because they exceeded the size limits.",
-        ).length,
-      ).toBeGreaterThanOrEqual(2),
-    );
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(
+        "The tool list may be incomplete, so this Agent may not have access to all of this Server’s tools.",
+      ),
+    ).toBeTruthy();
   });
 
   it("offers no tools entry point when a snapshot is absent", async () => {
     stub([entry({ snapshot: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    expect(await screen.findByRole("button", { name: "Refresh tools" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
-    expect(screen.queryByRole("menuitem", { name: "View tools" })).toBeNull();
+    const menu = await screen.findByRole("button", { name: "More actions for linear" });
+    expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
+    fireEvent.click(menu);
+    expect(await screen.findByRole("menuitem", { name: "Refresh tools" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /^View tools/ })).toBeNull();
   });
 });
 
@@ -1459,7 +1490,7 @@ describe("McpPage edit dialog", () => {
     expect(await screen.findByRole("button", { name: "Save" })).toBeTruthy();
   });
 
-  it("counts a missing tool total as none rather than showing a blank", async () => {
+  it("counts the saved tools when the authorization summary has no total", async () => {
     stub([
       entry({
         authorization: {
@@ -1471,7 +1502,7 @@ describe("McpPage edit dialog", () => {
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    expect(await screen.findByText("Found 0 tools")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "View tools (1)" })).toBeTruthy();
   });
 
   it("says the effective headers are none when the Server has none", async () => {
@@ -1633,7 +1664,7 @@ describe("McpPage OAuth callback", () => {
     vi.spyOn(browserApi, "probeMcpServer").mockRejectedValue(new ApiError(502, "Probe exploded"));
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Refresh tools" }));
+    await clickServerAction("Refresh tools");
     expect(await screen.findByText("Probe exploded")).toBeTruthy();
 
     // A successful action clears the stale error before it starts.
@@ -1645,7 +1676,7 @@ describe("McpPage OAuth callback", () => {
       protocolEra: null,
       protocolVersion: null,
     });
-    fireEvent.click(screen.getByRole("button", { name: "Refresh tools" }));
+    await clickServerAction("Refresh tools");
 
     await waitFor(() => expect(screen.queryByText("Probe exploded")).toBeNull());
   });

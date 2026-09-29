@@ -44,7 +44,7 @@
   "mcp_disable_action": "Disable",
   "mcp_disabled_authorization_required_hint": "Disabled. Authorization is required to use its tools.",
   "mcp_disabled_hint": "Disabled. Authorization is kept.",
-  "mcp_discovery_failed_hint": "Tools couldn’t be loaded. Try refreshing.",
+  "mcp_discovery_failed_hint": "Tools couldn’t be loaded. Try again.",
   "mcp_edit_action": "Edit",
   "mcp_edit_advanced": "Extra headers",
   "mcp_edit_auth_header_label": "Authorization header name",
@@ -93,11 +93,12 @@
   "mcp_revoke_failed": "Couldn’t revoke the authorization. Try again.",
   "mcp_revoke_title": "Revoke the authorization for {server}?",
   "mcp_toggle_label": "Enable {name}",
-  "mcp_tools_action": "View tools",
+  "mcp_tools_action": "View tools ({count})",
   "mcp_tools_column_schema": "Input schema",
   "mcp_tools_empty": "This Server reported no tools for this Agent’s credential.",
+  "mcp_tools_incomplete": "Tool list incomplete",
   "mcp_tools_previous_hint": "Showing the last successful discovery.",
   "mcp_tools_title": "Tools discovered with this Agent’s credential",
-  "mcp_tools_truncated": "This is not the Server’s complete tool set: the list hit a cap, or some tools were skipped because they exceeded the size limits.",
+  "mcp_tools_truncated": "The tool list may be incomplete, so this Agent may not have access to all of this Server’s tools.",
   "mcp_url_label": "MCP endpoint URL"
 }

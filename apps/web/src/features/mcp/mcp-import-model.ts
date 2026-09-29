@@ -5,7 +5,7 @@ import {
   MCPServerNameSchema,
   MCPServerUrlSchema,
 } from "@opentag/shared/browser";
-import { SENSITIVE_NAME_PATTERN } from "../../observability/sensitive-names.js";
+import { isCredentialName } from "../../observability/sensitive-names.js";
 import { serverNameFromUrl } from "./mcp-form-model.js";
 import { type HeaderPair, type RawEntry, readEntries } from "./mcp-import-readers.js";
 
@@ -106,7 +106,7 @@ export function isImportable(server: MCPImportServer): boolean {
 }
 
 function toServer(entry: RawEntry, taken: Set<string>): MCPImportServer {
-  const { extraHeaders, refusedHeaders, credential } = splitHeaders(entry.headers);
+  const { extraHeaders, refusedHeaders, credential } = splitHeaders(entry.headers, entry.unresolvedHeaders);
   const base = { sourceName: entry.sourceName, transport: entry.transport, extraHeaders, refusedHeaders };
   if (entry.transport === "local")
     return { ...base, name: displayedName(entry, taken, false), reason: "local-transport" };
@@ -175,53 +175,75 @@ export function normalizeImportName(raw: string): string {
     .replace(/-+$/, "");
 }
 
-/**
- * Whether a header name carries a credential rather than configuration.
- *
- * The vocabulary is the diagnostic redactor's (`../../observability/sensitive-names.js`), not a list
- * invented here: a name the product already treats as a secret must not become this Account-shared
- * record just because a paste spelled it `X-Client-Secret`. A vendor prefix is allowed
- * (`x-goog-api-key`), and `authorization` with the cookie headers are credentials of their own.
- * Everything else is context the Server is configured with, such as `x-workspace-id`.
- */
-const SENSITIVE_HEADER_NAME = new RegExp(`^(?:[a-z0-9]+-)*(?:${SENSITIVE_NAME_PATTERN}|authorization|cookie)$`);
-
-export function isSensitiveHeaderName(name: string): boolean {
-  return SENSITIVE_HEADER_NAME.test(name.trim().toLowerCase().replace(/_/g, "-"));
-}
+/** The header a paste means as its credential whenever it declares one. */
+const AUTHORIZATION_HEADER = "authorization";
 
 /**
  * Partition the paste's headers into this Agent's credential, the shared definition's extra headers,
  * and names OpenTag refuses.
  *
- * A refused name is reported rather than dropped in silence, and a second credential-shaped header is
- * refused rather than stored: extra headers are shared by every Agent of the Account, so a secret
- * must never reach them. A non-secret header that is neither (`x-workspace-id`) is shared as usual.
+ * Exactly one credential is taken: the `Authorization` header when the paste declares one, otherwise
+ * the first credential-shaped header. Every other credential-shaped name is refused, because extra
+ * headers are shared by every Agent of the Account and a secret must never reach them; a non-secret
+ * header such as `x-workspace-id` is shared as usual. `unresolvedNames` are headers the paste declares
+ * whose value comes from an environment variable — there is nothing to send, so they are refused
+ * rather than encoded as empty headers or guessed at from a literal duplicate.
  */
-function splitHeaders(pairs: HeaderPair[]): {
+function splitHeaders(
+  pairs: HeaderPair[],
+  unresolvedNames: readonly string[] = [],
+): {
   extraHeaders: Record<string, string>;
   refusedHeaders: string[];
   credential?: MCPImportCredential;
 } {
+  const named: NamedHeader[] = pairs
+    .map((pair) => ({ name: pair.name.trim().toLowerCase(), value: pair.value }))
+    .filter((pair) => pair.name.length > 0);
+  const unresolved = new Set(unresolvedNames.map((name) => name.trim().toLowerCase()).filter(Boolean));
+  const chosen = chooseCredential(named);
   const extraHeaders: Record<string, string> = {};
   const refusedHeaders: string[] = [];
-  let credential: MCPImportCredential | undefined;
-  for (const pair of pairs) {
-    const name = pair.name.trim().toLowerCase();
-    if (!name) continue;
-    if (isSensitiveHeaderName(name)) {
-      const found = credential === undefined ? credentialFrom(name, pair.value) : undefined;
-      if (found) credential = found;
-      else refusedHeaders.push(name);
+  for (const pair of named) {
+    if (unresolved.has(pair.name)) {
+      pushUnique(refusedHeaders, pair.name);
       continue;
     }
-    if (!acceptsHeader(extraHeaders, name, pair.value)) {
-      refusedHeaders.push(name);
+    if (pair === chosen?.pair) continue;
+    if (isCredentialName(pair.name)) {
+      pushUnique(refusedHeaders, pair.name);
       continue;
     }
-    extraHeaders[name] = pair.value;
+    if (!acceptsHeader(extraHeaders, pair.name, pair.value)) {
+      pushUnique(refusedHeaders, pair.name);
+      continue;
+    }
+    extraHeaders[pair.name] = pair.value;
   }
-  return { extraHeaders, refusedHeaders, ...(credential === undefined ? {} : { credential }) };
+  for (const name of unresolved) {
+    if (!named.some((pair) => pair.name === name)) pushUnique(refusedHeaders, name);
+  }
+  return { extraHeaders, refusedHeaders, ...(chosen === undefined ? {} : { credential: chosen.credential }) };
+}
+
+type NamedHeader = { name: string; value: string };
+
+/** The one header whose value becomes this Agent's authorization, preferring `Authorization` itself. */
+function chooseCredential(pairs: NamedHeader[]): { pair: NamedHeader; credential: MCPImportCredential } | undefined {
+  const ordered = [
+    ...pairs.filter((pair) => pair.name === AUTHORIZATION_HEADER),
+    ...pairs.filter((pair) => pair.name !== AUTHORIZATION_HEADER),
+  ];
+  for (const pair of ordered) {
+    if (!isCredentialName(pair.name)) continue;
+    const credential = credentialFrom(pair.name, pair.value);
+    if (credential) return { pair, credential };
+  }
+  return undefined;
+}
+
+function pushUnique(list: string[], value: string): void {
+  if (!list.includes(value)) list.push(value);
 }
 
 /**

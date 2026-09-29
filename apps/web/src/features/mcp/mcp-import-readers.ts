@@ -16,6 +16,14 @@ export type RawEntry = {
   transport: "remote" | "local" | "unrecognized";
   url?: string;
   headers: HeaderPair[];
+  /**
+   * Header names the paste declares whose value comes from an environment variable.
+   *
+   * There is no value to send and the variable's *name* is not a secret, so these travel separately
+   * and reach the model's refusal path. Encoding them as header pairs with empty values would create a
+   * real shared header with an empty value, and would overwrite a literal value for the same name.
+   */
+  unresolvedHeaders: string[];
 };
 
 /** The wrapper keys every supported dialect puts its servers under. */
@@ -195,25 +203,25 @@ function closesAfter(text: string, index: number): boolean {
 
 function entryFromRecord(record: Record<string, unknown>): Omit<RawEntry, "sourceName"> {
   const headers = recordHeaders(record);
+  const unresolvedHeaders = envBackedHeaderNames(record);
   const type = typeof record.type === "string" ? record.type.trim().toLowerCase() : "";
   if (LOCAL_TYPE_LABELS.has(type) || LOCAL_MARKERS.some((marker) => record[marker] !== undefined))
-    return { transport: "local", headers };
+    return { transport: "local", headers, unresolvedHeaders };
   const url = typeof record.url === "string" ? record.url.trim() : "";
-  if (url) return { transport: "remote", url, headers };
-  return { transport: "unrecognized", headers };
+  if (url) return { transport: "remote", url, headers, unresolvedHeaders };
+  return { transport: "unrecognized", headers, unresolvedHeaders };
 }
 
 /** `headers` is an object in most dialects and an array of `Name: value` lines in a few. */
 function recordHeaders(record: Record<string, unknown>): HeaderPair[] {
-  return [
-    ...headerPairs(record.headers),
-    // Codex spells its literal static headers `http_headers`; the two names describe the same field.
-    ...headerPairs(record.http_headers),
-    // `env_http_headers` maps a header name to the *name of an environment variable*. There is no
-    // value to import and the variable name is not a secret, so the header is refused by name rather
-    // than read as an empty credential.
-    ...headerNames(record.env_http_headers),
-  ];
+  // Codex spells its literal static headers `http_headers`; the two names describe the same field.
+  return [...headerPairs(record.headers), ...headerPairs(record.http_headers)];
+}
+
+/** Codex's `env_http_headers` maps a header name to the name of an environment variable. */
+function envBackedHeaderNames(record: Record<string, unknown>): string[] {
+  const envHeaders = asRecord(record.env_http_headers);
+  return envHeaders ? Object.keys(envHeaders) : [];
 }
 
 function headerPairs(raw: unknown): HeaderPair[] {
@@ -231,12 +239,6 @@ function headerPairs(raw: unknown): HeaderPair[] {
     if (typeof item === "string") pairs.push(...headerFromLine(item));
   }
   return pairs;
-}
-
-function headerNames(raw: unknown): HeaderPair[] {
-  const record = asRecord(raw);
-  if (!record) return [];
-  return Object.keys(record).map((name) => ({ name, value: "" }));
 }
 
 function headerFromLine(line: string): HeaderPair[] {
@@ -292,9 +294,10 @@ function readCliCommand(text: string): RawEntry | undefined {
   const parts = readCliTokens(tokens.slice(4));
   const sourceName = tokens[3] ?? "";
   const local = parts.command || parts.transport === "stdio" || parts.transport === "local";
-  if (local) return { sourceName, transport: "local", headers: parts.headers, ...urlField(parts) };
-  if (parts.url !== undefined) return { sourceName, transport: "remote", headers: parts.headers, url: parts.url };
-  return { sourceName, transport: "unrecognized", headers: parts.headers };
+  const base = { sourceName, headers: parts.headers, unresolvedHeaders: [] };
+  if (local) return { ...base, transport: "local", ...urlField(parts) };
+  if (parts.url !== undefined) return { ...base, transport: "remote", url: parts.url };
+  return { ...base, transport: "unrecognized" };
 }
 
 function urlField(parts: CliParts): { url?: string } {

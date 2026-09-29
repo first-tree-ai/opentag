@@ -1,6 +1,5 @@
 import { redactSensitive } from "@opentag/shared/browser";
 import { forwardErrorReport } from "./error-reporting.js";
-import { SENSITIVE_NAME_PATTERN } from "./sensitive-names.js";
 
 export type DiagnosticSource = "api" | "ui" | "window";
 export type DiagnosticLevel = "warn" | "error";
@@ -29,7 +28,15 @@ const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const INTEGER_SEGMENT = /^\d+$/;
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 
-const credentialKey = SENSITIVE_NAME_PATTERN;
+/**
+ * The flat expression this module matches `name: value` shapes with.
+ *
+ * It stays its own expression rather than reading `./sensitive-names.js`: this is a value-shape
+ * grammar over an error string, whose `authorization` and cookie entries exist to be pre-empted by the
+ * dedicated handling above, while `sensitive-names.ts` answers the different question of whether a
+ * *name* is a credential carrier.
+ */
+const credentialKey = "(?:password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
 const quotedValue = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`;
 const arrayValue = String.raw`\[(?:${quotedValue}|[^\[\]"'])*\]`;
 const objectValue = String.raw`\{(?:${quotedValue}|[^{}"'])*\}`;

@@ -88,4 +88,115 @@ describe("credential name vocabulary", () => {
     expect(foldCredentialName("X-PrivateKey")).toBe("x_private_key");
     expect(foldCredentialName("X-Private-Key")).toBe("x_private_key");
   });
+
+  /**
+   * The predicate and the shared redactor must agree everywhere except where this feature deliberately
+   * diverges: the structural-only parts. Without this, a name the repository adds to its vocabulary —
+   * or a hole in the separator/casing handling — shows up as a pasted secret in Account-shared
+   * configuration, which is the exact failure this feature exists to prevent.
+   */
+  it("agrees with the shared redactor except where a structural name is shared on purpose", () => {
+    // `!shared && local` is never excused: refusing something the redactor considers safe is still an
+    // inconsistency. `shared && !local` is excused only by a structural-only part.
+    const violations = credentialNameCorpus()
+      .map((name) => ({ name, shared: sharedRedacts(name), local: isCredentialName(name) }))
+      .filter(({ name, shared, local }) => (shared === local ? false : !(shared && !local && isStructuralOnly(name))));
+    expect(violations).toEqual([]);
+  });
+
+  it("diverges from the shared redactor only for structural-only names", () => {
+    const divergences = credentialNameCorpus().filter((name) => sharedRedacts(name) !== isCredentialName(name));
+    expect(divergences.filter((name) => !isStructuralOnly(name))).toEqual([]);
+    // The exemption is real and deliberate: the redactor hides `payload`, this feature shares it.
+    expect(divergences).toContain("x-payload");
+  });
+
+  it("never classifies a context name as a credential", () => {
+    const falsePositives = credentialNameCorpus().filter(
+      (name) => isCredentialName(name) && /workspace|user-project|trace|content-type|^accept$/.test(name),
+    );
+    expect(falsePositives).toEqual([]);
+  });
 });
+
+/** The repository redactor's verdict for a value stored under that name. */
+function sharedRedacts(name: string): boolean {
+  return !JSON.stringify(redactSensitive({ [name]: MARKER })).includes(MARKER);
+}
+
+/** Whether a name would be caught by a structural-only part, which this feature shares on purpose. */
+function isStructuralOnly(name: string): boolean {
+  const folded = foldCredentialName(name);
+  const collapsed = folded.replaceAll("_", "");
+  return STRUCTURAL_ONLY_NAME_PARTS.some(
+    (part) => folded.includes(part) || collapsed.includes(part.replaceAll("_", "")),
+  );
+}
+
+/** Credential words a real configuration writes, crossed with the affixes it wraps them in. */
+function credentialNameCorpus(): string[] {
+  const words = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "token",
+    "secret",
+    "credential",
+    "credentials",
+    "password",
+    "passwd",
+    "api_key",
+    "api-key",
+    "apikey",
+    "apiKey",
+    "bearer_key",
+    "bearer-key",
+    "bearerKey",
+    "access_key",
+    "access-key",
+    "accessKey",
+    "refresh_key",
+    "refresh-key",
+    "refreshKey",
+    "private_key",
+    "private-key",
+    "privateKey",
+    "client_secret",
+    "clientSecret",
+    "client-secret",
+    "session_token",
+    "sessionToken",
+    "auth_token",
+    "authToken",
+    "personal_access_token",
+    "payload",
+    "body",
+    "key",
+    "auth",
+    "session",
+    "pwd",
+    "pin",
+    "signature",
+  ];
+  const affixes = ["", "x-", "x_", "x", "X-", "my", "X-Goog-", "proxy-"];
+  const names = new Set<string>();
+  for (const word of words) {
+    for (const prefix of affixes) {
+      names.add(`${prefix}${word}`);
+      names.add(`${prefix}${word}-value`);
+      names.add(`${prefix}${word}Id`);
+    }
+  }
+  for (const context of [
+    "x-workspace-id",
+    "x-goog-user-project",
+    "x-payload",
+    "content-type",
+    "accept",
+    "x-trace-id",
+  ]) {
+    names.add(context);
+  }
+  return [...names];
+}

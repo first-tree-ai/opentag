@@ -415,6 +415,70 @@ describe("headers and credentials", () => {
   });
 });
 
+/**
+ * The end-to-end contract the shared redactor defines: a name it treats as a credential must never end
+ * up in the Account-shared extra headers, in every casing and separator convention a paste may use.
+ * This is the assertion an earlier round missed by exercising the predicate instead of the model.
+ */
+describe("no name the shared redactor treats as a credential reaches the shared headers", () => {
+  const secret = "sk-end-to-end";
+
+  const names = [
+    "Authorization",
+    "authorization",
+    "proxy-authorization",
+    "Cookie",
+    "X-Client-Secret",
+    "client_secret",
+    "X-ClientSecret",
+    "password",
+    "X-Password",
+    "X-Passwd",
+    "X-Credential",
+    "X-Credentials",
+    "X-Token",
+    "session_token",
+    "X-Access-Token",
+    "X-API-Key",
+    "x-api-key",
+    "X-ApiKey",
+    "X-PrivateKey",
+    "X-Private-Key",
+    "x-privatekey",
+    "X-BearerKey",
+    "X-AccessKey",
+    "X-RefreshKey",
+    "X-Goog-Api-Key",
+  ];
+
+  it.each(names)("keeps %s out of the extra headers through the model", async (name) => {
+    const outcome = await parse(
+      JSON.stringify({ mcpServers: { jira: remote("https://jira.example.com/mcp", { headers: { [name]: secret } }) } }),
+    );
+    const entry = server(outcome, "jira");
+    expect(entry.extraHeaders[Object.keys(entry.extraHeaders)[0] ?? ""]).not.toBe(secret);
+    expect(JSON.stringify(entry.extraHeaders)).not.toContain(secret);
+    // The value is either this Agent's credential or refused; never silently shared.
+    expect(entry.credential?.token === secret || entry.refusedHeaders.includes(name.toLowerCase())).toBe(true);
+    const { credential: _credential, ...shared } = entry;
+    expect(JSON.stringify(shared)).not.toContain(secret);
+  });
+
+  it.each(["X-Payload", "X-Request-Body", "X-Prompt"])(
+    "still shares the structural name %s, which is not a credential",
+    async (name) => {
+      const outcome = await parse(
+        JSON.stringify({
+          mcpServers: { docs: remote("https://docs.example.com/mcp", { headers: { [name]: "summary" } }) },
+        }),
+      );
+      const entry = server(outcome, "docs");
+      expect(entry.extraHeaders[name.toLowerCase()]).toBe("summary");
+      expect(entry.credential).toBeUndefined();
+    },
+  );
+});
+
 describe("credentials stay out of messages", () => {
   const token = "sk-do-not-echo-gfhnj2rr";
 

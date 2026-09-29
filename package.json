@@ -14,7 +14,7 @@
     "build": "turbo run build && pnpm --silent bundle:report",
     "bundle:report": "node scripts/report-bundle-sizes.mjs",
     "dev": "turbo run dev",
-    "check": "biome check . && node scripts/generate-web-theme.mjs --check && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs && node scripts/check-migration-drift.mjs && node scripts/check-ownership-policy.mjs && node scripts/check-complexity-ratchet.mjs",
+    "check": "biome check . && node scripts/generate-web-theme.mjs --check && tsx scripts/generate-mcp-catalog.mjs --check && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs && node scripts/check-migration-drift.mjs && node scripts/check-ownership-policy.mjs && node scripts/check-complexity-ratchet.mjs",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck",
@@ -28,7 +28,8 @@
     "check:node-compat": "pnpm build && pnpm test && node scripts/node-compat-smoke.mjs",
     "check:schema-drift": "node scripts/check-schema-drift.mjs",
     "notices:write": "node scripts/third-party-notices.mjs --write",
-    "theme:generate": "node scripts/generate-web-theme.mjs"
+    "theme:generate": "node scripts/generate-web-theme.mjs",
+    "catalog:generate": "tsx scripts/generate-mcp-catalog.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
@@ -39,7 +40,8 @@
     "tsx": "^4.23.13",
     "turbo": "^2.10.13",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {

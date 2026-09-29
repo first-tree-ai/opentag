@@ -391,6 +391,7 @@ export * from "./im-binding.js";
 export * from "./im-message.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
+export * from "./mcp-outbound-url.js";
 export * from "./runner-workspace.js";
 export {
   getRuntimeConfigurationOptions,

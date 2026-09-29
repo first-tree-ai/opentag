@@ -144,6 +144,14 @@ User-facing copy goes through Paraglide messages. English and Simplified Chinese
 and synchronized as described in `DEVELOPMENT.md`. UI review must include the locale most likely to stress the changed
 layout; do not assume English is always the longest representation.
 
+One deliberate exception: the MCP marketplace catalog carries its own copy. Category labels and card
+names and descriptions resolve from the catalog sources under `apps/web/src/features/mcp/catalog/`,
+localized inline for every supported locale, and the generator that compiles them fails the build
+when a locale is missing. Only the Discover surface's own chrome — the source label, the search
+field, the method labels, and the installed states — goes through Paraglide. Do not move the catalog's
+copy into the message catalog as if it were an omission; the exception and its reason are recorded in
+`mcp-server-integration.md`.
+
 Controls use concise action labels. Errors explain what happened and what the user can do next. Do not rely on color,
 placeholder text, an icon, or a tooltip as the only communication of essential information.
 

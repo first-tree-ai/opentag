@@ -1,6 +1,7 @@
 import {
   CreateMCPServerRequestSchema,
   type MCPAgentServer,
+  type MCPAuthKind,
   type MCPServer,
   MCPServerNameSchema,
   MCPServerUrlSchema,
@@ -8,26 +9,70 @@ import {
 import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
+import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "./catalog/mcp-catalog.gen.js";
+import { findAccountServer } from "./catalog/mcp-catalog-model.js";
+import { McpDiscoverSource } from "./catalog/mcp-discover-source.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorize-dialog.js";
 import { McpAuthFields, McpFooter } from "./mcp-form.js";
-import { actionError, authDraft, headersFromRows, headersKey, suggestServerName } from "./mcp-form-model.js";
+import {
+  type AuthDraft,
+  actionError,
+  authDraft,
+  defaultConnection,
+  headersFromRows,
+  headersKey,
+  suggestServerName,
+} from "./mcp-form-model.js";
 import { useAttachMcpServer, useCreateMcpServer, useMcpServers } from "./mcp-queries.js";
+
+/** Which source the picker opens on. The empty state lands on the catalog; the header lands on URL. */
+export type AddSource = "existing" | "discover";
+
+/**
+ * The draft a catalog entry prefills. Its auth header, scheme, and extra headers are configuration
+ * the entry declares; the kind stays a prefill for the new authorization.
+ */
+function catalogDraft(entry: McpCatalogEntry, kind: MCPAuthKind): AuthDraft {
+  return authDraft(
+    {
+      ...defaultConnection,
+      authHeader: entry.authHeader ?? defaultConnection.authHeader,
+      authScheme: entry.authScheme ?? defaultConnection.authScheme,
+      extraHeaders: entry.extraHeaders ?? {},
+    },
+    kind,
+  );
+}
+
+/** The create payload a catalog entry produces: the entry is the definition, nothing else invented. */
+function catalogCreateInput(entry: McpCatalogEntry) {
+  return CreateMCPServerRequestSchema.parse({
+    name: entry.name,
+    url: entry.url,
+    defaultAuthKind: entry.defaultAuthKind,
+    ...(entry.authHeader === undefined ? {} : { authHeader: entry.authHeader }),
+    ...(entry.authScheme === undefined ? {} : { authScheme: entry.authScheme }),
+    ...(entry.extraHeaders === undefined ? {} : { extraHeaders: entry.extraHeaders }),
+  });
+}
 
 type AddProps = {
   agentId: string;
   agentName: string;
   mounted: MCPAgentServer[];
+  initialSource?: AddSource;
   onClose: () => void;
   onAdded: (entry: MCPAgentServer) => void;
   onLocate: (id: string) => void;
 };
-function useAddServer({ agentId, onAdded }: AddProps) {
+function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
   const account = useMcpServers();
   const servers = account.data?.servers ?? [];
   const create = useCreateMcpServer(agentId);
   const attach = useAttachMcpServer(agentId);
   const authorize = useMcpAuthorization(agentId);
   const [step, setStep] = useState<"choose" | "configure">("choose");
+  const [source, setSource] = useState<AddSource>(initialSource ?? "existing");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<MCPServer>();
   const [url, setUrl] = useState("");
@@ -122,6 +167,59 @@ function useAddServer({ agentId, onAdded }: AddProps) {
       setBusy(false);
     }
   };
+  /**
+   * Add a catalog entry to this Agent.
+   *
+   * Anonymous and OAuth entries skip the configure step — everything is known — so the card is the
+   * whole interaction. A bearer entry genuinely needs a secret, so it opens the configure step with
+   * the entry's fields prefilled and stops there for the key.
+   */
+  /** Open the configure step with the entry's fields, so the user only supplies the key. */
+  const prefillCatalogBearer = (entry: McpCatalogEntry) => {
+    createdRef.current = undefined;
+    setCreated(undefined);
+    setSelected(undefined);
+    setName(entry.name);
+    nameEdited.current = true;
+    setUrl(entry.url);
+    setDraft(catalogDraft(entry, "bearer"));
+    setStep("configure");
+  };
+  /** The Account definition to add: the one already at this URL, or a new one from the entry. */
+  const resolveCatalogServer = async (entry: McpCatalogEntry) => {
+    const known = findAccountServer(entry, servers);
+    if (known) return known;
+    const server = await create.mutateAsync(catalogCreateInput(entry));
+    createdRef.current = server;
+    setCreated(server);
+    return server;
+  };
+  /**
+   * Add a catalog entry to this Agent.
+   *
+   * Anonymous and OAuth entries skip the configure step — everything is known — so the card is the
+   * whole interaction. A bearer entry genuinely needs a secret, so it stops for the key.
+   */
+  const addFromCatalog = async (entry: McpCatalogEntry) => {
+    if (inFlight.current) return;
+    setError(undefined);
+    if (entry.defaultAuthKind === "bearer") {
+      prefillCatalogBearer(entry);
+      return;
+    }
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      const binding = await ensureBinding(await resolveCatalogServer(entry));
+      await authorize(binding, catalogDraft(entry, entry.defaultAuthKind));
+      if (entry.defaultAuthKind !== "oauth") onAdded(binding);
+    } catch (cause) {
+      setError(actionError(cause, failureMessage()));
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
   const submitLabel = attached
     ? draft.kind === "oauth"
       ? m.mcp_authorize_submit()
@@ -134,6 +232,9 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     servers,
     step,
     back,
+    source,
+    setSource,
+    addFromCatalog,
     query,
     setQuery,
     selected,
@@ -179,9 +280,32 @@ export function McpAddDialog(props: AddProps) {
     </Dialog>
   );
 }
+/** The picker's two sources: the marketplace catalog, and the Account pool or a pasted URL. */
+function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (source: AddSource) => void }) {
+  const choices: { source: AddSource; label: string }[] = [
+    { source: "discover", label: m.mcp_source_discover() },
+    { source: "existing", label: m.mcp_add_existing() },
+  ];
+  return (
+    <fieldset className="mb-4 flex flex-wrap gap-1 border-0 p-0">
+      <legend className="sr-only">{m.mcp_source_label()}</legend>
+      {choices.map((choice) => (
+        <Button
+          key={choice.source}
+          aria-pressed={value === choice.source}
+          size="compact"
+          variant={value === choice.source ? "secondary" : "ghost"}
+          onClick={() => onChange(choice.source)}
+        >
+          {choice.label}
+        </Button>
+      ))}
+    </fieldset>
+  );
+}
 function AddPicker(props: AddProps & { state: AddState }) {
   const { state, onClose } = props;
-  const { account, filtered, urlLike, servers, query, continueUrl, error } = state;
+  const { account, filtered, urlLike, servers, query, continueUrl, error, source, setSource } = state;
   const loaded = !account.isPending && !account.isError;
   const canContinue = loaded && ((!filtered.length && urlLike) || !servers.length);
   return (
@@ -195,14 +319,30 @@ function AddPicker(props: AddProps & { state: AddState }) {
           </Button>
         </div>
       ) : null}
-      {loaded ? <AddChoices {...props} /> : null}
+      {loaded ? (
+        <>
+          <AddSourceSwitch value={source} onChange={setSource} />
+          {source === "discover" ? (
+            <McpDiscoverSource
+              categories={MCP_CATALOG_CATEGORIES}
+              entries={MCP_CATALOG_ENTRIES}
+              servers={servers}
+              mounted={props.mounted}
+              busy={state.busy}
+              onAdd={(entry) => void state.addFromCatalog(entry)}
+            />
+          ) : (
+            <AddChoices {...props} />
+          )}
+        </>
+      ) : null}
       {error ? (
         <p role="alert" className="mt-3 text-sm text-kumo-danger">
           {error}
         </p>
       ) : null}
-      <McpFooter onClose={onClose}>
-        {canContinue ? (
+      <McpFooter onClose={onClose} busy={state.busy}>
+        {source === "existing" && canContinue ? (
           <Button disabled={!query.trim()} onClick={continueUrl}>
             {m.mcp_continue()}
           </Button>

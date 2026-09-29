@@ -10,7 +10,7 @@ import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, Empty, Icon, Loader } from "../../ui/design-system.js";
 import { readImBinding } from "../agents/agent-queries.js";
 import { agentSettingsSectionLink } from "../agents/agent-routes.js";
-import { McpAddDialog } from "./mcp-add-dialog.js";
+import { type AddSource, McpAddDialog } from "./mcp-add-dialog.js";
 import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
 import { actionError } from "./mcp-form-model.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
@@ -20,7 +20,7 @@ import { McpConfirmDialog, McpDetailsDialog } from "./mcp-server-dialogs.js";
 import { McpSettingsDialog } from "./mcp-settings-dialog.js";
 import { McpToolsDialog } from "./mcp-tools-dialog.js";
 
-type Panel = { kind: "none" | "add" } | { kind: ServerAction; entry: MCPAgentServer };
+type Panel = { kind: "none" } | { kind: "add"; source?: AddSource } | { kind: ServerAction; entry: MCPAgentServer };
 /** One Agent's connections; runtime access remains determined by the server's actual authorization. */
 export function McpPage({ agentId }: { agentId: string }) {
   const identity = useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) });
@@ -104,7 +104,7 @@ export function McpPage({ agentId }: { agentId: string }) {
           description={m.mcp_empty()}
           icon={<Icon name="integrations" />}
           contents={
-            <Button variant="secondary" onClick={() => setPanel({ kind: "add" })}>
+            <Button variant="secondary" onClick={() => setPanel({ kind: "add", source: "discover" })}>
               <Icon name="plus" />
               {m.mcp_create_action()}
             </Button>
@@ -193,6 +193,7 @@ function McpPanel({
         agentId={agentId}
         agentName={agentName}
         mounted={servers}
+        initialSource={panel.source}
         onClose={onClose}
         onAdded={(entry) => onCompleted(entry, false)}
         onLocate={onLocate}

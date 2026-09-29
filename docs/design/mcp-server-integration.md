@@ -902,6 +902,68 @@ edit, and remove.
 The "new Server" wizard asks for the definition first and the authorization method second, so
 `default_auth_kind` is never presented as a statement about the Server.
 
+## The marketplace catalog
+
+An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
+an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
+that an Agent can add in one action, from the add flow's Discover source and from its empty state.
+
+The catalog is committed repository data, not a service:
+
+| Source | Holds |
+| --- | --- |
+| `apps/web/src/features/mcp/catalog/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
+| `apps/web/src/features/mcp/catalog/mcp-catalog.yaml` | the entries: slug, localized title and description, URL, default authorization kind, category, provider site, icon, order, and optional bearer header configuration |
+
+`scripts/generate-mcp-catalog.mjs` compiles both into
+`apps/web/src/features/mcp/catalog/mcp-catalog.gen.ts`, mirroring `generate-web-theme.mjs`: run
+`pnpm catalog:generate` to write it, and `pnpm check` runs the same script with `--check` to reject
+drift. It runs under `tsx` because it reads the shared runtime schemas from source — `pnpm check` runs
+before `pnpm build`, so `packages/shared/dist` does not exist yet.
+
+Adding from a card is a prefill of the chain this page already documents, not a new API. The entry's
+URL is matched against the Account's definitions, and an existing definition is mounted rather than
+duplicated; otherwise the entry itself is the create payload. `default_auth_kind` remains a prefill
+for the new authorization, never a statement about the Server. Anonymous and OAuth entries complete
+from the card, with OAuth navigating to the authorization server; a bearer entry stops to collect the
+key.
+
+The generator refuses, at build time, at minimum:
+
+- an entry URL the outbound policy would refuse;
+- a create payload the Server would reject — the entry is validated by `CreateMCPServerRequestSchema`
+  itself, so its name, auth header and scheme, and extra headers follow the same rules the Server
+  enforces;
+- an entry that names a category the category source does not declare;
+- a declared category that no entry references, so the tab bar never shows a tab that leads nowhere;
+- a duplicate entry or category id;
+- a localized field that omits any supported locale, taken from the i18n project settings;
+- an entry whose referenced icon file does not exist;
+- a compiled module that does not match its sources.
+
+Only remote Streamable HTTP Servers may be listed: OpenTag is a hosted service and cannot run a user's
+local stdio subprocess.
+
+**Staleness is not asserted by `pnpm check`.** Whether a listed endpoint still answers, and whether its
+authorization method is still what the catalog says, cannot be decided without the public network, and
+unit tests must not depend on it. That review belongs to the integration/live-smoke path or a manual
+pass; the catalog author confirms each entry's method.
+
+The pure outbound URL rules the catalog is validated against live in
+`packages/shared/src/mcp-outbound-url.ts`, so this build-time check and the Server's gate cannot
+drift: `packages/server/src/services/mcp/mcp-url-policy.ts` maps the shared verdict onto
+`McpServiceError`, and the condition that a hostname *resolves* to a private address remains a
+request-time decision in the Server's fetcher.
+
+### Copy ownership in the catalog
+
+The catalog's copy is data-driven: category labels and card text are localized inline in the catalog
+sources, and the generator requires every locale, so a card never falls back silently. That is a
+deliberate exception to the rule that user-facing copy goes through Paraglide. The Discover surface's
+own chrome — the source label, the search field, the method labels, and the installed states — stays
+in `messages/mcp/{en,zh}.json`. `web-ui-contract.md` records the same exception from the web side, so
+the catalog's copy is not "fixed" into the message catalog as an apparent omission.
+
 ## Verification
 
 Unit tests (no network, no database):

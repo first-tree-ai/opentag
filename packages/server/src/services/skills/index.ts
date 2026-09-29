@@ -19,6 +19,11 @@ export {
   skillNameReserved,
   skillNotFound,
   skillRevisionConflict,
+  skillSourceBlocked,
+  skillSourceInvalid,
+  skillSourceNoSkills,
+  skillSourceTooLarge,
+  skillSourceUnreachable,
   skillStorageFailure,
   skillStorageUnavailable,
 } from "./errors.js";
@@ -27,8 +32,10 @@ export {
   type S3SkillObjectStoreConfig,
   type S3SkillObjectStoreOptions,
 } from "./s3-skill-object-store.js";
-export { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-archive.js";
+export { type NormalizedSkillArchive, normalizeSkillArchive, normalizeSkillEntries } from "./skill-archive.js";
 export {
+  assertSkillEntries,
+  assertSkillEntryPaths,
   DEFAULT_MAX_TAR_STREAM_BYTES,
   isIgnoredSkillPath,
   normalizeMemberPath,
@@ -37,6 +44,7 @@ export {
   readSkillEntries,
   resolveSkillReadLimits,
   type SkillReadLimits,
+  tarStreamCeilingFor,
 } from "./skill-archive-reader.js";
 export {
   SKILL_GC_DEFAULT_GRACE_MS,

@@ -102,6 +102,13 @@ describe("skill resource schemas", () => {
     expect(parsed.source).toBe("web_upload");
   });
 
+  it("accepts every documented source and rejects an unknown one", () => {
+    for (const source of ["web_upload", "cli_upload", "agent_upload", "url_install"]) {
+      expect(SkillSchema.parse(validSkill({ source })).source).toBe(source);
+    }
+    expect(SkillSchema.safeParse(validSkill({ source: "elsewhere" })).success).toBe(false);
+  });
+
   it("rejects a bad sha, revision 0, and an over-limit archive", () => {
     expect(SkillSchema.safeParse(validSkill({ archiveSha256: "XYZ" })).success).toBe(false);
     expect(SkillSchema.safeParse(validSkill({ archiveSha256: "A".repeat(64) })).success).toBe(false);
@@ -167,6 +174,20 @@ describe("skill error codes", () => {
     const category = SKILL_ERROR_CODE_METADATA[code].category;
     const envelope = { error: { code, category, message: "The Skill changed concurrently; reload and retry" } };
     expect(ErrorEnvelopeSchema.parse(envelope)).toEqual(envelope);
+  });
+
+  it("round-trips a source failure through the error envelope", () => {
+    for (const code of [
+      SKILL_ERROR_CODES.SOURCE_INVALID,
+      SKILL_ERROR_CODES.SOURCE_UNREACHABLE,
+      SKILL_ERROR_CODES.SOURCE_BLOCKED,
+      SKILL_ERROR_CODES.SOURCE_TOO_LARGE,
+      SKILL_ERROR_CODES.SOURCE_NO_SKILLS,
+    ]) {
+      const category = SKILL_ERROR_CODE_METADATA[code].category;
+      const envelope = { error: { code, category, message: "The source could not be read" } };
+      expect(ErrorEnvelopeSchema.parse(envelope)).toEqual(envelope);
+    }
   });
 });
 

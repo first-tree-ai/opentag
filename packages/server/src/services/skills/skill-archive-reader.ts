@@ -51,11 +51,26 @@ export interface ResolvedSkillReadLimits {
 
 export const DEFAULT_MAX_TAR_STREAM_BYTES = SKILL_UNPACKED_MAX_BYTES + (SKILL_MAX_ENTRIES + 2) * 512 * 2;
 
+/**
+ * The decompressed-stream ceiling for a given payload ceiling: the payload plus the bounded framing
+ * a tar member adds (two 512-byte blocks each, with one spare).
+ *
+ * Derived rather than fixed, because a caller that lowers `maxUnpackedBytes` — a downloaded artifact
+ * is capped at 25 MiB, not the archive default's 64 — must lower the stream ceiling with it.
+ * Otherwise the guard would still admit a compressed bomb that inflates to the general limit, and
+ * the caller's own ceiling would never be reached: directory and ignored members are consumed as the
+ * stream passes, well before their declared sizes count toward the payload total.
+ */
+export function tarStreamCeilingFor(maxUnpackedBytes: number): number {
+  return maxUnpackedBytes + (SKILL_MAX_ENTRIES + 2) * 512 * 2;
+}
+
 export function resolveSkillReadLimits(limits?: SkillReadLimits): ResolvedSkillReadLimits {
+  const maxUnpackedBytes = limits?.maxUnpackedBytes ?? SKILL_UNPACKED_MAX_BYTES;
   const resolved: ResolvedSkillReadLimits = {
     maxArchiveBytes: limits?.maxArchiveBytes ?? SKILL_ARCHIVE_MAX_BYTES,
-    maxUnpackedBytes: limits?.maxUnpackedBytes ?? SKILL_UNPACKED_MAX_BYTES,
-    maxTarStreamBytes: limits?.maxTarStreamBytes ?? DEFAULT_MAX_TAR_STREAM_BYTES,
+    maxUnpackedBytes,
+    maxTarStreamBytes: limits?.maxTarStreamBytes ?? tarStreamCeilingFor(maxUnpackedBytes),
   };
   for (const [label, value] of Object.entries(resolved)) {
     if (!Number.isInteger(value) || value <= 0) {
@@ -96,6 +111,50 @@ export function normalizeMemberPath(rawName: string): string {
 export function isIgnoredSkillPath(path: string): boolean {
   if (path === "__MACOSX" || path.startsWith("__MACOSX/")) return true;
   return path === ".DS_Store" || path.endsWith("/.DS_Store");
+}
+
+/**
+ * The member rules a Skill archive obeys, applied to entries that did not come from one.
+ *
+ * A repository listing and a well-known directory are the other two ways a Skill can arrive, and
+ * their paths are not automatically archive-safe: git permits a backslash, a leading dot, or a name
+ * the macOS metadata rules say to drop. Without this pass an install could store a Skill the Client's
+ * extractor later refuses (`unsafe_member`), reporting success for something the runtime can never
+ * materialize. The rules are the reader's own — `normalizeMemberPath` for safety and the UTF-8 byte
+ * bound, `isIgnoredSkillPath` for metadata, a duplicate check, and the entry-count and unpacked-byte
+ * ceilings — so the archive path and the source path agree by construction.
+ */
+export function assertSkillEntries(entries: readonly RawSkillEntry[], limits?: SkillReadLimits): RawSkillEntry[] {
+  const resolved = resolveSkillReadLimits(limits);
+  const seen = new Set<string>();
+  const kept: RawSkillEntry[] = [];
+  let total = 0;
+  for (const entry of entries) {
+    const path = normalizeMemberPath(entry.path);
+    if (isIgnoredSkillPath(path)) continue;
+    if (seen.has(path)) throw skillArchiveInvalid(`Skill archive member is duplicated: ${path}`);
+    seen.add(path);
+    if (kept.length >= SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
+    total += entry.body.byteLength;
+    if (total > resolved.maxUnpackedBytes) throw skillArchiveTooLarge();
+    kept.push({ path, body: entry.body, mode: entry.mode });
+  }
+  return kept;
+}
+
+/**
+ * The same rules for a path listing alone, so a preview can reject an unusable candidate without
+ * reading any file body. Bodies are what the byte ceiling needs, and the preview does not have them.
+ */
+export function assertSkillEntryPaths(paths: readonly string[]): void {
+  const seen = new Set<string>();
+  for (const raw of paths) {
+    const path = normalizeMemberPath(raw);
+    if (isIgnoredSkillPath(path)) continue;
+    if (seen.has(path)) throw skillArchiveInvalid(`Skill archive member is duplicated: ${path}`);
+    seen.add(path);
+    if (seen.size > SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
+  }
 }
 
 function assertTarEntryType(header: TarHeaders): void {

@@ -70,3 +70,31 @@ export function skillStorageUnavailable(): SkillServiceError {
 export function skillStorageFailure(): SkillServiceError {
   return new SkillServiceError(SKILL_ERROR_CODES.STORAGE_UNAVAILABLE, "Skill storage is unavailable");
 }
+
+/*
+ * Remote source failures. Messages are written for a person who pasted a URL: they say what about
+ * the source could not be used and never echo a resolved address, a credential, a temporary path, or
+ * an upstream response body.
+ */
+
+export function skillSourceInvalid(message = "That source could not be understood"): SkillServiceError {
+  return new SkillServiceError(SKILL_ERROR_CODES.SOURCE_INVALID, message);
+}
+
+export function skillSourceBlocked(message = "That source is not reachable from this deployment"): SkillServiceError {
+  return new SkillServiceError(SKILL_ERROR_CODES.SOURCE_BLOCKED, message);
+}
+
+export function skillSourceUnreachable(message = "That source could not be reached"): SkillServiceError {
+  return new SkillServiceError(SKILL_ERROR_CODES.SOURCE_UNREACHABLE, message);
+}
+
+export function skillSourceTooLarge(
+  message = "That source is larger than this deployment will read",
+): SkillServiceError {
+  return new SkillServiceError(SKILL_ERROR_CODES.SOURCE_TOO_LARGE, message);
+}
+
+export function skillSourceNoSkills(message = "No Skills were found at that source"): SkillServiceError {
+  return new SkillServiceError(SKILL_ERROR_CODES.SOURCE_NO_SKILLS, message);
+}

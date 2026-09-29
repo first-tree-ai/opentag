@@ -54,6 +54,8 @@ import {
   agentSetupRefreshPath,
   agentSkillBundlePath,
   agentSkillPath,
+  agentSkillsInstallPath,
+  agentSkillsInstallResolvePath,
   agentSkillsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
@@ -103,6 +105,8 @@ import {
   type ImBindingSummary,
   ImBindingSummarySchema,
   type ImBindingUnbindRequiredDetail,
+  type InstallRemoteSkillsResponse,
+  InstallRemoteSkillsResponseSchema,
   type InternalNavigationVisibility,
   InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
@@ -139,6 +143,9 @@ import {
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
   type RebindAgentComputerRequest,
+  type RemoteSkillSelection,
+  type ResolveRemoteSkillsResponse,
+  ResolveRemoteSkillsResponseSchema,
   type SetMCPAuthorizationRequest,
   SKILL_FORMAT_HEADER,
   SKILL_REPLACE_HEADER,
@@ -841,6 +848,30 @@ export class BrowserApi {
   /** The same-origin bundle download path, built from the shared template rather than a string. */
   agentSkillBundleUrl(agentId: string, skillId: string): string {
     return agentSkillBundlePath(agentId, skillId);
+  }
+
+  /*
+   * Remote installation. A preview reads the pasted source and writes nothing, so it can never be
+   * the reason an Agent's Skills changed; the install names what to bring in and never carries file
+   * content, because the Server reads the source itself.
+   */
+  resolveRemoteSkills(agentId: string, source: string): Promise<ResolveRemoteSkillsResponse> {
+    return this.request(agentSkillsInstallResolvePath(agentId), ResolveRemoteSkillsResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ source }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  installRemoteSkills(
+    agentId: string,
+    input: { source: string; selections: RemoteSkillSelection[] },
+  ): Promise<InstallRemoteSkillsResponse> {
+    return this.request(agentSkillsInstallPath(agentId), InstallRemoteSkillsResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   /**

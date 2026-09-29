@@ -1,11 +1,17 @@
-import type { ListAgentSkillsResponse, Skill, SkillDetail } from "@opentag/shared/browser";
+import { type ListAgentSkillsResponse, SKILL_ERROR_CODES, type Skill, type SkillDetail } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { browserApi } from "../../api.js";
+import { ApiError, browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
-import { useRemoveSkill, useUpdateSkill, useUploadSkill } from "./skills-queries.js";
+import {
+  useInstallRemoteSkills,
+  useRemoveSkill,
+  useResolveRemoteSkills,
+  useUpdateSkill,
+  useUploadSkill,
+} from "./skills-queries.js";
 
 /**
  * The write hooks take the Agent id as a call argument, not as a hook argument.
@@ -179,5 +185,78 @@ describe("skill mutation invalidation", () => {
     // state is unknown and inventing one would claim something the page never read.
     expect(client.getQueryData(queryKeys.skills.skill(AGENT_ID, SKILL_ID))).toBeDefined();
     await waitFor(() => expect(cachedList(client)).toBeUndefined());
+  });
+});
+
+describe("remote installation hooks", () => {
+  it("installs through the Agent named in the call and invalidates that Agent's list", async () => {
+    vi.spyOn(browserApi, "installRemoteSkills").mockResolvedValue({
+      results: [{ name: "demo", status: "installed" }],
+    });
+    const { invalidate, wrapper } = setup({ skills: [listSkill("existing", SKILL_ID)], storage: "available" });
+    const { result } = renderHook(() => useInstallRemoteSkills(), { wrapper });
+
+    const selections = [
+      { name: "demo", fingerprint: `sha256:${"a".repeat(64)}` },
+      { name: "other", fingerprint: `sha256:${"b".repeat(64)}` },
+    ];
+    await result.current.mutateAsync({ agentId: OTHER_AGENT_ID, source: "owner/repo", selections });
+
+    expect(browserApi.installRemoteSkills).toHaveBeenCalledWith(OTHER_AGENT_ID, {
+      source: "owner/repo",
+      selections,
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.skills.agentSkills(OTHER_AGENT_ID) });
+  });
+
+  it("writes nothing to the cache and invalidates nothing when an install fails", async () => {
+    vi.spyOn(browserApi, "installRemoteSkills").mockRejectedValue(
+      new ApiError(502, "unreachable", SKILL_ERROR_CODES.SOURCE_UNREACHABLE),
+    );
+    const list = { skills: [listSkill("existing", SKILL_ID)], storage: "available" as const };
+    const { client, invalidate, wrapper } = setup(list);
+    const { result } = renderHook(() => useInstallRemoteSkills(), { wrapper });
+
+    await expect(
+      result.current
+        .mutateAsync({
+          agentId: AGENT_ID,
+          source: "owner/repo",
+          selections: [{ name: "demo", fingerprint: `sha256:${"a".repeat(64)}` }],
+        })
+        .then(undefined, (error: unknown) => {
+          throw error;
+        }),
+    ).rejects.toMatchObject({ code: SKILL_ERROR_CODES.SOURCE_UNREACHABLE });
+
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(cachedList(client)).toEqual(list);
+  });
+
+  it("keeps a preview out of the cache entirely", async () => {
+    const resolve = vi.spyOn(browserApi, "resolveRemoteSkills").mockResolvedValue({
+      source: { kind: "github", url: "https://github.com/o/r.git" },
+      skills: [
+        {
+          name: "demo",
+          description: "A demo",
+          path: "skills/demo",
+          fileCount: 1,
+          alreadyInstalled: false,
+          fingerprint: `sha256:${"e".repeat(64)}`,
+        },
+      ],
+    });
+    const list = { skills: [listSkill("existing", SKILL_ID)], storage: "available" as const };
+    const { client, invalidate, wrapper } = setup(list);
+    const { result } = renderHook(() => useResolveRemoteSkills(), { wrapper });
+
+    const preview = await result.current.mutateAsync({ agentId: AGENT_ID, source: "owner/repo" });
+
+    expect(resolve).toHaveBeenCalledWith(AGENT_ID, "owner/repo");
+    expect(preview.skills.map((candidate) => candidate.name)).toEqual(["demo"]);
+    // A preview writes nothing: no list write, no detail write, no invalidation.
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(cachedList(client)).toEqual(list);
   });
 });

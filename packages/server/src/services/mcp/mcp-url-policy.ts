@@ -1,5 +1,5 @@
-import { lookup } from "node:dns/promises";
-import { checkOutboundUrl, isBlockedAddress, isIpLiteral, isLoopbackHostname, MCP_ERROR_CODES } from "@opentag/shared";
+import { checkOutboundUrl, isLoopbackHostname, MCP_ERROR_CODES } from "@opentag/shared";
+import { classifyOutboundDestination, resolveAllAddresses } from "../outbound/destination-policy.js";
 import { McpServiceError } from "./errors.js";
 
 /**
@@ -31,11 +31,6 @@ import { McpServiceError } from "./errors.js";
  * name with one public and one private address must be refused, and checking only the first would
  * admit it whenever the public record came back first.
  */
-async function resolveAllAddresses(hostname: string): Promise<string[]> {
-  const records = await lookup(hostname, { all: true, verbatim: true });
-  return records.map((record) => record.address);
-}
-
 /** The request never follows a redirect: a 3xx is a refusal, and its `Location` is never read. */
 const REDIRECT_MODE = "manual" as const;
 
@@ -204,32 +199,21 @@ export class McpOutboundFetcher {
    * `connect.lookup`. Add it when a deployment faces a hostile resolver rather than a hostile Server.
    */
   async #assertPublicDestination(url: URL): Promise<void> {
-    const bare = url.hostname.replace(/^\[|\]$/g, "");
-    // A literal was already judged by `assertOutboundUrl`, and a loopback literal only got here
-    // because the deployment opted into loopback.
-    if (isIpLiteral(bare)) return;
-    if (isLoopbackHostname(bare)) return;
-    let addresses: string[];
-    try {
-      addresses = await this.#resolveAddresses(bare);
-    } catch (error) {
-      // A name that does not resolve is an unreachable endpoint, not a blocked one: the caller's
-      // URL is fine, the peer is missing. Reported as such so the UI says "could not be reached".
+    /*
+     * The resolution rules are shared with the Skill source transport, so there is one answer to
+     * "does this name point somewhere private". This method only renders that answer in MCP's own
+     * vocabulary; the verdict's pin is deliberately unused here, which is the rebinding gap the note
+     * above describes.
+     */
+    const verdict = await classifyOutboundDestination(url, this.#resolveAddresses);
+    if (verdict.ok) return;
+    if (verdict.failure.kind === "unreachable") {
       throw new McpServiceError(MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, "The MCP endpoint could not be reached", {
-        cause: error instanceof Error ? error.name : typeof error,
-        host: bare,
+        ...(verdict.failure.cause === undefined ? {} : { cause: verdict.failure.cause }),
+        host: verdict.failure.host,
       });
     }
-    if (addresses.length === 0) {
-      throw new McpServiceError(MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, "The MCP endpoint could not be reached", {
-        host: bare,
-      });
-    }
-    for (const address of addresses) {
-      if (isBlockedAddress(address)) {
-        throw blocked("The outbound URL resolves to a non-public address", { host: bare });
-      }
-    }
+    throw blocked("The outbound URL resolves to a non-public address", { host: verdict.failure.host });
   }
 
   async #perform(url: URL, init: McpFetchInit): Promise<McpFetchResponse> {

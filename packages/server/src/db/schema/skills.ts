@@ -29,7 +29,7 @@ import { agents } from "./agents.js";
  * truncated to `SKILL_MAX_LISTED_FILES`, which `files_truncated` records.
  */
 
-export const skillSource = pgEnum("skill_source", ["web_upload", "cli_upload", "agent_upload"]);
+export const skillSource = pgEnum("skill_source", ["web_upload", "cli_upload", "agent_upload", "url_install"]);
 
 /**
  * The name format is the shared `SkillNameSchema` spelled for PostgreSQL: lowercase alphanumerics

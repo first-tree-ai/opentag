@@ -4,6 +4,7 @@ import { ApiError, browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Empty, Icon, Loader, Text } from "../../ui/design-system.js";
+import { InstallSkillDialog } from "./install-skill-dialog.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
 import { SkillRow } from "./skill-row.js";
 import {
@@ -57,6 +58,12 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const [uploadingName, setUploadingName] = useState<string | undefined>();
   const [pendingReplace, setPendingReplace] = useState<PendingReplace | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<Skill | undefined>();
+  /*
+   * Remote installation lives in this body too, so a pending dialog cannot survive an Agent change:
+   * the body is keyed by Agent and remounts, and the install mutation carries the Agent it was
+   * started for rather than reading "whichever Agent is mounted now".
+   */
+  const [installOpen, setInstallOpen] = useState(false);
 
   /*
    * Three states, not two. Storage is only "available" once a successful list says so; before that it
@@ -70,6 +77,11 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const openFilePicker = () => {
     setActionError(undefined);
     fileInputRef.current?.click();
+  };
+
+  const openInstaller = () => {
+    setActionError(undefined);
+    setInstallOpen(true);
   };
 
   /*
@@ -154,6 +166,13 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
     }
   };
 
+  const installAction = (
+    <Button aria-label={m.skills_install()} disabled={!storageAvailable} onClick={openInstaller} variant="secondary">
+      <Icon name="plus" />
+      {m.skills_install()}
+    </Button>
+  );
+
   const uploadAction = (
     <Button
       aria-label={m.skills_upload()}
@@ -188,6 +207,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           }}
           ref={fileInputRef}
         />
+        {installAction}
         {uploadAction}
       </PageHeader>
 
@@ -224,6 +244,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
         />
       ) : null}
       {deleteTarget ? <RemoveSkillDialog onClose={() => setDeleteTarget(undefined)} skill={deleteTarget} /> : null}
+      {installOpen ? <InstallSkillDialog agentId={agentId} onClose={() => setInstallOpen(false)} /> : null}
     </section>
   );
 }

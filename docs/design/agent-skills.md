@@ -263,6 +263,23 @@ Sync completes the loop by removing marked directories that are absent from the 
 Skill that was disabled or deleted. Ownership stays one-way: the platform is the source of truth for
 every directory it manages.
 
+## Installing from a remote source
+
+A Skill no longer has to be built locally and uploaded. An operator can paste a public address from
+the open skills ecosystem into an Agent's Skills page, preview what it publishes, and install a
+selection; the result is an ordinary Skill with `source = url_install`. The whole feature — accepted
+source forms, discovery rules, the outbound policy, and the per-item install semantics — is specified
+in `docs/design/skill-remote-install.md`; what matters here is that it adds no new storage, no new
+row shape, and no new runtime behaviour. Installation goes through `SkillService.upload`, so the
+archive contract and the per-Agent ownership rules above apply unchanged, and a name conflict is
+skipped rather than replaced.
+
+Two Account-scoped routes carry it, both outside the upload transport's octet-stream scope:
+`POST /api/v1/agents/:agentId/skills/install/resolve` reads a source and returns its candidates, and
+`POST /api/v1/agents/:agentId/skills/install` installs the selected names. So the "exactly three
+surfaces" above still holds — those are the three authentication planes — and this adds resources to
+the Account one rather than a fourth plane.
+
 ## Cloud sandboxes
 
 **v1 covers Local Computers only.** Cloud sandboxes run Pi through a separate runner composition and

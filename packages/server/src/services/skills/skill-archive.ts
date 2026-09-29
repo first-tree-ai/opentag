@@ -13,6 +13,7 @@ import { gzipSync } from "fflate";
 import { type Pack, type Headers as TarHeaders, pack as tarPack } from "tar-stream";
 import { skillArchiveTooLarge, skillManifestInvalid, skillNameReserved } from "./errors.js";
 import {
+  assertSkillEntries,
   type RawSkillEntry,
   readSkillEntries,
   resolveSkillReadLimits,
@@ -124,21 +125,29 @@ async function packDeterministic(entries: RawSkillEntry[]): Promise<Uint8Array> 
   return gzipSync(new Uint8Array(Buffer.concat(chunks)), { level: 6, mtime: 0 });
 }
 
-export async function normalizeSkillArchive(
-  bytes: Uint8Array,
-  format: SkillArchiveFormat,
+/**
+ * The stored artifact of one Skill, built from entries that have already been validated.
+ *
+ * This is the half of `normalizeSkillArchive` that does not care where the entries came from: every
+ * transport — an uploaded archive, a repository file listing, a downloaded artifact — reduces to
+ * entries and then to the same canonical bytes. Keeping it separate is what stops the remote-install
+ * feature from growing a second, subtly different packer.
+ */
+export async function normalizeSkillEntries(
+  rawEntries: readonly RawSkillEntry[],
   limits?: SkillReadLimits,
 ): Promise<NormalizedSkillArchive> {
   const resolved = resolveSkillReadLimits(limits);
-  if (bytes.byteLength === 0 || bytes.byteLength > resolved.maxArchiveBytes) throw skillArchiveTooLarge();
-  const entries = stripSingleRoot(await readSkillEntries(bytes, format, resolved));
+  // The canonical member rules run here, not only in the archive reader: a repository listing or a
+  // well-known directory reaches this function without having passed through one.
+  const entries = stripSingleRoot(assertSkillEntries(rawEntries, limits));
   if (entries.length === 0) throw skillManifestInvalid("The Skill archive carries no files");
   const manifest = requireManifest(entries);
   const { files, filesTruncated } = toFileList(entries);
   const archive = await packDeterministic(entries);
-  // The input guard bounds the upload, not the re-packed output: ZIP and tar framing/compression
-  // overheads differ, so the canonical archive can grow past the limit the input respected. Reject
-  // it here, with the typed error, before any storage or database write.
+  // The input guard bounds the input, not the re-packed output: ZIP and tar framing/compression
+  // overheads differ, and a file listing has no input guard at all, so the canonical size is checked
+  // here — before any storage or database write.
   if (archive.byteLength > resolved.maxArchiveBytes) throw skillArchiveTooLarge();
   return {
     manifest,
@@ -148,4 +157,14 @@ export async function normalizeSkillArchive(
     archive,
     sha256: createHash("sha256").update(archive).digest("hex"),
   };
+}
+
+export async function normalizeSkillArchive(
+  bytes: Uint8Array,
+  format: SkillArchiveFormat,
+  limits?: SkillReadLimits,
+): Promise<NormalizedSkillArchive> {
+  const resolved = resolveSkillReadLimits(limits);
+  if (bytes.byteLength === 0 || bytes.byteLength > resolved.maxArchiveBytes) throw skillArchiveTooLarge();
+  return normalizeSkillEntries(await readSkillEntries(bytes, format, resolved), limits);
 }

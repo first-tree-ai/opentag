@@ -29,6 +29,8 @@ import {
   AGENT_MCP_SERVERS_TEMPLATE,
   AGENT_SKILL_BUNDLE_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
+  AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
+  AGENT_SKILLS_INSTALL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   API_V1_PREFIX,
   accountAgentCreationIntentPath,
@@ -58,6 +60,8 @@ import {
   agentSetupRefreshPath,
   agentSkillBundlePath,
   agentSkillPath,
+  agentSkillsInstallPath,
+  agentSkillsInstallResolvePath,
   agentSkillsPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
@@ -310,6 +314,13 @@ describe("http paths", () => {
       expect(agentSkillBundlePath(agentId, skillId)).toBe(`${skills}/${skillId}/bundle`);
     });
 
+    it("nests the remote-install paths under the agent's skills", () => {
+      const agentId = AGENT_ID;
+      expect(agentSkillsInstallPath(agentId)).toBe(`/api/v1/agents/${agentId}/skills/install`);
+      expect(agentSkillsInstallResolvePath(agentId)).toBe(`/api/v1/agents/${agentId}/skills/install/resolve`);
+      expect(agentSkillsInstallPath("a/b c")).toBe("/api/v1/agents/a%2Fb%20c/skills/install");
+    });
+
     it("nests the computer-scoped skill paths under the computer plane", () => {
       const agentId = AGENT_ID;
       const skills = `/api/v1/computer/agents/${agentId}/skills`;
@@ -382,6 +393,8 @@ describe("http paths", () => {
       expect(render(AGENT_SKILL_BUNDLE_TEMPLATE, { agentId, skillId: OTHER_ID })).toBe(
         agentSkillBundlePath(agentId, OTHER_ID),
       );
+      expect(render(AGENT_SKILLS_INSTALL_TEMPLATE, { agentId })).toBe(agentSkillsInstallPath(agentId));
+      expect(render(AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE, { agentId })).toBe(agentSkillsInstallResolvePath(agentId));
       expect(render(COMPUTER_AGENT_SKILLS_TEMPLATE, { agentId })).toBe(computerAgentSkillsPath(agentId));
       expect(render(COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE, { agentId, skillId: OTHER_ID })).toBe(
         computerAgentSkillBundlePath(agentId, OTHER_ID),

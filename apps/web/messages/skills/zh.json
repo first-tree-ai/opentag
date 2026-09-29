@@ -20,6 +20,11 @@
   "skills_error_name_reserved": "该技能名称已被平台保留。请在 SKILL.md 中改名后重试。",
   "skills_error_not_found": "该技能已不存在。请刷新后重试。",
   "skills_error_revision_conflict": "该技能在你操作期间发生了变化。请刷新后重试。",
+  "skills_error_source_blocked": "该来源无法从此部署访问。",
+  "skills_error_source_invalid": "无法识别该来源。请粘贴仓库地址或 skills.sh 链接。",
+  "skills_error_source_no_skills": "该来源未提供任何技能。",
+  "skills_error_source_too_large": "该来源超出可读取的大小上限。",
+  "skills_error_source_unreachable": "无法访问该来源。",
   "skills_error_storage_unavailable": "此部署未提供技能存储。",
   "skills_file_count": [
     {
@@ -31,6 +36,37 @@
       }
     }
   ],
+  "skills_install": "从 URL 安装",
+  "skills_install_already": "已安装——将被跳过",
+  "skills_install_candidates_aria": "该来源中的技能",
+  "skills_install_clear": "清除选择",
+  "skills_install_confirm": "安装所选",
+  "skills_install_description": "粘贴仓库地址或 skills.sh 链接。在你确认之前不会安装任何内容。",
+  "skills_install_empty": "该来源未提供任何技能。",
+  "skills_install_fetch": "获取列表",
+  "skills_install_fetching": "正在获取…",
+  "skills_install_found": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} 个技能",
+        "countPlural=other": "{count} 个技能"
+      }
+    }
+  ],
+  "skills_install_installing": "正在安装…",
+  "skills_install_result_installed": "已安装",
+  "skills_install_result_skipped": "已跳过——已存在同名技能",
+  "skills_install_results_aria": "安装结果",
+  "skills_install_select_all": "全选",
+  "skills_install_source_label": "来源",
+  "skills_install_source_placeholder": "owner/repo 或 https://github.com/owner/repo",
+  "skills_install_title": "从 URL 安装技能",
+  "skills_install_unavailable_manifest_invalid": "其 SKILL.md 缺失或无效",
+  "skills_install_unavailable_name_reserved": "其名称已被平台保留",
+  "skills_install_unavailable_path_invalid": "它包含技能归档无法接受的路径",
+  "skills_install_unavailable_too_large": "它超出技能归档的大小上限",
   "skills_list_aria": "此 Agent 的技能",
   "skills_page_description": "为 Agent 添加可复用的技能。",
   "skills_page_title": "技能",
@@ -40,6 +76,7 @@
   "skills_replace_title": "用 {name} 替换现有技能？",
   "skills_source_agent_upload": "由 Agent 编写",
   "skills_source_cli_upload": "从 CLI 上传",
+  "skills_source_url_install": "从 URL 安装",
   "skills_source_web_upload": "Web 上传",
   "skills_storage_unavailable": "此部署未配置技能存储，因此无法上传和下载。已有技能仍会列出。",
   "skills_toggle_label": "启用 {name}",

@@ -1,4 +1,6 @@
 import {
+  type RemoteSkillInstallResult,
+  type RemoteSkillUnavailableReason,
   SKILL_ARCHIVE_MAX_BYTES,
   SKILL_ERROR_CODES,
   type SkillArchiveFormat,
@@ -76,11 +78,18 @@ const SOURCE_MESSAGES: Record<SkillSource, () => string> = {
   web_upload: m.skills_source_web_upload,
   cli_upload: m.skills_source_cli_upload,
   agent_upload: m.skills_source_agent_upload,
+  url_install: m.skills_source_url_install,
 };
 
-/** Where this Skill's archive came from, as a sentence rather than the wire value. */
-export function skillSourceLabel(source: SkillSource): string {
-  return SOURCE_MESSAGES[source]();
+/**
+ * Where this Skill's archive came from, as a sentence rather than the wire value.
+ *
+ * A value the page does not know — a Skill written by a newer Server and read by this build after a
+ * rollback — falls back to the raw value instead of throwing. A row that cannot be labelled is a
+ * display problem; a page that cannot render is an outage.
+ */
+export function skillSourceLabel(source: string): string {
+  return Object.hasOwn(SOURCE_MESSAGES, source) ? SOURCE_MESSAGES[source as SkillSource]() : source;
 }
 
 /**
@@ -98,7 +107,34 @@ const ERROR_MESSAGES: Record<SkillErrorCode, () => string> = {
   [SKILL_ERROR_CODES.HASH_MISMATCH]: m.skills_error_hash_mismatch,
   [SKILL_ERROR_CODES.ARCHIVE_TOO_LARGE]: m.skills_error_archive_too_large,
   [SKILL_ERROR_CODES.STORAGE_UNAVAILABLE]: m.skills_error_storage_unavailable,
+  [SKILL_ERROR_CODES.SOURCE_INVALID]: m.skills_error_source_invalid,
+  [SKILL_ERROR_CODES.SOURCE_UNREACHABLE]: m.skills_error_source_unreachable,
+  [SKILL_ERROR_CODES.SOURCE_BLOCKED]: m.skills_error_source_blocked,
+  [SKILL_ERROR_CODES.SOURCE_TOO_LARGE]: m.skills_error_source_too_large,
+  [SKILL_ERROR_CODES.SOURCE_NO_SKILLS]: m.skills_error_source_no_skills,
 };
+
+/**
+ * The reason a candidate is listed but cannot be installed, as a sentence. Kept beside the error
+ * map because both turn a contract value into copy the user reads.
+ */
+const UNAVAILABLE_MESSAGES: Record<RemoteSkillUnavailableReason, () => string> = {
+  manifest_invalid: m.skills_install_unavailable_manifest_invalid,
+  name_reserved: m.skills_install_unavailable_name_reserved,
+  too_large: m.skills_install_unavailable_too_large,
+  path_invalid: m.skills_install_unavailable_path_invalid,
+};
+
+export function skillUnavailableMessage(reason: RemoteSkillUnavailableReason): string {
+  return UNAVAILABLE_MESSAGES[reason]();
+}
+
+/** The label for one install result: what happened to that name, in a sentence. */
+export function skillInstallResultMessage(result: RemoteSkillInstallResult): string {
+  if (result.status === "installed") return m.skills_install_result_installed();
+  if (result.status === "skipped_name_conflict") return m.skills_install_result_skipped();
+  return skillErrorMessage(result.errorCode);
+}
 
 export function skillErrorMessage(code: string | undefined): string {
   if (code !== undefined && Object.hasOwn(ERROR_MESSAGES, code)) {

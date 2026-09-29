@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   AGENT_SKILL_BUNDLE_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
+  AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
+  AGENT_SKILLS_INSTALL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   COMPUTER_AGENT_SKILLS_TEMPLATE,
   ListAgentSkillsResponseSchema,
@@ -18,8 +20,11 @@ import { AgentService } from "../../services/agents/index.js";
 import type { UserAuthService } from "../../services/auth/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
 import { SkillService } from "../../services/skills/index.js";
+import { RemoteSkillService } from "../../services/skills/source/remote-skill-service.js";
+import { SkillSourceFetcher } from "../../services/skills/source/source-fetcher.js";
 import { FakeSkillObjectStore } from "../support/fake-skill-object-store.js";
 import { skillManifest, tarGz } from "../support/skill-archive-fixtures.js";
+import { staticTransport } from "../support/skill-source-fixtures.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -93,7 +98,14 @@ async function boot(): Promise<Harness> {
     getActiveUserById: async () => ({ me: { user: { id: accountId } } }),
   } as unknown as UserAuthService;
 
-  const app = createApp({ authService, machineAuthService: machineAuth, skills: { service } });
+  // The remote-install routes are exercised with a local stub: an integration test may not depend on
+  // the public network, and the transport under test here is HTTP plus PostgreSQL, not git.
+  const remote = new RemoteSkillService({ skills: service, fetcher: await remoteSkillFetcher() });
+  const app = createApp({
+    authService,
+    machineAuthService: machineAuth,
+    skills: { service, remote },
+  });
   openApps.push(app);
   return {
     accountId,
@@ -108,6 +120,37 @@ async function boot(): Promise<Harness> {
 }
 
 const AUTH = { authorization: "Bearer account-token" };
+
+const DISCOVERY_SCHEMA_V2 = "https://schemas.agentskills.io/discovery/0.2.0/schema.json";
+
+/** A well-known host publishing two Skills from archive artifacts, all in process. */
+async function remoteSkillFetcher(): Promise<SkillSourceFetcher> {
+  const routes = new Map<string, () => { status: number; body?: Uint8Array | string }>();
+  const entries: Record<string, unknown>[] = [];
+  for (const name of ["demo", "other"]) {
+    const artifact = await tarGz([{ name: "SKILL.md", body: skillManifest(name) }]);
+    const url = `https://skills.example.test/artifacts/${name}.tar.gz`;
+    routes.set(url, () => ({ status: 200, body: artifact }));
+    entries.push({
+      name,
+      description: `${name} Skill`,
+      type: "archive",
+      url,
+      digest: sha256(artifact),
+    });
+  }
+  routes.set("https://skills.example.test/.well-known/agent-skills/index.json", () => ({
+    status: 200,
+    body: JSON.stringify({ $schema: DISCOVERY_SCHEMA_V2, skills: entries }),
+  }));
+  return new SkillSourceFetcher({
+    allowLoopback: false,
+    resolveAddresses: async () => ["93.184.216.34"],
+    transport: staticTransport(Object.fromEntries([...routes.entries()].map(([url, respond]) => [url, respond]))),
+  });
+}
+
+const REMOTE_SOURCE = "https://skills.example.test";
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -230,5 +273,118 @@ describe("Skill HTTP surfaces", () => {
       headers: AUTH,
     });
     expect(ListAgentSkillsResponseSchema.parse(empty.json()).skills).toEqual([]);
+  });
+});
+
+/** The fingerprints a preview reports, so an install states exact content. */
+async function selectionsFor(harness: Harness, agentId: string, names: string[]) {
+  const preview = await harness.app.inject({
+    method: "POST",
+    url: AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE.replace(":agentId", agentId),
+    headers: AUTH,
+    payload: { source: REMOTE_SOURCE },
+  });
+  const skills = preview.json().skills as { name: string; fingerprint: string }[];
+  return names.map((name) => ({
+    name,
+    fingerprint: skills.find((candidate) => candidate.name === name)?.fingerprint ?? "absent",
+  }));
+}
+
+describe("Remote Skill installation over HTTP", () => {
+  const resolveUrl = (agentId: string) => AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE.replace(":agentId", agentId);
+  const installUrl = (agentId: string) => AGENT_SKILLS_INSTALL_TEMPLATE.replace(":agentId", agentId);
+
+  it("previews a source and installs a selection as url_install rows", async () => {
+    const harness = await boot();
+
+    const preview = await harness.app.inject({
+      method: "POST",
+      url: resolveUrl(harness.agentId),
+      headers: AUTH,
+      payload: { source: REMOTE_SOURCE },
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().skills.map((candidate: { name: string }) => candidate.name)).toEqual(["demo", "other"]);
+
+    const installed = await harness.app.inject({
+      method: "POST",
+      url: installUrl(harness.agentId),
+      headers: AUTH,
+      payload: { source: REMOTE_SOURCE, selections: await selectionsFor(harness, harness.agentId, ["demo"]) },
+    });
+    expect(installed.statusCode).toBe(200);
+    expect(installed.json().results).toEqual([{ name: "demo", status: "installed" }]);
+
+    const list = await harness.app.inject({
+      method: "GET",
+      url: AGENT_SKILLS_TEMPLATE.replace(":agentId", harness.agentId),
+      headers: AUTH,
+    });
+    const skills = ListAgentSkillsResponseSchema.parse(list.json()).skills;
+    expect(skills.map((skill) => [skill.name, skill.source])).toEqual([["demo", "url_install"]]);
+
+    const rows = await harness.sql<{ source: string }[]>`
+      select source from agent_skills where agent_id = ${harness.agentId}
+    `;
+    expect(rows.map((row) => row.source)).toEqual(["url_install"]);
+
+    // A second install of the same name skips rather than replacing: the revision is untouched.
+    const repeated = await harness.app.inject({
+      method: "POST",
+      url: installUrl(harness.agentId),
+      headers: AUTH,
+      payload: { source: REMOTE_SOURCE, selections: await selectionsFor(harness, harness.agentId, ["demo"]) },
+    });
+    expect(repeated.json().results).toEqual([{ name: "demo", status: "skipped_name_conflict" }]);
+    const after = await harness.app.inject({
+      method: "GET",
+      url: AGENT_SKILLS_TEMPLATE.replace(":agentId", harness.agentId),
+      headers: AUTH,
+    });
+    expect(ListAgentSkillsResponseSchema.parse(after.json()).skills[0]?.revision).toBe(1);
+  }, 60_000);
+
+  it("keeps an Agent readable after the documented rollback statement", async () => {
+    const harness = await boot();
+    await harness.app.inject({
+      method: "POST",
+      url: installUrl(harness.agentId),
+      headers: AUTH,
+      payload: { source: REMOTE_SOURCE, selections: await selectionsFor(harness, harness.agentId, ["demo"]) },
+    });
+    const before = await harness.sql<{ source: string }[]>`
+      select source from agent_skills where agent_id = ${harness.agentId}
+    `;
+    expect(before.map((row) => row.source)).toEqual(["url_install"]);
+
+    // The documented rollback step: an older Server validates `source` against the three earlier enum
+    // values, so the rows have to be moved before the code is rolled back.
+    await harness.sql`
+      update agent_skills set source = 'web_upload' where source = 'url_install'
+    `;
+
+    const after = await harness.app.inject({
+      method: "GET",
+      url: AGENT_SKILLS_TEMPLATE.replace(":agentId", harness.agentId),
+      headers: AUTH,
+    });
+    const listed = ListAgentSkillsResponseSchema.parse(after.json()).skills;
+    expect(listed.map((skill) => skill.source)).toEqual(["web_upload"]);
+    // The Skill itself is untouched: same id, same revision, same stored archive.
+    expect(listed[0]?.revision).toBe(1);
+    expect(listed[0]?.fileCount).toBe(1);
+  }, 60_000);
+
+  it("reports a source it cannot read as a source failure, not a server error", async () => {
+    const harness = await boot();
+    const response = await harness.app.inject({
+      method: "POST",
+      url: resolveUrl(harness.agentId),
+      headers: AUTH,
+      payload: { source: "{{EMAIL_5h5v3q2f}}:owner/repo.git" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toMatchObject({ code: "SKILL_SOURCE_INVALID", category: "validation" });
   });
 });

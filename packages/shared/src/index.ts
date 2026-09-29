@@ -278,6 +278,8 @@ export {
   AGENT_SETUP_TEMPLATE,
   AGENT_SKILL_BUNDLE_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
+  AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
+  AGENT_SKILLS_INSTALL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
@@ -318,6 +320,8 @@ export {
   agentSetupRefreshPath,
   agentSkillBundlePath,
   agentSkillPath,
+  agentSkillsInstallPath,
+  agentSkillsInstallResolvePath,
   agentSkillsPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
@@ -654,6 +658,8 @@ export * from "./session.js";
 export * from "./session-cli.js";
 export * from "./sign-in-destination.js";
 export * from "./skill.js";
+export * from "./skill-discovery.js";
+export * from "./skill-source.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,

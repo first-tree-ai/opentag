@@ -57,6 +57,18 @@ type Journal = {
   entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
 };
 
+/**
+ * How many migrations the real folder holds.
+ *
+ * The upgrade path below must end with every migration recorded. Deriving the number from the
+ * journal keeps that guarantee while a new migration no longer has to remember to edit this file;
+ * a hardcoded total asserted nothing about the migrations themselves.
+ */
+async function migrationCount(): Promise<number> {
+  const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as Journal;
+  return journal.entries.length;
+}
+
 /** A migration folder truncated after `lastIndex`, for replaying old-schema states. */
 async function truncatedMigrationsFolder(lastIndex: number): Promise<string> {
   const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as Journal;
@@ -478,7 +490,7 @@ describe("migration 0052 upgrade path (M04)", () => {
         const [journalRow] = await sql<{ count: string }[]>`
           select count(*)::text as count from drizzle.__drizzle_migrations
         `;
-        expect(Number(journalRow?.count)).toBe(PRE_SCHEDULES_LAST_INDEX + 2);
+        expect(Number(journalRow?.count)).toBe(await migrationCount());
       });
     } finally {
       await rm(truncated, { force: true, recursive: true });

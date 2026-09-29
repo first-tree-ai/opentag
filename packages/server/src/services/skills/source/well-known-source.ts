@@ -219,9 +219,16 @@ async function legacyEntryFiles(
     if (url === undefined) throw skillSourceInvalid("That Skill's index declares an unusable file path");
     const allowance = Math.min(SKILL_SOURCE_DOWNLOAD_MAX_BYTES, budget.remaining);
     if (allowance <= 0) throw skillSourceTooLarge();
+    /*
+     * The allowance is reserved before the request and the unused part refunded after it, so a
+     * rejected oversized response is still charged. Debiting only a successful read would make a
+     * refused download free: a catalog of entries that each overrun their allowance could spend an
+     * unbounded number of allowances while the budget never moved, which is the ceiling this exists
+     * to be.
+     */
+    budget.remaining -= allowance;
     const { bytes } = await fetcher.fetchBytes(url, allowance);
-    budget.remaining -= bytes.byteLength;
-    if (budget.remaining < 0) throw skillSourceTooLarge();
+    budget.remaining += allowance - bytes.byteLength;
     files.push({ path: file, body: bytes, executable: false });
   }
   return files;
@@ -298,14 +305,11 @@ async function legacyListing(
   try {
     files = await legacyEntryFiles(entry, fetcher, indexDirectory, scope);
   } catch (error) {
+    // The attempt's spend is charged before deciding, because a refused oversized response was still
+    // fetched. Then: an entry that does not fit says nothing about a later, smaller entry, so the
+    // catalog continues rather than ending.
+    previewBudget.remaining -= spendBefore - scope.remaining;
     if (error instanceof SkillServiceError && error.code === SKILL_ERROR_CODES.SOURCE_TOO_LARGE) {
-      /*
-       * This entry does not fit — a file is larger than its remaining allowance, or the entry is
-       * larger than its own ceiling. Neither says anything about a later, smaller entry, so the
-       * catalog continues after debiting only what this attempt actually spent. A negative scope
-       * remainder means a file overran its allowance, and the whole granted scope counts as spent.
-       */
-      previewBudget.remaining -= Math.max(0, spendBefore - Math.max(0, scope.remaining));
       return { kind: "skip" };
     }
     throw error;

@@ -119,9 +119,11 @@ Every source is therefore bound to content. The legacy directory layout publishe
 a preview *reads* each of its entries — within `SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES` — rather than
 fingerprinting a declared file list: a list-only identity would let a publisher change `SKILL.md` and
 still install as though nothing had moved. The budget is what stops a long catalog from turning one
-preview into a download of the whole catalog, and each entry spends only what it actually used, so the
-budget is a catalog-wide total rather than a per-entry allowance. Three outcomes are distinct, and only
-the first ends the catalog:
+preview into a download of the whole catalog. Each request's allowance is reserved from that budget
+before it is made and the unused part refunded after it, so a download that is *refused* for
+overrunning its allowance is charged too: a refused response was still sent, and a budget that only
+charged successful reads would hand every attempt a fresh allowance. Three outcomes are distinct, and
+only the first ends the catalog:
 
 - the shared budget is spent — no later entry can be read either, so the preview stops;
 - an entry does not fit its own ceiling, or its published metadata is unusable — the entry is skipped,

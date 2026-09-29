@@ -5,6 +5,7 @@ import {
   SKILL_SOURCE_DOWNLOAD_MAX_BYTES,
   SKILL_SOURCE_EXTRACT_MAX_BYTES,
   SKILL_SOURCE_MAX_CANDIDATES,
+  SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES,
 } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import type { RemoteSkillListing } from "../services/skills/source/remote-candidates.js";
@@ -546,6 +547,59 @@ describe("resolveWellKnownSource", () => {
 
     // The oversized entry is skipped; the smaller one after it is not.
     expect(result.listings.map((listing) => listing.candidate.name)).toEqual(["small"]);
+  });
+
+  it("charges a refused oversized download against the catalog budget", async () => {
+    /*
+     * Every entry's payload overruns the allowance left to it, so every payload download is refused.
+     * Those bytes were still sent, so the budget has to be charged: otherwise each attempt is granted
+     * a fresh allowance and a catalog can spend an unbounded number of them while the budget never
+     * moves. Twenty entries against a 64 MiB budget and 10 MiB allowances is the arithmetic — six full
+     * allowances and one partial, then nothing.
+     */
+    const oversized = "a".repeat(11 * 1024 * 1024);
+    const skills = [
+      ...Array.from({ length: 20 }, (_value, index) => ({
+        name: `over-${index}`,
+        description: "d",
+        files: ["SKILL.md", "big.bin"],
+      })),
+      { name: "small", description: "d", files: ["SKILL.md"] },
+    ];
+    const requests: { url: string; maxBytes: number }[] = [];
+    const routes: Record<string, () => { status: number; body?: Uint8Array | string } | undefined> = {
+      "https://example.test/.well-known/skills/index.json": json({ skills }),
+      "https://example.test/.well-known/skills/small/SKILL.md": () => ({ status: 200, body: skillManifest("small") }),
+    };
+    for (const skill of skills) {
+      if (skill.files.includes("big.bin")) {
+        routes[`https://example.test/.well-known/skills/${skill.name}/SKILL.md`] = () => ({
+          status: 200,
+          body: skillManifest(skill.name),
+        });
+        routes[`https://example.test/.well-known/skills/${skill.name}/big.bin`] = () => ({
+          status: 200,
+          body: oversized,
+        });
+      }
+    }
+    const fetcher = stubFetcher(routes, { requests });
+    const result = await resolveWellKnownSource(fetcher, "https://example.test");
+    expect(result.found).toBe(true);
+    if (!result.found) return;
+
+    // Every refused payload is charged, so the attempts stop when the budget is spent rather than
+    // running for the whole catalog.
+    const payloads = requests.filter((request) => request.url.endsWith("/big.bin"));
+    expect(payloads.length).toBeLessThanOrEqual(
+      Math.ceil(SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES / SKILL_SOURCE_DOWNLOAD_MAX_BYTES),
+    );
+    expect(payloads.reduce((total, request) => total + request.maxBytes, 0)).toBeLessThanOrEqual(
+      SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES,
+    );
+    // And the budget really is spent: the valid Skill after the oversized ones is not read at all.
+    expect(result.listings).toEqual([]);
+    expect(requests.some((request) => request.url.endsWith("/small/SKILL.md"))).toBe(false);
   });
 
   it("lets a valid entry take a name an earlier unusable entry claimed", async () => {

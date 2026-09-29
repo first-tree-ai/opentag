@@ -520,6 +520,61 @@ describe("resolveWellKnownSource", () => {
     expect(result.listings.map((listing) => listing.candidate.name)).toEqual(["demo", "other"]);
   });
 
+  it("continues the catalog after a legacy entry that does not fit", async () => {
+    /*
+     * The first entry is too large for its own ceiling — a small manifest and three 9 MiB payloads
+     * against a 25 MiB scope. That is a statement about that entry, not about the 64 MiB catalog
+     * budget, so a later small Skill must still be read and listed.
+     */
+    const nineMebibytes = "a".repeat(9 * 1024 * 1024);
+    const skills = [
+      { name: "huge", description: "d", files: ["SKILL.md", "one.bin", "two.bin", "three.bin"] },
+      { name: "small", description: "d", files: ["SKILL.md"] },
+    ];
+    const routes: Record<string, () => { status: number; body?: Uint8Array | string } | undefined> = {
+      "https://example.test/.well-known/skills/index.json": json({ skills }),
+      "https://example.test/.well-known/skills/huge/SKILL.md": () => ({ status: 200, body: skillManifest("huge") }),
+      "https://example.test/.well-known/skills/small/SKILL.md": () => ({ status: 200, body: skillManifest("small") }),
+    };
+    for (const file of ["one.bin", "two.bin", "three.bin"]) {
+      routes[`https://example.test/.well-known/skills/huge/${file}`] = () => ({ status: 200, body: nineMebibytes });
+    }
+    const fetcher = stubFetcher(routes);
+    const result = await resolveWellKnownSource(fetcher, "https://example.test");
+    expect(result.found).toBe(true);
+    if (!result.found) return;
+
+    // The oversized entry is skipped; the smaller one after it is not.
+    expect(result.listings.map((listing) => listing.candidate.name)).toEqual(["small"]);
+  });
+
+  it("lets a valid entry take a name an earlier unusable entry claimed", async () => {
+    const index = {
+      $schema: SCHEMA_V2,
+      skills: [
+        // Unusable metadata under a name a later entry also uses.
+        { name: "demo", description: "d", type: "archive", url: "http://[invalid", digest: "a".repeat(64) },
+        {
+          name: "demo",
+          description: "The real one",
+          type: "archive",
+          url: "https://example.test/demo.tar.gz",
+          digest: "b".repeat(64),
+        },
+      ],
+    };
+    const fetcher = fetcherServing({
+      "https://example.test/.well-known/agent-skills/index.json": json(index),
+    });
+    const result = await resolveWellKnownSource(fetcher, "https://example.test");
+    expect(result.found).toBe(true);
+    if (!result.found) return;
+
+    // A skipped entry is not a candidate, so it does not hold the name against the valid duplicate.
+    expect(result.listings.map((listing) => listing.candidate.name)).toEqual(["demo"]);
+    expect(result.listings[0]?.candidate.description).toBe("The real one");
+  });
+
   it("never falls back to an origin-root index for a scoped URL", async () => {
     const fetcher = fetcherServing({
       "https://example.test/.well-known/agent-skills/index.json": json({

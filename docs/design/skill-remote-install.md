@@ -120,10 +120,13 @@ a preview *reads* each of its entries — within `SKILL_SOURCE_PREVIEW_CONTENT_M
 fingerprinting a declared file list: a list-only identity would let a publisher change `SKILL.md` and
 still install as though nothing had moved. The budget is what stops a long catalog from turning one
 preview into a download of the whole catalog, and each entry spends only what it actually used, so the
-budget is a catalog-wide total rather than a per-entry allowance. Entries past the budget are left out
-of the preview rather than listed without the binding the selection contract promises — a different
-outcome from an entry whose published metadata is unusable, which is skipped and leaves the catalog
-running.
+budget is a catalog-wide total rather than a per-entry allowance. Three outcomes are distinct, and only
+the first ends the catalog:
+
+- the shared budget is spent — no later entry can be read either, so the preview stops;
+- an entry does not fit its own ceiling, or its published metadata is unusable — the entry is skipped,
+  and a later smaller or valid entry is still read and listed;
+- the entry is read — it is listed, bound to the content that was read.
 
 ## Outbound policy
 

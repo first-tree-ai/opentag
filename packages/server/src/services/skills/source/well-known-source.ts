@@ -299,9 +299,14 @@ async function legacyListing(
     files = await legacyEntryFiles(entry, fetcher, indexDirectory, scope);
   } catch (error) {
     if (error instanceof SkillServiceError && error.code === SKILL_ERROR_CODES.SOURCE_TOO_LARGE) {
-      // The budget could not cover this entry, so it cannot cover any later one either.
-      previewBudget.remaining = 0;
-      return { kind: "exhausted" };
+      /*
+       * This entry does not fit — a file is larger than its remaining allowance, or the entry is
+       * larger than its own ceiling. Neither says anything about a later, smaller entry, so the
+       * catalog continues after debiting only what this attempt actually spent. A negative scope
+       * remainder means a file overran its allowance, and the whole granted scope counts as spent.
+       */
+      previewBudget.remaining -= Math.max(0, spendBefore - Math.max(0, scope.remaining));
+      return { kind: "skip" };
     }
     throw error;
   }
@@ -403,11 +408,13 @@ async function listingsFrom(
     if (listings.length >= maxCandidates) break;
     const key = entry.name.toLowerCase();
     if (seen.has(key)) continue;
-    seen.add(key);
     const attempt = await oneListing(parsed.version, entry, probe, fetcher, state);
     // The budget running out ends the catalog; an unusable entry does not.
     if (attempt.kind === "exhausted") break;
+    // A skipped entry is explicitly not a candidate, so it must not claim the name either: a later
+    // valid entry under the same name is still worth listing.
     if (attempt.kind === "skip") continue;
+    seen.add(key);
     attempt.listing.candidate.alreadyInstalled = existing.has(key);
     listings.push(attempt.listing);
   }

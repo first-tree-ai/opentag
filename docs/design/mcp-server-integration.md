@@ -914,6 +914,65 @@ edit, and remove.
 The "new Server" wizard asks for the definition first and the authorization method second, so
 `default_auth_kind` is never presented as a statement about the Server.
 
+### Importing a Server from another client's configuration
+
+The picker's sources are the catalog's **Discover**, the Account pool or a pasted URL under **Use an
+existing Server**, and **Import configuration**, which accepts a pasted configuration instead of a
+URL. It reads the shapes other clients write: OpenCode's `mcp` map with `"type": "remote"`, the
+`mcpServers` map of the Claude-family clients, VS Code's `servers` map with `"type": "http"` or
+`"sse"`, the TOML `[mcp_servers.<name>]` tables other clients use, the YAML spelling of any of those,
+and the `claude mcp add <name> --transport http <url>` / `codex mcp add <name> --url <url>` command
+lines. JSON carrying `//` comments and trailing commas is accepted, because the configs this targets
+routinely carry both.
+
+Parsing happens in the browser, never on the Server: a paste may carry a live credential, and the
+text itself is not sent anywhere. Only the values the user confirms travel, through the same
+create → attach → authorize sequence the manual wizard uses.
+
+- **Only remote Servers are importable.** `stdio`, `local`, `command`, and `npx` entries are listed
+  by name and reported as a category OpenTag does not support. An entry that declares a `command` is
+  local even when its arguments contain an HTTPS URL (`npx -y mcp-remote https://…`): reading that as
+  remote would create a definition the gateway could never reach.
+- **A paste that holds several Servers lists all of them** and imports exactly one per confirmation.
+  A listed Server this Agent already mounts is shown as added, with a link to it instead of an import.
+- **Names are normalized** to this product's rules — lowercase, hyphens, the 64-character bound — and
+  de-duplicated against the Account, and remain editable before confirmation.
+- **A credential goes to this Agent alone.** An `Authorization: <scheme> <token>` header, or a
+  credential-shaped header, prefills this Agent's bearer authorization; it is never written to the
+  shared definition and never echoed into an error or a log. "Credential-shaped" is the repository's
+  own credential-name vocabulary — `authorization`, `cookie`, `token`, `secret`, `credential`,
+  `password`, `passwd`, `api-key`/`apikey`, and the bearer/access/refresh/private key names, in any
+  separator convention and with an optional vendor prefix — so a name the product already redacts in a
+  log cannot become shared configuration just because a paste spelled it `X-Client-Secret` or
+  `X-PrivateKey`. HTTP header names are case-insensitive, so classification matches the separatorless
+  spelling too and does not depend on whether the paste preserved camel case. The `Authorization`
+  header is taken when the paste declares one; otherwise the first credential-shaped header is, and
+  every other one is refused by name. `observability/sensitive-names.test.ts` reads the shared array
+  out of `packages/shared/src/structured-errors.ts`, so a term added there fails the test until it is
+  mirrored or listed as structural-only. The predicate differs from the redactor deliberately in both
+  directions, and the invariant both preserve is that a name the redactor treats as a credential is
+  never shared:
+
+  - **Narrower** for the structural names (`payload`, `body`, `prompt`, …): the redactor hides them,
+    this importer shares them as ordinary configuration, because they are sensitive to log but are not
+    credentials and refusing a header named for one would drop configuration a Server may need.
+  - **Wider** for the separatorless lowercase spellings a paste may produce (lowercase `x-privatekey`),
+    which the redactor's key matching does not fold; refusing those is the conservative outcome.
+- **Every other header becomes an extra header** of the definition, read from `headers` or from
+  Codex's `http_headers`, in either dialect's object, array, inline-table, or nested-table spelling.
+  The shared schema's count and size bounds are enforced against the accumulated set rather than one
+  header at a time, so a header that would cross them is refused by name here instead of leaving a
+  disabled submit two steps later. `env_http_headers` names an environment variable rather than a
+  value, so those names are refused and never imported: they do not become a shared header with an
+  empty value, a literal header of the same name is not sent either, and a name declared that way is
+  not eligible to become the Agent credential, because the declaration carries no value to save.
+- **A rejected URL keeps no credential.** A URL carrying userinfo is refused, and the copy that is
+  shown and returned has the userinfo removed, rather than putting it in a row or in the result the
+  caller holds.
+- **The listed Servers describe the text that produced them.** Editing the field clears the list and
+  invalidates any read still running, so the previous Server — and the previous credential — cannot be
+  confirmed against text the user has since changed.
+
 ## The marketplace catalog
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
@@ -992,6 +1051,7 @@ Unit tests (no network, no database):
 | AAD | The literal format; a different Agent, a different authorization server, and the other envelope's domain all fail to open; a kind change is openable because the context never names the kind |
 | Discovery | The exact well-known order; a mismatched issuer propagates; multi-issuer ordering; the registration choice in all four cases; CIMD self-naming and same-host redirects; PKCE; `resource` on both requests; the four `iss` rows; scope priority; the refresh lead |
 | Probing | Two pages merged into one snapshot on both eras; the cursor sent only on later pages; each per-tool bound skipping the tool (in bytes, proven with multi-byte text), a nameless entry and a non-object entry skipped, a page whose every tool is skipped still succeeding, pagination continuing past a skipped tool, the `warn` line naming the bound; the cap, the budget, and a skipped tool all setting `tools_truncated`; an error page still failing the probe; a malformed page (non-object result, missing or non-array `tools`, non-string or empty cursor) failing both eras while a null cursor ends the list; SSE discovery; the era paths |
+| Config import | Every documented dialect (OpenCode `mcp`, `mcpServers`, `servers`, their YAML spellings, TOML `[mcp_servers.*]` with `headers`, `http_headers`, and `env_http_headers`, `claude`/`codex` command lines, and JSON with comments and trailing commas); a `command` entry whose arguments carry an HTTPS URL read as local; the multi-server list and each "no importable Server" outcome; name normalization, the host fallback, and de-duplication; the paste bound; the credential-name vocabulary read from the shared redactor's own source, matched for `X-PrivateKey` as well as `x-private-key`, with its two deliberate differences from the redactor pinned — narrower for structural names such as `payload`, wider for separatorless spellings such as `x-privatekey` — and no `client-secret`, `credential`, `passwd`, or `*key` name reaching the shared extra headers; the accumulated extra-header count and size bounds refused by name; an environment-backed header refused rather than shared as an empty value, including when a literal header declares the same name and when that name is credential-shaped; a rejected URL's userinfo dropped from the stored value; an edited paste discarding its previous list and any read still running; a token reaching the authorization write only, and never a message |
 
 PostgreSQL integration tests (`mcp-management.test.ts`, Docker + testcontainers) drive a loopback
 fixture Server that is also its own authorization server:

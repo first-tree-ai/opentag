@@ -23,10 +23,12 @@ import {
   headersKey,
   suggestServerName,
 } from "./mcp-form-model.js";
+import type { MCPImportServer } from "./mcp-import-model.js";
+import { McpImportPanel, useMcpImport } from "./mcp-import-panel.js";
 import { useAttachMcpServer, useCreateMcpServer, useMcpServers } from "./mcp-queries.js";
 
 /** Which source the picker opens on. The empty state lands on the catalog; the header lands on URL. */
-export type AddSource = "existing" | "discover";
+export type AddSource = "existing" | "discover" | "import";
 
 /**
  * The draft a catalog entry prefills. Its auth header, scheme, and extra headers are configuration
@@ -88,6 +90,7 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
   const catalogAttempt = useRef<string>(undefined);
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
+  const importState = useMcpImport(servers.map((server) => server.name));
   const urlLike = /^https?:\/\//i.test(query.trim());
   const filtered = servers.filter((server) =>
     urlLike
@@ -119,6 +122,35 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     resetAttempt();
     setSelected(undefined);
     changeUrl(query.trim());
+    setStep("configure");
+    setError(undefined);
+  };
+  /**
+   * Carry a detected server into the same draft a manual entry produces, so create, attach, and
+   * authorize are unchanged. A credential found in the paste becomes this Agent's bearer key and is
+   * never part of the shared definition that `ensureServer` creates.
+   */
+  const importServer = (detected: MCPImportServer) => {
+    if (!detected.url) return;
+    // A catalog card that failed earlier may have left a definition or a mount behind; reusing either
+    // would authorize the endpoint that card created rather than the one just imported.
+    resetAttempt();
+    setSelected(undefined);
+    setUrl(detected.url);
+    nameEdited.current = true;
+    setName(detected.name);
+    setDraft({
+      ...authDraft(
+        {
+          url: detected.url,
+          authHeader: detected.credential?.header ?? defaultConnection.authHeader,
+          authScheme: detected.credential?.scheme ?? defaultConnection.authScheme,
+          extraHeaders: detected.extraHeaders,
+        },
+        detected.credential ? "bearer" : "oauth",
+      ),
+      token: detected.credential?.token ?? "",
+    });
     setStep("configure");
     setError(undefined);
   };
@@ -156,7 +188,9 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     return createdRef.current ? m.mcp_attach_failed() : m.mcp_create_failed();
   };
   const back = () => {
-    if (!selected) setQuery(url);
+    // An imported draft keeps the picker on the import source, so the search field is not what the user
+    // is looking at; filling it with the imported URL would surprise them on a later switch back.
+    if (!selected && source !== "import") setQuery(url);
     setStep("choose");
     setError(undefined);
   };
@@ -291,6 +325,8 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     created,
     attached,
     busy,
+    import: importState,
+    importServer,
     urlLike,
     filtered,
     duplicate,
@@ -322,11 +358,12 @@ export function McpAddDialog(props: AddProps) {
     </Dialog>
   );
 }
-/** The picker's two sources: the marketplace catalog, and the Account pool or a pasted URL. */
+/** The picker's three sources: the marketplace catalog, the Account pool or a pasted URL, and a paste. */
 function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (source: AddSource) => void }) {
   const choices: { source: AddSource; label: string }[] = [
     { source: "discover", label: m.mcp_source_discover() },
     { source: "existing", label: m.mcp_add_existing() },
+    { source: "import", label: m.mcp_source_import() },
   ];
   return (
     <fieldset className="mb-4 flex flex-wrap gap-1 border-0 p-0">
@@ -372,6 +409,14 @@ function AddPicker(props: AddProps & { state: AddState }) {
               mounted={props.mounted}
               busy={state.busy}
               onAdd={(entry) => void state.addFromCatalog(entry)}
+            />
+          ) : source === "import" ? (
+            <McpImportPanel
+              state={state.import}
+              agentName={props.agentName}
+              mounted={props.mounted}
+              onChoose={state.importServer}
+              onLocate={props.onLocate}
             />
           ) : (
             <AddChoices {...props} />

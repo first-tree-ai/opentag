@@ -22,7 +22,9 @@
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1"
+    "remark-gfm": "4.0.1",
+    "smol-toml": "1.9.0",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@babel/parser": "8.0.5",

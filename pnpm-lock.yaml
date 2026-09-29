@@ -116,6 +116,12 @@ importers:
       remark-gfm:
         specifier: 4.0.1
         version: 4.0.1
+      smol-toml:
+        specifier: 1.9.0
+        version: 1.9.0
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
     devDependencies:
       '@babel/parser':
         specifier: 8.0.5

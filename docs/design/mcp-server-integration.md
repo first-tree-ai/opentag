@@ -931,16 +931,20 @@ create → attach → authorize sequence the manual wizard uses.
   `password`, `passwd`, `api-key`/`apikey`, and the bearer/access/refresh/private key names, in any
   separator convention and with an optional vendor prefix — so a name the product already redacts in a
   log cannot become shared configuration just because a paste spelled it `X-Client-Secret` or
-  `X-Private-Key`. The `Authorization` header is taken when the paste declares one; otherwise the first
-  credential-shaped header is, and every other one is refused by name.
+  `X-PrivateKey`. HTTP header names are case-insensitive, so classification matches the separatorless
+  spelling too and does not depend on whether the paste preserved camel case. The `Authorization`
+  header is taken when the paste declares one; otherwise the first credential-shaped header is, and
+  every other one is refused by name. `observability/sensitive-names.test.ts` enforces the vocabulary
+  in both directions by reading the shared array out of `packages/shared/src/structured-errors.ts`, so
+  a term added there fails the test until it is mirrored or listed as structural-only.
 - **Every other header becomes an extra header** of the definition, read from `headers` or from
   Codex's `http_headers`, in either dialect's object, array, inline-table, or nested-table spelling.
   The shared schema's count and size bounds are enforced against the accumulated set rather than one
   header at a time, so a header that would cross them is refused by name here instead of leaving a
   disabled submit two steps later. `env_http_headers` names an environment variable rather than a
   value, so those names are refused and never imported: they do not become a shared header with an
-  empty value, and a literal header of the same name is not sent either, because the declaration
-  cannot be resolved.
+  empty value, a literal header of the same name is not sent either, and a name declared that way is
+  not eligible to become the Agent credential, because the declaration carries no value to save.
 - **A rejected URL keeps no credential.** A URL carrying userinfo is refused, and the copy that is
   shown and returned has the userinfo removed, rather than putting it in a row or in the result the
   caller holds.
@@ -964,7 +968,7 @@ Unit tests (no network, no database):
 | AAD | The literal format; a different Agent, a different authorization server, and the other envelope's domain all fail to open; a kind change is openable because the context never names the kind |
 | Discovery | The exact well-known order; a mismatched issuer propagates; multi-issuer ordering; the registration choice in all four cases; CIMD self-naming and same-host redirects; PKCE; `resource` on both requests; the four `iss` rows; scope priority; the refresh lead |
 | Probing | Two pages merged into one snapshot on both eras; the cursor sent only on later pages; each per-tool bound skipping the tool (in bytes, proven with multi-byte text), a nameless entry and a non-object entry skipped, a page whose every tool is skipped still succeeding, pagination continuing past a skipped tool, the `warn` line naming the bound; the cap, the budget, and a skipped tool all setting `tools_truncated`; an error page still failing the probe; a malformed page (non-object result, missing or non-array `tools`, non-string or empty cursor) failing both eras while a null cursor ends the list; SSE discovery; the era paths |
-| Config import | Every documented dialect (OpenCode `mcp`, `mcpServers`, `servers`, their YAML spellings, TOML `[mcp_servers.*]` with `headers`, `http_headers`, and `env_http_headers`, `claude`/`codex` command lines, and JSON with comments and trailing commas); a `command` entry whose arguments carry an HTTPS URL read as local; the multi-server list and each "no importable Server" outcome; name normalization, the host fallback, and de-duplication; the paste bound; the credential-name vocabulary agreeing with the shared redactor, and no credential name — `client-secret`, `credential`, `passwd`, or a `*_key` name — reaching the shared extra headers; the accumulated extra-header count and size bounds refused by name; an environment-backed header refused rather than shared as an empty value, including when a literal header declares the same name; a rejected URL's userinfo dropped from the stored value; an edited paste discarding its previous list and any read still running; a token reaching the authorization write only, and never a message |
+| Config import | Every documented dialect (OpenCode `mcp`, `mcpServers`, `servers`, their YAML spellings, TOML `[mcp_servers.*]` with `headers`, `http_headers`, and `env_http_headers`, `claude`/`codex` command lines, and JSON with comments and trailing commas); a `command` entry whose arguments carry an HTTPS URL read as local; the multi-server list and each "no importable Server" outcome; name normalization, the host fallback, and de-duplication; the paste bound; the credential-name vocabulary mirrored two-way against the shared redactor's source and matching `X-PrivateKey` as well as `x-private-key`, with no `client-secret`, `credential`, `passwd`, or `*key` name reaching the shared extra headers; the accumulated extra-header count and size bounds refused by name; an environment-backed header refused rather than shared as an empty value, including when a literal header declares the same name and when that name is credential-shaped; a rejected URL's userinfo dropped from the stored value; an edited paste discarding its previous list and any read still running; a token reaching the authorization write only, and never a message |
 
 PostgreSQL integration tests (`mcp-management.test.ts`, Docker + testcontainers) drive a loopback
 fixture Server that is also its own authorization server:

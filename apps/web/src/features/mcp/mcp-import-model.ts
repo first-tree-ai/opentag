@@ -198,45 +198,49 @@ function splitHeaders(
   credential?: MCPImportCredential;
 } {
   const named: NamedHeader[] = pairs
-    .map((pair) => ({ name: pair.name.trim().toLowerCase(), value: pair.value }))
-    .filter((pair) => pair.name.length > 0);
+    .map((pair) => ({ name: pair.name.trim(), normalizedName: pair.name.trim().toLowerCase(), value: pair.value }))
+    .filter((pair) => pair.normalizedName.length > 0);
   const unresolved = new Set(unresolvedNames.map((name) => name.trim().toLowerCase()).filter(Boolean));
-  const chosen = chooseCredential(named);
+  // A name the paste declares through an environment variable declares no value at all, so it is not
+  // a candidate credential either: it is refused, and its literal twin (if any) is not sent.
+  const resolvable = named.filter((pair) => !unresolved.has(pair.normalizedName));
+  const chosen = chooseCredential(resolvable);
   const extraHeaders: Record<string, string> = {};
   const refusedHeaders: string[] = [];
   for (const pair of named) {
-    if (unresolved.has(pair.name)) {
-      pushUnique(refusedHeaders, pair.name);
+    if (unresolved.has(pair.normalizedName)) {
+      pushUnique(refusedHeaders, pair.normalizedName);
       continue;
     }
     if (pair === chosen?.pair) continue;
     if (isCredentialName(pair.name)) {
-      pushUnique(refusedHeaders, pair.name);
+      pushUnique(refusedHeaders, pair.normalizedName);
       continue;
     }
-    if (!acceptsHeader(extraHeaders, pair.name, pair.value)) {
-      pushUnique(refusedHeaders, pair.name);
+    if (!acceptsHeader(extraHeaders, pair.normalizedName, pair.value)) {
+      pushUnique(refusedHeaders, pair.normalizedName);
       continue;
     }
-    extraHeaders[pair.name] = pair.value;
+    extraHeaders[pair.normalizedName] = pair.value;
   }
   for (const name of unresolved) {
-    if (!named.some((pair) => pair.name === name)) pushUnique(refusedHeaders, name);
+    if (!named.some((pair) => pair.normalizedName === name)) pushUnique(refusedHeaders, name);
   }
   return { extraHeaders, refusedHeaders, ...(chosen === undefined ? {} : { credential: chosen.credential }) };
 }
 
-type NamedHeader = { name: string; value: string };
+/** The original spelling is kept for classification; the normalized one is what gets stored. */
+type NamedHeader = { name: string; normalizedName: string; value: string };
 
 /** The one header whose value becomes this Agent's authorization, preferring `Authorization` itself. */
 function chooseCredential(pairs: NamedHeader[]): { pair: NamedHeader; credential: MCPImportCredential } | undefined {
   const ordered = [
-    ...pairs.filter((pair) => pair.name === AUTHORIZATION_HEADER),
-    ...pairs.filter((pair) => pair.name !== AUTHORIZATION_HEADER),
+    ...pairs.filter((pair) => pair.normalizedName === AUTHORIZATION_HEADER),
+    ...pairs.filter((pair) => pair.normalizedName !== AUTHORIZATION_HEADER),
   ];
   for (const pair of ordered) {
     if (!isCredentialName(pair.name)) continue;
-    const credential = credentialFrom(pair.name, pair.value);
+    const credential = credentialFrom(pair.normalizedName, pair.value);
     if (credential) return { pair, credential };
   }
   return undefined;
@@ -260,14 +264,15 @@ function acceptsHeader(extraHeaders: Record<string, string>, name: string, value
 
 function credentialFrom(name: string, value: string): MCPImportCredential | undefined {
   const trimmed = value.trim();
-  if (!trimmed || !MCPCustomAuthHeaderSchema.safeParse(name).success) return undefined;
+  const header = name.trim().toLowerCase();
+  if (!trimmed || !MCPCustomAuthHeaderSchema.safeParse(header).success) return undefined;
   // Only `authorization` carries a scheme. Every other credential header is sent verbatim, so a
   // space in its value is part of the secret rather than a scheme separator.
-  if (name !== "authorization") return { header: name, scheme: "", token: trimmed };
+  if (header !== "authorization") return { header, scheme: "", token: trimmed };
   const parts = /^(\S+)\s+(.+)$/.exec(trimmed);
-  if (!parts) return { header: name, scheme: "", token: trimmed };
+  if (!parts) return { header, scheme: "", token: trimmed };
   const scheme = (parts[1] ?? "").trim();
   const token = (parts[2] ?? "").trim();
   if (!token) return undefined;
-  return { header: name, scheme: MCPAuthSchemeSchema.safeParse(scheme).success ? scheme : "", token };
+  return { header, scheme: MCPAuthSchemeSchema.safeParse(scheme).success ? scheme : "", token };
 }

@@ -489,6 +489,27 @@ describe("sensitive header names never reach shared configuration", () => {
     expect(server(outcome, "docs").extraHeaders).toEqual({ "x-payload": "summary" });
   });
 
+  /**
+   * HTTP header names are case-insensitive, so a paste may write `X-PrivateKey` and the caller
+   * lowercases it before storage. Classification has to happen on a name that may already have lost
+   * its case boundary, which is exactly what a lowercased-only predicate misses.
+   */
+  it.each(["X-PrivateKey", "X-BearerKey", "X-AccessKey", "X-RefreshKey", "x-privatekey", "XClientSecret"])(
+    "treats the separatorless spelling %s as a credential through the model",
+    async (name) => {
+      const outcome = await parse(
+        JSON.stringify({
+          mcpServers: { jira: remote("https://jira.example.com/mcp", { headers: { [name]: secret } }) },
+        }),
+      );
+      const entry = server(outcome, "jira");
+      expect(entry.extraHeaders).toEqual({});
+      expect(entry.credential?.token).toBe(secret);
+      expect(entry.credential?.header).toBe(name.toLowerCase());
+      expect(JSON.stringify(entry.extraHeaders)).not.toContain(secret);
+    },
+  );
+
   it("prefers the authorization header when several credential names are present", async () => {
     const outcome = await parse(
       JSON.stringify({
@@ -670,5 +691,42 @@ describe("Codex static headers", () => {
     // The declaration cannot be resolved, so neither value is sent and the name is reported once.
     expect(entry.extraHeaders).toEqual({});
     expect(entry.refusedHeaders).toEqual(["x-workspace-id"]);
+  });
+
+  /**
+   * A name the paste declares through an environment variable declares no value, so it is not a
+   * candidate credential: the literal twin must not be saved as one, which is what choosing before
+   * filtering unresolved names would do.
+   */
+  it("does not save a credential the paste declares through an environment variable", async () => {
+    const outcome = await parse(
+      [
+        "[mcp_servers.docs]",
+        'url = "https://docs.example.com/mcp"',
+        'http_headers = { Authorization = "Bearer literal-secret" }',
+        'env_http_headers = { Authorization = "DOCS_TOKEN" }',
+      ].join("\n"),
+    );
+    const entry = server(outcome, "docs");
+    expect(entry.credential).toBeUndefined();
+    expect(entry.extraHeaders).toEqual({});
+    expect(entry.refusedHeaders).toEqual(["authorization"]);
+    expect(JSON.stringify(outcome)).not.toContain("literal-secret");
+  });
+
+  it("does not save a custom credential name declared through an environment variable", async () => {
+    const outcome = await parse(
+      [
+        "[mcp_servers.docs]",
+        'url = "https://docs.example.com/mcp"',
+        'http_headers = { "X-PrivateKey" = "literal-secret" }',
+        'env_http_headers = { "X-PrivateKey" = "DOCS_KEY" }',
+      ].join("\n"),
+    );
+    const entry = server(outcome, "docs");
+    expect(entry.credential).toBeUndefined();
+    expect(entry.extraHeaders).toEqual({});
+    expect(entry.refusedHeaders).toEqual(["x-privatekey"]);
+    expect(JSON.stringify(outcome)).not.toContain("literal-secret");
   });
 });

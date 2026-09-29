@@ -322,6 +322,38 @@ describe("MCP import method", () => {
     );
   });
 
+  it("treats a camel-case credential header as this Agent's credential, not shared configuration", async () => {
+    stub([]);
+    const create = vi.spyOn(browserApi, "createMcpServer").mockImplementation(echoServer);
+    vi.spyOn(browserApi, "attachMcpServer").mockResolvedValue(entry({ authorization: null }));
+    vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry({ authorization: null }));
+    const auth = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openAdd();
+    await paste(
+      JSON.stringify({
+        mcpServers: {
+          jira: { type: "http", url: "https://jira.example.com/mcp", headers: { "X-PrivateKey": "sk-camel" } },
+        },
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /jira/ }));
+    submitImport();
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith({
+      name: "jira",
+      url: "https://jira.example.com/mcp",
+      defaultAuthKind: "bearer",
+      authHeader: "x-privatekey",
+      authScheme: "",
+      extraHeaders: {},
+    });
+    expect(JSON.stringify(create.mock.calls[0]?.[0])).not.toContain("sk-camel");
+    await waitFor(() =>
+      expect(auth).toHaveBeenCalledWith(AGENT_ID, detail(0).server.id, { kind: "bearer", bearerKey: "sk-camel" }),
+    );
+  });
+
   it("keeps the pasted draft when returning from the configuration step", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);

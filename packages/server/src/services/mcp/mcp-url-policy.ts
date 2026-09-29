@@ -1,6 +1,5 @@
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
-import { MCP_ERROR_CODES } from "@opentag/shared";
+import { checkOutboundUrl, isBlockedAddress, isIpLiteral, isLoopbackHostname, MCP_ERROR_CODES } from "@opentag/shared";
 import { McpServiceError } from "./errors.js";
 
 /**
@@ -88,157 +87,12 @@ export const MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT = 8;
 export const MCP_DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 export const MCP_DEFAULT_MAX_CONCURRENT_PER_ACCOUNT = 4;
 
-const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
-
 function blocked(message: string, detail?: Record<string, unknown>): McpServiceError {
   return new McpServiceError(MCP_ERROR_CODES.URL_BLOCKED, message, detail);
 }
 
 function invalid(message: string, detail?: Record<string, unknown>): McpServiceError {
   return new McpServiceError(MCP_ERROR_CODES.SERVER_URL_INVALID, message, detail);
-}
-
-/**
- * Non-public IPv4 ranges, as `[networkAddress, prefixLength]` in numeric form.
- *
- * A table rather than a chain of comparisons: the ranges are data, and adding one is a line rather
- * than a new branch. Anything matching any range is refused as a non-public destination.
- */
-const BLOCKED_IPV4_RANGES: readonly (readonly [number, number])[] = [
-  [0x00000000, 8], // 0/8 "this network"
-  [0x0a000000, 8], // 10/8 private
-  [0x64400000, 10], // 100.64/10 carrier-grade NAT
-  [0x7f000000, 8], // 127/8 loopback
-  [0xa9fe0000, 16], // 169.254/16 link-local, where cloud metadata lives
-  [0xac100000, 12], // 172.16/12 private
-  [0xc0000000, 24], // 192.0.0/24 IETF protocol assignments
-  [0xc0a80000, 16], // 192.168/16 private
-  [0xc6120000, 15], // 198.18/15 benchmarking
-  [0xe0000000, 4], // 224/4 multicast
-  [0xf0000000, 4], // 240/4 reserved, including 255.255.255.255
-];
-
-function ipv4ToNumber(address: string): number | undefined {
-  const parts = address.split(".");
-  if (parts.length !== 4) return undefined;
-  let value = 0;
-  for (const part of parts) {
-    const octet = Number(part);
-    if (!Number.isInteger(octet) || octet < 0 || octet > 255 || part !== String(octet)) return undefined;
-    value = (value << 8) | octet;
-  }
-  return value >>> 0;
-}
-
-function isBlockedIpv4(address: string): boolean {
-  const value = ipv4ToNumber(address);
-  if (value === undefined) return true;
-  return BLOCKED_IPV4_RANGES.some(([network, prefix]) => {
-    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-    return (value & mask) >>> 0 === network;
-  });
-}
-
-/**
- * Non-public IPv6 destinations, as `[network as a 128-bit BigInt, prefix length, CIDR text]`.
- *
- * Only ranges with no public members are listed: `2001::/16` is deliberately absent because most of
- * it is routable, so only Teredo (`2001:0000::/32`) and the documentation block (`2001:db8::/32`)
- * are refused.
- *
- * The range lives as a BigInt rather than the leading 32 bits because a prefix shorter than 32 bits
- * is decided above them: `fc00::/7` is only correct if `fd00::` matches it too, which a truncated
- * network number cannot express.
- */
-const BLOCKED_IPV6_RANGES: readonly (readonly [bigint, number, string])[] = [
-  [ipv6RangeBase("::", 16), 16, "::/16"], // unspecified, loopback, and IPv4-mapped/NAT64 forms
-  [ipv6RangeBase("64:ff9b::", 96), 32, "64:ff9b::/32"], // NAT64 well-known prefix
-  [ipv6RangeBase("100::", 64), 64, "100::/64"], // discard-only
-  [ipv6RangeBase("2001::", 32), 32, "2001::/32"], // Teredo
-  [ipv6RangeBase("2001:db8::", 32), 32, "2001:db8::/32"], // documentation
-  [ipv6RangeBase("fc00::", 7), 7, "fc00::/7"], // unique local
-  [ipv6RangeBase("fec0::", 10), 10, "fec0::/10"], // deprecated site-local, still unroutable
-  [ipv6RangeBase("fe80::", 10), 10, "fe80::/10"], // link-local
-  [ipv6RangeBase("ff00::", 8), 8, "ff00::/8"], // multicast
-];
-
-/** The 128-bit value of a CIDR base address, which the table above spells out in full. */
-function ipv6RangeBase(address: string, prefix: number): bigint {
-  const bits = ipv6Bits(address);
-  if (bits === undefined) throw new Error(`Blocked IPv6 range ${address} is not a usable address`);
-  return (bits >> BigInt(128 - prefix)) << BigInt(128 - prefix);
-}
-
-/**
- * The address as a 128-bit BigInt, or `undefined` when the spelling is not usable.
- *
- * BigInt rather than bitwise operators: JavaScript's `<<` and `|` coerce to 32 bits, so the
- * previous four-group packing discarded everything above the third group — `2001:db8::` read as
- * `::` and every address in the documentation block was judged by its *last* two groups instead of
- * its first. An address this cannot parse is treated as blocked by the caller, which is the safe
- * direction for a rule that decides what the Server may reach.
- */
-/**
- * An IPv6 address's eight groups, or `undefined` when the spelling is not usable.
- *
- * Split out of {@link ipv6Bits} so each step stays readable: an IPv4 tail has to be folded into two
- * hex groups before the elision can be counted, and an address with no `::` must already be exactly
- * eight groups.
- */
-function ipv6Groups(normalized: string): string[] | undefined {
-  const [head, tail] = normalized.split("::");
-  const headGroups = head === undefined || head === "" ? [] : head.split(":");
-  if (tail === undefined) return headGroups.length === 8 ? headGroups : undefined;
-  const tailGroups = tail === "" ? [] : tail.split(":");
-  const elided = 8 - headGroups.length - tailGroups.length;
-  // `::` must stand for at least one group; two elisions or an over-long address is unusable.
-  if (elided < 1) return undefined;
-  return [...headGroups, ...Array<string>(elided).fill("0"), ...tailGroups];
-}
-
-/** Folds a trailing dotted-quad into the two hex groups it stands for, or returns the input as-is. */
-function expandEmbeddedIpv4(normalized: string): string | undefined {
-  const embeddedIpv4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(normalized)?.[1];
-  if (!embeddedIpv4) return normalized;
-  const ipv4 = ipv4ToNumber(embeddedIpv4);
-  if (ipv4 === undefined) return undefined;
-  const head = normalized.slice(0, normalized.length - embeddedIpv4.length);
-  return `${head}${(ipv4 >>> 16).toString(16)}:${(ipv4 & 0xffff).toString(16)}`;
-}
-
-function ipv6Bits(address: string): bigint | undefined {
-  const normalized =
-    address
-      .toLowerCase()
-      .replace(/^\[|\]$/g, "")
-      .split("%", 1)[0] ?? "";
-  const text = expandEmbeddedIpv4(normalized);
-  if (text === undefined) return undefined;
-  const groups = ipv6Groups(text);
-  if (groups === undefined) return undefined;
-  let value = 0n;
-  for (const group of groups) {
-    if (!/^[0-9a-f]{1,4}$/.test(group)) return undefined;
-    value = (value << 16n) | BigInt(Number.parseInt(group, 16));
-  }
-  return value;
-}
-
-function isBlockedIpv6(address: string): boolean {
-  const value = ipv6Bits(address);
-  if (value === undefined) return true;
-  return BLOCKED_IPV6_RANGES.some(([network, prefix]) => {
-    const shift = BigInt(128 - prefix);
-    return value >> shift === network >> shift;
-  });
-}
-
-function isBlockedAddress(hostname: string): boolean {
-  const bare = hostname.replace(/^\[|\]$/g, "");
-  const family = isIP(bare);
-  if (family === 4) return isBlockedIpv4(bare);
-  if (family === 6) return isBlockedIpv6(bare);
-  return false;
 }
 
 /**
@@ -252,59 +106,21 @@ export function isLoopbackHost(hostname: string): boolean {
   return isLoopbackHostname(hostname);
 }
 
-function isLoopbackHostname(hostname: string): boolean {
-  // A trailing dot is the absolute form of the same name, so `localhost.` is `localhost`.
-  const bare = hostname
-    .toLowerCase()
-    .replace(/^\[|\]$/g, "")
-    .replace(/\.$/, "");
-  if (LOOPBACK_HOSTNAMES.has(bare)) return true;
-  // The specification reserves the whole `.localhost` tree for loopback, so `foo.localhost` is too.
-  if (bare.endsWith(".localhost")) return true;
-  return isIP(bare) === 4 && bare.startsWith("127.");
-}
-
 /**
  * Validate one outbound URL against every rule at once. Throws rather than returning a verdict so a
  * caller cannot forget to check the result.
  *
- * A loopback plain-HTTP URL is admitted only when the policy allows loopback — the local
- * development case where a CLI points at a fixture Server on `127.0.0.1`. Every other private,
- * link-local, reserved, or non-public destination is refused with `MCP_URL_BLOCKED` regardless of
- * scheme, because an HTTPS URL to `169.254.169.254` reaches the metadata service just as well.
+ * The rules themselves live in `@opentag/shared` (`mcp-outbound-url.ts`) because build-time tooling
+ * must apply the same ones to the marketplace catalog without depending on a built Server. This
+ * function only maps their verdict onto this feature's error vocabulary.
  */
 export function assertOutboundUrl(rawUrl: string, policy: McpOutboundPolicy): URL {
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw invalid("The outbound URL is not a valid absolute URL");
+  const result = checkOutboundUrl(rawUrl, { allowLoopback: policy.allowLoopback });
+  if ("failure" in result) {
+    const { kind, message, detail } = result.failure;
+    throw kind === "invalid" ? invalid(message, detail) : blocked(message, detail);
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw blocked("Only HTTPS outbound URLs are allowed", { scheme: url.protocol });
-  }
-  if (url.username || url.password) throw blocked("An outbound URL may not carry credentials");
-  if (url.hash) throw blocked("An outbound URL may not carry a fragment");
-
-  const loopback = isLoopbackHostname(url.hostname);
-  if (url.protocol === "http:") {
-    if (!loopback) throw blocked("Plain HTTP is only allowed for a loopback host");
-    if (!policy.allowLoopback) {
-      throw blocked("Loopback plain HTTP is disabled on this deployment", { host: url.hostname });
-    }
-  }
-  if (loopback) {
-    // Loopback is a private destination by definition; the only path that admits it is the explicit
-    // development opt-in above, already enforced for `http:` and re-checked here for `https:`.
-    if (!policy.allowLoopback) {
-      throw blocked("Loopback destinations are disabled on this deployment", { host: url.hostname });
-    }
-    return url;
-  }
-  if (isBlockedAddress(url.hostname)) {
-    throw blocked("The outbound URL resolves to a non-public address", { host: url.hostname });
-  }
-  return url;
+  return result.url;
 }
 
 export interface McpOutboundFetchOptions extends McpOutboundPolicy {
@@ -391,7 +207,7 @@ export class McpOutboundFetcher {
     const bare = url.hostname.replace(/^\[|\]$/g, "");
     // A literal was already judged by `assertOutboundUrl`, and a loopback literal only got here
     // because the deployment opted into loopback.
-    if (isIP(bare) !== 0) return;
+    if (isIpLiteral(bare)) return;
     if (isLoopbackHostname(bare)) return;
     let addresses: string[];
     try {

@@ -1,0 +1,21 @@
+# The marketplace category set.
+#
+# Every category declared here must be referenced by at least one entry in `mcp-catalog.yaml`, and
+# every entry's `category` must name one of these ids — `pnpm check` fails either way, so the tab bar
+# never shows a tab that leads nowhere.
+#
+# `label` must supply every locale listed in `apps/web/project.inlang/settings.json`. A missing locale
+# fails the build rather than falling back to another at render time.
+# `order` sets the tab order.
+
+- id: general
+  label:
+    en: General
+    zh: 通用
+  order: 10
+
+- id: engineering
+  label:
+    en: Engineering
+    zh: 工程
+  order: 20

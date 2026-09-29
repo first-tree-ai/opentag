@@ -703,6 +703,45 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     });
   });
 
+  it("probes credentials through the project setting sources the runtime loads", async () => {
+    const directory = await temporaryDirectory("opentag-claude-probe-");
+    const authArguments = join(directory, "auth-arguments");
+    const userCredentialCommand = join(directory, "claude-user-credential");
+    /*
+     * The credential lives in user-level settings: the CLI defaults report a login that the
+     * project-scoped runtime can never use. The probe must not repeat that false positive, so
+     * this fixture only reports `loggedIn` when the default sources are in effect.
+     */
+    await writeFile(
+      userCredentialCommand,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "project" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
+      "utf8",
+    );
+    await chmod(userCredentialCommand, 0o755);
+    const userCredential = new ClaudeCodeAgentRuntimeFactory({
+      process: { command: userCredentialCommand, env: { PATH: process.env.PATH } },
+    });
+    await expect(userCredential.probe({})).resolves.toMatchObject({
+      ready: false,
+      version: "2.1.210 (Claude Code)",
+      issues: [{ code: "credential_missing" }],
+    });
+    await expect(readFile(authArguments, "utf8")).resolves.toBe("--setting-sources project auth status --json\n");
+
+    // A credential visible under the project setting sources still reports ready.
+    const projectCredentialCommand = join(directory, "claude-project-credential");
+    await writeFile(
+      projectCredentialCommand,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "project" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
+      "utf8",
+    );
+    await chmod(projectCredentialCommand, 0o755);
+    const projectCredential = new ClaudeCodeAgentRuntimeFactory({
+      process: { command: projectCredentialCommand, env: { PATH: process.env.PATH } },
+    });
+    await expect(projectCredential.probe({})).resolves.toMatchObject({ ready: true, issues: [] });
+  });
+
   it("handles a disappearing CLI and an empty version response", async () => {
     const directory = await temporaryDirectory("opentag-claude-probe-");
     const vanishingCommand = join(directory, "claude-vanishing");

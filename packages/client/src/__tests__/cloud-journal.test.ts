@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeTurnResultHash, type SessionMessageDeliveryRequest, type TurnReportRequest } from "@opentag/shared";
+import {
+  computeTurnResultHash,
+  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
+  type TurnReportRequest,
+} from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertCloudJournalScope,
@@ -14,6 +19,7 @@ import {
   type CloudJournalScope,
   cloudJournalEntryKey,
   computeCloudDeliveryInputHash,
+  computeCloudSessionInputHash,
 } from "../runner/cloud-journal.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
@@ -66,6 +72,46 @@ function sessionFixture(overrides: Partial<SessionMessageDeliveryRequest> = {}):
     ...overrides,
   };
 }
+
+it("keeps scheduled Cloud journal identity stable across send timestamps and detail links", () => {
+  const ordinary = sessionFixture();
+  const origin = {
+    scheduleId: randomUUID(),
+    scheduledFor: "2026-09-28T01:00:00.000Z",
+    timezone: "Asia/Shanghai",
+    name: "Daily check",
+  };
+  const scheduled: SessionMessageDeliveryRequestV3 = {
+    ...ordinary,
+    sourceSessionId: undefined,
+    scheduledOrigin: origin,
+    sentAt: "2026-09-28T01:00:01.000Z",
+    scheduleDetailUrl: "https://example.test/schedules/first",
+  };
+  const input = { message: scheduled, sessionKind: "internal" as const };
+  const hash = computeCloudSessionInputHash(input);
+  expect(
+    computeCloudSessionInputHash({
+      ...input,
+      message: {
+        ...scheduled,
+        requestId: randomUUID(),
+        sentAt: "2026-09-28T01:00:09.000Z",
+        scheduleDetailUrl: "https://example.test/schedules/second",
+      },
+    }),
+  ).toBe(hash);
+  expect(
+    computeCloudSessionInputHash({
+      ...input,
+      message: {
+        ...scheduled,
+        scheduledOrigin: { ...origin, scheduledFor: "2026-09-29T01:00:00.000Z" },
+      },
+    }),
+  ).not.toBe(hash);
+  expect(computeCloudSessionInputHash({ message: ordinary, sessionKind: "internal" })).not.toBe(hash);
+});
 
 describe("CloudJournal", () => {
   let directory: string;

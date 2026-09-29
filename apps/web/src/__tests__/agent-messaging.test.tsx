@@ -142,9 +142,9 @@ describe("OpenTag Web App Shell", () => {
       screen.getByText("This Agent always receives direct messages. Choose when it receives messages in group chats."),
     ).toBeTruthy();
     expect(screen.getByRole("group", { name: "Receive mode" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change bot" }).className).toContain("h-9");
+    expect(screen.getByRole("button", { name: "Change bot" }).className).toContain("ui-button");
     const disconnect = screen.getByRole("button", { name: "Disconnect Lark" });
-    expect(disconnect.className).toContain("h-9");
+    expect(disconnect.className).toContain("ui-button");
     expect(disconnect.className).toContain("text-kumo-danger");
   });
 

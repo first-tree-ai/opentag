@@ -8,6 +8,7 @@ import {
   ImMessageOperationSchema,
   ImResourceDescriptorSchema,
 } from "./im-message.js";
+import { SessionMessageScheduledOriginSchema } from "./schedules.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
 export const TaskStatusSchema = z.enum([
@@ -200,7 +201,12 @@ export const TaskInternalSessionSchema = z
 export const TaskCollaborationMessageSchema = z
   .object({
     id: z.string().uuid(),
-    sourceSessionId: z.string().uuid(),
+    /*
+     * Exactly one origin: an ordinary message names its source Session; a Server-scheduled
+     * message carries its `scheduledOrigin` snapshot and a null source Session instead.
+     */
+    sourceSessionId: z.string().uuid().nullable(),
+    scheduledOrigin: SessionMessageScheduledOriginSchema.nullable(),
     targetSessionId: z.string().uuid(),
     content: z.string().min(1),
     outcome: z.enum(["unknown", "accepted", "unreachable", "rejected"]),

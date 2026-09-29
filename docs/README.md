@@ -37,6 +37,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 
 ## Design references
 
+- [App design guide](../design.md)
 - [MCP Server integration](./design/mcp-server-integration.md)
 - [Web UI contract](./design/web-ui-contract.md)
 - [Doctor product specification](./design/doctor-product-spec.md)

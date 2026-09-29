@@ -112,6 +112,7 @@ import {
 import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
+import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillService } from "./services/skills/index.js";
@@ -905,6 +906,25 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const internalNavigationService = new InternalNavigationVisibilityService();
+    const scheduleService = new ScheduleService({
+      database,
+      logger: serviceLogger("schedules"),
+      owners: new DatabaseAgentOwnerResolver(database),
+      proofs: sessionCliProofService,
+      publicUrl: config.publicUrl,
+    });
+    /*
+     * The schedule scanner. It starts only after every service and the database are initialized,
+     * and on shutdown it stops new scans and cancels not-yet-sent hand-offs BEFORE the Runtime
+     * and the database close, so a late frame can never leave against a half-closed Server.
+     */
+    const scheduleScheduler = new ScheduleScheduler({
+      database,
+      dispatch: sessionCollaborationService,
+      logger: serviceLogger("schedule-scheduler"),
+      publicUrl: config.publicUrl,
+      sessions: sessionService,
+    });
     app = createApp({
       deployment: deploymentProof(config),
       loggerLevel: config.logLevel,
@@ -1012,6 +1032,8 @@ export async function startServer(): Promise<void> {
           proofs: sessionCliProofService,
         }),
       },
+      runtimeAgentSchedules: { service: scheduleService },
+      agentSchedules: { service: scheduleService },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
         proofs: sessionCliProofService,
@@ -1047,6 +1069,7 @@ export async function startServer(): Promise<void> {
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    scheduleScheduler.start();
     sandboxIdleReclaimer?.start();
     github?.worker.start();
     mcpRefreshWorker.start();
@@ -1063,6 +1086,7 @@ export async function startServer(): Promise<void> {
     app.addHook("onClose", async () => {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
+      await scheduleScheduler.stop();
       channelTargetPoller.stop();
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();

@@ -40,7 +40,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByLabelText("More Agent actions")).toBeNull();
     const agentNavigation = await screen.findByRole("navigation", { name: "Agent" });
     expect(within(agentNavigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
-    expect(within(agentNavigation).getByRole("link", { name: "Context Tree" }).getAttribute("href")).toBe(
+    expect(within(agentNavigation).getByRole("link", { name: "Memory" }).getAttribute("href")).toBe(
       `/agents/${agentId}/context-tree`,
     );
     expect(within(agentNavigation).queryByText("Settings")).toBeNull();
@@ -202,7 +202,7 @@ describe("OpenTag Web App Shell", () => {
     const setup = await screen.findByRole("region", { name: "Agent setup" });
     expect(
       [...setup.querySelectorAll('[data-ui="agent-settings-entry"] strong')].map((entry) => entry.textContent),
-    ).toEqual(["Name", "Messaging", "Computer", "Instructions", "Model"]);
+    ).toEqual(["Name", "Messaging", "Computer", "Model"]);
     const dangerZone = screen.getByRole("region", { name: "Danger zone" });
     expect(within(dangerZone).getByRole("heading", { name: "Danger zone" })).toBeTruthy();
     expect(dangerZone.className).not.toContain("border-t");
@@ -211,9 +211,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "How it works" })).toBeNull();
     // jsdom 30 no longer contributes inter-element whitespace to accessible names, so the
     // label/value boundary may collapse; \s? keeps these queries engine-agnostic.
-    const instructionsLink = screen.getByRole("link", { name: /^Instructions\s?\S/ });
-    expect(instructionsLink.className).toContain("focus-visible:ring-2");
-    expect(within(instructionsLink).getByText("No custom instructions").className).toContain("text-kumo-subtle");
+    expect(within(setup).queryByText("Instructions")).toBeNull();
     expect(screen.getByRole("link", { name: /^Model\s?\S/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /^Name\s?Reviewer$/ })).toBeTruthy();
@@ -221,7 +219,6 @@ describe("OpenTag Web App Shell", () => {
     // Every row in the list opens; a row that is a link only sometimes cannot be predicted.
     expect(screen.getByRole("link", { name: /^Computer\s?\S/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Pause or delete/ })).toBeTruthy();
-    expect(screen.getByText("No custom instructions")).toBeTruthy();
     expect(screen.getByText("Codex · Provider defaults")).toBeTruthy();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
     expect(screen.getByText("Ada's Mac · macOS · Online")).toBeTruthy();

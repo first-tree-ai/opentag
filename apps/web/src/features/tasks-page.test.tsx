@@ -1017,6 +1017,7 @@ describe("Tasks view", () => {
     const collaboration = {
       id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
       sourceSessionId: sessionId,
+      scheduledOrigin: null,
       targetSessionId: "55555555-5555-4555-8555-555555555555",
       content: "Please verify the deployment state.",
       outcome: "accepted" as const,

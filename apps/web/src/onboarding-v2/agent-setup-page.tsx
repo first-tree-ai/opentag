@@ -885,7 +885,7 @@ function shouldShowPreparation(stage: AgentSetupSnapshot["stage"], awaitingPrepa
 }
 
 function shouldShowSetupTitle(stage: AgentSetupSnapshot["stage"], awaitingPreparationContinue: boolean): boolean {
-  return stage === "ready" || (stage === "needs-messaging" && !awaitingPreparationContinue);
+  return stage === "needs-messaging" && !awaitingPreparationContinue;
 }
 
 function AgentSetupSnapshotView({

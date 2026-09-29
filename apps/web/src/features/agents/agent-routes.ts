@@ -12,6 +12,10 @@ export function agentDetailLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId" } as const;
 }
 
+export function agentScheduleDetailLink(agentId: string, scheduleId: string) {
+  return { params: { agentId }, search: { schedule: scheduleId }, to: "/agents/$agentId" } as const;
+}
+
 export function agentSetupLink(agentId: string) {
   return { search: { agentId }, to: "/agents/setup" } as const;
 }
@@ -38,6 +42,10 @@ export function agentIntegrationsLink(agentId: string) {
 
 export function agentMcpLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/mcp" } as const;
+}
+
+export function agentInstructionsLink(agentId: string) {
+  return { params: { agentId }, to: "/agents/$agentId/instructions" } as const;
 }
 
 export function agentContextTreeLink(agentId: string) {

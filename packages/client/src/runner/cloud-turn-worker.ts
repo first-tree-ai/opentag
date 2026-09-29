@@ -620,7 +620,7 @@ export async function runCloudTurnWorker(
       const result = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
-        input: cloudWorkerInput(request),
+        input: cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
         signal: execution.signal,
       });
       // A completed result is preserved; a stop/timeout that raced a failed result maps true.

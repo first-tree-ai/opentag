@@ -228,6 +228,7 @@ async function attachRunner(
     executionEligible?: boolean;
     onFrame?: (frame: RunnerServerFrame) => void;
     sessionCollaborationEligible?: boolean;
+    sessionCollaborationVersion?: 1 | 2;
   } = {},
 ): Promise<{ connection: CloudConnectionRecord; sent: RunnerServerFrame[]; socket: RunnerControlSocket }> {
   const sent: RunnerServerFrame[] = [];
@@ -249,6 +250,9 @@ async function attachRunner(
     socket,
     executionEligible: options.executionEligible !== false,
     sessionCollaborationEligible: options.sessionCollaborationEligible !== false,
+    ...(options.sessionCollaborationVersion
+      ? { sessionCollaborationVersion: options.sessionCollaborationVersion }
+      : {}),
   });
   return { connection, sent, socket };
 }
@@ -332,6 +336,35 @@ async function deliveryInput(
     attemptCount,
     message: { content: "continue the task", id: messageId },
     route: routeFor(fixture),
+    runtime,
+  };
+}
+
+async function scheduledDeliveryInput(fixture: CloudFixture, messageId: string): Promise<CloudSessionDeliveryInput> {
+  const runtime = await new EffectiveRuntimeSnapshotAssembler(db.database).assembleForSession(fixture.sessionId);
+  return {
+    attemptCount: 1,
+    message: {
+      id: messageId,
+      content: "scheduled task",
+      scheduledOrigin: {
+        scheduleId: randomUUID(),
+        scheduledFor: "2026-09-28T01:00:00.000Z",
+        timezone: "Asia/Shanghai",
+        name: "Daily check",
+      },
+      scheduleDetailUrl: `https://example.test/agents/${fixture.agentId}/schedules/detail`,
+    },
+    route: {
+      agentId: fixture.agentId,
+      imBindingId: fixture.bindingId,
+      targetSessionId: fixture.sessionId,
+      targetSessionKind: "channel",
+      targetInstallationId: randomUUID(),
+      targetComputerId: fixture.computerId,
+      targetComputerKind: "cloud",
+      targetPlacementGeneration: 1,
+    },
     runtime,
   };
 }
@@ -420,6 +453,69 @@ describe("CloudSessionCollaborationOwner", () => {
     expect(outcome).toEqual({ status: "unreachable", code: "runtime_not_ready" });
     expect(sent.filter((frame) => frame.type.startsWith("session:message"))).toEqual([]);
     expect(sent.some((frame) => frame.type === "delivery:verified")).toBe(false);
+  });
+
+  it("refuses a scheduled origin on a v1 connection before sending a frame", async () => {
+    const fixture = await seedCloudSession();
+    const stack = makeStack(fixture);
+    const { sent } = await attachRunner(stack, fixture, { sessionCollaborationVersion: 1 });
+    const outcome = await stack.owner.deliver(await scheduledDeliveryInput(fixture, randomUUID()), allowAdmission);
+    expect(outcome).toEqual({ status: "unreachable", code: "unsupported_schedule_origin" });
+    expect(sent.filter((frame) => frame.type.startsWith("session:message"))).toEqual([]);
+  });
+
+  it("sends the frozen scheduled origin only on v2 and persists its durable custody", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    const input = await scheduledDeliveryInput(fixture, messageId);
+    if (!("scheduledOrigin" in input.message)) throw new Error("scheduled fixture missing origin");
+    await db.database.insert(sessionMessages).values({
+      id: messageId,
+      scheduledOrigin: input.message.scheduledOrigin,
+      targetSessionId: fixture.sessionId,
+      content: input.message.content,
+      contentHash: "a".repeat(64),
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+    });
+    const stack = makeStack(fixture);
+    const { sent } = await attachRunner(stack, fixture, {
+      sessionCollaborationVersion: 2,
+      onFrame: answeringOnFrame(stack, fixture),
+    });
+    const outcome = await stack.owner.deliver(input, allowAdmission);
+    expect(outcome).toEqual({ status: "accepted" });
+    const run = sent.find((frame) => frame.type === "session:message:run");
+    expect(run).toMatchObject({
+      message: {
+        messageId,
+        scheduledOrigin: { scheduledFor: "2026-09-28T01:00:00.000Z", name: "Daily check" },
+        scheduleDetailUrl: `https://example.test/agents/${fixture.agentId}/schedules/detail`,
+      },
+    });
+    if (run?.type !== "session:message:run") throw new Error("scheduled run frame missing");
+    expect(run.message.sourceSessionId).toBeUndefined();
+    expect(run.message.sentAt).toBeDefined();
+    const durable = await new PostgresRuntimeDurableWorkStore(db.database).read(
+      fixture.computerId,
+      "session-message",
+      `${fixture.sessionId}:${messageId}`,
+    );
+    expect(durable?.payload).toMatchObject({
+      request: { messageId, scheduledOrigin: { name: "Daily check" } },
+    });
+
+    const downgraded = await attachRunner(stack, fixture, { sessionCollaborationVersion: 1 });
+    await stack.owner.handleReceived(downgraded.connection, {
+      messageId,
+      phase: "received",
+      requestId: randomUUID(),
+      status: "accepted",
+      turnId: `turn-${messageId}`,
+      type: "session:message:received",
+    });
+    expect(downgraded.sent.filter((frame) => frame.type === "session:message:verified")).toEqual([]);
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
   });
 
   it("re-reads the configuration at the permission boundary and refuses a stale frozen snapshot", async () => {

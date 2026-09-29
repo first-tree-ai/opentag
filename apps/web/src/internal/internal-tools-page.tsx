@@ -145,7 +145,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
           </Text>
           <p className="text-sm text-kumo-subtle">{m.common_internal_navigation_description()}</p>
         </div>
-        <div className="divide-y divide-kumo-line rounded-lg ring ring-kumo-line">
+        <div className="ui-surface divide-y divide-kumo-line bg-kumo-base">
           <NavigationVisibilityRow
             checked={internalNavigation.integrations}
             description={m.common_show_integrations_navigation_description()}
@@ -167,7 +167,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
           {m.common_account_resets()}
         </Text>
         {operations.map((operation) => (
-          <div className="grid gap-2 rounded-lg p-4 ring ring-kumo-line" key={operation.mode}>
+          <div className="ui-surface grid gap-2 bg-kumo-base p-4" key={operation.mode}>
             <Text as="h3" variant="heading">
               {operation.title}
             </Text>
@@ -202,7 +202,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
         </Text>
         <nav aria-label={m.common_internal_tool_pages()} className="grid gap-2">
           {pages.map((page) => (
-            <Link className="grid gap-1 rounded-lg p-4 ring ring-kumo-line" key={page.to} to={page.to}>
+            <Link className="ui-surface grid gap-1 bg-kumo-base p-4" key={page.to} to={page.to}>
               <strong className="text-kumo-strong">{page.title}</strong>
               <span className="text-sm text-kumo-subtle">{page.description}</span>
             </Link>

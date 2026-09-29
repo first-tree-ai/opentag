@@ -20,9 +20,10 @@ import {
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
+import { AgentSchedulesSection } from "./agent-schedules-section.js";
 import { CloudProgressNotice } from "./cloud/cloud-progress-notice.js";
 
-export function AgentDetailPage({ agentId }: { agentId: string }) {
+export function AgentDetailPage({ agentId, scheduleId }: { agentId: string; scheduleId?: string }) {
   const { me } = useAccount();
   const state = useAgentDetailView(agentId, { watched: true, accountId: me.user.id });
   return (
@@ -41,6 +42,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               <AgentStatusCard agent={agent} />
             </div>
             {agent.computerKind === "cloud" ? <CloudProgressNotice agentId={agent.id} /> : null}
+            <AgentSchedulesSection agentId={agent.id} scheduleId={scheduleId} />
             <AgentTasksSection agentId={agent.id} />
           </div>
         </section>
@@ -119,7 +121,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   return (
     <section
-      className="grid rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      className="grid ui-surface bg-kumo-base p-4 ring ring-kumo-line"
       aria-label={m.agents_status_region()}
       data-ui="agent-status-overview"
     >

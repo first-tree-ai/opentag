@@ -1551,7 +1551,7 @@ describe("Agent-level overrides", () => {
     }
   });
 
-  it("re-probes only the Agent whose override changed, and every Agent for a shared edit", async () => {
+  it("re-probes only Agents whose effective connection changed", async () => {
     const fixture = await McpFixtureServer.start();
     const harness = await seed();
     try {
@@ -1584,7 +1584,7 @@ describe("Agent-level overrides", () => {
       expect(states.get(harness.agentA)).toBe("pending");
       expect(states.get(harness.agentB)).toBe("succeeded");
 
-      // A shared-definition edit re-probes every mount.
+      // Sending the current default does not alter either effective connection.
       const definition = (await harness.servers.listServers(harness.accountId))[0];
       await harness.servers.updateServer(harness.accountId, server.id, {
         expectedRevision: definition?.revision as number,
@@ -1592,6 +1592,15 @@ describe("Agent-level overrides", () => {
       });
       states = await afterProbe();
       expect(states.get(harness.agentA)).toBe("pending");
+      expect(states.get(harness.agentB)).toBe("succeeded");
+      await harness.authorization.probe(harness.accountId, harness.agentA, server.id);
+      const current = (await harness.servers.listServers(harness.accountId))[0];
+      await harness.servers.updateServer(harness.accountId, server.id, {
+        expectedRevision: current?.revision as number,
+        authScheme: "Token",
+      });
+      states = await afterProbe();
+      expect(states.get(harness.agentA)).toBe("succeeded");
       expect(states.get(harness.agentB)).toBe("pending");
 
       /*

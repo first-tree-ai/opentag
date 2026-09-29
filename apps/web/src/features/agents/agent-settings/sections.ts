@@ -9,7 +9,7 @@ import {
   runtimeProviderName,
 } from "../agent-presentation.js";
 
-export type AgentSettingsSection = "instructions" | "execution" | "messaging" | "identity" | "computer" | "manage";
+export type AgentSettingsSection = "execution" | "messaging" | "identity" | "computer" | "manage";
 
 export type AgentSettingsGroup = "setup" | "danger";
 
@@ -40,12 +40,6 @@ export const agentSettingsSections: ReadonlyArray<{
     label: () => m.agents_status_computer(),
     group: "setup",
     icon: "laptop",
-  },
-  {
-    key: "instructions",
-    label: () => m.agent_settings_instructions_title(),
-    group: "setup",
-    icon: "instructions",
   },
   {
     key: "execution",
@@ -80,11 +74,6 @@ export function agentSettingsSummary(
   config: AgentAdminConfig,
   section: AgentSettingsSection,
 ): string {
-  if (section === "instructions") {
-    return config.runtimeConfig.instructions.trim()
-      ? m.agent_settings_custom_instructions()
-      : m.agent_settings_no_custom_instructions();
-  }
   if (section === "execution") {
     const provider = runtimeProviderName(config.runtimeProvider);
     if (!config.runtimeConfig.model && !config.runtimeConfig.reasoningEffort) {

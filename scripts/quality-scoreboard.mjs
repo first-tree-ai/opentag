@@ -171,7 +171,7 @@ function toPosix(path) {
 function readTestDuration(repositoryRoot, path) {
   const value = readJson(resolve(repositoryRoot, path));
   const duration = typeof value === "number" ? value : value?.durationMs;
-  return Number.isFinite(Number(duration)) ? measured(Number(duration)) : skipped(`${path} was not found`);
+  return Number.isFinite(Number(duration)) ? measured(Number(duration), value?.note) : skipped(`${path} was not found`);
 }
 
 function readHighRisk(repositoryRoot, path) {
@@ -199,6 +199,7 @@ export function createScoreboard({
   complexityWarnings,
   coverage,
   testDurationMs,
+  testDurationNote,
   bundleReport,
   largestFiles = [],
   openHighRiskItems,
@@ -220,7 +221,7 @@ export function createScoreboard({
       testDurationMs:
         testDurationMs === null || testDurationMs === undefined
           ? skipped("test duration artifact was not found")
-          : measured(testDurationMs),
+          : measured(testDurationMs, testDurationNote),
       bundleSizes:
         bundleReport === null || bundleReport === undefined
           ? skipped("bundle-size report was unavailable")
@@ -278,6 +279,7 @@ function collectScoreboard(repositoryRoot, options) {
     complexityWarnings: biome.status === "skipped" ? undefined : biome.value,
     coverage: coverage.status === "skipped" ? null : coverage.value,
     testDurationMs: testDuration.status === "skipped" ? null : testDuration.value,
+    testDurationNote: testDuration.note,
     bundleReport: bundle.status === "skipped" ? null : bundle.value,
     largestFiles: collectLargestFiles(repositoryRoot),
     openHighRiskItems: highRisk.status === "skipped" ? null : highRisk.value,

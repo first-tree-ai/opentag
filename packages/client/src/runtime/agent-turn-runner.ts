@@ -227,7 +227,8 @@ export class AgentTurnRunner {
       }
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
-        input: buildAgentInput(request, supplementalContext, owner.request.runtime),
+        // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
+        input: buildAgentInput(request, supplementalContext, owner.request.runtime, new Date(this.#now())),
       });
     } catch {
       return steerResult(request, "deferred", "steer_state_unknown");
@@ -311,7 +312,12 @@ export class AgentTurnRunner {
       });
       const result = await runtime.prompt({
         runId: owner.turnId,
-        input: buildAgentInput(owner.request, supplementalContext),
+        /*
+         * The processing clock is sampled at actual input construction — after credential
+         * preparation and resource fetching, at the last moment before the Run dispatch — never
+         * at delivery receipt. It is prompt input only and never enters a persistent hash.
+         */
+        input: buildAgentInput(owner.request, supplementalContext, undefined, new Date(this.#now())),
         signal: runSignal,
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries
@@ -571,6 +577,7 @@ export function buildAgentInput(
   request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest,
   supplementalContext?: string,
   rootRuntime?: EffectiveRuntimeSnapshot,
+  processedAt: Date = new Date(),
 ): AgentInput {
   const runtime = request.type === "im:deliver" ? request.runtime : rootRuntime;
   if (!runtime) throw new Error("A steer input requires the root runtime snapshot");
@@ -594,6 +601,12 @@ export function buildAgentInput(
     `Session: ${request.sessionId}`,
     `Agent revision: ${runtime.revision.agent.sequence}/${runtime.revision.agent.id}`,
     `Session revision: ${runtime.revision.session.sequence}/${runtime.revision.session.id}`,
+    /*
+     * Trustworthy processing-time UTC for every ordinary IM/steer input. There is no schedule
+     * timezone to render here and the Runtime never guesses the user's local zone; the Agent
+     * uses the execution environment's system clock when it needs a fresher value.
+     */
+    `Processing time (UTC): ${processedAt.toISOString()} (sampled when this input was assembled for actual processing, after any queue wait)`,
     ...buildProviderOutboxInstructions({
       actionInstruction: observer
         ? "Do not run a provider CLI mutation for this observer copy. The CLI and credentials remain available because they are Session capabilities, not reply-role authorization."

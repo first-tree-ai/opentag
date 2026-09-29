@@ -181,10 +181,10 @@ describe("onboarding flow layout", () => {
 
   it("keeps readiness state emphasis on the marker, never in the row geometry", () => {
     expect(declarationValue('.otv2-readiness__line[data-state="passed"] .otv2-readiness__marker', "background")).toBe(
-      "var(--brand-soft)",
+      "var(--color-kumo-success-tint)",
     );
     expect(declarationValue('.otv2-readiness__line[data-state="passed"] .otv2-readiness__marker', "color")).toBe(
-      "var(--brand-ink)",
+      "var(--text-color-kumo-success)",
     );
     expect(declarationValue('.otv2-readiness__line[data-state="failed"] .otv2-readiness__marker', "background")).toBe(
       "var(--color-kumo-recessed)",

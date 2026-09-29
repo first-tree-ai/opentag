@@ -40,6 +40,7 @@
     "@slack/web-api": "^8.1.1",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.7.2",
+    "croner": "10.0.1",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.12.3",
     "fflate": "^0.8.3",

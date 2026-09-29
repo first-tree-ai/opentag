@@ -4,14 +4,14 @@ import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import postcss, { type Root } from "postcss";
 import { afterEach, describe, expect, it } from "vitest";
+import { designTokens } from "./design.tokens.js";
 import { Button, buttonClassName, Dialog } from "./design-system.js";
-import { kumoThemeTokens } from "./kumo-theme.tokens.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(here, "..", "..");
 const sourceRoot = resolve(webRoot, "src");
 const indexHtml = readFileSync(resolve(webRoot, "index.html"), "utf8");
-const kumoThemeCss = postcss.parse(readFileSync(resolve(here, "kumo-theme.css"), "utf8"));
+const kumoThemeCss = postcss.parse(readFileSync(resolve(here, "theme.css"), "utf8"));
 const designSystemSource = readFileSync(resolve(here, "design-system.tsx"), "utf8");
 const stylesheets = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith(".css"))
@@ -149,19 +149,19 @@ describe("emphasis button fallbacks", () => {
     {
       intent: "primary",
       tokens: [
-        ["bg", "buttonBackground"],
-        ["gradient-start", "buttonGradientStart"],
-        ["gradient-end", "buttonGradientEnd"],
-        ["ring", "buttonRing"],
+        ["bg", "action"],
+        ["gradient-start", "action"],
+        ["gradient-end", "action"],
+        ["ring", "action"],
       ],
     },
     {
       intent: "danger",
       tokens: [
-        ["bg", "dangerButtonBackground"],
-        ["gradient-start", "dangerButtonGradientStart"],
-        ["gradient-end", "dangerButtonGradientEnd"],
-        ["ring", "dangerButtonRing"],
+        ["bg", "danger"],
+        ["gradient-start", "danger"],
+        ["gradient-end", "danger"],
+        ["ring", "danger"],
       ],
     },
   ] as const;
@@ -179,8 +179,8 @@ describe("emphasis button fallbacks", () => {
     } as const;
     for (const { intent, tokens } of emphasisContracts) {
       for (const [slot, tokenName] of tokens) {
-        const token = `--opentag-button-${intent}-${slot}`;
-        const fallback: string = kumoThemeTokens.light[tokenName];
+        const token = `--opentag-button-${intent}-bg`;
+        const fallback: string = designTokens.light[tokenName];
         // Button sets the override inline; links receive it through buttonClassName instead.
         expect(buttons[intent].style.getPropertyValue(`--kumo-button-emphasis-${slot}`)).toBe(
           `var(${token}, ${fallback})`,
@@ -196,7 +196,7 @@ describe("emphasis button fallbacks", () => {
     // Tailwind only scans static class strings, so the buttonClassName fallbacks repeat palette
     // literals; any other raw color in the adapter is a contract breach. The fallback set is
     // exactly the WCAG-verified light button surfaces from the contrast test.
-    const paletteValues = new Set<string>(Object.values(kumoThemeTokens.light));
+    const paletteValues = new Set<string>(Object.values(designTokens.light));
     const literals = designSystemSource.match(/#[\da-f]{6}\b/gi) ?? [];
     expect(literals.length).toBeGreaterThan(0);
     for (const literal of literals) {

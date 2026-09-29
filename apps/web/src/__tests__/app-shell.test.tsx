@@ -40,7 +40,7 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     render(<App />);
     const pageHeading = await screen.findByRole("heading", { level: 1, name: "All Agents" });
-    expect(pageHeading.classList.contains("text-xl")).toBe(true);
+    expect(pageHeading.classList.contains("ui-text")).toBe(true);
     expect(window.location.pathname).toBe("/agents");
     expect(screen.queryByText("Infrastructure")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Agent runtime" })).toBeNull();
@@ -68,9 +68,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/currently working/)).toBeNull();
     expect(screen.queryByText("Choose an Agent to continue, or create a new one.")).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("@reviewer")).toBeNull();
-    expect(within(agentRow as HTMLElement).getByText("Last 30 days · IM tasks")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("32 tasks")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("428K tokens")).toBeTruthy();
+    expect(agentRow?.querySelector('[data-ui="agent-row-usage"]')).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("Tasks (30d)")).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("Tokens (30d)")).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("Last checked")).toBeNull();
@@ -110,12 +108,12 @@ describe("OpenTag Web App Shell", () => {
         .getAllByRole("link")
         .map((item) => item.textContent),
       /*
-       * MCP Servers, Context Tree and Skills are present with no Internal Tools flag: they are
+       * Instructions, Memory, MCP and Skills are present with no Internal Tools flag: they are
        * ordinary management surfaces, unlike Integrations which the next test gates.
        */
-    ).toEqual(["Overview", "Tasks", "Context Tree", "MCP Servers", "Skills", "Usage"]);
+    ).toEqual(["Overview", "Tasks", "Instructions", "Memory", "MCP", "Skills", "Usage"]);
     const navigationIcons = workspaceNavigation.querySelectorAll("svg");
-    expect(navigationIcons).toHaveLength(6);
+    expect(navigationIcons).toHaveLength(7);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
     expect(within(workspaceNavigation).queryByText("Settings")).toBeNull();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
@@ -165,7 +163,7 @@ describe("OpenTag Web App Shell", () => {
         within(workspaceNavigation)
           .getAllByRole("link")
           .map((item) => item.textContent),
-      ).toEqual(["Overview", "Tasks", "Context Tree", "MCP Servers", "Skills", "Integrations", "Usage"]),
+      ).toEqual(["Overview", "Tasks", "Instructions", "Memory", "MCP", "Skills", "Integrations", "Usage"]),
     );
   });
 
@@ -265,6 +263,7 @@ describe("Workspace and Agent navigation boundaries", () => {
     "/settings/identity",
     "/settings/messaging",
     "/settings/computer",
+    "/instructions",
     "/settings/instructions",
     "/settings/execution",
     "/settings/manage",

@@ -42,12 +42,12 @@ describe("setup piece layout", () => {
     });
   });
 
-  it("keeps the expired-command action legible over its dark scrim", () => {
-    expect(declarationValue(".ots-command__expired button", "color")).toBe("#b8d77d");
+  it("keeps the expired-command action legible over its neutral scrim", () => {
+    expect(declarationValue(".ots-command__expired button", "color")).toBe("var(--text-color-kumo-link)");
     expect(declarationValue(".ots-command__expired button:hover", "background")).toBe(
-      "color-mix(in srgb, var(--on-dark) 14%, transparent)",
+      "color-mix(in srgb, var(--fg) 8%, transparent)",
     );
-    expect(declarationValue(".ots-command__expired button:hover", "color")).toBe("#c8e594");
+    expect(declarationValue(".ots-command__expired button:hover", "color")).toBe("var(--color-kumo-brand-hover)");
   });
 
   it("keeps idle, issuing, issued, failed, and expired states on one measured command surface", () => {

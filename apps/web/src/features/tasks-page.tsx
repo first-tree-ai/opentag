@@ -280,7 +280,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
 
   return (
     <section
-      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      className="grid gap-4 ui-surface bg-kumo-base p-4 ring ring-kumo-line"
       aria-labelledby="agent-tasks-heading"
       data-ui="agent-tasks"
     >
@@ -430,7 +430,7 @@ export function TaskDetailPage({
           <TaskDetailFact label={m.tasks_agent_label()}>
             <span className="flex min-w-0 items-center gap-2">
               <span
-                className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+                className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-strong"
                 aria-hidden="true"
               >
                 {task.agent.displayName.charAt(0)}
@@ -752,7 +752,7 @@ function TaskRow({
         <Table.Cell className="col-span-2 row-start-3" data-label={m.tasks_agent_label()}>
           <span className="inline-flex min-w-0 items-center gap-2">
             <span
-              className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+              className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-strong"
               aria-hidden="true"
             >
               {task.agent.displayName.charAt(0)}
@@ -833,7 +833,7 @@ function TaskNotice({
 }) {
   return (
     <section
-      className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line"
+      className="grid gap-2 ui-surface bg-kumo-base p-8 text-center ring ring-kumo-line"
       aria-live="polite"
       data-ui="task-empty-state"
     >

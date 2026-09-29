@@ -1,182 +1,146 @@
 import type { MCPAgentServer } from "@opentag/shared/browser";
-import { formatDateTime } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
-import { Button, Collapsible, DropdownMenu, Icon, StatusIndicator, Switch, Text } from "../../ui/design-system.js";
-import { canRevoke, type McpRowStates, rowStates } from "./mcp-page-model.js";
+import {
+  Banner,
+  Button,
+  Collapsible,
+  DropdownMenu,
+  Icon,
+  Loader,
+  StatusIndicator,
+  Switch,
+  Text,
+  Tooltip,
+} from "../../ui/design-system.js";
+import { canRevoke } from "./mcp-page-model.js";
+import { McpPartialTools } from "./mcp-tools-dialog.js";
 
-type ServerAction = "authorize" | "edit" | "remove" | "revoke" | "tools";
-
-/** Mount, authorization and discovery stay independent, with controls beside the state they change. */
+export type ServerAction = "authorize" | "edit" | "remove" | "revoke" | "tools" | "details";
 export function McpServerCard({
   entry,
+  agentName,
   onAction,
   onProbe,
   onToggle,
   probing,
   toggling,
+  error,
+  highlighted = false,
 }: {
   entry: MCPAgentServer;
+  agentName: string;
   onAction: (action: ServerAction) => void;
   onProbe: () => void;
   onToggle: () => void;
   probing: boolean;
   toggling: boolean;
+  error?: string;
+  highlighted?: boolean;
 }) {
-  const states = rowStates(entry);
-  const authorized = states.authorizationStatus === "active";
-  const discovering = probing || (states.probe === "pending" && Boolean(entry.authorization?.probedAt));
-  const canInspectTools = entry.snapshot !== null;
-
+  const authorized = entry.authorization?.status === "active";
+  const pending = probing || entry.authorization?.probeState === "pending";
+  const saved = entry.snapshot !== null;
+  const count = entry.snapshot?.tools?.length ?? 0;
+  const previous = !authorized || entry.authorization?.probeState !== "succeeded" || probing;
   return (
-    <li className="grid min-w-0 gap-3 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="mcp-server-row">
-      <div className="grid min-w-0 gap-2">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1">
-          <div className="wrap-anywhere min-w-0">
-            <Text as="h2" variant="heading">
-              {entry.name}
-            </Text>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Switch
-              aria-label={m.mcp_toggle_label({ name: entry.name })}
-              checked={entry.enabled}
-              disabled={toggling}
-              onCheckedChange={onToggle}
-              transitioning={toggling}
-            />
-            <ServerMenu
-              authorized={authorized}
-              discovering={discovering}
-              entry={entry}
-              onAction={onAction}
-              onProbe={onProbe}
-            />
-          </div>
-          <p className="wrap-anywhere col-span-2 text-sm text-kumo-subtle">{entry.effective.url}</p>
-        </div>
-
-        {entry.description || entry.discoveredDescription ? (
-          <p className="wrap-anywhere text-sm text-kumo-subtle">
-            {entry.description || m.mcp_description_discovered({ value: entry.discoveredDescription ?? "" })}
-          </p>
-        ) : null}
-
-        <AuthorizationInfo entry={entry} />
-      </div>
-      {!entry.enabled ? (
-        <Text as="p" size="sm" variant="secondary">
-          {authorized ? m.mcp_disabled_hint() : m.mcp_disabled_authorization_required_hint()}
+    <li
+      id={`mcp-server-${entry.mcpServerId}`}
+      tabIndex={-1}
+      className={`grid min-w-0 gap-3 p-4 outline-offset-[-2px] ${highlighted ? "outline-2 outline-kumo-ring" : ""}`}
+      data-ui="mcp-server-row"
+    >
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 wrap-anywhere">
+        <Text as="h2" variant="heading">
+          {entry.name}
         </Text>
+        <div className="flex shrink-0 items-center gap-2">
+          <Tooltip
+            content={m.mcp_toggle_label({ agent: agentName, name: entry.name })}
+            render={
+              <span className="inline-flex">
+                <Switch
+                  aria-label={m.mcp_toggle_label({ agent: agentName, name: entry.name })}
+                  checked={entry.enabled}
+                  disabled={toggling}
+                  transitioning={toggling}
+                  onCheckedChange={onToggle}
+                />
+              </span>
+            }
+          />
+          <ServerMenu entry={entry} pending={pending} onAction={onAction} onProbe={onProbe} />
+        </div>
+        <p className="col-span-2 wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
+      </div>
+      {entry.description ? (
+        <p className="wrap-anywhere line-clamp-2 text-sm text-kumo-subtle">{entry.description}</p>
       ) : null}
-
       <div className="grid gap-3 border-t border-kumo-line pt-3 @min-[36rem]/content:grid-cols-[minmax(0,1fr)_auto] @min-[36rem]/content:items-start">
-        <div className="grid min-w-0 gap-2 empty:hidden">
-          <ToolStatus discovering={discovering} entry={entry} />
+        <div className="min-w-0 empty:hidden" aria-live="polite">
+          <ToolStatus entry={entry} agentName={agentName} pending={pending} />
         </div>
         <div className="flex flex-wrap items-center gap-2 @min-[36rem]/content:col-start-2 @min-[36rem]/content:row-start-1">
-          {!authorized ? (
-            <Button onClick={() => onAction("authorize")} size="compact" variant="secondary">
+          {entry.enabled && !authorized ? (
+            <Button size="compact" variant="secondary" onClick={() => onAction("authorize")}>
               {m.mcp_authorize_action()}
             </Button>
           ) : null}
-          {authorized && states.probe === "failed" ? (
+          {entry.enabled && authorized && entry.authorization?.probeState === "failed" ? (
             <Button
-              aria-label={m.common_retry()}
-              disabled={discovering}
-              loading={discovering}
-              onClick={onProbe}
+              aria-label={m.mcp_retry()}
+              disabled={pending}
+              loading={probing}
               size="compact"
               variant="secondary"
+              onClick={onProbe}
             >
-              {m.common_retry()}
+              {m.mcp_retry()}
             </Button>
           ) : null}
-          {canInspectTools ? (
-            <Button onClick={() => onAction("tools")} size="compact" variant="ghost">
-              {m.mcp_tools_action({ count: entry.snapshot?.tools?.length ?? 0 })}
+          {saved ? (
+            <Button variant="ghost" size="compact" onClick={() => onAction("tools")}>
+              {previous ? m.mcp_saved_tools_action({ count }) : m.mcp_tools_action({ count })}
               <Icon name="chevron-right" />
             </Button>
           ) : null}
         </div>
       </div>
+      {error ? <Banner variant="error">{error}</Banner> : null}
+      {entry.enabled &&
+      authorized &&
+      entry.authorization?.probeState === "failed" &&
+      !pending &&
+      entry.authorization.probeError ? (
+        <McpProbeError error={entry.authorization.probeError} />
+      ) : null}
     </li>
   );
 }
-
-function AuthorizationInfo({ entry }: { entry: MCPAgentServer }) {
-  const states = rowStates(entry);
-  const authorized = states.authorizationStatus === "active";
-  const expiresAt = entry.authorization?.accessTokenExpiresAt;
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-kumo-subtle">
-      {states.authorizationKind !== "unauthorized" ? <span>{describeKind(states.authorizationKind)}</span> : null}
-      <StatusIndicator label={describeStatus(states.authorizationStatus)} tone={authorized ? "success" : "warning"} />
-      {expiresAt ? <time dateTime={expiresAt}>{m.mcp_expires_at({ time: formatDateTime(expiresAt) })}</time> : null}
-    </div>
-  );
+function ToolStatus({ entry, agentName, pending }: { entry: MCPAgentServer; agentName: string; pending: boolean }) {
+  if (!entry.enabled)
+    return <span className="text-sm text-kumo-subtle">{m.mcp_disabled_for({ agent: agentName })}</span>;
+  if (entry.authorization?.status !== "active")
+    return <StatusIndicator label={m.mcp_authorization_required()} tone="warning" />;
+  if (pending)
+    return (
+      <span className="flex items-center gap-2 text-sm text-kumo-subtle">
+        <Loader size="sm" />
+        {entry.authorization.kind === "oauth" ? m.mcp_probe_oauth_pending() : m.mcp_probe_state_pending()}
+      </span>
+    );
+  if (entry.authorization.probeState === "failed")
+    return <span className="text-sm text-kumo-danger">{m.mcp_probe_state_failed()}</span>;
+  if (entry.snapshot === null) return <span className="text-sm text-kumo-subtle">{m.mcp_probe_state_not_run()}</span>;
+  return entry.authorization.toolsTruncated ? <McpPartialTools /> : null;
 }
-
-function ToolStatus({ discovering, entry }: { discovering: boolean; entry: MCPAgentServer }) {
-  return (
-    <>
-      <DiscoveryStatus discovering={discovering} entry={entry} />
-      {entry.authorization?.probeError ? <ProbeErrorDetails error={entry.authorization.probeError} /> : null}
-      {entry.snapshot !== null && entry.authorization?.toolsTruncated ? (
-        <Collapsible.Root className="min-w-0">
-          <Collapsible.Trigger render={<Button className="-ml-2 text-kumo-warning" size="compact" variant="ghost" />}>
-            <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-current" />
-            {m.mcp_tools_incomplete()}
-            <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
-          </Collapsible.Trigger>
-          <Collapsible.Panel className="pt-2">
-            <p className="wrap-anywhere rounded bg-kumo-recessed p-3 text-sm text-kumo-subtle">
-              {m.mcp_tools_truncated()}
-            </p>
-          </Collapsible.Panel>
-        </Collapsible.Root>
-      ) : null}
-    </>
-  );
-}
-
-function DiscoveryStatus({ discovering, entry }: { discovering: boolean; entry: MCPAgentServer }) {
-  const states = rowStates(entry);
-  const previousTools =
-    entry.snapshot !== null && (states.authorizationStatus !== "active" || states.probe !== "succeeded" || discovering);
-  const showProbe = discovering || states.probe !== "succeeded" || entry.snapshot === null;
-  if (!showProbe && !previousTools) return null;
-
-  const failed = states.probe === "failed" && !discovering;
-  let hint = previousTools ? m.mcp_tools_previous_hint() : null;
-  if (!hint && failed && states.authorizationStatus === "active") hint = m.mcp_discovery_failed_hint();
-
-  return (
-    <div aria-live="polite" className="flex flex-wrap items-center gap-x-3 gap-y-2">
-      {showProbe ? (
-        <StatusIndicator
-          label={discovering ? m.mcp_probe_state_pending() : describeProbe(entry)}
-          tone={failed ? "danger" : "neutral"}
-        />
-      ) : null}
-      {hint ? (
-        <Text size="sm" variant="secondary">
-          {hint}
-        </Text>
-      ) : null}
-    </div>
-  );
-}
-
 function ServerMenu({
-  authorized,
-  discovering,
   entry,
+  pending,
   onAction,
   onProbe,
 }: {
-  authorized: boolean;
-  discovering: boolean;
   entry: MCPAgentServer;
+  pending: boolean;
   onAction: (action: ServerAction) => void;
   onProbe: () => void;
 }) {
@@ -191,14 +155,13 @@ function ServerMenu({
       </DropdownMenu.Trigger>
       <DropdownMenu.Content align="end">
         <DropdownMenu.Item onClick={() => onAction("edit")}>{m.mcp_edit_action()}</DropdownMenu.Item>
-        {authorized ? (
-          <>
-            <DropdownMenu.Item onClick={() => onAction("authorize")}>{m.mcp_authorize_action()}</DropdownMenu.Item>
-            <DropdownMenu.Item disabled={discovering} onClick={onProbe}>
-              {m.mcp_probe_action()}
-            </DropdownMenu.Item>
-          </>
+        <DropdownMenu.Item onClick={() => onAction("authorize")}>{m.mcp_auth_menu()}</DropdownMenu.Item>
+        {entry.enabled && entry.authorization?.status === "active" ? (
+          <DropdownMenu.Item disabled={pending} onClick={onProbe}>
+            {m.mcp_probe_action()}
+          </DropdownMenu.Item>
         ) : null}
+        <DropdownMenu.Item onClick={() => onAction("details")}>{m.mcp_details_action()}</DropdownMenu.Item>
         <DropdownMenu.Separator />
         {canRevoke(entry) ? (
           <DropdownMenu.Item variant="danger" onClick={() => onAction("revoke")}>
@@ -212,8 +175,7 @@ function ServerMenu({
     </DropdownMenu>
   );
 }
-
-function ProbeErrorDetails({ error }: { error: string }) {
+export function McpProbeError({ error }: { error: string }) {
   return (
     <Collapsible.Root className="min-w-0">
       <Collapsible.Trigger render={<Button className="text-kumo-subtle" size="compact" variant="ghost" />}>
@@ -227,40 +189,4 @@ function ProbeErrorDetails({ error }: { error: string }) {
       </Collapsible.Panel>
     </Collapsible.Root>
   );
-}
-
-function describeKind(kind: Exclude<McpRowStates["authorizationKind"], "unauthorized">): string {
-  if (kind === "bearer") return m.mcp_authorization_bearer();
-  if (kind === "oauth") return m.mcp_authorization_oauth();
-  return m.mcp_authorization_anonymous();
-}
-
-function describeStatus(status: string): string {
-  switch (status) {
-    case "active":
-      return m.mcp_authorization_status_active();
-    case "pending":
-      return m.mcp_authorization_status_pending();
-    case "expired":
-      return m.mcp_authorization_status_expired();
-    case "revoked":
-      return m.mcp_authorization_status_revoked();
-    case "error":
-      return m.mcp_authorization_status_error();
-    default:
-      return m.mcp_authorization_status_none();
-  }
-}
-
-/**
- * The probe state as one phrase. "Never probed" and "probing right now" are different: the first
- * means the credential has not been exercised, the second means a result is on its way.
- */
-function describeProbe(entry: MCPAgentServer): string {
-  const authorization = entry.authorization;
-  if (!authorization) return m.mcp_probe_state_not_run();
-  if (authorization.probeState === "succeeded")
-    return m.mcp_probe_state_succeeded({ count: authorization.toolsCount ?? 0 });
-  if (authorization.probeState === "failed") return m.mcp_probe_state_failed();
-  return authorization.probedAt ? m.mcp_probe_state_pending() : m.mcp_probe_state_not_run();
 }

@@ -796,6 +796,7 @@ export async function createClientRuntime(
     persistence: durabilityStore,
     reconciler,
     runtimeManager,
+    sessionCollaborationVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.sessionCollaboration),
     turnPlan: providerCliTurnPlans,
   });
   await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);

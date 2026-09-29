@@ -5,7 +5,7 @@ import { Text } from "../ui/design-system.js";
 export function NotFoundPage() {
   return (
     <section
-      className="mx-auto grid max-w-xl gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-line"
+      className="mx-auto grid max-w-xl gap-3 ui-surface bg-kumo-base p-6 ring ring-kumo-line"
       data-ui="not-found"
     >
       <Text as="h1" size="lg" variant="heading">
@@ -21,7 +21,7 @@ export function NotFoundPage() {
 
 export function StandaloneNotFoundPage() {
   return (
-    <main className="mx-auto grid max-w-xl gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-line" data-ui="not-found">
+    <main className="mx-auto grid max-w-xl gap-3 ui-surface bg-kumo-base p-6 ring ring-kumo-line" data-ui="not-found">
       <Text as="h1" size="lg" variant="heading">
         {m.errors_page_not_found()}
       </Text>

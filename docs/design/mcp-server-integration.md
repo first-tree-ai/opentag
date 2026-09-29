@@ -897,18 +897,19 @@ edit, and remove.
 - **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
   context to the authorization server rather than fetching the URL.
 - **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
-  identity and authorization by an inset horizontal rule. Tool status and expandable warnings sit
-  on the left; on narrow rows the actions wrap below them. The count is the number of tools in the
+  identity by an inset horizontal rule. Tool status and expandable warnings sit on the left; on
+  narrow rows the actions wrap below them. The count is the number of tools in the
   saved snapshot shown by the dialog; it is not a promise that every tool is currently available.
   Successful discovery has no duplicate count row.
   The dialog shows the tools discovered with *this Agent's* credential, with the era and version
   that produced them. An incomplete snapshot has a lightweight, initially collapsed notice on the
   left of its Server row. Expanding it explains that some tools may be unavailable without guessing
   the cause or promising that refreshing will fix it; the dialog also shows that explanation.
-  Discovery progress, failure, and the notice identifying a previous snapshot remain visible.
-- **Refresh tools** is a maintenance action in the Server's more-actions menu while its authorization
-  is active. It is disabled during discovery. A failed discovery additionally offers **Retry** in
-  the tool footer, with the same pending guard; a partial list alone does not promote that action.
+  Discovery progress and failure remain visible; historical snapshots use **View saved tools (N)**.
+- **Refresh tools** is a maintenance action in the Server's more-actions menu and tool browser while
+  the Server is enabled and its authorization is active. It is disabled during discovery. A failed
+  discovery offers **Retry** in the tool footer, with the same pending guard; a partial list alone
+  does not promote that action.
 
 The "new Server" wizard asks for the definition first and the authorization method second, so
 `default_auth_kind` is never presented as a statement about the Server.

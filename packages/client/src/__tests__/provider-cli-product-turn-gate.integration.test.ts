@@ -106,6 +106,7 @@ describe("provider CLI product Turn gate", () => {
       admission: new AdmissionController(),
       credentialEnvironment: credentials,
       imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
       reconciler: inboxReconciler(),
       runtimeManager: {
         ensureRuntime: ensureRuntime as never,
@@ -191,6 +192,7 @@ describe("provider CLI product Turn gate", () => {
         cleanup: vi.fn(async () => undefined),
       },
       imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
       reconciler: inboxReconciler(),
       runtimeManager: {
         ensureRuntime: callbackEnsure,
@@ -220,6 +222,7 @@ describe("provider CLI product Turn gate", () => {
         cleanup: vi.fn(async () => undefined),
       },
       imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
       reconciler: inboxReconciler(),
       runtimeManager: {
         ensureRuntime: internalEnsure as never,

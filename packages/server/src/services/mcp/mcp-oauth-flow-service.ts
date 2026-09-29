@@ -476,9 +476,13 @@ export class McpOAuthFlowService {
       iss?: string;
     },
     flowSecret: string | undefined,
+    onVerified?: (target: { agentId: string; mcpServerId: string }) => void,
   ): Promise<{ accountId: string; agentId: string; mcpServerId: string }> {
     const row = await this.#locateFlow(query.state, flowSecret);
     const { authorization, agentId, accountId } = row;
+    const mcpServerId = authorization.mcpServerId;
+    // Only a valid state and browser binding may identify the page for a failed callback.
+    onVerified?.({ agentId, mcpServerId });
     if (query.error) {
       /*
        * A denial is terminal, so it is recorded as such rather than only cleared.
@@ -496,7 +500,6 @@ export class McpOAuthFlowService {
         "The authorization was not granted",
       );
     }
-    const mcpServerId = authorization.mcpServerId;
     if (!query.code) {
       await this.#failFlow(authorization.id, MCP_ERROR_CODES.OAUTH_FLOW_INVALID);
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization response carried no code");

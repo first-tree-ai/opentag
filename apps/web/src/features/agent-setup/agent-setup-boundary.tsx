@@ -253,7 +253,7 @@ function TargetedAgentSetup({
           {resolution.agents.map((agent) => (
             <li key={agent.id}>
               <Link
-                className="block rounded-lg bg-kumo-base px-4 py-3 text-sm text-kumo-strong ring ring-kumo-line"
+                className="block ui-surface bg-kumo-base px-4 py-3 text-sm text-kumo-strong ring ring-kumo-line"
                 search={{ agentId: agent.id, review }}
                 to="/agents/setup"
               >

@@ -12,6 +12,7 @@ import {
 } from "../../core/agent/self.js";
 import { executeCommand } from "../../core/command/policy.js";
 import { formatAgentMcpServers, formatAgentServerRow } from "../../core/mcp/shared.js";
+import { registerAgentSelfScheduleCommands } from "./self-schedule.js";
 
 interface JsonOption {
   json?: boolean;
@@ -78,6 +79,7 @@ export function registerAgentSelfCommands(agent: Command): void {
     });
 
   registerAgentSelfMcpCommands(self);
+  registerAgentSelfScheduleCommands(self);
 }
 
 function registerAgentSelfMcpCommands(self: Command): void {

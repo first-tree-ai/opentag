@@ -1,6 +1,6 @@
 # 技术文档
 
-> 权威来源：[docs/README.md](../README.md) · 同步日期：2026-09-22
+> 权威来源：[docs/README.md](../README.md) · 同步日期：2026-09-28
 
 从[快速开始](../../README.zh-CN.md#快速开始)或[开发指南](../../DEVELOPMENT.zh-CN.md)开始。
 
@@ -36,8 +36,9 @@
 - [国际化](./i18n.md)
 - [Web App 分析](./web-analytics.md)
 
-## 设计文档（英文）
+## 设计文档
 
+- [应用设计指南（英文）](../../design.md)
 - [MCP Server integration](../design/mcp-server-integration.md)
 - [Web UI contract](../design/web-ui-contract.md)
 - [Doctor product specification](../design/doctor-product-spec.md)

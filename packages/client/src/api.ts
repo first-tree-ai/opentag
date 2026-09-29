@@ -6,6 +6,12 @@ import {
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
   AgentRuntimeTestResponseSchema,
+  type AgentSchedule,
+  type AgentScheduleListResponse,
+  AgentScheduleListResponseSchema,
+  type AgentSchedulePreview,
+  AgentSchedulePreviewSchema,
+  AgentScheduleSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
@@ -40,6 +46,7 @@ import {
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
+  type CreateAgentScheduleRequest,
   type CreateMCPServerRequest,
   computerAgentSkillBundlePath,
   computerAgentSkillsPath,
@@ -85,12 +92,15 @@ import {
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
+  type PreviewAgentScheduleRequest,
   type RebindAgentComputerRequest,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
   RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
   RUNTIME_AGENT_MCP_SERVERS_PATH,
   RUNTIME_AGENT_PATH,
+  RUNTIME_AGENT_SCHEDULE_PREVIEW_PATH,
+  RUNTIME_AGENT_SCHEDULES_PATH,
   RUNTIME_SKILLS_PATH,
   type RuntimeDurableWorkKind,
   RuntimeDurableWorkListResponseSchema,
@@ -98,6 +108,9 @@ import {
   type RuntimeSkillManifest,
   RuntimeSkillManifestSchema,
   runtimeAgentMcpServerPath,
+  runtimeAgentSchedulePath,
+  runtimeAgentSchedulePausePath,
+  runtimeAgentScheduleResumePath,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,
@@ -128,6 +141,7 @@ import {
   type StructuredError,
   StructuredErrorSchema,
   type UpdateAgentRequest,
+  type UpdateAgentScheduleRequest,
   type UpdateMCPBindingRequest,
   type UpdateMCPServerRequest,
   type UpdateSelfAgentRequest,
@@ -1061,6 +1075,135 @@ export class OpenTagApi {
       AgentAdminConfigSchema,
       {
         method: "PATCH",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  createRuntimeAgentSchedule(
+    proof: string,
+    input: CreateAgentScheduleRequest,
+    options?: RequestOptions,
+  ): Promise<AgentSchedule> {
+    return this.#request(
+      RUNTIME_AGENT_SCHEDULES_PATH,
+      AgentScheduleSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  listRuntimeAgentSchedules(
+    proof: string,
+    query: { limit?: number; cursor?: string } = {},
+    options?: RequestOptions,
+  ): Promise<AgentScheduleListResponse> {
+    const params = new URLSearchParams();
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    const path =
+      params.size > 0 ? `${RUNTIME_AGENT_SCHEDULES_PATH}?${params.toString()}` : RUNTIME_AGENT_SCHEDULES_PATH;
+    return this.#request(
+      path,
+      AgentScheduleListResponseSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  getRuntimeAgentSchedule(proof: string, scheduleId: string, options?: RequestOptions): Promise<AgentSchedule> {
+    return this.#request(
+      runtimeAgentSchedulePath(scheduleId),
+      AgentScheduleSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  updateRuntimeAgentSchedule(
+    proof: string,
+    scheduleId: string,
+    input: UpdateAgentScheduleRequest,
+    options?: RequestOptions,
+  ): Promise<AgentSchedule> {
+    return this.#request(
+      runtimeAgentSchedulePath(scheduleId),
+      AgentScheduleSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  pauseRuntimeAgentSchedule(
+    proof: string,
+    scheduleId: string,
+    expectedRevision: number,
+    options?: RequestOptions,
+  ): Promise<AgentSchedule> {
+    return this.#request(
+      runtimeAgentSchedulePausePath(scheduleId),
+      AgentScheduleSchema,
+      {
+        method: "POST",
+        body: JSON.stringify({ expectedRevision }),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  resumeRuntimeAgentSchedule(
+    proof: string,
+    scheduleId: string,
+    expectedRevision: number,
+    options?: RequestOptions,
+  ): Promise<AgentSchedule> {
+    return this.#request(
+      runtimeAgentScheduleResumePath(scheduleId),
+      AgentScheduleSchema,
+      {
+        method: "POST",
+        body: JSON.stringify({ expectedRevision }),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  deleteRuntimeAgentSchedule(
+    proof: string,
+    scheduleId: string,
+    expectedRevision: number,
+    options?: RequestOptions,
+  ): Promise<void> {
+    const params = new URLSearchParams({ expectedRevision: String(expectedRevision) });
+    return this.#requestNoContent(
+      `${runtimeAgentSchedulePath(scheduleId)}?${params.toString()}`,
+      { method: "DELETE", headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  previewRuntimeAgentSchedule(
+    proof: string,
+    input: PreviewAgentScheduleRequest,
+    options?: RequestOptions,
+  ): Promise<AgentSchedulePreview> {
+    return this.#request(
+      RUNTIME_AGENT_SCHEDULE_PREVIEW_PATH,
+      AgentSchedulePreviewSchema,
+      {
+        method: "POST",
         body: JSON.stringify(input),
         headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
       },

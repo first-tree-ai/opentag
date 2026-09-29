@@ -208,6 +208,7 @@
   "mcp_import_unparseable": "未在此文本中找到 MCP 服务器。请确认粘贴的是配置片段或 claude/codex 命令。",
   "mcp_import_no_servers": "此文本中没有 MCP 服务器配置。",
   "mcp_import_unsupported_only": "只找到本地 MCP 服务器。OpenTag 仅支持远程服务器。",
+  "mcp_import_no_remote": "未在此文本中找到可导入的远程 MCP 服务器。下列条目无法按原样导入。",
   "mcp_import_invalid_url": "粘贴的服务器地址不是可用的 HTTP(S) MCP 地址。",
   "mcp_import_too_large": "文本过大，无法导入。请粘贴单个服务器的配置。",
   "mcp_import_local": "本地服务器 —— 暂不支持",

@@ -1,5 +1,7 @@
+import { MCPExtraHeadersSchema } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import {
+  isSensitiveHeaderName,
   MCP_IMPORT_MAX_PASTE_BYTES,
   type MCPImportOutcome,
   type MCPImportServer,
@@ -444,5 +446,167 @@ describe("credentials stay out of messages", () => {
     const { credential: _credential, ...rest } = entry;
     expect(JSON.stringify(rest)).not.toContain(token);
     expect(JSON.stringify(rest)).not.toContain("do-not-echo");
+  });
+});
+
+describe("sensitive header names never reach shared configuration", () => {
+  const secret = "sk-client-secret-9f3c";
+
+  it("leaves context header names shared", () => {
+    expect(isSensitiveHeaderName("X-Workspace-Id")).toBe(false);
+    expect(isSensitiveHeaderName("x-goog-user-project")).toBe(false);
+    expect(isSensitiveHeaderName("Authorization")).toBe(true);
+  });
+
+  /** Every name the diagnostic redactor already treats as a credential must be caught here too. */
+  it.each([
+    "X-Client-Secret",
+    "password",
+    "X-Password",
+    "client_secret",
+    "x-refresh-token",
+    "Cookie",
+    "x-goog-api-key",
+  ])("treats %s as a credential rather than shared configuration", async (name) => {
+    const outcome = await parse(
+      JSON.stringify({ mcpServers: { jira: remote("https://jira.example.com/mcp", { headers: { [name]: secret } }) } }),
+    );
+    const entry = server(outcome, "jira");
+    expect(entry.extraHeaders).toEqual({});
+    expect(entry.credential?.token).toBe(secret);
+    expect(JSON.stringify(entry.extraHeaders)).not.toContain(secret);
+  });
+
+  it("shares a non-secret header while the secret becomes this Agent's credential", async () => {
+    const outcome = await parse(
+      JSON.stringify({
+        mcpServers: {
+          jira: remote("https://jira.example.com/mcp", {
+            headers: { "X-Workspace-Id": "design", "X-Client-Secret": secret },
+          }),
+        },
+      }),
+    );
+    const entry = server(outcome, "jira");
+    expect(entry.credential).toEqual({ header: "x-client-secret", scheme: "", token: secret });
+    expect(entry.extraHeaders).toEqual({ "x-workspace-id": "design" });
+    expect(JSON.stringify(entry.extraHeaders)).not.toContain(secret);
+  });
+
+  it("keeps only the first credential and refuses the rest by name", async () => {
+    const outcome = await parse(
+      JSON.stringify({
+        mcpServers: {
+          jira: remote("https://jira.example.com/mcp", {
+            headers: {
+              Authorization: `Bearer ${secret}`,
+              "X-Client-Secret": "second-secret",
+              Password: "third-secret",
+            },
+          }),
+        },
+      }),
+    );
+    const entry = server(outcome, "jira");
+    expect(entry.credential).toEqual({ header: "authorization", scheme: "Bearer", token: secret });
+    expect(entry.refusedHeaders).toEqual(["x-client-secret", "password"]);
+    expect(entry.extraHeaders).toEqual({});
+    expect(JSON.stringify(entry)).not.toContain("second-secret");
+    expect(JSON.stringify(entry)).not.toContain("third-secret");
+  });
+});
+
+describe("the shared extra-header bounds are enforced on the accumulated set", () => {
+  const manyHeaders = (count: number, size: number) => {
+    const headers: Record<string, string> = {};
+    for (let index = 0; index < count; index++) headers[`x-h${index}`] = "a".repeat(size);
+    return headers;
+  };
+
+  it("refuses the header that crosses the aggregate byte bound", async () => {
+    const outcome = await parse(
+      JSON.stringify({
+        mcpServers: { jira: remote("https://jira.example.com/mcp", { headers: manyHeaders(16, 600) }) },
+      }),
+    );
+    expect(outcome.kind).toBe("parsed");
+    const entry = server(outcome, "jira");
+    expect(entry.refusedHeaders.length).toBeGreaterThan(0);
+    expect(Object.keys(entry.extraHeaders).length + entry.refusedHeaders.length).toBe(16);
+    // What the dialog would send must satisfy the shared schema, or the submit stays disabled later.
+    expect(MCPExtraHeadersSchema.safeParse(entry.extraHeaders).success).toBe(true);
+  });
+
+  it("refuses headers past the shared count bound", async () => {
+    const outcome = await parse(
+      JSON.stringify({
+        mcpServers: { jira: remote("https://jira.example.com/mcp", { headers: manyHeaders(20, 4) }) },
+      }),
+    );
+    const entry = server(outcome, "jira");
+    expect(Object.keys(entry.extraHeaders)).toHaveLength(16);
+    expect(entry.refusedHeaders).toHaveLength(4);
+    expect(MCPExtraHeadersSchema.safeParse(entry.extraHeaders).success).toBe(true);
+  });
+});
+
+describe("a rejected URL keeps no credential", () => {
+  const embedded = "secret-marker-754";
+
+  it("drops userinfo from the URL it stores and renders", async () => {
+    const outcome = await parse(
+      JSON.stringify({ mcpServers: { bad: remote(`https://user:${embedded}@example.com/mcp`) } }),
+    );
+    expect(outcome.kind).toBe("invalid-url");
+    expect(server(outcome, "bad")).toMatchObject({ reason: "invalid-url", url: "https://example.com/mcp" });
+    expect(JSON.stringify(outcome)).not.toContain(embedded);
+  });
+
+  it("drops userinfo from a URL no parser can read", async () => {
+    const outcome = await parse(JSON.stringify({ mcpServers: { bad: remote(`//user:${embedded}@example.com/mcp`) } }));
+    expect(server(outcome, "bad").reason).toBe("invalid-url");
+    expect(JSON.stringify(outcome)).not.toContain(embedded);
+  });
+});
+
+describe("Codex static headers", () => {
+  const inline = [
+    "[mcp_servers.docs]",
+    'url = "https://docs.example.com/mcp"',
+    'http_headers = { Authorization = "Bearer sk-docs" }',
+  ].join("\n");
+
+  it("reads an http_headers inline table", async () => {
+    const outcome = await parse(inline);
+    expect(server(outcome, "docs").credential).toEqual({ header: "authorization", scheme: "Bearer", token: "sk-docs" });
+  });
+
+  it("reads a nested http_headers table", async () => {
+    const outcome = await parse(
+      [
+        "[mcp_servers.docs]",
+        'url = "https://docs.example.com/mcp"',
+        "[mcp_servers.docs.http_headers]",
+        'X-Workspace-Id = "design"',
+      ].join("\n"),
+    );
+    const entry = server(outcome, "docs");
+    expect(entry.extraHeaders).toEqual({ "x-workspace-id": "design" });
+    expect(entry.credential).toBeUndefined();
+  });
+
+  it("never reads an environment variable name as a header value", async () => {
+    const outcome = await parse(
+      [
+        "[mcp_servers.docs]",
+        'url = "https://docs.example.com/mcp"',
+        'env_http_headers = { Authorization = "DOCS_TOKEN" }',
+      ].join("\n"),
+    );
+    const entry = server(outcome, "docs");
+    expect(entry.credential).toBeUndefined();
+    expect(entry.refusedHeaders).toEqual(["authorization"]);
+    expect(entry.extraHeaders).toEqual({});
+    expect(JSON.stringify(outcome)).not.toContain("DOCS_TOKEN");
   });
 });

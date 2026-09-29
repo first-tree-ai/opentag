@@ -194,7 +194,7 @@ function closesAfter(text: string, index: number): boolean {
 }
 
 function entryFromRecord(record: Record<string, unknown>): Omit<RawEntry, "sourceName"> {
-  const headers = recordHeaders(record.headers);
+  const headers = recordHeaders(record);
   const type = typeof record.type === "string" ? record.type.trim().toLowerCase() : "";
   if (LOCAL_TYPE_LABELS.has(type) || LOCAL_MARKERS.some((marker) => record[marker] !== undefined))
     return { transport: "local", headers };
@@ -204,7 +204,19 @@ function entryFromRecord(record: Record<string, unknown>): Omit<RawEntry, "sourc
 }
 
 /** `headers` is an object in most dialects and an array of `Name: value` lines in a few. */
-function recordHeaders(raw: unknown): HeaderPair[] {
+function recordHeaders(record: Record<string, unknown>): HeaderPair[] {
+  return [
+    ...headerPairs(record.headers),
+    // Codex spells its literal static headers `http_headers`; the two names describe the same field.
+    ...headerPairs(record.http_headers),
+    // `env_http_headers` maps a header name to the *name of an environment variable*. There is no
+    // value to import and the variable name is not a secret, so the header is refused by name rather
+    // than read as an empty credential.
+    ...headerNames(record.env_http_headers),
+  ];
+}
+
+function headerPairs(raw: unknown): HeaderPair[] {
   const record = asRecord(raw);
   if (record) {
     const pairs: HeaderPair[] = [];
@@ -219,6 +231,12 @@ function recordHeaders(raw: unknown): HeaderPair[] {
     if (typeof item === "string") pairs.push(...headerFromLine(item));
   }
   return pairs;
+}
+
+function headerNames(raw: unknown): HeaderPair[] {
+  const record = asRecord(raw);
+  if (!record) return [];
+  return Object.keys(record).map((name) => ({ name, value: "" }));
 }
 
 function headerFromLine(line: string): HeaderPair[] {

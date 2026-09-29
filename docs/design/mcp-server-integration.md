@@ -925,10 +925,25 @@ create → attach → authorize sequence the manual wizard uses.
 - **Names are normalized** to this product's rules — lowercase, hyphens, the 64-character bound — and
   de-duplicated against the Account, and remain editable before confirmation.
 - **A credential goes to this Agent alone.** An `Authorization: <scheme> <token>` header, or a
-  credential-shaped header such as `X-API-Key`, prefills this Agent's bearer authorization; it is
-  never written to the shared definition and never echoed into an error or a log. Every other header
-  becomes an extra header of the definition, and one OpenTag refuses — transport-owned, or a
-  second credential-shaped header — is reported by name rather than dropped in silence.
+  credential-shaped header, prefills this Agent's bearer authorization; it is never written to the
+  shared definition and never echoed into an error or a log. "Credential-shaped" is the diagnostic
+  redactor's own vocabulary — `password`, `secret`, `token`, `api-key`, `access-token`,
+  `refresh-token`, `client-secret`, `authorization`, and the cookie headers, each with an optional
+  vendor prefix — so a name the product already treats as a secret cannot become shared configuration
+  just because a paste spelled it `X-Client-Secret`. Only the first such header becomes this Agent's
+  credential; the rest are refused by name.
+- **Every other header becomes an extra header** of the definition, read from `headers` or from
+  Codex's `http_headers`, in either dialect's object, array, inline-table, or nested-table spelling.
+  The shared schema's count and size bounds are enforced against the accumulated set rather than one
+  header at a time, so a header that would cross them is refused by name here instead of leaving a
+  disabled submit two steps later. `env_http_headers` names an environment variable rather than a
+  value, so those names are refused rather than read as an empty credential.
+- **A rejected URL keeps no credential.** A URL carrying userinfo is refused, and the copy that is
+  shown and returned has the userinfo removed, rather than putting it in a row or in the result the
+  caller holds.
+- **The listed Servers describe the text that produced them.** Editing the field clears the list and
+  invalidates any read still running, so the previous Server — and the previous credential — cannot be
+  confirmed against text the user has since changed.
 
 ## Verification
 
@@ -946,7 +961,7 @@ Unit tests (no network, no database):
 | AAD | The literal format; a different Agent, a different authorization server, and the other envelope's domain all fail to open; a kind change is openable because the context never names the kind |
 | Discovery | The exact well-known order; a mismatched issuer propagates; multi-issuer ordering; the registration choice in all four cases; CIMD self-naming and same-host redirects; PKCE; `resource` on both requests; the four `iss` rows; scope priority; the refresh lead |
 | Probing | Two pages merged into one snapshot on both eras; the cursor sent only on later pages; each per-tool bound skipping the tool (in bytes, proven with multi-byte text), a nameless entry and a non-object entry skipped, a page whose every tool is skipped still succeeding, pagination continuing past a skipped tool, the `warn` line naming the bound; the cap, the budget, and a skipped tool all setting `tools_truncated`; an error page still failing the probe; a malformed page (non-object result, missing or non-array `tools`, non-string or empty cursor) failing both eras while a null cursor ends the list; SSE discovery; the era paths |
-| Config import | Every documented dialect (OpenCode `mcp`, `mcpServers`, `servers`, their YAML spellings, TOML `[mcp_servers.*]`, `claude`/`codex` command lines, and JSON with comments and trailing commas); a `command` entry whose arguments carry an HTTPS URL read as local; the multi-server list and each "no importable Server" outcome; name normalization, the host fallback, and de-duplication; the paste bound; a token reaching the authorization write only, and never a message |
+| Config import | Every documented dialect (OpenCode `mcp`, `mcpServers`, `servers`, their YAML spellings, TOML `[mcp_servers.*]` with `headers`, `http_headers`, and `env_http_headers`, `claude`/`codex` command lines, and JSON with comments and trailing commas); a `command` entry whose arguments carry an HTTPS URL read as local; the multi-server list and each "no importable Server" outcome; name normalization, the host fallback, and de-duplication; the paste bound; the redactor's sensitive-name vocabulary never reaching the shared extra headers; the accumulated extra-header count and size bounds refused by name; a rejected URL's userinfo dropped from the stored value; an edited paste discarding its previous list and any read still running; a token reaching the authorization write only, and never a message |
 
 PostgreSQL integration tests (`mcp-management.test.ts`, Docker + testcontainers) drive a loopback
 fixture Server that is also its own authorization server:

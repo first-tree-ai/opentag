@@ -208,6 +208,7 @@
   "mcp_import_unparseable": "No MCP server was found in this text. Check that you pasted a configuration fragment or a claude/codex command.",
   "mcp_import_no_servers": "This text has no MCP server configuration.",
   "mcp_import_unsupported_only": "Only local MCP servers were found. OpenTag connects to remote servers only.",
+  "mcp_import_no_remote": "No remote MCP server was found in this text. The entries listed below cannot be imported as they are.",
   "mcp_import_invalid_url": "The pasted server address is not a usable HTTP(S) MCP address.",
   "mcp_import_too_large": "This text is too large to import. Paste one server's configuration.",
   "mcp_import_local": "Local server — not supported yet",

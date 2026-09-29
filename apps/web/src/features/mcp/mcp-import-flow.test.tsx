@@ -231,6 +231,65 @@ describe("MCP import method", () => {
     expect(auth).toHaveBeenCalledTimes(1);
   });
 
+  it("drops the parsed list when the paste is edited", async () => {
+    stub([]);
+    const create = vi.spyOn(browserApi, "createMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openAdd();
+    await paste(
+      JSON.stringify({
+        mcpServers: {
+          nevent: { type: "http", url: "https://mcp.nevent.ai", headers: { Authorization: "Bearer sk-imported" } },
+        },
+      }),
+    );
+    expect(await screen.findByRole("button", { name: /nevent/ })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Configuration"), { target: { value: "mcpServers: {}" } });
+    expect(screen.queryByRole("button", { name: /nevent/ })).toBeNull();
+    expect(screen.queryByText("A credential was found. It is saved for this Agent only.")).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("never sends a paste's sensitive header to the shared definition", async () => {
+    stub([]);
+    const create = vi.spyOn(browserApi, "createMcpServer").mockImplementation(echoServer);
+    const attach = vi.spyOn(browserApi, "attachMcpServer").mockResolvedValue(entry({ authorization: null }));
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry({ authorization: null }));
+    const auth = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openAdd();
+    await paste(
+      JSON.stringify({
+        mcpServers: {
+          jira: {
+            type: "http",
+            url: "https://jira.example.com/mcp",
+            headers: { "X-Client-Secret": "sk-client-secret", "X-Workspace-Id": "design" },
+          },
+        },
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /jira/ }));
+    submitImport();
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const sent = create.mock.calls[0]?.[0] as { extraHeaders?: Record<string, string> };
+    expect(sent.extraHeaders).toEqual({ "x-workspace-id": "design" });
+    expect(JSON.stringify(sent)).not.toContain("sk-client-secret");
+    // The Agent-level override carries the header the paste named; the value itself never does.
+    expect(update).toHaveBeenCalledWith(AGENT_ID, detail(0).server.id, {
+      authHeader: "x-client-secret",
+      authScheme: "",
+    });
+    await waitFor(() =>
+      expect(auth).toHaveBeenCalledWith(AGENT_ID, detail(0).server.id, {
+        kind: "bearer",
+        bearerKey: "sk-client-secret",
+      }),
+    );
+    expect(update.mock.invocationCallOrder[0]).toBeLessThan(auth.mock.invocationCallOrder[0] as number);
+    expect(attach).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the pasted draft when returning from the configuration step", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);

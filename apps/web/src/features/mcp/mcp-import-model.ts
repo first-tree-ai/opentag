@@ -1,11 +1,11 @@
 import {
-  MCP_MAX_EXTRA_HEADERS,
   MCPAuthSchemeSchema,
   MCPCustomAuthHeaderSchema,
   MCPExtraHeadersSchema,
   MCPServerNameSchema,
   MCPServerUrlSchema,
 } from "@opentag/shared/browser";
+import { SENSITIVE_NAME_PATTERN } from "../../observability/sensitive-names.js";
 import { serverNameFromUrl } from "./mcp-form-model.js";
 import { type HeaderPair, type RawEntry, readEntries } from "./mcp-import-readers.js";
 
@@ -114,8 +114,31 @@ function toServer(entry: RawEntry, taken: Set<string>): MCPImportServer {
     return { ...base, name: displayedName(entry, taken, false), reason: "unrecognized" };
   const url = entry.url ?? "";
   if (!MCPServerUrlSchema.safeParse(url).success)
-    return { ...base, name: displayedName(entry, taken, false), url, reason: "invalid-url" };
+    return { ...base, name: displayedName(entry, taken, false), url: displayableUrl(url), reason: "invalid-url" };
   return { ...base, name: displayedName(entry, taken, true), url, ...(credential === undefined ? {} : { credential }) };
+}
+
+/**
+ * A URL as it may be stored and rendered.
+ *
+ * A rejected URL is still shown — it is why the entry cannot be imported — but one carrying userinfo
+ * would otherwise put a credential on screen and into the result the caller holds, which is exactly
+ * the boundary the rest of this module keeps. The raw value is what gets validated; only the copy that
+ * outlives the parse is stripped.
+ */
+function displayableUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (!url.username && !url.password) return raw;
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    // Not parseable as a URL at all, so there is no userinfo to remove by structure; strip the
+    // authority prefix syntactically, which is the only place a credential can sit. A protocol-relative
+    // paste (`//user:key@host/mcp`) carries no scheme and is covered by the same expression.
+    return raw.replace(/^([a-z][a-z0-9+.-]*:)?\/\/[^/@]*@/i, "$1//");
+  }
 }
 
 /**
@@ -152,35 +175,19 @@ export function normalizeImportName(raw: string): string {
     .replace(/-+$/, "");
 }
 
-/** Header names normalized for matching only: lowercased, with `_` written as `-`. */
-const CREDENTIAL_HEADER_NAMES = new Set([
-  "api-key",
-  "apikey",
-  "api-token",
-  "api-secret",
-  "access-token",
-  "auth-key",
-  "auth-token",
-  "authorization",
-  "bearer-token",
-  "token",
-]);
+/**
+ * Whether a header name carries a credential rather than configuration.
+ *
+ * The vocabulary is the diagnostic redactor's (`../../observability/sensitive-names.js`), not a list
+ * invented here: a name the product already treats as a secret must not become this Account-shared
+ * record just because a paste spelled it `X-Client-Secret`. A vendor prefix is allowed
+ * (`x-goog-api-key`), and `authorization` with the cookie headers are credentials of their own.
+ * Everything else is context the Server is configured with, such as `x-workspace-id`.
+ */
+const SENSITIVE_HEADER_NAME = new RegExp(`^(?:[a-z0-9]+-)*(?:${SENSITIVE_NAME_PATTERN}|authorization|cookie)$`);
 
-/** Vendor prefixes are common (`x-goog-api-key`), so a recognized tail counts as a credential too. */
-const CREDENTIAL_HEADER_SUFFIXES = [
-  "-api-key",
-  "-apikey",
-  "-api-token",
-  "-api-secret",
-  "-access-token",
-  "-auth-key",
-  "-auth-token",
-  "-bearer-token",
-];
-
-function isCredentialHeader(name: string): boolean {
-  const normalized = name.replace(/_/g, "-");
-  return CREDENTIAL_HEADER_NAMES.has(normalized) || CREDENTIAL_HEADER_SUFFIXES.some((s) => normalized.endsWith(s));
+export function isSensitiveHeaderName(name: string): boolean {
+  return SENSITIVE_HEADER_NAME.test(name.trim().toLowerCase().replace(/_/g, "-"));
 }
 
 /**
@@ -202,23 +209,31 @@ function splitHeaders(pairs: HeaderPair[]): {
   for (const pair of pairs) {
     const name = pair.name.trim().toLowerCase();
     if (!name) continue;
-    if (isCredentialHeader(name)) {
+    if (isSensitiveHeaderName(name)) {
       const found = credential === undefined ? credentialFrom(name, pair.value) : undefined;
       if (found) credential = found;
       else refusedHeaders.push(name);
       continue;
     }
-    if (Object.keys(extraHeaders).length >= MCP_MAX_EXTRA_HEADERS) {
-      refusedHeaders.push(name);
-      continue;
-    }
-    if (!MCPExtraHeadersSchema.safeParse({ [name]: pair.value }).success) {
+    if (!acceptsHeader(extraHeaders, name, pair.value)) {
       refusedHeaders.push(name);
       continue;
     }
     extraHeaders[name] = pair.value;
   }
   return { extraHeaders, refusedHeaders, ...(credential === undefined ? {} : { credential }) };
+}
+
+/**
+ * Whether one more header can join the shared set.
+ *
+ * The shared schema bounds the *accumulated* record — the header count and the serialized size — as
+ * well as each value, so sixteen individually acceptable headers can still cross the aggregate bound.
+ * Testing the prospective record here turns that into a named refusal at import time instead of a
+ * submit button that stays disabled two steps later.
+ */
+function acceptsHeader(extraHeaders: Record<string, string>, name: string, value: string): boolean {
+  return MCPExtraHeadersSchema.safeParse({ ...extraHeaders, [name]: value }).success;
 }
 
 function credentialFrom(name: string, value: string): MCPImportCredential | undefined {

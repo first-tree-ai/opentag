@@ -35,16 +35,34 @@ export type McpImportState = {
  * without re-running anything.
  */
 export function useMcpImport(takenNames: readonly string[]): McpImportState {
-  const [paste, setPaste] = useState("");
+  const [paste, setPasteState] = useState("");
   const [outcome, setOutcome] = useState<MCPImportOutcome>();
   const [parsing, setParsing] = useState(false);
+  const pasteRef = useRef("");
   const parsingRef = useRef(false);
+  /** Bumped by every edit, so a read that started against older text cannot land as the current one. */
+  const generationRef = useRef(0);
+  /**
+   * The listed servers describe one exact text. Keeping them across an edit would leave the previous
+   * Server — and the previous credential — selectable while the field shows something else, so an
+   * edit clears them and invalidates whatever read is still running.
+   */
+  const setPaste = (value: string) => {
+    generationRef.current += 1;
+    pasteRef.current = value;
+    setPasteState(value);
+    setOutcome(undefined);
+  };
   const analyze = async () => {
     if (parsingRef.current) return;
+    const generation = generationRef.current;
+    const text = pasteRef.current;
+    if (!text.trim()) return;
     parsingRef.current = true;
     setParsing(true);
     try {
-      setOutcome(await parseMcpImport({ text: paste, takenNames }));
+      const result = await parseMcpImport({ text, takenNames });
+      if (generation === generationRef.current) setOutcome(result);
     } finally {
       parsingRef.current = false;
       setParsing(false);
@@ -197,7 +215,12 @@ function importMessage(outcome: MCPImportOutcome): string {
       return count === 1 ? m.mcp_import_found_one() : m.mcp_import_found({ count });
     }
     case "unsupported-only":
-      return m.mcp_import_unsupported_only();
+      // A paste may mix local entries with ones OpenTag could not classify, or hold only the latter.
+      // Announcing "only local MCP servers" would be wrong for those, so the local wording is used
+      // only when every listed entry really is local; the rows name their own reason either way.
+      return outcome.servers.every((server) => server.reason === "local-transport")
+        ? m.mcp_import_unsupported_only()
+        : m.mcp_import_no_remote();
     case "invalid-url":
       return m.mcp_import_invalid_url();
     case "no-servers":

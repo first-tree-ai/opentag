@@ -14,7 +14,7 @@
     "build": "turbo run build && pnpm --silent bundle:report",
     "bundle:report": "node scripts/report-bundle-sizes.mjs",
     "dev": "turbo run dev",
-    "check": "biome check . && node scripts/generate-web-theme.mjs --check && tsx scripts/generate-mcp-catalog.mjs --check && tsx scripts/check-skill-bundles.mjs && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs && node scripts/check-migration-drift.mjs && node scripts/check-ownership-policy.mjs && node scripts/check-complexity-ratchet.mjs",
+    "check": "biome check . && node scripts/generate-web-theme.mjs --check && tsx scripts/generate-mcp-catalog.mjs --check && tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-bundles.mjs && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs && node scripts/check-migration-drift.mjs && node scripts/check-ownership-policy.mjs && node scripts/check-complexity-ratchet.mjs",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck",
@@ -30,7 +30,7 @@
     "notices:write": "node scripts/third-party-notices.mjs --write",
     "theme:generate": "node scripts/generate-web-theme.mjs",
     "catalog:generate": "tsx scripts/generate-mcp-catalog.mjs",
-    "skills:check": "tsx scripts/check-skill-bundles.mjs"
+    "skills:check": "tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-bundles.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",

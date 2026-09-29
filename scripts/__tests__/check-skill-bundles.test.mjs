@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 /**
- * The Skill bundle checker turns a manifest the Server would reject at upload time into a failing
- * `pnpm check`. These tests drive it as a process, which is also how `pnpm check` runs it.
+ * The Skill bundle checker turns a bundle the Server would reject at upload time into a failing
+ * `pnpm check`. These tests drive it as a process, which is also how `pnpm check` runs it, including
+ * the `--tsconfig` that resolves the checker's `@opentag/shared` import to source: `pnpm check` runs
+ * before `pnpm build`, so `packages/shared/dist` does not exist when it runs.
  */
 
 const repositoryRoot = join(import.meta.dirname, "..", "..");
 const checker = join(import.meta.dirname, "..", "check-skill-bundles.mjs");
+const tsconfig = join(import.meta.dirname, "..", "tsconfig.scripts.json");
 const tsx = join(repositoryRoot, "node_modules", ".bin", "tsx");
 
 function fixture(t, { name = "mcp-onboarding", manifest, extra = () => {} } = {}) {
@@ -33,7 +37,10 @@ function emptyFixture(t) {
 }
 
 function run(root) {
-  const result = spawnSync(tsx, [checker, "--root", root], { cwd: repositoryRoot, encoding: "utf8" });
+  const result = spawnSync(tsx, ["--tsconfig", tsconfig, checker, "--root", root], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
@@ -67,7 +74,7 @@ test("accepts a repository with no Skills at all", (t) => {
 });
 
 test("rejects a bundle without a manifest", (t) => {
-  assertRejected(t, /SKILL\.md is missing/, { manifest: undefined });
+  assertRejected(t, /manifest_missing/, { manifest: undefined });
 });
 
 test("rejects a manifest whose name disagrees with the directory", (t) => {
@@ -84,14 +91,35 @@ test("rejects a name the platform reserves", (t) => {
 });
 
 test("rejects frontmatter the manifest parser cannot read faithfully", (t) => {
-  assertRejected(t, /name|description/, {
+  assertRejected(t, /manifest_invalid/, {
     manifest: validManifest.replace("name: mcp-onboarding", "name: [mcp, onboarding]"),
   });
 });
 
 test("rejects a symlink member", (t) => {
-  assertRejected(t, /symlinks are not permitted/, {
+  assertRejected(t, /may not contain symlinks/, {
     manifest: validManifest,
     extra: (bundle) => symlinkSync("/etc/hosts", join(bundle, "escape")),
+  });
+});
+
+test("rejects a symlinked bundle root", (t) => {
+  assertRejected(t, /symlinks are not permitted/, {
+    manifest: validManifest,
+    extra: (bundle) => symlinkSync("/etc/hosts", join(dirname(bundle), "linked")),
+  });
+});
+
+test("rejects a non-directory member of skills/", (t) => {
+  assertRejected(t, /only a Skill bundle directory may live under skills\//, {
+    manifest: validManifest,
+    extra: (bundle) => writeFileSync(join(dirname(bundle), "notes.md"), "# notes\n"),
+  });
+});
+
+test("rejects a bundle whose packed archive exceeds the ceiling", (t) => {
+  assertRejected(t, /archive_too_large/, {
+    manifest: validManifest,
+    extra: (bundle) => writeFileSync(join(bundle, "random.bin"), randomBytes(17 * 1024 * 1024)),
   });
 });

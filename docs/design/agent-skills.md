@@ -323,10 +323,13 @@ Nothing here ships a Skill automatically. An operator uploads one with
 `opentag skill push skills/<name>`, which stores it as that Agent's Skill like any other upload; the
 repository is where the content is reviewed and versioned, not a delivery channel.
 
-`pnpm check` runs `scripts/check-skill-bundles.mjs` over every bundle, so the contract an upload
-enforces — a readable manifest, a name that matches its directory, no reserved name, no symlink
-member, and the entry and size bounds — fails in the pull request that wrote the bundle rather than
-at an operator's upload.
+`pnpm check` runs `scripts/check-skill-bundles.mjs` over every bundle, so a bundle the Server would
+refuse fails in the pull request that wrote it rather than at an operator's upload. The checker packs
+each bundle with the same `packSkillDirectory` the upload uses instead of restating its rules: a
+missing or unreadable manifest, a reserved name, a symlinked bundle root or member, an unsupported
+entry, the path, entry, unpacked and packed byte ceilings, and a name that disagrees with its
+directory are all decided here. It reads `@opentag/shared` from source through
+`scripts/tsconfig.scripts.json`, because `pnpm check` runs before `pnpm build`.
 
 ## Verification
 

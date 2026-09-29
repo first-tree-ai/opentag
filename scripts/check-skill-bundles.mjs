@@ -8,23 +8,20 @@
  * work here as well means an invalid manifest fails `pnpm check` in the pull request that wrote it,
  * instead of failing an operator's upload later.
  *
- * It runs under `tsx` because it reads the shared contract from source: `pnpm check` runs before
- * `pnpm build`, so `packages/shared/dist` does not exist yet.
+ * This script drives the same `packSkillDirectory` the upload runs rather than restating its rules.
+ * A local restatement would drift from the packer, and the rules that matter most cannot be
+ * restated at all: the packed archive's byte ceiling exists only on the compressed stream, and a
+ * symlinked bundle root looks like nothing in particular to a directory walk.
+ *
+ * It runs under tsx, and `pnpm check` runs before `pnpm build`, so `packages/shared/dist` does not
+ * exist yet. `scripts/tsconfig.scripts.json` maps `@opentag/shared` to its source for that reason,
+ * and `package.json` passes it with `--tsconfig`.
  */
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { SKILL_MAX_ENTRIES, SKILL_MAX_PATH_BYTES, SKILL_UNPACKED_MAX_BYTES } from "../packages/shared/src/skill.ts";
-import {
-  isReservedSkillName,
-  parseSkillManifest,
-  SKILL_MANIFEST_MAX_BYTES,
-  SkillNameSchema,
-} from "../packages/shared/src/skill-manifest.ts";
+import { packSkillDirectory, SkillArchiveError } from "../packages/client/src/skills/skill-archive.ts";
 
-/** The manifest a bundle must carry at its root, and the only member with a fixed name. */
-const MANIFEST = "SKILL.md";
-
+/** `--root` points the checker at a fixture tree; a script test sets it so it never touches the repo. */
 function flag(name) {
   const index = process.argv.indexOf(name);
   return index === -1 ? undefined : process.argv[index + 1];
@@ -34,89 +31,54 @@ const overrideRoot = flag("--root");
 const root = overrideRoot ? `${overrideRoot.replace(/[/\\]+$/, "")}/` : fileURLToPath(new URL("..", import.meta.url));
 const skillsDirectory = `${root}skills`;
 
-/** Every member of one bundle, and the totals the server bounds an upload by. */
-async function walk(directory, prefix, totals, violations) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    const path = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
-    const absolute = join(directory, entry.name);
-    totals.entries += 1;
-    if (Buffer.byteLength(path, "utf8") > SKILL_MAX_PATH_BYTES) {
-      violations.push(`${path}: path exceeds ${SKILL_MAX_PATH_BYTES} bytes`);
-    }
+/**
+ * The bundle directory names under `skills/`, in a stable order.
+ *
+ * Every direct member must be one. `Dirent.isDirectory()` is false for a symlink, so filtering on it
+ * would drop `skills/linked -> ../elsewhere` before anything looked at it, while the upload refuses a
+ * symlinked root outright.
+ */
+function collectBundles(entries, violations) {
+  const names = [];
+  for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
     if (entry.isSymbolicLink()) {
-      // The server refuses links outright: an archive member that points outside the bundle would
-      // write wherever it resolved to on the Computer that materializes it.
-      violations.push(`${path}: symlinks are not permitted in a Skill bundle`);
+      violations.push(`skills/${entry.name}: symlinks are not permitted; a bundle must be a real directory`);
       continue;
     }
-    if (entry.isDirectory()) {
-      await walk(absolute, path, totals, violations);
+    if (!entry.isDirectory()) {
+      violations.push(`skills/${entry.name}: only a Skill bundle directory may live under skills/`);
       continue;
     }
-    if (!entry.isFile()) {
-      violations.push(`${path}: only regular files and directories are permitted`);
-      continue;
-    }
-    totals.bytes += (await stat(absolute)).size;
+    names.push(entry.name);
   }
+  return names;
 }
 
-/** Validate one Skill bundle, pushing every problem it has rather than stopping at the first. */
+/** Validate one bundle by packing it: the one operation that decides what an upload accepts. */
 async function checkBundle(name, violations) {
-  const bundle = `${skillsDirectory}/${name}`;
-  const manifestPath = `${bundle}/${MANIFEST}`;
   const at = `skills/${name}`;
-
-  let markdown;
+  let packed;
   try {
-    markdown = await readFile(manifestPath, "utf8");
-  } catch {
-    violations.push(`${at}: ${MANIFEST} is missing`);
-    return;
-  }
-  if (Buffer.byteLength(markdown, "utf8") > SKILL_MANIFEST_MAX_BYTES) {
-    violations.push(`${at}/${MANIFEST}: exceeds ${SKILL_MANIFEST_MAX_BYTES} bytes`);
-    return;
-  }
-
-  const parsed = parseSkillManifest(markdown);
-  if (!parsed.ok) {
-    violations.push(`${at}/${MANIFEST}: ${parsed.reason}`);
-    return;
-  }
-  const manifest = parsed.manifest;
-  if (!SkillNameSchema.safeParse(manifest.name).success) {
-    violations.push(`${at}/${MANIFEST}: "name" is not a valid Skill name`);
+    packed = await packSkillDirectory(`${skillsDirectory}/${name}`);
+  } catch (error) {
+    if (error instanceof SkillArchiveError) {
+      violations.push(`${at}: ${error.code}: ${error.message}`);
+      return;
+    }
+    throw error;
   }
   // The directory name is what `opentag skill push` reports against on a collision, so a bundle
   // whose two names disagree is not addressable by the name it carries.
-  if (manifest.name !== name) {
-    violations.push(`${at}: manifest name "${manifest.name}" does not match the directory name`);
-  }
-  if (isReservedSkillName(manifest.name)) {
-    violations.push(`${at}: "${manifest.name}" is reserved by the platform`);
-  }
-
-  const totals = { entries: 0, bytes: 0 };
-  await walk(bundle, "", totals, violations);
-  if (totals.entries > SKILL_MAX_ENTRIES) {
-    violations.push(`${at}: ${totals.entries} members exceed the ${SKILL_MAX_ENTRIES} bound`);
-  }
-  if (totals.bytes > SKILL_UNPACKED_MAX_BYTES) {
-    violations.push(`${at}: ${totals.bytes} unpacked bytes exceed the ${SKILL_UNPACKED_MAX_BYTES} bound`);
+  if (packed.name !== name) {
+    violations.push(`${at}: manifest name "${packed.name}" does not match the directory name`);
   }
 }
 
 async function main() {
   const violations = [];
-  let names;
+  let entries;
   try {
-    const entries = await readdir(skillsDirectory, { withFileTypes: true });
-    names = entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
+    entries = await readdir(skillsDirectory, { withFileTypes: true });
   } catch (error) {
     if (error?.code === "ENOENT") {
       // A repository with no first-party Skill bundles is valid.
@@ -126,6 +88,7 @@ async function main() {
     throw error;
   }
 
+  const names = collectBundles(entries, violations);
   for (const name of names) await checkBundle(name, violations);
 
   if (violations.length > 0) {

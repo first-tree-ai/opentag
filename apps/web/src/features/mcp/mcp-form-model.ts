@@ -5,7 +5,6 @@ import {
   MCPCustomAuthHeaderSchema,
   type MCPEffectiveConfig,
   MCPExtraHeadersSchema,
-  type MCPServer,
   type UpdateMCPBindingRequest,
 } from "@opentag/shared/browser";
 import { ApiError } from "../../api.js";
@@ -29,7 +28,8 @@ export function validHeaders(rows: HeaderRow[], authHeader: string): boolean {
     MCPExtraHeadersSchema.safeParse(headersFromRows(nonempty)).success
   );
 }
-export function suggestServerName(url: string, servers: MCPServer[]): string {
+/** The name an MCP URL suggests, ignoring every name already in use. Empty when the URL has no host. */
+export function serverNameFromUrl(url: string): string {
   try {
     const parts = new URL(url).hostname.toLowerCase().split(".");
     const host =
@@ -39,17 +39,22 @@ export function suggestServerName(url: string, servers: MCPServer[]): string {
         .join("-") ||
       parts[0] ||
       "server";
-    const base =
+    return (
       host
         .replace(/[^a-z0-9-]/g, "-")
         .replace(/^-+/, "")
-        .slice(0, 58) || "server";
-    let name = base;
-    for (let suffix = 2; servers.some((server) => server.name === name); suffix++) name = `${base}-${suffix}`;
-    return name;
+        .slice(0, 58) || "server"
+    );
   } catch {
     return "";
   }
+}
+export function suggestServerName(url: string, servers: readonly { name: string }[]): string {
+  const base = serverNameFromUrl(url);
+  if (!base) return "";
+  let name = base;
+  for (let suffix = 2; servers.some((server) => server.name === name); suffix++) name = `${base}-${suffix}`;
+  return name;
 }
 export const actionError = (error: unknown, fallback: string): string =>
   error instanceof ApiError ? error.message : fallback;

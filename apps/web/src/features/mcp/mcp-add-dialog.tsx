@@ -7,10 +7,33 @@ import {
 } from "@opentag/shared/browser";
 import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
+import {
+  Banner,
+  Button,
+  Dialog,
+  Field,
+  Icon,
+  KumoInputAreaControl,
+  KumoInputControl,
+  Loader,
+} from "../../ui/design-system.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorize-dialog.js";
 import { McpAuthFields, McpFooter } from "./mcp-form.js";
-import { actionError, authDraft, headersFromRows, headersKey, suggestServerName } from "./mcp-form-model.js";
+import {
+  actionError,
+  authDraft,
+  defaultConnection,
+  headersFromRows,
+  headersKey,
+  suggestServerName,
+} from "./mcp-form-model.js";
+import {
+  isImportable,
+  type MCPImportOutcome,
+  type MCPImportReason,
+  type MCPImportServer,
+  parseMcpImport,
+} from "./mcp-import-model.js";
 import { useAttachMcpServer, useCreateMcpServer, useMcpServers } from "./mcp-queries.js";
 
 type AddProps = {
@@ -41,6 +64,13 @@ function useAddServer({ agentId, onAdded }: AddProps) {
   const attachedRef = useRef<MCPAgentServer>(undefined);
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
+  const [intake, setIntake] = useState<"search" | "import">("search");
+  const [paste, setPaste] = useState("");
+  const [outcome, setOutcome] = useState<MCPImportOutcome>();
+  const [parsing, setParsing] = useState(false);
+  const parsingRef = useRef(false);
+  /** Set while the draft came from a paste, so returning to the first step restores that paste. */
+  const imported = useRef(false);
   const urlLike = /^https?:\/\//i.test(query.trim());
   const filtered = servers.filter((server) =>
     urlLike
@@ -58,6 +88,7 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     if (!nameEdited.current) setName(suggestServerName(value, servers));
   };
   const choose = (server: MCPServer) => {
+    imported.current = false;
     setSelected(server);
     if (selected?.id !== server.id) setDraft(authDraft(server, server.defaultAuthKind));
     setStep("configure");
@@ -68,8 +99,52 @@ function useAddServer({ agentId, onAdded }: AddProps) {
       setError(m.mcp_url_invalid());
       return;
     }
+    imported.current = false;
     setSelected(undefined);
     changeUrl(query.trim());
+    setStep("configure");
+    setError(undefined);
+  };
+  /**
+   * Read the pasted configuration and list what it holds. Parsing is a read-only step: nothing is
+   * created until the user picks a server and confirms on the next step.
+   */
+  const analyze = async () => {
+    if (parsingRef.current) return;
+    parsingRef.current = true;
+    setParsing(true);
+    setError(undefined);
+    try {
+      setOutcome(await parseMcpImport({ text: paste, takenNames: servers.map((server) => server.name) }));
+    } finally {
+      parsingRef.current = false;
+      setParsing(false);
+    }
+  };
+  /**
+   * Carry a detected server into the same draft a manual entry produces, so create, attach, and
+   * authorize are unchanged. A credential found in the paste becomes this Agent's bearer key and is
+   * never part of the shared definition that `ensureServer` creates.
+   */
+  const importServer = (detected: MCPImportServer) => {
+    if (!detected.url) return;
+    imported.current = true;
+    setSelected(undefined);
+    setUrl(detected.url);
+    nameEdited.current = true;
+    setName(detected.name);
+    setDraft({
+      ...authDraft(
+        {
+          url: detected.url,
+          authHeader: detected.credential?.header ?? defaultConnection.authHeader,
+          authScheme: detected.credential?.scheme ?? defaultConnection.authScheme,
+          extraHeaders: detected.extraHeaders,
+        },
+        detected.credential ? "bearer" : "oauth",
+      ),
+      token: detected.credential?.token ?? "",
+    });
     setStep("configure");
     setError(undefined);
   };
@@ -100,7 +175,7 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     return createdRef.current ? m.mcp_attach_failed() : m.mcp_create_failed();
   };
   const back = () => {
-    if (!selected) setQuery(url);
+    if (!selected && !imported.current) setQuery(url);
     setStep("choose");
     setError(undefined);
   };
@@ -148,6 +223,14 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     created,
     attached,
     busy,
+    intake,
+    setIntake,
+    paste,
+    setPaste,
+    outcome,
+    parsing,
+    analyze,
+    importServer,
     urlLike,
     filtered,
     duplicate,
@@ -180,6 +263,9 @@ export function McpAddDialog(props: AddProps) {
   );
 }
 function AddPicker(props: AddProps & { state: AddState }) {
+  return props.state.intake === "import" ? <AddImport {...props} /> : <AddSearch {...props} />;
+}
+function AddSearch(props: AddProps & { state: AddState }) {
   const { state, onClose } = props;
   const { account, filtered, urlLike, servers, query, continueUrl, error } = state;
   const loaded = !account.isPending && !account.isError;
@@ -196,6 +282,12 @@ function AddPicker(props: AddProps & { state: AddState }) {
         </div>
       ) : null}
       {loaded ? <AddChoices {...props} /> : null}
+      {loaded ? (
+        <Button className="mt-4 -ml-2" variant="ghost" size="compact" onClick={() => state.setIntake("import")}>
+          <Icon name="upload" />
+          {m.mcp_import_open()}
+        </Button>
+      ) : null}
       {error ? (
         <p role="alert" className="mt-3 text-sm text-kumo-danger">
           {error}
@@ -210,6 +302,164 @@ function AddPicker(props: AddProps & { state: AddState }) {
       </McpFooter>
     </>
   );
+}
+/**
+ * The import method: paste a configuration fragment or a CLI command, read it, and pick one remote
+ * server out of what it holds. Unsupported entries are listed rather than hidden, and nothing is
+ * created until a listed server is chosen and confirmed on the next step.
+ */
+function AddImport(props: AddProps & { state: AddState }) {
+  const { state, agentName, mounted, onLocate } = props;
+  const { paste, setPaste, outcome, analyze, parsing, setIntake, error, importServer } = state;
+  const detected = outcome?.servers ?? [];
+  return (
+    <>
+      <Button
+        className="mb-4 -ml-2"
+        disabled={parsing}
+        variant="ghost"
+        size="compact"
+        onClick={() => setIntake("search")}
+      >
+        <Icon name="arrow-left" />
+        {m.mcp_import_back()}
+      </Button>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void analyze();
+        }}
+      >
+        <Field htmlFor="mcp-import-text" label={m.mcp_import_label()} hint={m.mcp_import_help()}>
+          <KumoInputAreaControl
+            id="mcp-import-text"
+            rows={6}
+            spellCheck={false}
+            value={paste}
+            placeholder={m.mcp_import_placeholder()}
+            onChange={(event) => setPaste(event.target.value)}
+          />
+        </Field>
+        <div className="mt-3">
+          <Button type="submit" variant="secondary" disabled={parsing || !paste.trim()} loading={parsing}>
+            {m.mcp_import_parse()}
+          </Button>
+        </div>
+      </form>
+      {outcome ? (
+        <div className="mt-6">
+          <p role="status" className="text-sm text-kumo-subtle">
+            {importMessage(outcome)}
+          </p>
+          {detected.length ? (
+            <ul className="mt-2 divide-y divide-kumo-line border-y border-kumo-line">
+              {detected.map((entry) => (
+                <ImportRow
+                  key={`${entry.sourceName} ${entry.name}`}
+                  entry={entry}
+                  agentName={agentName}
+                  mountedId={mounted.find((mount) => mount.effective.url === entry.url)?.mcpServerId}
+                  onChoose={() => importServer(entry)}
+                  onLocate={onLocate}
+                />
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+      {error ? (
+        <p role="alert" className="mt-3 text-sm text-kumo-danger">
+          {error}
+        </p>
+      ) : null}
+      <McpFooter onClose={props.onClose} busy={parsing} />
+    </>
+  );
+}
+function ImportRow({
+  entry,
+  agentName,
+  mountedId,
+  onChoose,
+  onLocate,
+}: {
+  entry: MCPImportServer;
+  agentName: string;
+  mountedId: string | undefined;
+  onChoose: () => void;
+  onLocate: (id: string) => void;
+}) {
+  const copy = <ImportCopy entry={entry} agentName={agentName} added={mountedId !== undefined} />;
+  if (!isImportable(entry))
+    return (
+      <li className="min-w-0 py-4">
+        <ImportCopy entry={entry} agentName={agentName} />
+        <span className="mt-1 block text-xs text-kumo-subtle">{importReason(entry.reason)}</span>
+      </li>
+    );
+  if (mountedId)
+    return (
+      <li className="flex items-center gap-3">
+        <div className="min-w-0 flex-1 py-4">{copy}</div>
+        <Button size="compact" variant="ghost" onClick={() => onLocate(mountedId)}>
+          {m.mcp_view_existing()}
+        </Button>
+      </li>
+    );
+  return (
+    <li className="flex items-center gap-3">
+      <Button variant="ghost" type="button" className="mcp-choice" onClick={onChoose}>
+        {copy}
+        <Icon className="size-3.5 shrink-0 text-kumo-subtle" name="chevron-right" />
+      </Button>
+    </li>
+  );
+}
+function ImportCopy({
+  entry,
+  agentName,
+  added = false,
+}: {
+  entry: MCPImportServer;
+  agentName: string;
+  added?: boolean;
+}) {
+  return (
+    <span className="grid min-w-0 gap-1">
+      <strong className="text-sm font-medium">{entry.name}</strong>
+      <span className="wrap-anywhere text-xs text-kumo-subtle">{entry.url ?? entry.sourceName}</span>
+      {entry.credential ? <span className="text-xs text-kumo-subtle">{m.mcp_import_credential()}</span> : null}
+      {entry.refusedHeaders.length ? (
+        <span className="text-xs text-kumo-subtle">
+          {m.mcp_import_refused_headers({ headers: entry.refusedHeaders.join(", ") })}
+        </span>
+      ) : null}
+      {added ? <span className="text-xs text-kumo-subtle">{m.mcp_added_to({ agent: agentName })}</span> : null}
+    </span>
+  );
+}
+function importMessage(outcome: MCPImportOutcome): string {
+  switch (outcome.kind) {
+    case "parsed": {
+      const count = outcome.servers.filter(isImportable).length;
+      return count === 1 ? m.mcp_import_found_one() : m.mcp_import_found({ count });
+    }
+    case "unsupported-only":
+      return m.mcp_import_unsupported_only();
+    case "invalid-url":
+      return m.mcp_import_invalid_url();
+    case "no-servers":
+      return m.mcp_import_no_servers();
+    case "too-large":
+      return m.mcp_import_too_large();
+    default:
+      return m.mcp_import_unparseable();
+  }
+}
+function importReason(reason: MCPImportReason | undefined): string {
+  if (reason === "local-transport") return m.mcp_import_local();
+  if (reason === "invalid-url") return m.mcp_import_entry_url_invalid();
+  return m.mcp_import_unrecognized();
 }
 function AddChoices({ state, agentName, mounted, onLocate }: AddProps & { state: AddState }) {
   const { servers, query, setQuery, filtered, urlLike, continueUrl, choose, setError } = state;

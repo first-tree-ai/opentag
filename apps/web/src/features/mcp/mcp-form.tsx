@@ -11,7 +11,8 @@ export function McpFooter({
 }: {
   onClose: () => void;
   busy?: boolean;
-  children: ReactNode;
+  /** The step's primary action. A step that carries its own submit control omits it. */
+  children?: ReactNode;
 }) {
   return (
     <footer className="mt-6 flex flex-wrap items-center justify-end gap-2">

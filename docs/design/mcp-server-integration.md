@@ -902,6 +902,34 @@ edit, and remove.
 The "new Server" wizard asks for the definition first and the authorization method second, so
 `default_auth_kind` is never presented as a statement about the Server.
 
+### Importing a Server from another client's configuration
+
+The wizard's first step also accepts a pasted configuration instead of a URL. It reads the shapes
+other clients write: OpenCode's `mcp` map with `"type": "remote"`, the `mcpServers` map of the
+Claude-family clients, VS Code's `servers` map with `"type": "http"` or `"sse"`, the TOML
+`[mcp_servers.<name>]` tables other clients use, the YAML spelling of any of those, and the
+`claude mcp add <name> --transport http <url>` / `codex mcp add <name> --url <url>` command lines.
+JSON carrying `//` comments and trailing commas is accepted, because the configs this targets
+routinely carry both.
+
+Parsing happens in the browser, never on the Server: a paste may carry a live credential, and the
+text itself is not sent anywhere. Only the values the user confirms travel, through the same
+create → attach → authorize sequence the manual wizard uses.
+
+- **Only remote Servers are importable.** `stdio`, `local`, `command`, and `npx` entries are listed
+  by name and reported as a category OpenTag does not support. An entry that declares a `command` is
+  local even when its arguments contain an HTTPS URL (`npx -y mcp-remote https://…`): reading that as
+  remote would create a definition the gateway could never reach.
+- **A paste that holds several Servers lists all of them** and imports exactly one per confirmation.
+  A listed Server this Agent already mounts is shown as added, with a link to it instead of an import.
+- **Names are normalized** to this product's rules — lowercase, hyphens, the 64-character bound — and
+  de-duplicated against the Account, and remain editable before confirmation.
+- **A credential goes to this Agent alone.** An `Authorization: <scheme> <token>` header, or a
+  credential-shaped header such as `X-API-Key`, prefills this Agent's bearer authorization; it is
+  never written to the shared definition and never echoed into an error or a log. Every other header
+  becomes an extra header of the definition, and one OpenTag refuses — transport-owned, or a
+  second credential-shaped header — is reported by name rather than dropped in silence.
+
 ## Verification
 
 Unit tests (no network, no database):
@@ -918,6 +946,7 @@ Unit tests (no network, no database):
 | AAD | The literal format; a different Agent, a different authorization server, and the other envelope's domain all fail to open; a kind change is openable because the context never names the kind |
 | Discovery | The exact well-known order; a mismatched issuer propagates; multi-issuer ordering; the registration choice in all four cases; CIMD self-naming and same-host redirects; PKCE; `resource` on both requests; the four `iss` rows; scope priority; the refresh lead |
 | Probing | Two pages merged into one snapshot on both eras; the cursor sent only on later pages; each per-tool bound skipping the tool (in bytes, proven with multi-byte text), a nameless entry and a non-object entry skipped, a page whose every tool is skipped still succeeding, pagination continuing past a skipped tool, the `warn` line naming the bound; the cap, the budget, and a skipped tool all setting `tools_truncated`; an error page still failing the probe; a malformed page (non-object result, missing or non-array `tools`, non-string or empty cursor) failing both eras while a null cursor ends the list; SSE discovery; the era paths |
+| Config import | Every documented dialect (OpenCode `mcp`, `mcpServers`, `servers`, their YAML spellings, TOML `[mcp_servers.*]`, `claude`/`codex` command lines, and JSON with comments and trailing commas); a `command` entry whose arguments carry an HTTPS URL read as local; the multi-server list and each "no importable Server" outcome; name normalization, the host fallback, and de-duplication; the paste bound; a token reaching the authorization write only, and never a message |
 
 PostgreSQL integration tests (`mcp-management.test.ts`, Docker + testcontainers) drive a loopback
 fixture Server that is also its own authorization server:

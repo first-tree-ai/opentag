@@ -2,8 +2,15 @@ import type { MCPAgentServer } from "@opentag/shared/browser";
 import { type RefObject, useId, useRef, useState } from "react";
 import { formatDateTime } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Dialog, KumoInputControl, MagnifyingGlass } from "../../ui/design-system.js";
-import { McpHelp } from "./mcp-form.js";
+import {
+  Banner,
+  Button,
+  Collapsible,
+  Dialog,
+  Icon,
+  KumoInputControl,
+  MagnifyingGlass,
+} from "../../ui/design-system.js";
 import { actionError } from "./mcp-form-model.js";
 import { useProbeMcpServer } from "./mcp-queries.js";
 
@@ -27,9 +34,16 @@ export function toolExcerpt(description: string | null, query: string): string {
 }
 export function McpPartialTools() {
   return (
-    <McpHelp label={m.mcp_partial()}>
-      <p>{m.mcp_partial_help()}</p>
-    </McpHelp>
+    <Collapsible.Root className="min-w-0">
+      <Collapsible.Trigger render={<Button className="-ml-2 text-kumo-warning" size="compact" variant="ghost" />}>
+        <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-current" />
+        {m.mcp_partial()}
+        <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
+      </Collapsible.Trigger>
+      <Collapsible.Panel className="pt-2">
+        <p className="wrap-anywhere rounded bg-kumo-recessed p-3 text-sm text-kumo-subtle">{m.mcp_partial_help()}</p>
+      </Collapsible.Panel>
+    </Collapsible.Root>
   );
 }
 export function McpToolsDialog({

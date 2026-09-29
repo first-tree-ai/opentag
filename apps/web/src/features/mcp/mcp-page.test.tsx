@@ -6,10 +6,10 @@ import { AGENT_ID, authorization, entry, menuAction, SERVER_ID, snapshot, stub, 
 
 afterEach(() => vi.restoreAllMocks());
 describe("MCP daily use", () => {
-  it("keeps normal rows quiet and refresh inside the tool browser", async () => {
+  it("keeps normal rows quiet and offers refresh inside the tool browser", async () => {
     stub([entry({ discoveredDescription: "Long server-provided description" })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^View tools/ }));
     expect(screen.getByRole("button", { name: "Refresh tools" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close linear tools" }));
     expect(screen.queryByText("Long server-provided description")).toBeNull();
@@ -17,13 +17,63 @@ describe("MCP daily use", () => {
     await menuAction("Server details");
     expect(await screen.findByText("Long server-provided description")).toBeTruthy();
   });
+  it.each(["succeeded", "failed"] as const)("guards discovery from the %s row", async (probeState) => {
+    stub([entry({ authorization: { ...authorization(), probeState } })]);
+    let finish: () => void = () => {};
+    const probe = vi.spyOn(browserApi, "probeMcpServer").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () =>
+            resolve({
+              probeState: "succeeded",
+              probeError: null,
+              toolsCount: 1,
+              toolsTruncated: false,
+              protocolEra: null,
+              protocolVersion: null,
+            });
+        }),
+    );
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await screen.findByRole("button", { name: /View (saved )?tools \(1\)/ });
+    expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
+    if (probeState === "failed") {
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    } else {
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      await menuAction("Refresh tools");
+    }
+    expect(await screen.findByText("Loading tools…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "View saved tools (1)" })).toBeTruthy();
+    if (probeState === "failed") {
+      const retry = screen.getByRole("button", { name: "Retry" });
+      expect(retry.hasAttribute("disabled")).toBe(true);
+      fireEvent.click(retry);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "More actions for linear" }));
+    const refresh = await screen.findByRole("menuitem", { name: "Refresh tools" });
+    expect(refresh.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(refresh);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
+    vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [entry()] });
+    finish();
+    await waitFor(() => expect(refresh.getAttribute("aria-disabled")).not.toBe("true"));
+    expect(screen.queryByText("Loading tools…")).toBeNull();
+  });
+  it.each([[], null])("opens an empty saved snapshot with tools=%j", async (tools) => {
+    stub([entry({ snapshot: { ...snapshot(), tools } })]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "View tools (0)" }));
+    expect(await screen.findByText("No tools loaded")).toBeTruthy();
+  });
   it.each(["pending", "expired", "revoked", "error"] as const)(
     "shows an authorization action for %s",
     async (status) => {
       stub([entry({ authorization: { ...authorization(), status } })]);
       wrap(<McpPage agentId={AGENT_ID} />);
       expect(await screen.findByRole("button", { name: "Authorize" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "View saved tools" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "View saved tools (1)" })).toBeTruthy();
     },
   );
   it("does not turn a disabled connection into an authorization error", async () => {
@@ -73,7 +123,7 @@ describe("MCP daily use", () => {
     expect(await screen.findByText("Try later")).toBeTruthy();
     expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
     expect(screen.queryByRole("button", { name: "Authorize" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Error details" }));
     expect(await screen.findByText("MCP_PROBE_FAILED: upstream limit")).toBeTruthy();
   });
@@ -81,7 +131,7 @@ describe("MCP daily use", () => {
     stub([entry({ snapshot: null, authorization: { ...authorization(), probeState: "pending", probedAt: null } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("Loading tools…")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "View tools" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
   });
   it("does not show an empty list after a read error", async () => {
     stub([]);
@@ -100,16 +150,22 @@ describe("MCP daily use", () => {
   it("shows tool truncation only as a disclosure", async () => {
     stub([entry({ authorization: { ...authorization(), toolsCount: 200, toolsTruncated: true } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("200 tools loaded")).toBeTruthy();
-    const disclosure = screen.getByRole("button", { name: "Some tools weren’t loaded" });
+    expect(await screen.findByRole("button", { name: "View tools (1)" })).toBeTruthy();
+    expect(screen.queryByText(/\d+ tools loaded/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    const disclosure = screen.getByRole("button", { name: "Tool list incomplete" });
+    const explanation =
+      "The tool list may be incomplete, so this Agent may not have access to all of this Server’s tools.";
     expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(explanation)).toBeNull();
     fireEvent.click(disclosure);
     expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(await screen.findByText(explanation)).toBeTruthy();
   });
   it("shows tools as static descriptions without row actions or parameter schemas", async () => {
     stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^View tools/ }));
     fireEvent.change(screen.getByRole("textbox", { name: "Search tools" }), { target: { value: "issue" } });
     const tool = screen.getByRole("listitem", { name: "create_issue" });
     expect(within(tool).getByText("Create an issue")).toBeTruthy();
@@ -121,7 +177,7 @@ describe("MCP daily use", () => {
     const description = `${"Provider introduction. ".repeat(10)}\nFind the rare needle.`;
     stub([entry({ snapshot: { ...snapshot(), tools: [{ name: "search_docs", description, inputSchema: null }] } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^View tools/ }));
     const search = screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement;
     fireEvent.change(search, { target: { value: "needle" } });
     const tool = screen.getByRole("listitem", { name: "search_docs" });
@@ -135,7 +191,7 @@ describe("MCP daily use", () => {
   it("does not invent an action for a tool without a description or schema", async () => {
     stub([entry({ snapshot: { ...snapshot(), tools: [{ name: "ping", description: null, inputSchema: null }] } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^View tools/ }));
     expect(within(screen.getByRole("listitem", { name: "ping" })).queryByRole("button")).toBeNull();
   });
   it("distinguishes a search miss from a truncated empty snapshot", async () => {
@@ -146,7 +202,7 @@ describe("MCP daily use", () => {
       }),
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^View tools/ }));
     expect(screen.getByText("An incomplete response was received. No tools were saved.")).toBeTruthy();
     fireEvent.change(screen.getByRole("textbox", { name: "Search tools" }), { target: { value: "query" } });
     expect(screen.getByText("No matching tools")).toBeTruthy();
@@ -160,7 +216,7 @@ describe("MCP daily use", () => {
       }),
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View saved tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View saved tools (1)" }));
     expect(screen.getByText("Last saved tool list")).toBeTruthy();
     expect(screen.queryByText(/Updated /)).toBeNull();
   });
@@ -182,7 +238,7 @@ describe("MCP daily use", () => {
         }),
     );
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View tools" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^View tools/ }));
     const refresh = screen.getByRole("button", { name: "Refresh tools" });
     fireEvent.click(refresh);
     await waitFor(() => expect(refresh.hasAttribute("disabled")).toBe(true));

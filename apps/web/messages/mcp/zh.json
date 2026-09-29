@@ -208,7 +208,6 @@
   "mcp_completion_channel": "在{channel}中让 {agent} 使用 {server}。",
   "mcp_completion_connect": "连接消息应用后，就可以让 {agent} 使用这些工具了。",
   "mcp_import_open": "从配置导入",
-  "mcp_import_back": "返回搜索",
   "mcp_import_label": "配置内容",
   "mcp_import_help": "粘贴 JSON、TOML 或 YAML 片段，或 claude/codex 的 mcp add 命令。",
   "mcp_import_placeholder": "claude mcp add nevent --transport http https://mcp.nevent.ai",
@@ -225,5 +224,6 @@
   "mcp_import_unrecognized": "未识别为远程服务器",
   "mcp_import_entry_url_invalid": "不是可用的 HTTP(S) MCP 地址",
   "mcp_import_credential": "发现凭据，将仅为此 Agent 保存。",
-  "mcp_import_refused_headers": "未导入：{headers}"
+  "mcp_import_refused_headers": "未导入：{headers}",
+  "mcp_source_import": "导入配置"
 }

@@ -208,7 +208,6 @@
   "mcp_completion_channel": "Ask {agent} to use {server} in {channel}.",
   "mcp_completion_connect": "Connect a messaging app to start asking {agent} to use these tools.",
   "mcp_import_open": "Import from config",
-  "mcp_import_back": "Back to search",
   "mcp_import_label": "Configuration",
   "mcp_import_help": "Paste a JSON, TOML, or YAML fragment, or a claude/codex mcp add command.",
   "mcp_import_placeholder": "claude mcp add nevent --transport http https://mcp.nevent.ai",
@@ -225,5 +224,6 @@
   "mcp_import_unrecognized": "Not recognized as a remote server",
   "mcp_import_entry_url_invalid": "Not a usable HTTP(S) MCP address",
   "mcp_import_credential": "A credential was found. It is saved for this Agent only.",
-  "mcp_import_refused_headers": "Not imported: {headers}"
+  "mcp_import_refused_headers": "Not imported: {headers}",
+  "mcp_source_import": "Import configuration"
 }

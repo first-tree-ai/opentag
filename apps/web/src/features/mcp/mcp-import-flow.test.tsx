@@ -6,7 +6,7 @@ import { AGENT_ID, detail, entry, openAdd, stub, wrap } from "./mcp-test-fixture
 
 afterEach(() => vi.restoreAllMocks());
 
-const IMPORT_OPEN = "Import from config";
+const IMPORT_SOURCE = "Import configuration";
 const PARSE = "Find servers";
 const SUBMIT = "Add server";
 const REMOTE_FRAGMENT = JSON.stringify({
@@ -20,8 +20,10 @@ const echoServer = async (input: Parameters<typeof browserApi.createMcpServer>[0
   extraHeaders: input.extraHeaders ?? {},
 });
 
+/** Open the add dialog from the page header, then switch it to the import source. */
 async function openImport() {
-  fireEvent.click(await screen.findByRole("button", { name: IMPORT_OPEN }));
+  await openAdd();
+  fireEvent.click(await screen.findByRole("button", { name: IMPORT_SOURCE }));
   await screen.findByLabelText("Configuration");
 }
 
@@ -39,11 +41,10 @@ describe("MCP import method", () => {
   it("is reachable from the Add server dialog", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
-    expect(await screen.findByRole("button", { name: IMPORT_OPEN })).toBeTruthy();
     await openImport();
     expect(screen.getByRole("button", { name: PARSE })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Back to search" }));
+    // Switching back returns to the Account/URL source rather than leaving the paste on screen.
+    fireEvent.click(screen.getByRole("button", { name: "Use an existing Server" }));
     expect(await screen.findByLabelText("MCP URL")).toBeTruthy();
   });
 
@@ -53,7 +54,6 @@ describe("MCP import method", () => {
     const attach = vi.spyOn(browserApi, "attachMcpServer");
     const auth = vi.spyOn(browserApi, "setMcpAuthorization");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(REMOTE_FRAGMENT);
     expect(await screen.findByText("Server found. Choose it to import.")).toBeTruthy();
     expect(screen.getByRole("button", { name: /nevent/ })).toBeTruthy();
@@ -69,7 +69,6 @@ describe("MCP import method", () => {
   it("lists a remote server beside an unsupported local one", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(
       JSON.stringify({
         mcpServers: {
@@ -87,7 +86,6 @@ describe("MCP import method", () => {
     stub([]);
     const create = vi.spyOn(browserApi, "createMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste("claude mcp add local-tools --transport stdio -- npx -y @modelcontextprotocol/server-everything");
     expect(
       await screen.findByText("Only local MCP servers were found. OpenTag connects to remote servers only."),
@@ -100,7 +98,6 @@ describe("MCP import method", () => {
   it("reports text it cannot read without offering anything", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste("@@@ not a configuration @@@");
     expect(await screen.findByText(/No MCP server was found in this text/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^nevent/ })).toBeNull();
@@ -110,7 +107,6 @@ describe("MCP import method", () => {
     Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(JSON.stringify({ mcpServers: { linear: { type: "http", url: "https://mcp.linear.app/sse" } } }));
     expect(await screen.findByText("Added to Reviewer")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "View" }));
@@ -123,7 +119,6 @@ describe("MCP import method", () => {
     const attach = vi.spyOn(browserApi, "attachMcpServer").mockResolvedValue(entry({ authorization: null }));
     const auth = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(
       JSON.stringify({
         mcpServers: {
@@ -164,7 +159,6 @@ describe("MCP import method", () => {
     vi.spyOn(browserApi, "attachMcpServer").mockResolvedValue(entry({ authorization: null }));
     const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(REMOTE_FRAGMENT);
     fireEvent.click(await screen.findByRole("button", { name: /nevent/ }));
     expect(screen.getByRole("radio", { name: "Authorize in browser (OAuth)" }).getAttribute("aria-checked")).toBe(
@@ -189,7 +183,6 @@ describe("MCP import method", () => {
       .mockResolvedValue(entry({ authorization: null }));
     vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(REMOTE_FRAGMENT);
     fireEvent.click(await screen.findByRole("button", { name: /nevent/ }));
     fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
@@ -206,7 +199,6 @@ describe("MCP import method", () => {
     const attach = vi.spyOn(browserApi, "attachMcpServer").mockResolvedValue(entry({ authorization: null }));
     const auth = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(
       JSON.stringify({
         mcpServers: {
@@ -235,7 +227,6 @@ describe("MCP import method", () => {
     stub([]);
     const create = vi.spyOn(browserApi, "createMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(
       JSON.stringify({
         mcpServers: {
@@ -257,7 +248,6 @@ describe("MCP import method", () => {
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry({ authorization: null }));
     const auth = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(
       JSON.stringify({
         mcpServers: {
@@ -297,7 +287,6 @@ describe("MCP import method", () => {
     vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry({ authorization: null }));
     const auth = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(
       JSON.stringify({
         mcpServers: {
@@ -329,7 +318,6 @@ describe("MCP import method", () => {
     vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry({ authorization: null }));
     const auth = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(
       JSON.stringify({
         mcpServers: {
@@ -357,7 +345,6 @@ describe("MCP import method", () => {
   it("keeps the pasted draft when returning from the configuration step", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
     await paste(REMOTE_FRAGMENT);
     fireEvent.click(await screen.findByRole("button", { name: /nevent/ }));
     fireEvent.click(screen.getByRole("button", { name: "Back" }));

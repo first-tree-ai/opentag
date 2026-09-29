@@ -2,7 +2,6 @@ import type { MCPAgentServer } from "@opentag/shared/browser";
 import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Field, Icon, KumoInputAreaControl } from "../../ui/design-system.js";
-import { McpFooter } from "./mcp-form.js";
 import {
   isImportable,
   type MCPImportOutcome,
@@ -77,25 +76,17 @@ export function McpImportPanel({
   mounted,
   onChoose,
   onLocate,
-  onBack,
-  onClose,
 }: {
   state: McpImportState;
   agentName: string;
   mounted: MCPAgentServer[];
   onChoose: (server: MCPImportServer) => void;
   onLocate: (id: string) => void;
-  onBack: () => void;
-  onClose: () => void;
 }) {
   const { paste, setPaste, outcome, parsing, analyze } = state;
   const detected = outcome?.servers ?? [];
   return (
     <>
-      <Button className="mb-4 -ml-2" disabled={parsing} variant="ghost" size="compact" onClick={onBack}>
-        <Icon name="arrow-left" />
-        {m.mcp_import_back()}
-      </Button>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -139,7 +130,6 @@ export function McpImportPanel({
           ) : null}
         </div>
       ) : null}
-      <McpFooter onClose={onClose} busy={parsing} />
     </>
   );
 }

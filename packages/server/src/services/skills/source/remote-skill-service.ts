@@ -53,6 +53,11 @@ export interface RemoteSkillServiceOptions {
   resolveAddresses?: (hostname: string) => Promise<string[]>;
   /** Only for a local-development deployment, exactly as the MCP gate has it. */
   allowLoopback?: boolean;
+  /**
+   * How the snapshot's size monitor measures the staging directory. Injectable so a test can observe
+   * the monitor's lifetime: a monitor that outlives its request keeps measuring a deleted path.
+   */
+  measureWorkspace?: (path: string) => Promise<number>;
   maxCandidates?: number;
   readLimits?: SkillReadLimits;
   logger?: ServiceLogger;
@@ -103,6 +108,7 @@ export class RemoteSkillService {
   readonly #gitRunner: GitProcessRunner | undefined;
   readonly #logger: ServiceLogger | undefined;
   readonly #maxCandidates: number | undefined;
+  readonly #measureWorkspace: ((path: string) => Promise<number>) | undefined;
   readonly #readLimits: SkillReadLimits | undefined;
   readonly #remoteOptions: { allowLoopback: boolean; resolveAddresses?: (hostname: string) => Promise<string[]> };
 
@@ -117,6 +123,7 @@ export class RemoteSkillService {
     this.#gitRunner = options.gitRunner;
     this.#logger = options.logger;
     this.#maxCandidates = options.maxCandidates;
+    this.#measureWorkspace = options.measureWorkspace;
     this.#readLimits = options.readLimits;
     this.#remoteOptions = {
       allowLoopback: options.allowLoopback === true,
@@ -241,8 +248,10 @@ export class RemoteSkillService {
   }
 
   /**
-   * Normalizes and reads a source. The workspace is created only for a repository, and is removed on
-   * every path: a fetched tree is the one thing here that has to be cleaned up.
+   * Normalizes and reads a source.
+   *
+   * A repository stages a tunnel and a workspace; every other kind reads into memory. The returned
+   * `dispose` is the only thing the caller has to call, whichever kind it got.
    */
   async #open(input: ResolveRemoteSkillsInput): Promise<OpenedSource> {
     const parsed = parseSkillSource(input.source);
@@ -257,63 +266,90 @@ export class RemoteSkillService {
     if (isRepository(source.kind)) return this.#openRepository(source, existingNames, input.signal);
     if (source.kind === "well_known") return this.#openWellKnown(source, existingNames);
     const document = await openDocumentSource(this.#fetcher, source.url);
-    return {
-      source,
-      listings: await this.#discover(document.snapshot, source, existingNames),
-      dispose: document.snapshot.dispose,
-    };
+    try {
+      const listings = await this.#discover(document.snapshot, source, existingNames);
+      return { source, listings, dispose: document.snapshot.dispose };
+    } catch (error) {
+      await document.snapshot.dispose();
+      throw error;
+    }
   }
 
+  /**
+   * A host that publishes no index at all is read as a direct download, exactly as the ecosystem does.
+   *
+   * An index that *is* published owns nothing to release — its v0.2 artifacts are fetched at install
+   * time — so its disposal is a no-op.
+   */
+  async #openWellKnown(source: RemoteSkillSource, existingNames: readonly string[]): Promise<OpenedSource> {
+    const index = await resolveWellKnownSource(this.#fetcher, source.url, {
+      existingNames,
+      ...(this.#maxCandidates === undefined ? {} : { maxCandidates: this.#maxCandidates }),
+    });
+    if (index.found) return { source, listings: index.listings, dispose: async () => undefined };
+    const document = await openDocumentSource(this.#fetcher, source.url);
+    try {
+      const listings = await this.#discover(document.snapshot, source, existingNames);
+      return { source, listings, dispose: document.snapshot.dispose };
+    } catch (error) {
+      await document.snapshot.dispose();
+      throw error;
+    }
+  }
+
+  /**
+   * A repository source, read through the pinning tunnel.
+   *
+   * Git resolves hostnames itself, so the address rules are bound to its connections by routing them
+   * through a loopback tunnel that resolves, judges, and then dials. Every connection git makes for
+   * this source — the clone, the tree listing, and each lazy blob fetch — goes through it, so a name
+   * cannot resolve publicly for the check and privately for the connection.
+   *
+   * Four things are acquired here and every one of them is released in reverse order, whether the
+   * request succeeds or fails part-way: the tunnel's listener, the staging directory, the snapshot's
+   * monitor, and the snapshot's cached blobs. Disposal is the returned closure, so the caller's
+   * `finally` releases everything with one call.
+   */
   async #openRepository(
     source: RemoteSkillSource,
     existingNames: readonly string[],
     signal: AbortSignal | undefined,
   ): Promise<OpenedSource> {
-    /*
-     * Git resolves hostnames itself, so the address rules are bound to its connections by routing
-     * them through a loopback tunnel that resolves, judges, and then dials. Every connection git
-     * makes for this source — the clone, the tree listing, and each lazy blob fetch — goes through it,
-     * so a name cannot resolve publicly for the check and privately for the connection.
-     */
     await assertGitRemoteAllowed(source, this.#remoteOptions);
-    const tunnel = await SkillSourceTunnel.start(this.#remoteOptions);
-    const workspace = await SkillSourceWorkspace.create();
+    const disposers: Array<() => Promise<void>> = [];
+    const disposeAll = async () => {
+      for (const dispose of [...disposers].reverse()) {
+        try {
+          await dispose();
+        } catch (error) {
+          // Cleanup must never mask the failure that caused it. A handle that could not be released is
+          // worth a warning, not a different error for the caller.
+          this.#logger?.warn({ error }, "Remote Skill source cleanup failed");
+        }
+      }
+    };
     try {
+      const tunnel = await SkillSourceTunnel.start(this.#remoteOptions);
+      disposers.push(() => tunnel.close());
+      const workspace = await SkillSourceWorkspace.create();
+      disposers.push(() => workspace.dispose());
       const snapshot = await fetchGitSnapshot({
         source,
         workspace: workspace.root,
         signal: signal ?? new AbortController().signal,
         proxyUrl: tunnel.proxyUrl,
         ...(this.#gitRunner === undefined ? {} : { run: this.#gitRunner }),
+        ...(this.#measureWorkspace === undefined ? {} : { measureWorkspace: this.#measureWorkspace }),
       });
-      return {
-        source,
-        listings: await this.#discover(snapshot, source, existingNames),
-        dispose: async () => {
-          await snapshot.dispose();
-          await workspace.dispose();
-          await tunnel.close();
-        },
-      };
+      disposers.push(() => snapshot.dispose());
+      // The listing reads manifests through the snapshot, so a failure here must still release the
+      // snapshot's monitor — it polls the workspace, which cleanup has just removed.
+      const listings = await this.#discover(snapshot, source, existingNames);
+      return { source, listings, dispose: disposeAll };
     } catch (error) {
-      await workspace.dispose();
-      await tunnel.close();
+      await disposeAll();
       throw error;
     }
-  }
-
-  /** A host that publishes no index at all is read as a direct download, exactly as the ecosystem does. */
-  async #openWellKnown(source: RemoteSkillSource, existingNames: readonly string[]): Promise<OpenedSource> {
-    const index = await resolveWellKnownSource(this.#fetcher, source.url, existingNames);
-    if (index.found) {
-      return { source, listings: index.listings, dispose: async () => undefined };
-    }
-    const document = await openDocumentSource(this.#fetcher, source.url);
-    return {
-      source,
-      listings: await this.#discover(document.snapshot, source, existingNames),
-      dispose: document.snapshot.dispose,
-    };
   }
 
   #discover(

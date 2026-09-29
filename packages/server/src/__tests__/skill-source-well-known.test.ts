@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { SKILL_ERROR_CODES, SKILL_SOURCE_DOWNLOAD_MAX_BYTES, SKILL_SOURCE_EXTRACT_MAX_BYTES } from "@opentag/shared";
+import {
+  ResolveRemoteSkillsResponseSchema,
+  SKILL_ERROR_CODES,
+  SKILL_SOURCE_DOWNLOAD_MAX_BYTES,
+  SKILL_SOURCE_EXTRACT_MAX_BYTES,
+  SKILL_SOURCE_MAX_CANDIDATES,
+} from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import type { RemoteSkillListing } from "../services/skills/source/remote-candidates.js";
 import { parseWellKnownIndex, resolveWellKnownSource } from "../services/skills/source/well-known-source.js";
@@ -192,8 +198,9 @@ describe("resolveWellKnownSource", () => {
       path: "demo",
       fileCount: 2,
       alreadyInstalled: false,
-      // The legacy layout publishes no content hash; the declared file set is what can be compared.
-      fingerprint: expect.stringMatching(/^declared:[0-9a-f]{64}$/),
+      // The legacy layout publishes no content hash, so the preview reads the files to bind the
+      // candidate to what it actually offers.
+      fingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
     });
     const files = await firstListing(result).materialize();
     expect(files.map((file) => file.path)).toEqual(["SKILL.md", "extra.md"]);
@@ -245,7 +252,9 @@ describe("resolveWellKnownSource", () => {
         ],
       }),
     });
-    const result = await resolveWellKnownSource(fetcher, "https://example.test", ["demo", "other"]);
+    const result = await resolveWellKnownSource(fetcher, "https://example.test", {
+      existingNames: ["demo", "other"],
+    });
     expect(result.found).toBe(true);
     if (!result.found) return;
     expect(result.listings[0]?.candidate.alreadyInstalled).toBe(true);
@@ -355,6 +364,85 @@ describe("resolveWellKnownSource", () => {
     expect(allowance("/demo/tail.md")).toBe(
       SKILL_SOURCE_EXTRACT_MAX_BYTES - manifestBytes - 2 * eightMebibytes.byteLength,
     );
+  });
+
+  it("bounds a well-known catalog at the candidate ceiling", async () => {
+    const skills = Array.from({ length: SKILL_SOURCE_MAX_CANDIDATES + 1 }, (_value, index) => ({
+      name: `demo-${index}`,
+      description: "d",
+      type: "skill-md",
+      url: `https://example.test/${index}.md`,
+      digest: "a".repeat(64),
+    }));
+    const fetcher = fetcherServing({
+      "https://example.test/.well-known/agent-skills/index.json": json({ $schema: SCHEMA_V2, skills }),
+    });
+    const result = await resolveWellKnownSource(fetcher, "https://example.test");
+    expect(result.found).toBe(true);
+    if (!result.found) return;
+    // A 201-entry index is truncated rather than handed to the response schema, which rejects 201.
+    expect(result.listings).toHaveLength(SKILL_SOURCE_MAX_CANDIDATES);
+    expect(
+      ResolveRemoteSkillsResponseSchema.safeParse({
+        source: { kind: "well_known", url: "https://example.test" },
+        skills: result.listings.map((listing) => listing.candidate),
+      }).success,
+    ).toBe(true);
+  });
+
+  it("reads at most the configured number of legacy entries", async () => {
+    const files = ["SKILL.md"];
+    const skills = Array.from({ length: 5 }, (_value, index) => ({
+      name: `demo-${index}`,
+      description: "d",
+      files,
+    }));
+    const requests: string[] = [];
+    const fetcher = stubFetcher(
+      {
+        "https://example.test/.well-known/skills/index.json": json({ skills }),
+        ...Object.fromEntries(
+          skills.map((skill) => [
+            `https://example.test/.well-known/skills/${skill.name}/SKILL.md`,
+            () => {
+              requests.push(skill.name);
+              return { status: 200, body: skillManifest(skill.name) };
+            },
+          ]),
+        ),
+      },
+      { requests: undefined },
+    );
+    const result = await resolveWellKnownSource(fetcher, "https://example.test", { maxCandidates: 2 });
+    expect(result.found).toBe(true);
+    if (!result.found) return;
+    expect(result.listings.map((listing) => listing.candidate.name)).toEqual(["demo-0", "demo-1"]);
+    // The legacy preview reads each entry to bind it to content, so the cap has to stop the reading
+    // too — otherwise a long catalog would still be downloaded.
+    expect(requests).toEqual(["demo-0", "demo-1"]);
+  });
+
+  it("binds a legacy entry to its content, not only its file list", async () => {
+    const original = skillManifest("demo", "The original description");
+    let body = original;
+    const index = {
+      skills: [{ name: "demo", description: "d", files: ["SKILL.md"] }],
+    };
+    const fetcher = stubFetcher({
+      "https://example.test/.well-known/skills/index.json": json(index),
+      "https://example.test/.well-known/skills/demo/SKILL.md": () => ({ status: 200, body }),
+    });
+
+    const preview = await resolveWellKnownSource(fetcher, "https://example.test");
+    expect(preview.found).toBe(true);
+    if (!preview.found) return;
+    const fingerprint = preview.listings[0]?.candidate.fingerprint ?? "";
+
+    // The file list is unchanged, so only a content-bound identity can notice this.
+    body = skillManifest("demo", "A different description");
+    const reread = await preview.listings[0]?.fingerprint();
+    expect(reread).not.toBe(fingerprint);
+    expect(reread).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
   it("never falls back to an origin-root index for a scoped URL", async () => {

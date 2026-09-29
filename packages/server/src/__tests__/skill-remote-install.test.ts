@@ -3,6 +3,7 @@ import { SKILL_ERROR_CODES, SKILL_MAX_PER_AGENT } from "@opentag/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agentSkills } from "../db/schema/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { runTrustedProcess } from "../services/github-proxy/git-process.js";
 import type { SkillService } from "../services/skills/index.js";
 import { RemoteSkillService } from "../services/skills/source/remote-skill-service.js";
 import { FakeSkillObjectStore } from "./support/fake-skill-object-store.js";
@@ -21,6 +22,7 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
  */
 
 const SCHEMA_V2 = "https://schemas.agentskills.io/discovery/0.2.0/schema.json";
+
 type StubAnswer = { status: number; body?: Uint8Array | string };
 type StubRoutes = Record<string, () => StubAnswer | undefined>;
 
@@ -368,6 +370,41 @@ describe("RemoteSkillService.install", () => {
     }
   }, 30_000);
 
+  it("refuses a legacy entry whose content changed but whose file list did not", async () => {
+    /*
+     * The v0.1 layout publishes no content hash, so a declared-file-list fingerprint would let a
+     * publisher swap `SKILL.md` and still install as though nothing had moved. The preview reads the
+     * files, so a content-only change is a revision conflict.
+     */
+    const accountId = await h.createUser();
+    const agentId = await h.createAgent(accountId);
+    let body = skillManifest("demo", "The original description");
+    const routes: StubRoutes = {
+      "https://example.test/.well-known/skills/index.json": () => ({
+        status: 200,
+        body: JSON.stringify({ skills: [{ name: "demo", description: "d", files: ["SKILL.md"] }] }),
+      }),
+      "https://example.test/.well-known/skills/demo/SKILL.md": () => ({ status: 200, body }),
+    };
+    const { service, skills } = remoteService(routes);
+
+    const preview = await service.resolve({ callerUserId: accountId, agentId, source: "https://example.test" });
+    const fingerprint = preview.skills[0]?.fingerprint ?? "";
+
+    // Same file list, different bytes.
+    body = skillManifest("demo", "A different description");
+    const response = await service.install({
+      callerUserId: accountId,
+      agentId,
+      source: "https://example.test",
+      selections: [{ name: "demo", fingerprint }],
+    });
+    expect(response.results).toEqual([
+      { name: "demo", status: "failed", errorCode: SKILL_ERROR_CODES.REVISION_CONFLICT },
+    ]);
+    expect((await skills.list(accountId, agentId)).skills).toEqual([]);
+  });
+
   it("refuses a selection whose source changed since the preview", async () => {
     const accountId = await h.createUser();
     const agentId = await h.createAgent(accountId);
@@ -418,6 +455,85 @@ describe("RemoteSkillService.install", () => {
       await fixture.close();
     }
   }, 30_000);
+
+  it("releases the request's resources when the listing fails after the fetch", async () => {
+    /*
+     * A tree that names a blob the clone does not hold is the shape of a post-fetch failure: the clone
+     * and the tree listing succeed, and discovery fails while reading the manifest. Four things were
+     * acquired — the tunnel's listener, the staging directory, the snapshot's size monitor, and its
+     * cached blobs — and every one of them has to be released on this path.
+     *
+     * The leak the monitor would cause is a live interval polling a directory that cleanup removed, so
+     * the assertion is on active timers: raising a timer is what a leaked monitor looks like.
+     */
+    const fixture = await startGitRepositoryFixture({
+      files: { "skills/demo/SKILL.md": skillManifest("demo") },
+    });
+    try {
+      const accountId = await h.createUser();
+      const agentId = await h.createAgent(accountId);
+      // The real clone and the real blob read; only the listing is replaced, with a blob id that
+      // cannot exist, so the manifest read fails inside discovery.
+      let measurements = 0;
+      const counting = new RemoteSkillService({
+        skills: h.serviceWith(new FakeSkillObjectStore()),
+        allowLoopback: true,
+        measureWorkspace: async () => {
+          measurements += 1;
+          return 1;
+        },
+        gitRunner: async (binary, args, options) => {
+          if (args.includes("ls-tree")) {
+            return { code: 0, stdout: Buffer.from(`100644 blob ${"0".repeat(40)}\tSKILL.md\0`) };
+          }
+          return runTrustedProcess(binary, args, options);
+        },
+      });
+
+      expect(await code(counting.resolve({ callerUserId: accountId, agentId, source: fixture.url }))).toBe(
+        SKILL_ERROR_CODES.SOURCE_UNREACHABLE,
+      );
+
+      // The monitor runs every 500 ms; the failure must have stopped it. Sampling twice, two ticks
+      // apart, is what distinguishes "stopped" from "slow".
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      const settled = measurements;
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      expect(measurements).toBe(settled);
+    } finally {
+      await fixture.close();
+    }
+  }, 30_000);
+
+  it("installs a repository Skill whose raw bytes exceed the archive ceiling but pack under it", async () => {
+    /*
+     * Uploads allow 64 MiB unpacked and then enforce a 16 MiB canonical archive. A repository source
+     * must match: this Skill is ~17 MiB of highly compressible content, so it packages far under the
+     * archive ceiling and must install rather than being refused for its raw size.
+     */
+    const filler = "a".repeat(17 * 1024 * 1024);
+    const fixture = await startGitRepositoryFixture({
+      files: { "skills/big/SKILL.md": skillManifest("big"), "skills/big/data.txt": filler },
+    });
+    try {
+      const accountId = await h.createUser();
+      const agentId = await h.createAgent(accountId);
+      const { service, skills } = remoteService({}, { allowLoopback: true });
+      const response = await install(service, {
+        callerUserId: accountId,
+        agentId,
+        source: fixture.url,
+        names: ["big"],
+      });
+      expect(response.results).toEqual([{ name: "big", status: "installed" }]);
+      const listed = await skills.list(accountId, agentId);
+      expect(listed.skills[0]).toMatchObject({ name: "big", fileCount: 2 });
+      // The stored archive is the packed size, which is what the 16 MiB ceiling bounds.
+      expect(listed.skills[0]?.archiveBytes).toBeLessThan(16 * 1024 * 1024);
+    } finally {
+      await fixture.close();
+    }
+  }, 60_000);
 
   it("reads a skill out of a real repository", async () => {
     const fixture = await startGitRepositoryFixture({

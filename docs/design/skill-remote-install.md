@@ -103,16 +103,19 @@ the source as it reads now and refuses an item whose value moved, with `SKILL_RE
 code that already means "this changed while you were working". That is what makes "what you previewed
 can have moved, and the result says so" true rather than aspirational.
 
-| Source | Fingerprint covers | What it detects |
+| Source | Fingerprint covers | Preview cost |
 | --- | --- | --- |
-| Repository (git) | every path with its blob id and mode | any content change at the previewed ref, including a branch that moved |
-| Direct download, artifact archive | every path with the content hash and mode | any change to the downloaded bytes |
-| Well-known `0.2.0` | the `digest` the index publishes, which the install also verifies against the artifact | an index entry that changed, and an artifact that changed without the index |
-| Well-known `0.1.0` | the declared file list | an index that changed what it publishes under this name |
+| Repository (git) | every path with its blob id and mode | a tree listing; no blob is read |
+| Direct download, artifact archive | every path with the content hash and mode | the download itself, which the preview already performs |
+| Well-known `0.2.0` | the `digest` the index publishes, which the install also verifies against the artifact | the index only |
+| Well-known `0.1.0` | every path with the content hash and mode | the entry's files, which the format gives no way to identify without reading |
 
-The legacy directory layout publishes no content hash at all, so content changed *within* an unchanged
-file list is not detectable at preview time; that is a limit of the format rather than of this check,
-and it is the only source with that gap.
+Every source is therefore bound to content. The legacy directory layout publishes no content hash, so
+a preview *reads* each of its entries — within `SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES` — rather than
+fingerprinting a declared file list: a list-only identity would let a publisher change `SKILL.md` and
+still install as though nothing had moved. The budget is what stops a long catalog from turning one
+preview into a download of the whole catalog; entries past it are left out of the preview rather than
+listed without the binding the selection contract promises.
 
 ## Outbound policy
 
@@ -232,15 +235,24 @@ operators in `docs/deploying.md`.
 | `SKILL_SOURCE_EXTRACT_MAX_BYTES` | 25 MiB | Maximum total bytes an unpacked download may hold, shared across the files of one legacy index entry |
 | `SKILL_SOURCE_EXTRACT_MAX_FILES` | 1000 | Maximum entries an unpacked download or a legacy index entry may declare |
 | `SKILL_SOURCE_SNAPSHOT_MAX_BYTES` | 256 MiB | Maximum bytes a repository snapshot may occupy on disk |
-| `SKILL_SOURCE_MAX_CANDIDATES` | 200 | Maximum candidates one preview returns |
+| `SKILL_SOURCE_MAX_CANDIDATES` | 200 | Maximum candidates one preview returns, for every source kind |
+| `SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES` | 64 MiB | Maximum bytes a preview downloads to identify what a legacy index publishes |
 | `SKILL_SOURCE_GIT_TIMEOUT_MS` | 60 s | Deadline for one repository transfer |
 | `SKILL_SOURCE_HTTP_TIMEOUT_MS` | 30 s | Deadline for one HTTP request |
 
 A downloaded artifact is read through the Skill archive reader with these source ceilings, not the
-general archive ones, so a 10 MiB download cannot unpack to 64 MiB. A legacy index entry's declared
-file list is bounded before anything is fetched, and its files share one unpacked-byte budget: each
-request is allowed only what remains, so a long list of large files cannot retain one full download per
-file.
+general archive ones, so a 10 MiB download cannot unpack to 64 MiB, and the decompressed-stream
+ceiling is derived from the payload ceiling the caller asked for rather than the general one — a
+stream guard fixed at the general limit would still admit a bomb that the caller's own limit exists to
+reject. A legacy index entry's declared file list is bounded before anything is fetched, and its files
+share one unpacked-byte budget: each request is allowed only what remains, so a long list of large
+files cannot retain one full download per file.
+
+A repository Skill is bounded by the *unpacked* ceiling while it is read, and by the 16 MiB canonical
+archive ceiling after it is packed, exactly as an upload is. Applying the packed ceiling to the raw
+total would make a compressible repository Skill impossible to install while the same bytes upload
+fine. A single file may be as large as the unpacked ceiling, and the blob read is allowed that much
+for the same reason.
 
 Per-Skill bounds are the Skill contract's own (`SKILL_ARCHIVE_MAX_BYTES`, `SKILL_UNPACKED_MAX_BYTES`,
 `SKILL_MAX_ENTRIES`, `SKILL_MAX_PATH_BYTES`). Repository and index entries pass through the same
@@ -261,14 +273,14 @@ to nothing, and an install can never fall back to "everything in the repository"
 | `packages/shared/src/__tests__/skill-source.test.ts` | Every accepted source form and every refusal, the resolve/install schemas, and the pinned limit values |
 | `packages/shared/src/__tests__/skill-discovery.test.ts` | The container list against its checked-in expectation, depth and shadowing, plugin manifests, the recursive fallback, subpath scoping, determinism, and skipped directories |
 | `packages/server/src/__tests__/skill-source-fetcher.test.ts` | Address refusals, the address pin handed to the transport, redirect refusal, both byte caps, the deadline, non-2xx mapping, and that only the transport and the tunnel dial |
-| `packages/server/src/__tests__/skill-source-transport.test.ts` | The real socket: the pin determines the dialed address while the hostname stays in `Host`, the declared and delivered byte caps, an unfollowed redirect, no body from an error, and the deadline |
-| `packages/server/src/__tests__/skill-source-tunnel.test.ts` | The git proxy: plain-HTTP forwarding with a close, a CONNECT byte tunnel, refusal of a blocked or loopback target, refusal of a non-absolute target, and no dial for a name the policy blocks |
+| `packages/server/src/__tests__/skill-source-transport.test.ts` | The real socket: the pin determines the dialed address while the hostname stays in `Host`, the declared and delivered byte caps, an unfollowed redirect, no body from an error, an error response stopped rather than drained, and the deadline |
+| `packages/server/src/__tests__/skill-source-tunnel.test.ts` | The git proxy: plain-HTTP forwarding with a close, a CONNECT byte tunnel, refusal of a blocked or loopback target, refusal of a non-absolute target, no dial for a name the policy blocks, the upstream dying with its client, a connect that never completes being refused on its deadline, and every socket released on close |
 | `packages/server/src/__tests__/skill-source-git.test.ts` | The clone argv and the git environment, the pre-spawn address check, `ls-tree` parsing, a real clone and blob read over local smart HTTP, the `--filter` fallback, lazy blobs, the size budget, and a missing ref |
 | `packages/server/src/__tests__/skill-source-workspace.test.ts` | Private staging, cleanup, and failing closed on a directory that is not private |
 | `packages/server/src/__tests__/skill-source-document.test.ts` | Magic-byte format detection, the single-`SKILL.md` case, invalid content, and both caps |
-| `packages/server/src/__tests__/skill-source-well-known.test.ts` | Both index versions, the two probe paths, digest verification, the legacy fallback for an unreadable modern document, and no origin-root fallback |
+| `packages/server/src/__tests__/skill-source-well-known.test.ts` | Both index versions, the two probe paths, digest verification (both spellings), the legacy fallback for an unreadable modern document, no origin-root fallback, the candidate ceiling for a long catalog and for legacy entries, the shared legacy content budget, and a content-only change moving a legacy fingerprint |
 | `packages/server/src/__tests__/skill-archive-entries.test.ts` | One logical Skill producing identical canonical bytes and sha256 through the upload, download, and listing entry points |
-| `packages/server/src/__tests__/skill-remote-install.test.ts` | Preview, already-installed marking, per-item install outcomes (installed, skipped, failed), name mismatches, the per-Agent limit, cross-Account isolation, the `@skill` filter, a selection whose source moved, an unusable path, and installs from a real repository through the pinning tunnel |
+| `packages/server/src/__tests__/skill-remote-install.test.ts` | Preview, already-installed marking, per-item install outcomes (installed, skipped, failed), name mismatches, the per-Agent limit, cross-Account isolation, the `@skill` filter, a selection whose source moved (including a legacy entry whose file list did not), an unusable path, a repository Skill that packs under the archive ceiling from more raw bytes than it, installs from a real repository through the pinning tunnel, and the monitor stopping when a post-fetch failure releases the request |
 | `apps/web/src/features/skills/*.test.tsx` | The page entry point and the install dialog's behaviour |
 
 ## Open items

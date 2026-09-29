@@ -95,14 +95,15 @@ export const nodeSkillSourceTransport: SkillSourceTransport = (input) => {
     const request = (secure ? httpsRequest : httpRequest)(requestOptions(input, port, hostname), (response) => {
       const status = response.statusCode ?? 0;
       if (status < 200 || status >= 300) {
-        // An error body is never buffered: it is not the document anyone asked for, and a peer could
-        // otherwise answer with an unbounded body to a request the caller will refuse anyway.
-        response.resume();
-        response.on("end", () => {
-          if (settled) return;
-          settled = true;
-          resolve({ status, bytes: new Uint8Array() });
-        });
+        /*
+         * An error body is neither buffered nor drained. The status is known from the headers, so the
+         * response is destroyed there and then: draining it would keep consuming inbound bandwidth for
+         * as long as the peer chose to send, up to the deadline, for a request the caller refuses
+         * anyway. Destroying it closes the socket, so the peer cannot keep writing either.
+         */
+        response.destroy();
+        settled = true;
+        resolve({ status, bytes: new Uint8Array() });
         return;
       }
       // The declared length is checked first so an oversized body is refused without buffering it.

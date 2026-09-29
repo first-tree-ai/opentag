@@ -5,7 +5,6 @@ import {
   parseSkillManifest,
   type RemoteSkillCandidate,
   type RemoteSkillUnavailableReason,
-  SKILL_ARCHIVE_MAX_BYTES,
   SKILL_DESCRIPTION_MAX_LENGTH,
   SKILL_MANIFEST_FILE,
   SKILL_MANIFEST_MAX_BYTES,
@@ -244,6 +243,14 @@ async function pluginContainers(input: DiscoverRemoteSkillsInput): Promise<strin
   return declaredSkillContainers(documents);
 }
 
+/**
+ * Reads a Skill's files.
+ *
+ * Only the unpacked ceiling applies here; the 16 MiB archive ceiling is the canonical *packed* size
+ * and belongs to `normalizeSkillEntries`, which measures the result. Applying it to the raw total
+ * would make a compressible 17 MiB repository Skill impossible to install while the same bytes upload
+ * fine, which is exactly the asymmetry the shared archive contract exists to avoid.
+ */
 async function materializeMembers(
   snapshot: SkillSourceSnapshot,
   directory: string,
@@ -255,7 +262,7 @@ async function materializeMembers(
     const sourcePath = directory === "" || directory === "." ? member.path : `${directory}/${member.path}`;
     const body = await snapshot.read(sourcePath);
     total += body.byteLength;
-    if (total > SKILL_UNPACKED_MAX_BYTES || total > SKILL_ARCHIVE_MAX_BYTES) throw skillArchiveTooLarge();
+    if (total > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
     files.push({ path: member.path, body, executable: member.executable });
   }
   return files;

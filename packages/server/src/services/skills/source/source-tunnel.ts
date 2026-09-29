@@ -24,9 +24,21 @@ import {
  * connection for several origin requests, and a transparent byte pipe cannot rewrite the second
  * request's absolute-form line; closing costs one TCP handshake per request and keeps every request
  * individually authorized.
+ *
+ * Every socket the tunnel owns is tracked, client and upstream alike, and every socket is bound to
+ * the one it is paired with:
+ *
+ * - a client that goes away destroys its upstream immediately, so a peer cannot hold a connection
+ *   open after the git process that asked for it was killed on its deadline;
+ * - an upstream connect has its own deadline, because a blackholed connect would otherwise outlive
+ *   that deadline and stay pending with nothing to cancel it;
+ * - `close()` destroys every tracked socket, so shutting the request down cannot leave a connect
+ *   pending or a tunneled connection live.
  */
 
 const HEADER_LIMIT_BYTES = 16 * 1024;
+/** How long an upstream connect may take. A transfer itself is unbounded; the connect is not. */
+const CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_PORTS = new Map([
   ["http:", 80],
   ["https:", 443],
@@ -42,6 +54,7 @@ export class SkillSourceTunnel {
   readonly #port: number;
   readonly #policy: OutboundAddressPolicy;
   readonly #resolveAddresses: (hostname: string) => Promise<string[]>;
+  readonly #sockets = new Set<Socket>();
   #closed = false;
 
   private constructor(
@@ -53,6 +66,18 @@ export class SkillSourceTunnel {
     this.#port = port;
     this.#policy = { allowLoopback: options.allowLoopback };
     this.#resolveAddresses = options.resolveAddresses ?? resolveAllAddresses;
+  }
+
+  /** How many sockets the tunnel still owns. Exposed so a test can prove none outlive a request. */
+  get openSockets(): number {
+    return this.#sockets.size;
+  }
+
+  #track(socket: Socket): Socket {
+    this.#sockets.add(socket);
+    socket.once("close", () => this.#sockets.delete(socket));
+    if (this.#closed) socket.destroy();
+    return socket;
   }
 
   static start(options: SkillSourceTunnelOptions): Promise<SkillSourceTunnel> {
@@ -77,10 +102,15 @@ export class SkillSourceTunnel {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    // Destroy first: the listener's `close` waits for established connections, and a pending upstream
+    // connect has no other owner to cancel it.
+    for (const socket of this.#sockets) socket.destroy();
+    this.#sockets.clear();
     await new Promise<void>((resolve) => this.#server.close(() => resolve()));
   }
 
   #accept(socket: Socket): void {
+    this.#track(socket);
     const chunks: Buffer[] = [];
     let read = 0;
     const onData = (chunk: Buffer) => {
@@ -97,6 +127,29 @@ export class SkillSourceTunnel {
     };
     socket.on("data", onData);
     socket.on("error", () => socket.destroy());
+  }
+
+  /**
+   * Connects to the judged address, with the client's lifetime and a deadline attached from the
+   * start. Either one cancels the attempt, so a connect cannot outlive the request that caused it.
+   */
+  async #connectUpstream(client: Socket, target: { address: string; family: number; port: number }): Promise<Socket> {
+    const upstream = this.#track(netConnect({ host: target.address, port: target.port, family: target.family }));
+    const abandon = () => upstream.destroy();
+    client.once("close", abandon);
+    const timer = setTimeout(abandon, CONNECT_TIMEOUT_MS);
+    timer.unref();
+    try {
+      await connected(upstream);
+    } catch (error) {
+      clearTimeout(timer);
+      client.off("close", abandon);
+      upstream.destroy();
+      throw error;
+    }
+    clearTimeout(timer);
+    // After the handshake the pipe owns the pairing; the client's own `close` still destroys it.
+    return upstream;
   }
 
   #refuse(socket: Socket): void {
@@ -146,8 +199,8 @@ export class SkillSourceTunnel {
   async #tunnel(socket: Socket, target: string, remainder: Buffer): Promise<void> {
     const [host, port] = target.split(":");
     const approved = await this.#approve(`https://${host}:${port ?? "443"}`);
-    const upstream = netConnect({ host: approved.address, port: approved.port, family: approved.family });
-    await connected(upstream);
+    if (socket.destroyed) return;
+    const upstream = await this.#connectUpstream(socket, approved);
     socket.write("HTTP/1.1 200 Connection established\r\n\r\n");
     if (remainder.byteLength > 0) upstream.write(remainder);
     pipe(socket, upstream);
@@ -162,8 +215,8 @@ export class SkillSourceTunnel {
   ): Promise<void> {
     const approved = await this.#approve(target);
     const url = new URL(target);
-    const upstream = netConnect({ host: approved.address, port: approved.port, family: approved.family });
-    await connected(upstream);
+    if (socket.destroyed) return;
+    const upstream = await this.#connectUpstream(socket, approved);
     // The absolute-form target is rewritten to origin-form, and the connection is closed after the
     // exchange so the next request arrives here again to be judged.
     const headers = headerLines.filter((line) => !/^connection:/i.test(line));
@@ -176,21 +229,45 @@ export class SkillSourceTunnel {
   }
 }
 
+/**
+ * Resolves once the socket is established, and rejects if it never gets there.
+ *
+ * `close` is handled as well as `error` because that is how a destroyed *connecting* socket settles:
+ * `destroy()` on a socket that never connected emits `close` without an `error`, so a deadline that
+ * only listened for `error` would leave its awaiter pending forever — the deadline would fire and
+ * nothing would happen.
+ */
 function connected(socket: Socket): Promise<void> {
   return new Promise((resolve, reject) => {
-    socket.once("connect", () => resolve());
-    socket.once("error", reject);
+    const settle = (error?: Error) => {
+      socket.off("connect", onConnect);
+      socket.off("close", onClose);
+      socket.off("error", onError);
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    const onConnect = () => settle();
+    const onClose = () => settle(new Error("the upstream connection closed before it was established"));
+    const onError = (error: Error) => settle(error);
+    socket.once("connect", onConnect);
+    socket.once("close", onClose);
+    socket.once("error", onError);
   });
 }
 
+/**
+ * Pairs two sockets for the rest of the exchange: either end going away takes the other with it, so a
+ * tunneled connection can never outlive the client that asked for it.
+ */
 function pipe(client: Socket, upstream: Socket): void {
-  client.pipe(upstream);
-  upstream.pipe(client);
   const destroy = () => {
     client.destroy();
     upstream.destroy();
   };
+  client.pipe(upstream);
+  upstream.pipe(client);
   client.on("error", destroy);
+  client.on("close", destroy);
   upstream.on("error", destroy);
   upstream.on("close", destroy);
 }

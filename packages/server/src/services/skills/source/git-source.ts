@@ -1,6 +1,12 @@
 import { lstat, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { type RemoteSkillSource, SKILL_SOURCE_GIT_TIMEOUT_MS, SKILL_SOURCE_SNAPSHOT_MAX_BYTES } from "@opentag/shared";
+import {
+  type RemoteSkillSource,
+  SKILL_SOURCE_GIT_TIMEOUT_MS,
+  SKILL_SOURCE_SNAPSHOT_MAX_BYTES,
+  SKILL_UNPACKED_MAX_BYTES,
+} from "@opentag/shared";
+import { GitPublicationError } from "../../github-proxy/git-packets.js";
 import { runTrustedProcess } from "../../github-proxy/git-process.js";
 import {
   classifyOutboundDestination,
@@ -32,6 +38,19 @@ import type { SkillSourceFile, SkillSourceSnapshot } from "./source-snapshot.js"
  * The remote is judged by the shared address policy *before* a process is spawned, because git
  * resolves DNS itself and would happily dial a name the policy refuses.
  */
+
+/**
+ * A git invocation's outcome as a Skill source failure.
+ *
+ * The spawner reports a resource limit, an unavailable peer, and a non-zero exit alike, and none of
+ * them may reach the caller as a raw error: an unhandled one becomes a 500 for what is really a
+ * decision about the source. A limit is the one case worth distinguishing, because the caller's next
+ * step is different — the source is too big, not unreachable.
+ */
+function gitFailure(error: unknown): SkillServiceError {
+  if (error instanceof GitPublicationError && error.code === "resource_limit") return skillSourceTooLarge();
+  return skillSourceUnreachable();
+}
 
 /** One git invocation, as the injected runner receives it. */
 export interface GitProcessInvocation {
@@ -262,7 +281,9 @@ export async function fetchGitSnapshot(options: GitSnapshotOptions): Promise<Ski
     }
   }
   try {
-    const clone = await run("git", gitCloneArguments(options.source, directory, proxy), invocation);
+    const clone = await run("git", gitCloneArguments(options.source, directory, proxy), invocation).catch((error) => {
+      throw gitFailure(error);
+    });
     if (clone.code !== 0) throw cloneFailure();
     if (options.proxyUrl !== undefined) {
       /*
@@ -318,11 +339,19 @@ function gitSnapshot(
       if (cached !== undefined) return cached;
       const id = ids.get(path);
       if (id === undefined) throw skillSourceInvalid("The source no longer holds that file");
-      // The promisor fetch that fills a missing blob runs inside this process, so the `-c` flags
-      // (including the pinning proxy) govern it too.
+      /*
+       * The promisor fetch that fills a missing blob runs inside this process, so the `-c` flags
+       * (including the pinning proxy) govern it too.
+       *
+       * The read cap is the *unpacked* ceiling, not a smaller fixed size: a Skill may hold a single
+       * file up to that bound, and a lower cap would make such a Skill readable through an upload and
+       * unreadable through a repository.
+       */
       const result = await run("git", [...configArguments(proxyUrl), "-C", directory, "cat-file", "blob", id], {
         ...invocation,
-        maxOutputBytes: 16 * 1024 * 1024,
+        maxOutputBytes: SKILL_UNPACKED_MAX_BYTES,
+      }).catch((error) => {
+        throw gitFailure(error);
       });
       if (result.code !== 0) throw cloneFailure();
       const body = new Uint8Array(result.stdout);

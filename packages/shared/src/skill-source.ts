@@ -40,6 +40,14 @@ export const SKILL_SOURCE_EXTRACT_MAX_FILES = 1000;
 export const SKILL_SOURCE_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
 /** Maximum candidates one resolve may return. */
 export const SKILL_SOURCE_MAX_CANDIDATES = 200;
+/**
+ * Maximum bytes a preview will download to bind candidates to their content.
+ *
+ * Only the legacy well-known layout needs this: it publishes no content hash, so a preview has to
+ * read a Skill's files to know what it offers. The budget stops a long catalog from turning one
+ * preview into a download of the whole catalog.
+ */
+export const SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES = 64 * 1024 * 1024;
 /** Deadline for the git transfer of one source. */
 export const SKILL_SOURCE_GIT_TIMEOUT_MS = 60_000;
 /** Deadline for one HTTP request to a source. */
@@ -428,7 +436,9 @@ export type ResolveRemoteSkillsResponse = z.infer<typeof ResolveRemoteSkillsResp
  */
 export const RemoteSkillSelectionSchema = z
   .object({
-    name: z.string().min(1).max(128),
+    // Trimmed before the length check, so a whitespace-only name is a validation failure at the
+    // boundary rather than a trimmed-to-empty name that no install result can represent.
+    name: z.string().trim().min(1).max(128),
     fingerprint: z.string().min(1).max(200),
   })
   .strict();
@@ -447,7 +457,7 @@ export type RemoteSkillInstallStatus = z.infer<typeof RemoteSkillInstallStatusSc
 
 export const RemoteSkillInstallResultSchema = z
   .object({
-    name: z.string().min(1).max(128),
+    name: z.string().trim().min(1).max(128),
     status: RemoteSkillInstallStatusSchema,
     /** Present exactly when the item failed, so the UI can render the reason as a sentence. */
     errorCode: SkillErrorCodeSchema.optional(),

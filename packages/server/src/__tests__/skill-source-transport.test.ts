@@ -24,10 +24,17 @@ function origin(
     body?: string;
     contentLength?: number;
     delayMs?: number;
+    endless?: boolean;
     headers?: Record<string, string>;
   },
-): Promise<{ port: number; seen: { host: string | undefined; url: string | undefined }[] }> {
+): Promise<{
+  port: number;
+  seen: { host: string | undefined; url: string | undefined }[];
+  /** How many response bytes left the origin, so "not drained" is observable. */
+  written: () => number;
+}> {
   const seen: { host: string | undefined; url: string | undefined }[] = [];
+  let written = 0;
   const server = createServer((request, response) => {
     seen.push({ host: request.headers.host, url: request.url });
     const answer = handler({ host: request.headers.host, url: request.url });
@@ -36,6 +43,19 @@ function origin(
     if (answer.contentLength !== undefined) headers["content-length"] = String(answer.contentLength);
     const send = () => {
       response.writeHead(answer.status ?? 200, headers);
+      if (answer.endless === true) {
+        // A peer that keeps writing until it is stopped. Nothing here cooperates with being drained.
+        const chunk = Buffer.alloc(64 * 1024, 0x61);
+        const pump = () => {
+          if (response.destroyed) return;
+          written += chunk.byteLength;
+          if (response.write(chunk)) setImmediate(pump);
+          else response.once("drain", pump);
+        };
+        pump();
+        return;
+      }
+      written += Buffer.byteLength(body);
       response.end(body);
     };
     if (answer.delayMs === undefined) send();
@@ -45,7 +65,11 @@ function origin(
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
-      resolve({ port: typeof address === "object" && address !== null ? address.port : 0, seen });
+      resolve({
+        port: typeof address === "object" && address !== null ? address.port : 0,
+        seen,
+        written: () => written,
+      });
     });
   });
 }
@@ -119,6 +143,28 @@ describe("nodeSkillSourceTransport", () => {
     });
     expect(response.status).toBe(500);
     expect(response.bytes.byteLength).toBe(0);
+  });
+
+  it("stops an error response instead of draining it", async () => {
+    /*
+     * A peer that never finishes writing must not be able to bill this deployment for bandwidth. The
+     * status is known from the headers, so the response is destroyed there; a drain would keep reading
+     * until the peer stopped or the deadline expired.
+     */
+    const server = await origin(() => ({ status: 500, endless: true }));
+    const response = await nodeSkillSourceTransport({
+      url: new URL(`http://127.0.0.1:${server.port}/endless`),
+      maxBytes: 16,
+      timeoutMs: 5_000,
+    });
+    expect(response.status).toBe(500);
+    expect(response.bytes.byteLength).toBe(0);
+
+    // The origin keeps pumping until the socket is gone; let it notice, then read where it stopped.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const afterDestroy = server.written();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(server.written()).toBe(afterDestroy);
   });
 
   it("reports an unreachable port as unreachable", async () => {

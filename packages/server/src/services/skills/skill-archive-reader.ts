@@ -51,11 +51,26 @@ export interface ResolvedSkillReadLimits {
 
 export const DEFAULT_MAX_TAR_STREAM_BYTES = SKILL_UNPACKED_MAX_BYTES + (SKILL_MAX_ENTRIES + 2) * 512 * 2;
 
+/**
+ * The decompressed-stream ceiling for a given payload ceiling: the payload plus the bounded framing
+ * a tar member adds (two 512-byte blocks each, with one spare).
+ *
+ * Derived rather than fixed, because a caller that lowers `maxUnpackedBytes` — a downloaded artifact
+ * is capped at 25 MiB, not the archive default's 64 — must lower the stream ceiling with it.
+ * Otherwise the guard would still admit a compressed bomb that inflates to the general limit, and
+ * the caller's own ceiling would never be reached: directory and ignored members are consumed as the
+ * stream passes, well before their declared sizes count toward the payload total.
+ */
+export function tarStreamCeilingFor(maxUnpackedBytes: number): number {
+  return maxUnpackedBytes + (SKILL_MAX_ENTRIES + 2) * 512 * 2;
+}
+
 export function resolveSkillReadLimits(limits?: SkillReadLimits): ResolvedSkillReadLimits {
+  const maxUnpackedBytes = limits?.maxUnpackedBytes ?? SKILL_UNPACKED_MAX_BYTES;
   const resolved: ResolvedSkillReadLimits = {
     maxArchiveBytes: limits?.maxArchiveBytes ?? SKILL_ARCHIVE_MAX_BYTES,
-    maxUnpackedBytes: limits?.maxUnpackedBytes ?? SKILL_UNPACKED_MAX_BYTES,
-    maxTarStreamBytes: limits?.maxTarStreamBytes ?? DEFAULT_MAX_TAR_STREAM_BYTES,
+    maxUnpackedBytes,
+    maxTarStreamBytes: limits?.maxTarStreamBytes ?? tarStreamCeilingFor(maxUnpackedBytes),
   };
   for (const [label, value] of Object.entries(resolved)) {
     if (!Number.isInteger(value) || value <= 0) {

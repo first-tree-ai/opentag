@@ -44,6 +44,7 @@ export {
   readSkillEntries,
   resolveSkillReadLimits,
   type SkillReadLimits,
+  tarStreamCeilingFor,
 } from "./skill-archive-reader.js";
 export {
   SKILL_GC_DEFAULT_GRACE_MS,

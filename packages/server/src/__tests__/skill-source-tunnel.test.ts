@@ -1,5 +1,10 @@
 import { createServer, request as httpRequest, type Server } from "node:http";
-import { connect as netConnect } from "node:net";
+import {
+  createServer as createNetServer,
+  type Server as NetServer,
+  connect as netConnect,
+  type Socket,
+} from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { SkillSourceTunnel } from "../services/skills/source/source-tunnel.js";
 
@@ -11,7 +16,7 @@ import { SkillSourceTunnel } from "../services/skills/source/source-tunnel.js";
  * not the client library that would normally sit on top.
  */
 
-const openServers: Server[] = [];
+const openServers: NetServer[] = [];
 const openTunnels: SkillSourceTunnel[] = [];
 
 afterEach(async () => {
@@ -38,6 +43,37 @@ function originServer(body = "origin"): Promise<{ server: Server; port: number; 
         port: typeof address === "object" && address !== null ? address.port : 0,
         received: () => requests.join("|"),
       });
+    });
+  });
+}
+
+/** Waits for a condition that a socket's own event loop turn will satisfy. */
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("the condition was not met in time");
+}
+
+/**
+ * A raw TCP peer that accepts and stays connected, so a CONNECT tunnel remains open.
+ *
+ * Deliberately `node:net`, not `node:http`: a CONNECT tunnel carries no HTTP request, so an HTTP
+ * server would never see the connection as a request and the socket count would be meaningless.
+ */
+function holdServer(): Promise<{ server: NetServer; port: number; sockets: Set<Socket> }> {
+  const sockets = new Set<Socket>();
+  const server = createNetServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  openServers.push(server);
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve({ server, port: typeof address === "object" && address !== null ? address.port : 0, sockets });
     });
   });
 }
@@ -169,6 +205,80 @@ describe("SkillSourceTunnel", () => {
       socket.on("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
     });
     expect(response).toContain("502 Bad Gateway");
+  });
+
+  it("destroys the upstream socket when the client goes away", async () => {
+    // A CONNECT tunnel is long-lived, so the upstream stays open while the client is alive — which is
+    // what makes "the client's close reaches the upstream" observable. The peer's own side is the
+    // evidence: a killed git process must not leave it connected.
+    const peer = await holdServer();
+    const started = await tunnel({ allowLoopback: true });
+    const proxyPort = Number(new URL(started.proxyUrl).port);
+
+    const client = netConnect(proxyPort, "127.0.0.1");
+    await new Promise<void>((resolve, reject) => {
+      client.on("connect", () => {
+        client.write(`CONNECT 127.0.0.1:${peer.port} HTTP/1.1\r\nhost: 127.0.0.1:${peer.port}\r\n\r\n`);
+      });
+      client.once("data", () => resolve());
+      client.once("error", reject);
+    });
+    await waitFor(() => peer.sockets.size === 1);
+    expect(peer.sockets.size).toBe(1);
+
+    client.destroy();
+    // Both sides have to settle: the peer sees the upstream close, and the tunnel drops its own
+    // bookkeeping of the client. The two happen on separate event-loop turns.
+    await waitFor(() => peer.sockets.size === 0 && started.openSockets === 0);
+    expect(peer.sockets.size).toBe(0);
+    expect(started.openSockets).toBe(0);
+  });
+
+  it("cancels a connect that never completes, on time and on close", async () => {
+    /*
+     * A blackholed destination is the case a connect deadline exists for: the client's own deadline
+     * (git's process timeout) kills the client, and without a deadline the pending connect would sit
+     * there with nothing left to cancel it. TEST-NET-1 is public per the address policy so it is not
+     * refused up front, and it does not answer.
+     */
+    const started = await tunnel({ allowLoopback: true, resolveAddresses: async () => ["192.0.2.1"] });
+    const proxyPort = Number(new URL(started.proxyUrl).port);
+    const client = netConnect(proxyPort, "127.0.0.1");
+    const answer = await new Promise<string>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      client.on("connect", () => {
+        client.write("CONNECT blackhole.test:443 HTTP/1.1\r\nhost: blackhole.test:443\r\n\r\n");
+      });
+      client.on("data", (chunk: Buffer) => chunks.push(chunk));
+      client.on("error", reject);
+      client.on("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      // The connect deadline refuses on its own, well inside this window.
+      setTimeout(() => reject(new Error("the tunnel neither refused nor closed")), 12_000).unref();
+    });
+    // The deadline refused the attempt rather than leaving it pending.
+    expect(answer).toContain("502 Bad Gateway");
+    // The refused attempt left no upstream behind; the client socket goes when the client does.
+    client.destroy();
+    await waitFor(() => started.openSockets === 0);
+    expect(started.openSockets).toBe(0);
+  }, 20_000);
+
+  it("releases every socket when it is closed", async () => {
+    const origin = await originServer("origin");
+    const started = await tunnel({ allowLoopback: true });
+    const proxyPort = Number(new URL(started.proxyUrl).port);
+    const client = netConnect(proxyPort, "127.0.0.1");
+    await new Promise<void>((resolve, reject) => {
+      client.on("connect", () => {
+        client.write(`GET http://127.0.0.1:${origin.port}/x HTTP/1.1\r\nhost: 127.0.0.1:${origin.port}\r\n\r\n`);
+      });
+      client.once("data", () => resolve());
+      client.once("error", reject);
+    });
+
+    await started.close();
+    expect(started.openSockets).toBe(0);
+    client.destroy();
   });
 
   it("is reachable as a plain http proxy URL", async () => {

@@ -5,18 +5,21 @@ import {
   parseSkillManifest,
   SKILL_ARCHIVE_MAX_BYTES,
   SKILL_DESCRIPTION_MAX_LENGTH,
+  SKILL_ERROR_CODES,
   SKILL_MANIFEST_FILE,
   SKILL_MANIFEST_MAX_BYTES,
   SKILL_SOURCE_DOWNLOAD_MAX_BYTES,
   SKILL_SOURCE_EXTRACT_MAX_BYTES,
   SKILL_SOURCE_EXTRACT_MAX_FILES,
+  SKILL_SOURCE_MAX_CANDIDATES,
+  SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES,
   SkillNameSchema,
 } from "@opentag/shared";
-import { skillSourceInvalid, skillSourceTooLarge } from "../errors.js";
+import { SkillServiceError, skillSourceInvalid, skillSourceTooLarge } from "../errors.js";
 import { readSkillEntries } from "../skill-archive-reader.js";
 import type { MaterializedSkillFile, RemoteSkillListing } from "./remote-candidates.js";
 import type { SkillSourceFetcher } from "./source-fetcher.js";
-import { declaredFingerprint } from "./source-snapshot.js";
+import { contentId, skillFingerprint } from "./source-snapshot.js";
 
 /**
  * Well-known Skill discovery (RFC 8615), the format a host publishes when it is not a git repository.
@@ -197,6 +200,40 @@ function indexUrl(base: string, path: string): string | undefined {
   }
 }
 
+/**
+ * The files of one legacy entry, downloaded within one budget.
+ *
+ * The legacy layout publishes no content hash, so the only way to know what it offers is to read it.
+ * The budget is what keeps that bounded: each file may take what the per-download cap allows and no
+ * more than the Skill has left, and the total may never exceed the entry's unpacked ceiling.
+ */
+async function legacyEntryFiles(
+  entry: IndexEntryV1,
+  fetcher: SkillSourceFetcher,
+  indexDirectory: string,
+  budget: { remaining: number },
+): Promise<MaterializedSkillFile[]> {
+  const files: MaterializedSkillFile[] = [];
+  for (const file of entry.files) {
+    const url = indexUrl(indexDirectory, `${entry.name}/${file}`);
+    if (url === undefined) throw skillSourceInvalid("That Skill's index declares an unusable file path");
+    const allowance = Math.min(SKILL_SOURCE_DOWNLOAD_MAX_BYTES, budget.remaining);
+    if (allowance <= 0) throw skillSourceTooLarge();
+    const { bytes } = await fetcher.fetchBytes(url, allowance);
+    budget.remaining -= bytes.byteLength;
+    if (budget.remaining < 0) throw skillSourceTooLarge();
+    files.push({ path: file, body: bytes, executable: false });
+  }
+  return files;
+}
+
+/** The content identity of an entry's files, in the same shape a repository or artifact reports. */
+function contentFingerprint(files: readonly MaterializedSkillFile[]): string {
+  return skillFingerprint(
+    files.map((file) => ({ path: file.path, id: contentId(file.body), executable: file.executable })),
+  );
+}
+
 function versionedListing(entry: IndexEntryV2, artifactUrl: string, fetcher: SkillSourceFetcher): RemoteSkillListing {
   // The index publishes the artifact's content hash, and the install verifies it, so it is a complete
   // identity for what the preview offered: a publisher that swaps the index entry changes this value,
@@ -226,15 +263,34 @@ function versionedListing(entry: IndexEntryV2, artifactUrl: string, fetcher: Ski
   };
 }
 
-function legacyListing(entry: IndexEntryV1, fetcher: SkillSourceFetcher, indexDirectory: string): RemoteSkillListing {
-  /*
-   * The legacy layout publishes no content hash at all, so the strongest identity a preview can form
-   * without downloading every Skill is the declared file list: it detects an index that changed what
-   * it publishes under this name. Content changed *within* an unchanged file list is not detectable
-   * here, which is a limitation of the format rather than of this check; the v0.2 layout and every
-   * repository source do carry a content identity.
-   */
-  const fingerprint = declaredFingerprint(entry.files);
+/**
+ * One legacy entry, bound to its content.
+ *
+ * The v0.1 layout publishes no content hash, so a declared-file-list fingerprint would let a
+ * publisher change `SKILL.md` — or any payload — and still install as if nothing had moved. The
+ * preview therefore reads the entry's files (within a bounded budget) and fingerprints what it read,
+ * and the install reads them again and compares. The cost is the format's: unlike a v0.2 index or a
+ * repository tree, v0.1 carries no content identity to rely on.
+ *
+ * `undefined` means the preview's content budget is spent; the entry is left out rather than listed
+ * without the binding the selection contract promises.
+ */
+async function legacyListing(
+  entry: IndexEntryV1,
+  fetcher: SkillSourceFetcher,
+  indexDirectory: string,
+  previewBudget: { remaining: number },
+): Promise<RemoteSkillListing | undefined> {
+  const scope = { remaining: Math.min(SKILL_SOURCE_EXTRACT_MAX_BYTES, previewBudget.remaining) };
+  if (scope.remaining <= 0) return undefined;
+  let fingerprint: string;
+  try {
+    fingerprint = contentFingerprint(await legacyEntryFiles(entry, fetcher, indexDirectory, scope));
+  } catch (error) {
+    if (error instanceof SkillServiceError && error.code === SKILL_ERROR_CODES.SOURCE_TOO_LARGE) return undefined;
+    throw error;
+  }
+  previewBudget.remaining = scope.remaining;
   return {
     candidate: {
       name: entry.name,
@@ -245,24 +301,11 @@ function legacyListing(entry: IndexEntryV1, fetcher: SkillSourceFetcher, indexDi
       fingerprint,
       ...(isReservedSkillName(entry.name) ? { unavailableReason: "name_reserved" } : {}),
     },
-    fingerprint: () => Promise.resolve(fingerprint),
-    async materialize() {
-      // One budget for the whole Skill, not one allowance per file: otherwise a 1000-file entry could
-      // retain 1000 full downloads before normalization rejected the result.
-      const files: MaterializedSkillFile[] = [];
-      let remaining = SKILL_SOURCE_EXTRACT_MAX_BYTES;
-      for (const file of entry.files) {
-        const url = indexUrl(indexDirectory, `${entry.name}/${file}`);
-        if (url === undefined) throw skillSourceInvalid("That Skill's index declares an unusable file path");
-        const allowance = Math.min(SKILL_SOURCE_DOWNLOAD_MAX_BYTES, remaining);
-        if (allowance <= 0) throw skillSourceTooLarge();
-        const { bytes } = await fetcher.fetchBytes(url, allowance);
-        remaining -= bytes.byteLength;
-        if (remaining < 0) throw skillSourceTooLarge();
-        files.push({ path: file, body: bytes, executable: false });
-      }
-      return files;
+    fingerprint: async () => {
+      const budget = { remaining: SKILL_SOURCE_EXTRACT_MAX_BYTES };
+      return contentFingerprint(await legacyEntryFiles(entry, fetcher, indexDirectory, budget));
     },
+    materialize: () => legacyEntryFiles(entry, fetcher, indexDirectory, { remaining: SKILL_SOURCE_EXTRACT_MAX_BYTES }),
   };
 }
 
@@ -287,10 +330,15 @@ async function probe(fetcher: SkillSourceFetcher, base: string, path: string): P
  * publish Skills, and installing nothing while saying "no Skills" would be a lie about a deployment
  * problem the publisher can fix.
  */
+export interface WellKnownOptions {
+  existingNames?: readonly string[];
+  maxCandidates?: number;
+}
+
 export async function resolveWellKnownSource(
   fetcher: SkillSourceFetcher,
   url: string,
-  existingNames?: readonly string[],
+  options: WellKnownOptions = {},
 ): Promise<WellKnownIndexResult> {
   const base = indexBase(url);
   let broken: IndexProbe | undefined;
@@ -302,37 +350,66 @@ export async function resolveWellKnownSource(
       broken ??= probeResult;
       continue;
     }
-    return { found: true, listings: listingsFrom(parsed, probeResult, fetcher, existingNames) };
+    return { found: true, listings: await listingsFrom(parsed, probeResult, fetcher, options) };
   }
   if (broken !== undefined) throw skillSourceInvalid("That host's Skill index could not be read");
   return { found: false };
 }
 
-function listingsFrom(
+/**
+ * The listings of one index, capped like every other source.
+ *
+ * The cap is applied here rather than by the caller because a catalog can be arbitrarily long and the
+ * response schema rejects more than `SKILL_SOURCE_MAX_CANDIDATES`; truncating is the preview's job.
+ * It also bounds the legacy content budget below, since at most this many entries are ever read.
+ */
+async function listingsFrom(
   parsed: ParsedIndex,
   probe: IndexProbe,
   fetcher: SkillSourceFetcher,
-  existingNames?: readonly string[],
-): RemoteSkillListing[] {
-  const existing = new Set((existingNames ?? []).map((name) => name.toLowerCase()));
-  const indexDirectory = new URL(".", probe.indexUrl).toString();
+  options: WellKnownOptions,
+): Promise<RemoteSkillListing[]> {
+  const existing = new Set((options.existingNames ?? []).map((name) => name.toLowerCase()));
+  const maxCandidates = options.maxCandidates ?? SKILL_SOURCE_MAX_CANDIDATES;
+  const state = {
+    indexDirectory: new URL(".", probe.indexUrl).toString(),
+    // The legacy layout's content budget, shared across its entries; v0.2 spends none of it.
+    previewBudget: { remaining: SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES },
+    maxCandidates,
+  };
   const listings: RemoteSkillListing[] = [];
   const seen = new Set<string>();
   for (const entry of parsed.entries) {
+    if (listings.length >= maxCandidates) break;
     const key = entry.name.toLowerCase();
     if (seen.has(key)) continue;
-    let listing: RemoteSkillListing;
-    if (parsed.version === "0.2.0") {
-      const artifactUrl = indexUrl(probe.indexUrl, (entry as IndexEntryV2).url);
-      // An entry whose artifact URL cannot be resolved names nothing to fetch; it is not listed.
-      if (artifactUrl === undefined) continue;
-      listing = versionedListing(entry as IndexEntryV2, artifactUrl, fetcher);
-    } else {
-      listing = legacyListing(entry as IndexEntryV1, fetcher, indexDirectory);
-    }
+    const listing = await oneListing(parsed.version, entry, probe, fetcher, state);
+    if (listing === undefined) break;
     seen.add(key);
     listing.candidate.alreadyInstalled = existing.has(key);
     listings.push(listing);
   }
   return listings;
+}
+
+/**
+ * One entry as a listing, or `undefined` when the legacy preview has spent its content budget.
+ *
+ * A v0.2 entry names an artifact with a published digest, so it costs nothing to list; a v0.1 entry
+ * has to be read to be identified, which is why only that version can come back `undefined`.
+ */
+async function oneListing(
+  version: ParsedIndex["version"],
+  entry: IndexEntryV1 | IndexEntryV2,
+  probe: IndexProbe,
+  fetcher: SkillSourceFetcher,
+  state: { indexDirectory: string; previewBudget: { remaining: number }; maxCandidates: number },
+): Promise<RemoteSkillListing | undefined> {
+  if (version === "0.2.0") {
+    const artifactUrl = indexUrl(probe.indexUrl, (entry as IndexEntryV2).url);
+    // An entry whose artifact URL cannot be resolved names nothing to fetch; it is not listed.
+    if (artifactUrl === undefined) return undefined;
+    return versionedListing(entry as IndexEntryV2, artifactUrl, fetcher);
+  }
+  return legacyListing(entry as IndexEntryV1, fetcher, state.indexDirectory, state.previewBudget);
 }

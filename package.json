@@ -34,14 +34,14 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
-    "@types/node": "^26.6.1",
-    "@vitest/coverage-v8": "5.0.1",
+    "@types/node": "^26.6.3",
+    "@vitest/coverage-v8": "5.0.2",
     "lefthook": "^2.1.14",
     "tsdown": "^0.23.0",
-    "tsx": "^4.23.13",
-    "turbo": "^2.10.13",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.4",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.1",
+    "vitest": "^5.0.2",
     "yaml": "^2.9.0"
   },
   "pnpm": {

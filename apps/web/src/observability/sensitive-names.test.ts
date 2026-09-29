@@ -92,15 +92,13 @@ describe("credential name vocabulary", () => {
   });
 
   /**
-   * The predicate and the shared redactor must agree everywhere except where this feature deliberately
-   * diverges: the structural-only parts. Without this, a name the repository adds to its vocabulary —
-   * or a hole in the separator/casing handling — shows up as a pasted secret in Account-shared
-   * configuration, which is the exact failure this feature exists to prevent.
-   */
-  /**
    * The security invariant: a name the shared redactor treats as a credential is never shared here.
    * That is the direction that must hold without exception, apart from the structural names this
    * feature deliberately shares because they are sensitive to log but are not credentials.
+   *
+   * Together with the two tests below, this is what keeps the boundary honest: the redactor's own
+   * vocabulary is read from source, so a name it adds cannot slip into Account-shared configuration,
+   * and the casing holes that would let a pasted secret through are covered explicitly.
    */
   it("never shares a name the shared redactor treats as a credential", () => {
     const shared = credentialNameCorpus().filter(
@@ -110,7 +108,7 @@ describe("credential name vocabulary", () => {
   });
 
   /**
-   * The other direction is allowed to be wider and is pinned here rather than left implicit: the
+   * The opposite direction is deliberately wider and is pinned here rather than left implicit: the
    * separatorless lowercase spellings a paste may produce. HTTP header names are case-insensitive, so
    * `X-PrivateKey` reaches the classifier as `x-privatekey`, which the redactor's key matching never
    * folds — refusing it is the conservative outcome, not an inconsistency.

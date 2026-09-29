@@ -8,9 +8,18 @@
  *
  * `sensitive-names.test.ts` pins the mirror by reading that array out of the shared source, so a term
  * added there fails the test until it is mirrored here or listed as structural-only. It also pins the
- * two deliberate ways this predicate is wider than the redactor, which is the safe direction: the
- * structural names that are not credentials, and the separatorless lowercase spellings a paste may
- * produce, which the redactor's key matching does not fold.
+ * two deliberate ways the predicate differs from the redactor, in opposite directions:
+ *
+ * - **Narrower**, for the structural names (`payload`, `body`, `prompt`, …): the redactor hides them,
+ *   this predicate does not classify them, so they are shared as ordinary configuration. They are
+ *   sensitive to log but they are not credentials, and refusing a header named for one would drop
+ *   configuration a Server may need.
+ * - **Wider**, for the separatorless lowercase spellings a paste may produce (`x-privatekey`): HTTP
+ *   header names are case-insensitive, so a paste's `X-PrivateKey` arrives already lowercased and the
+ *   redactor's key matching never folds it. Refusing those is the conservative outcome.
+ *
+ * The invariant that matters is the one both directions preserve: a name the redactor treats as a
+ * credential is never shared, except where it is structural-only as described above.
  */
 export const CREDENTIAL_NAME_PARTS = [
   "authorization",

@@ -6,8 +6,9 @@
 #   name             the definition name; must satisfy MCPServerNameSchema (lowercase letters, digits,
 #                    hyphens) so a card's human-readable name lives in `title` instead
 #   title            the card's name, in every supported locale
-#   description      the card's description, in every supported locale; also written as the created
-#                    definition's description in the locale active at add time
+#   description      the card's description, in every supported locale. Card copy only: the create
+#                    contract has no description field, so the definition starts without one and the
+#                    Agent page shows the Server's own description once a probe succeeds
 #   defaultAuthKind  a prefill for a new authorization, NEVER a claim about what the Server requires.
 #                    The catalog author confirms the method; the UI must state the method it will use
 #                    without asserting the Server demands it.

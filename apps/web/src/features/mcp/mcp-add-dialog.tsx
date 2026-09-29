@@ -10,7 +10,7 @@ import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
 import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "./catalog/mcp-catalog.gen.js";
-import { findAccountServer } from "./catalog/mcp-catalog-model.js";
+import { comparableUrl, findAccountServer } from "./catalog/mcp-catalog-model.js";
 import { McpDiscoverSource } from "./catalog/mcp-discover-source.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorize-dialog.js";
 import { McpAuthFields, McpFooter } from "./mcp-form.js";
@@ -84,6 +84,8 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
   const [attached, setAttached] = useState<MCPAgentServer>();
   const createdRef = useRef<MCPServer>(undefined);
   const attachedRef = useRef<MCPAgentServer>(undefined);
+  /** The entry the current create/mount state belongs to, so another card cannot inherit it. */
+  const catalogAttempt = useRef<string>(undefined);
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
   const urlLike = /^https?:\/\//i.test(query.trim());
@@ -133,8 +135,15 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     setCreated(server);
     return server;
   };
+  /**
+   * The mount for one Server, cached only for that Server.
+   *
+   * A catalog attempt that failed at authorization leaves a mount behind; returning it for the next
+   * card would rewrite that first Server's authorization, or probe a newly entered key against an
+   * endpoint the user did not choose.
+   */
   const ensureBinding = async (server: MCPServer) => {
-    if (attachedRef.current) return attachedRef.current;
+    if (attachedRef.current?.mcpServerId === server.id) return attachedRef.current;
     const binding = await attach.mutateAsync(server.id);
     attachedRef.current = binding;
     setAttached(binding);
@@ -168,17 +177,25 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     }
   };
   /**
-   * Add a catalog entry to this Agent.
+   * Start a catalog attempt for one entry, clearing the create/mount state of a previous entry.
    *
-   * Anonymous and OAuth entries skip the configure step — everything is known — so the card is the
-   * whole interaction. A bearer entry genuinely needs a secret, so it opens the configure step with
-   * the entry's fields prefilled and stops there for the key.
+   * Retrying the same card keeps its progress; switching cards must not inherit the other entry's
+   * definition or mount, or the new authorization would be written against the wrong Server.
    */
-  /** Open the configure step with the entry's fields, so the user only supplies the key. */
-  const prefillCatalogBearer = (entry: McpCatalogEntry) => {
+  const beginCatalogAttempt = (entry: McpCatalogEntry) => {
+    if (catalogAttempt.current === entry.id) return;
+    catalogAttempt.current = entry.id;
     createdRef.current = undefined;
+    attachedRef.current = undefined;
     setCreated(undefined);
-    setSelected(undefined);
+    setAttached(undefined);
+  };
+  /**
+   * Open the configure step prefilled with the entry, keeping the Account's definition at the same
+   * URL when one exists so the key form submits against it instead of creating a duplicate.
+   */
+  const prefillCatalogBearer = (entry: McpCatalogEntry) => {
+    setSelected(findAccountServer(entry, servers));
     setName(entry.name);
     nameEdited.current = true;
     setUrl(entry.url);
@@ -187,7 +204,12 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
   };
   /** The Account definition to add: the one already at this URL, or a new one from the entry. */
   const resolveCatalogServer = async (entry: McpCatalogEntry) => {
-    const known = findAccountServer(entry, servers);
+    const target = comparableUrl(entry.url);
+    const previous = createdRef.current;
+    // A definition this session already created for this entry, before the Account read caught up.
+    const carried = previous && comparableUrl(previous.url) === target ? previous : undefined;
+    if (previous && !carried) createdRef.current = undefined;
+    const known = findAccountServer(entry, servers) ?? carried;
     if (known) return known;
     const server = await create.mutateAsync(catalogCreateInput(entry));
     createdRef.current = server;
@@ -202,6 +224,7 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
    */
   const addFromCatalog = async (entry: McpCatalogEntry) => {
     if (inFlight.current) return;
+    beginCatalogAttempt(entry);
     setError(undefined);
     if (entry.defaultAuthKind === "bearer") {
       prefillCatalogBearer(entry);

@@ -105,6 +105,7 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     if (!nameEdited.current) setName(suggestServerName(value, servers));
   };
   const choose = (server: MCPServer) => {
+    resetAttempt();
     setSelected(server);
     if (selected?.id !== server.id) setDraft(authDraft(server, server.defaultAuthKind));
     setStep("configure");
@@ -115,6 +116,7 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
       setError(m.mcp_url_invalid());
       return;
     }
+    resetAttempt();
     setSelected(undefined);
     changeUrl(query.trim());
     setStep("configure");
@@ -177,18 +179,35 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     }
   };
   /**
-   * Start a catalog attempt for one entry, clearing the create/mount state of a previous entry.
+   * Drop the create/mount state of whatever attempt came before.
+   *
+   * The catalog's cache must not outlive its entry. `ensureServer()` prefers a cached definition, so
+   * leaving Discover, choosing another Account Server, or entering a new URL without this would
+   * authorize the endpoint a failed catalog card created instead of the one the user just picked.
+   */
+  const resetAttempt = () => {
+    catalogAttempt.current = undefined;
+    createdRef.current = undefined;
+    attachedRef.current = undefined;
+    setCreated(undefined);
+    setAttached(undefined);
+  };
+  /** Switch source, dropping any attempt the previous source left behind. */
+  const changeSource = (next: AddSource) => {
+    if (next === source) return;
+    resetAttempt();
+    setSource(next);
+  };
+  /**
+   * Start a catalog attempt for one entry, clearing the state of a previous entry.
    *
    * Retrying the same card keeps its progress; switching cards must not inherit the other entry's
    * definition or mount, or the new authorization would be written against the wrong Server.
    */
   const beginCatalogAttempt = (entry: McpCatalogEntry) => {
     if (catalogAttempt.current === entry.id) return;
+    resetAttempt();
     catalogAttempt.current = entry.id;
-    createdRef.current = undefined;
-    attachedRef.current = undefined;
-    setCreated(undefined);
-    setAttached(undefined);
   };
   /**
    * Open the configure step prefilled with the entry, keeping the Account's definition at the same
@@ -256,7 +275,7 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     step,
     back,
     source,
-    setSource,
+    changeSource,
     addFromCatalog,
     query,
     setQuery,
@@ -328,7 +347,7 @@ function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (sou
 }
 function AddPicker(props: AddProps & { state: AddState }) {
   const { state, onClose } = props;
-  const { account, filtered, urlLike, servers, query, continueUrl, error, source, setSource } = state;
+  const { account, filtered, urlLike, servers, query, continueUrl, error, source, changeSource } = state;
   const loaded = !account.isPending && !account.isError;
   const canContinue = loaded && ((!filtered.length && urlLike) || !servers.length);
   return (
@@ -344,7 +363,7 @@ function AddPicker(props: AddProps & { state: AddState }) {
       ) : null}
       {loaded ? (
         <>
-          <AddSourceSwitch value={source} onChange={setSource} />
+          <AddSourceSwitch value={source} onChange={changeSource} />
           {source === "discover" ? (
             <McpDiscoverSource
               categories={MCP_CATALOG_CATEGORIES}

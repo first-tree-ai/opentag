@@ -72,10 +72,12 @@ const entries = CATALOG.entries as McpCatalogEntry[];
 const ALPHA_ID = "11111111-1111-4111-8111-111111111111";
 const BETA_ID = "22222222-2222-4222-8222-222222222222";
 const GAMMA_ID = "33333333-3333-4333-8333-333333333333";
+const DELTA_ID = "44444444-4444-4444-8444-444444444444";
 
 function idFor(name: string): string {
   if (name === "beta") return BETA_ID;
   if (name === "gamma") return GAMMA_ID;
+  if (name === "delta") return DELTA_ID;
   return ALPHA_ID;
 }
 
@@ -144,6 +146,7 @@ function stubCatalogWrites() {
 function nameForId(id: string): string {
   if (id === BETA_ID) return "beta";
   if (id === GAMMA_ID) return "gamma";
+  if (id === DELTA_ID) return "delta";
   return "alpha";
 }
 
@@ -362,6 +365,57 @@ describe("Discover inside the add flow", () => {
       expect(authorize).toHaveBeenCalledWith(AGENT_ID, GAMMA_ID, { kind: "bearer", bearerKey: "sample-key" }),
     );
     expect(attach).toHaveBeenLastCalledWith(AGENT_ID, { mcpServerId: GAMMA_ID, enabled: true });
+    expect(authorize).not.toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, expect.anything());
+  });
+
+  it("clears a failed catalog attempt when the user switches to an existing Server", async () => {
+    stub([]);
+    vi.mocked(browserApi.mcpServers).mockResolvedValue({
+      servers: [{ ...serverFor("gamma"), defaultAuthKind: "bearer" }],
+    });
+    const { attach, authorize } = stubCatalogWrites();
+    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDiscover();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
+    await screen.findByText("OAuth unavailable");
+    // Leave the catalog for the manual source and pick a different Server.
+    fireEvent.click(screen.getByRole("button", { name: "Use an existing Server" }));
+    fireEvent.click(await screen.findByRole("button", { name: /gamma.*https/ }));
+    fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
+      target: { value: "sample-key" },
+    });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add server" }));
+    await waitFor(() =>
+      expect(authorize).toHaveBeenCalledWith(AGENT_ID, GAMMA_ID, { kind: "bearer", bearerKey: "sample-key" }),
+    );
+    expect(attach).toHaveBeenLastCalledWith(AGENT_ID, { mcpServerId: GAMMA_ID, enabled: true });
+    expect(authorize).not.toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, expect.anything());
+  });
+
+  it("clears a failed catalog attempt when the user pastes a new URL", async () => {
+    stub([]);
+    const { create, attach, authorize } = stubCatalogWrites();
+    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDiscover();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
+    await screen.findByText("OAuth unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Use an existing Server" }));
+    fireEvent.change(await screen.findByLabelText("MCP URL"), {
+      target: { value: "https://mcp.delta.test/mcp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("radio", { name: "API key or token" }));
+    fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
+      target: { value: "sample-key" },
+    });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add server" }));
+    await waitFor(() =>
+      expect(authorize).toHaveBeenCalledWith(AGENT_ID, DELTA_ID, { kind: "bearer", bearerKey: "sample-key" }),
+    );
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ url: "https://mcp.delta.test/mcp" }));
+    expect(attach).toHaveBeenLastCalledWith(AGENT_ID, { mcpServerId: DELTA_ID, enabled: true });
     expect(authorize).not.toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, expect.anything());
   });
 });

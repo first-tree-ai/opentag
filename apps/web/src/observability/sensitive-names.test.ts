@@ -15,9 +15,11 @@ const MARKER = "sk-must-not-survive";
  * The shared vocabulary, read from its source.
  *
  * `SENSITIVE_KEY_PARTS` is private to `packages/shared`, so the mirror cannot be imported. Reading the
- * array is what makes the check two-way: a term added there fails this test until this feature mirrors
- * it or lists it as structural-only, instead of silently leaving a pasted secret shareable. Source
- * reading follows the repository's own contract checks, which assert module contents the same way.
+ * array is what makes the *list* check two-way: a term added there fails this test until this feature
+ * mirrors it or lists it as structural-only, instead of silently leaving a pasted secret shareable.
+ * (The predicate built from that list is compared against the redactor separately, in both directions,
+ * because the two are not meant to agree everywhere.) Source reading follows the repository's own
+ * contract checks, which assert module contents the same way.
  */
 function sharedVocabularyParts(): string[] {
   const source = readFileSync(
@@ -95,20 +97,33 @@ describe("credential name vocabulary", () => {
    * or a hole in the separator/casing handling — shows up as a pasted secret in Account-shared
    * configuration, which is the exact failure this feature exists to prevent.
    */
-  it("agrees with the shared redactor except where a structural name is shared on purpose", () => {
-    // `!shared && local` is never excused: refusing something the redactor considers safe is still an
-    // inconsistency. `shared && !local` is excused only by a structural-only part.
-    const violations = credentialNameCorpus()
-      .map((name) => ({ name, shared: sharedRedacts(name), local: isCredentialName(name) }))
-      .filter(({ name, shared, local }) => (shared === local ? false : !(shared && !local && isStructuralOnly(name))));
-    expect(violations).toEqual([]);
+  /**
+   * The security invariant: a name the shared redactor treats as a credential is never shared here.
+   * That is the direction that must hold without exception, apart from the structural names this
+   * feature deliberately shares because they are sensitive to log but are not credentials.
+   */
+  it("never shares a name the shared redactor treats as a credential", () => {
+    const shared = credentialNameCorpus().filter(
+      (name) => sharedRedacts(name) && !isCredentialName(name) && !isStructuralOnly(name),
+    );
+    expect(shared).toEqual([]);
   });
 
-  it("diverges from the shared redactor only for structural-only names", () => {
-    const divergences = credentialNameCorpus().filter((name) => sharedRedacts(name) !== isCredentialName(name));
-    expect(divergences.filter((name) => !isStructuralOnly(name))).toEqual([]);
-    // The exemption is real and deliberate: the redactor hides `payload`, this feature shares it.
-    expect(divergences).toContain("x-payload");
+  /**
+   * The other direction is allowed to be wider and is pinned here rather than left implicit: the
+   * separatorless lowercase spellings a paste may produce. HTTP header names are case-insensitive, so
+   * `X-PrivateKey` reaches the classifier as `x-privatekey`, which the redactor's key matching never
+   * folds — refusing it is the conservative outcome, not an inconsistency.
+   */
+  it("is wider than the shared redactor only for separatorless spellings", () => {
+    const wider = credentialNameCorpus().filter((name) => isCredentialName(name) && !sharedRedacts(name));
+    expect(wider.sort()).toEqual(["x-accesskey", "x-bearerkey", "x-privatekey", "x-refreshkey"].sort());
+  });
+
+  it("shares a structural name that is not a credential", () => {
+    // The redactor hides `payload`; refusing a header named for it would drop Server configuration.
+    expect(sharedRedacts("x-payload")).toBe(true);
+    expect(isCredentialName("x-payload")).toBe(false);
   });
 
   it("never classifies a context name as a credential", () => {
@@ -197,6 +212,12 @@ function credentialNameCorpus(): string[] {
     "x-trace-id",
   ]) {
     names.add(context);
+  }
+  // Lowercase separatorless spellings a paste may produce, which the shared key matcher does not fold:
+  // HTTP header names are case-insensitive, so these reach the importer with the case boundary already
+  // gone. They are the importer-only direction the agreement test pins.
+  for (const spelling of ["x-privatekey", "x-bearerkey", "x-accesskey", "x-refreshkey", "x-clientsecret"]) {
+    names.add(spelling);
   }
   return [...names];
 }

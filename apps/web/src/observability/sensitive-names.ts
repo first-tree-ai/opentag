@@ -6,9 +6,11 @@
  * `SENSITIVE_KEY_PARTS` in `packages/shared/src/structured-errors.ts`, so a name the product already
  * redacts in a log cannot become shareable just because it arrived in a pasted MCP configuration.
  *
- * `sensitive-names.test.ts` enforces the mirror in both directions by reading that array out of the
- * shared source: a term added to the repository's vocabulary fails the test until it is mirrored here
- * or listed as structural-only below.
+ * `sensitive-names.test.ts` pins the mirror by reading that array out of the shared source, so a term
+ * added there fails the test until it is mirrored here or listed as structural-only. It also pins the
+ * two deliberate ways this predicate is wider than the redactor, which is the safe direction: the
+ * structural names that are not credentials, and the separatorless lowercase spellings a paste may
+ * produce, which the redactor's key matching does not fold.
  */
 export const CREDENTIAL_NAME_PARTS = [
   "authorization",

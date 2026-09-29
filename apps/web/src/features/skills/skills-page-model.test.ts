@@ -1,19 +1,23 @@
 import { webcrypto } from "node:crypto";
 import {
+  type RemoteSkillUnavailableReason,
   SKILL_ARCHIVE_MAX_BYTES,
   SKILL_ERROR_CODES,
   type SkillErrorCode,
   type SkillSource,
 } from "@opentag/shared/browser";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import * as m from "../../paraglide/messages.js";
 import {
   archiveFormatForFile,
   checkSkillArchiveFile,
   formatArchiveBytes,
   sha256Hex,
   skillErrorMessage,
+  skillInstallResultMessage,
   skillRejectionMessage,
   skillSourceLabel,
+  skillUnavailableMessage,
   storageStateForList,
 } from "./skills-page-model.js";
 
@@ -105,8 +109,34 @@ describe("formatArchiveBytes", () => {
 
 describe("skillSourceLabel", () => {
   it("has a sentence for every source", () => {
-    const sources: SkillSource[] = ["web_upload", "cli_upload", "agent_upload"];
+    const sources: SkillSource[] = ["web_upload", "cli_upload", "agent_upload", "url_install"];
     expect(new Set(sources.map(skillSourceLabel)).size).toBe(sources.length);
+  });
+
+  it("falls back to the raw value for a source this build does not know", () => {
+    // A Skill written by a newer Server and read after a rollback must not break the page.
+    expect(skillSourceLabel("from_the_future")).toBe("from_the_future");
+  });
+});
+
+describe("skillUnavailableMessage", () => {
+  it("explains every reason a candidate cannot be installed, distinctly", () => {
+    const reasons: RemoteSkillUnavailableReason[] = ["manifest_invalid", "name_reserved", "too_large"];
+    const messages = reasons.map(skillUnavailableMessage);
+    expect(messages.every((message) => message.length > 0)).toBe(true);
+    expect(new Set(messages).size).toBe(reasons.length);
+  });
+});
+
+describe("skillInstallResultMessage", () => {
+  it("says what happened to each name", () => {
+    expect(skillInstallResultMessage({ name: "demo", status: "installed" })).toBe(m.skills_install_result_installed());
+    expect(skillInstallResultMessage({ name: "demo", status: "skipped_name_conflict" })).toBe(
+      m.skills_install_result_skipped(),
+    );
+    expect(
+      skillInstallResultMessage({ name: "demo", status: "failed", errorCode: SKILL_ERROR_CODES.SOURCE_INVALID }),
+    ).toBe(skillErrorMessage(SKILL_ERROR_CODES.SOURCE_INVALID));
   });
 });
 

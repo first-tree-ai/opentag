@@ -214,6 +214,28 @@ describe("SkillsPage Agent changes", () => {
     expect(screen.queryByText(/Replace the existing Skill/)).toBeNull();
   });
 
+  it("closes the install dialog when the Agent changes, installing nothing", async () => {
+    stubApi({ [AGENT_A]: [skill(AGENT_A)] });
+    const resolve = vi
+      .spyOn(browserApi, "resolveRemoteSkills")
+      .mockResolvedValue({ source: { kind: "github", url: "https://github.com/o/r.git" }, skills: [] });
+    const install = vi.spyOn(browserApi, "installRemoteSkills").mockResolvedValue({ results: [] });
+    const router = await renderSkillsRoute(`/agents/${AGENT_A}/skills`);
+
+    await screen.findByText("Release notes writer");
+    fireEvent.click(screen.getByRole("button", { name: "Install from URL" }));
+    expect(await screen.findByText("Install Skills from a URL")).toBeTruthy();
+
+    await navigateTo(router, AGENT_B);
+    await flush();
+
+    // The body is keyed by Agent, so the dialog and its un-submitted address are gone with it, and
+    // the mutation carries the Agent it was opened for rather than "whichever Agent is mounted now".
+    expect(screen.queryByText("Install Skills from a URL")).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(install).not.toHaveBeenCalled();
+  });
+
   it("closes the delete dialog when the Agent changes, confirming nothing", async () => {
     stubApi({ [AGENT_A]: [skill(AGENT_A)] });
     const router = await renderSkillsRoute(`/agents/${AGENT_A}/skills`);

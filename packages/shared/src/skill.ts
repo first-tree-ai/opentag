@@ -37,7 +37,7 @@ export const SKILL_MARKER_FILE = ".opentag-skill.json";
 /* --------------------------------- resources ------------------------------- */
 
 const SkillIdSchema = z.string().uuid();
-export const SkillSourceSchema = z.enum(["web_upload", "cli_upload", "agent_upload"]);
+export const SkillSourceSchema = z.enum(["web_upload", "cli_upload", "agent_upload", "url_install"]);
 export type SkillSource = z.infer<typeof SkillSourceSchema>;
 export const SkillArchiveFormatSchema = z.enum(["tar.gz", "zip"]);
 export type SkillArchiveFormat = z.infer<typeof SkillArchiveFormatSchema>;
@@ -142,9 +142,22 @@ export const SKILL_ERROR_CODES = {
   HASH_MISMATCH: "SKILL_HASH_MISMATCH",
   ARCHIVE_TOO_LARGE: "SKILL_ARCHIVE_TOO_LARGE",
   STORAGE_UNAVAILABLE: "SKILL_STORAGE_UNAVAILABLE",
+  SOURCE_INVALID: "SKILL_SOURCE_INVALID",
+  SOURCE_UNREACHABLE: "SKILL_SOURCE_UNREACHABLE",
+  SOURCE_BLOCKED: "SKILL_SOURCE_BLOCKED",
+  SOURCE_TOO_LARGE: "SKILL_SOURCE_TOO_LARGE",
+  SOURCE_NO_SKILLS: "SKILL_SOURCE_NO_SKILLS",
 } as const;
 export type SkillErrorCode = (typeof SKILL_ERROR_CODES)[keyof typeof SKILL_ERROR_CODES];
 export type SkillErrorCategory = "credential" | "deterministic" | "validation" | "transient";
+
+/**
+ * Every Skill code as a schema, so a per-item install result can carry one without a second list of
+ * the values. Derived from `SKILL_ERROR_CODES` rather than spelled out again: an explicit enum would
+ * have to be kept in step with the object by hand, and the object is what the metadata table is
+ * checked against.
+ */
+export const SkillErrorCodeSchema = z.enum(Object.values(SKILL_ERROR_CODES) as [SkillErrorCode, ...SkillErrorCode[]]);
 
 export const SKILL_ERROR_CODE_METADATA: Readonly<
   Record<SkillErrorCode, { category: SkillErrorCategory; statusCode: number }>
@@ -159,4 +172,13 @@ export const SKILL_ERROR_CODE_METADATA: Readonly<
   [SKILL_ERROR_CODES.HASH_MISMATCH]: { category: "validation", statusCode: 400 },
   [SKILL_ERROR_CODES.ARCHIVE_TOO_LARGE]: { category: "validation", statusCode: 413 },
   [SKILL_ERROR_CODES.STORAGE_UNAVAILABLE]: { category: "transient", statusCode: 503 },
+  /*
+   * Source failures. `SOURCE_INVALID` and `SOURCE_BLOCKED` will fail again unchanged; the other
+   * three are decisions about the remote side, so a later retry is worth attempting.
+   */
+  [SKILL_ERROR_CODES.SOURCE_INVALID]: { category: "validation", statusCode: 400 },
+  [SKILL_ERROR_CODES.SOURCE_BLOCKED]: { category: "validation", statusCode: 400 },
+  [SKILL_ERROR_CODES.SOURCE_UNREACHABLE]: { category: "transient", statusCode: 502 },
+  [SKILL_ERROR_CODES.SOURCE_TOO_LARGE]: { category: "transient", statusCode: 413 },
+  [SKILL_ERROR_CODES.SOURCE_NO_SKILLS]: { category: "deterministic", statusCode: 404 },
 };

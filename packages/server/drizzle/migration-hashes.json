@@ -265,6 +265,11 @@
       "idx": 52,
       "tag": "0052_agent_schedules",
       "sha256": "e25c1fd92d2f17022ffc8bb9fe983a3c46ca01e62e9e4ecb5885d6f709529a99"
+    },
+    {
+      "idx": 53,
+      "tag": "0053_white_killmonger",
+      "sha256": "ca04f9202c1b6a8e4783b5297877817602de7d1e50900dddbbdda1820e91fda4"
     }
   ]
 }

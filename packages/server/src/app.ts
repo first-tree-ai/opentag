@@ -87,6 +87,7 @@ import { ScheduleServiceError } from "./services/schedules/index.js";
 import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
 import { type SkillService, SkillServiceError } from "./services/skills/index.js";
+import type { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
 
@@ -169,6 +170,8 @@ export interface CreateAppOptions {
    */
   skills?: {
     service: SkillService;
+    /** Remote installation; absent when a caller wires only the upload/management surface. */
+    remote?: RemoteSkillService;
     proofs?: Pick<SessionCliProofService, "authenticate">;
   };
   slackOAuth?: SlackOAuthRouteOptions;
@@ -672,7 +675,7 @@ export function createApp(options: CreateAppOptions = {}) {
       });
     }
     if (options.skills) {
-      registerSkillRoutes(app, options.skills.service, authService, authOptions);
+      registerSkillRoutes(app, options.skills.service, authService, authOptions, options.skills.remote);
       if (options.machineAuthService) {
         registerComputerSkillRoutes(app, options.machineAuthService, options.skills.service);
       }

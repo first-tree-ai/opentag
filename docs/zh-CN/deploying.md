@@ -167,6 +167,18 @@ bundle 始终以调用方自己的凭据（Account session、Computer machine to
 回滚只回退应用代码，不会回退更新的 revision 已经执行过的数据库 migration，因此跨越破坏性 migration 的回滚需要一份
 有意为之的数据库方案。
 
+有一次 migration 需要先做数据步骤，再回滚代码：`0053_white_killmonger` 为 `skill_source` enum 增加了 `url_install`，
+而旧版 Server 只接受此前的三个取值。若行中仍带有 `url_install` 就回滚 Server，受影响 Agent 的每次 Skill 读取都会因
+校验失败而报错。因此请先执行下面的语句——它保留 Skill，只是把它们呈现为 Web 上传，也就是旧版本最接近的表示：
+
+```sql
+update agent_skills set source = 'web_upload' where source = 'url_install';
+```
+
+之后重新部署新版 Server 是安全的；该取值不会被自动恢复，因此回滚期间通过 URL 安装的 Skill 会重新显示为 Web 上传。
+如果这个 enum 取值必须跨过回滚窗口存活，替代方案是分两次发布：先单独发布这条 migration，再在下一个 release 中发布
+写入 `url_install` 的代码。
+
 ## 验证一次部署
 
 Job summary 会记录部署的 revision、镜像 tag 和镜像 digest。之后再从 CapRover 侧确认上线结果：

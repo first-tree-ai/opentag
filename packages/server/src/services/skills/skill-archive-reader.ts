@@ -98,6 +98,50 @@ export function isIgnoredSkillPath(path: string): boolean {
   return path === ".DS_Store" || path.endsWith("/.DS_Store");
 }
 
+/**
+ * The member rules a Skill archive obeys, applied to entries that did not come from one.
+ *
+ * A repository listing and a well-known directory are the other two ways a Skill can arrive, and
+ * their paths are not automatically archive-safe: git permits a backslash, a leading dot, or a name
+ * the macOS metadata rules say to drop. Without this pass an install could store a Skill the Client's
+ * extractor later refuses (`unsafe_member`), reporting success for something the runtime can never
+ * materialize. The rules are the reader's own — `normalizeMemberPath` for safety and the UTF-8 byte
+ * bound, `isIgnoredSkillPath` for metadata, a duplicate check, and the entry-count and unpacked-byte
+ * ceilings — so the archive path and the source path agree by construction.
+ */
+export function assertSkillEntries(entries: readonly RawSkillEntry[], limits?: SkillReadLimits): RawSkillEntry[] {
+  const resolved = resolveSkillReadLimits(limits);
+  const seen = new Set<string>();
+  const kept: RawSkillEntry[] = [];
+  let total = 0;
+  for (const entry of entries) {
+    const path = normalizeMemberPath(entry.path);
+    if (isIgnoredSkillPath(path)) continue;
+    if (seen.has(path)) throw skillArchiveInvalid(`Skill archive member is duplicated: ${path}`);
+    seen.add(path);
+    if (kept.length >= SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
+    total += entry.body.byteLength;
+    if (total > resolved.maxUnpackedBytes) throw skillArchiveTooLarge();
+    kept.push({ path, body: entry.body, mode: entry.mode });
+  }
+  return kept;
+}
+
+/**
+ * The same rules for a path listing alone, so a preview can reject an unusable candidate without
+ * reading any file body. Bodies are what the byte ceiling needs, and the preview does not have them.
+ */
+export function assertSkillEntryPaths(paths: readonly string[]): void {
+  const seen = new Set<string>();
+  for (const raw of paths) {
+    const path = normalizeMemberPath(raw);
+    if (isIgnoredSkillPath(path)) continue;
+    if (seen.has(path)) throw skillArchiveInvalid(`Skill archive member is duplicated: ${path}`);
+    seen.add(path);
+    if (seen.size > SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
+  }
+}
+
 function assertTarEntryType(header: TarHeaders): void {
   if (header.type === "file" || header.type === "contiguous-file" || header.type == null) return;
   if (header.type === "symlink" || header.type === "link") {

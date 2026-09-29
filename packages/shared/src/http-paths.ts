@@ -108,6 +108,13 @@ export const MCP_CLIENT_METADATA_PATH = "/oauth/client-metadata.json";
 export const AGENT_SKILLS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/skills`;
 export const AGENT_SKILL_TEMPLATE = `${AGENT_SKILLS_TEMPLATE}/:skillId`;
 export const AGENT_SKILL_BUNDLE_TEMPLATE = `${AGENT_SKILL_TEMPLATE}/bundle`;
+/*
+ * Remote Skill installation. `resolve` only reads: it normalizes the source, fetches it, and returns
+ * the Skills it holds. The collection endpoint writes the selected names, so a preview can never
+ * change an Agent's Skills.
+ */
+export const AGENT_SKILLS_INSTALL_TEMPLATE = `${AGENT_SKILLS_TEMPLATE}/install`;
+export const AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE = `${AGENT_SKILLS_INSTALL_TEMPLATE}/resolve`;
 export const COMPUTER_AGENT_SKILLS_TEMPLATE = `${API_V1_PREFIX}/computer/agents/:agentId/skills`;
 export const COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE = `${COMPUTER_AGENT_SKILLS_TEMPLATE}/:skillId/bundle`;
 export const RUNTIME_SKILLS_PATH = `${API_V1_PREFIX}/runtime/skills`;
@@ -434,6 +441,16 @@ export function agentSkillsPath(agentId: string): string {
 
 export function agentSkillPath(agentId: string, skillId: string): string {
   return `${agentSkillsPath(agentId)}/${encodeURIComponent(skillId)}`;
+}
+
+/** The remote-install collection: it writes the selected Skills of the posted source. */
+export function agentSkillsInstallPath(agentId: string): string {
+  return `${agentSkillsPath(agentId)}/install`;
+}
+
+/** The remote-install preview: same source in, candidate Skills out, and no write. */
+export function agentSkillsInstallResolvePath(agentId: string): string {
+  return `${agentSkillsInstallPath(agentId)}/resolve`;
 }
 
 export function agentSkillBundlePath(agentId: string, skillId: string): string {

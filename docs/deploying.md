@@ -181,6 +181,20 @@ with the current compatible Server revision instead; see [Cloud Runner releases]
 Rolling back only reverts application code. It does not revert database migrations that a later revision applied, so a
 rollback across a destructive migration needs a deliberate database plan.
 
+One migration needs a data step before its code is rolled back: `0053_white_killmonger` adds `url_install` to the
+`skill_source` enum, and an older Server validates `Skill.source` against the three earlier values. Rolling the Server
+back while rows still carry `url_install` makes every Skill read for the affected Agents fail validation, so run this
+first — it preserves the Skills and reports them as web uploads, which is the closest older representation:
+
+```sql
+update agent_skills set source = 'web_upload' where source = 'url_install';
+```
+
+Re-running the newer Server after that statement is safe; nothing recreates the value automatically, so a Skill installed
+from a URL after the rollback is simply a web upload again. The alternative, if the enum value must survive a rollback
+window, is to stage the change: deploy this migration alone, then deploy the code that writes `url_install` in the next
+release.
+
 ## Verifying a deployment
 
 The job summary records the deployed revision, the image tag, and the image digest. Confirm the rollout from the

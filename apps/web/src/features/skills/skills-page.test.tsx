@@ -87,6 +87,35 @@ describe("SkillsPage", () => {
     expect(download.getAttribute("download")).toBe("Release notes writer.tar.gz");
   });
 
+  it("offers remote installation and opens the dialog", async () => {
+    stubList([]);
+    const resolve = vi
+      .spyOn(browserApi, "resolveRemoteSkills")
+      .mockResolvedValue({ source: { kind: "github", url: "https://github.com/o/r.git" }, skills: [] });
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+
+    // The button exists before the list arrives, when storage is still unknown and it is disabled;
+    // storage is only a fact once a successful list has said so.
+    await screen.findByText(/No Skills yet/);
+    const install = screen.getByRole("button", { name: "Install from URL" }) as HTMLButtonElement;
+    expect(install.disabled).toBe(false);
+    fireEvent.click(install);
+    expect(await screen.findByText("Install Skills from a URL")).toBeTruthy();
+    // Opening the dialog only opens it: no source has been read yet.
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("disables remote installation when the deployment has no Skill storage", async () => {
+    stubList([], "unavailable");
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+
+    expect(await screen.findByText(/Skill storage is not configured/)).toBeTruthy();
+    const install = screen.getByRole("button", { name: "Install from URL" }) as HTMLButtonElement;
+    expect(install.disabled).toBe(true);
+    fireEvent.click(install);
+    expect(screen.queryByText("Install Skills from a URL")).toBeNull();
+  });
+
   it("shows the empty state when the Agent has no Skills", async () => {
     stubList([]);
     wrap(<SkillsPage agentId={AGENT_ID} />);

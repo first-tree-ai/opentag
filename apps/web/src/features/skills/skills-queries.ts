@@ -1,4 +1,9 @@
-import type { ListAgentSkillsResponse, SkillArchiveFormat, SkillDetail } from "@opentag/shared/browser";
+import type {
+  ListAgentSkillsResponse,
+  RemoteSkillSelection,
+  SkillArchiveFormat,
+  SkillDetail,
+} from "@opentag/shared/browser";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
@@ -104,6 +109,35 @@ export function useUpdateSkill() {
     onSuccess: async (detail, input) => {
       cache.reconcileList(input.agentId, (list) => updateSkillInList(list, detail));
       cache.setDetail(input.agentId, detail.id, detail);
+      await cache.invalidate(input.agentId);
+    },
+  });
+}
+
+/**
+ * Reading a source. The response is a preview: it lists what the source holds and writes nothing, so
+ * there is no cache to reconcile and nothing to invalidate.
+ */
+export function useResolveRemoteSkills() {
+  return useMutation({
+    mutationFn: (input: { agentId: string; source: string }) =>
+      browserApi.resolveRemoteSkills(input.agentId, input.source),
+  });
+}
+
+/**
+ * Installing a selection.
+ *
+ * The response is a per-item report rather than Skill records, so the list cannot be reconciled from
+ * it the way an upload reconciles: the installed rows are refetched instead, which is also what
+ * surfaces anything the Server decided (a name that turned out to exist, an item that failed).
+ */
+export function useInstallRemoteSkills() {
+  const cache = useSkillCache();
+  return useMutation({
+    mutationFn: (input: { agentId: string; source: string; selections: RemoteSkillSelection[] }) =>
+      browserApi.installRemoteSkills(input.agentId, { source: input.source, selections: input.selections }),
+    onSuccess: async (_result, input) => {
       await cache.invalidate(input.agentId);
     },
   });

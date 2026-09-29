@@ -1,6 +1,7 @@
 import {
   CreateMCPServerRequestSchema,
   type MCPAgentServer,
+  type MCPAuthKind,
   type MCPServer,
   MCPServerNameSchema,
   MCPServerUrlSchema,
@@ -8,9 +9,13 @@ import {
 import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
+import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "./catalog/mcp-catalog.gen.js";
+import { comparableUrl, findAccountServer } from "./catalog/mcp-catalog-model.js";
+import { McpDiscoverSource } from "./catalog/mcp-discover-source.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorize-dialog.js";
 import { McpAuthFields, McpFooter } from "./mcp-form.js";
 import {
+  type AuthDraft,
   actionError,
   authDraft,
   defaultConnection,
@@ -22,21 +27,54 @@ import type { MCPImportServer } from "./mcp-import-model.js";
 import { McpImportPanel, useMcpImport } from "./mcp-import-panel.js";
 import { useAttachMcpServer, useCreateMcpServer, useMcpServers } from "./mcp-queries.js";
 
+/** Which source the picker opens on. The empty state lands on the catalog; the header lands on URL. */
+export type AddSource = "existing" | "discover" | "import";
+
+/**
+ * The draft a catalog entry prefills. Its auth header, scheme, and extra headers are configuration
+ * the entry declares; the kind stays a prefill for the new authorization.
+ */
+function catalogDraft(entry: McpCatalogEntry, kind: MCPAuthKind): AuthDraft {
+  return authDraft(
+    {
+      ...defaultConnection,
+      authHeader: entry.authHeader ?? defaultConnection.authHeader,
+      authScheme: entry.authScheme ?? defaultConnection.authScheme,
+      extraHeaders: entry.extraHeaders ?? {},
+    },
+    kind,
+  );
+}
+
+/** The create payload a catalog entry produces: the entry is the definition, nothing else invented. */
+function catalogCreateInput(entry: McpCatalogEntry) {
+  return CreateMCPServerRequestSchema.parse({
+    name: entry.name,
+    url: entry.url,
+    defaultAuthKind: entry.defaultAuthKind,
+    ...(entry.authHeader === undefined ? {} : { authHeader: entry.authHeader }),
+    ...(entry.authScheme === undefined ? {} : { authScheme: entry.authScheme }),
+    ...(entry.extraHeaders === undefined ? {} : { extraHeaders: entry.extraHeaders }),
+  });
+}
+
 type AddProps = {
   agentId: string;
   agentName: string;
   mounted: MCPAgentServer[];
+  initialSource?: AddSource;
   onClose: () => void;
   onAdded: (entry: MCPAgentServer) => void;
   onLocate: (id: string) => void;
 };
-function useAddServer({ agentId, onAdded }: AddProps) {
+function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
   const account = useMcpServers();
   const servers = account.data?.servers ?? [];
   const create = useCreateMcpServer(agentId);
   const attach = useAttachMcpServer(agentId);
   const authorize = useMcpAuthorization(agentId);
   const [step, setStep] = useState<"choose" | "configure">("choose");
+  const [source, setSource] = useState<AddSource>(initialSource ?? "existing");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<MCPServer>();
   const [url, setUrl] = useState("");
@@ -48,12 +86,11 @@ function useAddServer({ agentId, onAdded }: AddProps) {
   const [attached, setAttached] = useState<MCPAgentServer>();
   const createdRef = useRef<MCPServer>(undefined);
   const attachedRef = useRef<MCPAgentServer>(undefined);
+  /** The entry the current create/mount state belongs to, so another card cannot inherit it. */
+  const catalogAttempt = useRef<string>(undefined);
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
-  const [intake, setIntake] = useState<"search" | "import">("search");
-  const intakeState = useMcpImport(servers.map((server) => server.name));
-  /** Set while the draft came from a paste, so returning to the first step restores that paste. */
-  const imported = useRef(false);
+  const importState = useMcpImport(servers.map((server) => server.name));
   const urlLike = /^https?:\/\//i.test(query.trim());
   const filtered = servers.filter((server) =>
     urlLike
@@ -71,7 +108,7 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     if (!nameEdited.current) setName(suggestServerName(value, servers));
   };
   const choose = (server: MCPServer) => {
-    imported.current = false;
+    resetAttempt();
     setSelected(server);
     if (selected?.id !== server.id) setDraft(authDraft(server, server.defaultAuthKind));
     setStep("configure");
@@ -82,7 +119,7 @@ function useAddServer({ agentId, onAdded }: AddProps) {
       setError(m.mcp_url_invalid());
       return;
     }
-    imported.current = false;
+    resetAttempt();
     setSelected(undefined);
     changeUrl(query.trim());
     setStep("configure");
@@ -95,7 +132,9 @@ function useAddServer({ agentId, onAdded }: AddProps) {
    */
   const importServer = (detected: MCPImportServer) => {
     if (!detected.url) return;
-    imported.current = true;
+    // A catalog card that failed earlier may have left a definition or a mount behind; reusing either
+    // would authorize the endpoint that card created rather than the one just imported.
+    resetAttempt();
     setSelected(undefined);
     setUrl(detected.url);
     nameEdited.current = true;
@@ -130,8 +169,15 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     setCreated(server);
     return server;
   };
+  /**
+   * The mount for one Server, cached only for that Server.
+   *
+   * A catalog attempt that failed at authorization leaves a mount behind; returning it for the next
+   * card would rewrite that first Server's authorization, or probe a newly entered key against an
+   * endpoint the user did not choose.
+   */
   const ensureBinding = async (server: MCPServer) => {
-    if (attachedRef.current) return attachedRef.current;
+    if (attachedRef.current?.mcpServerId === server.id) return attachedRef.current;
     const binding = await attach.mutateAsync(server.id);
     attachedRef.current = binding;
     setAttached(binding);
@@ -142,7 +188,9 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     return createdRef.current ? m.mcp_attach_failed() : m.mcp_create_failed();
   };
   const back = () => {
-    if (!selected && !imported.current) setQuery(url);
+    // An imported draft keeps the picker on the import source, so the search field is not what the user
+    // is looking at; filling it with the imported URL would surprise them on a later switch back.
+    if (!selected && source !== "import") setQuery(url);
     setStep("choose");
     setError(undefined);
   };
@@ -164,6 +212,90 @@ function useAddServer({ agentId, onAdded }: AddProps) {
       setBusy(false);
     }
   };
+  /**
+   * Drop the create/mount state of whatever attempt came before.
+   *
+   * The catalog's cache must not outlive its entry. `ensureServer()` prefers a cached definition, so
+   * leaving Discover, choosing another Account Server, or entering a new URL without this would
+   * authorize the endpoint a failed catalog card created instead of the one the user just picked.
+   */
+  const resetAttempt = () => {
+    catalogAttempt.current = undefined;
+    createdRef.current = undefined;
+    attachedRef.current = undefined;
+    setCreated(undefined);
+    setAttached(undefined);
+  };
+  /** Switch source, dropping any attempt the previous source left behind. */
+  const changeSource = (next: AddSource) => {
+    if (next === source) return;
+    resetAttempt();
+    setSource(next);
+  };
+  /**
+   * Start a catalog attempt for one entry, clearing the state of a previous entry.
+   *
+   * Retrying the same card keeps its progress; switching cards must not inherit the other entry's
+   * definition or mount, or the new authorization would be written against the wrong Server.
+   */
+  const beginCatalogAttempt = (entry: McpCatalogEntry) => {
+    if (catalogAttempt.current === entry.id) return;
+    resetAttempt();
+    catalogAttempt.current = entry.id;
+  };
+  /**
+   * Open the configure step prefilled with the entry, keeping the Account's definition at the same
+   * URL when one exists so the key form submits against it instead of creating a duplicate.
+   */
+  const prefillCatalogBearer = (entry: McpCatalogEntry) => {
+    setSelected(findAccountServer(entry, servers));
+    setName(entry.name);
+    nameEdited.current = true;
+    setUrl(entry.url);
+    setDraft(catalogDraft(entry, "bearer"));
+    setStep("configure");
+  };
+  /** The Account definition to add: the one already at this URL, or a new one from the entry. */
+  const resolveCatalogServer = async (entry: McpCatalogEntry) => {
+    const target = comparableUrl(entry.url);
+    const previous = createdRef.current;
+    // A definition this session already created for this entry, before the Account read caught up.
+    const carried = previous && comparableUrl(previous.url) === target ? previous : undefined;
+    if (previous && !carried) createdRef.current = undefined;
+    const known = findAccountServer(entry, servers) ?? carried;
+    if (known) return known;
+    const server = await create.mutateAsync(catalogCreateInput(entry));
+    createdRef.current = server;
+    setCreated(server);
+    return server;
+  };
+  /**
+   * Add a catalog entry to this Agent.
+   *
+   * Anonymous and OAuth entries skip the configure step — everything is known — so the card is the
+   * whole interaction. A bearer entry genuinely needs a secret, so it stops for the key.
+   */
+  const addFromCatalog = async (entry: McpCatalogEntry) => {
+    if (inFlight.current) return;
+    beginCatalogAttempt(entry);
+    setError(undefined);
+    if (entry.defaultAuthKind === "bearer") {
+      prefillCatalogBearer(entry);
+      return;
+    }
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      const binding = await ensureBinding(await resolveCatalogServer(entry));
+      await authorize(binding, catalogDraft(entry, entry.defaultAuthKind));
+      if (entry.defaultAuthKind !== "oauth") onAdded(binding);
+    } catch (cause) {
+      setError(actionError(cause, failureMessage()));
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
   const submitLabel = attached
     ? draft.kind === "oauth"
       ? m.mcp_authorize_submit()
@@ -176,6 +308,9 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     servers,
     step,
     back,
+    source,
+    changeSource,
+    addFromCatalog,
     query,
     setQuery,
     selected,
@@ -190,9 +325,7 @@ function useAddServer({ agentId, onAdded }: AddProps) {
     created,
     attached,
     busy,
-    intake,
-    setIntake,
-    import: intakeState,
+    import: importState,
     importServer,
     urlLike,
     filtered,
@@ -225,12 +358,33 @@ export function McpAddDialog(props: AddProps) {
     </Dialog>
   );
 }
-function AddPicker(props: AddProps & { state: AddState }) {
-  return props.state.intake === "import" ? <AddImport {...props} /> : <AddSearch {...props} />;
+/** The picker's three sources: the marketplace catalog, the Account pool or a pasted URL, and a paste. */
+function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (source: AddSource) => void }) {
+  const choices: { source: AddSource; label: string }[] = [
+    { source: "discover", label: m.mcp_source_discover() },
+    { source: "existing", label: m.mcp_add_existing() },
+    { source: "import", label: m.mcp_source_import() },
+  ];
+  return (
+    <fieldset className="mb-4 flex flex-wrap gap-1 border-0 p-0">
+      <legend className="sr-only">{m.mcp_source_label()}</legend>
+      {choices.map((choice) => (
+        <Button
+          key={choice.source}
+          aria-pressed={value === choice.source}
+          size="compact"
+          variant={value === choice.source ? "secondary" : "ghost"}
+          onClick={() => onChange(choice.source)}
+        >
+          {choice.label}
+        </Button>
+      ))}
+    </fieldset>
+  );
 }
-function AddSearch(props: AddProps & { state: AddState }) {
+function AddPicker(props: AddProps & { state: AddState }) {
   const { state, onClose } = props;
-  const { account, filtered, urlLike, servers, query, continueUrl, error } = state;
+  const { account, filtered, urlLike, servers, query, continueUrl, error, source, changeSource } = state;
   const loaded = !account.isPending && !account.isError;
   const canContinue = loaded && ((!filtered.length && urlLike) || !servers.length);
   return (
@@ -244,40 +398,44 @@ function AddSearch(props: AddProps & { state: AddState }) {
           </Button>
         </div>
       ) : null}
-      {loaded ? <AddChoices {...props} /> : null}
       {loaded ? (
-        <Button className="mt-4 -ml-2" variant="ghost" size="compact" onClick={() => state.setIntake("import")}>
-          <Icon name="upload" />
-          {m.mcp_import_open()}
-        </Button>
+        <>
+          <AddSourceSwitch value={source} onChange={changeSource} />
+          {source === "discover" ? (
+            <McpDiscoverSource
+              categories={MCP_CATALOG_CATEGORIES}
+              entries={MCP_CATALOG_ENTRIES}
+              servers={servers}
+              mounted={props.mounted}
+              busy={state.busy}
+              onAdd={(entry) => void state.addFromCatalog(entry)}
+            />
+          ) : source === "import" ? (
+            <McpImportPanel
+              state={state.import}
+              agentName={props.agentName}
+              mounted={props.mounted}
+              onChoose={state.importServer}
+              onLocate={props.onLocate}
+            />
+          ) : (
+            <AddChoices {...props} />
+          )}
+        </>
       ) : null}
       {error ? (
         <p role="alert" className="mt-3 text-sm text-kumo-danger">
           {error}
         </p>
       ) : null}
-      <McpFooter onClose={onClose}>
-        {canContinue ? (
+      <McpFooter onClose={onClose} busy={state.busy}>
+        {source === "existing" && canContinue ? (
           <Button disabled={!query.trim()} onClick={continueUrl}>
             {m.mcp_continue()}
           </Button>
         ) : null}
       </McpFooter>
     </>
-  );
-}
-/** The import panel owns the paste and the detected list; this step only wires it to the dialog. */
-function AddImport({ state, agentName, mounted, onLocate, onClose }: AddProps & { state: AddState }) {
-  return (
-    <McpImportPanel
-      state={state.import}
-      agentName={agentName}
-      mounted={mounted}
-      onChoose={state.importServer}
-      onLocate={onLocate}
-      onBack={() => state.setIntake("search")}
-      onClose={onClose}
-    />
   );
 }
 function AddChoices({ state, agentName, mounted, onLocate }: AddProps & { state: AddState }) {

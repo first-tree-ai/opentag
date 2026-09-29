@@ -39,7 +39,8 @@ export function McpServerCard({
 }) {
   const authorized = entry.authorization?.status === "active";
   const pending = probing || entry.authorization?.probeState === "pending";
-  const saved = entry.snapshot?.tools != null;
+  const saved = entry.snapshot !== null;
+  const count = entry.snapshot?.tools?.length ?? 0;
   const previous = !authorized || entry.authorization?.probeState !== "succeeded" || probing;
   return (
     <li
@@ -67,31 +68,39 @@ export function McpServerCard({
               </span>
             }
           />
-          <ServerMenu entry={entry} onAction={onAction} />
+          <ServerMenu entry={entry} pending={pending} onAction={onAction} onProbe={onProbe} />
         </div>
         <p className="col-span-2 wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
       </div>
       {entry.description ? (
         <p className="wrap-anywhere line-clamp-2 text-sm text-kumo-subtle">{entry.description}</p>
       ) : null}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-        <div className="min-w-0" aria-live="polite">
+      <div className="grid gap-3 border-t border-kumo-line pt-3 @min-[36rem]/content:grid-cols-[minmax(0,1fr)_auto] @min-[36rem]/content:items-start">
+        <div className="min-w-0 empty:hidden" aria-live="polite">
           <ToolStatus entry={entry} agentName={agentName} pending={pending} />
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {saved ? (
-            <Button variant="ghost" size="compact" onClick={() => onAction("tools")}>
-              {previous ? m.mcp_saved_tools_action() : m.mcp_tools_action()}
-            </Button>
-          ) : null}
+        <div className="flex flex-wrap items-center gap-2 @min-[36rem]/content:col-start-2 @min-[36rem]/content:row-start-1">
           {entry.enabled && !authorized ? (
             <Button size="compact" variant="secondary" onClick={() => onAction("authorize")}>
               {m.mcp_authorize_action()}
             </Button>
           ) : null}
-          {entry.enabled && authorized && entry.authorization?.probeState === "failed" && !pending ? (
-            <Button size="compact" variant="secondary" onClick={onProbe}>
+          {entry.enabled && authorized && entry.authorization?.probeState === "failed" ? (
+            <Button
+              aria-label={m.mcp_retry()}
+              disabled={pending}
+              loading={probing}
+              size="compact"
+              variant="secondary"
+              onClick={onProbe}
+            >
               {m.mcp_retry()}
+            </Button>
+          ) : null}
+          {saved ? (
+            <Button variant="ghost" size="compact" onClick={() => onAction("tools")}>
+              {previous ? m.mcp_saved_tools_action({ count }) : m.mcp_tools_action({ count })}
+              <Icon name="chevron-right" />
             </Button>
           ) : null}
         </div>
@@ -121,16 +130,20 @@ function ToolStatus({ entry, agentName, pending }: { entry: MCPAgentServer; agen
     );
   if (entry.authorization.probeState === "failed")
     return <span className="text-sm text-kumo-danger">{m.mcp_probe_state_failed()}</span>;
-  return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-      <span className="text-sm">
-        {m.mcp_probe_state_succeeded({ count: entry.authorization.toolsCount ?? entry.snapshot?.tools?.length ?? 0 })}
-      </span>
-      {entry.authorization.toolsTruncated ? <McpPartialTools /> : null}
-    </div>
-  );
+  if (entry.snapshot === null) return <span className="text-sm text-kumo-subtle">{m.mcp_probe_state_not_run()}</span>;
+  return entry.authorization.toolsTruncated ? <McpPartialTools /> : null;
 }
-function ServerMenu({ entry, onAction }: { entry: MCPAgentServer; onAction: (action: ServerAction) => void }) {
+function ServerMenu({
+  entry,
+  pending,
+  onAction,
+  onProbe,
+}: {
+  entry: MCPAgentServer;
+  pending: boolean;
+  onAction: (action: ServerAction) => void;
+  onProbe: () => void;
+}) {
   return (
     <DropdownMenu>
       <DropdownMenu.Trigger
@@ -143,6 +156,11 @@ function ServerMenu({ entry, onAction }: { entry: MCPAgentServer; onAction: (act
       <DropdownMenu.Content align="end">
         <DropdownMenu.Item onClick={() => onAction("edit")}>{m.mcp_edit_action()}</DropdownMenu.Item>
         <DropdownMenu.Item onClick={() => onAction("authorize")}>{m.mcp_auth_menu()}</DropdownMenu.Item>
+        {entry.enabled && entry.authorization?.status === "active" ? (
+          <DropdownMenu.Item disabled={pending} onClick={onProbe}>
+            {m.mcp_probe_action()}
+          </DropdownMenu.Item>
+        ) : null}
         <DropdownMenu.Item onClick={() => onAction("details")}>{m.mcp_details_action()}</DropdownMenu.Item>
         <DropdownMenu.Separator />
         {canRevoke(entry) ? (

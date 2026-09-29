@@ -876,7 +876,7 @@ mounted Servers, and each row displays **four independent states** rather than o
 | Mount | Enabled / Disabled |
 | Authorization method | Bearer / OAuth / Anonymous |
 | Authorization status | Authorized / Awaiting authorization / Expired / Reauthorization required / None |
-| Discovery | Discovering… / Found N tools / Discovery failed / Not discovered |
+| Discovery | View tools (N) for a saved snapshot / Discovering… / Discovery failed / Not discovered |
 
 They are kept separate because "disabled" and "not authorized" are different problems with different
 fixes: a disabled Server keeps its credential and needs no reauthorization, while an unauthorized one
@@ -896,20 +896,33 @@ edit, and remove.
   there is no Account-level page that lists it.
 - **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
   context to the authorization server rather than fetching the URL.
-- **View tools** shows the tools discovered with *this Agent's* credential, with the era and version
-  that produced them, and an explicit notice when the list was truncated.
+- **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
+  identity by an inset horizontal rule. Tool status and expandable warnings sit on the left; on
+  narrow rows the actions wrap below them. The count is the number of tools in the
+  saved snapshot shown by the dialog; it is not a promise that every tool is currently available.
+  Successful discovery has no duplicate count row.
+  The dialog shows the tools discovered with *this Agent's* credential, with the era and version
+  that produced them. An incomplete snapshot has a lightweight, initially collapsed notice on the
+  left of its Server row. Expanding it explains that some tools may be unavailable without guessing
+  the cause or promising that refreshing will fix it; the dialog also shows that explanation.
+  Discovery progress and failure remain visible; historical snapshots use **View saved tools (N)**.
+- **Refresh tools** is a maintenance action in the Server's more-actions menu and tool browser while
+  the Server is enabled and its authorization is active. It is disabled during discovery. A failed
+  discovery offers **Retry** in the tool footer, with the same pending guard; a partial list alone
+  does not promote that action.
 
 The "new Server" wizard asks for the definition first and the authorization method second, so
 `default_auth_kind` is never presented as a statement about the Server.
 
 ### Importing a Server from another client's configuration
 
-The wizard's first step also accepts a pasted configuration instead of a URL. It reads the shapes
-other clients write: OpenCode's `mcp` map with `"type": "remote"`, the `mcpServers` map of the
-Claude-family clients, VS Code's `servers` map with `"type": "http"` or `"sse"`, the TOML
-`[mcp_servers.<name>]` tables other clients use, the YAML spelling of any of those, and the
-`claude mcp add <name> --transport http <url>` / `codex mcp add <name> --url <url>` command lines.
-JSON carrying `//` comments and trailing commas is accepted, because the configs this targets
+The picker's sources are the catalog's **Discover**, the Account pool or a pasted URL under **Use an
+existing Server**, and **Import configuration**, which accepts a pasted configuration instead of a
+URL. It reads the shapes other clients write: OpenCode's `mcp` map with `"type": "remote"`, the
+`mcpServers` map of the Claude-family clients, VS Code's `servers` map with `"type": "http"` or
+`"sse"`, the TOML `[mcp_servers.<name>]` tables other clients use, the YAML spelling of any of those,
+and the `claude mcp add <name> --transport http <url>` / `codex mcp add <name> --url <url>` command
+lines. JSON carrying `//` comments and trailing commas is accepted, because the configs this targets
 routinely carry both.
 
 Parsing happens in the browser, never on the Server: a paste may carry a live credential, and the
@@ -951,6 +964,68 @@ create → attach → authorize sequence the manual wizard uses.
 - **The listed Servers describe the text that produced them.** Editing the field clears the list and
   invalidates any read still running, so the previous Server — and the previous credential — cannot be
   confirmed against text the user has since changed.
+
+## The marketplace catalog
+
+An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
+an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
+that an Agent can add in one action, from the add flow's Discover source and from its empty state.
+
+The catalog is committed repository data, not a service:
+
+| Source | Holds |
+| --- | --- |
+| `apps/web/src/features/mcp/catalog/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
+| `apps/web/src/features/mcp/catalog/mcp-catalog.yaml` | the entries: slug, localized title and description, URL, default authorization kind, category, provider site, icon, order, and optional bearer header configuration |
+
+`scripts/generate-mcp-catalog.mjs` compiles both into
+`apps/web/src/features/mcp/catalog/mcp-catalog.gen.ts`, mirroring `generate-web-theme.mjs`: run
+`pnpm catalog:generate` to write it, and `pnpm check` runs the same script with `--check` to reject
+drift. It runs under `tsx` because it reads the shared runtime schemas from source — `pnpm check` runs
+before `pnpm build`, so `packages/shared/dist` does not exist yet.
+
+Adding from a card is a prefill of the chain this page already documents, not a new API. The entry's
+URL is matched against the Account's definitions, and an existing definition is mounted rather than
+duplicated; otherwise the entry itself is the create payload. `default_auth_kind` remains a prefill
+for the new authorization, never a statement about the Server. Anonymous and OAuth entries complete
+from the card, with OAuth navigating to the authorization server; a bearer entry stops to collect the
+key.
+
+The generator refuses, at build time, at minimum:
+
+- an entry URL the outbound policy would refuse;
+- a create payload the Server would reject — the entry is validated by `CreateMCPServerRequestSchema`
+  itself, so its name, auth header and scheme, and extra headers follow the same rules the Server
+  enforces;
+- an entry that names a category the category source does not declare;
+- a declared category that no entry references, so the tab bar never shows a tab that leads nowhere;
+- a duplicate entry or category id;
+- a localized field that omits any supported locale, taken from the i18n project settings;
+- an entry whose referenced icon file does not exist;
+- a compiled module that does not match its sources.
+
+Only remote Streamable HTTP Servers may be listed: OpenTag is a hosted service and cannot run a user's
+local stdio subprocess.
+
+**Staleness is not asserted by `pnpm check`.** Whether a listed endpoint still answers, and whether its
+authorization method is still what the catalog says, cannot be decided without the public network, and
+unit tests must not depend on it. That review belongs to the integration/live-smoke path or a manual
+pass; the catalog author confirms each entry's method.
+
+The pure outbound URL rules the catalog is validated against live in
+`packages/shared/src/mcp-outbound-url.ts`, so this build-time check and the Server's gate cannot
+drift: `packages/server/src/services/mcp/mcp-url-policy.ts` maps the shared verdict onto
+`McpServiceError`, and the condition that a hostname *resolves* to a private address remains a
+request-time decision in the Server's fetcher.
+
+### Copy ownership in the catalog
+
+The catalog's copy is data-driven: category labels and card text are localized inline in the catalog
+sources, and the generator requires every locale, so a card never falls back silently. That is a
+deliberate exception to the rule that user-facing copy goes through Paraglide. The Discover surface's
+own chrome — the source label, the search field, the method labels, and the installed states — stays
+in `messages/mcp/{en,zh}.json`. `web-ui-contract.md` records the same exception from the web side, so
+the catalog's copy is not "fixed" into the message catalog as an apparent omission.
 
 ## Verification
 

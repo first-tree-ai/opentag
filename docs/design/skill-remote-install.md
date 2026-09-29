@@ -103,6 +103,11 @@ the source as it reads now and refuses an item whose value moved, with `SKILL_RE
 code that already means "this changed while you were working". That is what makes "what you previewed
 can have moved, and the result says so" true rather than aspirational.
 
+A listing's read returns the files **and** the fingerprint of those same bytes, from one call, and the
+install compares and then packages that one read. Comparing one read and using another would leave a
+check/use race: a publisher able to answer twice with different bodies would pass the comparison and
+have the second body installed. The pairing is the contract, not an implementation detail.
+
 | Source | Fingerprint covers | Preview cost |
 | --- | --- | --- |
 | Repository (git) | every path with its blob id and mode | a tree listing; no blob is read |
@@ -114,8 +119,11 @@ Every source is therefore bound to content. The legacy directory layout publishe
 a preview *reads* each of its entries — within `SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES` — rather than
 fingerprinting a declared file list: a list-only identity would let a publisher change `SKILL.md` and
 still install as though nothing had moved. The budget is what stops a long catalog from turning one
-preview into a download of the whole catalog; entries past it are left out of the preview rather than
-listed without the binding the selection contract promises.
+preview into a download of the whole catalog, and each entry spends only what it actually used, so the
+budget is a catalog-wide total rather than a per-entry allowance. Entries past the budget are left out
+of the preview rather than listed without the binding the selection contract promises — a different
+outcome from an entry whose published metadata is unusable, which is skipped and leaves the catalog
+running.
 
 ## Outbound policy
 
@@ -139,7 +147,10 @@ connection rather than resolving again:
   policy blocks, and only then dials. The clone, the tree listing, and every lazy blob fetch go through
   it (`http.proxy` is recorded in the clone so the on-demand fetches inherit it), and a plain-HTTP
   forward closes its upstream connection after each request so every request is judged on its own.
-  `NO_PROXY`/`no_proxy` are cleared so an inherited bypass cannot skip the tunnel.
+  `NO_PROXY`/`no_proxy` are cleared so an inherited bypass cannot skip the tunnel. Every socket the
+  tunnel owns is tracked: an upstream connect has its own deadline, dies with the client that caused
+  it, and is destroyed by `close()` along with the rest, so a killed git process cannot leave a
+  connection — or a pending connect — behind.
 
 The git transport applies the same judgement before spawning a process and then removes every way git
 could reach outside the clone:
@@ -275,13 +286,13 @@ to nothing, and an install can never fall back to "everything in the repository"
 | `packages/shared/src/__tests__/skill-discovery.test.ts` | The container list against its checked-in expectation, depth and shadowing, plugin manifests, the recursive fallback, subpath scoping, determinism, and skipped directories |
 | `packages/server/src/__tests__/skill-source-fetcher.test.ts` | Address refusals, the address pin handed to the transport, redirect refusal, both byte caps, the deadline, non-2xx mapping, and that only the transport and the tunnel dial |
 | `packages/server/src/__tests__/skill-source-transport.test.ts` | The real socket: the pin determines the dialed address while the hostname stays in `Host`, the declared and delivered byte caps, an unfollowed redirect, no body from an error, an error response stopped rather than drained, and the deadline |
-| `packages/server/src/__tests__/skill-source-tunnel.test.ts` | The git proxy: plain-HTTP forwarding with a close, a CONNECT byte tunnel, refusal of a blocked or loopback target, refusal of a non-absolute target, no dial for a name the policy blocks, the upstream dying with its client, a connect that never completes being refused on its deadline, and every socket released on close |
+| `packages/server/src/__tests__/skill-source-tunnel.test.ts` | The git proxy: plain-HTTP forwarding with a close, a CONNECT byte tunnel, refusal of a blocked or loopback target, refusal of a non-absolute target, no dial for a name the policy blocks, the upstream dying with its client, a connect that never completes being refused on its deadline (with an injected dial, so the result does not depend on an address happening to blackhole), and every socket released on close |
 | `packages/server/src/__tests__/skill-source-git.test.ts` | The clone argv and the git environment, the pre-spawn address check, `ls-tree` parsing, a real clone and blob read over local smart HTTP, the `--filter` fallback, lazy blobs, the size budget, and a missing ref |
-| `packages/server/src/__tests__/skill-source-workspace.test.ts` | Private staging, cleanup, and failing closed on a directory that is not private |
+| `packages/server/src/__tests__/skill-source-workspace.test.ts` | Private staging, cleanup, failing closed on a directory that is not private, and removing a directory whose privacy check failed after it was created |
 | `packages/server/src/__tests__/skill-source-document.test.ts` | Magic-byte format detection, the single-`SKILL.md` case, invalid content, and both caps |
 | `packages/server/src/__tests__/skill-source-well-known.test.ts` | Both index versions, the two probe paths, digest verification (both spellings), the legacy fallback for an unreadable modern document, no origin-root fallback, the candidate ceiling for a long catalog and for legacy entries, the shared legacy content budget, and a content-only change moving a legacy fingerprint |
 | `packages/server/src/__tests__/skill-archive-entries.test.ts` | One logical Skill producing identical canonical bytes and sha256 through the upload, download, and listing entry points |
-| `packages/server/src/__tests__/skill-remote-install.test.ts` | Preview, already-installed marking, per-item install outcomes (installed, skipped, failed), name mismatches, the per-Agent limit, cross-Account isolation, the `@skill` filter, a selection whose source moved (including a legacy entry whose file list did not), an unusable path, a repository Skill that packs under the archive ceiling from more raw bytes than it, installs from a real repository through the pinning tunnel, and the monitor stopping when a post-fetch failure releases the request |
+| `packages/server/src/__tests__/skill-remote-install.test.ts` | Preview, already-installed marking, per-item install outcomes (installed, skipped, failed), name mismatches, the per-Agent limit, cross-Account isolation, the `@skill` filter, a selection whose source moved (including a legacy entry whose file list did not), one read per legacy request, an unusable path, a repository Skill that packs under the archive ceiling from more raw bytes than it, installs from a real repository through the pinning tunnel, and the monitor stopping when a post-fetch failure releases the request |
 | `apps/web/src/features/skills/*.test.tsx` | The page entry point and the install dialog's behaviour |
 
 ## Open items

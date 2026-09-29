@@ -31,13 +31,19 @@ export class SkillSourceWorkspace {
    * Creates a workspace, or fails with the source error the caller already renders. A deployment
    * whose temporary directory is unwritable cannot install from a source, which is an unavailable
    * source from the user's point of view.
+   *
+   * The directory is removed when the privacy check fails after `mkdtemp` has already created it:
+   * the factory never returns on that path, so the caller's disposer can never reach it.
+   * `validateRoot` is injectable because the check depends on the ambient `umask`, which a test
+   * cannot arrange portably.
    */
-  static async create(): Promise<SkillSourceWorkspace> {
-    let root: string;
+  static async create(options: { validateRoot?: (root: string) => Promise<void> } = {}): Promise<SkillSourceWorkspace> {
+    let root: string | undefined;
     try {
       root = await mkdtemp(join(tmpdir(), WORKSPACE_PREFIX));
-      await assertPrivateWorkspaceRoot(root);
+      await (options.validateRoot ?? assertPrivateWorkspaceRoot)(root);
     } catch {
+      if (root !== undefined) await rm(root, { recursive: true, force: true }).catch(() => undefined);
       throw skillSourceUnreachable("The source could not be staged on this deployment");
     }
     return new SkillSourceWorkspace(root);

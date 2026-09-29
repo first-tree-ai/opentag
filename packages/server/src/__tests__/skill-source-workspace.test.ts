@@ -40,6 +40,28 @@ describe("SkillSourceWorkspace", () => {
     }
   });
 
+  it("removes a directory whose privacy check fails after it was created", async () => {
+    /*
+     * `mkdtemp` succeeds and the check then fails, so the factory never returns and the caller's
+     * disposer can never reach this directory. It has to be removed inside the factory.
+     */
+    let created: string | undefined;
+    let code: string | undefined;
+    try {
+      await SkillSourceWorkspace.create({
+        validateRoot: async (root) => {
+          created = root;
+          throw new Error("not private");
+        },
+      });
+    } catch (error) {
+      code = (error as { code?: string }).code;
+    }
+    expect(code).toBe(SKILL_ERROR_CODES.SOURCE_UNREACHABLE);
+    expect(created).toBeDefined();
+    await expect(lstat(created as string)).rejects.toThrow();
+  });
+
   it("reports a staging failure as an unavailable source rather than a filesystem error", async () => {
     const previous = process.env.TMPDIR;
     process.env.TMPDIR = join(tmpdir(), "opentag-missing-staging-root");

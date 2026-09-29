@@ -248,8 +248,9 @@ function versionedListing(entry: IndexEntryV2, artifactUrl: string, fetcher: Ski
       fingerprint,
       ...(isReservedSkillName(entry.name) ? { unavailableReason: "name_reserved" } : {}),
     },
-    fingerprint: () => Promise.resolve(fingerprint),
-    async materialize() {
+    // One download: its digest is checked against the published one, and the value reported as the
+    // fingerprint is that same artifact's, so the comparison and the content cannot disagree.
+    async read() {
       const { bytes } = await fetcher.fetchBytes(artifactUrl);
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== entry.digest) {
@@ -258,10 +259,19 @@ function versionedListing(entry: IndexEntryV2, artifactUrl: string, fetcher: Ski
       if (bytes.byteLength > SKILL_ARCHIVE_MAX_BYTES) {
         throw skillSourceInvalid("That Skill's artifact is larger than a Skill archive may be");
       }
-      return filesFromArtifact(bytes);
+      return { fingerprint, files: await filesFromArtifact(bytes) };
     },
   };
 }
+
+/**
+ * What happened while trying to list one entry.
+ *
+ * `skip` and `exhausted` are deliberately different: unusable metadata means "this entry is not
+ * listed", while the legacy budget running out means "no later entry can be read either". Treating
+ * both as the end of the catalog would let one malformed v0.2 entry hide every valid entry after it.
+ */
+type ListingAttempt = { kind: "listing"; listing: RemoteSkillListing } | { kind: "skip" } | { kind: "exhausted" };
 
 /**
  * One legacy entry, bound to its content.
@@ -280,32 +290,43 @@ async function legacyListing(
   fetcher: SkillSourceFetcher,
   indexDirectory: string,
   previewBudget: { remaining: number },
-): Promise<RemoteSkillListing | undefined> {
+): Promise<ListingAttempt> {
   const scope = { remaining: Math.min(SKILL_SOURCE_EXTRACT_MAX_BYTES, previewBudget.remaining) };
-  if (scope.remaining <= 0) return undefined;
-  let fingerprint: string;
+  if (scope.remaining <= 0) return { kind: "exhausted" };
+  const spendBefore = scope.remaining;
+  let files: MaterializedSkillFile[];
   try {
-    fingerprint = contentFingerprint(await legacyEntryFiles(entry, fetcher, indexDirectory, scope));
+    files = await legacyEntryFiles(entry, fetcher, indexDirectory, scope);
   } catch (error) {
-    if (error instanceof SkillServiceError && error.code === SKILL_ERROR_CODES.SOURCE_TOO_LARGE) return undefined;
+    if (error instanceof SkillServiceError && error.code === SKILL_ERROR_CODES.SOURCE_TOO_LARGE) {
+      // The budget could not cover this entry, so it cannot cover any later one either.
+      previewBudget.remaining = 0;
+      return { kind: "exhausted" };
+    }
     throw error;
   }
-  previewBudget.remaining = scope.remaining;
+  // The entry's own spend is what the shared budget loses, not the whole scope it was granted.
+  previewBudget.remaining -= spendBefore - scope.remaining;
+  const fingerprint = contentFingerprint(files);
   return {
-    candidate: {
-      name: entry.name,
-      description: descriptionOf(entry),
-      path: entry.name,
-      fileCount: entry.files.length,
-      alreadyInstalled: false,
-      fingerprint,
-      ...(isReservedSkillName(entry.name) ? { unavailableReason: "name_reserved" } : {}),
+    kind: "listing",
+    listing: {
+      candidate: {
+        name: entry.name,
+        description: descriptionOf(entry),
+        path: entry.name,
+        fileCount: entry.files.length,
+        alreadyInstalled: false,
+        fingerprint,
+        ...(isReservedSkillName(entry.name) ? { unavailableReason: "name_reserved" } : {}),
+      },
+      /*
+       * The read the preview already performed is the one the install uses. Reading twice would let a
+       * publisher answer the fingerprint read and the materialization read differently, and the
+       * second answer — never compared against the preview — would be what gets installed.
+       */
+      read: () => Promise.resolve({ fingerprint, files }),
     },
-    fingerprint: async () => {
-      const budget = { remaining: SKILL_SOURCE_EXTRACT_MAX_BYTES };
-      return contentFingerprint(await legacyEntryFiles(entry, fetcher, indexDirectory, budget));
-    },
-    materialize: () => legacyEntryFiles(entry, fetcher, indexDirectory, { remaining: SKILL_SOURCE_EXTRACT_MAX_BYTES }),
   };
 }
 
@@ -375,7 +396,6 @@ async function listingsFrom(
     indexDirectory: new URL(".", probe.indexUrl).toString(),
     // The legacy layout's content budget, shared across its entries; v0.2 spends none of it.
     previewBudget: { remaining: SKILL_SOURCE_PREVIEW_CONTENT_MAX_BYTES },
-    maxCandidates,
   };
   const listings: RemoteSkillListing[] = [];
   const seen = new Set<string>();
@@ -383,33 +403,37 @@ async function listingsFrom(
     if (listings.length >= maxCandidates) break;
     const key = entry.name.toLowerCase();
     if (seen.has(key)) continue;
-    const listing = await oneListing(parsed.version, entry, probe, fetcher, state);
-    if (listing === undefined) break;
     seen.add(key);
-    listing.candidate.alreadyInstalled = existing.has(key);
-    listings.push(listing);
+    const attempt = await oneListing(parsed.version, entry, probe, fetcher, state);
+    // The budget running out ends the catalog; an unusable entry does not.
+    if (attempt.kind === "exhausted") break;
+    if (attempt.kind === "skip") continue;
+    attempt.listing.candidate.alreadyInstalled = existing.has(key);
+    listings.push(attempt.listing);
   }
   return listings;
 }
 
 /**
- * One entry as a listing, or `undefined` when the legacy preview has spent its content budget.
+ * One entry as a listing.
  *
- * A v0.2 entry names an artifact with a published digest, so it costs nothing to list; a v0.1 entry
- * has to be read to be identified, which is why only that version can come back `undefined`.
+ * A v0.2 entry names an artifact with a published digest, so it costs nothing to list and unusable
+ * metadata is simply skipped. A v0.1 entry has to be read to be identified, which is the only way
+ * `exhausted` arises.
  */
 async function oneListing(
   version: ParsedIndex["version"],
   entry: IndexEntryV1 | IndexEntryV2,
   probe: IndexProbe,
   fetcher: SkillSourceFetcher,
-  state: { indexDirectory: string; previewBudget: { remaining: number }; maxCandidates: number },
-): Promise<RemoteSkillListing | undefined> {
+  state: { indexDirectory: string; previewBudget: { remaining: number } },
+): Promise<ListingAttempt> {
   if (version === "0.2.0") {
     const artifactUrl = indexUrl(probe.indexUrl, (entry as IndexEntryV2).url);
-    // An entry whose artifact URL cannot be resolved names nothing to fetch; it is not listed.
-    if (artifactUrl === undefined) return undefined;
-    return versionedListing(entry as IndexEntryV2, artifactUrl, fetcher);
+    // An entry whose artifact URL cannot be resolved names nothing to fetch; it is not listed, and
+    // the catalog continues.
+    if (artifactUrl === undefined) return { kind: "skip" };
+    return { kind: "listing", listing: versionedListing(entry as IndexEntryV2, artifactUrl, fetcher) };
   }
   return legacyListing(entry as IndexEntryV1, fetcher, state.indexDirectory, state.previewBudget);
 }

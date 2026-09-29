@@ -49,6 +49,30 @@ function gitFailure(error: unknown): SkillServiceError {
   return skillSourceUnreachable();
 }
 
+/**
+ * Runs one git command, mapping every failure into the Skill source contract.
+ *
+ * All four invocations go through here — the clone, the proxy-config write, the tree listing, and
+ * each blob read — because a spawner failure is not an exit status: it is thrown, and one that
+ * escaped would reach the caller as a raw error and a 500 for what is a decision about the source.
+ */
+async function runGit(
+  run: GitProcessRunner,
+  args: string[],
+  invocation: GitProcessInvocation,
+  overrides: { maxOutputBytes?: number } = {},
+): Promise<{ code: number; stdout: Buffer }> {
+  try {
+    return await run(
+      "git",
+      args,
+      overrides.maxOutputBytes === undefined ? invocation : { ...invocation, ...overrides },
+    );
+  } catch (error) {
+    throw gitFailure(error);
+  }
+}
+
 /** One git invocation, as the injected runner receives it. */
 export interface GitProcessInvocation {
   cwd: string;
@@ -278,9 +302,7 @@ export async function fetchGitSnapshot(options: GitSnapshotOptions): Promise<Ski
     }
   }
   try {
-    const clone = await run("git", gitCloneArguments(options.source, directory, proxy), invocation).catch((error) => {
-      throw gitFailure(error);
-    });
+    const clone = await runGit(run, gitCloneArguments(options.source, directory, proxy), invocation);
     if (clone.code !== 0) throw cloneFailure();
     if (options.proxyUrl !== undefined) {
       /*
@@ -288,21 +310,19 @@ export async function fetchGitSnapshot(options: GitSnapshotOptions): Promise<Ski
        * separate `git cat-file` process that reads the repository's own configuration. Without this
        * the tree arrives through the tunnel and the blobs do not.
        */
-      const configured = await run(
-        "git",
+      const configured = await runGit(
+        run,
         [...configArguments(), "-C", directory, "config", "http.proxy", options.proxyUrl],
         invocation,
       );
       if (configured.code !== 0) throw cloneFailure();
     }
     if (await overBudget()) throw skillSourceTooLarge();
-    const tree = await run(
-      "git",
+    const tree = await runGit(
+      run,
       [...configArguments(options.proxyUrl), "-C", directory, "ls-tree", "-r", "-z", "HEAD"],
-      {
-        ...invocation,
-        maxOutputBytes: 8 * 1024 * 1024,
-      },
+      invocation,
+      { maxOutputBytes: 8 * 1024 * 1024 },
     );
     if (tree.code !== 0) throw cloneFailure();
     return gitSnapshot(directory, tree.stdout, invocation, run, stopMonitoring, options.proxyUrl);
@@ -344,12 +364,12 @@ function gitSnapshot(
        * file up to that bound, and a lower cap would make such a Skill readable through an upload and
        * unreadable through a repository.
        */
-      const result = await run("git", [...configArguments(proxyUrl), "-C", directory, "cat-file", "blob", id], {
-        ...invocation,
-        maxOutputBytes: SKILL_UNPACKED_MAX_BYTES,
-      }).catch((error) => {
-        throw gitFailure(error);
-      });
+      const result = await runGit(
+        run,
+        [...configArguments(proxyUrl), "-C", directory, "cat-file", "blob", id],
+        invocation,
+        { maxOutputBytes: SKILL_UNPACKED_MAX_BYTES },
+      );
       if (result.code !== 0) throw cloneFailure();
       const body = new Uint8Array(result.stdout);
       cache.set(path, body);

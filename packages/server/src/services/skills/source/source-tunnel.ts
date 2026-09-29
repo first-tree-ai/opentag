@@ -43,6 +43,13 @@ const DEFAULT_PORTS = new Map([
 export interface SkillSourceTunnelOptions {
   allowLoopback: boolean;
   resolveAddresses?: (hostname: string) => Promise<string[]>;
+  /**
+   * Opens the upstream socket. Injectable so a test can hold a socket in the connecting state — which
+   * is what the deadline exists for — instead of depending on an address that happens to blackhole.
+   */
+  dial?: (target: { address: string; family: number; port: number }) => Socket;
+  /** How long a connect may take. */
+  connectTimeoutMs?: number;
 }
 
 export class SkillSourceTunnel {
@@ -51,6 +58,8 @@ export class SkillSourceTunnel {
   readonly #policy: { allowLoopback: boolean };
   readonly #resolveAddresses: (hostname: string) => Promise<string[]>;
   readonly #sockets = new Set<Socket>();
+  readonly #dial: (target: { address: string; family: number; port: number }) => Socket;
+  readonly #connectTimeoutMs: number;
   #closed = false;
 
   private constructor(
@@ -62,6 +71,8 @@ export class SkillSourceTunnel {
     this.#port = port;
     this.#policy = { allowLoopback: options.allowLoopback };
     this.#resolveAddresses = options.resolveAddresses ?? resolveAllAddresses;
+    this.#dial = options.dial ?? ((target) => netConnect(target));
+    this.#connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   }
 
   /** How many sockets the tunnel still owns. Exposed so a test can prove none outlive a request. */
@@ -130,10 +141,10 @@ export class SkillSourceTunnel {
    * start. Either one cancels the attempt, so a connect cannot outlive the request that caused it.
    */
   async #connectUpstream(client: Socket, target: { address: string; family: number; port: number }): Promise<Socket> {
-    const upstream = this.#track(netConnect({ host: target.address, port: target.port, family: target.family }));
+    const upstream = this.#track(this.#dial(target));
     const abandon = () => upstream.destroy();
     client.once("close", abandon);
-    const timer = setTimeout(abandon, CONNECT_TIMEOUT_MS);
+    const timer = setTimeout(abandon, this.#connectTimeoutMs);
     timer.unref();
     try {
       await connected(upstream);

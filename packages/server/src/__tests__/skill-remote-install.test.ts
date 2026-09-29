@@ -370,6 +370,41 @@ describe("RemoteSkillService.install", () => {
     }
   }, 30_000);
 
+  it("reads a legacy entry once per request, so nothing can answer the comparison twice", async () => {
+    /*
+     * A fingerprint read followed by a separate materialization read is a check/use race: a publisher
+     * that answers the two reads differently passes the comparison and has the second body installed.
+     * One read per request is the property that removes it, and the request count is how it shows.
+     */
+    const accountId = await h.createUser();
+    const agentId = await h.createAgent(accountId);
+    const reads: string[] = [];
+    const routes: StubRoutes = {
+      "https://example.test/.well-known/skills/index.json": () => ({
+        status: 200,
+        body: JSON.stringify({ skills: [{ name: "demo", description: "d", files: ["SKILL.md"] }] }),
+      }),
+      "https://example.test/.well-known/skills/demo/SKILL.md": () => {
+        reads.push("SKILL.md");
+        return { status: 200, body: skillManifest("demo") };
+      },
+    };
+    const { service, skills } = remoteService(routes);
+
+    const preview = await service.resolve({ callerUserId: accountId, agentId, source: "https://example.test" });
+    expect(reads).toHaveLength(1);
+    const response = await service.install({
+      callerUserId: accountId,
+      agentId,
+      source: "https://example.test",
+      selections: [{ name: "demo", fingerprint: preview.skills[0]?.fingerprint ?? "" }],
+    });
+    expect(response.results).toEqual([{ name: "demo", status: "installed" }]);
+    // One read for the preview, one more for the install: never a comparison read plus a use read.
+    expect(reads).toHaveLength(2);
+    expect((await skills.list(accountId, agentId)).skills.map((skill) => skill.name)).toEqual(["demo"]);
+  });
+
   it("refuses a legacy entry whose content changed but whose file list did not", async () => {
     /*
      * The v0.1 layout publishes no content hash, so a declared-file-list fingerprint would let a

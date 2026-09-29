@@ -54,7 +54,7 @@ describe("one logical Skill through every entry point", () => {
     try {
       const listings = await discoverRemoteSkills({ snapshot: document.snapshot });
       expect(listings.map((listing) => listing.candidate.name)).toEqual(["demo"]);
-      const files = await first(listings).materialize();
+      const files = (await first(listings).read()).files;
       const normalized = await normalizeSkillEntries(skillArchiveEntries(files));
       expect(normalized.sha256).toBe(reference.sha256);
       expect(normalized.archive).toEqual(reference.archive);
@@ -72,7 +72,7 @@ describe("one logical Skill through every entry point", () => {
       LOGICAL_FILES.map((file) => ({ path: file.name, body: bytesOf(file.body) })),
     );
     const listings = await discoverRemoteSkills({ snapshot });
-    const normalized = await normalizeSkillEntries(skillArchiveEntries(await first(listings).materialize()));
+    const normalized = await normalizeSkillEntries(skillArchiveEntries((await first(listings).read()).files));
     expect(normalized.sha256).toBe(reference.sha256);
     expect(normalized.archive).toEqual(reference.archive);
   });

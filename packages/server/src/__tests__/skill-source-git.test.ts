@@ -2,6 +2,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { discoverSkillDirectories, type RemoteSkillSource, SKILL_ERROR_CODES } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
+import { GitPublicationError } from "../services/github-proxy/git-packets.js";
 import {
   assertGitRemoteAllowed,
   fetchGitSnapshot,
@@ -172,6 +173,54 @@ describe("git source hardening", () => {
     );
     expect(calls[0]?.options.environment.NO_PROXY).toBe("");
     expect(calls[0]?.options.environment.no_proxy).toBe("");
+  });
+
+  it("maps a runner failure from any invocation into a source error", async () => {
+    /*
+     * A spawner failure is thrown, not returned as an exit status, and one that escaped would reach
+     * the caller as a raw error and a 500 for what is a decision about the source. Every invocation
+     * is checked, including the proxy-config write and the tree listing, which are easy to leave
+     * unmapped, and the blob read, which is a separate process.
+     */
+    const failure = new GitPublicationError("resource_limit");
+    const stages: [string, (args: string[]) => boolean][] = [
+      ["clone", (args) => args.includes("clone")],
+      ["config", (args) => args.includes("config")],
+      ["ls-tree", (args) => args.includes("ls-tree")],
+      ["cat-file", (args) => args.includes("cat-file")],
+    ];
+    const workspace = await SkillSourceWorkspace.create();
+    try {
+      for (const [stage, matches] of stages) {
+        const seen: string[] = [];
+        // Every other stage is answered locally, so the target stage is the only possible failure.
+        const run: GitProcessRunner = async (_binary, args) => {
+          if (matches(args)) {
+            seen.push(stage);
+            throw failure;
+          }
+          if (args.includes("clone") || args.includes("config")) return { code: 0, stdout: Buffer.alloc(0) };
+          return { code: 0, stdout: Buffer.from(treeRecord("100644", "blob", BLOB_A, "README.md")) };
+        };
+        const opened = fetchGitSnapshot({
+          source: githubSource({ url: "https://example.test/repo.git" }),
+          workspace: workspace.root,
+          signal: new AbortController().signal,
+          run,
+          proxyUrl: "http://127.0.0.1:4567",
+          measureWorkspace: async () => 1,
+        });
+        // The blob read is a snapshot operation, the others happen while opening the snapshot.
+        const observed =
+          stage === "cat-file"
+            ? code((await opened).read("README.md"))
+            : code(opened.then(async (snapshot) => snapshot.dispose()));
+        expect(await observed, stage).toBe(SKILL_ERROR_CODES.SOURCE_TOO_LARGE);
+        expect(seen, stage).toEqual([stage]);
+      }
+    } finally {
+      await workspace.dispose();
+    }
   });
 
   it("carries the ref and the workspace into the clone arguments", () => {

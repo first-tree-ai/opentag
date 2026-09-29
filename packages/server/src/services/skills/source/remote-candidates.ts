@@ -51,15 +51,22 @@ export interface MaterializedSkillFile {
   executable: boolean;
 }
 
+/** One read of a Skill's content, with the fingerprint of exactly those bytes. */
+export interface RemoteSkillRead {
+  files: MaterializedSkillFile[];
+  fingerprint: string;
+}
+
 export interface RemoteSkillListing {
   candidate: RemoteSkillCandidate;
   /**
-   * Re-derives the fingerprint from the same source. The installer calls it on a freshly read source
-   * and compares it with the value the preview reported.
+   * The Skill's files **and** the fingerprint of those same files, from one read.
+   *
+   * The pairing is the point: a fingerprint taken from one read and content taken from another can
+   * disagree, and a publisher able to answer twice with different bytes would then pass the check and
+   * have the second answer installed. One call returns both, so what was compared is what is used.
    */
-  fingerprint: () => Promise<string>;
-  /** Reads the Skill's own files. Called at install time, never while listing. */
-  materialize: () => Promise<MaterializedSkillFile[]>;
+  read: () => Promise<RemoteSkillRead>;
 }
 
 export interface DiscoverRemoteSkillsInput {
@@ -214,8 +221,12 @@ async function listingFor(
       fingerprint: skillFingerprint(members),
       ...(reason === undefined ? {} : { unavailableReason: reason }),
     },
-    fingerprint: () => Promise.resolve(skillFingerprint(members)),
-    materialize: () => materializeMembers(input.snapshot, directory, members),
+    // A snapshot is fixed for the request, so the listing's fingerprint and the bytes it reads
+    // describe the same content by construction.
+    read: async () => ({
+      fingerprint: skillFingerprint(members),
+      files: await materializeMembers(input.snapshot, directory, members),
+    }),
   };
 }
 

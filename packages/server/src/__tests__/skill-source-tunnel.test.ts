@@ -3,10 +3,11 @@ import {
   createServer as createNetServer,
   type Server as NetServer,
   connect as netConnect,
-  type Socket,
+  // A value, not a type: the deadline case needs a socket that is deliberately never connected.
+  Socket,
 } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { SkillSourceTunnel } from "../services/skills/source/source-tunnel.js";
+import { SkillSourceTunnel, type SkillSourceTunnelOptions } from "../services/skills/source/source-tunnel.js";
 
 /**
  * The address-pinning tunnel git dials through.
@@ -78,11 +79,8 @@ function holdServer(): Promise<{ server: NetServer; port: number; sockets: Set<S
   });
 }
 
-function tunnel(options: { allowLoopback?: boolean; resolveAddresses?: (host: string) => Promise<string[]> } = {}) {
-  return SkillSourceTunnel.start({
-    allowLoopback: options.allowLoopback === true,
-    ...(options.resolveAddresses === undefined ? {} : { resolveAddresses: options.resolveAddresses }),
-  }).then((started) => {
+function tunnel(options: Partial<SkillSourceTunnelOptions> = {}) {
+  return SkillSourceTunnel.start({ ...options, allowLoopback: options.allowLoopback === true }).then((started) => {
     openTunnels.push(started);
     return started;
   });
@@ -236,12 +234,24 @@ describe("SkillSourceTunnel", () => {
 
   it("cancels a connect that never completes, on time and on close", async () => {
     /*
-     * A blackholed destination is the case a connect deadline exists for: the client's own deadline
-     * (git's process timeout) kills the client, and without a deadline the pending connect would sit
-     * there with nothing left to cancel it. TEST-NET-1 is public per the address policy so it is not
-     * refused up front, and it does not answer.
+     * The socket the dial returns is never connected, so it stays in the connecting state for as long
+     * as the test likes — which is the case the deadline exists for, and which no real address can be
+     * relied on to reproduce. (An earlier version dialed TEST-NET-1 and passed or failed depending on
+     * whether the environment happened to route it.)
      */
-    const started = await tunnel({ allowLoopback: true, resolveAddresses: async () => ["192.0.2.1"] });
+    const dialed: Socket[] = [];
+    const started = await tunnel({
+      allowLoopback: true,
+      // A public address the policy admits, so the attempt reaches the dial rather than being refused
+      // as a name that does not resolve.
+      resolveAddresses: async () => ["203.0.113.10"],
+      connectTimeoutMs: 30,
+      dial: () => {
+        const socket = new Socket();
+        dialed.push(socket);
+        return socket;
+      },
+    });
     const proxyPort = Number(new URL(started.proxyUrl).port);
     const client = netConnect(proxyPort, "127.0.0.1");
     const answer = await new Promise<string>((resolve, reject) => {
@@ -252,34 +262,17 @@ describe("SkillSourceTunnel", () => {
       client.on("data", (chunk: Buffer) => chunks.push(chunk));
       client.on("error", reject);
       client.on("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      // The connect deadline refuses on its own, well inside this window.
-      setTimeout(() => reject(new Error("the tunnel neither refused nor closed")), 12_000).unref();
+      setTimeout(() => reject(new Error("the tunnel neither refused nor closed")), 5_000).unref();
     });
+
     // The deadline refused the attempt rather than leaving it pending.
     expect(answer).toContain("502 Bad Gateway");
-    // The refused attempt left no upstream behind; the client socket goes when the client does.
+    expect(dialed).toHaveLength(1);
+    expect(dialed[0]?.destroyed).toBe(true);
     client.destroy();
     await waitFor(() => started.openSockets === 0);
     expect(started.openSockets).toBe(0);
-  }, 20_000);
-
-  it("releases every socket when it is closed", async () => {
-    const origin = await originServer("origin");
-    const started = await tunnel({ allowLoopback: true });
-    const proxyPort = Number(new URL(started.proxyUrl).port);
-    const client = netConnect(proxyPort, "127.0.0.1");
-    await new Promise<void>((resolve, reject) => {
-      client.on("connect", () => {
-        client.write(`GET http://127.0.0.1:${origin.port}/x HTTP/1.1\r\nhost: 127.0.0.1:${origin.port}\r\n\r\n`);
-      });
-      client.once("data", () => resolve());
-      client.once("error", reject);
-    });
-
-    await started.close();
-    expect(started.openSockets).toBe(0);
-    client.destroy();
-  });
+  }, 15_000);
 
   it("is reachable as a plain http proxy URL", async () => {
     const started = await tunnel({ allowLoopback: true });

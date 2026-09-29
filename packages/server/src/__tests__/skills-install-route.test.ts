@@ -93,6 +93,17 @@ describe("remote install routes", () => {
       const response = await app.inject({ method: "POST", url: resolveUrl, headers, payload });
       expect(response.statusCode).toBe(400);
     }
+
+    // A whitespace-only selection name is a validation failure at the boundary. It would otherwise be
+    // trimmed to empty and produce a result no install-result schema can represent — a 500.
+    for (const payload of [
+      { source: "owner/repo", selections: [{ name: "   ", fingerprint: "sha256:abc" }] },
+      { source: "owner/repo", selections: [{ name: "demo" }] },
+      { source: "owner/repo", selections: [] },
+    ]) {
+      const response = await app.inject({ method: "POST", url: installUrl, headers, payload });
+      expect(response.statusCode).toBe(400);
+    }
     const installWithoutSelections = await app.inject({
       method: "POST",
       url: installUrl,

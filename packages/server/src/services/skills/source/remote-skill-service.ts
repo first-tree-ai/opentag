@@ -210,15 +210,17 @@ export class RemoteSkillService {
        * or an artifact that moved between the two calls is reported as a revision conflict — the code
        * that already means "this changed while you were working" — rather than installed quietly.
        */
-      if ((await listing.fingerprint()) !== selection.fingerprint) {
+      // One read: the fingerprint is derived from the very bytes that will be packaged, so a
+      // publisher cannot answer the comparison with one body and the install with another.
+      const content = await listing.read();
+      if (content.fingerprint !== selection.fingerprint) {
         this.#logger?.debug(
           { agentId: input.agentId, name, code: SKILL_ERROR_CODES.REVISION_CONFLICT },
           "Remote Skill changed since the preview",
         );
         return { name, status: "failed", errorCode: SKILL_ERROR_CODES.REVISION_CONFLICT };
       }
-      const files = await listing.materialize();
-      const normalized = await normalizeSkillEntries(skillArchiveEntries(files), this.#readLimits);
+      const normalized = await normalizeSkillEntries(skillArchiveEntries(content.files), this.#readLimits);
       // The selection is by name, so a source whose content claims another name would install
       // something the user did not choose. A well-known index publishes its own metadata, which is
       // exactly where the two can disagree.

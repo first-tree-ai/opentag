@@ -127,7 +127,7 @@ describe("resolveWellKnownSource", () => {
         fingerprint: `sha256:${sha256(artifact)}`,
       },
     ]);
-    expect(new TextDecoder().decode(first(await firstListing(result).materialize()).body)).toContain("name: demo");
+    expect(new TextDecoder().decode(first((await firstListing(result).read()).files).body)).toContain("name: demo");
   });
 
   it("refuses an artifact whose digest does not match", async () => {
@@ -150,7 +150,7 @@ describe("resolveWellKnownSource", () => {
     const result = await resolveWellKnownSource(fetcher, "https://example.test");
     expect(result.found).toBe(true);
     if (!result.found) return;
-    expect(await code(firstListing(result).materialize())).toBe(SKILL_ERROR_CODES.SOURCE_INVALID);
+    expect(await code(firstListing(result).read())).toBe(SKILL_ERROR_CODES.SOURCE_INVALID);
   });
 
   it("reads a v0.2.0 skill-md artifact", async () => {
@@ -175,7 +175,7 @@ describe("resolveWellKnownSource", () => {
     const result = await resolveWellKnownSource(fetcher, "https://example.test/skills");
     expect(result.found).toBe(true);
     if (!result.found) return;
-    const files = await firstListing(result).materialize();
+    const files = (await firstListing(result).read()).files;
     expect(files.map((file) => file.path)).toEqual(["SKILL.md"]);
     expect(files[0]?.body.byteLength).toBe(artifact.byteLength);
   });
@@ -202,7 +202,7 @@ describe("resolveWellKnownSource", () => {
       // candidate to what it actually offers.
       fingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
     });
-    const files = await firstListing(result).materialize();
+    const files = (await firstListing(result).read()).files;
     expect(files.map((file) => file.path)).toEqual(["SKILL.md", "extra.md"]);
   });
 
@@ -318,7 +318,7 @@ describe("resolveWellKnownSource", () => {
     expect(result.found).toBe(true);
     if (!result.found) return;
     expect(result.listings[0]?.candidate.fingerprint).toBe(`sha256:${sha256(artifact)}`);
-    expect((await firstListing(result).materialize()).map((file) => file.path)).toEqual(["SKILL.md"]);
+    expect((await firstListing(result).read()).files.map((file) => file.path)).toEqual(["SKILL.md"]);
   });
 
   it("drops a legacy entry whose declared file list is over the entry cap", () => {
@@ -351,8 +351,8 @@ describe("resolveWellKnownSource", () => {
     const result = await resolveWellKnownSource(fetcher, "https://example.test");
     expect(result.found).toBe(true);
     if (!result.found) return;
-    const files = await result.listings[0]?.materialize();
-    expect(files?.map((file) => file.path)).toEqual(["SKILL.md", "a.bin", "b.bin", "tail.md"]);
+    const files = (await result.listings[0]?.read())?.files ?? [];
+    expect(files.map((file) => file.path)).toEqual(["SKILL.md", "a.bin", "b.bin", "tail.md"]);
 
     // The first file may take the full download allowance; each later file only what the Skill's
     // unpacked budget has left, so a long list of large files cannot retain one full download each.
@@ -423,11 +423,8 @@ describe("resolveWellKnownSource", () => {
   });
 
   it("binds a legacy entry to its content, not only its file list", async () => {
-    const original = skillManifest("demo", "The original description");
-    let body = original;
-    const index = {
-      skills: [{ name: "demo", description: "d", files: ["SKILL.md"] }],
-    };
+    let body = skillManifest("demo", "The original description");
+    const index = { skills: [{ name: "demo", description: "d", files: ["SKILL.md"] }] };
     const fetcher = stubFetcher({
       "https://example.test/.well-known/skills/index.json": json(index),
       "https://example.test/.well-known/skills/demo/SKILL.md": () => ({ status: 200, body }),
@@ -436,13 +433,91 @@ describe("resolveWellKnownSource", () => {
     const preview = await resolveWellKnownSource(fetcher, "https://example.test");
     expect(preview.found).toBe(true);
     if (!preview.found) return;
-    const fingerprint = preview.listings[0]?.candidate.fingerprint ?? "";
+    const listing = first(preview.listings);
+    const fingerprint = listing.candidate.fingerprint;
+    expect(fingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
 
-    // The file list is unchanged, so only a content-bound identity can notice this.
+    // The file list is unchanged, so only a content-bound identity can notice the mutation below. A
+    // fresh read of the source produces a different fingerprint, and the same listing keeps the pair
+    // it already read — which is what stops a fingerprint read and a materialization read disagreeing.
+    const read = await listing.read();
+    expect(read.fingerprint).toBe(fingerprint);
+    expect(read.files.map((file) => file.path)).toEqual(["SKILL.md"]);
+
     body = skillManifest("demo", "A different description");
-    const reread = await preview.listings[0]?.fingerprint();
-    expect(reread).not.toBe(fingerprint);
-    expect(reread).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const again = await resolveWellKnownSource(fetcher, "https://example.test");
+    expect(again.found).toBe(true);
+    if (!again.found) return;
+    expect(first(again.listings).candidate.fingerprint).not.toBe(fingerprint);
+  });
+
+  it("spends the preview budget by what an entry actually used", async () => {
+    /*
+     * The shared budget is 64 MiB and each entry may take 25 MiB. Granting an entry the smaller of
+     * the two and writing the scope's remainder back would leave 24 MiB after a 1 MiB entry instead
+     * of 63, so the catalog would be truncated long before its budget was spent.
+     */
+    // Enough entries that the shared budget matters: 30 MiB fits inside 64 MiB, but a per-entry
+    // 25 MiB scope written back as the shared remainder would run out after roughly 25 entries.
+    const small = "a".repeat(1024 * 1024);
+    const skills = Array.from({ length: 30 }, (_value, index) => ({
+      name: `demo-${index}`,
+      description: "d",
+      files: ["SKILL.md", "payload.bin"],
+    }));
+    const routes: Record<string, () => { status: number; body?: Uint8Array | string } | undefined> = {
+      "https://example.test/.well-known/skills/index.json": json({ skills }),
+    };
+    for (const skill of skills) {
+      routes[`https://example.test/.well-known/skills/${skill.name}/SKILL.md`] = () => ({
+        status: 200,
+        body: skillManifest(skill.name),
+      });
+      routes[`https://example.test/.well-known/skills/${skill.name}/payload.bin`] = () => ({
+        status: 200,
+        body: small,
+      });
+    }
+    const fetcher = stubFetcher(routes);
+    const result = await resolveWellKnownSource(fetcher, "https://example.test");
+
+    expect(result.found).toBe(true);
+    if (!result.found) return;
+    // Every entry is listed: 30 MiB of content is well inside the 64 MiB budget.
+    expect(result.listings).toHaveLength(30);
+  });
+
+  it("skips an unusable entry without ending the catalog", async () => {
+    const index = {
+      $schema: SCHEMA_V2,
+      skills: [
+        // An unparseable artifact URL: unusable metadata, not the end of the catalog. (A merely
+        // relative URL resolves against the index, as the RFC requires.)
+        { name: "broken", description: "d", type: "archive", url: "http://[invalid", digest: "a".repeat(64) },
+        {
+          name: "demo",
+          description: "d",
+          type: "archive",
+          url: "https://example.test/demo.tar.gz",
+          digest: "b".repeat(64),
+        },
+        {
+          name: "other",
+          description: "d",
+          type: "archive",
+          url: "https://example.test/other.tar.gz",
+          digest: "c".repeat(64),
+        },
+      ],
+    };
+    const fetcher = fetcherServing({
+      "https://example.test/.well-known/agent-skills/index.json": json(index),
+    });
+    const result = await resolveWellKnownSource(fetcher, "https://example.test");
+    expect(result.found).toBe(true);
+    if (!result.found) return;
+    // The malformed first entry is skipped and the valid ones after it are still listed.
+    expect(result.listings.map((listing) => listing.candidate.name)).toEqual(["demo", "other"]);
   });
 
   it("never falls back to an origin-root index for a scoped URL", async () => {

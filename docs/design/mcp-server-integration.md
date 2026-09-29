@@ -992,6 +992,10 @@ The catalog is committed repository data, not a service:
 drift. It runs under `tsx` because it reads the shared runtime schemas from source — `pnpm check` runs
 before `pnpm build`, so `packages/shared/dist` does not exist yet.
 
+The procedure an operator follows to add an entry — the facts to collect from the provider, the slug
+and category rules, the icon, and the gates to run — is a first-party Skill,
+`skills/mcp-catalog-entry`.
+
 Adding from a card is a prefill of the chain this page already documents, not a new API. The entry's
 URL is matched against the Account's definitions, and an existing definition is mounted rather than
 duplicated; otherwise the entry itself is the create payload. `default_auth_kind` remains a prefill

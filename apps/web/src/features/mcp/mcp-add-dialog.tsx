@@ -130,7 +130,19 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     }
     resetAttempt();
     setSelected(undefined);
-    changeUrl(query.trim());
+    const next = query.trim();
+    /*
+     * The name and the authorization draft belong to the address they were typed for. Continuing with a
+     * different address starts a new Server definition, and carrying the previous name or credential over
+     * would authorize the new address with the old secret. Continuing the same address is the
+     * Back-and-Continue round trip, which is expected to keep both.
+     */
+    if (next !== url) {
+      setName("");
+      nameEdited.current = false;
+      setDraft(authDraft());
+    }
+    changeUrl(next);
     setStep("configure");
     setError(undefined);
   };

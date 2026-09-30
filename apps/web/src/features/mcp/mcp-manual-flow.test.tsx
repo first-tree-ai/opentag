@@ -181,6 +181,31 @@ describe("MCP manual configuration source", () => {
     expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(MANUAL_URL);
   });
 
+  it("does not carry a manual name or credential into a different pasted address", async () => {
+    stub([]);
+    const writes = stubManualWrites();
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openManual();
+    fillManual("https://mcp.alpha.app/mcp", "alpha-manual");
+    fireEvent.click(screen.getByRole("radio", { name: "API key or token" }));
+    fireEvent.change(password(), { target: { value: "token-a" } });
+    // A different address is a different Server: the name and the credential typed for the first one must
+    // not define or authorize the second.
+    fireEvent.click(screen.getByRole("button", { name: EXISTING_SOURCE }));
+    // An empty Account labels this field by the address alone.
+    fireEvent.change(await screen.findByLabelText("MCP URL"), {
+      target: { value: "https://mcp.beta.app/mcp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe("https://mcp.beta.app/mcp");
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("beta");
+    expect(screen.getByRole("radio", { name: "Authorize in browser (OAuth)" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.queryByLabelText("API key or token", { selector: 'input[type="password"]' })).toBeNull();
+    expectNothingWritten(writes);
+  });
+
   it("keeps a partially added manual Server recoverable across a source round trip", async () => {
     stub([]);
     const writes = stubManualWrites();

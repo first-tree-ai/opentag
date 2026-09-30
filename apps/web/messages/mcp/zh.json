@@ -102,6 +102,7 @@
   "mcp_revoke_title": "撤销对 {server} 的访问权限？",
   "mcp_source_discover": "发现",
   "mcp_source_label": "来源",
+  "mcp_source_manual": "手动配置",
   "mcp_toggle_label": "允许 {agent} 使用 {name}",
   "mcp_tools_action": "查看工具（{count}）",
   "mcp_tools_empty": "该 Server 对该 Agent 的凭据未返回任何工具。",

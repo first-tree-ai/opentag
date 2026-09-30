@@ -102,6 +102,7 @@
   "mcp_revoke_title": "Revoke access to {server}?",
   "mcp_source_discover": "Discover",
   "mcp_source_label": "Source",
+  "mcp_source_manual": "Configure manually",
   "mcp_toggle_label": "Allow {agent} to use {name}",
   "mcp_tools_action": "View tools ({count})",
   "mcp_tools_empty": "This Server reported no tools for this Agent’s credential.",

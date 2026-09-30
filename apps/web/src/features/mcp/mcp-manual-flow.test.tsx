@@ -53,6 +53,18 @@ function submitManual(label = "Add server") {
 
 const password = () => screen.getByLabelText("API key or token", { selector: 'input[type="password"]' });
 
+/** The four source buttons, in switch order, for asserting whether the switch is usable. */
+const sourceButtons = () =>
+  ["Discover", EXISTING_SOURCE, "Import configuration", MANUAL_SOURCE].map((name) =>
+    screen.getByRole("button", { name }),
+  );
+
+const expectSwitchLocked = (locked: boolean) => {
+  for (const button of sourceButtons()) {
+    expect(button.hasAttribute("disabled")).toBe(locked);
+  }
+};
+
 function stubManualWrites() {
   const create = vi.spyOn(browserApi, "createMcpServer").mockImplementation(echoServer);
   const attach = vi.spyOn(browserApi, "attachMcpServer").mockResolvedValue(entry({ authorization: null }));
@@ -167,6 +179,76 @@ describe("MCP manual configuration source", () => {
     fireEvent.change(screen.getByLabelText("MCP URL"), { target: { value: MANUAL_URL } });
     fireEvent.click(screen.getByRole("button", { name: MANUAL_SOURCE }));
     expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(MANUAL_URL);
+  });
+
+  it("keeps a partially added manual Server recoverable across a source round trip", async () => {
+    stub([]);
+    const writes = stubManualWrites();
+    writes.attach.mockRejectedValueOnce(new ApiError(503, "Attach unavailable"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openManual();
+    fillManual();
+    fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
+    submitManual();
+    expect(await screen.findByText("The configuration is saved. Retry to add it to this Agent.")).toBeTruthy();
+    expect(screen.getByText("Attach unavailable")).toBeTruthy();
+    // Comparing another source is the only reason to leave this form, and it must not cost the user
+    // the definition this attempt already created: retyping the name would read as taken.
+    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
+    fireEvent.click(screen.getByRole("button", { name: MANUAL_SOURCE }));
+    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(MANUAL_URL);
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(MANUAL_NAME);
+    expect(screen.getByText("The configuration is saved. Retry to add it to this Agent.")).toBeTruthy();
+    submitManual();
+    await waitFor(() => expect(writes.attach).toHaveBeenCalledTimes(2));
+    expect(writes.create).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("keeps a typed manual draft across a source round trip", async () => {
+    stub([]);
+    const writes = stubManualWrites();
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openManual();
+    fillManual();
+    fireEvent.click(screen.getByRole("radio", { name: "API key or token" }));
+    fireEvent.change(password(), { target: { value: "manual-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
+    fireEvent.click(screen.getByRole("button", { name: MANUAL_SOURCE }));
+    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(MANUAL_URL);
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(MANUAL_NAME);
+    expect((password() as HTMLInputElement).value).toBe("manual-key");
+    expectNothingWritten(writes);
+  });
+
+  it("holds the source switch while a manual add is still running", async () => {
+    stub([]);
+    const writes = stubManualWrites();
+    let release!: (value: ReturnType<typeof entry>) => void;
+    writes.attach.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openManual();
+    fillManual();
+    fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
+    submitManual();
+    await waitFor(() => expect(writes.attach).toHaveBeenCalledTimes(1));
+    // Switching mid-flight would clear the refs the in-flight submit is writing through.
+    expectSwitchLocked(true);
+    release(entry({ authorization: null }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(writes.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the source switch free while nothing is being added", async () => {
+    stub([]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openManual();
+    expectSwitchLocked(false);
   });
 
   it("creates, attaches, and authorizes a no-auth manual Server in order", async () => {

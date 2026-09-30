@@ -58,6 +58,16 @@ function catalogCreateInput(entry: McpCatalogEntry) {
   });
 }
 
+/** The manual source's own work: its typed draft and whatever attempt it already made. */
+type ManualAttempt = {
+  url: string;
+  name: string;
+  nameEdited: boolean;
+  draft: AuthDraft;
+  created?: MCPServer;
+  attached?: MCPAgentServer;
+};
+
 type AddProps = {
   agentId: string;
   agentName: string;
@@ -226,25 +236,60 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     setAttached(undefined);
   };
   /**
-   * Switch source, dropping any attempt the previous source left behind.
+   * The manual source's own work, parked while the user looks at another source.
    *
-   * The manual source types a whole new Server from nothing, so it also drops the previous source's
-   * selection and draft: reusing an Account Server would show its read-only layout, and carrying its
-   * name over would read as already taken. The same-source guard above keeps this from happening
-   * while the user is still on manual, so the draft survives repeated clicks on its own source.
+   * The manual form lives inside the step that owns the source switch, so leaving it is the only way
+   * to compare sources — and it must not cost the user anything. A typed draft is worth keeping, and
+   * an attempt that already created a definition or mounted it is worth more: retyping its name would
+   * be refused as taken, and a retry would create a duplicate instead of retrying the failed step.
    */
-  const changeSource = (next: AddSource) => {
-    if (next === source) return;
-    resetAttempt();
-    setSource(next);
-    setError(undefined);
-    if (next === "manual") {
-      setSelected(undefined);
+  const manualAttempt = useRef<ManualAttempt>(undefined);
+  /** Keep the manual source's draft and attempt, or drop them when it has nothing in progress. */
+  const parkManual = () => {
+    if (source !== "manual") return;
+    const untouched = !created && !attached && !url && !name;
+    manualAttempt.current = untouched
+      ? undefined
+      : { url, name, nameEdited: nameEdited.current, draft, created, attached };
+  };
+  /**
+   * Enter the manual source: the parked attempt when there is one, a fresh draft otherwise.
+   *
+   * A fresh draft also drops the previous source's selection and name — reusing an Account Server
+   * would show its read-only layout, and carrying its name over would read as already taken.
+   */
+  const restoreManual = () => {
+    setSelected(undefined);
+    const parked = manualAttempt.current;
+    if (!parked) {
       setUrl("");
       setName("");
       nameEdited.current = false;
       setDraft(authDraft());
+      return;
     }
+    setUrl(parked.url);
+    setName(parked.name);
+    nameEdited.current = parked.nameEdited;
+    setDraft(parked.draft);
+    // The parked attempt outlives `resetAttempt()`, which the switch just ran for the source it left.
+    createdRef.current = parked.created;
+    attachedRef.current = parked.attached;
+    setCreated(parked.created);
+    setAttached(parked.attached);
+  };
+  /**
+   * Switch source, dropping any attempt the previous source left behind.
+   *
+   * The same-source guard keeps repeated clicks on the current source from re-running any of this.
+   */
+  const changeSource = (next: AddSource) => {
+    if (next === source) return;
+    parkManual();
+    resetAttempt();
+    setSource(next);
+    setError(undefined);
+    if (next === "manual") restoreManual();
   };
   /**
    * Start a catalog attempt for one entry, clearing the state of a previous entry.
@@ -373,8 +418,23 @@ export function McpAddDialog(props: AddProps) {
     </Dialog>
   );
 }
-/** The picker's four sources: the marketplace catalog, the Account pool or a pasted URL, a paste, and a manual entry. */
-function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (source: AddSource) => void }) {
+/**
+ * The picker's four sources: the marketplace catalog, the Account pool or a pasted URL, a paste, and a manual entry.
+ *
+ * `locked` matches the configuration step's Back button: an attempt that already created a definition
+ * or mounted it keeps the user where that work lives. Switching sources drops the attempt
+ * (`resetAttempt`), so an attach failure that could simply be retried would instead lose the saved
+ * definition — and retyping the same name would then be refused as taken.
+ */
+function AddSourceSwitch({
+  value,
+  onChange,
+  locked = false,
+}: {
+  value: AddSource;
+  onChange: (source: AddSource) => void;
+  locked?: boolean;
+}) {
   const choices: { source: AddSource; label: string }[] = [
     { source: "discover", label: m.mcp_source_discover() },
     { source: "existing", label: m.mcp_add_existing() },
@@ -388,6 +448,7 @@ function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (sou
         <Button
           key={choice.source}
           aria-pressed={value === choice.source}
+          disabled={locked}
           size="compact"
           variant={value === choice.source ? "secondary" : "ghost"}
           onClick={() => onChange(choice.source)}
@@ -400,7 +461,7 @@ function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (sou
 }
 function AddPicker(props: AddProps & { state: AddState }) {
   const { state, onClose } = props;
-  const { account, source, changeSource } = state;
+  const { account, source, changeSource, busy } = state;
   const loaded = !account.isPending && !account.isError;
   return (
     <>
@@ -415,7 +476,7 @@ function AddPicker(props: AddProps & { state: AddState }) {
       ) : null}
       {loaded ? (
         <>
-          <AddSourceSwitch value={source} onChange={changeSource} />
+          <AddSourceSwitch value={source} onChange={changeSource} locked={busy} />
           <AddSourcePanel {...props} />
         </>
       ) : null}

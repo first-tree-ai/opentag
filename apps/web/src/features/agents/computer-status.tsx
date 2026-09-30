@@ -21,13 +21,11 @@ export function ComputerIdentity({
   const status =
     connection === "unconfirmed"
       ? { label: m.computer_status_unavailable(), tone: "neutral" as const }
-      : connection === "disconnected"
-        ? { label: m.computer_disconnected(), tone: "neutral" as const }
-        : cloud
-          ? { label: m.computer_managed(), tone: "neutral" as const }
-          : connection === "online"
-            ? { label: m.agent_settings_computer_online(), tone: "success" as const }
-            : { label: m.agent_settings_computer_offline(), tone: "warning" as const };
+      : cloud || connection === "online"
+        ? { label: m.agent_settings_computer_online(), tone: "success" as const }
+        : connection === "disconnected"
+          ? { label: m.computer_disconnected(), tone: "neutral" as const }
+          : { label: m.agent_settings_computer_offline(), tone: "warning" as const };
   return (
     <div className="flex min-w-0 items-start gap-4 wrap-anywhere" data-ui="computer-identity">
       <span aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-lg bg-kumo-tint">

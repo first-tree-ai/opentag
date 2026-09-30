@@ -459,8 +459,8 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
     };
   }
   return {
-    label: agent.computerKind === "cloud" ? m.computer_managed() : m.agents_status_computer_ready(),
-    tone: agent.computerKind === "cloud" ? "neutral" : "success",
+    label: m.agents_status_computer_ready(),
+    tone: "success",
   };
 }
 

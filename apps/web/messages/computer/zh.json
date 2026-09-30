@@ -36,7 +36,6 @@
   "computer_local": "本地电脑",
   "computer_manage": "管理电脑",
   "computer_manage_named": "管理 {name}",
-  "computer_managed": "托管",
   "computer_missing": "这台电脑已不在你的账户中。",
   "computer_more_actions": "电脑操作",
   "computer_online_description": "Agent 可以使用这台电脑。",

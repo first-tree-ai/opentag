@@ -914,15 +914,32 @@ edit, and remove.
 The "new Server" wizard asks for the definition first and the authorization method second, so
 `default_auth_kind` is never presented as a statement about the Server.
 
+### Adding a Server by hand
+
+The picker's sources are the catalog's **Discover**, the Account pool under **Use an existing
+Server**, **Import configuration**, and **Configure manually**. Where the Account pool and the paste
+readers start from something the user already has, **Configure manually** is the home for a Server
+typed from nothing: it shows the new Server's fields — address, name, authentication method, and the
+advanced connection settings — straight away, so a user who knows the address but has neither an
+Account entry nor a configuration fragment to paste does not have to work out that pasting an
+address into a search field was the way in. It reuses the wizard's own validation and its
+create → attach → authorize sequence, and the copy that rejects an address, a name, or a header is
+the copy the configuration step shows. The source switch stays visible above it, because switching
+sources is how a user leaves a form that has no step behind it to go back to.
+
+**Use an existing Server** keeps a shortcut of its own: its field searches the Account pool, and
+pasting an MCP address the Account does not hold still continues to the configuration step. The
+shortcut predates the manual source and is kept beside it rather than folded into it, so neither
+entry loses a capability it had.
+
 ### Importing a Server from another client's configuration
 
-The picker's sources are the catalog's **Discover**, the Account pool or a pasted URL under **Use an
-existing Server**, and **Import configuration**, which accepts a pasted configuration instead of a
-URL. It reads the shapes other clients write: OpenCode's `mcp` map with `"type": "remote"`, the
-`mcpServers` map of the Claude-family clients, VS Code's `servers` map with `"type": "http"` or
-`"sse"`, the TOML `[mcp_servers.<name>]` tables other clients use, the YAML spelling of any of those,
-and the `claude mcp add <name> --transport http <url>` / `codex mcp add <name> --url <url>` command
-lines. JSON carrying `//` comments and trailing commas is accepted, because the configs this targets
+The paste readers of **Import configuration** accept a configuration instead of a URL. They read the
+shapes other clients write: OpenCode's `mcp` map with `"type": "remote"`, the `mcpServers` map of the
+Claude-family clients, VS Code's `servers` map with `"type": "http"` or `"sse"`, the TOML
+`[mcp_servers.<name>]` tables other clients use, the YAML spelling of any of those, and the
+`claude mcp add <name> --transport http <url>` / `codex mcp add <name> --url <url>` command lines.
+JSON carrying `//` comments and trailing commas is accepted, because the configs this targets
 routinely carry both.
 
 Parsing happens in the browser, never on the Server: a paste may carry a live credential, and the

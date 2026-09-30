@@ -28,7 +28,7 @@ import { McpImportPanel, useMcpImport } from "./mcp-import-panel.js";
 import { useAttachMcpServer, useCreateMcpServer, useMcpServers } from "./mcp-queries.js";
 
 /** Which source the picker opens on. The empty state lands on the catalog; the header lands on URL. */
-export type AddSource = "existing" | "discover" | "import";
+export type AddSource = "existing" | "discover" | "import" | "manual";
 
 /**
  * The draft a catalog entry prefills. Its auth header, scheme, and extra headers are configuration
@@ -57,6 +57,16 @@ function catalogCreateInput(entry: McpCatalogEntry) {
     ...(entry.extraHeaders === undefined ? {} : { extraHeaders: entry.extraHeaders }),
   });
 }
+
+/** The manual source's own work: its typed draft and whatever attempt it already made. */
+type ManualAttempt = {
+  url: string;
+  name: string;
+  nameEdited: boolean;
+  draft: AuthDraft;
+  created?: MCPServer;
+  attached?: MCPAgentServer;
+};
 
 type AddProps = {
   agentId: string;
@@ -99,10 +109,9 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
   );
   const duplicate = !selected && servers.some((server) => server.name === name.trim() && server.id !== created?.id);
   const validName = MCPServerNameSchema.safeParse(name).success;
-  const canSubmit = Boolean(
-    (selected || (validName && !duplicate && MCPServerUrlSchema.safeParse(url).success)) &&
-      validAuth(draft, Boolean(selected)),
-  );
+  /** Shown on the field itself, so a typed address that cannot be submitted says why. */
+  const validUrl = MCPServerUrlSchema.safeParse(url).success;
+  const canSubmit = Boolean((selected || (validName && !duplicate && validUrl)) && validAuth(draft, Boolean(selected)));
   const changeUrl = (value: string) => {
     setUrl(value);
     if (!nameEdited.current) setName(suggestServerName(value, servers));
@@ -121,7 +130,19 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     }
     resetAttempt();
     setSelected(undefined);
-    changeUrl(query.trim());
+    const next = query.trim();
+    /*
+     * The name and the authorization draft belong to the address they were typed for. Continuing with a
+     * different address starts a new Server definition, and carrying the previous name or credential over
+     * would authorize the new address with the old secret. Continuing the same address is the
+     * Back-and-Continue round trip, which is expected to keep both.
+     */
+    if (next !== url) {
+      setName("");
+      nameEdited.current = false;
+      setDraft(authDraft());
+    }
+    changeUrl(next);
     setStep("configure");
     setError(undefined);
   };
@@ -226,11 +247,61 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     setCreated(undefined);
     setAttached(undefined);
   };
-  /** Switch source, dropping any attempt the previous source left behind. */
+  /**
+   * The manual source's own work, parked while the user looks at another source.
+   *
+   * The manual form lives inside the step that owns the source switch, so leaving it is the only way
+   * to compare sources — and it must not cost the user anything. A typed draft is worth keeping, and
+   * an attempt that already created a definition or mounted it is worth more: retyping its name would
+   * be refused as taken, and a retry would create a duplicate instead of retrying the failed step.
+   */
+  const manualAttempt = useRef<ManualAttempt>(undefined);
+  /** Keep the manual source's draft and attempt, or drop them when it has nothing in progress. */
+  const parkManual = () => {
+    if (source !== "manual") return;
+    const untouched = !created && !attached && !url && !name;
+    manualAttempt.current = untouched
+      ? undefined
+      : { url, name, nameEdited: nameEdited.current, draft, created, attached };
+  };
+  /**
+   * Enter the manual source: the parked attempt when there is one, a fresh draft otherwise.
+   *
+   * A fresh draft also drops the previous source's selection and name — reusing an Account Server
+   * would show its read-only layout, and carrying its name over would read as already taken.
+   */
+  const restoreManual = () => {
+    setSelected(undefined);
+    const parked = manualAttempt.current;
+    if (!parked) {
+      setUrl("");
+      setName("");
+      nameEdited.current = false;
+      setDraft(authDraft());
+      return;
+    }
+    setUrl(parked.url);
+    setName(parked.name);
+    nameEdited.current = parked.nameEdited;
+    setDraft(parked.draft);
+    // The parked attempt outlives `resetAttempt()`, which the switch just ran for the source it left.
+    createdRef.current = parked.created;
+    attachedRef.current = parked.attached;
+    setCreated(parked.created);
+    setAttached(parked.attached);
+  };
+  /**
+   * Switch source, dropping any attempt the previous source left behind.
+   *
+   * The same-source guard keeps repeated clicks on the current source from re-running any of this.
+   */
   const changeSource = (next: AddSource) => {
     if (next === source) return;
+    parkManual();
     resetAttempt();
     setSource(next);
+    setError(undefined);
+    if (next === "manual") restoreManual();
   };
   /**
    * Start a catalog attempt for one entry, clearing the state of a previous entry.
@@ -331,6 +402,7 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     filtered,
     duplicate,
     validName,
+    validUrl,
     canSubmit,
     changeUrl,
     choose,
@@ -358,12 +430,28 @@ export function McpAddDialog(props: AddProps) {
     </Dialog>
   );
 }
-/** The picker's three sources: the marketplace catalog, the Account pool or a pasted URL, and a paste. */
-function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (source: AddSource) => void }) {
+/**
+ * The picker's four sources: the marketplace catalog, the Account pool or a pasted URL, a paste, and a manual entry.
+ *
+ * `locked` matches the configuration step's Back button: an attempt that already created a definition
+ * or mounted it keeps the user where that work lives. Switching sources drops the attempt
+ * (`resetAttempt`), so an attach failure that could simply be retried would instead lose the saved
+ * definition — and retyping the same name would then be refused as taken.
+ */
+function AddSourceSwitch({
+  value,
+  onChange,
+  locked = false,
+}: {
+  value: AddSource;
+  onChange: (source: AddSource) => void;
+  locked?: boolean;
+}) {
   const choices: { source: AddSource; label: string }[] = [
     { source: "discover", label: m.mcp_source_discover() },
     { source: "existing", label: m.mcp_add_existing() },
     { source: "import", label: m.mcp_source_import() },
+    { source: "manual", label: m.mcp_source_manual() },
   ];
   return (
     <fieldset className="mb-4 flex flex-wrap gap-1 border-0 p-0">
@@ -372,6 +460,7 @@ function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (sou
         <Button
           key={choice.source}
           aria-pressed={value === choice.source}
+          disabled={locked}
           size="compact"
           variant={value === choice.source ? "secondary" : "ghost"}
           onClick={() => onChange(choice.source)}
@@ -384,9 +473,8 @@ function AddSourceSwitch({ value, onChange }: { value: AddSource; onChange: (sou
 }
 function AddPicker(props: AddProps & { state: AddState }) {
   const { state, onClose } = props;
-  const { account, filtered, urlLike, servers, query, continueUrl, error, source, changeSource } = state;
+  const { account, source, changeSource, busy } = state;
   const loaded = !account.isPending && !account.isError;
-  const canContinue = loaded && ((!filtered.length && urlLike) || !servers.length);
   return (
     <>
       {account.isPending ? <Loader /> : null}
@@ -400,35 +488,62 @@ function AddPicker(props: AddProps & { state: AddState }) {
       ) : null}
       {loaded ? (
         <>
-          <AddSourceSwitch value={source} onChange={changeSource} />
-          {source === "discover" ? (
-            <McpDiscoverSource
-              categories={MCP_CATALOG_CATEGORIES}
-              entries={MCP_CATALOG_ENTRIES}
-              servers={servers}
-              mounted={props.mounted}
-              busy={state.busy}
-              onAdd={(entry) => void state.addFromCatalog(entry)}
-            />
-          ) : source === "import" ? (
-            <McpImportPanel
-              state={state.import}
-              agentName={props.agentName}
-              mounted={props.mounted}
-              onChoose={state.importServer}
-              onLocate={props.onLocate}
-            />
-          ) : (
-            <AddChoices {...props} />
-          )}
+          <AddSourceSwitch value={source} onChange={changeSource} locked={busy} />
+          <AddSourcePanel {...props} />
         </>
       ) : null}
+      <AddPickerFooter state={state} onClose={onClose} loaded={loaded} />
+    </>
+  );
+}
+/** The picker's body: the panel of exactly one source. */
+function AddSourcePanel(props: AddProps & { state: AddState }) {
+  const { state } = props;
+  if (state.source === "discover")
+    return (
+      <McpDiscoverSource
+        categories={MCP_CATALOG_CATEGORIES}
+        entries={MCP_CATALOG_ENTRIES}
+        servers={state.servers}
+        mounted={props.mounted}
+        busy={state.busy}
+        onAdd={(entry) => void state.addFromCatalog(entry)}
+      />
+    );
+  if (state.source === "import")
+    return (
+      <McpImportPanel
+        state={state.import}
+        agentName={props.agentName}
+        mounted={props.mounted}
+        onChoose={state.importServer}
+        onLocate={props.onLocate}
+      />
+    );
+  // The manual source types a new Server from nothing, so the configuration form is its panel.
+  if (state.source === "manual") return <AddConfiguration {...props} embedded />;
+  return <AddChoices {...props} />;
+}
+/**
+ * The picker's footer: the Account pool's Continue action, and where a picker-wide error is shown.
+ *
+ * The manual source carries the step's primary action, its own Cancel, and its own error, so this
+ * adds none of them there. It only stands down while that form is actually on screen: an Account read
+ * that fails after the source was chosen leaves the manual panel unrendered, and the step still needs
+ * the Cancel the picker owns.
+ */
+function AddPickerFooter({ state, onClose, loaded }: { state: AddState; onClose: () => void; loaded: boolean }) {
+  const { error, filtered, urlLike, servers, query, continueUrl, source, busy } = state;
+  if (loaded && source === "manual") return null;
+  const canContinue = loaded && ((!filtered.length && urlLike) || !servers.length);
+  return (
+    <>
       {error ? (
         <p role="alert" className="mt-3 text-sm text-kumo-danger">
           {error}
         </p>
       ) : null}
-      <McpFooter onClose={onClose} busy={state.busy}>
+      <McpFooter onClose={onClose} busy={busy}>
         {source === "existing" && canContinue ? (
           <Button disabled={!query.trim()} onClick={continueUrl}>
             {m.mcp_continue()}
@@ -497,7 +612,28 @@ function AddChoices({ state, agentName, mounted, onLocate }: AddProps & { state:
     </>
   );
 }
-function AddConfiguration({ state, agentName, onClose }: AddProps & { state: AddState }) {
+/** The message the address field shows while the typed address cannot be submitted. */
+function urlFieldError(url: string, validUrl: boolean): string | undefined {
+  return url && !validUrl ? m.mcp_url_invalid() : undefined;
+}
+/** The message the name field shows: a taken name first, then one that breaks the naming rules. */
+function nameFieldError(name: string, validName: boolean, duplicate: boolean): string | undefined {
+  if (duplicate) return m.mcp_name_conflict();
+  return name && !validName ? m.mcp_name_invalid() : undefined;
+}
+/**
+ * The configuration step, and — for the manual source — that source's own panel.
+ *
+ * The manual source types a new Server from nothing, so it is this form straight away, with no Back
+ * button: the source switch above it is the way out, and the form's own footer carries Cancel and
+ * the submit action instead of the picker's.
+ */
+function AddConfiguration({
+  state,
+  agentName,
+  onClose,
+  embedded = false,
+}: AddProps & { state: AddState; embedded?: boolean }) {
   const {
     busy,
     created,
@@ -511,6 +647,7 @@ function AddConfiguration({ state, agentName, onClose }: AddProps & { state: Add
     changeUrl,
     duplicate,
     validName,
+    validUrl,
     nameEdited,
     setName,
     draft,
@@ -520,16 +657,18 @@ function AddConfiguration({ state, agentName, onClose }: AddProps & { state: Add
   } = state;
   return (
     <>
-      <Button
-        className="mb-4 -ml-2"
-        disabled={busy || Boolean(created || attached)}
-        variant="ghost"
-        size="compact"
-        onClick={back}
-      >
-        <Icon name="arrow-left" />
-        {m.mcp_back()}
-      </Button>
+      {embedded ? null : (
+        <Button
+          className="mb-4 -ml-2"
+          disabled={busy || Boolean(created || attached)}
+          variant="ghost"
+          size="compact"
+          onClick={back}
+        >
+          <Icon name="arrow-left" />
+          {m.mcp_back()}
+        </Button>
+      )}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -550,7 +689,7 @@ function AddConfiguration({ state, agentName, onClose }: AddProps & { state: Add
             </div>
           ) : (
             <>
-              <Field htmlFor="mcp-url" label={m.mcp_url_label()}>
+              <Field htmlFor="mcp-url" label={m.mcp_url_label()} error={urlFieldError(url, validUrl)}>
                 <KumoInputControl
                   id="mcp-url"
                   type="url"
@@ -563,7 +702,7 @@ function AddConfiguration({ state, agentName, onClose }: AddProps & { state: Add
                 htmlFor="mcp-name"
                 label={m.mcp_name_label()}
                 hint={m.mcp_name_help()}
-                error={duplicate ? m.mcp_name_conflict() : name && !validName ? m.mcp_name_invalid() : undefined}
+                error={nameFieldError(name, validName, duplicate)}
               >
                 <KumoInputControl
                   id="mcp-name"

@@ -217,11 +217,11 @@ describe("Account Computer management", () => {
     },
   );
 
-  it("presents managed cloud computers without local repair instructions", async () => {
+  it("presents cloud computers as online without local repair instructions", async () => {
     installApi({ computers: [{ ...twoReadyComputers[0], kind: "cloud", connectionStatus: "offline" }] });
     openComputer();
-    expect((await screen.findAllByText("Managed")).length).toBeGreaterThan(0);
-    expect(screen.queryByText("Online")).toBeNull();
+    expect((await screen.findByText("Online")).closest('[data-state="success"]')).toBeTruthy();
+    expect(screen.queryByText("Managed")).toBeNull();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete computer" })).toBeNull();

@@ -284,6 +284,26 @@ describe("MCP manual configuration source", () => {
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("example");
   });
 
+  it("keeps the step's Cancel when the manual source cannot render its form", async () => {
+    stub([]);
+    vi.mocked(browserApi.mcpServers).mockRejectedValue(new ApiError(503, "Account configurations unavailable"));
+    wrap(
+      <McpAddDialog
+        agentId={AGENT_ID}
+        agentName="Reviewer"
+        mounted={[]}
+        initialSource="manual"
+        onClose={() => undefined}
+        onAdded={() => undefined}
+        onLocate={() => undefined}
+      />,
+    );
+    expect(await screen.findByText("Account configurations unavailable")).toBeTruthy();
+    // The form needs the Account read, so it is absent; the step must still be closable from its footer.
+    expect(screen.queryByLabelText("MCP URL")).toBeNull();
+    expect(within(screen.getByRole("dialog")).getAllByRole("button", { name: "Cancel" })).toHaveLength(1);
+  });
+
   it("defines the manual source label in both catalogues", () => {
     const read = (locale: "en" | "zh") =>
       JSON.parse(readFileSync(resolve(webRoot, "messages", "mcp", `${locale}.json`), "utf8")) as Record<string, string>;

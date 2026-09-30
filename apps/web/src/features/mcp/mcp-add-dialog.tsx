@@ -455,11 +455,13 @@ function AddSourcePanel(props: AddProps & { state: AddState }) {
  * The picker's footer: the Account pool's Continue action, and where a picker-wide error is shown.
  *
  * The manual source carries the step's primary action, its own Cancel, and its own error, so this
- * adds none of them there.
+ * adds none of them there. It only stands down while that form is actually on screen: an Account read
+ * that fails after the source was chosen leaves the manual panel unrendered, and the step still needs
+ * the Cancel the picker owns.
  */
 function AddPickerFooter({ state, onClose, loaded }: { state: AddState; onClose: () => void; loaded: boolean }) {
   const { error, filtered, urlLike, servers, query, continueUrl, source, busy } = state;
-  if (source === "manual") return null;
+  if (loaded && source === "manual") return null;
   const canContinue = loaded && ((!filtered.length && urlLike) || !servers.length);
   return (
     <>

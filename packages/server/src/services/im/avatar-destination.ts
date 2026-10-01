@@ -1,7 +1,7 @@
 import { lookup as dnsLookup, type LookupAddress, type LookupAllOptions } from "node:dns";
 import { isIP, type LookupFunction } from "node:net";
 import { isBlockedAddress, isLoopbackHostname } from "@opentag/shared";
-import { Agent, type Dispatcher, Dispatcher1Wrapper } from "undici";
+import { Agent, type Dispatcher } from "undici";
 
 const AVATAR_DESTINATION_BLOCKED = "IM_AVATAR_DESTINATION_BLOCKED";
 
@@ -64,13 +64,16 @@ export function createAvatarLookup(resolve: AvatarAddressResolver = resolveAllAd
 
 /** Create a dispatcher whose connection-time DNS lookup refuses non-public destinations. */
 export function createAvatarDispatcher(resolve: AvatarAddressResolver = resolveAllAddresses): Dispatcher {
-  return new Dispatcher1Wrapper(
-    new Agent({
-      connect: { lookup: createAvatarLookup(resolve) },
-      maxCachedSessions: 0,
-    }),
-  );
+  return new Agent({
+    connect: { lookup: createAvatarLookup(resolve) },
+    maxCachedSessions: 0,
+  });
 }
 
-/** Shared dispatcher for authenticated avatar fetches. */
-export const avatarDispatcher = createAvatarDispatcher();
+let sharedAvatarDispatcher: Dispatcher | undefined;
+
+/** Create the shared dispatcher only when an authenticated avatar is fetched. */
+export function getAvatarDispatcher(): Dispatcher {
+  sharedAvatarDispatcher ??= createAvatarDispatcher();
+  return sharedAvatarDispatcher;
+}

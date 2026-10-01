@@ -270,6 +270,11 @@
       "idx": 53,
       "tag": "0053_white_killmonger",
       "sha256": "ca04f9202c1b6a8e4783b5297877817602de7d1e50900dddbbdda1820e91fda4"
+    },
+    {
+      "idx": 54,
+      "tag": "0054_shallow_whiplash",
+      "sha256": "288793772d790dfeb88bce965a1821fc99a3d66e8986ebc32cff049bd0470100"
     }
   ]
 }

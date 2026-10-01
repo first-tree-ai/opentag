@@ -32,13 +32,8 @@ export function validHeaders(rows: HeaderRow[], authHeader: string): boolean {
 export function serverNameFromUrl(url: string): string {
   try {
     const parts = new URL(url).hostname.toLowerCase().split(".");
-    const host =
-      parts
-        .filter((part) => !["www", "mcp"].includes(part))
-        .slice(0, -1)
-        .join("-") ||
-      parts[0] ||
-      "server";
+    const filteredParts = parts.filter((part) => !["www", "mcp"].includes(part));
+    const host = filteredParts.slice(0, -1).join("-") || filteredParts[0] || "server";
     return (
       host
         .replace(/[^a-z0-9-]/g, "-")

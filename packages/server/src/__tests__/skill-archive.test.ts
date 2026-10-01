@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_TAR_STREAM_BYTES,
+  decodeZipName,
   normalizeSkillArchive,
   resolveSkillReadLimits,
 } from "../services/skills/index.js";
@@ -30,6 +31,16 @@ const MIB = 1024 * 1024;
 async function failure(promise: Promise<unknown>, code: string): Promise<void> {
   await expect(promise).rejects.toMatchObject({ code });
 }
+
+describe("ZIP filename decoding", () => {
+  it("decodes UTF-8 names when bit 11 is set", () => {
+    expect(decodeZipName(new Uint8Array([0x6c, 0x69, 0xc3, 0xa9, 0x6e, 0x6b]), true)).toBe("liénk");
+  });
+
+  it("decodes non-UTF-8 names as Latin-1 when bit 11 is clear", () => {
+    expect(decodeZipName(new Uint8Array([0x6c, 0x69, 0xe9, 0x6e, 0x6b]), false)).toBe("liénk");
+  });
+});
 
 describe("normalizeSkillArchive", () => {
   it("accepts tar.gz and zip happy paths with a root SKILL.md", async () => {

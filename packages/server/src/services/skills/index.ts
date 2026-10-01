@@ -76,4 +76,4 @@ export {
   type SkillServiceOptions,
   type SkillUploadInput,
 } from "./skill-service.js";
-export { readZipDirectory, type ZipDirectoryEntry } from "./skill-zip-directory.js";
+export { decodeZipName, readZipDirectory, type ZipDirectoryEntry } from "./skill-zip-directory.js";

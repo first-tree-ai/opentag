@@ -6,13 +6,14 @@ import { skillArchiveInvalid } from "./errors.js";
  * `fflate` inflates an archive but does not expose the Unix mode living in each central-directory
  * record's `externalFileAttributes`, so ZIP imports would otherwise lose the execute bit and could
  * never see a symlink. This parser walks exactly the central directory — bounded by entry count and
- * by every offset and length — and returns only the two fields that matter: whether the entry was
- * made on Unix, and its Unix mode. Anything malformed is a typed `SKILL_ARCHIVE_INVALID`, so a
- * hostile archive never reaches `unzipSync` and never allocates.
+ * by every offset and length — and returns only the fields that matter: the general-purpose flag,
+ * whether the entry was made on Unix, and its Unix mode. Anything malformed is a typed
+ * `SKILL_ARCHIVE_INVALID`, so a hostile archive never reaches `unzipSync` and never allocates.
  */
 
 export interface ZipDirectoryEntry {
   name: string;
+  generalPurposeBitFlag: number;
   madeByUnix: boolean;
   unixMode: number;
 }
@@ -23,6 +24,8 @@ const EOCD_MIN_BYTES = 22;
 const MAX_COMMENT_BYTES = 0xffff;
 const CENTRAL_HEADER_BYTES = 46;
 const ZIP64_SENTINEL = 0xffff;
+const UTF8_NAME_FLAG = 0x0800;
+const LATIN1_CHUNK_BYTES = 16_384;
 
 function reader(bytes: Uint8Array) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -42,8 +45,14 @@ function findEndOfCentralDirectory(bytes: Uint8Array): number {
   throw skillArchiveInvalid("Skill archive is not a zip with a central directory");
 }
 
-function decodeName(bytes: Uint8Array, start: number, length: number): string {
-  return new TextDecoder("utf-8", { fatal: false }).decode(bytes.subarray(start, start + length));
+/** Decodes a ZIP member name using the same bit-11 rule as `fflate`. */
+export function decodeZipName(bytes: Uint8Array, utf8: boolean): string {
+  if (utf8) return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  let result = "";
+  for (let offset = 0; offset < bytes.length; offset += LATIN1_CHUNK_BYTES) {
+    result += String.fromCharCode(...bytes.subarray(offset, offset + LATIN1_CHUNK_BYTES));
+  }
+  return result;
 }
 
 export function readZipDirectory(bytes: Uint8Array, maxEntries: number): ZipDirectoryEntry[] {
@@ -68,6 +77,7 @@ export function readZipDirectory(bytes: Uint8Array, maxEntries: number): ZipDire
     if (u32(cursor) !== CENTRAL_SIGNATURE) {
       throw skillArchiveInvalid("Skill archive central directory record is malformed");
     }
+    const generalPurposeBitFlag = u16(cursor + 8);
     const madeByUnix = u16(cursor + 4) >> 8 === 3;
     const nameLength = u16(cursor + 28);
     const extraLength = u16(cursor + 30);
@@ -77,7 +87,11 @@ export function readZipDirectory(bytes: Uint8Array, maxEntries: number): ZipDire
       throw skillArchiveInvalid("Skill archive central directory record is out of bounds");
     }
     entries.push({
-      name: decodeName(bytes, nameStart, nameLength),
+      name: decodeZipName(
+        bytes.subarray(nameStart, nameStart + nameLength),
+        (generalPurposeBitFlag & UTF8_NAME_FLAG) !== 0,
+      ),
+      generalPurposeBitFlag,
       madeByUnix,
       unixMode: (u32(cursor + 38) >>> 16) & 0xffff,
     });

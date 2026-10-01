@@ -31,8 +31,8 @@ test("browser negotiation renders the supported locale without persisting an imp
     await page.goto("/login", { waitUntil: "networkidle" });
     await expect(page.getByRole("heading", { name: "登录 OpenTag", exact: true })).toBeVisible();
     await expect(page.getByText("管理你的 Agent 和 Computer。", { exact: true })).toBeVisible();
-    // Document metadata remains on the base locale until the ongoing visible-copy migration is complete.
-    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    // Document metadata follows the negotiated locale without persisting an implicit preference.
+    await expect(page.locator("html")).toHaveAttribute("lang", "zh");
     await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
 
     const localeState = await page.evaluate(() => ({

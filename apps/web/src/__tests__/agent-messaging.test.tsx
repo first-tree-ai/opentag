@@ -57,7 +57,7 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("offers messaging app setup only when the missing binding is confirmed", async () => {
-    installApi({ bound: false });
+    installApi({ bound: false, slackOAuthAvailable: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
@@ -75,7 +75,7 @@ describe("OpenTag Web App Shell", () => {
      * Which app a team already lives in decides this, so neither channel gets the emphasis styling
      * that would read as our recommendation. Each carries its own mark instead, and Slack leads.
      */
-    installApi({ bound: false });
+    installApi({ bound: false, slackOAuthAvailable: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
@@ -91,6 +91,23 @@ describe("OpenTag Web App Shell", () => {
       expect(button.className).toContain("bg-kumo-base");
       expect(button.className).toContain("!text-kumo-default");
     }
+  });
+
+  it("hides Slack setup when the deployment has no Slack OAuth", async () => {
+    installApi({ bound: false, slackOAuthAvailable: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Connect Lark" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect Slack" })).toBeNull();
+  });
+
+  it("keeps an existing Slack binding manageable when OAuth is unavailable", async () => {
+    installApi({ bound: true, provider: "slack", slackOAuthAvailable: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Disconnect Slack" })).toBeTruthy();
   });
 
   it("spaces a brand name correctly when the page itself renders in Chinese", async () => {

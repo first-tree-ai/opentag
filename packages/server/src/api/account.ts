@@ -100,6 +100,8 @@ const SandboxParamsSchema = z.object({ sandboxId: z.string().uuid() }).strict();
 const EmptyBodySchema = z.object({}).strict();
 
 export interface AccountRoutesOptions {
+  /** Whether this deployment can start the first-party Slack OAuth flow. */
+  slackOAuthAvailable?: boolean;
   cloudAvailability?: () => CloudAvailability;
   /**
    * The Router-sourced Cloud model choices. Absent means the deployment's model path is disabled,
@@ -199,7 +201,15 @@ export function registerAccountRoutes(
 
     app.get(HTTP_PATHS.accountAgents, { preHandler }, async (request, reply) => {
       const account = accountId(request);
-      return reply.code(200).send(ListAgentsResponseSchema.parse(await agentService.listForAccount(account)));
+      const response = await agentService.listForAccount(account);
+      return reply.code(200).send(
+        ListAgentsResponseSchema.parse({
+          agents:
+            options.slackOAuthAvailable === undefined
+              ? response.agents
+              : response.agents.map((agent) => ({ ...agent, slackOAuthAvailable: options.slackOAuthAvailable })),
+        }),
+      );
     });
 
     app.get(ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE, { preHandler }, async (request, reply) => {

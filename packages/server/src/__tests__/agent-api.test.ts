@@ -121,8 +121,12 @@ function agentService() {
   };
 }
 
-function appWith(service = agentService()) {
-  const app = createApp({ authService: authService(), agentService: service as unknown as AgentService });
+function appWith(service = agentService(), slackOAuthAvailable?: boolean) {
+  const app = createApp({
+    authService: authService(),
+    agentService: service as unknown as AgentService,
+    ...(slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable }),
+  });
   apps.push(app);
   return { app, service };
 }
@@ -216,6 +220,18 @@ describe("Agent HTTP API", () => {
     expect(deleted.statusCode).toBe(204);
     expect(deleted.body).toBe("");
     expect(service.deleteById).toHaveBeenCalledWith(userId, agentId);
+  });
+
+  it.each([false, true])("projects Slack OAuth availability on Agent reads (%s)", async (slackOAuthAvailable) => {
+    const { app } = appWith(undefined, slackOAuthAvailable);
+
+    const detail = await app.inject({ method: "GET", url: agentByIdPath(agentId), headers: authorization });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({ slackOAuthAvailable });
+
+    const list = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toMatchObject({ agents: [{ slackOAuthAvailable }] });
   });
 
   it("gets Agent usage through a strict supported period", async () => {

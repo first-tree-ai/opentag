@@ -112,6 +112,8 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
    * is rejected until the creator rebinds it to an owned Computer.
    */
   requiresComputerRebind: z.boolean().optional(),
+  /** Whether this deployment can start the first-party Slack OAuth flow. */
+  slackOAuthAvailable: z.boolean().optional(),
 }).strict();
 
 export const RebindAgentComputerRequestSchema = z

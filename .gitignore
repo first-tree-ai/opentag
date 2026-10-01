@@ -11,6 +11,8 @@ coverage/
 
 # Local tooling overrides
 lefthook-local.yml
+.omo/
+.opencode/
 
 # Local environment and logs
 .env

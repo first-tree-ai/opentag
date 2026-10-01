@@ -477,6 +477,30 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
   });
 
+  it("dismisses the sidebar account menu when clicking sibling page content", async () => {
+    installApi({ bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const { trigger } = await openAccountMenu();
+    const sidebar = trigger.closest("aside");
+    const main = document.querySelector("main");
+    expect(sidebar).toBeTruthy();
+    expect(main).toBeTruthy();
+    expect(main?.closest("aside")).toBeNull();
+    // Base UI dismisses mouse outside presses on the primary pointerdown that starts a real click.
+    fireEvent.pointerDown(within(main as HTMLElement).getByRole("heading", { name: "Reviewer" }), {
+      button: 0,
+      pointerType: "mouse",
+    });
+
+    await waitFor(() => {
+      expect(trigger.getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+  });
+
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
     installApi({ multipleMemberships: true });
     render(<App />);

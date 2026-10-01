@@ -304,6 +304,9 @@ importers:
       tar-stream:
         specifier: 3.2.0
         version: 3.2.0
+      undici:
+        specifier: ^8.10.2
+        version: 8.10.2
       ws:
         specifier: ^8.21.3
         version: 8.21.3

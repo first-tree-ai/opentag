@@ -17,12 +17,14 @@ import {
 } from "../db/schema/index.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import { AgentService } from "../services/agents/index.js";
+import type { ExternalCallPolicy } from "../services/im/external-call-policy.js";
 import {
   classifyImInboundPersistenceError,
   ImInboundPersistenceError,
   ImMessageInbox,
 } from "../services/im/im-message-inbox.js";
 import { ImResourceService } from "../services/im/im-resource-service.js";
+import { disableImBindingInTransaction } from "../services/im-bindings/disable-im-binding.js";
 import type { ImProviderAdapter } from "../services/im-bindings/index.js";
 import { ProviderAdapterResolutionError } from "../services/im-bindings/provider-adapter-resolver.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
@@ -33,6 +35,49 @@ import {
   SessionServiceError,
 } from "../services/sessions/session-service.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
+
+const AVATAR_URL = "https://tenant-cdn.example.test/avatar.png";
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+
+function fakeAvatarPolicy(fetch: ReturnType<typeof vi.fn>): ExternalCallPolicy {
+  return { fetch } as unknown as ExternalCallPolicy;
+}
+
+function avatarResponse(
+  options: {
+    status?: number;
+    contentType?: string;
+    contentLength?: string;
+    chunks?: Uint8Array[];
+    close?: boolean;
+    cancel?: () => void;
+  } = {},
+): { response: Response; cancel: ReturnType<typeof vi.fn> } {
+  const cancel = options.cancel ?? vi.fn();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of options.chunks ?? [Buffer.from("avatar")]) controller.enqueue(chunk);
+      if (options.close ?? true) controller.close();
+    },
+    cancel,
+  });
+  const headers = new Headers({ "content-type": options.contentType ?? "image/png" });
+  if (options.contentLength !== undefined) headers.set("content-length", options.contentLength);
+  return {
+    response: new Response(stream, { status: options.status ?? 200, headers }),
+    cancel: cancel as ReturnType<typeof vi.fn>,
+  };
+}
+
+async function readNodeStream(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+async function setAvatarUrl(db: UnitDatabase, bindingId: string, providerUrl = AVATAR_URL): Promise<void> {
+  await db.database.update(imBindings).set({ botAvatarUrl: providerUrl }).where(eq(imBindings.id, bindingId));
+}
 
 describe("SessionService with the unit database", () => {
   let db: UnitDatabase;
@@ -963,6 +1008,122 @@ describe("ImResourceService with the unit database", () => {
   beforeEach(async () => {
     await db.reset();
     fixture = await seedFixture(db);
+  });
+
+  it("opens an owning Agent avatar and passes the bounded unauthenticated request policy", async () => {
+    await setAvatarUrl(db, fixture.bindingId);
+    const avatar = avatarResponse({ contentType: "image/png; charset=binary", contentLength: "6" });
+    const fetch = vi.fn().mockResolvedValue(avatar.response);
+    const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
+
+    const opened = await service.openAvatar(fixture.userId, fixture.agentId);
+
+    expect(opened.mediaType).toBe("image/png");
+    expect(opened.sizeBytes).toBe(6);
+    await expect(readNodeStream(opened.stream)).resolves.toEqual(Buffer.from("avatar"));
+    expect(fetch).toHaveBeenCalledWith(
+      AVATAR_URL,
+      expect.objectContaining({ headers: { accept: "image/*" }, dispatcher: expect.anything() }),
+      {
+        allowAnyHttpsHost: true,
+        circuitKey: `im-avatar:${fixture.agentId}`,
+        maxAttempts: 1,
+        timeoutMs: 10_000,
+      },
+    );
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit & { credentials?: unknown }];
+    expect(init).not.toHaveProperty("credentials");
+    expect(init).not.toHaveProperty("authorization");
+  });
+
+  it.each(["missing binding", "disabled binding", "other account", "deleted Agent"])(
+    "rejects an avatar request for %s",
+    async (variant) => {
+      if (variant !== "missing binding") await setAvatarUrl(db, fixture.bindingId);
+      if (variant === "disabled binding") {
+        await db.database.transaction(async (transaction) => {
+          await disableImBindingInTransaction(transaction, fixture.bindingId, fixture.now);
+        });
+      }
+      if (variant === "deleted Agent") {
+        await db.database.update(agents).set({ status: "deleted" }).where(eq(agents.id, fixture.agentId));
+      }
+      const fetch = vi.fn();
+      const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
+      const callerUserId = variant === "other account" ? randomUUID() : fixture.userId;
+
+      await expect(service.openAvatar(callerUserId, fixture.agentId)).rejects.toMatchObject({
+        code: "IM_BINDING_NOT_FOUND",
+        statusCode: 404,
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("maps fetch failures to a transient 503", async () => {
+    await setAvatarUrl(db, fixture.bindingId);
+    const fetch = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+    const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
+
+    await expect(service.openAvatar(fixture.userId, fixture.agentId)).rejects.toMatchObject({
+      code: "IM_BINDING_TEMPORARILY_UNAVAILABLE",
+      statusCode: 503,
+      category: "transient",
+    });
+  });
+
+  it.each(["non-OK response", "empty response body"])("maps an %s to a transient 503", async (variant) => {
+    await setAvatarUrl(db, fixture.bindingId);
+    const avatar = variant === "non-OK response" ? avatarResponse({ status: 503 }) : undefined;
+    const response = avatar?.response ?? new Response(null, { status: 200, headers: { "content-type": "image/png" } });
+    const fetch = vi.fn().mockResolvedValue(response);
+    const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
+
+    await expect(service.openAvatar(fixture.userId, fixture.agentId)).rejects.toMatchObject({
+      code: "IM_BINDING_TEMPORARILY_UNAVAILABLE",
+      statusCode: 503,
+      category: "transient",
+    });
+    if (avatar) expect(avatar.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("cancels and rejects a disallowed avatar media type", async () => {
+    await setAvatarUrl(db, fixture.bindingId);
+    const avatar = avatarResponse({ contentType: "text/html" });
+    const fetch = vi.fn().mockResolvedValue(avatar.response);
+    const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
+
+    await expect(service.openAvatar(fixture.userId, fixture.agentId)).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      statusCode: 415,
+    });
+    expect(avatar.cancel).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["invalid Content-Length", "not-a-number", 502],
+    ["declared size above 5 MiB", String(MAX_AVATAR_BYTES + 1), 413],
+  ] as const)("cancels and rejects %s", async (_label, contentLength, statusCode) => {
+    await setAvatarUrl(db, fixture.bindingId);
+    const avatar = avatarResponse({ contentLength });
+    const fetch = vi.fn().mockResolvedValue(avatar.response);
+    const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
+
+    await expect(service.openAvatar(fixture.userId, fixture.agentId)).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      statusCode,
+    });
+    expect(avatar.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("cuts off a streamed avatar body above 5 MiB when no length is declared", async () => {
+    await setAvatarUrl(db, fixture.bindingId);
+    const avatar = avatarResponse({ chunks: [Buffer.alloc(MAX_AVATAR_BYTES), Buffer.from("x")] });
+    const fetch = vi.fn().mockResolvedValue(avatar.response);
+    const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
+
+    const opened = await service.openAvatar(fixture.userId, fixture.agentId);
+    await expect(readNodeStream(opened.stream)).rejects.toThrow("IM_AVATAR_TOO_LARGE");
   });
 
   it("authorizes resources, applies descriptor fallbacks, and enforces limits", async () => {

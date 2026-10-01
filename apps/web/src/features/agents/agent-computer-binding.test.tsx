@@ -31,6 +31,7 @@ const boundConfig: AgentAdminConfig = {
   displayName: "Reviewer",
   runtimeProvider: "codex",
   receiveMode: "mention_only",
+  selfConfigurationEnabled: false,
   status: "active",
   revision: 2,
   runtimeConfig: {

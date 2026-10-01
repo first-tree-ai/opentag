@@ -14,6 +14,7 @@ const snapshot: EffectiveRuntimeSnapshot = {
   instructions: { platform: "platform", agent: "agent" },
   execution: { approvalPolicy: "never", networkAccess: true },
   workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
+  selfConfigurationEnabled: true,
 };
 
 const session: ManagedSessionContext = {
@@ -21,6 +22,7 @@ const session: ManagedSessionContext = {
   sessionKind: "visible",
   cliCommand: "opentag-dev",
   sessionCliAvailable: true,
+  selfConfigurationEnabled: true,
 };
 
 describe("renderManagedSystemPrompt Agent Home", () => {
@@ -62,18 +64,32 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("restored on every Computer this Agent runs on");
   });
 
-  it("tells the Agent how to change its own configuration only when the Session CLI is available", () => {
+  it("describes self-configuration only when the owner enables it and the Session CLI is available", () => {
     const prompt = renderManagedSystemPrompt(snapshot, session);
     expect(prompt).toContain("## Self-configuration");
     expect(prompt).toContain("`opentag-dev agent self show`");
     expect(prompt).toContain("`opentag-dev agent self update`");
     expect(prompt).toContain("`opentag-dev agent self mcp`");
     expect(prompt).toContain("apply from your next Turn and start a new provider conversation");
+    expect(prompt).toContain("An Agent that had no usable MCP Server gets MCP access at its next execution.");
+    expect(prompt).not.toContain("MCP mount changes apply to your next MCP request");
     expect(prompt).toContain("read the current value first");
 
     const unavailable = renderManagedSystemPrompt(snapshot, { ...session, sessionCliAvailable: false });
     expect(unavailable).not.toContain("## Self-configuration");
     expect(unavailable).not.toContain("agent self");
+
+    const disabled = renderManagedSystemPrompt(snapshot, { ...session, selfConfigurationEnabled: false });
+    expect(disabled).not.toContain("## Self-configuration");
+    expect(disabled).not.toContain("agent self");
+
+    const disabledUnavailable = renderManagedSystemPrompt(snapshot, {
+      ...session,
+      sessionCliAvailable: false,
+      selfConfigurationEnabled: false,
+    });
+    expect(disabledUnavailable).not.toContain("## Self-configuration");
+    expect(disabledUnavailable).not.toContain("agent self");
   });
 
   it("still describes Agent Home conventions when the concrete path is omitted", () => {

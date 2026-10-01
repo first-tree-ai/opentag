@@ -203,6 +203,7 @@ it("starts a post-write snapshot after binding an owned Computer while an old re
       displayName: agent.displayName,
       runtimeProvider: agent.runtimeProvider,
       receiveMode: agent.receiveMode,
+      selfConfigurationEnabled: false,
       status: agent.status,
       createdAt: agent.createdAt,
       updatedAt: agent.updatedAt,

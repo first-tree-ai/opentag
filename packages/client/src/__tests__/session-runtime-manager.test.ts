@@ -159,6 +159,46 @@ describe("SessionRuntimeManager", () => {
     await manager.close();
   });
 
+  it.each([undefined, false, true])(
+    "carries owner self-configuration opt-in=%s into the managed Session prompt",
+    async (selfConfigurationEnabled) => {
+      const home = await mkdtemp(resolve(tmpdir(), "opentag-self-config-runtime-"));
+      homes.push(home);
+      const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+      const factory = new FakeFactory();
+      const manager = new SessionRuntimeManager({
+        bindingStore: store,
+        cliCommand: "opentag-dev",
+        home,
+        proofManager: {
+          materialize: async () => "/tmp/session-proof.json",
+          cleanup: async () => undefined,
+        },
+        providers: await providerRegistry(factory),
+        providerEnvironmentPath: () => "/tmp/provider-env.sh",
+        workspace: new AgentWorkspaceManager({ home, bindingStore: store }),
+      });
+      const computerId = randomUUID();
+      const reconciler = new SessionReconciler({
+        installationId: computerId,
+        preparation: manager,
+        localPolicy: manager,
+      });
+      const request = {
+        ...reconcile(computerId, { ...snapshot(1), selfConfigurationEnabled }),
+        sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) },
+      };
+
+      await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+      await manager.ensureRuntime(request.sessionId);
+
+      const prompt = factory.created[0]?.systemPrompt;
+      expect(prompt?.includes("## Self-configuration")).toBe(selfConfigurationEnabled === true);
+      expect(prompt?.includes("opentag-dev agent self show")).toBe(selfConfigurationEnabled === true);
+      await manager.close();
+    },
+  );
+
   it("grants only the active Slack config leaf to visible Sessions and never to internal or Feishu", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-slack-writable-"));
     homes.push(home);

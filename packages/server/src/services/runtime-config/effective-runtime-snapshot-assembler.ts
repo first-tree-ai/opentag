@@ -17,6 +17,7 @@ interface EffectiveRuntimeSnapshotAuthority {
   agentStatus: string;
   agentId: string;
   agentName: string;
+  selfConfigurationEnabled?: boolean;
   imBindingStatus: string;
   runtimeConfig: unknown;
   runtimeProvider: string;
@@ -82,6 +83,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       config.instructions,
       normalizeContextTrees(config.contextTrees),
       authority.agentId,
+      authority.selfConfigurationEnabled ?? false,
       "empty_on_create",
       "agent",
     ]);
@@ -118,6 +120,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       },
       contextTrees: config.contextTrees,
       agentId: authority.agentId,
+      selfConfigurationEnabled: authority.selfConfigurationEnabled ?? false,
       provider: authority.runtimeProvider,
       ...(model !== null ? { model } : {}),
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
@@ -152,6 +155,7 @@ async function loadAuthority(
       agentId: agents.id,
       agentName: agents.name,
       agentStatus: agents.status,
+      selfConfigurationEnabled: agents.selfConfigurationEnabled,
       runtimeProvider: agents.runtimeProvider,
       configRevision: agentRuntimeConfigs.revision,
       configContextTrees: agentRuntimeConfigs.contextTrees,
@@ -172,6 +176,7 @@ async function loadAuthority(
     agentId: row.agentId,
     agentName: row.agentName,
     imBindingStatus: row.imBindingStatus,
+    selfConfigurationEnabled: row.selfConfigurationEnabled,
     runtimeConfig:
       row.configRevision === null
         ? null

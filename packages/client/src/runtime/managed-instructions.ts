@@ -7,6 +7,7 @@ export interface ManagedSessionContext {
   creatorSessionId?: string;
   cliCommand: string;
   sessionCliAvailable: boolean;
+  selfConfigurationEnabled: boolean;
   contextTree?: ContextTreeStatus;
   agentHome?: string;
 }
@@ -110,7 +111,7 @@ function renderSelfConfiguration(cliCommand: string): readonly string[] {
   return [
     "## Self-configuration",
     "",
-    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`, and mount or enable Account MCP Servers with \`${cliCommand} agent self mcp\`. Instruction, model, and reasoning-effort changes apply from your next Turn and start a new provider conversation in every existing Session, so earlier conversation context is not carried over; change them only when asked, not mid-task. MCP mount changes apply to your next MCP request. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
+    `Inspect your own configuration with \`${cliCommand} agent self show\`. When a user asks you to change how you work, you may update your own instructions, model, or reasoning effort with \`${cliCommand} agent self update\`, and mount or enable Account MCP Servers with \`${cliCommand} agent self mcp\`. Instruction, model, and reasoning-effort changes apply from your next Turn and start a new provider conversation in every existing Session, so earlier conversation context is not carried over; change them only when asked, not mid-task. An Agent that had no usable MCP Server gets MCP access at its next execution. Replacing instructions overwrites them entirely, so read the current value first and keep what still applies.`,
     "",
   ];
 }
@@ -120,7 +121,9 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
     ? [
         ...renderAgentHome(context.agentHome),
         ...renderSkills(context.cliCommand),
-        ...(context.sessionCliAvailable ? renderSelfConfiguration(context.cliCommand) : []),
+        ...(context.sessionCliAvailable && context.selfConfigurationEnabled
+          ? renderSelfConfiguration(context.cliCommand)
+          : []),
         "## Session",
         "",
         `Current Session: ${context.sessionId}`,

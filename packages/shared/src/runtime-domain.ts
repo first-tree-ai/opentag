@@ -143,6 +143,7 @@ export const EffectiveRuntimeSnapshotSchema = z
       })
       .strict(),
     agentId: RuntimeOpaqueIdSchema,
+    selfConfigurationEnabled: z.boolean().optional(),
     provider: AgentRuntimeProviderSchema,
     model: RuntimeModelSchema.optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.optional(),
@@ -1242,6 +1243,7 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
     snapshot.revision.agent.id,
     snapshot.instructions.platform,
     snapshot.instructions.agent,
+    snapshot.selfConfigurationEnabled ?? false,
     snapshot.workspace.workspaceId,
     snapshot.workspace.mode,
     snapshot.workspace.sharing,

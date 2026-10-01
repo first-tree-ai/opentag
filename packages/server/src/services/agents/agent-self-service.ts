@@ -12,7 +12,7 @@ import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { McpServerService } from "../mcp/index.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
 import type { AgentService } from "./agent-service.js";
-import { resourceNotFound } from "./errors.js";
+import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 /**
  * Agent self-configuration, authorized by a Session CLI proof.
@@ -26,6 +26,7 @@ import { resourceNotFound } from "./errors.js";
 
 export interface AgentOwnerResolver {
   resolveAccountId(agentId: string): Promise<string>;
+  isSelfConfigurationEnabled(agentId: string): Promise<boolean>;
 }
 
 export class DatabaseAgentOwnerResolver implements AgentOwnerResolver {
@@ -43,6 +44,16 @@ export class DatabaseAgentOwnerResolver implements AgentOwnerResolver {
       .limit(1);
     if (!row) throw resourceNotFound();
     return row.accountId;
+  }
+
+  async isSelfConfigurationEnabled(agentId: string): Promise<boolean> {
+    const [row] = await this.#database
+      .select({ selfConfigurationEnabled: agents.selfConfigurationEnabled })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .limit(1);
+    if (!row) throw resourceNotFound();
+    return row.selfConfigurationEnabled;
   }
 }
 
@@ -98,7 +109,13 @@ export class AgentSelfService {
   }
 
   async attachMcpServer(scope: AgentSelfScope, mcpServerId: string, enabled: boolean): Promise<MCPAgentServer> {
-    const mounted = await this.#options.mcp.attachServer(scope.accountId, scope.agentId, mcpServerId, enabled);
+    const mounted = await this.#options.mcp.attachServer(
+      scope.accountId,
+      scope.agentId,
+      mcpServerId,
+      enabled,
+      "agent-self",
+    );
     this.#audit(scope, "agent_self.mcp_attached", { mcpServerId, enabled });
     return mounted;
   }
@@ -123,6 +140,18 @@ export class AgentSelfService {
   async authenticate(proof: string): Promise<AgentSelfScope> {
     const source = await this.#options.proofs.authenticate(proof);
     const accountId = await this.#options.owners.resolveAccountId(source.agentId);
+    if (!(await this.#options.owners.isSelfConfigurationEnabled(source.agentId))) {
+      this.#options.logger?.debug(
+        { agentId: source.agentId, sessionId: source.sessionId, code: "AGENT_SELF_CONFIGURATION_DISABLED" },
+        "agent self-configuration is disabled by the Agent owner",
+      );
+      throw new AgentServiceError(
+        "AGENT_SELF_CONFIGURATION_DISABLED",
+        "deterministic",
+        "Agent self-configuration is disabled by the Agent owner",
+        403,
+      );
+    }
     this.#options.logger?.debug(
       { agentId: source.agentId, sessionId: source.sessionId },
       "agent self-configuration request authenticated",

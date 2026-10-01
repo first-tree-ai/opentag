@@ -140,6 +140,7 @@ describe("BrowserApi", () => {
       displayName: "Reviewer",
       runtimeProvider: "codex",
       receiveMode: "mention_only",
+      selfConfigurationEnabled: false,
       status: "suspended",
       revision: 2,
       runtimeConfig: {

@@ -182,6 +182,7 @@ function toAgentAdminConfig(
     runtimeProvider: row.runtimeProvider,
     receiveMode: row.receiveMode,
     status: row.status,
+    selfConfigurationEnabled: row.selfConfigurationEnabled,
     revision: row.revision,
     runtimeConfig: toRuntimeConfig(runtimeConfig),
     createdAt: row.createdAt.toISOString(),
@@ -913,69 +914,26 @@ export class AgentService {
         );
       }
       const now = this.#now();
-      if (input.receiveMode !== undefined) {
-        const [imBinding] = await transaction
-          .select({
-            provider: imBindings.provider,
-            capabilities: imBindings.grantedCapabilities,
-          })
-          .from(imBindings)
-          .where(and(eq(imBindings.agentId, agentId), isNull(imBindings.disabledAt)))
-          .limit(1)
-          .for("update");
-        if (
-          input.receiveMode !== scope.agent.receiveMode &&
-          input.receiveMode === "all_message" &&
-          imBinding?.provider === "feishu"
-        ) {
-          const missingRequiredCapabilities = !hasRequiredFeishuTenantScopes(imBinding.capabilities);
-          if (missingRequiredCapabilities) {
-            throw new AgentServiceError(
-              "IM_BINDING_SCOPE_REAUTH_REQUIRED",
-              "deterministic",
-              "The IM binding must be reauthorized before enabling all-message receive mode",
-              409,
-            );
-          }
-        }
-      }
+      await this.#assertReceiveModeUpdate(transaction, agentId, scope.agent.receiveMode, input.receiveMode);
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
-      const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
-      const nextRuntimeConfig = resolveAgentRuntimeConfig({
-        contextTrees: currentRuntimeProjection.contextTrees,
-        model: input.runtimeConfig?.model !== undefined ? input.runtimeConfig.model : currentRuntimeProjection.model,
-        reasoningEffort:
-          input.runtimeConfig?.reasoningEffort !== undefined
-            ? input.runtimeConfig.reasoningEffort
-            : currentRuntimeProjection.reasoningEffort,
-        instructions: input.runtimeConfig?.instructions ?? currentRuntimeProjection.instructions,
-        maxDurationMs:
-          input.runtimeConfig?.maxDurationMs !== undefined
-            ? input.runtimeConfig.maxDurationMs
-            : currentRuntimeProjection.maxDurationMs,
-      });
-      const runtimeConfigChanged = !runtimeConfigsEqual(currentRuntimeConfig, nextRuntimeConfig);
       const [updated] = await transaction
         .update(agents)
         .set({
           displayName: input.displayName ?? scope.agent.displayName,
           receiveMode: input.receiveMode ?? scope.agent.receiveMode,
+          selfConfigurationEnabled: input.selfConfigurationEnabled ?? scope.agent.selfConfigurationEnabled,
           revision: sql`${agents.revision} + 1`,
           updatedAt: now,
         })
         .where(and(eq(agents.id, agentId), ne(agents.status, "deleted"), eq(agents.revision, input.expectedRevision)))
         .returning();
       if (updated) {
-        let runtimeConfig = currentRuntimeConfig;
-        if (runtimeConfigChanged) {
-          const [updatedRuntimeConfig] = await transaction
-            .update(agentRuntimeConfigs)
-            .set({ ...nextRuntimeConfig, revision: sql`nextval('runtime_config_revision_sequence')`, updatedAt: now })
-            .where(eq(agentRuntimeConfigs.agentId, agentId))
-            .returning();
-          if (!updatedRuntimeConfig) throw new Error("Agent runtime config update did not return a row");
-          runtimeConfig = updatedRuntimeConfig;
-        }
+        const runtimeConfig = await this.#applyRuntimeConfigUpdate(
+          transaction,
+          currentRuntimeConfig,
+          input.runtimeConfig,
+          now,
+        );
         return { config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId) };
       }
 
@@ -1262,6 +1220,58 @@ export class AgentService {
     if (!row || row.agent.createdByUserId !== callerUserId) throw resourceNotFound();
     await this.#afterAgentLocked?.();
     return { agent: row.agent, canManage: true, computerId: row.computerId };
+  }
+
+  async #assertReceiveModeUpdate(
+    transaction: DatabaseTransaction,
+    agentId: string,
+    current: AgentRow["receiveMode"],
+    next: UpdateAgentRequest["receiveMode"],
+  ): Promise<void> {
+    if (next === undefined) return;
+    const [imBinding] = await transaction
+      .select({ provider: imBindings.provider, capabilities: imBindings.grantedCapabilities })
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, agentId), isNull(imBindings.disabledAt)))
+      .limit(1)
+      .for("update");
+    if (
+      next !== current &&
+      next === "all_message" &&
+      imBinding?.provider === "feishu" &&
+      !hasRequiredFeishuTenantScopes(imBinding.capabilities)
+    ) {
+      throw new AgentServiceError(
+        "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+        "deterministic",
+        "The IM binding must be reauthorized before enabling all-message receive mode",
+        409,
+      );
+    }
+  }
+
+  async #applyRuntimeConfigUpdate(
+    transaction: DatabaseTransaction,
+    current: AgentRuntimeConfigRow,
+    input: UpdateAgentRequest["runtimeConfig"],
+    now: Date,
+  ): Promise<AgentRuntimeConfigRow> {
+    const projection = toRuntimeConfig(current);
+    const next = resolveAgentRuntimeConfig({
+      contextTrees: projection.contextTrees,
+      model: input?.model !== undefined ? input.model : projection.model,
+      reasoningEffort: input?.reasoningEffort !== undefined ? input.reasoningEffort : projection.reasoningEffort,
+      instructions: input?.instructions ?? projection.instructions,
+      maxDurationMs: input?.maxDurationMs !== undefined ? input.maxDurationMs : projection.maxDurationMs,
+    });
+    if (runtimeConfigsEqual(current, next)) return current;
+    const [updated] = await transaction
+      .update(agentRuntimeConfigs)
+      .set({ ...next, revision: sql`nextval('runtime_config_revision_sequence')`, updatedAt: now })
+      .where(eq(agentRuntimeConfigs.agentId, current.agentId))
+      .returning();
+    if (!updated) throw new Error("Agent runtime config update did not return a row");
+    return updated;
   }
 
   async #lockRuntimeConfig(transaction: DatabaseTransaction, agentId: string): Promise<AgentRuntimeConfigRow> {

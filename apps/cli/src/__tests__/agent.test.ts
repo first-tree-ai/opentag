@@ -63,6 +63,7 @@ const agent: AgentAdminConfig = {
   displayName: "Code Reviewer",
   runtimeProvider: "codex" as const,
   receiveMode: "all_message" as const,
+  selfConfigurationEnabled: false,
   status: "active" as const,
   revision: 1,
   runtimeConfig: {
@@ -79,6 +80,7 @@ const agent: AgentAdminConfig = {
 const {
   runtimeConfig: _runtimeConfig,
   revision: _revision,
+  selfConfigurationEnabled: _selfConfigurationEnabled,
   createdByUserId,
   computerId: _agentComputerId,
   ...agentBase

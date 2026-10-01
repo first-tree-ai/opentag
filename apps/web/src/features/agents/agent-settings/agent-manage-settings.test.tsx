@@ -65,6 +65,7 @@ const config: AgentAdminConfig = {
   displayName: agentDetail.displayName,
   runtimeProvider: "codex",
   receiveMode: "mention_only",
+  selfConfigurationEnabled: false,
   // Deleting is only offered once the Agent is paused, so the fixture starts where that flow ends.
   status: "suspended",
   createdAt: agentDetail.createdAt,

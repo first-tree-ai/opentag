@@ -4,6 +4,10 @@
 
 Start with the [Quick Start](../README.md#quick-start) or the [development guide](../DEVELOPMENT.md).
 
+## Project policy
+
+- [Trademarks and asset provenance](./trademarks.md)
+
 ## Runtime and messaging
 
 - [Platform integrations and credential delivery](./platform-integrations-foundation.md)

@@ -1,8 +1,8 @@
-# 商标
+# 商标与素材来源
 
 [English](../trademarks.md)
 
-> Last synced with: 2026-10-01
+> 权威来源：[docs/trademarks.md](../trademarks.md) · 同步日期：2026-10-01
 
 OpenTag 会连接其它公司的产品。为了在界面里指明这些产品，我们展示各自权利人发布的官方标识。
 

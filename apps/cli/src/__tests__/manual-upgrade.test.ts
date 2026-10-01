@@ -125,6 +125,22 @@ describe("manual upgrade", () => {
     expect(runNpm).not.toHaveBeenCalled();
   });
 
+  it("rejects a malformed portable release pointer without installing", async () => {
+    const runNpm = vi.fn();
+    const result = await runUpgrade({
+      channel: "staging",
+      home: await tempHome(),
+      environment: {},
+      installMode: { mode: "portable", root: "/portable/root", binDir: "/portable/bin" },
+      fetchFn: (async () => jsonResponse({ channel: "staging" })) as typeof fetch,
+      runNpm,
+    });
+
+    expect(result).toMatchObject({ exitCode: 1, status: "error" });
+    expect(result.message).toContain("missing or invalid");
+    expect(runNpm).not.toHaveBeenCalled();
+  });
+
   it("installs the exact channel target through npm and refreshes the service (npm-global)", async () => {
     const home = await tempHome();
     const npmArgs: string[][] = [];

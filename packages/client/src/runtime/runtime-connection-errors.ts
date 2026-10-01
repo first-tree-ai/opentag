@@ -23,6 +23,41 @@ export class RuntimeConnectionError extends Error {
   }
 }
 
+export function runtimeConnectionErrorCategory(
+  code: string | undefined,
+  fatal: boolean,
+  allowTransient = true,
+): RuntimeConnectionErrorCategory {
+  if (code?.startsWith("AUTH_")) return "authentication_rejection";
+  if (code === "PROTOCOL_CAPABILITY_UNSUPPORTED") return "capability_incompatibility";
+  if (
+    allowTransient &&
+    (code === "INTERNAL_ERROR" ||
+      code === "SERVICE_UNAVAILABLE" ||
+      code === "RUNTIME_AUTH_TIMEOUT" ||
+      code === "RUNTIME_REGISTER_TIMEOUT")
+  ) {
+    return "transient_connection";
+  }
+  return fatal ? "protocol" : "transient_connection";
+}
+
+export function runtimeConnectionCloseError(code: number, established: boolean): RuntimeConnectionError | undefined {
+  if (code === 4001 || (code >= 4400 && code < 4500)) {
+    const category = code === 4401 ? "authentication_rejection" : code === 4408 ? "transient_connection" : "protocol";
+    return new RuntimeConnectionError(
+      "The runtime connection was rejected",
+      category !== "transient_connection",
+      category,
+    );
+  }
+  return new RuntimeConnectionError(
+    established ? "The runtime connection closed" : "Could not establish runtime connection",
+    false,
+    "transient_connection",
+  );
+}
+
 export class RuntimeSendError extends Error {
   constructor(
     readonly code: RuntimeSendErrorCode,

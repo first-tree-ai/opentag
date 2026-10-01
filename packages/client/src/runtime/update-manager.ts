@@ -58,11 +58,18 @@ export interface UpdateManagerOptions {
   saveState(state: UpdaterStateSnapshot): Promise<void>;
   /** Protected-work re-check cadence. This is a poll interval, never a force timeout. */
   checkIntervalMs?: number;
+  /** Read the configured release channel without relying on a runtime heartbeat. */
+  discoverTarget?: () => Promise<RuntimeChannelTarget | undefined>;
+  /** Successful release discovery cadence. Failed reads use bounded exponential backoff. */
+  discoveryIntervalMs?: number;
+  discoveryMaxBackoffMs?: number;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
 }
 
 const DEFAULT_CHECK_INTERVAL_MS = 5_000;
+const DEFAULT_DISCOVERY_INTERVAL_MS = 300_000;
+const DEFAULT_DISCOVERY_MAX_BACKOFF_MS = 1_800_000;
 const QUIET_LOG_THROTTLE_MS = 60_000;
 
 const defaultSleep = (milliseconds: number): Promise<void> =>
@@ -86,10 +93,16 @@ export class UpdateManager {
   readonly #now: () => number;
   readonly #sleep: (milliseconds: number) => Promise<void>;
   readonly #checkIntervalMs: number;
+  readonly #discoveryIntervalMs: number;
+  readonly #discoveryMaxBackoffMs: number;
   #latestTarget?: string;
   #deciding?: Promise<void>;
   #stopped = false;
   #blockedLoggedTarget?: string;
+  #discoveryStarted = false;
+  #discoveryFailures = 0;
+  #discoveryTimer?: ReturnType<typeof setTimeout>;
+  #discoveryInFlight?: Promise<boolean>;
 
   constructor(options: UpdateManagerOptions) {
     this.#options = options;
@@ -97,6 +110,14 @@ export class UpdateManager {
     this.#now = options.now ?? Date.now;
     this.#sleep = options.sleep ?? defaultSleep;
     this.#checkIntervalMs = positive(options.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS, "checkIntervalMs");
+    this.#discoveryIntervalMs = positive(
+      options.discoveryIntervalMs ?? DEFAULT_DISCOVERY_INTERVAL_MS,
+      "discoveryIntervalMs",
+    );
+    this.#discoveryMaxBackoffMs = positive(
+      options.discoveryMaxBackoffMs ?? DEFAULT_DISCOVERY_MAX_BACKOFF_MS,
+      "discoveryMaxBackoffMs",
+    );
   }
 
   /**
@@ -189,6 +210,24 @@ export class UpdateManager {
     });
   }
 
+  /** Start the single heartbeat-independent release discovery loop. */
+  startDiscovery(): void {
+    if (this.#stopped || !this.#options.discoverTarget || this.#discoveryStarted) return;
+    this.#discoveryStarted = true;
+    this.#scheduleDiscovery(0);
+  }
+
+  /** Trigger one coalesced metadata read, for example after a capability rejection. */
+  async discoverNow(): Promise<void> {
+    if (this.#stopped || !this.#options.discoverTarget) return;
+    if (this.#discoveryTimer) {
+      clearTimeout(this.#discoveryTimer);
+      this.#discoveryTimer = undefined;
+    }
+    await this.#runDiscovery();
+    if (this.#discoveryStarted && !this.#stopped) this.#scheduleDiscovery(this.#nextDiscoveryDelay());
+  }
+
   async #recordSatisfiedTarget(target: string): Promise<void> {
     const stored = await this.#options.loadState();
     const state = stored ?? emptyState(this.#options.currentVersion);
@@ -211,6 +250,58 @@ export class UpdateManager {
 
   stop(): void {
     this.#stopped = true;
+    if (this.#discoveryTimer) clearTimeout(this.#discoveryTimer);
+    this.#discoveryTimer = undefined;
+  }
+
+  #scheduleDiscovery(delay: number): void {
+    if (this.#stopped || !this.#discoveryStarted || !this.#options.discoverTarget) return;
+    if (this.#discoveryTimer) clearTimeout(this.#discoveryTimer);
+    const timer = setTimeout(() => {
+      this.#discoveryTimer = undefined;
+      void this.#runDiscovery().then(() => {
+        if (!this.#stopped) this.#scheduleDiscovery(this.#nextDiscoveryDelay());
+      });
+    }, delay);
+    timer.unref?.();
+    this.#discoveryTimer = timer;
+  }
+
+  #nextDiscoveryDelay(): number {
+    if (this.#discoveryFailures === 0) return this.#discoveryIntervalMs;
+    const backoff = this.#discoveryIntervalMs * 2 ** Math.min(this.#discoveryFailures, 5);
+    return Math.min(this.#discoveryMaxBackoffMs, backoff);
+  }
+
+  #runDiscovery(): Promise<boolean> {
+    if (this.#discoveryInFlight) return this.#discoveryInFlight;
+    const discoverTarget = this.#options.discoverTarget;
+    if (!discoverTarget || this.#stopped) return Promise.resolve(false);
+    this.#discoveryInFlight = (async () => {
+      try {
+        const target = await discoverTarget();
+        this.#discoveryFailures = 0;
+        if (target) this.observe(target);
+        this.#logger.debug(
+          { discovered: target !== undefined, version: target?.version },
+          "Portable release metadata discovery completed",
+        );
+        return true;
+      } catch (error) {
+        this.#discoveryFailures = Math.min(this.#discoveryFailures + 1, 31);
+        this.#logger.warn(
+          {
+            backoffMs: this.#nextDiscoveryDelay(),
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Portable release metadata discovery failed; retry is bounded",
+        );
+        return false;
+      } finally {
+        this.#discoveryInFlight = undefined;
+      }
+    })();
+    return this.#discoveryInFlight;
   }
 
   async #decide(): Promise<void> {

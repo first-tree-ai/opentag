@@ -34,7 +34,6 @@ import {
 import WebSocket, { type ClientOptions } from "ws";
 import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
-import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
 import {
   abortError,
@@ -44,6 +43,8 @@ import {
   type RuntimeConnectionErrorCategory,
   RuntimeProtocolFallbackError,
   RuntimeSendError,
+  runtimeConnectionCloseError,
+  runtimeConnectionErrorCategory,
 } from "./runtime-connection-errors.js";
 import {
   notifyTarget,
@@ -53,6 +54,12 @@ import {
   rawDataBuffer,
   safeJson,
 } from "./runtime-connection-helpers.js";
+import {
+  connectionErrorCategory,
+  listenerFailureCategory,
+  raceWithAbort,
+  withoutConnectionId,
+} from "./runtime-connection-utils.js";
 
 export {
   RuntimeConnectionError,
@@ -846,25 +853,7 @@ export class RuntimeConnection {
           finish();
           return;
         }
-        if (code === 4001 || (code >= 4400 && code < 4500)) {
-          const category =
-            code === 4401 ? "authentication_rejection" : code === 4408 ? "transient_connection" : "protocol";
-          finish(
-            new RuntimeConnectionError(
-              "The runtime connection was rejected",
-              category !== "transient_connection",
-              category,
-            ),
-          );
-          return;
-        }
-        finish(
-          new RuntimeConnectionError(
-            established ? "The runtime connection closed" : "Could not establish runtime connection",
-            false,
-            "transient_connection",
-          ),
-        );
+        finish(runtimeConnectionCloseError(code, established));
       });
       socket.on("error", () => undefined);
     });
@@ -1081,66 +1070,4 @@ export class RuntimeConnection {
       signal.addEventListener("abort", onAbort, { once: true });
     });
   }
-}
-
-function listenerFailureCategory(error: unknown): string {
-  if (error instanceof RuntimeStorageError) return `runtime_storage_${error.code}`;
-  if (error instanceof RuntimeSendError) return `runtime_send_${error.code}`;
-  if (error instanceof RuntimeConnectionError) return "runtime_connection";
-  return error instanceof Error ? "error" : "non_error";
-}
-
-function connectionErrorCategory(error: unknown): string {
-  if (error instanceof OpenTagApiError) return error.category;
-  if (error instanceof RuntimeConnectionError) return error.category;
-  if (error instanceof RuntimeSendError) return error.code;
-  return "unexpected";
-}
-
-function runtimeConnectionErrorCategory(
-  code: string | undefined,
-  fatal: boolean,
-  allowTransient = true,
-): RuntimeConnectionErrorCategory {
-  if (code?.startsWith("AUTH_")) return "authentication_rejection";
-  if (code === "PROTOCOL_CAPABILITY_UNSUPPORTED") return "capability_incompatibility";
-  if (
-    allowTransient &&
-    (code === "INTERNAL_ERROR" ||
-      code === "SERVICE_UNAVAILABLE" ||
-      code === "RUNTIME_AUTH_TIMEOUT" ||
-      code === "RUNTIME_REGISTER_TIMEOUT")
-  ) {
-    return "transient_connection";
-  }
-  return fatal ? "protocol" : "transient_connection";
-}
-
-function withoutConnectionId(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const frame = { ...(value as Record<string, unknown>) };
-  delete frame.connectionId;
-  return frame;
-}
-
-async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) throw abortError();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      cleanup();
-      reject(abortError());
-    };
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
 }

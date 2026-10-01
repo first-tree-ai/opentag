@@ -453,6 +453,7 @@ export {
   type RuntimeBusinessFrame,
   RuntimeConnection,
   RuntimeConnectionError,
+  type RuntimeConnectionErrorCategory,
   type RuntimeConnectionOptions,
   type RuntimeConnectionState,
   type RuntimeQueueLimits,

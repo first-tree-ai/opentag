@@ -38,11 +38,16 @@ export interface DaemonAutoUpdateOverrides {
   installMode?: InstallMode;
   installTarget?: (target: string) => Promise<void>;
   refreshService?: () => Promise<void>;
+  fetchFn?: typeof fetch;
   stateStore?: {
     loadState(): Promise<UpdaterStateSnapshot | undefined>;
     saveState(state: UpdaterStateSnapshot): Promise<void>;
   };
   checkIntervalMs?: number;
+  discoveryIntervalMs?: number;
+  discoveryMaxBackoffMs?: number;
+  /** Disable release metadata discovery in deterministic lifecycle tests. */
+  discovery?: boolean;
   /** Observe a target immediately after startup (deterministic tests). */
   initialTarget?: RuntimeChannelTarget;
 }
@@ -260,7 +265,19 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     () => runtimeLogger.info({}, "Computer runtime is ready"),
     () => undefined,
   );
-  return { run: () => runtime.run(), stop: () => runtime.stop() };
+  return {
+    run: async () => {
+      try {
+        await runtime.run();
+      } catch (error) {
+        if (error instanceof RuntimeConnectionError && error.category === "capability_incompatibility") {
+          await context.state.updater?.discoverNow();
+        }
+        throw error;
+      }
+    },
+    stop: () => runtime.stop(),
+  };
 }
 
 async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform, signal: AbortSignal) {
@@ -313,14 +330,19 @@ async function attachAutoUpdater(
       runtime.stop();
     },
     logger: runtimeLogger.child({ module: "updater" }),
-    ...(autoUpdate.installTarget ? { installTarget: autoUpdate.installTarget } : {}),
-    ...(autoUpdate.refreshService ? { refreshService: autoUpdate.refreshService } : {}),
-    ...(autoUpdate.stateStore ? { stateStore: autoUpdate.stateStore } : {}),
-    ...(autoUpdate.checkIntervalMs ? { checkIntervalMs: autoUpdate.checkIntervalMs } : {}),
+    environment: context.daemonEnvironment,
+    installTarget: autoUpdate.installTarget,
+    refreshService: autoUpdate.refreshService,
+    fetchFn: autoUpdate.fetchFn,
+    stateStore: autoUpdate.stateStore,
+    checkIntervalMs: autoUpdate.checkIntervalMs,
+    discoveryIntervalMs: autoUpdate.discoveryIntervalMs,
+    discoveryMaxBackoffMs: autoUpdate.discoveryMaxBackoffMs,
   });
   await updater.syncRunningVersion();
   context.state.channelTargetObserver = (target) => updater.observe(target);
   if (autoUpdate.initialTarget) updater.observe(autoUpdate.initialTarget);
+  if (autoUpdate.discovery !== false) updater.startDiscovery();
   return updater;
 }
 
@@ -376,6 +398,7 @@ function runtimeConnectionOperatorMessage(category: RuntimeConnectionErrorCatego
     case "protocol":
       return "Daemon runtime protocol was rejected; inspect daemon status";
   }
+  return "Daemon runtime protocol was rejected; inspect daemon status";
 }
 
 function logTerminalFailure(logger: ClientLogger, error: unknown): void {

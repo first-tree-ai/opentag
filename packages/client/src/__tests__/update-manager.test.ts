@@ -1,5 +1,5 @@
 import type { RuntimeChannelTarget } from "@opentag/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 import { recordingLogger } from "./recording-logger.js";
 
@@ -22,6 +22,9 @@ function harness(
     currentVersion?: string;
     failSaveForState?: UpdaterStateSnapshot["state"];
     stored?: UpdaterStateSnapshot;
+    discoverTarget?: () => Promise<RuntimeChannelTarget | undefined>;
+    discoveryIntervalMs?: number;
+    discoveryMaxBackoffMs?: number;
   } = {},
 ): Harness {
   let stored = overrides.stored ? structuredClone(overrides.stored) : undefined;
@@ -63,6 +66,9 @@ function harness(
       stored = structuredClone(state);
     },
     checkIntervalMs: 10,
+    ...(overrides.discoverTarget ? { discoverTarget: overrides.discoverTarget } : {}),
+    ...(overrides.discoveryIntervalMs ? { discoveryIntervalMs: overrides.discoveryIntervalMs } : {}),
+    ...(overrides.discoveryMaxBackoffMs ? { discoveryMaxBackoffMs: overrides.discoveryMaxBackoffMs } : {}),
     now: () => 1_700_000_000_000,
     sleep: async () => {
       await new Promise<void>((resolve) => sleepers.push(resolve));
@@ -204,6 +210,46 @@ describe("UpdateManager", () => {
     h.manager.observe(target("0.0.9", "prod"));
     await h.settle();
     expect(h.installs).toEqual([]);
+  });
+
+  it("discovers a channel target independently of heartbeat and coalesces concurrent reads", async () => {
+    const discoverTarget = vi.fn(async () => target("0.0.3-staging.1.1"));
+    const h = harness({ discoverTarget });
+
+    h.manager.startDiscovery();
+    await Promise.all([h.manager.discoverNow(), h.manager.discoverNow()]);
+    await h.settle();
+
+    expect(discoverTarget).toHaveBeenCalledOnce();
+    expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+    h.manager.stop();
+  });
+
+  it("uses bounded exponential backoff after unavailable release metadata", async () => {
+    vi.useFakeTimers();
+    try {
+      const discoverTarget = vi.fn(async () => {
+        throw new Error("release endpoint unavailable");
+      });
+      const h = harness({ discoverTarget, discoveryIntervalMs: 10, discoveryMaxBackoffMs: 25 });
+
+      h.manager.startDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(discoverTarget).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(19);
+      expect(discoverTarget).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(discoverTarget).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(24);
+      expect(discoverTarget).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(discoverTarget).toHaveBeenCalledTimes(3);
+      h.manager.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("waits indefinitely for protected work with no force timeout", async () => {

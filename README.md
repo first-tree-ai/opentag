@@ -69,4 +69,4 @@ Issues and pull requests are welcome; start with the [Contributing guide](./CONT
 
 ## License
 
-OpenTag is licensed under the [Apache License 2.0](./LICENSE).
+OpenTag is licensed under the [Apache License 2.0](./LICENSE). See the [trademarks and asset provenance record](./docs/trademarks.md) for third-party marks and assets.

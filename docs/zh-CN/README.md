@@ -1,8 +1,12 @@
 # 技术文档
 
-> 权威来源：[docs/README.md](../README.md) · 同步日期：2026-09-28
+> 权威来源：[docs/README.md](../README.md) · 同步日期：2026-10-01
 
 从[快速开始](../../README.zh-CN.md#快速开始)或[开发指南](../../DEVELOPMENT.zh-CN.md)开始。
+
+## 项目政策
+
+- [商标与素材来源记录](./trademarks.md)
 
 - [平台集成与凭证下发](./platform-integrations-foundation.md)
 

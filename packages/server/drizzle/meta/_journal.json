@@ -379,6 +379,13 @@
       "when": 1790653646839,
       "tag": "0053_white_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1790849432690,
+      "tag": "0054_shallow_whiplash",
+      "breakpoints": true
     }
   ]
 }

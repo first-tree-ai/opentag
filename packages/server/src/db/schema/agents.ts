@@ -1,5 +1,16 @@
 import { relations, sql } from "drizzle-orm";
-import { check, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  check,
+  index,
+  integer,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { users } from "./auth.js";
 import { computers } from "./computers.js";
 
@@ -22,6 +33,7 @@ export const agents = pgTable(
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),
     receiveMode: agentReceiveMode("receive_mode").notNull().default("all_message"),
+    selfConfigurationEnabled: boolean("self_configuration_enabled").notNull().default(false),
     status: agentStatus("status").notNull().default("active"),
     revision: integer("revision").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

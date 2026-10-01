@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "self_configuration_enabled" boolean DEFAULT false NOT NULL;

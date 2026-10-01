@@ -18,6 +18,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import { requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -500,6 +501,9 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           lastErrorCode: null,
         })
         .where(eq(imMessageDeliveries.id, report.deliveryId));
+      if (report.outcome !== "completed") {
+        await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now());
+      }
       return "recorded";
     });
   }

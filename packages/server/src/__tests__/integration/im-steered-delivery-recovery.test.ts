@@ -21,6 +21,8 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
+import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -43,51 +45,76 @@ describe("steered IM delivery recovery", () => {
     await testDatabase.reset();
   });
 
-  it("reproduces the loss: cancelled root leaves steered deliveries terminal", async () => {
+  it("requeues cancelled target children once and preserves ingress order", async () => {
     const fixture = await createFixture(client.database);
     const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
-    const rootInputHash = computeDirectInputHash(fixture.rootRequest);
-
+    await acceptAndSteer(fixture, custody);
     await expect(
-      custody.beginDeliveryDispatch(fixture.rootRequest, rootInputHash, fixture.dispatchContext),
-    ).resolves.toBe("dispatched");
-    await expect(
-      custody.acceptDelivery(fixture.rootRequest, rootInputHash, fixture.rootTurnId, fixture.context),
-    ).resolves.toBe("accepted");
+      custody.recordTurn(turnReport(fixture, "cancelled", "client_shutdown"), fixture.context),
+    ).resolves.toBe("recorded");
 
-    for (const request of fixture.steerRequests) {
-      const inputHash = computeRuntimeImSteerInputHash(request);
-      const semanticHash = computeRuntimeImMessageSemanticHash(request);
-      await expect(custody.beginSteerDispatch(request, inputHash, fixture.dispatchContext)).resolves.toBe("dispatched");
-      await expect(custody.recordSteered(request, inputHash, semanticHash, fixture.context)).resolves.toBe("steered");
-    }
-
-    const report = cancelledReport(fixture);
-    await expect(custody.recordTurn(report, fixture.context)).resolves.toBe("recorded");
-
-    const deliveries = await client.database
-      .select({
-        id: imMessageDeliveries.id,
-        state: imMessageDeliveries.state,
-        steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
-        reportedAt: imMessageDeliveries.reportedAt,
-      })
-      .from(imMessageDeliveries)
-      .where(eq(imMessageDeliveries.sessionId, fixture.sessionId));
-
-    expect(deliveries).toEqual(
+    const recovered = await deliveryRows(client.database, fixture);
+    expect(recovered.children.map((row) => row.id)).toEqual(fixture.steerRequests.map((request) => request.deliveryId));
+    expect(recovered.children).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: fixture.rootDeliveryId, state: "accepted", reportedAt: expect.any(Date) }),
         expect.objectContaining({
-          id: fixture.steerRequests[0]?.deliveryId,
-          state: "steered",
-          steerTargetDeliveryId: fixture.rootDeliveryId,
+          state: "pending",
+          steerTargetDeliveryId: null,
+          attemptCount: 1,
+          lastErrorCode: STEER_TARGET_ENDED_ERROR_CODE,
         }),
-        expect.objectContaining({
-          id: fixture.steerRequests[1]?.deliveryId,
-          state: "steered",
-          steerTargetDeliveryId: fixture.rootDeliveryId,
-        }),
+      ]),
+    );
+    expect(recovered.children[0]?.nextAttemptAt.getTime()).toBeLessThan(
+      recovered.children[1]?.nextAttemptAt.getTime() ?? Number.POSITIVE_INFINITY,
+    );
+
+    await runImDeliveryExpiry(client.database, janitorOptions(fixture.now));
+    const afterJanitor = await deliveryRows(client.database, fixture);
+    expect(afterJanitor.children).toEqual(recovered.children);
+  });
+
+  it("requeues a failed target through the janitor after a crashed Turn", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: "IM_DELIVERY_RECOVERY_FAILED", nextAttemptAt: fixture.now })
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+
+    await runImDeliveryExpiry(client.database, janitorOptions(fixture.now));
+    const recovered = await deliveryRows(client.database, fixture);
+    expect(recovered.children).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: "pending", steerTargetDeliveryId: null, attemptCount: 1 }),
+      ]),
+    );
+  });
+
+  it("requeues a timed-out target", async () => {
+    const timedOut = await createFixture(client.database);
+    const timedOutCustody = new PostgresRuntimeCustodyStore(client.database, { now: () => timedOut.now });
+    await acceptAndSteer(timedOut, timedOutCustody);
+    await expect(
+      timedOutCustody.recordTurn(turnReport(timedOut, "failed", "turn_timeout"), timedOut.context),
+    ).resolves.toBe("recorded");
+    expect((await deliveryRows(client.database, timedOut)).children).toEqual(
+      expect.arrayContaining([expect.objectContaining({ state: "pending", steerTargetDeliveryId: null })]),
+    );
+  });
+
+  it("leaves completed target children steered after the janitor runs", async () => {
+    const completed = await createFixture(client.database);
+    const completedCustody = new PostgresRuntimeCustodyStore(client.database, { now: () => completed.now });
+    await acceptAndSteer(completed, completedCustody);
+    await expect(completedCustody.recordTurn(turnReport(completed, "completed"), completed.context)).resolves.toBe(
+      "recorded",
+    );
+    await runImDeliveryExpiry(client.database, janitorOptions(completed.now));
+    expect((await deliveryRows(client.database, completed)).children).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: "steered", steerTargetDeliveryId: completed.rootDeliveryId, attemptCount: 0 }),
       ]),
     );
   });
@@ -260,17 +287,73 @@ async function createFixture(database: ReturnType<typeof createDatabaseClient>["
   };
 }
 
-function cancelledReport(fixture: Fixture): TurnReportRequest {
+async function acceptAndSteer(fixture: Fixture, custody: PostgresRuntimeCustodyStore): Promise<void> {
+  const rootInputHash = computeDirectInputHash(fixture.rootRequest);
+  await expect(
+    custody.beginDeliveryDispatch(fixture.rootRequest, rootInputHash, fixture.dispatchContext),
+  ).resolves.toBe("dispatched");
+  await expect(
+    custody.acceptDelivery(fixture.rootRequest, rootInputHash, fixture.rootTurnId, fixture.context),
+  ).resolves.toBe("accepted");
+
+  for (const request of fixture.steerRequests) {
+    const inputHash = computeRuntimeImSteerInputHash(request);
+    const semanticHash = computeRuntimeImMessageSemanticHash(request);
+    await expect(custody.beginSteerDispatch(request, inputHash, fixture.dispatchContext)).resolves.toBe("dispatched");
+    await expect(custody.recordSteered(request, inputHash, semanticHash, fixture.context)).resolves.toBe("steered");
+  }
+}
+
+async function deliveryRows(database: ReturnType<typeof createDatabaseClient>["database"], fixture: Fixture) {
+  const rows = await database
+    .select({
+      id: imMessageDeliveries.id,
+      state: imMessageDeliveries.state,
+      steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
+      reportedAt: imMessageDeliveries.reportedAt,
+      attemptCount: imMessageDeliveries.attemptCount,
+      nextAttemptAt: imMessageDeliveries.nextAttemptAt,
+      lastErrorCode: imMessageDeliveries.lastErrorCode,
+    })
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.sessionId, fixture.sessionId));
+  const root = rows.find((row) => row.id === fixture.rootDeliveryId);
+  if (!root) throw new Error("Root delivery row is missing");
+  const children = fixture.steerRequests.map((request) => {
+    const child = rows.find((row) => row.id === request.deliveryId);
+    if (!child) throw new Error(`Steered delivery row is missing: ${request.deliveryId}`);
+    return child;
+  });
+  return { root, children };
+}
+
+function janitorOptions(now: Date) {
+  return {
+    clock: () => now,
+    expiryBatchSize: 100,
+    retentionBatchSize: 100,
+    imMessagesRetentionMs: 90 * 24 * 60 * 60 * 1_000,
+    imMessageDeliveriesRetentionMs: 90 * 24 * 60 * 60 * 1_000,
+    slackWebhookReceiptsRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+    feishuInboundReceiptsRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+  };
+}
+
+function turnReport(
+  fixture: Fixture,
+  outcome: TurnReportRequest["outcome"],
+  errorReason?: TurnReportRequest["errorReason"],
+): TurnReportRequest {
   const body = {
     deliveryId: fixture.rootDeliveryId,
     turnId: fixture.rootTurnId,
     sessionId: fixture.sessionId,
     agentId: fixture.agentId,
     placementGeneration: fixture.placementGeneration,
-    outcome: "cancelled" as const,
-    executionEffects: "may_have_occurred" as const,
-    errorReason: "client_shutdown" as const,
+    outcome,
+    executionEffects: outcome === "completed" ? ("completed" as const) : ("may_have_occurred" as const),
     traceSummary: { lastSequence: 0, droppedEvents: 0 },
+    ...(errorReason ? { errorReason } : {}),
   };
   return { type: "turn:report", requestId: randomUUID(), ...body, resultHash: computeTurnResultHash(body) };
 }

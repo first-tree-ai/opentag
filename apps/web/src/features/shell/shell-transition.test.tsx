@@ -49,6 +49,7 @@ function HomePage() {
     <>
       <h1>Home</h1>
       <Link to={"/agents/a1" as never}>Agent</Link>
+      <Link to={"/" as never}>Home</Link>
       <Link to={"/late" as never}>Late</Link>
       <Link to={"/other" as never}>Other</Link>
     </>
@@ -82,11 +83,20 @@ function OtherPage() {
   return <p>No heading here</p>;
 }
 
-async function renderShell(root: () => ReactElement = Layout, path = "/") {
+async function renderShell(
+  root: () => ReactElement = Layout,
+  path = "/",
+  options: { beforeAgentLoad?: () => Promise<void> } = {},
+) {
   const rootRoute = createRootRoute({ component: root });
   const routeTree = rootRoute.addChildren([
     createRoute({ component: HomePage, getParentRoute: () => rootRoute, path: "/" }),
-    createRoute({ component: AgentPage, getParentRoute: () => rootRoute, path: "/agents/$agentId" }),
+    createRoute({
+      ...(options.beforeAgentLoad ? { beforeLoad: options.beforeAgentLoad } : {}),
+      component: AgentPage,
+      getParentRoute: () => rootRoute,
+      path: "/agents/$agentId",
+    }),
     createRoute({ component: LatePage, getParentRoute: () => rootRoute, path: "/late" }),
     createRoute({ component: OtherPage, getParentRoute: () => rootRoute, path: "/other" }),
   ]);
@@ -211,6 +221,30 @@ describe("useShellTransition focus restoration", () => {
     await flush();
 
     expect(document.activeElement).toBe(screen.getByRole("link", { name: "Late link" }));
+  });
+
+  it("restores focus when a pending route is canceled by returning to the current path", async () => {
+    let releaseAgentLoad!: () => void;
+    const beforeAgentLoad = new Promise<void>((resolve) => {
+      releaseAgentLoad = resolve;
+    });
+    const { router } = await renderShell(Layout, "/", { beforeAgentLoad: () => beforeAgentLoad });
+    pressTab();
+    const agentLink = screen.getByRole("link", { name: "Agent" });
+    agentLink.focus();
+
+    const pendingNavigation = router.navigate({ to: "/agents/$agentId" as never, params: { agentId: "a1" } as never });
+    await flush();
+
+    const homeLink = screen.getByRole("link", { name: "Home" });
+    homeLink.focus();
+    fireEvent.keyDown(document, { key: "Enter" });
+    fireEvent.click(homeLink);
+    await flush();
+
+    expect(document.activeElement).toBe(agentLink);
+    releaseAgentLoad();
+    await pendingNavigation.catch(() => undefined);
   });
 
   it("gives up on a remembered link after the grace period and focuses the heading instead", async () => {

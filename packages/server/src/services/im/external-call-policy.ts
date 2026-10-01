@@ -115,7 +115,11 @@ type ExternalCallOptionsDeadline = {
 };
 type ExternalCallOptionsRetry = { maxAttempts?: number; retryable?: (error: unknown) => boolean };
 type ExternalCallOptionsCircuit = { circuitKey?: string };
-type ExternalCallOptionsCore = ExternalCallOptionsDeadline & ExternalCallOptionsRetry;
+type ExternalCallOptionsSecurity = {
+  /** Provider-returned media URLs may use tenant-specific HTTPS hosts. */
+  allowAnyHttpsHost?: boolean;
+};
+type ExternalCallOptionsCore = ExternalCallOptionsDeadline & ExternalCallOptionsRetry & ExternalCallOptionsSecurity;
 export type ExternalCallOptions = ExternalCallOptionsCore & ExternalCallOptionsCircuit;
 
 type PolicyAction<T> = (signal: AbortSignal, requestId: string) => Promise<T>;
@@ -266,7 +270,7 @@ export class ExternalCallPolicy {
   }
 
   /** Validate a provider URL before any credential-bearing request headers are constructed. */
-  admitUrl(input: string | URL): URL {
+  admitUrl(input: string | URL, options: Pick<ExternalCallOptions, "allowAnyHttpsHost"> = {}): URL {
     if (hasEncodedAuthority(input)) throw hostNotAllowedError("Encoded provider hosts are not allowed");
     const url = parseProviderUrl(input);
     const isLoopbackHttp = url.protocol === "http:" && isLoopbackHostname(url.hostname);
@@ -276,7 +280,7 @@ export class ExternalCallPolicy {
     if (isIpLiteral(url.hostname) && !isLoopbackHttp) {
       throw hostNotAllowedError("Provider IP literals are not allowed");
     }
-    if (!hostAllowed(url, this.#allowedHosts)) {
+    if (!options.allowAnyHttpsHost && !hostAllowed(url, this.#allowedHosts)) {
       throw hostNotAllowedError();
     }
     return url;
@@ -370,7 +374,7 @@ export class ExternalCallPolicy {
   }
 
   async fetch(input: string | URL, init: RequestInit = {}, options: ExternalCallOptions = {}): Promise<Response> {
-    const url = this.admitUrl(input);
+    const url = this.admitUrl(input, options);
     const requestSignal = init.signal ?? undefined;
     const runOptions = requestSignal
       ? {
@@ -391,7 +395,7 @@ export class ExternalCallPolicy {
         }
         if (response.url) {
           try {
-            this.admitUrl(response.url);
+            this.admitUrl(response.url, options);
           } catch (error) {
             throw new ExternalCallPolicyError("IM_PROVIDER_REDIRECT_REJECTED", "Provider redirects are not allowed", {
               category: "security",

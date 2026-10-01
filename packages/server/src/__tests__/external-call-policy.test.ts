@@ -103,6 +103,21 @@ describe("ExternalCallPolicy", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
+  it("allows tenant-specific HTTPS hosts only when explicitly requested", async () => {
+    const transport = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const policy = new ExternalCallPolicy({ transport });
+
+    await expect(policy.fetch("https://cdn.example.test/avatar.png")).rejects.toMatchObject({
+      code: "IM_PROVIDER_HOST_NOT_ALLOWED",
+    });
+    await expect(
+      policy.fetch("https://cdn.example.test/avatar.png", {}, { allowAnyHttpsHost: true }),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(policy.fetch("https://127.0.0.1/avatar.png", {}, { allowAnyHttpsHost: true })).rejects.toMatchObject({
+      code: "IM_PROVIDER_HOST_NOT_ALLOWED",
+    });
+  });
+
   it("rejects private, loopback, and encoded IP literal hosts", async () => {
     const policy = new ExternalCallPolicy({
       allowedHosts: ["127.0.0.1", "10.0.0.1", "::1"],

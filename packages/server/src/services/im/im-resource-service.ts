@@ -1,4 +1,5 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { Readable } from "node:stream";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
   agents,
@@ -16,9 +17,15 @@ import { ProviderAdapterResolutionError } from "../im-bindings/provider-adapter-
 import { ExternalCallPolicy, limitReadableStream } from "./external-call-policy.js";
 
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+const ALLOWED_AVATAR_MEDIA_TYPES = new Set(["image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"]);
 
 export interface AuthorizedImResource extends ReadableResource {
   kind: "image" | "file" | "audio" | "video";
+}
+
+export interface AuthorizedAgentAvatar extends ReadableResource {
+  mediaType: string;
 }
 
 export class ImResourceService {
@@ -36,6 +43,72 @@ export class ImResourceService {
     this.#database = database;
     this.#resolveAdapter = resolveAdapter;
     this.#policy = policy;
+  }
+
+  async openAvatar(callerUserId: string, agentId: string): Promise<AuthorizedAgentAvatar> {
+    const [binding] = await this.#database
+      .select({ providerUrl: imBindings.botAvatarUrl })
+      .from(agents)
+      .innerJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .limit(1);
+    if (!binding?.providerUrl) {
+      throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent avatar was not found");
+    }
+
+    let response: Response;
+    try {
+      response = await this.#policy.fetch(
+        binding.providerUrl,
+        { headers: { accept: "image/*" } },
+        { allowAnyHttpsHost: true, circuitKey: `im-avatar:${agentId}`, maxAttempts: 1, timeoutMs: 10_000 },
+      );
+    } catch {
+      throw new ImBindingServiceError(
+        "IM_BINDING_TEMPORARILY_UNAVAILABLE",
+        503,
+        "The Agent avatar is temporarily unavailable",
+        "transient",
+      );
+    }
+
+    if (!response.ok || !response.body) {
+      await discardResponseBody(response);
+      throw new ImBindingServiceError(
+        "IM_BINDING_TEMPORARILY_UNAVAILABLE",
+        503,
+        "The Agent avatar is temporarily unavailable",
+        "transient",
+      );
+    }
+
+    const mediaType = imageMediaType(response.headers.get("content-type"));
+    if (!mediaType) {
+      await discardResponseBody(response);
+      throw new ImBindingServiceError(
+        "VALIDATION_ERROR",
+        415,
+        "The Agent avatar is not an allowed image",
+        "validation",
+      );
+    }
+
+    const sizeBytes = response.headers.get("content-length");
+    const declaredSize = sizeBytes === null ? undefined : Number(sizeBytes);
+    if (declaredSize !== undefined && (!Number.isSafeInteger(declaredSize) || declaredSize < 0)) {
+      await discardResponseBody(response);
+      throw new ImBindingServiceError("VALIDATION_ERROR", 502, "The Agent avatar response is invalid", "validation");
+    }
+    if (declaredSize !== undefined && declaredSize > MAX_AVATAR_BYTES) {
+      await discardResponseBody(response);
+      throw new ImBindingServiceError("VALIDATION_ERROR", 413, "The Agent avatar exceeds the size limit", "validation");
+    }
+
+    return {
+      stream: limitReadableStream(Readable.fromWeb(response.body), MAX_AVATAR_BYTES, "IM_AVATAR_TOO_LARGE"),
+      mediaType,
+      ...(declaredSize === undefined ? {} : { sizeBytes: declaredSize }),
+    };
   }
 
   async open(
@@ -142,5 +215,18 @@ export class ImResourceService {
       filename: opened.filename ?? resource.filename ?? undefined,
       mediaType: opened.mediaType ?? resource.mediaType ?? undefined,
     };
+  }
+}
+
+function imageMediaType(value: string | null): string | undefined {
+  const mediaType = value?.split(";", 1)[0]?.trim().toLowerCase();
+  return mediaType && ALLOWED_AVATAR_MEDIA_TYPES.has(mediaType) ? mediaType : undefined;
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Best effort: the provider response is never relayed after validation fails.
   }
 }

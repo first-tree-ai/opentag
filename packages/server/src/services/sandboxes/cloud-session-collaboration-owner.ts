@@ -690,7 +690,22 @@ export class CloudSessionCollaborationOwner {
     attemptCount: number,
     turnId: string,
   ): Promise<"accepted" | "unavailable" | "refused"> {
-    const durable = await this.#writeDurableAccepted(connection, request, turnId);
+    let durable: RuntimeDurableWorkRecord | "refused" | undefined;
+    try {
+      durable = await this.#writeDurableAccepted(connection, request, turnId);
+    } catch {
+      this.#logger?.warn(
+        {
+          code: "CLOUD_SESSION_DURABLE_READ_FAILED",
+          computerId: connection.computerId,
+          sessionId: request.targetSessionId,
+          messageId: request.messageId,
+          turnId,
+        },
+        "Accepted Session custody could not be read; the attempt stays retryable",
+      );
+      return "unavailable";
+    }
     if (durable === "refused") return "refused";
     if (!durable) return "unavailable";
     const sessions = this.#sessions;
@@ -727,7 +742,7 @@ export class CloudSessionCollaborationOwner {
     const store = this.#durableWork;
     if (!store) return undefined;
     const key = durableKey(request.targetSessionId, request.messageId);
-    const existing = await store.read(connection.computerId, "session-message", key).catch(() => undefined);
+    const existing = await this.#readDurable(connection.computerId, request.targetSessionId, request.messageId);
     const decision = custodyDecision(existing, connection, turnId);
     if (decision === "reuse") return existing;
     if (decision === "refuse") return "refused";
@@ -756,7 +771,7 @@ export class CloudSessionCollaborationOwner {
         return record;
       } catch {
         // A concurrent writer may have created a record first; re-read and re-decide once.
-        const raced = await store.read(connection.computerId, "session-message", key).catch(() => undefined);
+        const raced = await this.#readDurable(connection.computerId, request.targetSessionId, request.messageId);
         const retry = custodyDecision(raced, connection, turnId);
         if (retry === "reuse") return raced;
         if (retry === "refuse") return "refused";

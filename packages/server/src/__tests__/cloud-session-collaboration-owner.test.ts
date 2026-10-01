@@ -167,6 +167,7 @@ function makeStack(
     noteActivity?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["noteActivity"];
     recordMessageOutcome?: (input: { messageId: string }) => Promise<boolean>;
     requestTimeoutMs?: number;
+    logger?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["logger"];
   } = {},
 ): Stack {
   const hub = new RunnerHub();
@@ -206,6 +207,7 @@ function makeStack(
     modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
     modelGrants: overrides.modelGrants ?? grants,
     ...(overrides.noteActivity !== undefined ? { noteActivity: overrides.noteActivity } : {}),
+    ...(overrides.logger !== undefined ? { logger: overrides.logger } : {}),
     proofs,
     ...(overrides.requestTimeoutMs !== undefined ? { requestTimeoutMs: overrides.requestTimeoutMs } : {}),
     sessions: { recordMessageOutcome },
@@ -445,6 +447,193 @@ describe("CloudSessionCollaborationOwner", () => {
     releaseOutcome();
     await expect(delivering).resolves.toEqual({ status: "accepted" });
     expect(order.indexOf("accepted-outcome")).toBeLessThan(order.indexOf("verified"));
+  });
+
+  it("fails closed when the first custody preflight read throws", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const store = new PostgresRuntimeDurableWorkStore(db.database);
+    let failReads = 0;
+    let successfulWrites = 0;
+    const reads = vi.fn(async (...args: Parameters<typeof store.read>) => {
+      if (failReads > 0) {
+        failReads -= 1;
+        throw new Error("preflight custody read failure");
+      }
+      return store.read(...args);
+    });
+    const writes = vi.fn(async (...args: Parameters<typeof store.write>) => {
+      await store.write(...args);
+      successfulWrites += 1;
+    });
+    const warn = vi.fn();
+    const stack = makeStack(fixture, {
+      durableWork: {
+        read: reads,
+        write: writes,
+        replaceSessionMessageRecord: (computerId, expected, record) =>
+          store.replaceSessionMessageRecord(computerId, expected, record),
+      },
+      logger: { error: vi.fn(), warn },
+    });
+    let receiptCount = 0;
+    const attach = await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (!connection) return;
+        const turnId = receiptCount === 0 ? "turn-first" : "turn-second";
+        receiptCount += 1;
+        void stack.owner.handleReceived(connection, {
+          messageId,
+          phase: "received",
+          requestId: frame.requestId,
+          status: "accepted",
+          turnId,
+          type: "session:message:received",
+        });
+      },
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    const [before] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    if (!before) throw new Error("durable record missing before retry");
+    const grantsBefore = stack.grants.trackedGrantCount;
+    failReads = 1;
+
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_unavailable",
+    });
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(successfulWrites).toBe(1);
+    expect(stack.grants.trackedGrantCount).toBe(grantsBefore);
+    expect(
+      attach.sent.filter((frame) => frame.type === "session:message:verified" && frame.status === "verified"),
+    ).toHaveLength(1);
+    const [after] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(after).toMatchObject({
+      acceptedAt: before.acceptedAt,
+      payload: before.payload,
+      status: "accepted",
+      updatedAt: before.updatedAt,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      {
+        code: "CLOUD_SESSION_DURABLE_READ_FAILED",
+        computerId: fixture.computerId,
+        sessionId: fixture.sessionId,
+        messageId,
+        turnId: "turn-second",
+      },
+      "Accepted Session custody could not be read; the attempt stays retryable",
+    );
+  });
+
+  it("fails closed when the raced custody re-read throws", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const store = new PostgresRuntimeDurableWorkStore(db.database);
+    let racePhase: "normal" | "preflight" | "reread" | "done" = "normal";
+    let successfulWrites = 0;
+    const reads = vi.fn(async (...args: Parameters<typeof store.read>) => {
+      if (racePhase === "preflight") {
+        racePhase = "reread";
+        return undefined;
+      }
+      if (racePhase === "reread") {
+        racePhase = "done";
+        throw new Error("raced custody read failure");
+      }
+      return store.read(...args);
+    });
+    const writes = vi.fn(async (...args: Parameters<typeof store.write>) => {
+      if (racePhase === "reread") throw new Error("concurrent custody write");
+      await store.write(...args);
+      successfulWrites += 1;
+    });
+    const warn = vi.fn();
+    const stack = makeStack(fixture, {
+      durableWork: {
+        read: reads,
+        write: writes,
+        replaceSessionMessageRecord: (computerId, expected, record) =>
+          store.replaceSessionMessageRecord(computerId, expected, record),
+      },
+      logger: { error: vi.fn(), warn },
+    });
+    let receiptCount = 0;
+    const attach = await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (!connection) return;
+        const turnId = receiptCount === 0 ? "turn-first" : "turn-second";
+        receiptCount += 1;
+        void stack.owner.handleReceived(connection, {
+          messageId,
+          phase: "received",
+          requestId: frame.requestId,
+          status: "accepted",
+          turnId,
+          type: "session:message:received",
+        });
+      },
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    const [before] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    if (!before) throw new Error("durable record missing before raced retry");
+    const grantsBefore = stack.grants.trackedGrantCount;
+    racePhase = "preflight";
+
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_unavailable",
+    });
+    expect(reads).toHaveBeenCalledTimes(3);
+    expect(writes).toHaveBeenCalledTimes(2);
+    expect(successfulWrites).toBe(1);
+    expect(stack.grants.trackedGrantCount).toBe(grantsBefore);
+    expect(
+      attach.sent.filter((frame) => frame.type === "session:message:verified" && frame.status === "verified"),
+    ).toHaveLength(1);
+    const [after] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(after).toMatchObject({
+      acceptedAt: before.acceptedAt,
+      payload: before.payload,
+      status: "accepted",
+      updatedAt: before.updatedAt,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      {
+        code: "CLOUD_SESSION_DURABLE_READ_FAILED",
+        computerId: fixture.computerId,
+        sessionId: fixture.sessionId,
+        messageId,
+        turnId: "turn-second",
+      },
+      "Accepted Session custody could not be read; the attempt stays retryable",
+    );
   });
 
   it("never sends a session frame to a legacy E7 connection and leaves IM behavior untouched", async () => {

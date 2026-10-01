@@ -106,6 +106,7 @@ export class UpdateManager {
   #discoveryFailures = 0;
   #discoveryTimer?: ReturnType<typeof setTimeout>;
   #discoveryInFlight?: Promise<boolean>;
+  #recoveryKeepAlive = 0;
   #recoveryStatusWrite?: Promise<void>;
 
   constructor(options: UpdateManagerOptions) {
@@ -231,6 +232,20 @@ export class UpdateManager {
     if (this.#discoveryStarted && !this.#stopped) this.#scheduleDiscovery(this.#nextDiscoveryDelay());
   }
 
+  /** Keep the discovery loop referenced while the daemon waits for recovery. */
+  holdRecoveryAlive(): () => void {
+    if (this.#stopped || !this.#options.discoverTarget) return () => undefined;
+    this.#recoveryKeepAlive += 1;
+    this.#discoveryTimer?.ref?.();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#recoveryKeepAlive = Math.max(0, this.#recoveryKeepAlive - 1);
+      if (this.#recoveryKeepAlive === 0) this.#discoveryTimer?.unref?.();
+    };
+  }
+
   /** Persist a local recovery diagnosis without changing the install-attempt state machine. */
   async recordRecoveryStatus(status: UpdaterRecoveryStatus | undefined): Promise<void> {
     const write = async () => {
@@ -292,8 +307,9 @@ export class UpdateManager {
         if (!this.#stopped) this.#scheduleDiscovery(this.#nextDiscoveryDelay());
       });
     }, delay);
-    timer.unref?.();
     this.#discoveryTimer = timer;
+    if (this.#recoveryKeepAlive > 0) timer.ref?.();
+    else timer.unref?.();
   }
 
   #nextDiscoveryDelay(): number {

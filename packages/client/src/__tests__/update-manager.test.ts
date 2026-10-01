@@ -1,7 +1,11 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { RuntimeChannelTarget } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 import { recordingLogger } from "./recording-logger.js";
+
+const execFileAsync = promisify(execFile);
 
 interface Harness {
   manager: UpdateManager;
@@ -238,6 +242,43 @@ describe("UpdateManager", () => {
     expect(discoverTarget).toHaveBeenCalledOnce();
     expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
     h.manager.stop();
+  });
+
+  it("keeps built metadata recovery alive until a retry runs", async () => {
+    const builtModuleUrl = new URL("../../dist/index.mjs", import.meta.url).href;
+    const script = `
+      import { UpdateManager } from ${JSON.stringify(builtModuleUrl)};
+      let reads = 0;
+      let manager;
+      manager = new UpdateManager({
+        channel: "staging",
+        currentVersion: "0.0.1-staging.1.1",
+        protectedWork: () => ({ total: 0 }),
+        executeUpdate: async () => undefined,
+        onHandoff: () => undefined,
+        loadState: async () => undefined,
+        saveState: async () => undefined,
+        discoverTarget: async () => {
+          reads += 1;
+          if (reads >= 2) manager.stop();
+          throw new Error("metadata unavailable");
+        },
+        discoveryIntervalMs: 100,
+        discoveryMaxBackoffMs: 100,
+      });
+      manager.startDiscovery();
+      manager.holdRecoveryAlive();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      process.on("beforeExit", () => {
+        process.stdout.write("beforeExit reads=" + reads + "\\n");
+        process.exitCode = reads >= 2 ? 0 : 1;
+      });
+    `;
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain("beforeExit reads=2");
   });
 
   it("uses bounded exponential backoff after unavailable release metadata", async () => {

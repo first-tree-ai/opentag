@@ -285,9 +285,14 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
           const recoveryStatus = runtimeRecoveryStatus(error.category);
           if (recoveryStatus) await context.state.updater.recordRecoveryStatus(recoveryStatus);
           if (error.category === "capability_incompatibility") {
-            await context.state.updater.discoverNow();
-            await waitForCapabilityRecovery(context, signal);
-            return;
+            const releaseRecovery = context.state.updater.holdRecoveryAlive();
+            try {
+              await context.state.updater.discoverNow();
+              await waitForCapabilityRecovery(context, signal);
+              return;
+            } finally {
+              releaseRecovery();
+            }
           }
         }
         throw error;

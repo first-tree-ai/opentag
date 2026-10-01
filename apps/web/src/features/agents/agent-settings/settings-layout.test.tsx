@@ -1,4 +1,4 @@
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useRouter, useRouterState } from "@tanstack/react-router";
 import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderInRouter } from "../../../__tests__/support/router.js";
@@ -9,12 +9,22 @@ function LocationProbe() {
   return <output>{pathname}</output>;
 }
 
+function BackButton() {
+  const router = useRouter({ warn: false });
+  return (
+    <button type="button" onClick={() => router.history.back()}>
+      Back
+    </button>
+  );
+}
+
 describe("UnsavedChangesGuard", () => {
   it("keeps an edited settings page in place until the reader explicitly discards changes", async () => {
     await renderInRouter(
       <>
         <UnsavedChangesGuard when />
         <Link to="/account">Leave</Link>
+        <BackButton />
         <LocationProbe />
       </>,
       { path: "/settings" },
@@ -31,5 +41,9 @@ describe("UnsavedChangesGuard", () => {
     fireEvent.click(screen.getByRole("link", { name: "Leave" }));
     fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
     expect(await screen.findByText("/account")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("/settings")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

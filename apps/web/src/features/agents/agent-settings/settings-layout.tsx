@@ -48,6 +48,7 @@ export function SettingsSaveActions({
 
 export function UnsavedChangesGuard({ when }: { when: boolean }) {
   const router = useRouter({ warn: false });
+  const unblockRef = useRef<(() => void) | undefined>(undefined);
   const resolverRef = useRef<((blocked: boolean) => void) | undefined>(undefined);
   const [confirming, setConfirming] = useState(false);
 
@@ -63,14 +64,23 @@ export function UnsavedChangesGuard({ when }: { when: boolean }) {
       },
       enableBeforeUnload: true,
     });
+    unblockRef.current = unblock;
     return () => {
       unblock();
+      if (unblockRef.current === unblock) unblockRef.current = undefined;
       resolverRef.current?.(true);
       resolverRef.current = undefined;
     };
   }, [router, when]);
 
   function settle(blocked: boolean) {
+    if (!blocked) {
+      // Remove the blocker before retrying the allowed navigation. The settings component can
+      // remain mounted until the route commit finishes, so a fast Back could otherwise be blocked
+      // by the discarded draft and observe timing-dependent history.
+      unblockRef.current?.();
+      unblockRef.current = undefined;
+    }
     resolverRef.current?.(blocked);
     resolverRef.current = undefined;
     setConfirming(false);

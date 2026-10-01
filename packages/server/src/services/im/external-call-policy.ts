@@ -82,7 +82,8 @@ type ConcurrencyWaiter = { grant: () => void; cancel: (error: unknown) => void }
 
 type ExternalCallPolicyClockOptions = { clock?: () => Date };
 type ExternalCallPolicySleepOptions = { sleep?: (delayMs: number) => Promise<void> };
-type ExternalCallPolicyTransportOptions = { transport?: typeof fetch };
+export type ExternalCallTransport = (input: string | URL, init?: RequestInit) => Promise<Response>;
+type ExternalCallPolicyTransportOptions = { transport?: ExternalCallTransport };
 type ExternalCallPolicyTimingOptions = ExternalCallPolicyClockOptions &
   /* type-only */ ExternalCallPolicySleepOptions &
   /* type-only */ ExternalCallPolicyTransportOptions;
@@ -115,11 +116,15 @@ type ExternalCallOptionsDeadline = {
 };
 type ExternalCallOptionsRetry = { maxAttempts?: number; retryable?: (error: unknown) => boolean };
 type ExternalCallOptionsCircuit = { circuitKey?: string };
+type ExternalCallOptionsTransport = { transport?: ExternalCallTransport };
 type ExternalCallOptionsSecurity = {
   /** Provider-returned media URLs may use tenant-specific HTTPS hosts. */
   allowAnyHttpsHost?: boolean;
 };
-type ExternalCallOptionsCore = ExternalCallOptionsDeadline & ExternalCallOptionsRetry & ExternalCallOptionsSecurity;
+type ExternalCallOptionsCore = ExternalCallOptionsDeadline &
+  ExternalCallOptionsRetry &
+  ExternalCallOptionsSecurity &
+  ExternalCallOptionsTransport;
 export type ExternalCallOptions = ExternalCallOptionsCore & ExternalCallOptionsCircuit;
 
 type PolicyAction<T> = (signal: AbortSignal, requestId: string) => Promise<T>;
@@ -232,7 +237,7 @@ type DeadlineAttempt<T> = { result: Promise<T>; settled: Promise<void> };
 export class ExternalCallPolicy {
   readonly #clock: () => Date;
   readonly #sleep: (delayMs: number) => Promise<void>;
-  readonly #transport: typeof fetch;
+  readonly #transport: ExternalCallTransport;
   readonly #defaultTimeoutMs: number;
   readonly #maxConcurrency: number;
   readonly #maxAttempts: number;
@@ -382,10 +387,11 @@ export class ExternalCallPolicy {
           signal: options.signal ? AbortSignal.any([options.signal, requestSignal]) : requestSignal,
         }
       : options;
+    const transport = options.transport ?? this.#transport;
     return this.run(
       `http:${url.hostname}`,
       async (signal) => {
-        const response = await this.#transport(url.toString(), { ...init, redirect: "error", signal });
+        const response = await transport(url.toString(), { ...init, redirect: "error", signal });
         if (response.redirected || (response.status >= 300 && response.status < 400)) {
           throw new ExternalCallPolicyError("IM_PROVIDER_REDIRECT_REJECTED", "Provider redirects are not allowed", {
             category: "security",

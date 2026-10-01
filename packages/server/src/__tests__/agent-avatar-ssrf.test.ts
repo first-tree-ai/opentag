@@ -4,7 +4,7 @@ import type { ExternalCallPolicy } from "../services/im/external-call-policy.js"
 import { ImResourceService } from "../services/im/im-resource-service.js";
 
 describe("Agent avatar SSRF regression", () => {
-  it("passes a connection-filtering dispatcher to avatar transport", async () => {
+  it("passes a connection-filtering transport to avatar policy", async () => {
     const fetch = vi.fn().mockRejectedValue(new Error("blocked destination"));
     const query = {
       from: vi.fn().mockReturnThis(),
@@ -21,13 +21,14 @@ describe("Agent avatar SSRF regression", () => {
     });
     expect(fetch).toHaveBeenCalledWith(
       "https://avatar.example.test/image.png",
-      expect.objectContaining({ dispatcher: expect.anything() }),
-      expect.objectContaining({ allowAnyHttpsHost: true, maxAttempts: 1 }),
+      { headers: { accept: "image/*" } },
+      expect.objectContaining({ allowAnyHttpsHost: true, maxAttempts: 1, transport: expect.any(Function) }),
     );
-    const [url, init] = fetch.mock.calls[0] as [string, RequestInit & { dispatcher?: unknown }];
+    const [url, init, options] = fetch.mock.calls[0] as [string, RequestInit, { transport?: unknown }];
     expect(url).toBe("https://avatar.example.test/image.png");
     expect(init.headers).toEqual({ accept: "image/*" });
     expect(init).not.toHaveProperty("credentials");
     expect(init).not.toHaveProperty("authorization");
+    expect(options.transport).toEqual(expect.any(Function));
   });
 });

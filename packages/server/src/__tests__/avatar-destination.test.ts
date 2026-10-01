@@ -1,8 +1,13 @@
 import type { LookupAddress, LookupAllOptions } from "node:dns";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, connect } from "node:net";
+import { Agent } from "undici";
 import { describe, expect, it, vi } from "vitest";
-import { createAvatarDispatcher, createAvatarLookup } from "../services/im/avatar-destination.js";
+import {
+  type AvatarAddressResolver,
+  createAvatarLookup,
+  createAvatarTransport,
+} from "../services/im/avatar-destination.js";
 
 const BLOCKED_CODE = "IM_AVATAR_DESTINATION_BLOCKED";
 
@@ -85,15 +90,65 @@ describe("avatar connection destination policy", () => {
       server.listen(0, "127.0.0.1", () => resolve());
     });
     const port = (server.address() as AddressInfo).port;
-    const dispatcher = createAvatarDispatcher(scriptedResolver(["127.0.0.1"]));
+    const transport = createAvatarTransport(scriptedResolver(["127.0.0.1"]));
     try {
-      await expect(
-        fetch(`http://avatar.example.test:${port}/avatar`, { dispatcher } as RequestInit & { dispatcher: unknown }),
-      ).rejects.toMatchObject({ cause: { code: BLOCKED_CODE } });
+      await expect(transport(`http://avatar.example.test:${port}/avatar`)).rejects.toMatchObject({
+        cause: { code: BLOCKED_CODE },
+      });
     } finally {
-      await dispatcher.close();
+      await transport.close();
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
     expect(requests).toBe(0);
+  });
+
+  it("fetches through the package transport after an allowed lookup and rejects a blocked lookup", async () => {
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.writeHead(200, { "content-type": "image/png" });
+      response.end("image");
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as AddressInfo).port;
+    const dispatcherFactory = (resolve: AvatarAddressResolver) =>
+      new Agent({
+        connect: (_options, callback) => {
+          createAvatarLookup(resolve)("avatar.example.test", { all: false }, (error) => {
+            if (error) {
+              callback(error, null);
+              return;
+            }
+            const socket = connect(port, "127.0.0.1");
+            socket.once("connect", () => callback(null, socket));
+            socket.once("error", (socketError) => callback(socketError, null));
+          });
+        },
+      });
+    const allowedResolve = scriptedResolver(["93.184.216.34"]);
+    const blockedResolve = scriptedResolver(["127.0.0.1"]);
+    const allowed = createAvatarTransport(allowedResolve, dispatcherFactory);
+    const blocked = createAvatarTransport(blockedResolve, dispatcherFactory);
+
+    try {
+      const response = await allowed(`http://avatar.example.test:${port}/avatar`, {
+        headers: { accept: "image/*" },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("image");
+      expect(allowedResolve).toHaveBeenCalledOnce();
+      await expect(blocked(`http://avatar.example.test:${port}/avatar`)).rejects.toMatchObject({
+        cause: { code: BLOCKED_CODE },
+      });
+      expect(blockedResolve).toHaveBeenCalledOnce();
+      expect(requests).toBe(1);
+    } finally {
+      await allowed.close();
+      await blocked.close();
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
   });
 });

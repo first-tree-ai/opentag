@@ -14,7 +14,7 @@ import type { ComputerAuthContext } from "../computers/index.js";
 import type { ImProviderAdapter, ReadableResource } from "../im-bindings/index.js";
 import { ImBindingServiceError } from "../im-bindings/index.js";
 import { ProviderAdapterResolutionError } from "../im-bindings/provider-adapter-resolver.js";
-import { getAvatarDispatcher } from "./avatar-destination.js";
+import { getAvatarTransport } from "./avatar-destination.js";
 import { ExternalCallPolicy, limitReadableStream } from "./external-call-policy.js";
 
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
@@ -59,17 +59,17 @@ export class ImResourceService {
 
     let response: Response;
     try {
-      // The runtime dispatcher contract is compatible, but Node's bundled Undici types are versioned separately.
-      const avatarRequestInit = {
-        headers: { accept: "image/*" },
-        dispatcher: getAvatarDispatcher(),
-      } as unknown as RequestInit;
-      response = await this.#policy.fetch(binding.providerUrl, avatarRequestInit, {
-        allowAnyHttpsHost: true,
-        circuitKey: `im-avatar:${agentId}`,
-        maxAttempts: 1,
-        timeoutMs: 10_000,
-      });
+      response = await this.#policy.fetch(
+        binding.providerUrl,
+        { headers: { accept: "image/*" } },
+        {
+          allowAnyHttpsHost: true,
+          circuitKey: `im-avatar:${agentId}`,
+          maxAttempts: 1,
+          timeoutMs: 10_000,
+          transport: getAvatarTransport(),
+        },
+      );
     } catch {
       throw new ImBindingServiceError(
         "IM_BINDING_TEMPORARILY_UNAVAILABLE",

@@ -118,6 +118,18 @@ describe("ExternalCallPolicy", () => {
     });
   });
 
+  it("uses a per-call transport override without changing the policy default", async () => {
+    const defaultTransport = vi.fn();
+    const avatarTransport = vi.fn().mockResolvedValue(new Response("avatar", { status: 200 }));
+    const policy = new ExternalCallPolicy({ allowedHosts: ["avatar.example.test"], transport: defaultTransport });
+
+    await expect(
+      policy.fetch("https://avatar.example.test/avatar.png", {}, { transport: avatarTransport }),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(avatarTransport).toHaveBeenCalledOnce();
+    expect(defaultTransport).not.toHaveBeenCalled();
+  });
+
   it("rejects private, loopback, and encoded IP literal hosts", async () => {
     const policy = new ExternalCallPolicy({
       allowedHosts: ["127.0.0.1", "10.0.0.1", "::1"],

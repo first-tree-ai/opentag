@@ -1023,15 +1023,16 @@ describe("ImResourceService with the unit database", () => {
     await expect(readNodeStream(opened.stream)).resolves.toEqual(Buffer.from("avatar"));
     expect(fetch).toHaveBeenCalledWith(
       AVATAR_URL,
-      expect.objectContaining({ headers: { accept: "image/*" }, dispatcher: expect.anything() }),
+      { headers: { accept: "image/*" } },
       {
         allowAnyHttpsHost: true,
         circuitKey: `im-avatar:${fixture.agentId}`,
         maxAttempts: 1,
         timeoutMs: 10_000,
+        transport: expect.any(Function),
       },
     );
-    const [, init] = fetch.mock.calls[0] as [string, RequestInit & { credentials?: unknown }];
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
     expect(init).not.toHaveProperty("credentials");
     expect(init).not.toHaveProperty("authorization");
   });

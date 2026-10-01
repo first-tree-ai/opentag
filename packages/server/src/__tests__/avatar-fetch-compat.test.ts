@@ -13,20 +13,20 @@ describe("avatar transport fetch compatibility", () => {
       server.listen(0, "127.0.0.1", resolve);
     });
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/upload`;
-    let dispatcher: { close(): Promise<void> } | undefined;
+    let transport: { close(): Promise<void> } | undefined;
 
     try {
       expect(await (await fetch(url)).text()).toBe("ok");
       const nativeFetch = globalThis.fetch;
       const legacyDispatcher = Reflect.get(globalThis, Symbol.for("undici.globalDispatcher.1"));
       const currentDispatcher = Reflect.get(globalThis, Symbol.for("undici.globalDispatcher.2"));
-      const { createAvatarDispatcher } = await import("../services/im/avatar-destination.js");
+      const { createAvatarTransport } = await import("../services/im/avatar-destination.js");
 
       expect(globalThis.fetch).toBe(nativeFetch);
       expect(Reflect.get(globalThis, Symbol.for("undici.globalDispatcher.1"))).toBe(legacyDispatcher);
       expect(Reflect.get(globalThis, Symbol.for("undici.globalDispatcher.2"))).toBe(currentDispatcher);
 
-      dispatcher = createAvatarDispatcher();
+      transport = createAvatarTransport();
       expect(Reflect.get(globalThis, Symbol.for("undici.globalDispatcher.1"))).toBe(legacyDispatcher);
       expect(Reflect.get(globalThis, Symbol.for("undici.globalDispatcher.2"))).toBe(currentDispatcher);
 
@@ -39,7 +39,7 @@ describe("avatar transport fetch compatibility", () => {
       expect(response.status).toBe(200);
       expect(await response.text()).toBe("ok");
     } finally {
-      await dispatcher?.close();
+      await transport?.close();
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });

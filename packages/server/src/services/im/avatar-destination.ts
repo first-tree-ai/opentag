@@ -1,11 +1,12 @@
 import { lookup as dnsLookup, type LookupAddress, type LookupAllOptions } from "node:dns";
 import { isIP, type LookupFunction } from "node:net";
 import { isBlockedAddress, isLoopbackHostname } from "@opentag/shared";
-import { Agent, type Dispatcher } from "undici";
+import { Agent, type Dispatcher, fetch as undiciFetch } from "undici";
+import type { ExternalCallTransport } from "./external-call-policy.js";
 
 const AVATAR_DESTINATION_BLOCKED = "IM_AVATAR_DESTINATION_BLOCKED";
 
-type AvatarAddressResolver = (
+export type AvatarAddressResolver = (
   hostname: string,
   options: LookupAllOptions,
   callback: (error: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void,
@@ -70,10 +71,36 @@ export function createAvatarDispatcher(resolve: AvatarAddressResolver = resolveA
   });
 }
 
-let sharedAvatarDispatcher: Dispatcher | undefined;
+export type AvatarTransport = ExternalCallTransport & { close(): Promise<void> };
+type AvatarDispatcherFactory = (resolve: AvatarAddressResolver) => Dispatcher;
 
-/** Create the shared dispatcher only when an authenticated avatar is fetched. */
-export function getAvatarDispatcher(): Dispatcher {
-  sharedAvatarDispatcher ??= createAvatarDispatcher();
-  return sharedAvatarDispatcher;
+/** Create an avatar transport that always uses this package's fetch and connection-filtering Agent. */
+export function createAvatarTransport(
+  resolve: AvatarAddressResolver = resolveAllAddresses,
+  dispatcherFactory: AvatarDispatcherFactory = createAvatarDispatcher,
+): AvatarTransport {
+  const dispatcher = dispatcherFactory(resolve);
+  const transport: ExternalCallTransport = async (input, init = {}) => {
+    const requestHeaders = init.headers === undefined ? undefined : Array.from(new Headers(init.headers).entries());
+    const response = await undiciFetch(input, {
+      headers: requestHeaders,
+      redirect: init.redirect,
+      signal: init.signal,
+      dispatcher,
+    });
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Array.from(response.headers.entries()),
+    });
+  };
+  return Object.assign(transport, { close: () => dispatcher.close() });
+}
+
+let sharedAvatarTransport: AvatarTransport | undefined;
+
+/** Create the shared avatar transport only when an authenticated avatar is fetched. */
+export function getAvatarTransport(): AvatarTransport {
+  sharedAvatarTransport ??= createAvatarTransport();
+  return sharedAvatarTransport;
 }

@@ -38,7 +38,27 @@ export async function requeueSteeredDeliveries(
   now: Date,
   sessionService: SessionEnsurer,
 ): Promise<string[]> {
-  const candidates = (await transaction
+  const candidates = await readSteeredCandidates(transaction, targetDeliveryId);
+  if (candidates.length === 0) return [];
+  const routes = await resolveRecoveryRoutes(transaction, candidates, now, sessionService);
+  const recoveredIds: string[] = [];
+  for (const [index, candidate] of candidates.entries()) {
+    const recoveredId = await transitionSteeredDelivery(
+      transaction,
+      candidate,
+      targetDeliveryId,
+      routes.get(candidate.sourceSessionId),
+      now,
+      index,
+      candidates.length,
+    );
+    if (recoveredId) recoveredIds.push(recoveredId);
+  }
+  return recoveredIds;
+}
+
+async function readSteeredCandidates(transaction: DatabaseTransaction, targetDeliveryId: string): Promise<Candidate[]> {
+  return (await transaction
     .select({
       id: imMessageDeliveries.id,
       messageId: imMessageDeliveries.messageId,
@@ -56,132 +76,124 @@ export async function requeueSteeredDeliveries(
       asc(imMessageDeliveries.id),
     )
     .for("update", { of: imMessageDeliveries, skipLocked: true })) as Candidate[];
-  if (candidates.length === 0) return [];
+}
 
-  const routeBySourceSession = new Map<string, RecoveryRoute>();
+async function resolveRecoveryRoutes(
+  transaction: DatabaseTransaction,
+  candidates: Candidate[],
+  now: Date,
+  sessionService: SessionEnsurer,
+): Promise<Map<string, RecoveryRoute>> {
+  const routes = new Map<string, RecoveryRoute>();
   for (const candidate of candidates) {
-    if (routeBySourceSession.has(candidate.sourceSessionId)) continue;
-    routeBySourceSession.set(
-      candidate.sourceSessionId,
-      await resolveRecoveryRoute(transaction, candidate.sourceSessionId, now, sessionService),
-    );
+    if (!routes.has(candidate.sourceSessionId)) {
+      routes.set(
+        candidate.sourceSessionId,
+        await resolveRecoveryRoute(transaction, candidate.sourceSessionId, now, sessionService),
+      );
+    }
+  }
+  return routes;
+}
+
+async function transitionSteeredDelivery(
+  transaction: DatabaseTransaction,
+  candidate: Candidate,
+  targetDeliveryId: string,
+  route: RecoveryRoute | undefined,
+  now: Date,
+  sequence: number,
+  total: number,
+): Promise<string | undefined> {
+  if (!route || route.kind === "terminal") {
+    return terminalizeSteeredDelivery(transaction, candidate.id, targetDeliveryId, STEER_TARGET_UNPLACEABLE_REASON);
   }
 
-  const recoveredIds: string[] = [];
-  for (const [index, candidate] of candidates.entries()) {
-    const route = routeBySourceSession.get(candidate.sourceSessionId);
-    if (!route || route.kind === "terminal") {
-      const [updated] = await transaction
-        .update(imMessageDeliveries)
-        .set({
-          state: "terminal_rejected",
-          attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
-          dispatchRequestId: null,
-          dispatchInputHash: null,
-          dispatchPayload: null,
-          inputHash: null,
-          turnId: null,
-          steerTargetDeliveryId: null,
-          steeredAt: null,
-          reportOwnerInstanceId: null,
-          resultHash: null,
-          turnReport: null,
-          reportedAt: null,
-          acceptedAt: null,
-          reason: STEER_TARGET_UNPLACEABLE_REASON,
-          lastErrorCode: STEER_TARGET_UNPLACEABLE_ERROR_CODE,
-        })
-        .where(
-          and(
-            eq(imMessageDeliveries.id, candidate.id),
-            eq(imMessageDeliveries.state, "steered"),
-            eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
-          ),
-        )
-        .returning({ id: imMessageDeliveries.id });
-      if (updated) recoveredIds.push(updated.id);
-      continue;
-    }
-
-    const [duplicate] = await transaction
-      .select({ id: imMessageDeliveries.id })
-      .from(imMessageDeliveries)
-      .where(
-        and(
-          eq(imMessageDeliveries.messageId, candidate.messageId),
-          eq(imMessageDeliveries.sessionId, route.sessionId),
-          ne(imMessageDeliveries.id, candidate.id),
-        ),
-      )
-      .limit(1)
-      .for("update");
-    if (duplicate) {
-      const [updated] = await transaction
-        .update(imMessageDeliveries)
-        .set({
-          state: "terminal_rejected",
-          attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
-          dispatchRequestId: null,
-          dispatchInputHash: null,
-          dispatchPayload: null,
-          inputHash: null,
-          turnId: null,
-          steerTargetDeliveryId: null,
-          steeredAt: null,
-          reportOwnerInstanceId: null,
-          resultHash: null,
-          turnReport: null,
-          reportedAt: null,
-          acceptedAt: null,
-          reason: "steer_target_ended_duplicate",
-          lastErrorCode: STEER_TARGET_UNPLACEABLE_ERROR_CODE,
-        })
-        .where(
-          and(
-            eq(imMessageDeliveries.id, candidate.id),
-            eq(imMessageDeliveries.state, "steered"),
-            eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
-          ),
-        )
-        .returning({ id: imMessageDeliveries.id });
-      if (updated) recoveredIds.push(updated.id);
-      continue;
-    }
-
-    const [updated] = await transaction
-      .update(imMessageDeliveries)
-      .set({
-        state: "pending",
-        sessionId: route.sessionId,
-        placementGeneration: route.placementGeneration,
-        attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
-        dispatchRequestId: null,
-        dispatchInputHash: null,
-        dispatchPayload: null,
-        inputHash: null,
-        turnId: null,
-        steerTargetDeliveryId: null,
-        steeredAt: null,
-        reportOwnerInstanceId: null,
-        resultHash: null,
-        turnReport: null,
-        reportedAt: null,
-        acceptedAt: null,
-        nextAttemptAt: new Date(now.getTime() - (candidates.length - index - 1)),
-        reason: null,
-        lastErrorCode: STEER_TARGET_ENDED_ERROR_CODE,
-      })
-      .where(
-        and(
-          eq(imMessageDeliveries.id, candidate.id),
-          eq(imMessageDeliveries.state, "steered"),
-          eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
-        ),
-      )
-      .returning({ id: imMessageDeliveries.id });
-    if (updated) recoveredIds.push(updated.id);
+  const [duplicate] = await transaction
+    .select({ id: imMessageDeliveries.id })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.messageId, candidate.messageId),
+        eq(imMessageDeliveries.sessionId, route.sessionId),
+        ne(imMessageDeliveries.id, candidate.id),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (duplicate) {
+    return terminalizeSteeredDelivery(transaction, candidate.id, targetDeliveryId, "steer_target_ended_duplicate");
   }
-  return recoveredIds;
+
+  const [updated] = await transaction
+    .update(imMessageDeliveries)
+    .set({
+      state: "pending",
+      sessionId: route.sessionId,
+      placementGeneration: route.placementGeneration,
+      attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
+      dispatchRequestId: null,
+      dispatchInputHash: null,
+      dispatchPayload: null,
+      inputHash: null,
+      turnId: null,
+      steerTargetDeliveryId: null,
+      steeredAt: null,
+      reportOwnerInstanceId: null,
+      resultHash: null,
+      turnReport: null,
+      reportedAt: null,
+      acceptedAt: null,
+      nextAttemptAt: new Date(now.getTime() - (total - sequence - 1)),
+      reason: null,
+      lastErrorCode: STEER_TARGET_ENDED_ERROR_CODE,
+    })
+    .where(
+      and(
+        eq(imMessageDeliveries.id, candidate.id),
+        eq(imMessageDeliveries.state, "steered"),
+        eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
+      ),
+    )
+    .returning({ id: imMessageDeliveries.id });
+  return updated?.id;
+}
+
+async function terminalizeSteeredDelivery(
+  transaction: DatabaseTransaction,
+  deliveryId: string,
+  targetDeliveryId: string,
+  reason: string,
+): Promise<string | undefined> {
+  const [updated] = await transaction
+    .update(imMessageDeliveries)
+    .set({
+      state: "terminal_rejected",
+      attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
+      dispatchRequestId: null,
+      dispatchInputHash: null,
+      dispatchPayload: null,
+      inputHash: null,
+      turnId: null,
+      steerTargetDeliveryId: null,
+      steeredAt: null,
+      reportOwnerInstanceId: null,
+      resultHash: null,
+      turnReport: null,
+      reportedAt: null,
+      acceptedAt: null,
+      reason,
+      lastErrorCode: STEER_TARGET_UNPLACEABLE_ERROR_CODE,
+    })
+    .where(
+      and(
+        eq(imMessageDeliveries.id, deliveryId),
+        eq(imMessageDeliveries.state, "steered"),
+        eq(imMessageDeliveries.steerTargetDeliveryId, targetDeliveryId),
+      ),
+    )
+    .returning({ id: imMessageDeliveries.id });
+  return updated?.id;
 }
 
 async function resolveRecoveryRoute(

@@ -19,6 +19,7 @@ export function useShellTransition({
   const memory = useShellMemory();
   const previous = useRef({ pathname, scope });
   const keyboard = useRef(false);
+  const pendingNavigation = useRef<{ from: string } | undefined>(undefined);
   const animations = useRef<Animation[]>([]);
 
   useEffect(() => {
@@ -40,8 +41,18 @@ export function useShellTransition({
     () =>
       router.subscribe("onBeforeLoad", (event) => {
         const node = main.current;
-        if (!node || !event.pathChanged) return;
-        memory?.pages.set(previous.current.pathname, captureVisit(node));
+        if (!node) return;
+        if (!event.pathChanged) {
+          const path = previous.current.pathname;
+          if (keyboard.current && pendingNavigation.current?.from === path && event.toLocation.pathname === path) {
+            restorePage(node, memory?.pages.get(path), true);
+          }
+          pendingNavigation.current = undefined;
+          return;
+        }
+        const visit = captureVisit(node);
+        pendingNavigation.current = { from: previous.current.pathname };
+        memory?.pages.set(previous.current.pathname, visit);
         captureSnapshot(node, outgoing.current);
       }),
     [router, main, outgoing, memory],
@@ -51,6 +62,7 @@ export function useShellTransition({
     if (previous.current.pathname === pathname) return;
     const crossScope = previous.current.scope !== scope;
     previous.current = { pathname, scope };
+    pendingNavigation.current = undefined;
     for (const animation of animations.current) animation.cancel();
     animations.current = [];
     const node = main.current;

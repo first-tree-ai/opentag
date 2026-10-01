@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { initials } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
@@ -21,6 +21,7 @@ export function AccountMenu({
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const internalToolsOffered =
     useQuery({
       queryKey: queryKeys.internalToolsOffered(),
@@ -45,6 +46,7 @@ export function AccountMenu({
   const trigger =
     placement !== "page" ? (
       <Sidebar.MenuButton
+        ref={triggerRef}
         aria-label={m.shell_account_menu()}
         className="app-account-trigger justify-start [&>div]:translate-none"
         data-compact={placement === "dock" ? "true" : undefined}
@@ -60,7 +62,13 @@ export function AccountMenu({
         <Icon className="app-nav-label size-3.5 text-kumo-subtle" name="chevron-up" />
       </Sidebar.MenuButton>
     ) : (
-      <Button aria-label={m.shell_account_menu()} className="app-account-trigger gap-2" size="compact" variant="ghost">
+      <Button
+        ref={triggerRef}
+        aria-label={m.shell_account_menu()}
+        className="app-account-trigger gap-2"
+        size="compact"
+        variant="ghost"
+      >
         <span
           className="app-account-avatar grid size-8 place-items-center rounded-full bg-kumo-tint text-sm font-semibold"
           aria-hidden="true"
@@ -83,6 +91,8 @@ export function AccountMenu({
       <DropdownMenu.Content
         align={placement === "sidebar" ? "start" : "end"}
         className="app-account-menu"
+        // Keep the popup within its owning landmark without introducing a transient navigation region.
+        container={triggerRef.current?.closest<HTMLElement>("aside, nav, header, main")}
         positionMethod="fixed"
         style={{ zIndex: 50 }}
         side={placement === "dock" ? "right" : placement === "sidebar" ? "top" : "bottom"}

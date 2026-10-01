@@ -205,6 +205,21 @@ describe("UpdateManager", () => {
     });
   });
 
+  it("records and clears local recovery diagnostics without changing updater state", async () => {
+    const h = harness();
+    h.manager.observe(target("0.0.3-staging.1.1"));
+    await h.settle();
+
+    await h.manager.recordRecoveryStatus("upgrade_required");
+    expect(h.state()).toMatchObject({ state: "installed", recoveryStatus: "upgrade_required" });
+
+    await h.manager.recordRecoveryStatus("authentication_repair");
+    expect(h.state()).toMatchObject({ state: "installed", recoveryStatus: "authentication_repair" });
+
+    await h.manager.recordRecoveryStatus(undefined);
+    expect(h.state()).not.toHaveProperty("recoveryStatus");
+  });
+
   it("ignores targets advertised for another channel", async () => {
     const h = harness();
     h.manager.observe(target("0.0.9", "prod"));

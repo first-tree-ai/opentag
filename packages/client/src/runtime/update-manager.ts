@@ -16,11 +16,14 @@ export interface UpdaterAttempt {
 
 export type UpdaterStateName = "idle" | "awaiting_protected_work" | "installing" | "blocked" | "installed";
 
+export type UpdaterRecoveryStatus = "upgrade_required" | "authentication_repair" | "retryable_connectivity";
+
 /** Persisted updater status, also the source for `daemon status` update reporting. */
 export interface UpdaterStateSnapshot {
   schemaVersion: 1;
   currentVersion: string;
   state: UpdaterStateName;
+  recoveryStatus?: UpdaterRecoveryStatus;
   target?: string;
   lastAttempt?: UpdaterAttempt;
   attempts: Record<string, UpdaterAttempt>;
@@ -103,6 +106,7 @@ export class UpdateManager {
   #discoveryFailures = 0;
   #discoveryTimer?: ReturnType<typeof setTimeout>;
   #discoveryInFlight?: Promise<boolean>;
+  #recoveryStatusWrite?: Promise<void>;
 
   constructor(options: UpdateManagerOptions) {
     this.#options = options;
@@ -130,8 +134,7 @@ export class UpdateManager {
     try {
       const stored = await this.#options.loadState();
       const state = stored ?? emptyState(this.#options.currentVersion);
-      let changed = stored === undefined || state.currentVersion !== this.#options.currentVersion;
-      state.currentVersion = this.#options.currentVersion;
+      let changed = stored === undefined || reconcileRunningVersion(state, this.#options.currentVersion);
       if (state.target) {
         const comparison = compareSemVer(state.target, this.#options.currentVersion);
         if (state.target === this.#options.currentVersion && state.state !== "installed") {
@@ -226,6 +229,32 @@ export class UpdateManager {
     }
     await this.#runDiscovery();
     if (this.#discoveryStarted && !this.#stopped) this.#scheduleDiscovery(this.#nextDiscoveryDelay());
+  }
+
+  /** Persist a local recovery diagnosis without changing the install-attempt state machine. */
+  async recordRecoveryStatus(status: UpdaterRecoveryStatus | undefined): Promise<void> {
+    const write = async () => {
+      try {
+        const stored = await this.#options.loadState();
+        const state = stored ?? emptyState(this.#options.currentVersion);
+        if (state.recoveryStatus === status) return;
+        if (status === undefined) delete state.recoveryStatus;
+        else state.recoveryStatus = status;
+        await this.#options.saveState(state);
+      } catch (error) {
+        this.#logger.warn(
+          { error: error instanceof Error ? error.message : String(error), status },
+          "Automatic upgrade recovery status could not be recorded",
+        );
+      }
+    };
+    const pending = (this.#recoveryStatusWrite ?? Promise.resolve()).then(write);
+    this.#recoveryStatusWrite = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.#recoveryStatusWrite === pending) this.#recoveryStatusWrite = undefined;
+    }
   }
 
   async #recordSatisfiedTarget(target: string): Promise<void> {
@@ -457,6 +486,13 @@ export class UpdateManager {
 
 function emptyState(currentVersion: string): UpdaterStateSnapshot {
   return { schemaVersion: 1, currentVersion, state: "idle", attempts: {} };
+}
+
+function reconcileRunningVersion(state: UpdaterStateSnapshot, currentVersion: string): boolean {
+  if (state.currentVersion === currentVersion) return false;
+  state.currentVersion = currentVersion;
+  delete state.recoveryStatus;
+  return true;
 }
 
 function positive(value: number, name: string): number {

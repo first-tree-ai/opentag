@@ -288,7 +288,12 @@ describe("daemon automatic upgrade", () => {
 
     expect(exitCode).toBe(0);
     expect(fetchFn).toHaveBeenCalledOnce();
-    expect(store.state()).toMatchObject({ currentVersion: "0.0.2", state: "idle", target: "0.0.2" });
+    expect(store.state()).toMatchObject({
+      currentVersion: "0.0.2",
+      state: "idle",
+      target: "0.0.2",
+      recoveryStatus: "upgrade_required",
+    });
   });
 
   it("installs and hands off a newer target after a capability rejection without re-enrollment", async () => {
@@ -333,6 +338,37 @@ describe("daemon automatic upgrade", () => {
     expect(installs).toEqual(["0.0.3"]);
     expect(refreshes).toEqual([1]);
     expect(clientMocks.createClientRuntime).toHaveBeenCalledOnce();
-    expect(store.state()).toMatchObject({ state: "installed", target: "0.0.3" });
+    expect(store.state()).toMatchObject({ state: "installed", target: "0.0.3", recoveryStatus: "upgrade_required" });
+  });
+
+  it("records authentication repair without triggering release discovery", async () => {
+    const home = await tempHome();
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    fakeRuntime(
+      { total: 0 },
+      new RuntimeConnectionError("Credentials were rejected", true, "authentication_rejection"),
+    );
+    const fetchFn = vi.fn() as typeof fetch;
+    const store = memoryStore();
+
+    const exitCode = await runDaemonServiceEntry({
+      home,
+      logger: noopLogger(),
+      signals: new EventEmitter() as unknown as NodeJS.Process,
+      autoUpdate: {
+        attach: true,
+        discovery: false,
+        fetchFn,
+        installMode: { mode: "portable", root: "/portable/root", binDir: "/portable/bin" },
+        installTarget: async () => undefined,
+        refreshService: async () => undefined,
+        stateStore: store,
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(store.state()).toMatchObject({ recoveryStatus: "authentication_repair" });
   });
 });

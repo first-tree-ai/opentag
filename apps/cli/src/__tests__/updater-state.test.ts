@@ -56,6 +56,16 @@ describe("updater state store", () => {
     expect(await store.loadState()).toEqual(state());
   });
 
+  it("round-trips a local recovery diagnosis", async () => {
+    const home = await tempHome();
+    const store = createUpdaterStateStore(home);
+    const expected = state({ recoveryStatus: "retryable_connectivity" });
+
+    await store.saveState(expected);
+
+    expect(await store.loadState()).toEqual(expected);
+  });
+
   it("fails closed on malformed state instead of rewriting it", async () => {
     const home = await tempHome();
     const paths = resolveDaemonPaths(home);

@@ -14,6 +14,7 @@ import {
   resolveComputerIdentity,
   resolveOpenTagHome,
   type UpdateManager,
+  type UpdaterRecoveryStatus,
   type UpdaterStateSnapshot,
 } from "@opentag/client";
 import type { RuntimeChannelTarget } from "@opentag/shared";
@@ -262,6 +263,15 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
   });
   composed.runtime = runtime;
   context.state.updater = await attachAutoUpdater(context, runtime, runtimeLogger);
+  connection.subscribeState((connectionState) => {
+    const updater = context.state.updater;
+    if (!updater) return;
+    if (connectionState === "registered") {
+      void updater.recordRecoveryStatus(undefined);
+      return;
+    }
+    if (connectionState !== "stopped") void updater.recordRecoveryStatus("retryable_connectivity");
+  });
   void connection.whenRegistered(signal).then(
     () => runtimeLogger.info({}, "Computer runtime is ready"),
     () => undefined,
@@ -271,14 +281,14 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
       try {
         await runtime.run();
       } catch (error) {
-        if (
-          error instanceof RuntimeConnectionError &&
-          error.category === "capability_incompatibility" &&
-          context.state.updater
-        ) {
-          await context.state.updater.discoverNow();
-          await waitForCapabilityRecovery(context, signal);
-          return;
+        if (error instanceof RuntimeConnectionError && context.state.updater) {
+          const recoveryStatus = runtimeRecoveryStatus(error.category);
+          if (recoveryStatus) await context.state.updater.recordRecoveryStatus(recoveryStatus);
+          if (error.category === "capability_incompatibility") {
+            await context.state.updater.discoverNow();
+            await waitForCapabilityRecovery(context, signal);
+            return;
+          }
         }
         throw error;
       }
@@ -421,6 +431,19 @@ function runtimeConnectionOperatorMessage(category: RuntimeConnectionErrorCatego
       return "Daemon runtime protocol was rejected; inspect daemon status";
   }
   return "Daemon runtime protocol was rejected; inspect daemon status";
+}
+
+function runtimeRecoveryStatus(category: RuntimeConnectionErrorCategory): UpdaterRecoveryStatus | undefined {
+  switch (category) {
+    case "capability_incompatibility":
+      return "upgrade_required";
+    case "authentication_rejection":
+      return "authentication_repair";
+    case "transient_connection":
+      return "retryable_connectivity";
+    default:
+      return undefined;
+  }
 }
 
 function logTerminalFailure(logger: ClientLogger, error: unknown): void {

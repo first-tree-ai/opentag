@@ -128,12 +128,18 @@ export function tarGzWithDeclaredSize(name: string, size: number): Uint8Array {
 }
 
 /** A local file header plus its name; the caller appends the entry's data. */
-export function zipLocalHeader(name: string, compression: number, size: number, originalSize: number): Buffer {
-  const nameBytes = Buffer.from(name, "utf8");
+export function zipLocalHeader(
+  name: string | Uint8Array,
+  compression: number,
+  size: number,
+  originalSize: number,
+  generalPurposeBitFlag = 0,
+): Buffer {
+  const nameBytes = typeof name === "string" ? Buffer.from(name, "utf8") : Buffer.from(name);
   const header = Buffer.alloc(30);
   header.writeUInt32LE(0x04034b50, 0);
   header.writeUInt16LE(20, 4);
-  header.writeUInt16LE(0, 6);
+  header.writeUInt16LE(generalPurposeBitFlag, 6);
   header.writeUInt16LE(compression, 8);
   header.writeUInt32LE(0, 14);
   header.writeUInt32LE(size >>> 0, 18);
@@ -144,7 +150,7 @@ export function zipLocalHeader(name: string, compression: number, size: number, 
 }
 
 export interface RawZipEntry {
-  name: string;
+  name: string | Uint8Array;
   compression: number;
   /** Compressed size recorded in both the local and central records. */
   size: number;
@@ -153,17 +159,19 @@ export interface RawZipEntry {
   offset: number;
   /** "Version made by" high byte `3` marks a Unix ZIP, which is the only place a mode lives. */
   madeByUnix?: boolean;
+  /** The central and local general-purpose bit flag, including bit 11 for UTF-8 names. */
+  generalPurposeBitFlag?: number;
   /** The Unix mode, shifted into the high 16 bits of `externalFileAttributes`. */
   unixMode?: number;
 }
 
 function zipCentralEntry(entry: RawZipEntry): Buffer {
-  const nameBytes = Buffer.from(entry.name, "utf8");
+  const nameBytes = typeof entry.name === "string" ? Buffer.from(entry.name, "utf8") : Buffer.from(entry.name);
   const record = Buffer.alloc(46);
   record.writeUInt32LE(0x02014b50, 0);
   record.writeUInt16LE(entry.madeByUnix ? 0x0314 : 0x0014, 4);
   record.writeUInt16LE(20, 6);
-  record.writeUInt16LE(0, 8);
+  record.writeUInt16LE(entry.generalPurposeBitFlag ?? 0, 8);
   record.writeUInt16LE(entry.compression, 10);
   record.writeUInt32LE(0, 16);
   record.writeUInt32LE(entry.size >>> 0, 20);
@@ -196,10 +204,12 @@ export function buildRawZip(local: Uint8Array, entries: RawZipEntry[]): Uint8Arr
 }
 
 export interface StoredZipEntry {
-  name: string;
+  name: string | Uint8Array;
   body: Uint8Array | string;
   /** When set, the entry is Unix-made with this external mode; otherwise it is a DOS entry. */
   unixMode?: number;
+  /** The central and local general-purpose bit flag, including bit 11 for UTF-8 names. */
+  generalPurposeBitFlag?: number;
 }
 
 /**
@@ -212,7 +222,10 @@ export function buildStoredZip(entries: StoredZipEntry[]): Uint8Array {
   let offset = 0;
   for (const entry of entries) {
     const body = bytesOf(entry.body);
-    const record = Buffer.concat([zipLocalHeader(entry.name, 0, body.byteLength, body.byteLength), Buffer.from(body)]);
+    const record = Buffer.concat([
+      zipLocalHeader(entry.name, 0, body.byteLength, body.byteLength, entry.generalPurposeBitFlag),
+      Buffer.from(body),
+    ]);
     central.push({
       name: entry.name,
       compression: 0,
@@ -220,6 +233,7 @@ export function buildStoredZip(entries: StoredZipEntry[]): Uint8Array {
       originalSize: body.byteLength,
       offset,
       madeByUnix: entry.unixMode !== undefined,
+      generalPurposeBitFlag: entry.generalPurposeBitFlag,
       unixMode: entry.unixMode,
     });
     local.push(record);

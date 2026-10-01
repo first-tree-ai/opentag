@@ -1,7 +1,7 @@
 # OpenTag Portable 发布指南
 
 > Canonical source: [../portable-release.md](../portable-release.md)
-> Last synced with: 2026-09-07
+> Last synced with: 2026-10-01
 
 Portable release 是一份自包含的 OpenTag 安装包：每个平台一个 tarball，同时携带 bundle 后的 CLI **和它自己的
 Node.js runtime**，因此没有 Node.js、没有 npm、没有任何 package manager 的机器也能安装并运行 OpenTag。它发布到
@@ -74,9 +74,14 @@ bundle 后的 CLI 的 Context Tree 集成会在运行时解析已安装的 `@fir
 ## 自动升级
 
 portable 是唯一拥有完整支持的自动升级的安装模式；npm-global 安装永远不会自我升级，只能使用手动的
-`opentag upgrade` / `opentag upgrade --check` 命令。每个 channel 只有一个精确目标，没有灰度队列或 canary：Server
-轮询该 channel 已发布的 `latest.json`，并通过 v2 heartbeat result（`runtime.channelTarget` capability——见
-[runtime-protocol.md](./runtime-protocol.md)）把这个精确目标广播给已连接的 Client。
+`opentag upgrade` / `opentag upgrade --check` 命令。每个 channel 只有一个精确目标，没有灰度队列或 canary。
+daemon 会在启动时、发生 capability incompatibility 后，以及每次成功读取后的五分钟读取一次所配置 channel 的
+`latest.json`。读取失败会使用有上限的指数退避，间隔翻倍直到三十分钟。Server 的 v2 heartbeat 广播
+（`runtime.channelTarget`，见 [runtime-protocol.md](./runtime-protocol.md)）在连接健康时仍是优化路径，但不再是
+发现 release 的唯一方式。
+
+已经停止的旧 Client 无法运行这条发现循环。请在该安装上手动执行一次 `opentag upgrade`（或重新安装对应的
+portable channel），先升级到支持独立发现的版本；之后的 release 就可以由 daemon 自动安装，不需要再次手动操作。
 
 daemon 的 updater 遵循严格的契约：
 
@@ -88,6 +93,10 @@ daemon 的 updater 遵循严格的契约：
   先关闭新工作准入；此前已经接受的投递继续排空，之后到达的投递则收到可重试的 busy 结果。
 - **每个目标只尝试一次。** 任何安装工作开始之前，尝试就会被持久化记录。失败——包括被中断的尝试——会进入
   blocked 状态且绝不自动重试：updater 等待更新的目标或手动 `opentag upgrade`，从而避免重试与重启风暴。
+- **失败类别彼此独立。** Server 要求而本地缺失的 capability 会记录本地 `upgrade required`，并启动 metadata 恢复；
+  如果没有更新的可用目标，daemon 会保持运行并按上述有上限的 cadence 重试。认证拒绝不会触发升级，而会报告
+  `authentication repair` 并提示执行 `opentag connect`。传输、注册和超时错误保持为 `retryable connectivity`，使用
+  runtime 自身的重连退避。这些都是 Client 本地诊断；release 指针不会声称知道某个 Client 为何失败。
 - **复用现有布局。** 安装下载不可变的版本 manifest（绝不读取 channel 指针），校验已发布的 SHA-256，解压到全新的
   不可变版本目录，对新 runtime 做冒烟检查，重写稳定 shim，并通过一次原子切换移动 `current`——与 `install.sh`
   完全相同的机制。
@@ -97,7 +106,9 @@ daemon 的 updater 遵循严格的契约：
   `KeepAlive.SuccessfulExit=false` 重启。由于稳定 shim 的存在，重启后的服务运行新版本，而 OpenTag home、Account
   凭据、Computer connection、Agent 与 placement 全部保持不变。
 
-当前版本、目标、updater 状态以及最近一次尝试及其失败原因都可以在 `opentag daemon status` 中查看。
+当前版本、目标、updater 状态、恢复诊断以及最近一次尝试及其失败原因都可以在 `opentag daemon status` 中查看。
+`awaiting_protected_work` 与 `installing` 表示升级进行中，`blocked` 表示需要更高目标或手动重试；恢复行会区分
+`upgrade required`、`authentication repair` 与 `retryable connectivity`。
 
 ## 已发布对象结构
 

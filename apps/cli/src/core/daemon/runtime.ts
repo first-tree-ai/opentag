@@ -85,6 +85,7 @@ interface ClientLoggerGate {
 interface DaemonMutableState {
   channelTargetObserver?: (target: RuntimeChannelTarget) => void;
   handoffRequested: boolean;
+  recoveryWake?: () => void;
   terminalLogger?: ClientLogger;
   updater?: UpdateManager;
 }
@@ -270,14 +271,34 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
       try {
         await runtime.run();
       } catch (error) {
-        if (error instanceof RuntimeConnectionError && error.category === "capability_incompatibility") {
-          await context.state.updater?.discoverNow();
+        if (
+          error instanceof RuntimeConnectionError &&
+          error.category === "capability_incompatibility" &&
+          context.state.updater
+        ) {
+          await context.state.updater.discoverNow();
+          await waitForCapabilityRecovery(context, signal);
+          return;
         }
         throw error;
       }
     },
     stop: () => runtime.stop(),
   };
+}
+
+async function waitForCapabilityRecovery(context: DaemonLifecycleContext, signal: AbortSignal): Promise<void> {
+  if (context.state.handoffRequested || signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    const complete = () => {
+      signal.removeEventListener("abort", complete);
+      if (context.state.recoveryWake === complete) context.state.recoveryWake = undefined;
+      resolve();
+    };
+    context.state.recoveryWake = complete;
+    signal.addEventListener("abort", complete, { once: true });
+    if (context.state.handoffRequested || signal.aborted) complete();
+  });
 }
 
 async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform, signal: AbortSignal) {
@@ -327,6 +348,7 @@ async function attachAutoUpdater(
     quiesce: () => runtime.quiesceForUpdate(),
     onHandoff: () => {
       context.state.handoffRequested = true;
+      context.state.recoveryWake?.();
       runtime.stop();
     },
     logger: runtimeLogger.child({ module: "updater" }),

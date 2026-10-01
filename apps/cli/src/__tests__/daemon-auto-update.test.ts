@@ -263,18 +263,19 @@ describe("daemon automatic upgrade", () => {
       { total: 0 },
       new RuntimeConnectionError("Required runtime capabilities are unavailable", true, "capability_incompatibility"),
     );
-    const fetchFn = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ channel: "dev", version: "0.0.2" }), {
-          headers: { "content-type": "application/json" },
-        }),
-    ) as typeof fetch;
+    const signals = new EventEmitter();
+    const fetchFn = vi.fn(async () => {
+      signals.emit("SIGTERM");
+      return new Response(JSON.stringify({ channel: "dev", version: "0.0.2" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
     const store = memoryStore();
 
     const exitCode = await runDaemonServiceEntry({
       home,
       logger: noopLogger(),
-      signals: new EventEmitter() as unknown as NodeJS.Process,
+      signals: signals as unknown as NodeJS.Process,
       autoUpdate: {
         attach: true,
         fetchFn,
@@ -288,5 +289,50 @@ describe("daemon automatic upgrade", () => {
     expect(exitCode).toBe(0);
     expect(fetchFn).toHaveBeenCalledOnce();
     expect(store.state()).toMatchObject({ currentVersion: "0.0.2", state: "idle", target: "0.0.2" });
+  });
+
+  it("installs and hands off a newer target after a capability rejection without re-enrollment", async () => {
+    const home = await tempHome();
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    fakeRuntime(
+      { total: 0 },
+      new RuntimeConnectionError("Required runtime capabilities are unavailable", true, "capability_incompatibility"),
+    );
+    const signals = new EventEmitter();
+    const fetchFn = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ channel: "dev", version: "0.0.3" }), {
+          headers: { "content-type": "application/json" },
+        }),
+    ) as typeof fetch;
+    const store = memoryStore();
+    const installs: string[] = [];
+    const refreshes: number[] = [];
+
+    const exitCode = await runDaemonServiceEntry({
+      home,
+      logger: noopLogger(),
+      signals: signals as unknown as NodeJS.Process,
+      autoUpdate: {
+        attach: true,
+        fetchFn,
+        installMode: { mode: "portable", root: "/portable/root", binDir: "/portable/bin" },
+        installTarget: async (target) => {
+          installs.push(target);
+        },
+        refreshService: async () => {
+          refreshes.push(1);
+        },
+        stateStore: store,
+      },
+    });
+
+    expect(exitCode).toBe(SUPERVISOR_RESTART_EXIT_CODE);
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(installs).toEqual(["0.0.3"]);
+    expect(refreshes).toEqual([1]);
+    expect(clientMocks.createClientRuntime).toHaveBeenCalledOnce();
+    expect(store.state()).toMatchObject({ state: "installed", target: "0.0.3" });
   });
 });

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
+import { SessionService } from "../services/sessions/session-service.js";
 import { requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 
 const DEFAULT_JANITOR_INTERVAL_MS = 5_000;
@@ -50,6 +51,7 @@ export async function runImDeliverySteerRecovery(
   options: Pick<ImDeliveryJanitorOptions, "clock" | "expiryBatchSize">,
 ): Promise<void> {
   const now = options.clock();
+  const sessionService = new SessionService(database);
   await database.transaction(async (transaction) => {
     const targets = (await transaction.execute(sql`
       select target.id as target_id
@@ -86,7 +88,7 @@ export async function runImDeliverySteerRecovery(
       for update of target skip locked
     `)) as Array<{ target_id: string }>;
     for (const target of targets) {
-      await requeueSteeredDeliveries(transaction, target.target_id, now);
+      await requeueSteeredDeliveries(transaction, target.target_id, now, sessionService);
     }
   });
 }

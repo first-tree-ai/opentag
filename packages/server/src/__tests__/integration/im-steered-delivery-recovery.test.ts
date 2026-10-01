@@ -8,8 +8,8 @@ import {
   type RuntimeImSteerRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
-import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { eq, inArray } from "drizzle-orm";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import {
   agents,
@@ -23,6 +23,7 @@ import {
 } from "../../db/schema/index.js";
 import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
 import { STEER_TARGET_ENDED_ERROR_CODE } from "../../runtime/im-delivery-recovery.js";
+import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -104,6 +105,49 @@ describe("steered IM delivery recovery", () => {
     );
   });
 
+  it("re-places children from an ended target Session before the worker claims them", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await client.database
+      .update(sessions)
+      .set({ endedAt: new Date(fixture.now.getTime() + 1_000) })
+      .where(eq(sessions.id, fixture.sessionId));
+
+    await expect(
+      custody.recordTurn(turnReport(fixture, "cancelled", "client_shutdown"), fixture.context),
+    ).resolves.toBe("recorded");
+
+    const recovered = await deliveryRows(client.database, fixture);
+    expect(recovered.children.every((row) => row.sessionId !== fixture.sessionId)).toBe(true);
+    expect(recovered.children[0]?.placementGeneration).toBe(1);
+
+    const requestDelivery = await runRecoveryWorker(client.database, fixture, custody);
+
+    expect(requestDelivery).toHaveBeenCalledTimes(1);
+    expect(requestDelivery.mock.calls[0]?.[2]).toMatchObject({
+      deliveryId: fixture.steerRequests[0].deliveryId,
+      sessionId: recovered.children[0]?.sessionId,
+    });
+    expect((await deliveryRows(client.database, fixture)).children[0]?.state).toBe("accepted");
+  });
+
+  it("keeps live-Session recoveries claimable by the worker", async () => {
+    const fixture = await createFixture(client.database);
+    const custody = new PostgresRuntimeCustodyStore(client.database, { now: () => fixture.now });
+    await acceptAndSteer(fixture, custody);
+    await expect(
+      custody.recordTurn(turnReport(fixture, "cancelled", "client_shutdown"), fixture.context),
+    ).resolves.toBe("recorded");
+
+    const recovered = await deliveryRows(client.database, fixture);
+    expect(recovered.children.every((row) => row.sessionId === fixture.sessionId)).toBe(true);
+    const requestDelivery = await runRecoveryWorker(client.database, fixture, custody);
+
+    expect(requestDelivery).toHaveBeenCalledTimes(1);
+    expect((await deliveryRows(client.database, fixture)).children[0]?.state).toBe("accepted");
+  });
+
   it("leaves completed target children steered after the janitor runs", async () => {
     const completed = await createFixture(client.database);
     const completedCustody = new PostgresRuntimeCustodyStore(client.database, { now: () => completed.now });
@@ -131,6 +175,7 @@ type Fixture = {
   steerRequests: [RuntimeImSteerRequest, RuntimeImSteerRequest];
   context: RuntimeBusinessContext;
   dispatchContext: { computerId: string; instanceId: string };
+  runtime: DirectImMessageDeliveryRequest["runtime"];
 };
 
 async function createFixture(database: ReturnType<typeof createDatabaseClient>["database"]): Promise<Fixture> {
@@ -167,8 +212,14 @@ async function createFixture(database: ReturnType<typeof createDatabaseClient>["
   await database.insert(imBindings).values({
     id: bindingId,
     agentId,
-    provider: "slack",
-    status: "provisioning",
+    provider: "feishu",
+    status: "active",
+    externalAppId: "app",
+    externalBotId: "bot",
+    credentialSchemaVersion: 1,
+    credentialGeneration: 1,
+    encryptedCredential: "unit-only-unused",
+    activatedAt: now,
   });
   await database.insert(sessions).values({
     id: sessionId,
@@ -198,7 +249,7 @@ async function createFixture(database: ReturnType<typeof createDatabaseClient>["
       authorKind: "human" as const,
       authorExternalId: "human",
       content: { fallbackText: externalId },
-      providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: externalId },
+      providerContext: { provider: "feishu", chatType: "group" },
       occurredAt: new Date(now.getTime() + index * 1_000),
     })) as never,
   );
@@ -209,7 +260,7 @@ async function createFixture(database: ReturnType<typeof createDatabaseClient>["
       sessionId,
       attention: "direct",
       placementGeneration: 1,
-      expiresAt: new Date(now.getTime() + 60_000),
+      expiresAt: new Date(Date.now() + 60 * 60_000),
     },
     ...followUps.map(({ messageId, deliveryId }) => ({
       id: deliveryId,
@@ -217,7 +268,7 @@ async function createFixture(database: ReturnType<typeof createDatabaseClient>["
       sessionId,
       attention: "direct" as const,
       placementGeneration: 1,
-      expiresAt: new Date(now.getTime() + 60_000),
+      expiresAt: new Date(Date.now() + 60 * 60_000),
     })),
   ]);
 
@@ -234,12 +285,12 @@ async function createFixture(database: ReturnType<typeof createDatabaseClient>["
     kind: "text" as const,
     text: "hello",
     providerRef: {
-      provider: "slack" as const,
+      provider: "feishu" as const,
+      teamBrand: "feishu" as const,
       appId: "app",
-      teamId: "team",
-      botUserId: "bot",
-      channelId: "channel",
-      messageTs: "1",
+      botOpenId: "bot",
+      chatId: "channel",
+      messageId: "1",
     },
   };
   const rootRequest: DirectImMessageDeliveryRequest = {
@@ -275,6 +326,7 @@ async function createFixture(database: ReturnType<typeof createDatabaseClient>["
     sessionId,
     agentId,
     placementGeneration: 1,
+    runtime,
     rootRequest,
     steerRequests,
     context: {
@@ -304,10 +356,56 @@ async function acceptAndSteer(fixture: Fixture, custody: PostgresRuntimeCustodyS
   }
 }
 
+async function runRecoveryWorker(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  fixture: Fixture,
+  custody: PostgresRuntimeCustodyStore,
+) {
+  const requestDelivery = vi.fn(
+    async (
+      _computerId: string,
+      _instanceId: string,
+      request: DirectImMessageDeliveryRequest,
+      onDispatched?: () => void,
+    ) => {
+      const inputHash = computeDirectInputHash(request);
+      await custody.beginDeliveryDispatch(request, inputHash, fixture.dispatchContext);
+      onDispatched?.();
+      await custody.acceptDelivery(request, inputHash, randomUUID(), fixture.context);
+      return { status: "accepted" as const };
+    },
+  );
+  const worker = new ImDeliveryWorker({
+    database,
+    domain: {
+      requestReconcile: vi.fn((_computerId, _instanceId, _request, onDispatched) => {
+        onDispatched?.();
+        return Promise.resolve({ status: "ready" as const });
+      }),
+      requestDelivery,
+    } as never,
+    assembler: { assembleForSession: vi.fn(async () => fixture.runtime) },
+    registry: {
+      currentInstanceId: vi.fn(() => fixture.dispatchContext.instanceId),
+      capabilityVersion: vi.fn(() => 2),
+    } as never,
+    now: () => new Date(),
+    intervalMs: 60_000,
+  });
+  try {
+    await worker.runOnce();
+  } finally {
+    worker.stop();
+  }
+  return requestDelivery;
+}
+
 async function deliveryRows(database: ReturnType<typeof createDatabaseClient>["database"], fixture: Fixture) {
   const rows = await database
     .select({
       id: imMessageDeliveries.id,
+      sessionId: imMessageDeliveries.sessionId,
+      placementGeneration: imMessageDeliveries.placementGeneration,
       state: imMessageDeliveries.state,
       steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
       reportedAt: imMessageDeliveries.reportedAt,
@@ -316,7 +414,12 @@ async function deliveryRows(database: ReturnType<typeof createDatabaseClient>["d
       lastErrorCode: imMessageDeliveries.lastErrorCode,
     })
     .from(imMessageDeliveries)
-    .where(eq(imMessageDeliveries.sessionId, fixture.sessionId));
+    .where(
+      inArray(imMessageDeliveries.messageId, [
+        fixture.rootRequest.imMessageId,
+        ...fixture.steerRequests.map((request) => request.imMessageId),
+      ]),
+    );
   const root = rows.find((row) => row.id === fixture.rootDeliveryId);
   if (!root) throw new Error("Root delivery row is missing");
   const children = fixture.steerRequests.map((request) => {

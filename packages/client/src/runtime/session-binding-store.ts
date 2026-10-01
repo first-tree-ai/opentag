@@ -415,7 +415,11 @@ export class SessionBindingStore {
         turnId,
       };
       const recentRecordedInputs = [
-        ...binding.recentRecordedInputs.filter((entry) => entry.deliveryId !== recorded.deliveryId),
+        ...binding.recentRecordedInputs.filter(
+          (entry) =>
+            entry.deliveryId !== recorded.deliveryId &&
+            !failedTargetSteerReceipt(entry, unresolved.deliveryId, unresolved.turnId, unresolved.report),
+        ),
         recorded,
       ].slice(-this.#recordedInputLimit);
       const updated = { ...binding, recentRecordedInputs };
@@ -748,6 +752,21 @@ function parseUnresolvedTurn(
     ...(report ? { report } : {}),
     ...(value.resultHash ? { resultHash: value.resultHash as string } : {}),
   };
+}
+
+function failedTargetSteerReceipt(
+  entry: RecordedInput,
+  targetDeliveryId: string,
+  targetTurnId: string,
+  report: TurnReportRequest | undefined,
+): boolean {
+  return (
+    entry.kind === "steer" &&
+    report !== undefined &&
+    report.outcome !== "completed" &&
+    entry.rootDeliveryId === targetDeliveryId &&
+    entry.turnId === targetTurnId
+  );
 }
 
 function phaseOrder(phase: UnresolvedTurnPhase): number {

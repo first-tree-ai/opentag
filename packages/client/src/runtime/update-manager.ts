@@ -107,7 +107,7 @@ export class UpdateManager {
   #discoveryTimer?: ReturnType<typeof setTimeout>;
   #discoveryInFlight?: Promise<boolean>;
   #recoveryKeepAlive = 0;
-  #recoveryStatusWrite?: Promise<void>;
+  #stateWriteTail: Promise<void> = Promise.resolve();
 
   constructor(options: UpdateManagerOptions) {
     this.#options = options;
@@ -133,28 +133,12 @@ export class UpdateManager {
    */
   async syncRunningVersion(): Promise<void> {
     try {
-      const stored = await this.#options.loadState();
-      const state = stored ?? emptyState(this.#options.currentVersion);
-      let changed = stored === undefined || reconcileRunningVersion(state, this.#options.currentVersion);
-      if (state.target) {
-        const comparison = compareSemVer(state.target, this.#options.currentVersion);
-        if (state.target === this.#options.currentVersion && state.state !== "installed") {
-          state.state = "installed";
-          const attempt = state.attempts[state.target];
-          if (attempt) {
-            attempt.finishedAt ??= new Date(this.#now()).toISOString();
-            attempt.result = "installed";
-            delete attempt.failureReason;
-            state.lastAttempt = attempt;
-          }
-          changed = true;
-        } else if (comparison < 0) {
-          state.state = "idle";
-          delete state.target;
-          changed = true;
-        }
-      }
-      if (changed) await this.#options.saveState(state);
+      await this.#withStateLock(async () => {
+        const stored = await this.#options.loadState();
+        const state = stored ?? emptyState(this.#options.currentVersion);
+        const changed = stored === undefined || reconcileStoredState(state, this.#options.currentVersion, this.#now());
+        if (changed) await this.#options.saveState(state);
+      });
     } catch (error) {
       this.#logger.warn(
         { error: error instanceof Error ? error.message : String(error) },
@@ -248,31 +232,28 @@ export class UpdateManager {
 
   /** Persist a local recovery diagnosis without changing the install-attempt state machine. */
   async recordRecoveryStatus(status: UpdaterRecoveryStatus | undefined): Promise<void> {
-    const write = async () => {
-      try {
+    try {
+      await this.#withStateLock(async () => {
         const stored = await this.#options.loadState();
         const state = stored ?? emptyState(this.#options.currentVersion);
         if (state.recoveryStatus === status) return;
         if (status === undefined) delete state.recoveryStatus;
         else state.recoveryStatus = status;
         await this.#options.saveState(state);
-      } catch (error) {
-        this.#logger.warn(
-          { error: error instanceof Error ? error.message : String(error), status },
-          "Automatic upgrade recovery status could not be recorded",
-        );
-      }
-    };
-    const pending = (this.#recoveryStatusWrite ?? Promise.resolve()).then(write);
-    this.#recoveryStatusWrite = pending;
-    try {
-      await pending;
-    } finally {
-      if (this.#recoveryStatusWrite === pending) this.#recoveryStatusWrite = undefined;
+      });
+    } catch (error) {
+      this.#logger.warn(
+        { error: error instanceof Error ? error.message : String(error), status },
+        "Automatic upgrade recovery status could not be recorded",
+      );
     }
   }
 
   async #recordSatisfiedTarget(target: string): Promise<void> {
+    await this.#withStateLock(() => this.#recordSatisfiedTargetUnlocked(target));
+  }
+
+  async #recordSatisfiedTargetUnlocked(target: string): Promise<void> {
     const stored = await this.#options.loadState();
     const state = stored ?? emptyState(this.#options.currentVersion);
     const attempt = state.attempts[target];
@@ -350,21 +331,23 @@ export class UpdateManager {
   }
 
   async #decide(): Promise<void> {
-    while (!this.#stopped) {
-      const target = this.#latestTarget;
-      if (!target) return;
-      if (await this.#settleNonNewerTarget(target)) return;
-      const stored = await this.#options.loadState();
-      const state = stored ?? emptyState(this.#options.currentVersion);
-      state.currentVersion = this.#options.currentVersion;
-      if (await this.#settleExistingAttempt(target, state)) return;
-      if ((await this.#attemptTarget(target, state)) === "finished") return;
-    }
+    await this.#withStateLock(async () => {
+      while (!this.#stopped) {
+        const target = this.#latestTarget;
+        if (!target) return;
+        if (await this.#settleNonNewerTarget(target)) return;
+        const stored = await this.#options.loadState();
+        const state = stored ?? emptyState(this.#options.currentVersion);
+        state.currentVersion = this.#options.currentVersion;
+        if (await this.#settleExistingAttempt(target, state)) return;
+        if ((await this.#attemptTarget(target, state)) === "finished") return;
+      }
+    });
   }
 
   async #settleNonNewerTarget(target: string): Promise<boolean> {
     if (target === this.#options.currentVersion) {
-      await this.#recordSatisfiedTarget(target);
+      await this.#recordSatisfiedTargetUnlocked(target);
       return true;
     }
     const comparison = compareSemVer(target, this.#options.currentVersion);
@@ -498,6 +481,27 @@ export class UpdateManager {
       await this.#sleep(this.#checkIntervalMs);
     }
   }
+
+  // Serialize complete load-modify-save lifetimes so recovery diagnostics cannot overwrite a newer attempt.
+  async #withStateLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.#stateWriteTail;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(
+      () => current,
+      () => current,
+    );
+    this.#stateWriteTail = queued;
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#stateWriteTail === queued) this.#stateWriteTail = Promise.resolve();
+    }
+  }
 }
 
 function emptyState(currentVersion: string): UpdaterStateSnapshot {
@@ -509,6 +513,28 @@ function reconcileRunningVersion(state: UpdaterStateSnapshot, currentVersion: st
   state.currentVersion = currentVersion;
   delete state.recoveryStatus;
   return true;
+}
+
+function reconcileStoredState(state: UpdaterStateSnapshot, currentVersion: string, now: number): boolean {
+  let changed = reconcileRunningVersion(state, currentVersion);
+  if (!state.target) return changed;
+  const comparison = compareSemVer(state.target, currentVersion);
+  if (state.target === currentVersion && state.state !== "installed") {
+    state.state = "installed";
+    const attempt = state.attempts[state.target];
+    if (attempt) {
+      attempt.finishedAt ??= new Date(now).toISOString();
+      attempt.result = "installed";
+      delete attempt.failureReason;
+      state.lastAttempt = attempt;
+    }
+    changed = true;
+  } else if (comparison < 0) {
+    state.state = "idle";
+    delete state.target;
+    changed = true;
+  }
+  return changed;
 }
 
 function positive(value: number, name: string): number {

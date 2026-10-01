@@ -281,6 +281,63 @@ describe("UpdateManager", () => {
     expect(stdout).toContain("beforeExit reads=2");
   });
 
+  it("preserves an installing attempt when recovery status is saved concurrently", async () => {
+    let stored: UpdaterStateSnapshot | undefined;
+    let releaseInstalling!: () => void;
+    let installingStarted!: () => void;
+    let releaseRecovery!: () => void;
+    let recoverySaveStarted!: () => void;
+    let recoverySaveBlocked = true;
+    const installingGate = new Promise<void>((resolve) => {
+      releaseInstalling = resolve;
+    });
+    const installingReady = new Promise<void>((resolve) => {
+      installingStarted = resolve;
+    });
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    const recoveryReady = new Promise<void>((resolve) => {
+      recoverySaveStarted = resolve;
+    });
+    const manager = new UpdateManager({
+      channel: "staging",
+      currentVersion: "0.0.2-staging.1.1",
+      protectedWork: () => ({ total: 0 }),
+      executeUpdate: async () => undefined,
+      onHandoff: () => undefined,
+      loadState: async () => (stored ? structuredClone(stored) : undefined),
+      saveState: async (state) => {
+        if (state.state === "installing") {
+          installingStarted();
+          await installingGate;
+        }
+        if (state.recoveryStatus === "upgrade_required" && recoverySaveBlocked) {
+          recoverySaveBlocked = false;
+          recoverySaveStarted();
+          await recoveryGate;
+        }
+        stored = structuredClone(state);
+      },
+    });
+
+    manager.observe(target("0.0.3-staging.1.1"));
+    await installingReady;
+    const recoveryStatus = manager.recordRecoveryStatus("upgrade_required");
+    releaseInstalling();
+    await vi.waitFor(() => expect(stored).toMatchObject({ state: "installed", target: "0.0.3-staging.1.1" }));
+    await recoveryReady;
+    releaseRecovery();
+    await recoveryStatus;
+
+    expect(stored).toMatchObject({
+      state: "installed",
+      target: "0.0.3-staging.1.1",
+      recoveryStatus: "upgrade_required",
+    });
+    expect(stored?.attempts["0.0.3-staging.1.1"]).toMatchObject({ result: "installed" });
+  });
+
   it("uses bounded exponential backoff after unavailable release metadata", async () => {
     vi.useFakeTimers();
     try {

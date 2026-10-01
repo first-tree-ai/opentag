@@ -27,6 +27,7 @@ const config: AgentAdminConfig = {
   displayName: "Helper",
   runtimeProvider: "codex",
   receiveMode: "mention_only",
+  selfConfigurationEnabled: true,
   status: "active",
   createdAt: now,
   updatedAt: now,

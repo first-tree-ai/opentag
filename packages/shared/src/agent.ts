@@ -235,6 +235,7 @@ export const AgentListItemSchema = AgentSummarySchema.extend({
 export const AgentAdminConfigSchema = AgentIdentitySchema.extend({
   createdByUserId: z.string().uuid(),
   computerId: z.string().uuid().nullable(),
+  selfConfigurationEnabled: z.boolean(),
   revision: z.number().int().min(1),
   runtimeConfig: AgentRuntimeConfigSchema,
 }).strict();
@@ -271,11 +272,16 @@ export const UpdateAgentRequestSchema = z
     expectedRevision: z.number().int().min(1),
     displayName: AgentDisplayNameSchema.optional(),
     receiveMode: ReceiveModeSchema.optional(),
+    selfConfigurationEnabled: z.boolean().optional(),
     runtimeConfig: UpdateAgentRuntimeConfigSchema.optional(),
   })
   .strict()
   .refine(
-    (value) => value.displayName !== undefined || value.receiveMode !== undefined || value.runtimeConfig !== undefined,
+    (value) =>
+      value.displayName !== undefined ||
+      value.receiveMode !== undefined ||
+      value.selfConfigurationEnabled !== undefined ||
+      value.runtimeConfig !== undefined,
     { message: "At least one Agent field must be updated" },
   );
 

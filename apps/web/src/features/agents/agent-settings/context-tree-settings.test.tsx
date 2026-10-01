@@ -15,6 +15,7 @@ function config(id = "agent-a", repository: string | null = null): AgentAdminCon
     displayName: id,
     runtimeProvider: "codex",
     receiveMode: "mention_only",
+    selfConfigurationEnabled: false,
     status: "suspended",
     revision: 2,
     runtimeConfig: {

@@ -324,9 +324,16 @@ export class McpServerService {
     agentId: string,
     mcpServerId: string,
     enabled: boolean,
+    source: "account" | "agent-self" = "account",
   ): Promise<MCPAgentServer> {
     await this.#requireAgent(accountId, agentId);
     const server = await this.#requireServer(accountId, mcpServerId);
+    if (source === "agent-self" && server.defaultAuthKind === "none") {
+      throw new McpServiceError(
+        MCP_ERROR_CODES.SELF_ATTACH_NONE_AUTH_FORBIDDEN,
+        "Agent self-configuration cannot attach an MCP Server that does not require credentials",
+      );
+    }
     const now = this.#now();
     try {
       await this.#database.transaction(async (transaction) => {

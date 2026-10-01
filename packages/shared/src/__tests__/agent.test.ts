@@ -80,6 +80,7 @@ const agent = {
   displayName: "Code Reviewer",
   runtimeProvider: "codex",
   receiveMode: "all_message",
+  selfConfigurationEnabled: false,
   status: "active",
   revision: 1,
   runtimeConfig: {
@@ -176,7 +177,14 @@ describe("Agent contracts", () => {
     });
     expect(created.computerId).toBeUndefined();
     expect(AgentAdminConfigSchema.parse({ ...agent, computerId: null })).toMatchObject({ computerId: null });
-    const { runtimeConfig: _, revision: _revision, createdByUserId, computerId: _computerId, ...base } = agent;
+    const {
+      runtimeConfig: _,
+      revision: _revision,
+      selfConfigurationEnabled: _selfConfigurationEnabled,
+      createdByUserId,
+      computerId: _computerId,
+      ...base
+    } = agent;
     const unbound = {
       ...base,
       createdBy: { userId: createdByUserId, displayName: "Creator" },
@@ -203,7 +211,14 @@ describe("Agent contracts", () => {
 
   it("validates strict Agent response projections", () => {
     expect(AgentAdminConfigSchema.parse(agent)).toEqual(agent);
-    const { runtimeConfig: _, revision: _revision, createdByUserId, computerId: adminComputerId, ...base } = agent;
+    const {
+      runtimeConfig: _,
+      revision: _revision,
+      selfConfigurationEnabled: _selfConfigurationEnabled,
+      createdByUserId,
+      computerId: adminComputerId,
+      ...base
+    } = agent;
     const summary = {
       ...base,
       createdBy: { userId: createdByUserId, displayName: "Creator" },

@@ -461,6 +461,7 @@ describe("Agent availability model and presentation", () => {
       displayName: agent.displayName,
       runtimeProvider: agent.runtimeProvider,
       receiveMode: agent.receiveMode,
+      selfConfigurationEnabled: false,
       status: agent.status,
       revision: 1,
       runtimeConfig: {

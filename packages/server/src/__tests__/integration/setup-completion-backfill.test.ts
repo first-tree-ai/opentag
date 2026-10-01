@@ -33,7 +33,7 @@ const LATE = new Date("2026-08-20T00:00:00.000Z");
 const THROUGH_0028_IDX = 28;
 const THROUGH_0028_COUNT = 29;
 const THROUGH_0030_COUNT = 31;
-const CURRENT_MIGRATION_COUNT = 54;
+const CURRENT_MIGRATION_COUNT = 55;
 
 type Journal = {
   version: string;
@@ -245,6 +245,14 @@ describe("Account setup completion backfill", () => {
           [ACCOUNT_GRANT_ONLY]: null,
           [ACCOUNT_EMPTY]: null,
         });
+        const migratedAgents = await after<{ id: string; self_configuration_enabled: boolean }[]>`
+          select id::text, self_configuration_enabled from agents order by id
+        `;
+        expect(migratedAgents).toEqual([
+          { id: AGENT_DELETED, self_configuration_enabled: false },
+          { id: AGENT_ACTIVE, self_configuration_enabled: false },
+          { id: AGENT_LATE, self_configuration_enabled: false },
+        ]);
         await verifyDatabaseMigrations(databaseUrl, migrationsFolder);
       } finally {
         await after.end();

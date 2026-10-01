@@ -28,6 +28,7 @@ const agent = {
   displayName: "Code Reviewer",
   runtimeProvider: "codex" as const,
   receiveMode: "all_message" as const,
+  selfConfigurationEnabled: false,
   status: "active" as const,
   revision: 1,
   runtimeConfig: {
@@ -46,6 +47,7 @@ const {
   revision: _revision,
   createdByUserId,
   computerId: agentComputerId,
+  selfConfigurationEnabled: _selfConfigurationEnabled,
   ...agentBase
 } = agent;
 const agentSummary = {
@@ -232,6 +234,26 @@ describe("Agent HTTP API", () => {
     const list = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toMatchObject({ agents: [{ slackOAuthAvailable }] });
+  });
+
+  it("lets the owning Account enable Agent self-configuration", async () => {
+    const service = agentService();
+    service.updateById.mockResolvedValueOnce({ ...agent, selfConfigurationEnabled: true, revision: 2 });
+    const { app } = appWith(service);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: agentByIdPath(agentId),
+      headers: authorization,
+      payload: { expectedRevision: 1, selfConfigurationEnabled: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ selfConfigurationEnabled: true, revision: 2 });
+    expect(service.updateById).toHaveBeenCalledWith(userId, agentId, {
+      expectedRevision: 1,
+      selfConfigurationEnabled: true,
+    });
   });
 
   it("gets Agent usage through a strict supported period", async () => {

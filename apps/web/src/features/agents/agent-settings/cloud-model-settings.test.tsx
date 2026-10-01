@@ -14,6 +14,7 @@ const config: AgentAdminConfig = {
   displayName: "Cloud test",
   runtimeProvider: "pi",
   receiveMode: "mention_only",
+  selfConfigurationEnabled: false,
   status: "active",
   revision: 4,
   runtimeConfig: {

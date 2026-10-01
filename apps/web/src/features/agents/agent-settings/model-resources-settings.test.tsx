@@ -49,6 +49,7 @@ const config: AgentAdminConfig = {
   displayName: agent.displayName,
   runtimeProvider: "codex",
   receiveMode: "mention_only",
+  selfConfigurationEnabled: false,
   status: "active",
   revision: 4,
   runtimeConfig: {

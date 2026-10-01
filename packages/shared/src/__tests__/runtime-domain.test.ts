@@ -317,12 +317,12 @@ describe("runtime domain contract", () => {
     const runtime = snapshot();
     const hashes = computeRuntimeSnapshotHashes(runtime);
     expect(hashes).toEqual({
-      agentConfigHash: "7007eb64403d2aa5ff3a4b03ffd18b77b4bf2f9e059cde1a785586aceb783ba4",
+      agentConfigHash: "5f97c5990e34142c90ead2977be8846cd24939243f43567f2ee1dd8728764f10",
       sessionConfigHash: "9b51b9872c3617a33b57b2068500c3c645be5f1ed4662e613101b8c20546eea6",
-      effectiveSnapshotHash: "4d2eef9ffaef9670ab63911c88fd76f822cab84f8fae2216a5641d8c033053cc",
+      effectiveSnapshotHash: "630f5ebbeac713b010d77d7833e5f458e9ec689d05ef464c1e67da5aff916540",
     });
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "2f5773b56951456e484642608eb3ca5382fbea0f551af9e4152c3a26e7dde771",
+      "78fba4d088258093c5234aa76c6077e75225c365bc700e0e3e0c946862cbe4e5",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
     const withReplies = turnReport({
@@ -438,7 +438,7 @@ describe("runtime domain contract", () => {
       runtime: snapshot(),
     };
     expect(computeReconcilePayloadHash(request)).toBe(
-      "fd29f85893f3c8fc102de9bdfeed6fde66ff36b4f5bc8be7b3dca05fbff3df1e",
+      "c39b21f8edb13ce756ebcbc96b64acd22955974070ab9803ab9e748fd8c345d8",
     );
     expect(
       computeReconcilePayloadHash({ ...request, installationId: "77777777-7777-4777-8777-777777777777" }),

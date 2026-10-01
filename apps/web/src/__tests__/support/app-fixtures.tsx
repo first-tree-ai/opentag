@@ -441,6 +441,7 @@ export function installApi(
     displayName: agentSummary.displayName,
     runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
     receiveMode: agentSummary.receiveMode,
+    selfConfigurationEnabled: false,
     status: lifecycleStatus,
     createdAt: agentSummary.createdAt,
     updatedAt: agentSummary.updatedAt,

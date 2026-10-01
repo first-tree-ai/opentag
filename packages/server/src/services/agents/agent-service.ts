@@ -11,6 +11,7 @@ import {
   type AgentSummary,
   type AgentUsageDetail,
   type AgentUsageWindowDays,
+  agentAvatarPath,
   type ContextTreeConnection,
   ContextTreesSchema,
   type CreateAgentRequest,
@@ -76,7 +77,7 @@ interface ActiveSessionPlacement {
 }
 
 interface AgentSafeRow {
-  avatarUrl?: string | null;
+  avatarSourceUrl?: string | null;
   id: string;
   createdByUserId: string;
   creatorDisplayName: string;
@@ -194,7 +195,7 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
   if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as a summary");
   return {
     id: row.id,
-    ...(row.avatarUrl ? { avatarUrl: row.avatarUrl } : {}),
+    ...(row.avatarSourceUrl ? { avatarPath: agentAvatarPath(row.id) } : {}),
     createdBy: { userId: row.createdByUserId, displayName: row.creatorDisplayName },
     computer: row.computer
       ? {
@@ -603,7 +604,7 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
-        avatarUrl: imBindings.botAvatarUrl,
+        avatarSourceUrl: imBindings.botAvatarUrl,
         agentComputerId: agents.computerId,
         computerId: computers.id,
         computerDisplayName: computers.displayName,
@@ -725,7 +726,7 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
-        avatarUrl: imBindings.botAvatarUrl,
+        avatarSourceUrl: imBindings.botAvatarUrl,
         agentComputerId: agents.computerId,
         computerId: computers.id,
         computerDisplayName: computers.displayName,

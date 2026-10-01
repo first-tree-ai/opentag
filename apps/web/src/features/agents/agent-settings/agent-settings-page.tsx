@@ -123,7 +123,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
   return (
     <div className="grid gap-6">
       <div className="flex items-center gap-3">
-        <AgentAvatar displayName={agent.displayName} avatarUrl={agent.avatarUrl} />
+        <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} />
         <AgentSettingsPageHeader title={m.agent_settings_title()} />
       </div>
       <AsyncState loading={<AgentSettingsDirectoryLoading />} state={configState}>

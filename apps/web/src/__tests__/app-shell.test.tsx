@@ -1,3 +1,4 @@
+import { agentAvatarPath } from "@opentag/shared/browser";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
@@ -16,21 +17,21 @@ describe("OpenTag Web App Shell", () => {
   afterEach(() => vi.useRealTimers());
 
   it("shows the cached bot avatar across list, detail, settings, and switcher", async () => {
-    const avatarUrl = "https://example.com/cat.png";
-    installApi({ avatarUrl });
+    const avatarPath = agentAvatarPath(agentId);
+    installApi({ avatarPath });
     render(<App />);
     const agentLink = await screen.findByRole("link", { name: "Open Reviewer" });
     const row = agentLink.closest('[data-ui="agent-row"]') as HTMLElement;
-    expect(row.querySelector("img")?.getAttribute("src")).toBe(avatarUrl);
+    expect(row.querySelector("img")?.getAttribute("src")).toBe(avatarPath);
     fireEvent.click(agentLink);
     await screen.findByRole("heading", { level: 1, name: "Reviewer" });
-    expect(screen.getByRole("main").querySelector("img")?.getAttribute("src")).toBe(avatarUrl);
+    expect(screen.getByRole("main").querySelector("img")?.getAttribute("src")).toBe(avatarPath);
     const switcher = await screen.findByRole("button", { name: "Switch Agent, current Agent Reviewer" });
-    expect(switcher.querySelector("img")?.getAttribute("src")).toBe(avatarUrl);
+    expect(switcher.querySelector("img")?.getAttribute("src")).toBe(avatarPath);
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
     await screen.findByRole("heading", { level: 1, name: "Agent settings" });
     const image = screen.getByRole("main").querySelector("img") as HTMLImageElement;
-    expect(image.getAttribute("src")).toBe(avatarUrl);
+    expect(image.getAttribute("src")).toBe(avatarPath);
     fireEvent.error(image);
     expect(image.isConnected).toBe(false);
     expect(screen.getByRole("main").textContent).toContain("R");

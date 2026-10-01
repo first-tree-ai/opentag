@@ -373,10 +373,11 @@ test("global return, local return, history, and dirty settings keep their own de
   await page.getByRole("link", { name: "All Agents", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Discard", exact: true }).click();
   await expect(page).toHaveURL(/\/agents\/?$/);
+  await expect(page.getByRole("heading", { name: "All Agents", exact: true })).toBeVisible();
   await page.goBack({ waitUntil: "networkidle" });
-  await expect(page).toHaveURL(/\/agents\/?$/);
-  await expect(page.getByLabel("Display name", { exact: true })).toHaveCount(0);
-  await expect(page.locator(".app-navigation")).toHaveCSS("width", "72px");
+  await expect(page).toHaveURL(new RegExp(`/agents/${agentId}/settings/identity$`));
+  await expect(page.getByLabel("Display name", { exact: true })).toHaveValue("E2E Agent Updated");
+  await expect(page.locator(".app-navigation")).toHaveCSS("width", "240px");
 
   await page.goto(`/agents/${agentId}/tasks`, { waitUntil: "networkidle" });
   const search = page.getByRole("searchbox", { name: "Search Tasks" });

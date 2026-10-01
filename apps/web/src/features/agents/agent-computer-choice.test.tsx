@@ -7,7 +7,7 @@
 
 import type { AccountComputerSummary, AgentAdminConfig } from "@opentag/shared/browser";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
 import { createQueryClient } from "../../query/client.js";
@@ -34,6 +34,12 @@ const spareComputer: AccountComputerSummary = {
   ...cachedComputer,
   computerId: OTHER_COMPUTER_ID,
   displayName: "Spare",
+};
+
+const disconnectedComputer: AccountComputerSummary = {
+  ...cachedComputer,
+  connectionStatus: "disconnected",
+  connectedAt: null,
 };
 
 const boundConfig: AgentAdminConfig = {
@@ -122,6 +128,27 @@ describe("AgentComputerChoice over a cached inventory", () => {
       await screen.findByText("Paste this command into your coding assistant on the computer you’re connecting."),
     ).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
+  });
+
+  it("keeps a sole disconnected Computer explicit and offers another connection", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [disconnectedComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockReturnValue(new Promise(() => undefined));
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <AgentComputerChoice agentId={AGENT_ID} onBound={() => undefined} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/Disconnected/)).toBeTruthy();
+    expect(
+      screen.getByText("Paste this command into your coding assistant on the computer you’re connecting."),
+    ).toBeTruthy();
+    expect(rebind).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use this computer: Ada's Mac" }));
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(AGENT_ID, COMPUTER_ID));
   });
 
   it("still binds by itself once the fresh read confirms the one Computer", async () => {

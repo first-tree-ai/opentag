@@ -426,6 +426,7 @@ test("mobile global return remains visible and reduced motion does not animate n
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/agents\/?$/);
   await expect(page.getByRole("heading", { name: "All Agents", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open E2E Agent Updated", exact: true })).toBeFocused();
 });
 
 test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", async ({ page }) => {

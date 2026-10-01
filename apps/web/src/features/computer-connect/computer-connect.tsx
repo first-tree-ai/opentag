@@ -4,7 +4,7 @@ import { type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, us
 import { analytics } from "../../analytics/analytics.js";
 import { ANALYTICS_EVENT } from "../../analytics/events.js";
 import { reportComputerConnected } from "../../analytics/milestones.js";
-import { browserApi } from "../../api.js";
+import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { fetchSharedResource } from "../../query/session-cache.js";
@@ -89,7 +89,7 @@ type PollResult =
   | { readonly kind: "connected"; readonly computer: AccountComputerSummary };
 
 function errorMessage(cause: unknown, fallback: string): string {
-  return cause instanceof Error && cause.message ? cause.message : fallback;
+  return cause instanceof ApiError && cause.message ? cause.message : fallback;
 }
 
 /** The redeemed Computer counts only once the connection bought by that redemption is online. */

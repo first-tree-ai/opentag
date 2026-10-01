@@ -7,9 +7,12 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_TAR_STREAM_BYTES,
+  decodeZipName,
   normalizeSkillArchive,
+  readZipDirectory,
   resolveSkillReadLimits,
 } from "../services/skills/index.js";
+import { canonicalZipMode } from "../services/skills/skill-archive-reader.js";
 import {
   buildRawZip,
   buildStoredZip,
@@ -26,10 +29,36 @@ import {
 const entry = (name: string, body: string, extra: Record<string, unknown> = {}) => ({ name, body, ...extra });
 
 const MIB = 1024 * 1024;
+const UTF8_NAME_FLAG = 0x0800;
+const LATIN1_LINK_NAME = new Uint8Array([0x6c, 0x69, 0xe9, 0x6e, 0x6b]);
+const UTF8_LINK_NAME = new Uint8Array([0x6c, 0x69, 0xc3, 0xa9, 0x6e, 0x6b]);
+const LATIN1_EXECUTABLE_NAME = new Uint8Array([
+  0x73, 0x63, 0x72, 0x69, 0x70, 0x74, 0x73, 0x2f, 0x72, 0xe9, 0x6e, 0x2e, 0x73, 0x68,
+]);
 
 async function failure(promise: Promise<unknown>, code: string): Promise<void> {
   await expect(promise).rejects.toMatchObject({ code });
 }
+
+describe("ZIP filename decoding", () => {
+  it("decodes UTF-8 names when bit 11 is set", () => {
+    expect(decodeZipName(new Uint8Array([0x6c, 0x69, 0xc3, 0xa9, 0x6e, 0x6b]), true)).toBe("liénk");
+  });
+
+  it("decodes non-UTF-8 names as Latin-1 when bit 11 is clear", () => {
+    expect(decodeZipName(new Uint8Array([0x6c, 0x69, 0xe9, 0x6e, 0x6b]), false)).toBe("liénk");
+  });
+
+  it("records the general-purpose flag from each central-directory entry", () => {
+    const zip = buildStoredZip([{ name: UTF8_LINK_NAME, body: "x", generalPurposeBitFlag: UTF8_NAME_FLAG }]);
+    expect(readZipDirectory(zip, 1)).toEqual([
+      expect.objectContaining({
+        name: "liénk",
+        generalPurposeBitFlag: UTF8_NAME_FLAG,
+      }),
+    ]);
+  });
+});
 
 describe("normalizeSkillArchive", () => {
   it("accepts tar.gz and zip happy paths with a root SKILL.md", async () => {
@@ -257,6 +286,60 @@ describe("normalizeSkillArchive", () => {
     const modes = await tarMemberModes(fromZip.archive);
     expect(modes.get("scripts/run.sh")).toBe(0o755);
     expect(modes.get("SKILL.md")).toBe(0o644);
+  });
+
+  it("rejects a non-UTF-8-named Unix symlink", async () => {
+    await expect(
+      normalizeSkillArchive(
+        buildStoredZip([
+          { name: "SKILL.md", body: skillManifest("latin1-link"), unixMode: 0o100644 },
+          { name: LATIN1_LINK_NAME, body: "SKILL.md", unixMode: 0o120777 },
+        ]),
+        "zip",
+      ),
+    ).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.ARCHIVE_INVALID,
+      message: "Skill archive may not contain links",
+    });
+  });
+
+  it("rejects a UTF-8-named Unix symlink when bit 11 is set", async () => {
+    await expect(
+      normalizeSkillArchive(
+        buildStoredZip([
+          { name: "SKILL.md", body: skillManifest("utf8-link"), unixMode: 0o100644 },
+          { name: UTF8_LINK_NAME, body: "SKILL.md", unixMode: 0o120777, generalPurposeBitFlag: UTF8_NAME_FLAG },
+        ]),
+        "zip",
+      ),
+    ).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.ARCHIVE_INVALID,
+      message: "Skill archive may not contain links",
+    });
+  });
+
+  it("keeps the execute bit for a non-UTF-8-named executable", async () => {
+    const normalized = await normalizeSkillArchive(
+      buildStoredZip([
+        { name: "SKILL.md", body: skillManifest("latin1-exec"), unixMode: 0o100644 },
+        { name: LATIN1_EXECUTABLE_NAME, body: "#!/bin/sh\n", unixMode: 0o100755 },
+      ]),
+      "zip",
+    );
+    const modes = await tarMemberModes(normalized.archive);
+    expect(modes.get(decodeZipName(LATIN1_EXECUTABLE_NAME, false))).toBe(0o755);
+  });
+
+  it("rejects a ZIP name/central-directory entry mismatch", () => {
+    const zip = buildStoredZip([{ name: "member.txt", body: "x", unixMode: 0o100755 }]);
+    const directory = new Map(readZipDirectory(zip, 1).map((entry) => [entry.name, entry]));
+    directory.delete("member.txt");
+    expect(() => canonicalZipMode("member.txt", directory)).toThrowError(
+      expect.objectContaining({
+        code: SKILL_ERROR_CODES.ARCHIVE_INVALID,
+        message: "Skill archive member is missing from the central directory",
+      }),
+    );
   });
 
   it("accepts permissions-only Unix zip entries and still applies the execute bit", async () => {

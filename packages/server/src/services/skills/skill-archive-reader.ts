@@ -341,9 +341,10 @@ function classifyZipMode(mode: number, name: string): ZipMemberKind {
  * file-type bits (Python's `zipfile` does this) is an ordinary member; a DOS/Windows entry has no
  * mode to lose, so it is `0644`.
  */
-function canonicalZipMode(rawName: string, directory: Map<string, ZipDirectoryEntry>): number {
+export function canonicalZipMode(rawName: string, directory: ReadonlyMap<string, ZipDirectoryEntry>): number {
   const info = directory.get(rawName);
-  if (!info?.madeByUnix) return 0o644;
+  if (!info) throw skillArchiveInvalid("Skill archive member is missing from the central directory");
+  if (!info.madeByUnix) return 0o644;
   const kind = classifyZipMode(info.unixMode, rawName);
   if (kind === "link") throw skillArchiveInvalid("Skill archive may not contain links");
   if (kind === "special") throw skillArchiveInvalid("Skill archive may not contain special files");

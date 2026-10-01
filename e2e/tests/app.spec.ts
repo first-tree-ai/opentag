@@ -16,7 +16,7 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
   await page.goto("/agents/setup", { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: AGENT_SETUP_CREATE_HEADING, exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Local computer / })).toBeVisible();
-  const cloudComputer = page.getByRole("button", { name: /^Cloud computer Coming soon / });
+  const cloudComputer = page.getByRole("button", { name: /^Cloud computer Temporarily unavailable / });
   await expect(cloudComputer).toBeVisible();
   await expect(cloudComputer).toBeDisabled();
   await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();

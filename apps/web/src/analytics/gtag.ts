@@ -40,7 +40,7 @@ export function dataLayerSink(target: Window = window): AnalyticsSink {
     // gtag.js reads each queued entry as an `arguments` object rather than as an array, so the
     // queue is filled exactly the way the published snippet fills it.
     scope.gtag = function gtag() {
-      // biome-ignore lint/complexity/useArrowFunction: `arguments` is the value gtag.js expects.
+      // biome-ignore lint/complexity/noArguments: gtag.js consumes each queued call as an arguments object.
       layer.push(arguments);
     };
   }

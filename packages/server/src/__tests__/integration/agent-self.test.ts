@@ -69,6 +69,7 @@ describe("Agent self-configuration against PostgreSQL", () => {
   it("resolves the owning Account from the Agent and updates its runtime config", async () => {
     const value = await fixture();
     try {
+      expect(value.agent.selfConfigurationEnabled).toBe(false);
       await expect(value.self.authenticate("valid-proof")).rejects.toMatchObject({
         code: "AGENT_SELF_CONFIGURATION_DISABLED",
         statusCode: 403,
@@ -135,9 +136,21 @@ describe("Agent self-configuration against PostgreSQL", () => {
       await expect(value.self.updateMcpBinding(scope, server.id, { enabled: false })).resolves.toMatchObject({
         enabled: false,
       });
-      expect(await value.self.listMcpServers(scope)).toHaveLength(1);
+      expect(await value.self.listMcpServers(scope)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ mcpServerId: anonymous.id, enabled: true }),
+          expect.objectContaining({ mcpServerId: server.id, enabled: false }),
+        ]),
+      );
 
       await value.self.detachMcpServer(scope, server.id);
+      expect(await value.self.listMcpServers(scope)).toEqual([
+        expect.objectContaining({ mcpServerId: anonymous.id, enabled: true }),
+      ]);
+      await expect(value.self.updateMcpBinding(scope, anonymous.id, { enabled: false })).resolves.toMatchObject({
+        enabled: false,
+      });
+      await value.self.detachMcpServer(scope, anonymous.id);
       expect(await value.self.listMcpServers(scope)).toEqual([]);
     } finally {
       await value.sql.end();

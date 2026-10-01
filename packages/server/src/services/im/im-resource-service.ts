@@ -100,21 +100,12 @@ export class ImResourceService {
       );
     }
 
-    const sizeBytes = response.headers.get("content-length");
-    const declaredSize = sizeBytes === null ? undefined : Number(sizeBytes);
-    if (declaredSize !== undefined && (!Number.isSafeInteger(declaredSize) || declaredSize < 0)) {
-      await discardResponseBody(response);
-      throw new ImBindingServiceError("VALIDATION_ERROR", 502, "The Agent avatar response is invalid", "validation");
-    }
-    if (declaredSize !== undefined && declaredSize > MAX_AVATAR_BYTES) {
-      await discardResponseBody(response);
-      throw new ImBindingServiceError("VALIDATION_ERROR", 413, "The Agent avatar exceeds the size limit", "validation");
-    }
+    const body = await readAvatarBody(response.body);
 
     return {
-      stream: limitReadableStream(Readable.fromWeb(response.body), MAX_AVATAR_BYTES, "IM_AVATAR_TOO_LARGE"),
+      stream: Readable.from(body),
       mediaType,
-      ...(declaredSize === undefined ? {} : { sizeBytes: declaredSize }),
+      sizeBytes: body.byteLength,
     };
   }
 
@@ -236,4 +227,30 @@ async function discardResponseBody(response: Response): Promise<void> {
   } catch {
     // Best effort: the provider response is never relayed after validation fails.
   }
+}
+
+async function readAvatarBody(body: ReadableStream<Uint8Array>): Promise<Buffer> {
+  const stream = Readable.fromWeb(body);
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    for await (const chunk of stream) {
+      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_AVATAR_BYTES) {
+        stream.destroy();
+        throw new ImBindingServiceError("IM_AVATAR_TOO_LARGE", 413, "The Agent avatar exceeds the size limit");
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof ImBindingServiceError) throw error;
+    throw new ImBindingServiceError(
+      "IM_BINDING_TEMPORARILY_UNAVAILABLE",
+      503,
+      "The Agent avatar is temporarily unavailable",
+      "transient",
+    );
+  }
+  return Buffer.concat(chunks, totalBytes);
 }

@@ -88,10 +88,13 @@ export function createAvatarTransport(
       signal: init.signal,
       dispatcher,
     });
+    const responseHeaders = Array.from(response.headers.entries()).filter(
+      ([name]) => name !== "content-length" && name !== "content-encoding",
+    );
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
-      headers: Array.from(response.headers.entries()),
+      headers: responseHeaders,
     });
   };
   return Object.assign(transport, { close: () => dispatcher.close() });

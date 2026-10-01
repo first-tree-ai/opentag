@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import { gzipSync } from "node:zlib";
 import type { NormalizedInboundImEvent, SessionReconcileRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -38,6 +39,10 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
 
 const AVATAR_URL = "https://tenant-cdn.example.test/avatar.png";
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 function fakeAvatarPolicy(fetch: ReturnType<typeof vi.fn>): ExternalCallPolicy {
   return { fetch } as unknown as ExternalCallPolicy;
@@ -48,6 +53,8 @@ function avatarResponse(
     status?: number;
     contentType?: string;
     contentLength?: string;
+    contentEncoding?: string;
+    body?: Uint8Array;
     chunks?: Uint8Array[];
     close?: boolean;
     cancel?: () => void;
@@ -56,13 +63,14 @@ function avatarResponse(
   const cancel = options.cancel ?? vi.fn();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      for (const chunk of options.chunks ?? [Buffer.from("avatar")]) controller.enqueue(chunk);
+      for (const chunk of options.chunks ?? [options.body ?? Buffer.from("avatar")]) controller.enqueue(chunk);
       if (options.close ?? true) controller.close();
     },
     cancel,
   });
   const headers = new Headers({ "content-type": options.contentType ?? "image/png" });
   if (options.contentLength !== undefined) headers.set("content-length", options.contentLength);
+  if (options.contentEncoding !== undefined) headers.set("content-encoding", options.contentEncoding);
   return {
     response: new Response(stream, { status: options.status ?? 200, headers }),
     cancel: cancel as ReturnType<typeof vi.fn>,
@@ -1101,30 +1109,39 @@ describe("ImResourceService with the unit database", () => {
     expect(avatar.cancel).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    ["invalid Content-Length", "not-a-number", 502],
-    ["declared size above 5 MiB", String(MAX_AVATAR_BYTES + 1), 413],
-  ] as const)("cancels and rejects %s", async (_label, contentLength, statusCode) => {
+  it("uses decoded bytes instead of compressed response headers for sizeBytes", async () => {
     await setAvatarUrl(db, fixture.bindingId);
-    const avatar = avatarResponse({ contentLength });
-    const fetch = vi.fn().mockResolvedValue(avatar.response);
-    const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
-
-    await expect(service.openAvatar(fixture.userId, fixture.agentId)).rejects.toMatchObject({
-      code: "VALIDATION_ERROR",
-      statusCode,
+    const encoded = gzipSync(PNG_BYTES);
+    const avatar = avatarResponse({
+      body: PNG_BYTES,
+      contentEncoding: "gzip",
+      contentLength: String(encoded.byteLength),
     });
-    expect(avatar.cancel).toHaveBeenCalledOnce();
-  });
-
-  it("cuts off a streamed avatar body above 5 MiB when no length is declared", async () => {
-    await setAvatarUrl(db, fixture.bindingId);
-    const avatar = avatarResponse({ chunks: [Buffer.alloc(MAX_AVATAR_BYTES), Buffer.from("x")] });
     const fetch = vi.fn().mockResolvedValue(avatar.response);
     const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
 
     const opened = await service.openAvatar(fixture.userId, fixture.agentId);
-    await expect(readNodeStream(opened.stream)).rejects.toThrow("IM_AVATAR_TOO_LARGE");
+
+    expect(opened.sizeBytes).toBe(PNG_BYTES.byteLength);
+    await expect(readNodeStream(opened.stream)).resolves.toEqual(PNG_BYTES);
+  });
+
+  it("rejects a compressed response whose decoded body exceeds 5 MiB", async () => {
+    await setAvatarUrl(db, fixture.bindingId);
+    const decoded = Buffer.alloc(MAX_AVATAR_BYTES + 1, 0x61);
+    const encoded = gzipSync(decoded);
+    const avatar = avatarResponse({
+      body: decoded,
+      contentEncoding: "gzip",
+      contentLength: String(encoded.byteLength),
+    });
+    const fetch = vi.fn().mockResolvedValue(avatar.response);
+    const service = new ImResourceService(db.database, vi.fn(), fakeAvatarPolicy(fetch));
+
+    await expect(service.openAvatar(fixture.userId, fixture.agentId)).rejects.toMatchObject({
+      code: "IM_AVATAR_TOO_LARGE",
+      statusCode: 413,
+    });
   });
 
   it("authorizes resources, applies descriptor fallbacks, and enforces limits", async () => {

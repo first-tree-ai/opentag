@@ -1,6 +1,7 @@
 import type { LookupAddress, LookupAllOptions } from "node:dns";
 import { createServer } from "node:http";
 import { type AddressInfo, connect } from "node:net";
+import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
 import { Agent } from "undici";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -10,6 +11,10 @@ import {
 } from "../services/im/avatar-destination.js";
 
 const BLOCKED_CODE = "IM_AVATAR_DESTINATION_BLOCKED";
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 type LookupCallback = (error: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void;
 
@@ -24,6 +29,23 @@ function scriptedResolver(addresses: string[]) {
 
 function errorFrom(callback: ReturnType<typeof vi.fn>): unknown {
   return callback.mock.calls[0]?.[0];
+}
+
+function localDispatcherFactory(port: number) {
+  return (resolve: AvatarAddressResolver) =>
+    new Agent({
+      connect: (_options, callback) => {
+        createAvatarLookup(resolve)("avatar.example.test", { all: false }, (error) => {
+          if (error) {
+            callback(error, null);
+            return;
+          }
+          const socket = connect(port, "127.0.0.1");
+          socket.once("connect", () => callback(null, socket));
+          socket.once("error", (socketError) => callback(socketError, null));
+        });
+      },
+    });
 }
 
 describe("avatar connection destination policy", () => {
@@ -114,24 +136,10 @@ describe("avatar connection destination policy", () => {
       server.listen(0, "127.0.0.1", resolve);
     });
     const port = (server.address() as AddressInfo).port;
-    const dispatcherFactory = (resolve: AvatarAddressResolver) =>
-      new Agent({
-        connect: (_options, callback) => {
-          createAvatarLookup(resolve)("avatar.example.test", { all: false }, (error) => {
-            if (error) {
-              callback(error, null);
-              return;
-            }
-            const socket = connect(port, "127.0.0.1");
-            socket.once("connect", () => callback(null, socket));
-            socket.once("error", (socketError) => callback(socketError, null));
-          });
-        },
-      });
     const allowedResolve = scriptedResolver(["93.184.216.34"]);
     const blockedResolve = scriptedResolver(["127.0.0.1"]);
-    const allowed = createAvatarTransport(allowedResolve, dispatcherFactory);
-    const blocked = createAvatarTransport(blockedResolve, dispatcherFactory);
+    const allowed = createAvatarTransport(allowedResolve, localDispatcherFactory(port));
+    const blocked = createAvatarTransport(blockedResolve, localDispatcherFactory(port));
 
     try {
       const response = await allowed(`http://avatar.example.test:${port}/avatar`, {
@@ -149,6 +157,43 @@ describe("avatar connection destination policy", () => {
       await allowed.close();
       await blocked.close();
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it.each([
+    ["gzip", "gzip", gzipSync],
+    ["br", "br", brotliCompressSync],
+    ["deflate", "deflate", deflateSync],
+  ] as const)("drops stale %s framing headers after decoding the avatar body", async (_label, encoding, compress) => {
+    const encoded = compress(PNG_BYTES);
+    const server = createServer((_request, response) => {
+      response.writeHead(200, {
+        "content-encoding": encoding,
+        "content-length": encoded.byteLength,
+        "content-type": "image/png",
+      });
+      response.end(encoded);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as AddressInfo).port;
+    const resolve = scriptedResolver(["93.184.216.34"]);
+    const transport = createAvatarTransport(resolve, localDispatcherFactory(port));
+
+    try {
+      const response = await transport(`http://avatar.example.test:${port}/avatar`);
+      expect(response.headers.get("content-encoding")).toBeNull();
+      expect(response.headers.get("content-length")).toBeNull();
+      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(PNG_BYTES);
+      expect(resolve).toHaveBeenCalledOnce();
+    } finally {
+      await transport.close();
+      await new Promise<void>((resolveClose, reject) =>
+        server.close((error) => (error ? reject(error) : resolveClose())),
+      );
     }
   });
 });

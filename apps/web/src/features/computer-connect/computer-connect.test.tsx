@@ -5,7 +5,7 @@ import { type ReactNode, StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { analytics } from "../../analytics/analytics.js";
 import type { GtagCommand } from "../../analytics/gtag.js";
-import { browserApi } from "../../api.js";
+import { ApiError, browserApi } from "../../api.js";
 import { createQueryClient } from "../../query/client.js";
 import { ComputerConnect } from "./computer-connect.js";
 
@@ -71,6 +71,7 @@ describe("ComputerConnect", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue(pending());
   });
 
@@ -114,6 +115,47 @@ describe("ComputerConnect", () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
     expect(screen.getByText("Expires in 14:59")).toBeTruthy();
+  });
+
+  it("shows server-authored issuance errors and logs structured diagnostics", async () => {
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockRejectedValue(
+      new ApiError(503, "The server refused this connection."),
+    );
+
+    render(<ComputerConnect intent={{ mode: "create" }} />);
+    await flushAsync();
+
+    expect(screen.getByRole("alert").textContent).toContain("The server refused this connection.");
+    expect(console.warn).toHaveBeenCalledWith(
+      "[OpenTag] Computer connect failure",
+      expect.objectContaining({
+        source: "ui",
+        operation: "issue",
+        errorName: "ApiError",
+        error: { name: "ApiError", message: "The server refused this connection." },
+      }),
+    );
+  });
+
+  it("uses the translated fallback for a transport issuance failure", async () => {
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockRejectedValue(new TypeError("Failed to fetch"));
+
+    render(<ComputerConnect intent={{ mode: "create" }} />);
+    await flushAsync();
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Couldn’t prepare the connection command.");
+    expect(alert.textContent).not.toContain("Failed to fetch");
+  });
+
+  it("uses the translated fallback when an issuance error has no message", async () => {
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockRejectedValue(new Error());
+
+    render(<ComputerConnect intent={{ mode: "create" }} />);
+    await flushAsync();
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Couldn’t prepare the connection command.");
   });
 
   it("keeps repair idle compact without a command surface, then issues against the exact target", async () => {
@@ -297,19 +339,41 @@ describe("ComputerConnect", () => {
       issuedAt: NOW,
     });
     vi.mocked(browserApi.computerConnectCodeStatus)
-      .mockRejectedValueOnce(new Error("Temporary polling failure"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
       .mockResolvedValue(pending());
 
     render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
 
     expect(commandIsShown(COMMAND)).toBe(true);
-    expect(screen.getByRole("alert").textContent).toContain("Temporary polling failure");
+    expect(screen.getByRole("alert").textContent).toContain("Couldn’t check the connection status.");
+    expect(screen.getByRole("alert").textContent).not.toContain("Failed to fetch");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_500);
     });
     expect(commandIsShown(COMMAND)).toBe(true);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("uses the translated fallback when redeemed inventory polling fails", async () => {
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemed());
+    vi.spyOn(browserApi, "computers")
+      .mockResolvedValueOnce({ computers: [] })
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue({ computers: [] });
+
+    render(<ComputerConnect intent={{ mode: "create" }} />);
+    await flushAsync();
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Couldn’t check the connection status.");
+    expect(alert.textContent).not.toContain("Failed to fetch");
   });
 
   it("keeps polling the exact redeemed Computer after the command deadline", async () => {
@@ -466,7 +530,7 @@ describe("ComputerConnect", () => {
         expiresIn: 1,
         issuedAt: NOW,
       })
-      .mockRejectedValueOnce(new Error("Issuance unavailable"));
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
 
     render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
@@ -479,24 +543,23 @@ describe("ComputerConnect", () => {
     expect(commandIsShown(COMMAND)).toBe(false);
     expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
     const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain("Issuance unavailable");
+    expect(alert.textContent).toContain("Couldn’t prepare the connection command.");
+    expect(alert.textContent).not.toContain("Failed to fetch");
     expect(alert.closest(".ots-command__body")).toBeNull();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
   it("retries an initial issuance failure", async () => {
-    vi.spyOn(browserApi, "issueComputerConnectCode")
-      .mockRejectedValueOnce(new Error("Issuance unavailable"))
-      .mockResolvedValueOnce({
-        connectCodeId: CONNECT_CODE_ID,
-        bootstrapCommand: COMMAND,
-        expiresIn: 900,
-        issuedAt: NOW,
-      });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockRejectedValueOnce(new Error()).mockResolvedValueOnce({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
 
     render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
-    expect(screen.getByRole("alert").textContent).toContain("Issuance unavailable");
+    expect(screen.getByRole("alert").textContent).toContain("Couldn’t prepare the connection command.");
     expect(screen.getByRole("alert").closest(".ots-command__body")).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
     expect(screen.queryByText("opentag.example.com")).toBeNull();

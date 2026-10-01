@@ -182,6 +182,7 @@ function toAgentAdminConfig(
     runtimeProvider: row.runtimeProvider,
     receiveMode: row.receiveMode,
     status: row.status,
+    selfConfigurationEnabled: row.selfConfigurationEnabled,
     revision: row.revision,
     runtimeConfig: toRuntimeConfig(runtimeConfig),
     createdAt: row.createdAt.toISOString(),
@@ -960,6 +961,7 @@ export class AgentService {
         .set({
           displayName: input.displayName ?? scope.agent.displayName,
           receiveMode: input.receiveMode ?? scope.agent.receiveMode,
+          selfConfigurationEnabled: input.selfConfigurationEnabled ?? scope.agent.selfConfigurationEnabled,
           revision: sql`${agents.revision} + 1`,
           updatedAt: now,
         })

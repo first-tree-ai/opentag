@@ -16,6 +16,7 @@ function authority(overrides: Record<string, unknown> = {}) {
     agentStatus: "active",
     agentId,
     agentName,
+    selfConfigurationEnabled: false,
     imBindingStatus: "active",
     runtimeConfig: {
       contextTrees: [],
@@ -51,6 +52,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     expect(first).toEqual(second);
     expect(first).toMatchObject({
       agentId,
+      selfConfigurationEnabled: false,
       provider: "codex",
       model: "gpt-5",
       reasoningEffort: "high",
@@ -117,6 +119,22 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     );
     expect(computeRuntimeSnapshotHashes(renamed).effectiveSnapshotHash).not.toBe(
       computeRuntimeSnapshotHashes(original).effectiveSnapshotHash,
+    );
+  });
+
+  it("carries the owner self-configuration gate and changes the Agent snapshot identity", async () => {
+    const disabled = await assembler(async () => authority({ selfConfigurationEnabled: false })).assembleForSession(
+      sessionId,
+    );
+    const enabled = await assembler(async () => authority({ selfConfigurationEnabled: true })).assembleForSession(
+      sessionId,
+    );
+
+    expect(disabled.selfConfigurationEnabled).toBe(false);
+    expect(enabled.selfConfigurationEnabled).toBe(true);
+    expect(enabled.revision.agent.id).not.toBe(disabled.revision.agent.id);
+    expect(computeRuntimeSnapshotHashes(enabled).agentConfigHash).not.toBe(
+      computeRuntimeSnapshotHashes(disabled).agentConfigHash,
     );
   });
 

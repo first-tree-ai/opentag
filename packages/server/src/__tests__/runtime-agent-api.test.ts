@@ -31,6 +31,7 @@ const config: AgentAdminConfig = {
   displayName: "Helper",
   runtimeProvider: "codex",
   receiveMode: "mention_only",
+  selfConfigurationEnabled: true,
   status: "active",
   createdAt: now,
   updatedAt: now,
@@ -86,7 +87,10 @@ function fixture(overrides: Partial<AgentSelfServiceOptions> = {}) {
     updateBinding: vi.fn(async () => ({ ...mounted, enabled: false })),
   };
   const proofs = { authenticate: vi.fn(async () => source) };
-  const owners = { resolveAccountId: vi.fn(async () => accountId) };
+  const owners = {
+    isSelfConfigurationEnabled: vi.fn(async () => true),
+    resolveAccountId: vi.fn(async () => accountId),
+  };
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const service = new AgentSelfService({ agents, mcp, owners, proofs, logger, ...overrides });
   const app = createApp({ runtimeAgent: { service } });
@@ -130,6 +134,7 @@ describe("Runtime Agent self-configuration routes", () => {
     for (const payload of [
       { expectedRevision: 3, displayName: "Renamed", runtimeConfig: { model: "m" } },
       { expectedRevision: 3, receiveMode: "all_message", runtimeConfig: { model: "m" } },
+      { expectedRevision: 3, selfConfigurationEnabled: true, runtimeConfig: { model: "m" } },
       { expectedRevision: 3, runtimeConfig: { maxDurationMs: 999_999 } },
       { expectedRevision: 3, runtimeConfig: {} },
       { agentId: randomUUID(), expectedRevision: 3, runtimeConfig: { model: "m" } },
@@ -138,6 +143,50 @@ describe("Runtime Agent self-configuration routes", () => {
       expect(response.statusCode).toBe(400);
     }
     expect(agents.updateById).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rejects every self route while the Agent owner has disabled self-configuration", async () => {
+    const { app, agents, mcp, owners } = fixture();
+    owners.isSelfConfigurationEnabled.mockResolvedValue(false);
+
+    const responses = await Promise.all([
+      app.inject({ method: "GET", url: RUNTIME_AGENT_PATH, headers }),
+      app.inject({
+        method: "PATCH",
+        url: RUNTIME_AGENT_PATH,
+        headers,
+        payload: { expectedRevision: 3, runtimeConfig: { model: "m" } },
+      }),
+      app.inject({ method: "GET", url: RUNTIME_AGENT_MCP_SERVERS_PATH, headers }),
+      app.inject({ method: "GET", url: RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH, headers }),
+      app.inject({
+        method: "POST",
+        url: RUNTIME_AGENT_MCP_SERVERS_PATH,
+        headers,
+        payload: { mcpServerId, enabled: true },
+      }),
+      app.inject({
+        method: "PATCH",
+        url: runtimeAgentMcpServerPath(mcpServerId),
+        headers,
+        payload: { enabled: false },
+      }),
+      app.inject({ method: "DELETE", url: runtimeAgentMcpServerPath(mcpServerId), headers }),
+    ]);
+
+    expect(responses.map((response) => response.statusCode)).toEqual([403, 403, 403, 403, 403, 403, 403]);
+    for (const response of responses) {
+      expect(response.json()).toMatchObject({
+        error: { code: "AGENT_SELF_CONFIGURATION_DISABLED", category: "deterministic" },
+      });
+    }
+    expect(agents.getConfigById).not.toHaveBeenCalled();
+    expect(agents.updateById).not.toHaveBeenCalled();
+    expect(mcp.listAgentServers).not.toHaveBeenCalled();
+    expect(mcp.attachServer).not.toHaveBeenCalled();
+    expect(mcp.updateBinding).not.toHaveBeenCalled();
+    expect(mcp.detachServer).not.toHaveBeenCalled();
     await app.close();
   });
 
@@ -161,7 +210,7 @@ describe("Runtime Agent self-configuration routes", () => {
       payload: { mcpServerId, enabled: false },
     });
     expect(attached.statusCode).toBe(201);
-    expect(mcp.attachServer).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, false);
+    expect(mcp.attachServer).toHaveBeenCalledWith(accountId, source.agentId, mcpServerId, false, "agent-self");
 
     const disabled = await app.inject({
       method: "PATCH",

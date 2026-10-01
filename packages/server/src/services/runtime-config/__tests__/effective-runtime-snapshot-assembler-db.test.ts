@@ -92,6 +92,7 @@ describe("EffectiveRuntimeSnapshotAssembler database authority", () => {
     expect(snapshot).toMatchObject({
       agentId: agent.id,
       provider: "codex",
+      selfConfigurationEnabled: false,
       model: "gpt-5",
       reasoningEffort: "high",
       instructions: { agent: "Read the repository instructions." },

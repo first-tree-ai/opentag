@@ -56,10 +56,24 @@ async function createUser(database: DatabaseClient, email: string) {
   return user;
 }
 
+async function enableSelfConfiguration(value: Awaited<ReturnType<typeof fixture>>) {
+  const updated = await value.agentService.updateById(value.accountId, value.agent.id, {
+    expectedRevision: value.agent.revision,
+    selfConfigurationEnabled: true,
+  });
+  value.agent = updated;
+  return updated;
+}
+
 describe("Agent self-configuration against PostgreSQL", () => {
   it("resolves the owning Account from the Agent and updates its runtime config", async () => {
     const value = await fixture();
     try {
+      await expect(value.self.authenticate("valid-proof")).rejects.toMatchObject({
+        code: "AGENT_SELF_CONFIGURATION_DISABLED",
+        statusCode: 403,
+      });
+      await enableSelfConfiguration(value);
       const scope = await value.self.authenticate("valid-proof");
       expect(scope).toMatchObject({ accountId: value.accountId, agentId: value.agent.id });
 
@@ -85,11 +99,17 @@ describe("Agent self-configuration against PostgreSQL", () => {
   it("mounts, toggles, and unmounts only the owning Account's MCP Servers", async () => {
     const value = await fixture();
     try {
+      await enableSelfConfiguration(value);
       const scope = await value.self.authenticate("valid-proof");
-      const server = await value.mcp.createServer(value.accountId, {
-        name: "docs",
+      const anonymous = await value.mcp.createServer(value.accountId, {
+        name: "anonymous",
         url: "https://mcp.example.com/mcp",
         defaultAuthKind: "none",
+      });
+      const server = await value.mcp.createServer(value.accountId, {
+        name: "docs",
+        url: "https://mcp.example.com/credentials",
+        defaultAuthKind: "bearer",
       });
       const stranger = await createUser(value.database, "stranger@example.com");
       const foreign = await value.mcp.createServer(stranger.id, {
@@ -98,8 +118,17 @@ describe("Agent self-configuration against PostgreSQL", () => {
         defaultAuthKind: "none",
       });
 
-      expect((await value.self.listAvailableMcpServers(scope)).map((entry) => entry.id)).toEqual([server.id]);
+      expect((await value.self.listAvailableMcpServers(scope)).map((entry) => entry.id)).toEqual(
+        expect.arrayContaining([anonymous.id, server.id]),
+      );
       await expect(value.self.attachMcpServer(scope, foreign.id, true)).rejects.toThrow();
+      await expect(value.self.attachMcpServer(scope, anonymous.id, true)).rejects.toMatchObject({
+        code: "MCP_SELF_ATTACH_NONE_AUTH_FORBIDDEN",
+        statusCode: 403,
+      });
+
+      const humanMounted = await value.mcp.attachServer(value.accountId, value.agent.id, anonymous.id, true);
+      expect(humanMounted).toMatchObject({ mcpServerId: anonymous.id, enabled: true });
 
       const mounted = await value.self.attachMcpServer(scope, server.id, true);
       expect(mounted).toMatchObject({ mcpServerId: server.id, enabled: true });

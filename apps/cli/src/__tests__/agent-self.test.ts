@@ -190,7 +190,7 @@ describe("agent self commands", () => {
       expect(enable).toHaveBeenCalledWith("docs", false);
       expect(detach).toHaveBeenCalledWith("docs");
       const output = stdout.mock.calls.map(([chunk]) => String(chunk)).join("");
-      expect(output).toContain("search\t" + availableId + "\tSearch");
+      expect(output).toContain(`search\t${availableId}\tSearch`);
       expect(output).toContain(`Detached docs (${mcpServerId})`);
       expect(process.exitCode ?? 0).toBe(0);
     } finally {

@@ -127,6 +127,69 @@ describe("SessionBindingStore", () => {
     );
   });
 
+  it("clears steer receipts when the target Turn ends without completing", async () => {
+    const fixture = await bindingFixture();
+    const root = delivery(fixture.runtime, 1);
+    await fixture.store.recordAccepted(root, computeDirectInputHash(root), "turn-1");
+    const steer = steerRequest("delivery-steer", "turn-1");
+    const steerHash = computeRuntimeImMessageSemanticHash(steer);
+    await fixture.store.recordSteer(steer, steerHash);
+
+    const report = turnReport(root, "turn-1", "cancelled");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+      report,
+      resultHash: report.resultHash,
+    });
+    await fixture.store.recordResult("agent-1", "session-1", "turn-1", report.resultHash);
+
+    const redelivery: DirectImMessageDeliveryRequest = {
+      ...root,
+      requestId: randomUUID(),
+      deliveryId: steer.deliveryId,
+      imMessageId: steer.imMessageId,
+      content: steer.content,
+    };
+    await expect(
+      fixture.store.recordAccepted(redelivery, computeDirectInputHash(redelivery), "turn-2"),
+    ).resolves.toMatchObject({
+      status: "committed",
+      unresolvedTurn: { deliveryId: steer.deliveryId, turnId: "turn-2" },
+    });
+    expect((await fixture.store.read("agent-1", "session-1"))?.recentRecordedInputs).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ deliveryId: steer.deliveryId })]),
+    );
+  });
+
+  it("keeps steer receipts when the target Turn completes", async () => {
+    const fixture = await bindingFixture();
+    const root = delivery(fixture.runtime, 1);
+    await fixture.store.recordAccepted(root, computeDirectInputHash(root), "turn-1");
+    const steer = steerRequest("delivery-steer", "turn-1");
+    const steerHash = computeRuntimeImMessageSemanticHash(steer);
+    await fixture.store.recordSteer(steer, steerHash);
+
+    const report = turnReport(root, "turn-1");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+      report,
+      resultHash: report.resultHash,
+    });
+    await fixture.store.recordResult("agent-1", "session-1", "turn-1", report.resultHash);
+
+    const redelivery: DirectImMessageDeliveryRequest = {
+      ...root,
+      requestId: randomUUID(),
+      deliveryId: steer.deliveryId,
+      imMessageId: steer.imMessageId,
+      content: steer.content,
+    };
+    await expect(
+      fixture.store.recordAccepted(redelivery, computeDirectInputHash(redelivery), "turn-2"),
+    ).resolves.toMatchObject({
+      status: "absorbed",
+      recorded: { rootDeliveryId: root.deliveryId, turnId: "turn-1" },
+    });
+  });
+
   it("rejects stale preparation and binding changes while preserving the durable snapshot", async () => {
     const fixture = await bindingFixture();
     const hashes = computeRuntimeSnapshotHashes(fixture.runtime);
@@ -711,16 +774,27 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function turnReport(request: DirectImMessageDeliveryRequest, turnId: string): TurnReportRequest {
+function turnReport(
+  request: DirectImMessageDeliveryRequest,
+  turnId: string,
+  outcome: TurnReportRequest["outcome"] = "completed",
+): TurnReportRequest {
   const body = {
     deliveryId: request.deliveryId,
     turnId,
     sessionId: request.sessionId,
     agentId: request.agentId,
     placementGeneration: request.placementGeneration,
-    outcome: "completed" as const,
-    executionEffects: "completed" as const,
-    finalText: "durable result",
+    outcome,
+    executionEffects: outcome === "completed" ? ("completed" as const) : ("may_have_occurred" as const),
+    ...(outcome === "completed" ? { finalText: "durable result" } : {}),
+    ...(outcome === "cancelled"
+      ? { errorReason: "client_shutdown" as const }
+      : outcome === "failed"
+        ? { errorReason: "turn_timeout" as const }
+        : outcome === "unknown"
+          ? { errorReason: "turn_state_unknown" as const }
+          : {}),
     traceSummary: { lastSequence: 2, droppedEvents: 0 },
   };
   return { type: "turn:report", requestId: randomUUID(), ...body, resultHash: computeTurnResultHash(body) };

@@ -18,6 +18,8 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import { SessionService } from "../services/sessions/session-service.js";
+import { requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -116,10 +118,12 @@ interface DeliveryScope {
 
 export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   readonly #database: DatabaseClient;
+  readonly #sessions: SessionService;
   readonly #now: () => Date;
 
   constructor(database: DatabaseClient, options: { now?: () => Date } = {}) {
     this.#database = database;
+    this.#sessions = new SessionService(database);
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -500,6 +504,9 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           lastErrorCode: null,
         })
         .where(eq(imMessageDeliveries.id, report.deliveryId));
+      if (report.outcome !== "completed") {
+        await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now(), this.#sessions);
+      }
       return "recorded";
     });
   }

@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
+import { SessionService } from "../services/sessions/session-service.js";
+import { requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 
 const DEFAULT_JANITOR_INTERVAL_MS = 5_000;
 const DEFAULT_RETENTION_INTERVAL_MS = 60_000;
@@ -41,6 +43,54 @@ export interface ImDeliveryJanitorInput {
   imMessageDeliveriesRetentionMs?: number;
   slackWebhookReceiptsRetentionMs?: number;
   feishuInboundReceiptsRetentionMs?: number;
+}
+
+/** Recover children whose target already has a non-completed terminal outcome or a stale failure marker. */
+export async function runImDeliverySteerRecovery(
+  database: DatabaseClient,
+  options: Pick<ImDeliveryJanitorOptions, "clock" | "expiryBatchSize">,
+): Promise<void> {
+  const now = options.clock();
+  const sessionService = new SessionService(database);
+  await database.transaction(async (transaction) => {
+    const targets = (await transaction.execute(sql`
+      select target.id as target_id
+      from im_message_deliveries as target
+      inner join sessions as target_session on target_session.id = target.session_id
+      where exists (
+        select 1
+        from im_message_deliveries as child
+        where child.state = 'steered'
+          and child.steer_target_delivery_id = target.id
+      )
+        and (
+          (
+            target.state <> 'accepted'
+            or (
+              target.reported_at is not null
+              and coalesce(target.turn_report ->> 'outcome', 'unknown') <> 'completed'
+            )
+            or (
+              target.reported_at is null
+              and target_session.ended_at is not null
+            )
+            or (
+              target.state = 'accepted'
+              and target.reported_at is null
+              and target.next_attempt_at <= ${now.toISOString()}::timestamptz
+              and target.last_error_code is not null
+              and target.last_error_code not like 'IM_DELIVERY_CLAIM_%'
+            )
+          )
+        )
+      order by target.id asc
+      limit ${options.expiryBatchSize}
+      for update of target skip locked
+    `)) as Array<{ target_id: string }>;
+    for (const target of targets) {
+      await requeueSteeredDeliveries(transaction, target.target_id, now, sessionService);
+    }
+  });
 }
 
 export function resolveImDeliveryJanitorConfig(input: ImDeliveryJanitorInput): ImDeliveryJanitorConfig {
@@ -171,6 +221,7 @@ export interface ImDeliveryJanitorOptions {
 }
 
 export async function runImDeliveryExpiry(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
+  await runImDeliverySteerRecovery(database, options);
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
   // A pending row has exactly one bounded deadline. Local rows expire at the ingress deadline.

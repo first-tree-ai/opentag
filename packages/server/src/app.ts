@@ -99,6 +99,8 @@ export interface CreateAppOptions {
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
+  /** Whether this deployment can start the first-party Slack OAuth flow. */
+  slackOAuthAvailable?: boolean;
   agentSetupService?: AgentSetupService;
   agentRuntimeTestService?: AgentRuntimeTestService;
   contextTreeOperationService?: ContextTreeOperationService;
@@ -648,6 +650,7 @@ export function createApp(options: CreateAppOptions = {}) {
                 controlsEnabled: !!options.sandboxRunnerService,
               })
             : undefined),
+        options.slackOAuthAvailable,
       );
     }
     registerAvailableAccountRoutes(app, authService, options, authOptions);
@@ -834,6 +837,7 @@ function registerAvailableAccountRoutes(
     ...(options.cloudAvailability ? { cloudAvailability: options.cloudAvailability } : {}),
     ...(cloudModelCatalog ? { cloudModelOptions: () => cloudModelCatalog.list() } : {}),
     ...(options.agentService ? { agentService: options.agentService } : {}),
+    slackOAuthAvailable: options.slackOAuthAvailable,
     ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
     ...(options.computerService ? { computerService: options.computerService } : {}),
     ...(options.sandboxService ? { sandboxService: options.sandboxService } : {}),

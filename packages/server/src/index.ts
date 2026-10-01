@@ -942,6 +942,7 @@ export async function startServer(): Promise<void> {
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       agentService,
+      slackOAuthAvailable: config.slackOAuth !== undefined,
       agentSetupService,
       agentRuntimeTestService,
       contextTreeOperationService,

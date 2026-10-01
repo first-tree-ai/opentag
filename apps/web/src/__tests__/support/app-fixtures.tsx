@@ -371,6 +371,8 @@ export function installApi(
     agentUsage?: Omit<AgentUsageDetail, "endedAt" | "startedAt" | "windowDays">;
     agentListStatus?: () => number | undefined;
     agentActivity?: { state: "idle" } | { state: "working"; startedAt: string };
+    /** Deployment capability exposed on Agent reads; omitted to preserve legacy fixture defaults. */
+    slackOAuthAvailable?: boolean;
     emptyAgents?: boolean;
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     multipleMemberships?: boolean;
@@ -477,6 +479,9 @@ export function installApi(
               activity: options.agentActivity ?? agentListItem.activity,
               status: lifecycleStatus,
               runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+              ...(options.slackOAuthAvailable === undefined
+                ? {}
+                : { slackOAuthAvailable: options.slackOAuthAvailable }),
               ...(agentUnbound ? { computer: null } : {}),
             },
           ],
@@ -788,6 +793,7 @@ export function installApi(
         runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,
         activity: options.agentActivity ?? { state: "idle" },
+        ...(options.slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable: options.slackOAuthAvailable }),
         ...(agentUnbound ? { computer: null } : {}),
       });
     }

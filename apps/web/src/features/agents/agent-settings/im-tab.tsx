@@ -193,15 +193,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                              * not us — so both connect actions share one neutral variant and carry their own mark.
                              */}
                             <div className="flex flex-wrap gap-3">
-                              <Button
-                                icon={<ProviderIcon className="size-4" provider="slack" />}
+                              <SlackConnectButton
+                                available={agent.slackOAuthAvailable}
                                 loading={slackConfiguration.loading}
-                                disabled={slackConfiguration.loading}
-                                variant="secondary"
-                                onClick={() => void connectSlack()}
-                              >
-                                {m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
-                              </Button>
+                                onConnect={connectSlack}
+                              />
                               <Button
                                 icon={<ProviderIcon className="size-4" provider="feishu" />}
                                 loading={feishuSetup.loading}
@@ -300,6 +296,29 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         </Dialog>
       ) : null}
     </div>
+  );
+}
+
+function SlackConnectButton({
+  available,
+  loading,
+  onConnect,
+}: {
+  available?: boolean;
+  loading: boolean;
+  onConnect: () => void | Promise<void>;
+}) {
+  if (available === false) return null;
+  return (
+    <Button
+      icon={<ProviderIcon className="size-4" provider="slack" />}
+      loading={loading}
+      disabled={loading}
+      variant="secondary"
+      onClick={() => void onConnect()}
+    >
+      {m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
+    </Button>
   );
 }
 

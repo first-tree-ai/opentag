@@ -208,6 +208,7 @@ describe("Agent contracts", () => {
       ...base,
       createdBy: { userId: createdByUserId, displayName: "Creator" },
       computer: { computerId: adminComputerId, displayName: "Laptop", platform: "darwin" },
+      slackOAuthAvailable: false,
     };
     expect(AgentSummarySchema.parse(summary)).toEqual(summary);
     const listItem = {

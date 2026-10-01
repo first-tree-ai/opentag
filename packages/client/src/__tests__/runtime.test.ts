@@ -20,7 +20,11 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { OpenTagApiError } from "../api.js";
-import { type RuntimeBusinessFrame, RuntimeConnection } from "../runtime/runtime-connection.js";
+import {
+  type RuntimeBusinessFrame,
+  RuntimeConnection,
+  type RuntimeConnectionErrorCategory,
+} from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
@@ -164,9 +168,14 @@ describe("RuntimeConnection", () => {
   });
 
   it("rejects invalid handshakes, authentication, registration, and capability requirements", async () => {
-    const scenarios: Array<{ name: string; respond: (socket: WebSocket, frame: Record<string, unknown>) => void }> = [
+    const scenarios: Array<{
+      name: string;
+      expectedCategory: RuntimeConnectionErrorCategory;
+      respond: (socket: WebSocket, frame: Record<string, unknown>) => void;
+    }> = [
       {
         name: "unmatched auth",
+        expectedCategory: "protocol",
         respond: (socket, _frame) =>
           socket.send(
             JSON.stringify({
@@ -180,6 +189,7 @@ describe("RuntimeConnection", () => {
       },
       {
         name: "auth rejected",
+        expectedCategory: "authentication_rejection",
         respond: (socket, frame) =>
           socket.send(
             JSON.stringify({
@@ -192,6 +202,7 @@ describe("RuntimeConnection", () => {
       },
       {
         name: "missing capability",
+        expectedCategory: "capability_incompatibility",
         respond: (socket, frame) => {
           const { "runtime.imDelivery": _omitted, ...supportedCapabilities } = RUNTIME_SERVER_CAPABILITY_OFFERS;
           completeAuth(socket, frame, {
@@ -220,13 +231,15 @@ describe("RuntimeConnection", () => {
         platform: "linux",
         machineToken: "machine-token",
       });
-      await expect(connection.run()).rejects.toThrow(
-        scenario.name === "unmatched auth"
-          ? "unmatched auth result"
-          : scenario.name === "auth rejected"
-            ? "AUTH_INVALID_TOKEN"
-            : "Required runtime capabilities are unavailable",
-      );
+      await expect(connection.run()).rejects.toMatchObject({
+        category: scenario.expectedCategory,
+        message:
+          scenario.name === "unmatched auth"
+            ? "The server returned an unmatched auth result"
+            : scenario.name === "auth rejected"
+              ? "Runtime authentication failed: AUTH_INVALID_TOKEN"
+              : expect.stringContaining("Required runtime capabilities are unavailable"),
+      });
     }
   });
 
@@ -242,6 +255,7 @@ describe("RuntimeConnection", () => {
             installationId: randomUUID(),
           }),
         expectedError: "unmatched auth result",
+        expectedCategory: "protocol" as const,
       },
       {
         send: (socket: ControlledWebSocket, auth: Record<string, unknown>) =>
@@ -252,6 +266,7 @@ describe("RuntimeConnection", () => {
             message: "Authorization: Bearer close-secret",
           }),
         expectedError: "Authorization: Bearer close-secret",
+        expectedCategory: "authentication_rejection" as const,
       },
     ];
     const reasons: unknown[] = [];
@@ -271,7 +286,7 @@ describe("RuntimeConnection", () => {
       const rejection = logs.find((entry) => entry.message === "Runtime connection was rejected");
       expect(rejection).toMatchObject({
         level: "error",
-        fields: { attempt: 1, category: "protocol", state: "authenticating" },
+        fields: { attempt: 1, category: scenario.expectedCategory, state: "authenticating" },
       });
       reasons.push(rejection?.fields.reason);
     }
@@ -323,7 +338,10 @@ describe("RuntimeConnection", () => {
         throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "access token was revoked");
       },
     });
-    await expect(apiConnection.run()).rejects.toThrow("access token was revoked; run opentag connect again");
+    await expect(apiConnection.run()).rejects.toMatchObject({
+      category: "authentication_rejection",
+      message: "access token was revoked; run opentag connect again",
+    });
 
     const credentialConnection = new RuntimeConnection({
       ...controlledOptions(new ControlledWebSocket()),
@@ -331,9 +349,50 @@ describe("RuntimeConnection", () => {
         throw new Error("The runtime CLI is not logged in");
       },
     });
-    await expect(credentialConnection.run()).rejects.toThrow(
-      "The runtime CLI is not logged in; run opentag connect first",
+    await expect(credentialConnection.run()).rejects.toMatchObject({
+      category: "authentication_rejection",
+      message: "The runtime CLI is not logged in; run opentag connect first",
+    });
+  });
+
+  it("classifies a transient registration timeout without scheduling an upgrade", async () => {
+    const socket = new ControlledWebSocket();
+    const logs: RecordedLog[] = [];
+    let connection!: RuntimeConnection;
+    connection = new RuntimeConnection({
+      ...controlledOptions(socket),
+      jitter: () => 0,
+      logger: recordingLogger(logs),
+      waitForRetry: async () => connection.stop(),
+    });
+    const running = connection.run();
+    await vi.waitFor(() => expect(socket.listenerCount("open")).toBeGreaterThan(0));
+    socket.open();
+    await vi.waitFor(() => expect(socket.frame("auth")).toBeDefined());
+    const auth = socket.frame("auth");
+    socket.receive({
+      type: "auth:result",
+      requestId: auth?.requestId,
+      ok: true,
+      computerId: randomUUID(),
+      installationId: randomUUID(),
+    });
+    socket.receive(welcome(1_000, 2_000));
+    await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());
+    socket.receive({
+      type: "error",
+      code: "RUNTIME_REGISTER_TIMEOUT",
+      message: "Computer registration timed out",
+    });
+    await running;
+
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        fields: expect.objectContaining({ category: "transient_connection" }),
+        message: "Runtime connection lost; retry scheduled",
+      }),
     );
+    expect(logs).not.toContainEqual(expect.objectContaining({ message: "Runtime connection was rejected" }));
   });
 
   it("uses the default retry timer after a transient factory failure", async () => {

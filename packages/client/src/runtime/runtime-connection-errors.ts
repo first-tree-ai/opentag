@@ -6,10 +6,17 @@ export type RuntimeSendErrorCode =
   | "unavailable"
   | "capability_unavailable";
 
+export type RuntimeConnectionErrorCategory =
+  | "authentication_rejection"
+  | "capability_incompatibility"
+  | "protocol"
+  | "transient_connection";
+
 export class RuntimeConnectionError extends Error {
   constructor(
     message: string,
     readonly fatal: boolean,
+    readonly category: RuntimeConnectionErrorCategory = fatal ? "protocol" : "transient_connection",
   ) {
     super(message);
     this.name = "RuntimeConnectionError";

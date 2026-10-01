@@ -8,6 +8,7 @@ import {
   createLogger,
   RuntimeConnection,
   RuntimeConnectionError,
+  type RuntimeConnectionErrorCategory,
   readMachineCredentials,
   resolveBoundAccountComputer,
   resolveComputerIdentity,
@@ -352,16 +353,29 @@ function daemonOperatorMessage(error: unknown): string {
       ? "Daemon is already running; inspect daemon status"
       : "Daemon ownership prevented startup; inspect daemon status";
   }
-  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run opentag connect again";
+  if (error instanceof RuntimeConnectionError) return runtimeConnectionOperatorMessage(error.category);
   return "Daemon service configuration prevented startup; inspect daemon status";
 }
 
 function daemonFailureCategory(error: unknown): string {
   if (error instanceof DaemonRuntimeConfigurationError) return "configuration";
   if (error instanceof DaemonOwnerStartupError) return "ownership";
-  if (error instanceof RuntimeConnectionError) return error.fatal ? "connection_fatal" : "connection";
+  if (error instanceof RuntimeConnectionError) return error.category;
   if (error instanceof DaemonServiceError) return error.code.toLowerCase();
   return "unexpected";
+}
+
+function runtimeConnectionOperatorMessage(category: RuntimeConnectionErrorCategory): string {
+  switch (category) {
+    case "capability_incompatibility":
+      return "Daemon requires a newer Client for the Server runtime capabilities; automatic upgrade recovery is in progress";
+    case "authentication_rejection":
+      return "Daemon authentication was rejected; run opentag connect to repair credentials";
+    case "transient_connection":
+      return "Daemon connection is retryable; it will reconnect with backoff";
+    case "protocol":
+      return "Daemon runtime protocol was rejected; inspect daemon status";
+  }
 }
 
 function logTerminalFailure(logger: ClientLogger, error: unknown): void {

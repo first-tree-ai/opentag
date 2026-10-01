@@ -74,6 +74,6 @@ export function redactRuntimeReason(message: string): string {
   return redactForLog(message);
 }
 
-export function protocolRejectionFields(attempt: number, state: string, message: string) {
-  return { attempt: attempt + 1, category: "protocol", reason: redactRuntimeReason(message), state };
+export function protocolRejectionFields(attempt: number, state: string, message: string, category = "protocol") {
+  return { attempt: attempt + 1, category, reason: redactRuntimeReason(message), state };
 }

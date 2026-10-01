@@ -343,7 +343,8 @@ function classifyZipMode(mode: number, name: string): ZipMemberKind {
  */
 function canonicalZipMode(rawName: string, directory: Map<string, ZipDirectoryEntry>): number {
   const info = directory.get(rawName);
-  if (!info?.madeByUnix) return 0o644;
+  if (!info) throw skillArchiveInvalid("Skill archive member is missing from the central directory");
+  if (!info.madeByUnix) return 0o644;
   const kind = classifyZipMode(info.unixMode, rawName);
   if (kind === "link") throw skillArchiveInvalid("Skill archive may not contain links");
   if (kind === "special") throw skillArchiveInvalid("Skill archive may not contain special files");

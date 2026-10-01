@@ -19,7 +19,7 @@ export function useShellTransition({
   const memory = useShellMemory();
   const previous = useRef({ pathname, scope });
   const keyboard = useRef(false);
-  const pendingNavigation = useRef<{ from: string }>();
+  const pendingNavigation = useRef<{ from: string } | undefined>(undefined);
   const animations = useRef<Animation[]>([]);
 
   useEffect(() => {

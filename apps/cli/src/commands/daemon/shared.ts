@@ -1,4 +1,4 @@
-import { resolveOpenTagHome } from "@opentag/client";
+import { resolveOpenTagHome, type UpdaterRecoveryStatus } from "@opentag/client";
 import { CLI_VERSION } from "../../build-info.js";
 import { resolveChannelEnvironment } from "../../core/channel/environment.js";
 import * as commandPolicy from "../../core/command/policy.js";
@@ -19,6 +19,7 @@ export interface DaemonUpdateStatus {
   currentVersion: string;
   installMode?: InstallMode["mode"];
   state: string;
+  recoveryStatus?: UpdaterRecoveryStatus;
   target?: string;
   lastAttempt?: { target: string; startedAt: string; finishedAt?: string; result?: string; failureReason?: string };
   historyStatus?: "invalid";
@@ -33,6 +34,7 @@ export function formatUpdateStatus(state: DaemonUpdateStatus): string {
       ? "Update state: unknown (the updater state record is invalid; run the upgrade command)"
       : `Update state: ${state.state}`,
   );
+  if (state.recoveryStatus) lines.push(`Update recovery: ${recoveryStatusMessage(state.recoveryStatus)}`);
   if (state.target) lines.push(`Update target: ${state.target}`);
   const attempt = state.lastAttempt;
   if (attempt) {
@@ -43,6 +45,17 @@ export function formatUpdateStatus(state: DaemonUpdateStatus): string {
     );
   }
   return lines.join("\n");
+}
+
+function recoveryStatusMessage(status: UpdaterRecoveryStatus): string {
+  switch (status) {
+    case "upgrade_required":
+      return "upgrade required (waiting for a compatible portable release)";
+    case "authentication_repair":
+      return "authentication repair required (run opentag connect)";
+    case "retryable_connectivity":
+      return "retryable connectivity failure (the daemon will reconnect)";
+  }
 }
 
 export async function executeDaemonServiceCommand(

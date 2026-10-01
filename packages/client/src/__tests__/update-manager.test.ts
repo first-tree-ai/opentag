@@ -1,7 +1,11 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { RuntimeChannelTarget } from "@opentag/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 import { recordingLogger } from "./recording-logger.js";
+
+const execFileAsync = promisify(execFile);
 
 interface Harness {
   manager: UpdateManager;
@@ -22,6 +26,9 @@ function harness(
     currentVersion?: string;
     failSaveForState?: UpdaterStateSnapshot["state"];
     stored?: UpdaterStateSnapshot;
+    discoverTarget?: () => Promise<RuntimeChannelTarget | undefined>;
+    discoveryIntervalMs?: number;
+    discoveryMaxBackoffMs?: number;
   } = {},
 ): Harness {
   let stored = overrides.stored ? structuredClone(overrides.stored) : undefined;
@@ -63,6 +70,9 @@ function harness(
       stored = structuredClone(state);
     },
     checkIntervalMs: 10,
+    ...(overrides.discoverTarget ? { discoverTarget: overrides.discoverTarget } : {}),
+    ...(overrides.discoveryIntervalMs ? { discoveryIntervalMs: overrides.discoveryIntervalMs } : {}),
+    ...(overrides.discoveryMaxBackoffMs ? { discoveryMaxBackoffMs: overrides.discoveryMaxBackoffMs } : {}),
     now: () => 1_700_000_000_000,
     sleep: async () => {
       await new Promise<void>((resolve) => sleepers.push(resolve));
@@ -199,11 +209,160 @@ describe("UpdateManager", () => {
     });
   });
 
+  it("records and clears local recovery diagnostics without changing updater state", async () => {
+    const h = harness();
+    h.manager.observe(target("0.0.3-staging.1.1"));
+    await h.settle();
+
+    await h.manager.recordRecoveryStatus("upgrade_required");
+    expect(h.state()).toMatchObject({ state: "installed", recoveryStatus: "upgrade_required" });
+
+    await h.manager.recordRecoveryStatus("authentication_repair");
+    expect(h.state()).toMatchObject({ state: "installed", recoveryStatus: "authentication_repair" });
+
+    await h.manager.recordRecoveryStatus(undefined);
+    expect(h.state()).not.toHaveProperty("recoveryStatus");
+  });
+
   it("ignores targets advertised for another channel", async () => {
     const h = harness();
     h.manager.observe(target("0.0.9", "prod"));
     await h.settle();
     expect(h.installs).toEqual([]);
+  });
+
+  it("discovers a channel target independently of heartbeat and coalesces concurrent reads", async () => {
+    const discoverTarget = vi.fn(async () => target("0.0.3-staging.1.1"));
+    const h = harness({ discoverTarget });
+
+    h.manager.startDiscovery();
+    await Promise.all([h.manager.discoverNow(), h.manager.discoverNow()]);
+    await h.settle();
+
+    expect(discoverTarget).toHaveBeenCalledOnce();
+    expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+    h.manager.stop();
+  });
+
+  it("keeps built metadata recovery alive until a retry runs", async () => {
+    const builtModuleUrl = new URL("../../dist/index.mjs", import.meta.url).href;
+    const script = `
+      import { UpdateManager } from ${JSON.stringify(builtModuleUrl)};
+      let reads = 0;
+      let manager;
+      manager = new UpdateManager({
+        channel: "staging",
+        currentVersion: "0.0.1-staging.1.1",
+        protectedWork: () => ({ total: 0 }),
+        executeUpdate: async () => undefined,
+        onHandoff: () => undefined,
+        loadState: async () => undefined,
+        saveState: async () => undefined,
+        discoverTarget: async () => {
+          reads += 1;
+          if (reads >= 2) manager.stop();
+          throw new Error("metadata unavailable");
+        },
+        discoveryIntervalMs: 100,
+        discoveryMaxBackoffMs: 100,
+      });
+      manager.startDiscovery();
+      manager.holdRecoveryAlive();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      process.on("beforeExit", () => {
+        process.stdout.write("beforeExit reads=" + reads + "\\n");
+        process.exitCode = reads >= 2 ? 0 : 1;
+      });
+    `;
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+    });
+
+    expect(stdout).toContain("beforeExit reads=2");
+  });
+
+  it("preserves an installing attempt when recovery status is saved concurrently", async () => {
+    let stored: UpdaterStateSnapshot | undefined;
+    let releaseInstalling!: () => void;
+    let installingStarted!: () => void;
+    let releaseRecovery!: () => void;
+    let recoverySaveStarted!: () => void;
+    let recoverySaveBlocked = true;
+    const installingGate = new Promise<void>((resolve) => {
+      releaseInstalling = resolve;
+    });
+    const installingReady = new Promise<void>((resolve) => {
+      installingStarted = resolve;
+    });
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    const recoveryReady = new Promise<void>((resolve) => {
+      recoverySaveStarted = resolve;
+    });
+    const manager = new UpdateManager({
+      channel: "staging",
+      currentVersion: "0.0.2-staging.1.1",
+      protectedWork: () => ({ total: 0 }),
+      executeUpdate: async () => undefined,
+      onHandoff: () => undefined,
+      loadState: async () => (stored ? structuredClone(stored) : undefined),
+      saveState: async (state) => {
+        if (state.state === "installing") {
+          installingStarted();
+          await installingGate;
+        }
+        if (state.recoveryStatus === "upgrade_required" && recoverySaveBlocked) {
+          recoverySaveBlocked = false;
+          recoverySaveStarted();
+          await recoveryGate;
+        }
+        stored = structuredClone(state);
+      },
+    });
+
+    manager.observe(target("0.0.3-staging.1.1"));
+    await installingReady;
+    const recoveryStatus = manager.recordRecoveryStatus("upgrade_required");
+    releaseInstalling();
+    await vi.waitFor(() => expect(stored).toMatchObject({ state: "installed", target: "0.0.3-staging.1.1" }));
+    await recoveryReady;
+    releaseRecovery();
+    await recoveryStatus;
+
+    expect(stored).toMatchObject({
+      state: "installed",
+      target: "0.0.3-staging.1.1",
+      recoveryStatus: "upgrade_required",
+    });
+    expect(stored?.attempts["0.0.3-staging.1.1"]).toMatchObject({ result: "installed" });
+  });
+
+  it("uses bounded exponential backoff after unavailable release metadata", async () => {
+    vi.useFakeTimers();
+    try {
+      const discoverTarget = vi.fn(async () => {
+        throw new Error("release endpoint unavailable");
+      });
+      const h = harness({ discoverTarget, discoveryIntervalMs: 10, discoveryMaxBackoffMs: 25 });
+
+      h.manager.startDiscovery();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(discoverTarget).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(19);
+      expect(discoverTarget).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(discoverTarget).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(24);
+      expect(discoverTarget).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(discoverTarget).toHaveBeenCalledTimes(3);
+      h.manager.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("waits indefinitely for protected work with no force timeout", async () => {

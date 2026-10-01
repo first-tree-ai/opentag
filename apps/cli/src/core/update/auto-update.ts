@@ -12,6 +12,7 @@ import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { channelConfig } from "../channel/config.js";
 import type { InstallMode } from "./install-mode.js";
 import { DEFAULT_DOWNLOAD_BASE_URL, installPortableTarget, PortableInstallError } from "./portable-installer.js";
+import { resolvePortableReleaseTarget } from "./release-metadata.js";
 import { createUpdaterStateStore } from "./updater-state.js";
 
 const execFileAsync = promisify(execFile);
@@ -25,6 +26,7 @@ export interface PortableAutoUpdateOptions {
   onHandoff(): void | Promise<void>;
   logger?: ClientLogger;
   environment?: NodeJS.ProcessEnv;
+  fetchFn?: typeof fetch;
   /** Injectable install step (tests). Defaults to the real portable installer. */
   installTarget?: (target: string) => Promise<void>;
   /** Injectable service refresh (tests). Defaults to running the newly installed binary. */
@@ -34,6 +36,8 @@ export interface PortableAutoUpdateOptions {
     saveState(state: UpdaterStateSnapshot): Promise<void>;
   };
   checkIntervalMs?: UpdateManagerOptions["checkIntervalMs"];
+  discoveryIntervalMs?: UpdateManagerOptions["discoveryIntervalMs"];
+  discoveryMaxBackoffMs?: UpdateManagerOptions["discoveryMaxBackoffMs"];
 }
 
 /**
@@ -99,7 +103,10 @@ export function createPortableAutoUpdater(options: PortableAutoUpdateOptions): U
     onHandoff: options.onHandoff,
     loadState: stateStore.loadState,
     saveState: stateStore.saveState,
+    discoverTarget: () => resolvePortableReleaseTarget({ channel: CHANNEL, environment, fetchFn: options.fetchFn }),
     ...(options.checkIntervalMs ? { checkIntervalMs: options.checkIntervalMs } : {}),
+    ...(options.discoveryIntervalMs ? { discoveryIntervalMs: options.discoveryIntervalMs } : {}),
+    ...(options.discoveryMaxBackoffMs ? { discoveryMaxBackoffMs: options.discoveryMaxBackoffMs } : {}),
   });
 }
 

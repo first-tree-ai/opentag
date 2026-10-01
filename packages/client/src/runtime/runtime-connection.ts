@@ -34,15 +34,17 @@ import {
 import WebSocket, { type ClientOptions } from "ws";
 import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
-import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
 import {
   abortError,
   asError,
   isAbortError,
   RuntimeConnectionError,
+  type RuntimeConnectionErrorCategory,
   RuntimeProtocolFallbackError,
   RuntimeSendError,
+  runtimeConnectionCloseError,
+  runtimeConnectionErrorCategory,
 } from "./runtime-connection-errors.js";
 import {
   notifyTarget,
@@ -52,8 +54,19 @@ import {
   rawDataBuffer,
   safeJson,
 } from "./runtime-connection-helpers.js";
+import {
+  connectionErrorCategory,
+  listenerFailureCategory,
+  raceWithAbort,
+  withoutConnectionId,
+} from "./runtime-connection-utils.js";
 
-export { RuntimeConnectionError, RuntimeSendError, type RuntimeSendErrorCode } from "./runtime-connection-errors.js";
+export {
+  RuntimeConnectionError,
+  type RuntimeConnectionErrorCategory,
+  RuntimeSendError,
+  type RuntimeSendErrorCode,
+} from "./runtime-connection-errors.js";
 export type { RuntimeBusinessFrame } from "./runtime-connection-helpers.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
@@ -348,7 +361,7 @@ export class RuntimeConnection {
   }
 
   async run(): Promise<void> {
-    if (this.#hasRun) throw new RuntimeConnectionError("RuntimeConnection can only be run once", true);
+    if (this.#hasRun) throw new RuntimeConnectionError("RuntimeConnection can only be run once", true, "protocol");
     this.#hasRun = true;
     this.#running = true;
     let attempt = 0;
@@ -364,11 +377,15 @@ export class RuntimeConnection {
         } catch (error) {
           if (this.#stopped || isAbortError(error)) break;
           if (error instanceof RuntimeProtocolFallbackError && this.#protocolVersion === RUNTIME_PROTOCOL_V2) {
-            throw new RuntimeConnectionError("Update the Server: required Context Tree support is unavailable", true);
+            throw new RuntimeConnectionError(
+              "Update the Server: required Context Tree support is unavailable",
+              true,
+              "protocol",
+            );
           }
           if (error instanceof RuntimeConnectionError && error.fatal) {
             this.#logger.error(
-              protocolRejectionFields(attempt, this.#state, error.message),
+              protocolRejectionFields(attempt, this.#state, error.message, error.category),
               "Runtime connection was rejected",
             );
             throw error;
@@ -378,14 +395,22 @@ export class RuntimeConnection {
               { attempt: attempt + 1, category: error.category, state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run opentag connect again`, true);
+            throw new RuntimeConnectionError(
+              `${error.message}; run opentag connect again`,
+              true,
+              "authentication_rejection",
+            );
           }
           if (error instanceof Error && error.message.includes("not logged in")) {
             this.#logger.error(
               { attempt: attempt + 1, category: "credential", state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run opentag connect first`, true);
+            throw new RuntimeConnectionError(
+              `${error.message}; run opentag connect first`,
+              true,
+              "authentication_rejection",
+            );
           }
           attempt += 1;
           const maximum = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));
@@ -506,9 +531,14 @@ export class RuntimeConnection {
         this.#connectionId = undefined;
         error ? reject(error) : resolve();
       };
-      const failProtocol = (message: string, closeReason: string, fatal = true) => {
+      const failProtocol = (
+        message: string,
+        closeReason: string,
+        fatal = true,
+        category: RuntimeConnectionErrorCategory = "protocol",
+      ) => {
         socket.close(4400, closeReason);
-        finish(new RuntimeConnectionError(message, fatal));
+        finish(new RuntimeConnectionError(message, fatal, category));
       };
       const armSilence = () => {
         if (!welcome) return;
@@ -598,7 +628,7 @@ export class RuntimeConnection {
         }
         if (envelope.data.type === "server:welcome" && envelope.data.protocolVersion !== protocolVersion) {
           socket.close(4400, "Protocol version unsupported");
-          finish(new RuntimeConnectionError("The runtime protocol version is unsupported", true));
+          finish(new RuntimeConnectionError("The runtime protocol version is unsupported", true, "protocol"));
           return;
         }
 
@@ -640,7 +670,13 @@ export class RuntimeConnection {
           }
           if (!frame.ok) {
             socket.close(4403, "Authentication rejected");
-            finish(new RuntimeConnectionError(`Runtime authentication failed: ${frame.errorCode}`, true));
+            finish(
+              new RuntimeConnectionError(
+                `Runtime authentication failed: ${frame.errorCode}`,
+                true,
+                "authentication_rejection",
+              ),
+            );
             return;
           }
           this.#setState("welcoming");
@@ -664,6 +700,8 @@ export class RuntimeConnection {
               failProtocol(
                 `Required runtime capabilities are unavailable: ${[...new Set(missing)].sort().join(", ")}`,
                 "Required capability unavailable",
+                true,
+                "capability_incompatibility",
               );
               return;
             }
@@ -706,7 +744,14 @@ export class RuntimeConnection {
           }
           if (!frame.ok || !welcome) {
             socket.close(4403, "Computer registration rejected");
-            finish(new RuntimeConnectionError(`Computer registration failed: ${frame.errorCode}`, true));
+            const category = runtimeConnectionErrorCategory(frame.errorCode, true, false);
+            finish(
+              new RuntimeConnectionError(
+                `Computer registration failed: ${frame.errorCode}`,
+                category !== "transient_connection",
+                category,
+              ),
+            );
             return;
           }
           if (protocolVersion === RUNTIME_PROTOCOL_V2) {
@@ -754,7 +799,14 @@ export class RuntimeConnection {
           }
           if (!frame.ok) {
             socket.close(4403, "Heartbeat rejected");
-            finish(new RuntimeConnectionError(`Runtime heartbeat failed: ${frame.errorCode}`, true));
+            const category = runtimeConnectionErrorCategory(frame.errorCode, true, false);
+            finish(
+              new RuntimeConnectionError(
+                `Runtime heartbeat failed: ${frame.errorCode}`,
+                category !== "transient_connection",
+                category,
+              ),
+            );
             return;
           }
           pendingHeartbeatRequestId = undefined;
@@ -780,9 +832,13 @@ export class RuntimeConnection {
             finish(new RuntimeProtocolFallbackError());
             return;
           }
-          const fatal = frame.code !== "INTERNAL_ERROR" && frame.code !== "SERVICE_UNAVAILABLE";
+          const category = runtimeConnectionErrorCategory(
+            frame.code,
+            frame.code !== "INTERNAL_ERROR" && frame.code !== "SERVICE_UNAVAILABLE",
+          );
+          const fatal = category !== "transient_connection";
           socket.close(fatal ? 4403 : 1011, frame.message.slice(0, 120));
-          finish(new RuntimeConnectionError(frame.message, fatal));
+          finish(new RuntimeConnectionError(frame.message, fatal, category));
           return;
         }
         failProtocol("The server runtime frame arrived out of order", "Frame out of order");
@@ -797,16 +853,7 @@ export class RuntimeConnection {
           finish();
           return;
         }
-        if (code === 4001 || (code >= 4400 && code < 4500)) {
-          finish(new RuntimeConnectionError("The runtime connection was rejected", true));
-          return;
-        }
-        finish(
-          new RuntimeConnectionError(
-            established ? "The runtime connection closed" : "Could not establish runtime connection",
-            false,
-          ),
-        );
+        finish(runtimeConnectionCloseError(code, established));
       });
       socket.on("error", () => undefined);
     });
@@ -1023,47 +1070,4 @@ export class RuntimeConnection {
       signal.addEventListener("abort", onAbort, { once: true });
     });
   }
-}
-
-function listenerFailureCategory(error: unknown): string {
-  if (error instanceof RuntimeStorageError) return `runtime_storage_${error.code}`;
-  if (error instanceof RuntimeSendError) return `runtime_send_${error.code}`;
-  if (error instanceof RuntimeConnectionError) return "runtime_connection";
-  return error instanceof Error ? "error" : "non_error";
-}
-
-function connectionErrorCategory(error: unknown): string {
-  if (error instanceof OpenTagApiError) return error.category;
-  if (error instanceof RuntimeConnectionError) return error.fatal ? "protocol" : "transport";
-  if (error instanceof RuntimeSendError) return error.code;
-  return "unexpected";
-}
-
-function withoutConnectionId(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const frame = { ...(value as Record<string, unknown>) };
-  delete frame.connectionId;
-  return frame;
-}
-
-async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) throw abortError();
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      cleanup();
-      reject(abortError());
-    };
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
 }

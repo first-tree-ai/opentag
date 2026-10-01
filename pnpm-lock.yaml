@@ -65,6 +65,9 @@ importers:
       '@opentag/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       commander:
         specifier: ^15.0.0
         version: 15.0.0

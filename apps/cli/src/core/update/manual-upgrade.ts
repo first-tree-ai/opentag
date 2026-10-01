@@ -5,7 +5,8 @@ import { type ChannelName, compareSemVer, getChannelConfig, parseSemVer } from "
 import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { type DaemonServiceReconcileResult, reconcileDaemonService } from "../daemon/reconcile-service.js";
 import { detectInstallMode, type InstallMode } from "./install-mode.js";
-import { DEFAULT_DOWNLOAD_BASE_URL, installPortableTarget } from "./portable-installer.js";
+import { installPortableTarget } from "./portable-installer.js";
+import { resolvePortableReleaseTarget } from "./release-metadata.js";
 import { readUpdaterState, writeUpdaterState } from "./updater-state.js";
 
 const execFileAsync = promisify(execFile);
@@ -59,14 +60,7 @@ async function resolveChannelTarget(
   environment: NodeJS.ProcessEnv,
 ): Promise<ResolvedTarget> {
   if (mode.mode === "portable") {
-    const base = (environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL ?? DEFAULT_DOWNLOAD_BASE_URL).replace(/\/+$/, "");
-    const url = `${base}/${channel}/latest.json`;
-    const body = await fetchJson(fetchFn, url, "the channel release pointer");
-    const pointer = body as Record<string, unknown>;
-    if (pointer.channel !== channel) {
-      throw new UpgradeError("The channel release pointer belongs to another channel");
-    }
-    return { version: requireSemVer(pointer.version, "the channel release pointer") };
+    return resolvePortableReleaseTarget({ channel, environment, fetchFn });
   }
   const registry = (environment.OPENTAG_NPM_REGISTRY_URL ?? DEFAULT_NPM_REGISTRY_URL).replace(/\/+$/, "");
   const url = `${registry}/${packageName}`;

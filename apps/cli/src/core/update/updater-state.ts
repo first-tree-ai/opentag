@@ -1,6 +1,7 @@
 import {
   readPrivateJson,
   type UpdaterAttempt,
+  type UpdaterRecoveryStatus,
   type UpdaterStateName,
   type UpdaterStateSnapshot,
   writePrivateJson,
@@ -74,6 +75,12 @@ const STATE_NAMES: readonly UpdaterStateName[] = [
   "installed",
 ];
 
+const RECOVERY_STATUS_NAMES: readonly UpdaterRecoveryStatus[] = [
+  "upgrade_required",
+  "authentication_repair",
+  "retryable_connectivity",
+];
+
 function stateRecord(value: unknown, label = "state"): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`malformed updater ${label}`);
   return value as Record<string, unknown>;
@@ -97,6 +104,13 @@ function parseStateName(value: unknown): UpdaterStateName {
   return value as UpdaterStateName;
 }
 
+function parseRecoveryStatus(value: unknown): UpdaterRecoveryStatus {
+  if (typeof value !== "string" || !RECOVERY_STATUS_NAMES.includes(value as UpdaterRecoveryStatus)) {
+    throw new Error("malformed updater recovery status");
+  }
+  return value as UpdaterRecoveryStatus;
+}
+
 function parseAttempts(value: unknown): Record<string, UpdaterAttempt> {
   const record = stateRecord(value, "state");
   const attempts: Record<string, UpdaterAttempt> = {};
@@ -114,6 +128,7 @@ function parseUpdaterState(value: unknown): UpdaterStateSnapshot {
   if (record.schemaVersion !== 1) throw new Error("malformed updater state");
   const currentVersion = semVerString(record.currentVersion);
   const state = parseStateName(record.state);
+  const recoveryStatus = record.recoveryStatus === undefined ? undefined : parseRecoveryStatus(record.recoveryStatus);
   const target = record.target === undefined ? undefined : semVerString(record.target);
   const attempts = parseAttempts(record.attempts);
   const lastAttempt = record.lastAttempt === undefined ? undefined : parseUpdaterAttempt(record.lastAttempt);
@@ -121,6 +136,7 @@ function parseUpdaterState(value: unknown): UpdaterStateSnapshot {
     schemaVersion: 1,
     currentVersion,
     state,
+    ...(recoveryStatus ? { recoveryStatus } : {}),
     ...(target ? { target } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
     attempts,

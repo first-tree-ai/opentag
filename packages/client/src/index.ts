@@ -453,6 +453,7 @@ export {
   type RuntimeBusinessFrame,
   RuntimeConnection,
   RuntimeConnectionError,
+  type RuntimeConnectionErrorCategory,
   type RuntimeConnectionOptions,
   type RuntimeConnectionState,
   type RuntimeQueueLimits,
@@ -636,6 +637,7 @@ export {
   UpdateManager,
   type UpdateManagerOptions,
   type UpdaterAttempt,
+  type UpdaterRecoveryStatus,
   type UpdaterStateName,
   type UpdaterStateSnapshot,
 } from "./runtime/update-manager.js";

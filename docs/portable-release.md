@@ -77,9 +77,15 @@ embeds that package and its full production dependency closure as a physical `ap
 
 Portable is the only install mode with fully supported automatic upgrades; an npm-global install never upgrades
 itself and uses the manual `opentag upgrade` / `opentag upgrade --check` commands instead. One exact target per
-channel, no cohorts or canaries: the Server polls the channel's published `latest.json` and advertises that exact
-target to connected Clients on v2 heartbeat results (the `runtime.channelTarget` capability — see
-[runtime-protocol.md](./runtime-protocol.md)).
+channel, no cohorts or canaries. The daemon reads its configured channel's `latest.json` once at startup, after a
+capability incompatibility, and every five minutes after a successful read. A failed read uses bounded exponential
+backoff, doubling up to thirty minutes. The Server's v2 heartbeat advertisement (`runtime.channelTarget`; see
+[runtime-protocol.md](./runtime-protocol.md)) remains an optimization while the connection is healthy, not the only
+way to discover a release.
+
+An already-stopped old Client cannot run this discovery loop. Run `opentag upgrade` once from that installation (or
+reinstall the portable channel) so that it reaches a version with independent discovery; later releases can then be
+installed by the daemon without another manual step.
 
 The daemon's updater follows a strict contract:
 
@@ -95,6 +101,12 @@ The daemon's updater follows a strict contract:
 - **One attempt per target.** The attempt is recorded durably before any install work starts. A failure — including
   an interrupted attempt — becomes a blocked state that is never retried automatically: the updater waits for a
   newer target or a manual `opentag upgrade`, which prevents retry and restart storms.
+- **Failure classes stay separate.** A missing Server-required capability is a local `upgrade required` diagnosis and
+  starts the metadata recovery path; if no newer eligible target is available, the daemon stays alive and rechecks on
+  the bounded cadence. Authentication rejection never triggers an upgrade and reports `authentication repair` with a
+  `opentag connect` action. Transport, registration, and timeout failures remain `retryable connectivity` and use the
+  runtime reconnect backoff. These are Client-local diagnoses; the release pointer does not claim to know why a
+  particular Client failed.
 - **The existing layout does the work.** The install downloads the immutable version manifest (never the channel
   pointer), verifies the published SHA-256, extracts into a fresh immutable version directory, smoke-checks the new
   runtime, rewrites the stable shim, and moves `current` in one atomic switch — the same mechanics as `install.sh`.
@@ -105,8 +117,10 @@ The daemon's updater follows a strict contract:
   `KeepAlive.SuccessfulExit=false`. The stable shim means the restarted service runs the new version with the
   OpenTag home, Account credentials, Computer connection, Agents, and placement untouched.
 
-Current version, target, updater state, and the last attempt with its failure reason are visible in
-`opentag daemon status`.
+Current version, target, updater state, recovery diagnosis, and the last attempt with its failure reason are visible in
+`opentag daemon status`. `awaiting_protected_work` and `installing` identify an upgrade in progress, `blocked` identifies
+an install that needs a newer target or a manual retry, and the recovery line distinguishes `upgrade required`,
+`authentication repair`, and `retryable connectivity`.
 
 ## Published object layout
 

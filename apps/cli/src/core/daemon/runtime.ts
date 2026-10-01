@@ -8,11 +8,13 @@ import {
   createLogger,
   RuntimeConnection,
   RuntimeConnectionError,
+  type RuntimeConnectionErrorCategory,
   readMachineCredentials,
   resolveBoundAccountComputer,
   resolveComputerIdentity,
   resolveOpenTagHome,
   type UpdateManager,
+  type UpdaterRecoveryStatus,
   type UpdaterStateSnapshot,
 } from "@opentag/client";
 import type { RuntimeChannelTarget } from "@opentag/shared";
@@ -37,11 +39,16 @@ export interface DaemonAutoUpdateOverrides {
   installMode?: InstallMode;
   installTarget?: (target: string) => Promise<void>;
   refreshService?: () => Promise<void>;
+  fetchFn?: typeof fetch;
   stateStore?: {
     loadState(): Promise<UpdaterStateSnapshot | undefined>;
     saveState(state: UpdaterStateSnapshot): Promise<void>;
   };
   checkIntervalMs?: number;
+  discoveryIntervalMs?: number;
+  discoveryMaxBackoffMs?: number;
+  /** Disable release metadata discovery in deterministic lifecycle tests. */
+  discovery?: boolean;
   /** Observe a target immediately after startup (deterministic tests). */
   initialTarget?: RuntimeChannelTarget;
 }
@@ -79,6 +86,7 @@ interface ClientLoggerGate {
 interface DaemonMutableState {
   channelTargetObserver?: (target: RuntimeChannelTarget) => void;
   handoffRequested: boolean;
+  recoveryWake?: () => void;
   terminalLogger?: ClientLogger;
   updater?: UpdateManager;
 }
@@ -255,11 +263,57 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
   });
   composed.runtime = runtime;
   context.state.updater = await attachAutoUpdater(context, runtime, runtimeLogger);
+  connection.subscribeState((connectionState) => {
+    const updater = context.state.updater;
+    if (!updater) return;
+    if (connectionState === "registered") {
+      void updater.recordRecoveryStatus(undefined);
+      return;
+    }
+    if (connectionState !== "stopped") void updater.recordRecoveryStatus("retryable_connectivity");
+  });
   void connection.whenRegistered(signal).then(
     () => runtimeLogger.info({}, "Computer runtime is ready"),
     () => undefined,
   );
-  return { run: () => runtime.run(), stop: () => runtime.stop() };
+  return {
+    run: async () => {
+      try {
+        await runtime.run();
+      } catch (error) {
+        if (error instanceof RuntimeConnectionError && context.state.updater) {
+          const recoveryStatus = runtimeRecoveryStatus(error.category);
+          if (recoveryStatus) await context.state.updater.recordRecoveryStatus(recoveryStatus);
+          if (error.category === "capability_incompatibility") {
+            const releaseRecovery = context.state.updater.holdRecoveryAlive();
+            try {
+              await context.state.updater.discoverNow();
+              await waitForCapabilityRecovery(context, signal);
+              return;
+            } finally {
+              releaseRecovery();
+            }
+          }
+        }
+        throw error;
+      }
+    },
+    stop: () => runtime.stop(),
+  };
+}
+
+async function waitForCapabilityRecovery(context: DaemonLifecycleContext, signal: AbortSignal): Promise<void> {
+  if (context.state.handoffRequested || signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    const complete = () => {
+      signal.removeEventListener("abort", complete);
+      if (context.state.recoveryWake === complete) context.state.recoveryWake = undefined;
+      resolve();
+    };
+    context.state.recoveryWake = complete;
+    signal.addEventListener("abort", complete, { once: true });
+    if (context.state.handoffRequested || signal.aborted) complete();
+  });
 }
 
 async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform, signal: AbortSignal) {
@@ -309,17 +363,23 @@ async function attachAutoUpdater(
     quiesce: () => runtime.quiesceForUpdate(),
     onHandoff: () => {
       context.state.handoffRequested = true;
+      context.state.recoveryWake?.();
       runtime.stop();
     },
     logger: runtimeLogger.child({ module: "updater" }),
-    ...(autoUpdate.installTarget ? { installTarget: autoUpdate.installTarget } : {}),
-    ...(autoUpdate.refreshService ? { refreshService: autoUpdate.refreshService } : {}),
-    ...(autoUpdate.stateStore ? { stateStore: autoUpdate.stateStore } : {}),
-    ...(autoUpdate.checkIntervalMs ? { checkIntervalMs: autoUpdate.checkIntervalMs } : {}),
+    environment: context.daemonEnvironment,
+    installTarget: autoUpdate.installTarget,
+    refreshService: autoUpdate.refreshService,
+    fetchFn: autoUpdate.fetchFn,
+    stateStore: autoUpdate.stateStore,
+    checkIntervalMs: autoUpdate.checkIntervalMs,
+    discoveryIntervalMs: autoUpdate.discoveryIntervalMs,
+    discoveryMaxBackoffMs: autoUpdate.discoveryMaxBackoffMs,
   });
   await updater.syncRunningVersion();
   context.state.channelTargetObserver = (target) => updater.observe(target);
   if (autoUpdate.initialTarget) updater.observe(autoUpdate.initialTarget);
+  if (autoUpdate.discovery !== false) updater.startDiscovery();
   return updater;
 }
 
@@ -352,16 +412,43 @@ function daemonOperatorMessage(error: unknown): string {
       ? "Daemon is already running; inspect daemon status"
       : "Daemon ownership prevented startup; inspect daemon status";
   }
-  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run opentag connect again";
+  if (error instanceof RuntimeConnectionError) return runtimeConnectionOperatorMessage(error.category);
   return "Daemon service configuration prevented startup; inspect daemon status";
 }
 
 function daemonFailureCategory(error: unknown): string {
   if (error instanceof DaemonRuntimeConfigurationError) return "configuration";
   if (error instanceof DaemonOwnerStartupError) return "ownership";
-  if (error instanceof RuntimeConnectionError) return error.fatal ? "connection_fatal" : "connection";
+  if (error instanceof RuntimeConnectionError) return error.category;
   if (error instanceof DaemonServiceError) return error.code.toLowerCase();
   return "unexpected";
+}
+
+function runtimeConnectionOperatorMessage(category: RuntimeConnectionErrorCategory): string {
+  switch (category) {
+    case "capability_incompatibility":
+      return "Daemon requires a newer Client for the Server runtime capabilities; automatic upgrade recovery is in progress";
+    case "authentication_rejection":
+      return "Daemon authentication was rejected; run opentag connect to repair credentials";
+    case "transient_connection":
+      return "Daemon connection is retryable; it will reconnect with backoff";
+    case "protocol":
+      return "Daemon runtime protocol was rejected; inspect daemon status";
+  }
+  return "Daemon runtime protocol was rejected; inspect daemon status";
+}
+
+function runtimeRecoveryStatus(category: RuntimeConnectionErrorCategory): UpdaterRecoveryStatus | undefined {
+  switch (category) {
+    case "capability_incompatibility":
+      return "upgrade_required";
+    case "authentication_rejection":
+      return "authentication_repair";
+    case "transient_connection":
+      return "retryable_connectivity";
+    default:
+      return undefined;
+  }
 }
 
 function logTerminalFailure(logger: ClientLogger, error: unknown): void {

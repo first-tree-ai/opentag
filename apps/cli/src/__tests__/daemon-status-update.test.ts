@@ -59,6 +59,15 @@ describe("daemon status update visibility", () => {
     expect(formatUpdateStatus({ currentVersion: "0.0.3", state: "idle" })).toBe(
       ["Update current: 0.0.3", "Update state: idle"].join("\n"),
     );
+    expect(
+      formatUpdateStatus({ currentVersion: "0.0.2", state: "idle", recoveryStatus: "upgrade_required" }),
+    ).toContain("Update recovery: upgrade required (waiting for a compatible portable release)");
+    expect(
+      formatUpdateStatus({ currentVersion: "0.0.2", state: "idle", recoveryStatus: "authentication_repair" }),
+    ).toContain("Update recovery: authentication repair required (run opentag connect)");
+    expect(
+      formatUpdateStatus({ currentVersion: "0.0.2", state: "idle", recoveryStatus: "retryable_connectivity" }),
+    ).toContain("Update recovery: retryable connectivity failure (the daemon will reconnect)");
   });
 
   it("appends the durable updater state to daemon status when one exists", async () => {
@@ -69,6 +78,7 @@ describe("daemon status update visibility", () => {
       schemaVersion: 1,
       currentVersion: "0.0.2",
       state: "awaiting_protected_work",
+      recoveryStatus: "retryable_connectivity",
       target: "0.0.3",
       attempts: {},
     });
@@ -82,6 +92,7 @@ describe("daemon status update visibility", () => {
     expect(text).toContain("State: active");
     expect(text).toContain(`Update current: ${CLI_VERSION}`);
     expect(text).toContain("Update state: awaiting_protected_work");
+    expect(text).toContain("Update recovery: retryable connectivity failure (the daemon will reconnect)");
     expect(text).toContain("Update target: 0.0.3");
   });
 

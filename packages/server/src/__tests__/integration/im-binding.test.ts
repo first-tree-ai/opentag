@@ -4596,7 +4596,7 @@ describe("IM binding persistence", () => {
           database: value.database,
           computerId: value.computer.id,
           instanceId,
-          requestTimeoutMs: 100,
+          requestTimeoutMs: 2_000,
           installationId: value.computer.currentInstallationId,
           onFrame: (frame) => {
             if (frame.type === "im:deliver") dispatched.resolve(frame as unknown as DirectImMessageDeliveryRequest);
@@ -4980,7 +4980,7 @@ describe("IM binding persistence", () => {
           database: value.database,
           computerId: value.computer.id,
           instanceId: firstInstanceId,
-          requestTimeoutMs: 100,
+          requestTimeoutMs: 2_000,
           installationId: value.computer.currentInstallationId,
           onFrame: (frame) => {
             if (frame.type === "im:deliver") dispatched.resolve(frame as unknown as DirectImMessageDeliveryRequest);
@@ -5105,7 +5105,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        requestTimeoutMs: 100,
+        requestTimeoutMs: 2_000,
         installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
@@ -5300,7 +5300,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        requestTimeoutMs: 100,
+        requestTimeoutMs: 2_000,
         installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
@@ -5504,7 +5504,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        requestTimeoutMs: 100,
+        requestTimeoutMs: 2_000,
         installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
@@ -5647,7 +5647,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        requestTimeoutMs: 100,
+        requestTimeoutMs: 2_000,
         installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);

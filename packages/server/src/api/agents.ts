@@ -76,6 +76,7 @@ export function registerAgentRoutes(
   agentSetup?: AgentSetupService,
   contextTree?: ContextTreeOperationService,
   cloudOverview?: CloudOverviewService,
+  slackOAuthAvailable?: boolean,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
 
@@ -90,7 +91,11 @@ export function registerAgentRoutes(
 
   app.get(AGENT_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
-    const response = AgentDetailSchema.parse(await agentService.getById(authenticatedUserId(request), agentId));
+    const detail = await agentService.getById(authenticatedUserId(request), agentId);
+    const response = AgentDetailSchema.parse({
+      ...detail,
+      ...(slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable }),
+    });
     return reply.code(200).send(response);
   });
 

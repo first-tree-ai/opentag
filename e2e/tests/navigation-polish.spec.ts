@@ -75,6 +75,27 @@ test("dock account menu preserves all destinations, visible hover, and keyboard 
   await expect(menu).toBeHidden();
 });
 
+test("sidebar account menu dismisses when page content is clicked", async ({ page }) => {
+  const agentId = await createAgent(page, "Account menu dismissal");
+  await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
+
+  const main = page.getByRole("main");
+  const heading = main.getByRole("heading").first();
+  await expect(heading).toBeVisible();
+
+  const trigger = page.getByRole("button", { name: "Account menu", exact: true });
+  await trigger.click();
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+  await expectAccessible(page);
+
+  const headingBox = await heading.boundingBox();
+  if (!headingBox) throw new Error("Missing agent page heading bounds");
+  await page.mouse.click(headingBox.x + headingBox.width / 2, headingBox.y + headingBox.height / 2);
+  await expect(menu).toBeHidden();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+});
+
 internalToolsTest(
   "Internal tools opens from Agent navigation and retains working previews and reset cancellation",
   async ({ page }) => {

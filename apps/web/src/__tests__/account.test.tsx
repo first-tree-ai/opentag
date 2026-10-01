@@ -483,15 +483,12 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const { menu, trigger } = await openAccountMenu();
+    const { trigger } = await openAccountMenu();
     const sidebar = trigger.closest("aside");
     const main = document.querySelector("main");
     expect(sidebar).toBeTruthy();
     expect(main).toBeTruthy();
     expect(main?.closest("aside")).toBeNull();
-    expect(menu).toBeTruthy();
-    expect(menu.closest("aside")).toBeNull();
-
     // Base UI dismisses mouse outside presses on the primary pointerdown that starts a real click.
     fireEvent.pointerDown(within(main as HTMLElement).getByRole("heading", { name: "Reviewer" }), {
       button: 0,

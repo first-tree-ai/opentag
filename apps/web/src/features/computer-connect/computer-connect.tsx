@@ -4,7 +4,8 @@ import { type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, us
 import { analytics } from "../../analytics/analytics.js";
 import { ANALYTICS_EVENT } from "../../analytics/events.js";
 import { reportComputerConnected } from "../../analytics/milestones.js";
-import { browserApi } from "../../api.js";
+import { ApiError, browserApi } from "../../api.js";
+import { createDiagnosticEnvelope, normalizeError } from "../../observability/diagnostics.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { fetchSharedResource } from "../../query/session-cache.js";
@@ -89,7 +90,22 @@ type PollResult =
   | { readonly kind: "connected"; readonly computer: AccountComputerSummary };
 
 function errorMessage(cause: unknown, fallback: string): string {
-  return cause instanceof Error && cause.message ? cause.message : fallback;
+  return cause instanceof ApiError && cause.message ? cause.message : fallback;
+}
+
+type ComputerConnectOperation = "issue" | "poll";
+
+function logComputerConnectFailure(operation: ComputerConnectOperation, cause: unknown): void {
+  const normalized = normalizeError(cause, "computer_connect_failed");
+  const diagnostic = createDiagnosticEnvelope({
+    source: "ui",
+    code: normalized.code,
+    routeTemplate: "computer-connect",
+    operation,
+    errorName: normalized.error.name,
+    error: { name: normalized.error.name, message: normalized.error.message },
+  });
+  console.warn("[OpenTag] Computer connect failure", diagnostic);
 }
 
 /** The redeemed Computer counts only once the connection bought by that redemption is online. */
@@ -155,7 +171,10 @@ async function pollRedeemedComputer({
     );
     if (connected) onConnected(connected);
   } catch (cause) {
-    if (isCurrent()) setError(errorMessage(cause, m.computer_connect_poll_failed()));
+    if (isCurrent()) {
+      logComputerConnectFailure("poll", cause);
+      setError(errorMessage(cause, m.computer_connect_poll_failed()));
+    }
   }
 }
 
@@ -195,7 +214,10 @@ async function pollIssuedCommand({
       expire();
     }
   } catch (cause) {
-    if (isCurrent()) setError(errorMessage(cause, m.computer_connect_poll_failed()));
+    if (isCurrent()) {
+      logComputerConnectFailure("poll", cause);
+      setError(errorMessage(cause, m.computer_connect_poll_failed()));
+    }
   }
 }
 
@@ -363,6 +385,7 @@ function ComputerConnectAttempt({
       });
     } catch (cause) {
       if (!mounted.current || generation.current !== mine) return;
+      logComputerConnectFailure("issue", cause);
       setState(previous.kind === "expired" ? previous : { kind: "issue-failed" });
       setError(errorMessage(cause, m.computer_connect_issue_failed()));
     }

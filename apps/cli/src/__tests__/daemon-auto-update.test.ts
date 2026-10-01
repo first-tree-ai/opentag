@@ -296,7 +296,7 @@ describe("daemon automatic upgrade", () => {
     });
   });
 
-  it("installs and hands off a newer target after a capability rejection while keeping the same Computer identity", async () => {
+  it("installs and hands off a newer target after a capability rejection without reconnecting as a new Computer", async () => {
     const home = await tempHome();
     clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
     clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());

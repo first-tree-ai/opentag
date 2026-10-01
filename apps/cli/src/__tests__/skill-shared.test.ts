@@ -39,7 +39,7 @@ describe("formatSkill", () => {
         "revision\t3",
         "bytes\t128",
         "files\t2",
-        "sha256\t" + "a".repeat(64),
+        `sha256\t${"a".repeat(64)}`,
         "updatedAt\t2030-01-02T00:00:00.000Z",
       ].join("\n"),
     );

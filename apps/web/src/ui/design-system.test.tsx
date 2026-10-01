@@ -69,7 +69,7 @@ describe("Kumo semantic adapter", () => {
         <Button variant="secondary-destructive">Disconnect</Button>
       </>,
     );
-    expect(screen.getByRole("button", { name: "Details" }).className).not.toContain("ds-");
+    expect(screen.getByRole("button", { name: "Details" }).className).toContain("hover:bg-kumo-tint");
     expect(screen.getByRole("button", { name: "Disconnect" }).className).toContain("text-kumo-danger");
   });
 

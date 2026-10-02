@@ -651,6 +651,7 @@ export function createApp(options: CreateAppOptions = {}) {
               })
             : undefined),
         options.slackOAuthAvailable,
+        options.imResourceService,
       );
     }
     registerAvailableAccountRoutes(app, authService, options, authOptions);

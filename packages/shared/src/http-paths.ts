@@ -6,6 +6,7 @@ export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_CLOUD_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/cloud`;
+export const AGENT_AVATAR_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/avatar`;
 
 export function agentCloudPath(
   agentId: string,
@@ -156,6 +157,7 @@ export const HTTP_PATHS = {
   internalNavigationVisibility: INTERNAL_NAVIGATION_VISIBILITY_PATH,
   accountTasks: ACCOUNT_TASKS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
+  agentAvatar: AGENT_AVATAR_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
   githubIntegration: GITHUB_INTEGRATION_PATH,
   githubOAuthCallback: GITHUB_OAUTH_CALLBACK_PATH,
@@ -243,6 +245,10 @@ export function accountComputerDisconnectPath(computerId: string): string {
 
 export function agentByIdPath(agentId: string): string {
   return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}`;
+}
+
+export function agentAvatarPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/avatar`;
 }
 
 export function agentSchedulesPath(agentId: string): string {

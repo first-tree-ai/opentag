@@ -81,7 +81,7 @@ export function AgentObjectHeader({
       ) : null}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
-          <AgentAvatar displayName={agent.displayName} avatarUrl={agent.avatarUrl} className="size-10" />
+          <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} className="size-10" />
           <div className="grid min-w-0 gap-1">
             <div className="flex flex-wrap items-center gap-3">
               <Text as="h1" size="lg" variant="heading">

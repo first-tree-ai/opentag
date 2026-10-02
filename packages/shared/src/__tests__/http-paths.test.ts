@@ -15,6 +15,7 @@ import {
   ACCOUNT_SETUP_COMPLETE_PATH,
   ACCOUNT_SETUP_RESET_PATH,
   ACCOUNT_TASKS_PATH,
+  AGENT_AVATAR_TEMPLATE,
   AGENT_BY_ID_TEMPLATE,
   AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONTEXT_TREE_TEMPLATE,
@@ -40,6 +41,7 @@ import {
   accountSandboxRunnerPath,
   accountSandboxRunnerStartPath,
   accountSandboxRunnerStopPath,
+  agentAvatarPath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
@@ -172,6 +174,7 @@ describe("http paths", () => {
       const agentId = AGENT_ID;
       const base = `/api/v1/agents/${agentId}`;
       expect(agentByIdPath(agentId)).toBe(base);
+      expect(agentAvatarPath(agentId)).toBe(`${base}/avatar`);
       expect(agentSetupPath(agentId)).toBe(`${base}/setup`);
       expect(agentSetupRefreshPath(agentId)).toBe(`${base}/setup/refresh`);
       expect(agentConfigPath(agentId)).toBe(`${base}/config`);
@@ -349,6 +352,7 @@ describe("http paths", () => {
         template.replace(/:([a-zA-Z]+)/g, (_match, name: string) => params[name] ?? _match);
 
       expect(render(AGENT_BY_ID_TEMPLATE, { agentId })).toBe(agentByIdPath(agentId));
+      expect(render(AGENT_AVATAR_TEMPLATE, { agentId })).toBe(agentAvatarPath(agentId));
       expect(render(TASK_BY_ID_TEMPLATE, { sessionId: OTHER_ID })).toBe(taskByIdPath(OTHER_ID));
       expect(render(TASK_CANCEL_TEMPLATE, { sessionId: OTHER_ID })).toBe(taskCancelPath(OTHER_ID));
       expect(render(ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE, { connectCodeId: OTHER_ID })).toBe(
@@ -413,6 +417,7 @@ describe("http paths", () => {
       expect(HTTP_PATHS.accountSetupReset).toBe(ACCOUNT_SETUP_RESET_PATH);
       expect(HTTP_PATHS.accountTasks).toBe(ACCOUNT_TASKS_PATH);
       expect(HTTP_PATHS.agentById).toBe(AGENT_BY_ID_TEMPLATE);
+      expect(HTTP_PATHS.agentAvatar).toBe(AGENT_AVATAR_TEMPLATE);
       expect(HTTP_PATHS.githubIntegration).toBe(GITHUB_INTEGRATION_PATH);
       expect(HTTP_PATHS.githubOAuthCallback).toBe(GITHUB_OAUTH_CALLBACK_PATH);
       expect(HTTP_PATHS.githubWebhook).toBe(GITHUB_WEBHOOK_PATH);

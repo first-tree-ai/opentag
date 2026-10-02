@@ -226,6 +226,13 @@ describe("Agent contracts", () => {
       slackOAuthAvailable: false,
     };
     expect(AgentSummarySchema.parse(summary)).toEqual(summary);
+    expect(
+      AgentSummarySchema.parse({
+        ...summary,
+        avatarPath: `/api/v1/agents/${summary.id}/avatar`,
+      }).avatarPath,
+    ).toBe(`/api/v1/agents/${summary.id}/avatar`);
+    expect(() => AgentSummarySchema.parse({ ...summary, avatarPath: "https://example.com/avatar.png" })).toThrow();
     const listItem = {
       ...summary,
       activity: { state: "idle" },

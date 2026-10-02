@@ -116,8 +116,8 @@ function AgentSwitcher({
   pathname,
   agentId,
 }: {
-  agent?: { id: string; displayName: string; avatarUrl?: string | null };
-  agents: readonly { id: string; displayName: string; avatarUrl?: string | null }[];
+  agent?: { id: string; displayName: string; avatarPath?: string | null };
+  agents: readonly { id: string; displayName: string; avatarPath?: string | null }[];
   pathname: string;
   agentId: string;
 }) {
@@ -136,7 +136,7 @@ function AgentSwitcher({
             icon={
               <AgentAvatar
                 displayName={agent?.displayName ?? "A"}
-                avatarUrl={agent?.avatarUrl}
+                avatarPath={agent?.avatarPath}
                 className="size-6 text-xs"
               />
             }
@@ -163,7 +163,7 @@ function AgentSwitcher({
             icon={
               <AgentAvatar
                 displayName={candidate.displayName}
-                avatarUrl={candidate.avatarUrl}
+                avatarPath={candidate.avatarPath}
                 className="mr-2 size-6 text-xs"
               />
             }

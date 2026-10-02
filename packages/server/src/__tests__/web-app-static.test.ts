@@ -57,7 +57,10 @@ describe("Web App static serving", () => {
       const policy = String(spa.headers["content-security-policy"]);
       expect(policy).toContain("frame-ancestors 'none'");
       expect(policy).toContain("style-src 'self' 'unsafe-inline'");
-      expect(policy).toContain("img-src 'self' data: https:");
+      expect(policy).toContain(
+        "img-src 'self' data: https://platform.slack-edge.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://*.googletagmanager.com",
+      );
+      expect(policy).not.toMatch(/img-src 'self' data: https:(?:;|$)/);
       // The analytics tag is a host allowance and nothing more: inline script stays refused, so the
       // published gtag.js snippet cannot run and the Web App queues from its own bundle instead.
       expect(policy).toContain("script-src 'self' https://www.googletagmanager.com");

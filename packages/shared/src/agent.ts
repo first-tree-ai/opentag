@@ -87,7 +87,11 @@ const AgentIdentitySchema = z
   .strict();
 
 export const AgentSummarySchema = AgentIdentitySchema.extend({
-  avatarUrl: z.string().url().nullable().optional(),
+  avatarPath: z
+    .string()
+    .regex(/^\/api\/v1\/agents\/[^/]+\/avatar$/)
+    .nullable()
+    .optional(),
   createdBy: z
     .object({
       userId: z.string().uuid(),

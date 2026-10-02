@@ -7,7 +7,7 @@ import {
   type NormalizedMessage,
   WSClient,
 } from "@larksuiteoapi/node-sdk";
-import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
+import { agentAvatarPath, FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
@@ -102,8 +102,12 @@ describe("Feishu adapter", () => {
     const read = () => value.imBindings.getForAgent(value.bootstrap.userId, value.agent.id);
     expect((await read())?.bot).toEqual(profile);
     const service = new AgentService(connectionDatabase.database);
-    expect((await service.getById(value.bootstrap.userId, value.agent.id)).avatarUrl).toBe(profile.avatarUrl);
-    expect((await service.listForAccount(value.bootstrap.userId)).agents[0]?.avatarUrl).toBe(profile.avatarUrl);
+    expect((await service.getById(value.bootstrap.userId, value.agent.id)).avatarPath).toBe(
+      agentAvatarPath(value.agent.id),
+    );
+    expect((await service.listForAccount(value.bootstrap.userId)).agents[0]?.avatarPath).toBe(
+      agentAvatarPath(value.agent.id),
+    );
     const newer = { ...profile, avatarUrl: "https://example.com/new.png" };
     await value.imBindings.activateFeishu({ ...input, profile: newer });
     expect((await read())?.bot).toEqual(newer);

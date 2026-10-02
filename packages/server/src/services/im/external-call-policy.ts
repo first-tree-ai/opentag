@@ -82,7 +82,8 @@ type ConcurrencyWaiter = { grant: () => void; cancel: (error: unknown) => void }
 
 type ExternalCallPolicyClockOptions = { clock?: () => Date };
 type ExternalCallPolicySleepOptions = { sleep?: (delayMs: number) => Promise<void> };
-type ExternalCallPolicyTransportOptions = { transport?: typeof fetch };
+export type ExternalCallTransport = (input: string | URL, init?: RequestInit) => Promise<Response>;
+type ExternalCallPolicyTransportOptions = { transport?: ExternalCallTransport };
 type ExternalCallPolicyTimingOptions = ExternalCallPolicyClockOptions &
   /* type-only */ ExternalCallPolicySleepOptions &
   /* type-only */ ExternalCallPolicyTransportOptions;
@@ -115,7 +116,15 @@ type ExternalCallOptionsDeadline = {
 };
 type ExternalCallOptionsRetry = { maxAttempts?: number; retryable?: (error: unknown) => boolean };
 type ExternalCallOptionsCircuit = { circuitKey?: string };
-type ExternalCallOptionsCore = ExternalCallOptionsDeadline & ExternalCallOptionsRetry;
+type ExternalCallOptionsTransport = { transport?: ExternalCallTransport };
+type ExternalCallOptionsSecurity = {
+  /** Provider-returned media URLs may use tenant-specific HTTPS hosts. */
+  allowAnyHttpsHost?: boolean;
+};
+type ExternalCallOptionsCore = ExternalCallOptionsDeadline &
+  ExternalCallOptionsRetry &
+  ExternalCallOptionsSecurity &
+  ExternalCallOptionsTransport;
 export type ExternalCallOptions = ExternalCallOptionsCore & ExternalCallOptionsCircuit;
 
 type PolicyAction<T> = (signal: AbortSignal, requestId: string) => Promise<T>;
@@ -228,7 +237,7 @@ type DeadlineAttempt<T> = { result: Promise<T>; settled: Promise<void> };
 export class ExternalCallPolicy {
   readonly #clock: () => Date;
   readonly #sleep: (delayMs: number) => Promise<void>;
-  readonly #transport: typeof fetch;
+  readonly #transport: ExternalCallTransport;
   readonly #defaultTimeoutMs: number;
   readonly #maxConcurrency: number;
   readonly #maxAttempts: number;
@@ -266,7 +275,7 @@ export class ExternalCallPolicy {
   }
 
   /** Validate a provider URL before any credential-bearing request headers are constructed. */
-  admitUrl(input: string | URL): URL {
+  admitUrl(input: string | URL, options: Pick<ExternalCallOptions, "allowAnyHttpsHost"> = {}): URL {
     if (hasEncodedAuthority(input)) throw hostNotAllowedError("Encoded provider hosts are not allowed");
     const url = parseProviderUrl(input);
     const isLoopbackHttp = url.protocol === "http:" && isLoopbackHostname(url.hostname);
@@ -276,7 +285,7 @@ export class ExternalCallPolicy {
     if (isIpLiteral(url.hostname) && !isLoopbackHttp) {
       throw hostNotAllowedError("Provider IP literals are not allowed");
     }
-    if (!hostAllowed(url, this.#allowedHosts)) {
+    if (!options.allowAnyHttpsHost && !hostAllowed(url, this.#allowedHosts)) {
       throw hostNotAllowedError();
     }
     return url;
@@ -370,7 +379,7 @@ export class ExternalCallPolicy {
   }
 
   async fetch(input: string | URL, init: RequestInit = {}, options: ExternalCallOptions = {}): Promise<Response> {
-    const url = this.admitUrl(input);
+    const url = this.admitUrl(input, options);
     const requestSignal = init.signal ?? undefined;
     const runOptions = requestSignal
       ? {
@@ -378,10 +387,11 @@ export class ExternalCallPolicy {
           signal: options.signal ? AbortSignal.any([options.signal, requestSignal]) : requestSignal,
         }
       : options;
+    const transport = options.transport ?? this.#transport;
     return this.run(
       `http:${url.hostname}`,
       async (signal) => {
-        const response = await this.#transport(url.toString(), { ...init, redirect: "error", signal });
+        const response = await transport(url.toString(), { ...init, redirect: "error", signal });
         if (response.redirected || (response.status >= 300 && response.status < 400)) {
           throw new ExternalCallPolicyError("IM_PROVIDER_REDIRECT_REJECTED", "Provider redirects are not allowed", {
             category: "security",
@@ -391,7 +401,7 @@ export class ExternalCallPolicy {
         }
         if (response.url) {
           try {
-            this.admitUrl(response.url);
+            this.admitUrl(response.url, options);
           } catch (error) {
             throw new ExternalCallPolicyError("IM_PROVIDER_REDIRECT_REJECTED", "Provider redirects are not allowed", {
               category: "security",

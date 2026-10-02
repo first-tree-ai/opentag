@@ -97,7 +97,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
       <div className="flex min-w-0 items-center gap-3 pr-6 @min-[42rem]/agent-roster:pr-0" data-ui="agent-row-identity">
         <AgentAvatar
           displayName={agent.displayName}
-          avatarUrl={agent.avatarUrl}
+          avatarPath={agent.avatarPath}
           className="size-10 text-sm text-kumo-strong"
           data-ui="agent-row-avatar"
         />

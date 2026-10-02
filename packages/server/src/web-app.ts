@@ -24,8 +24,9 @@ const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self' https://www.googletagmanager.com",
   "connect-src 'self' https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://*.googletagmanager.com",
-  // Provider avatars use tenant-specific HTTPS CDNs; other resource directives stay restricted.
-  "img-src 'self' data: https:",
+  // Agent avatars are served through the authenticated same-origin route. Keep only known analytics
+  // collectors and the Slack-provided add-to-Slack image hotlink.
+  "img-src 'self' data: https://platform.slack-edge.com https://*.google-analytics.com https://analytics.google.com https://*.analytics.google.com https://*.googletagmanager.com",
   "style-src 'self' 'unsafe-inline'",
   "object-src 'none'",
   "base-uri 'none'",

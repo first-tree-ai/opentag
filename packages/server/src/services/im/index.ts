@@ -18,4 +18,4 @@ export {
   type OutboundCaptureSkipReason,
   parseCapturedOutbound,
 } from "./im-outbound-capture.js";
-export { type AuthorizedImResource, ImResourceService } from "./im-resource-service.js";
+export { type AuthorizedAgentAvatar, type AuthorizedImResource, ImResourceService } from "./im-resource-service.js";

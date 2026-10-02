@@ -145,7 +145,7 @@ export function useAgentListQuery(accountId: string, enabled = true) {
  */
 export function useAgentIdentityList(
   accountId: string,
-): LoadState<{ agents: readonly { id: string; displayName: string; avatarUrl?: string | null }[] }> {
+): LoadState<{ agents: readonly { id: string; displayName: string; avatarPath?: string | null }[] }> {
   const agentsQuery = useAgentListQuery(accountId);
   const agentsError = usePersistedSettledError(queryKeys.agents.list(accountId), agentsQuery);
   if (agentsError && isTerminalResourceError(agentsError)) return { kind: "error", error: agentsError };

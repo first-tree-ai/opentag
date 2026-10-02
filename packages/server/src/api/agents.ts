@@ -1,4 +1,5 @@
 import {
+  AGENT_AVATAR_TEMPLATE,
   AGENT_BY_ID_TEMPLATE,
   AGENT_CLOUD_TEMPLATE,
   AGENT_COMPUTER_REBIND_TEMPLATE,
@@ -31,6 +32,7 @@ import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plu
 import type { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
+import type { ImResourceService } from "../services/im/index.js";
 import type { CloudOverviewService } from "../services/sandboxes/cloud-overview-service.js";
 import { projectAgentSetupSnapshotForHttp, requestIncludesProviderCliReasonV2 } from "./provider-cli-reason.js";
 import { parseRequest } from "./request-validation.js";
@@ -77,8 +79,23 @@ export function registerAgentRoutes(
   contextTree?: ContextTreeOperationService,
   cloudOverview?: CloudOverviewService,
   slackOAuthAvailable?: boolean,
+  imResourceService?: ImResourceService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
+
+  if (imResourceService) {
+    app.get(AGENT_AVATAR_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const avatar = await imResourceService.openAvatar(authenticatedUserId(request), agentId);
+      reply
+        .header("Cache-Control", "private, max-age=300, stale-while-revalidate=3600")
+        .header("Vary", "Authorization, Cookie")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Type", avatar.mediaType);
+      if (avatar.sizeBytes !== undefined) reply.header("Content-Length", String(avatar.sizeBytes));
+      return reply.send(avatar.stream);
+    });
+  }
 
   if (cloudOverview) {
     app.get(AGENT_CLOUD_TEMPLATE, { preHandler }, async (request, reply) => {

@@ -72,7 +72,7 @@ export function RouteErrorPage({ reset }: ErrorComponentProps) {
 
   return (
     <BoundaryCard data-ui="route-error">
-      <OpenTagLogo label={m.auth_brand_name()} variant="wordmark" />
+      <OpenTagLogo label={m.auth_brand_name()} />
       <Text as="h1" size="lg" variant="heading">
         {m.errors_something_went_wrong()}
       </Text>
@@ -93,7 +93,7 @@ export function StandaloneErrorPage({ actionLabel, onAction }: { actionLabel: st
   return (
     <main className="app-error-boundary grid bg-kumo-canvas p-6" data-ui="app-error-boundary">
       <BoundaryCard>
-        <OpenTagLogo label={m.auth_brand_name()} variant="wordmark" />
+        <OpenTagLogo label={m.auth_brand_name()} />
         <Text as="h1" size="lg" variant="heading">
           {m.errors_something_went_wrong()}
         </Text>

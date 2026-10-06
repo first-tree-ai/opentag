@@ -767,7 +767,7 @@ function AgentSetupPageContent({
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
       <header className="flex items-center justify-between p-6">
-        <OpenTagLogo label={m.onboarding_v2_brand_name()} variant="wordmark" />
+        <OpenTagLogo label={m.onboarding_v2_brand_name()} />
         {onOpenAgent && !ready ? (
           <Button onClick={onOpenAgent} variant="ghost">
             {m.onboarding_v2_back_to_agent()}

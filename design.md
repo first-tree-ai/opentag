@@ -78,6 +78,9 @@ content policy disallows those font sources.
 | Metadata | 12px / 400 |
 | Brand lockup | 19px / 700 |
 
+Always pair OpenTag brand lettering with the logo image using `OpenTagLogo`'s combined lockup.
+Never use a standalone text-only wordmark. Compact icon-only surfaces use the mark variant.
+
 Use semantic `Text as="h1"` and a single page title. Use `PageHeader` for the title and actions.
 Keep explanations near the decision they support; avoid repeating the title in an eyebrow.
 Do not add slogans, welcome heroes, feature summaries, or decorative text to routine screens.

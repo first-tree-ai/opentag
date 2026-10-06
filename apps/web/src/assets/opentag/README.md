@@ -10,8 +10,9 @@ verified against the live homepage and a read-only checkout of that commit on 20
   stroke in white, supplied in `OpenTag-SVG-Essentials-2/opentag_svg` on 2026-09-11. Its paths and colors are unchanged.
 - `ui/opentag-logo.tsx` composes the mark with real OpenTag text, following the app [design guide](../../../../../design.md)
   lockup: Manrope 700 lettering at 19px with -0.02em letter spacing, a 26px mark, and a 9px gap. Manrope is
-  self-hosted by the app. The wordmark variant renders the same lettering without the mark; the mark variant displays
-  the icon alone. Earlier separate lockup and wordmark SVGs used different lettering and were removed.
+  self-hosted by the app. Always pair OpenTag lettering with the icon; text-only wordmarks are not supported. The mark
+  variant displays the icon alone for compact surfaces. Earlier separate lockup and wordmark SVGs used different
+  lettering and were removed.
 - The app's namespaced `data-opentag-mode` selects the light or dark mark and the semantic `var(--fg)` or
   `var(--on-dark)` text color, including locally themed surfaces. Decorative artwork is hidden from assistive technology and labeled uses
   expose the supplied label once.

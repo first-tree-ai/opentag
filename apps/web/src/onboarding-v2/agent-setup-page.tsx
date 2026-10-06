@@ -1912,23 +1912,25 @@ function UnbindMessagingDialog({
       title={m.im_disconnect_title({ providerName })}
       onClose={onClose}
     >
-      {error ? <Banner variant="error" role="alert" description={error} /> : null}
-      <div className="flex flex-wrap justify-end gap-3">
-        <Button disabled={busy} onClick={onClose} variant="ghost">
-          {m.im_disconnect_cancel()}
-        </Button>
-        <Button
-          disabled={busy}
-          loading={busy}
-          onClick={() =>
-            void onAct(action).then((ok) => {
-              if (ok) onClose();
-            })
-          }
-          variant="danger"
-        >
-          {m.im_disconnect({ providerName })}
-        </Button>
+      <div className="grid gap-5">
+        {error ? <Banner variant="error" role="alert" description={error} /> : null}
+        <div className="flex flex-wrap justify-end gap-3">
+          <Button disabled={busy} onClick={onClose} variant="ghost">
+            {m.im_disconnect_cancel()}
+          </Button>
+          <Button
+            disabled={busy}
+            loading={busy}
+            onClick={() =>
+              void onAct(action).then((ok) => {
+                if (ok) onClose();
+              })
+            }
+            variant="danger"
+          >
+            {m.im_disconnect({ providerName })}
+          </Button>
+        </div>
       </div>
     </Dialog>
   );

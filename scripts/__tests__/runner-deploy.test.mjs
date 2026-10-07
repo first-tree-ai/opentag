@@ -326,6 +326,15 @@ test("environment and server-image guards reject the wrong target", () => {
   assert.throws(() => assertServerImage({ deployedImageName: undefined, serverRevision: SERVER_SHA }), /expected/);
 });
 
+test("Runner activation accepts only the exact digest-pinned combined cloud image", () => {
+  const image = `ghcr.io/first-tree-ai/opentag-billing-cloud@${DIGEST}`;
+  assertServerImage({ deployedImageName: image, serverImage: image, serverRevision: SERVER_SHA });
+  for (const deployedImageName of [undefined, `ghcr.io/first-tree-ai/opentag:${SERVER_SHA}`, `${image}0`]) {
+    assert.throws(() => assertServerImage({ deployedImageName, serverImage: image, serverRevision: SERVER_SHA }));
+  }
+  assert.throws(() => assertServerImage({ deployedImageName: image, serverImage: "ghcr.io/example/cloud:latest" }));
+});
+
 test("check is strictly read-only and reports the current and target Runner", async () => {
   const fake = caproverFake();
   const summary = await runDeploy(deployDeps(fake));

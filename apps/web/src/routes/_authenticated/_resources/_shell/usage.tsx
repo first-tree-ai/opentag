@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Redirect } from "../../../../features/navigation/redirect.js";
+import { CloudUsagePage } from "../../../../features/account/cloud-usage-page.js";
 
 export const Route = createFileRoute("/_authenticated/_resources/_shell/usage")({
-  component: () => <Redirect replace to="/agents" />,
+  component: CloudUsagePage,
 });

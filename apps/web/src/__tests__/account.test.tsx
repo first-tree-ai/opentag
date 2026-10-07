@@ -13,6 +13,46 @@ async function expectPreparationGate(): Promise<HTMLButtonElement> {
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
 
+  it("opens account-wide cloud usage from the credits link", async () => {
+    installApi();
+    const fixtureFetch = vi.mocked(fetch).getMockImplementation();
+    if (!fixtureFetch) throw new Error("Missing fixture fetch");
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/cloud/billing")
+        return json({
+          enabled: true,
+          currency: "USD",
+          availableMicros: 1_000_000,
+          blocked: false,
+          minimumTopUpCents: 1000,
+          maximumTopUpCents: 100_000,
+        });
+      if (path === "/api/v1/cloud/billing/usage?windowDays=30")
+        return json({
+          enabled: true,
+          windowDays: 30,
+          startedAt: "2026-09-05T12:00:00.000Z",
+          endedAt: "2026-10-05T12:00:00.000Z",
+          requests: 2,
+          measuredRequests: 2,
+          tokens: 3000,
+          inputTokens: 1000,
+          outputTokens: 2000,
+          daily: [{ date: "2026-10-05", tokens: 3000 }],
+        });
+      return fixtureFetch(input, init);
+    });
+    window.history.replaceState({}, "", "/account");
+    render(<App />);
+    const link = await screen.findByRole("link", { name: "View usage" });
+    expect(link.getAttribute("href")).toBe("/usage");
+    fireEvent.click(link);
+    expect(await screen.findByRole("heading", { name: "Cloud usage" })).toBeTruthy();
+    expect(await screen.findByText("Model calls")).toBeTruthy();
+    expect(window.location.pathname).toBe("/usage");
+  });
+
   it("lets an Account update its global display name", async () => {
     installApi();
     window.history.replaceState({}, "", "/account");

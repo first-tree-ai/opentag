@@ -4,6 +4,7 @@ import {
   RUNTIME_AGENT_RUNTIME_TEST_MAX_PENDING,
 } from "@opentag/shared";
 import { z } from "zod";
+import type { CloudBilling } from "../../cloud-billing.js";
 import type { CloudModelConfig } from "../../cloud-model-config.js";
 import { type CloudModelCatalog, readBoundedResponseText } from "../sandboxes/cloud-model-catalog.js";
 
@@ -69,6 +70,7 @@ export interface CloudAgentRuntimeTesterOptions {
   config: Extract<CloudModelConfig, { enabled: true }>;
   /** The one shared Router model catalog; admits explicit models and resolves the default. */
   catalog: CloudModelCatalog;
+  billing?: CloudBilling;
   fetchImpl?: typeof fetch;
   maxPending?: number;
   maxResponseBytes?: number;
@@ -76,6 +78,7 @@ export interface CloudAgentRuntimeTesterOptions {
 }
 
 export class CloudAgentRuntimeTester {
+  readonly #billing: CloudBilling | undefined;
   readonly #catalog: CloudModelCatalog;
   readonly #config: Extract<CloudModelConfig, { enabled: true }>;
   readonly #fetchImpl: typeof fetch;
@@ -87,6 +90,7 @@ export class CloudAgentRuntimeTester {
   #closed = false;
 
   constructor(options: CloudAgentRuntimeTesterOptions) {
+    this.#billing = options.billing;
     this.#catalog = options.catalog;
     this.#config = options.config;
     this.#fetchImpl = options.fetchImpl ?? fetch;
@@ -109,6 +113,7 @@ export class CloudAgentRuntimeTester {
    * without spending a model request on it.
    */
   async test(input: {
+    accountId?: string;
     computerId: string;
     model: string | null;
     signal?: AbortSignal;
@@ -133,7 +138,7 @@ export class CloudAgentRuntimeTester {
       const model = input.model ?? snapshot.defaultModel;
       if (!snapshot.available || model === null || !snapshot.models.includes(model))
         return failure("provider_start_failed");
-      return await this.#probe(model, controller.signal, () => timedOut, input.signal);
+      return await this.#probe(model, controller.signal, () => timedOut, input.signal, input.accountId);
     } catch {
       return this.#mapAborted(() => timedOut, input.signal) ?? failure("provider_failed");
     } finally {
@@ -149,32 +154,41 @@ export class CloudAgentRuntimeTester {
     for (const pending of this.#pending.values()) pending.abort();
   }
 
+  #request(model: string, signal: AbortSignal, accountId: string | undefined): Promise<Response> {
+    const body = {
+      model,
+      messages: [{ role: "user", content: CLOUD_AGENT_RUNTIME_TEST_PROMPT }],
+      max_tokens: CLOUD_AGENT_RUNTIME_TEST_MAX_OUTPUT_TOKENS,
+      stream: false,
+    };
+    if (this.#billing) {
+      if (!accountId) throw new Error("Cloud billing requires an authenticated Account");
+      return this.#billing.model(accountId, body, signal);
+    }
+    return this.#fetchImpl(`${this.#config.upstreamBaseUrl}/chat/completions`, {
+      body: JSON.stringify(body),
+      headers: {
+        accept: "application/json",
+        "accept-encoding": "identity",
+        authorization: `Bearer ${this.#config.masterKey}`,
+        "content-type": "application/json",
+      },
+      method: "POST",
+      redirect: "error",
+      signal,
+    });
+  }
+
   async #probe(
     model: string,
     signal: AbortSignal,
     timedOut: () => boolean,
     callerSignal: AbortSignal | undefined,
+    accountId: string | undefined,
   ): Promise<AgentRuntimeTestResponse> {
     let response: Response;
     try {
-      response = await this.#fetchImpl(`${this.#config.upstreamBaseUrl}/chat/completions`, {
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "user", content: CLOUD_AGENT_RUNTIME_TEST_PROMPT }],
-          max_tokens: CLOUD_AGENT_RUNTIME_TEST_MAX_OUTPUT_TOKENS,
-          stream: false,
-        }),
-        headers: {
-          accept: "application/json",
-          "accept-encoding": "identity",
-          authorization: `Bearer ${this.#config.masterKey}`,
-          "content-type": "application/json",
-        },
-        method: "POST",
-        // A redirect from the fixed upstream must never steer the probe to another origin.
-        redirect: "error",
-        signal,
-      });
+      response = await this.#request(model, signal, accountId);
     } catch {
       return this.#mapAborted(timedOut, callerSignal) ?? failure("provider_failed");
     }

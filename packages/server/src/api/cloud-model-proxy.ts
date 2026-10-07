@@ -2,6 +2,7 @@ import type { ServerResponse } from "node:http";
 import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
+import type { CloudBilling } from "../cloud-billing.js";
 import type { CloudModelConfig } from "../cloud-model-config.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
@@ -213,6 +214,7 @@ const MAX_TOKEN_CHARS = 4_096;
 export interface CloudModelProxyRouteOptions {
   config: Extract<CloudModelConfig, { enabled: true }>;
   grants: CloudModelGrantService;
+  billing?: { client: CloudBilling; accountForExecution: (claims: GrantClaims) => Promise<string | undefined> };
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -282,9 +284,15 @@ async function callUpstream(
   model: string,
   body: z.infer<typeof ChatCompletionsBodySchema>,
   signal: AbortSignal,
+  claims: GrantClaims,
 ): Promise<Response | undefined> {
   const fetchImpl = options.fetchImpl ?? fetch;
   try {
+    if (options.billing) {
+      const accountId = await options.billing.accountForExecution(claims);
+      if (!accountId || signal.aborted) return undefined;
+      return await options.billing.client.model(accountId, { ...body, model }, signal);
+    }
     return await fetchImpl(`${options.config.upstreamBaseUrl}/chat/completions`, {
       body: JSON.stringify({ ...body, model }),
       headers: {
@@ -632,7 +640,7 @@ async function forwardChatCompletions(
   signal: AbortSignal,
   timedOut: () => boolean,
 ): Promise<FastifyReply> {
-  const upstream = await callUpstream(options, claims.model, body, signal);
+  const upstream = await callUpstream(options, claims.model, body, signal, claims);
   if (!upstream) return finalizeUpstreamUnavailable(reply, signal, timedOut);
   const rejection = await rejectUnusableUpstream(upstream, body, options.config.maxResponseBytes);
   if (rejection) {

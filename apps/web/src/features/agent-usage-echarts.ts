@@ -20,4 +20,12 @@ echarts.use([
   CanvasRenderer,
 ]);
 
+// Date ticks near a calendar boundary can overlap even with a small tick count.
+echarts.registerPreprocessor((option) => {
+  const axes = Array.isArray(option.xAxis) ? option.xAxis : [option.xAxis];
+  for (const axis of axes) {
+    if (axis?.type === "time") axis.axisLabel = { ...axis.axisLabel, hideOverlap: true };
+  }
+});
+
 export { echarts };

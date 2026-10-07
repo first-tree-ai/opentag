@@ -22,6 +22,11 @@ import {
   rateLimitFailureMetadata,
   registerBrowserAuthRoutes,
 } from "./api/browser-auth.js";
+import {
+  registerCloudBillingReadinessRoute,
+  registerCloudBillingRoutes,
+  registerCloudBillingWebhook,
+} from "./api/cloud-billing.js";
 import { type CloudModelProxyRouteOptions, registerCloudModelProxyRoutes } from "./api/cloud-model-proxy.js";
 import { registerComputerSkillRoutes } from "./api/computer-skills.js";
 import { registerComputerRoutes } from "./api/computers.js";
@@ -50,6 +55,7 @@ import { registerWebsiteSessionRoutes } from "./api/website-session.js";
 import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import type { CloudBilling } from "./cloud-billing.js";
 import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
 import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
@@ -121,6 +127,7 @@ export interface CreateAppOptions {
   };
   /** E4 controlled model path; present exactly when the deployment model proxy is enabled. */
   cloudModel?: CloudModelProxyRouteOptions;
+  cloudBilling?: CloudBilling;
   /**
    * E5 Runner workspace persistence HTTP routes; present exactly when the Runner runtime
    * configured the object store. Authenticates the Runner bootstrap bearer token only — never
@@ -565,6 +572,8 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   const readinessHeaders = deploymentHeaders(options.deployment);
+  registerCloudBillingReadinessRoute(app, options.cloudBilling, readinessHeaders);
+  registerCloudBillingWebhook(app, options.cloudBilling);
   app.get("/readyz", async (request, reply) => {
     reply.headers(readinessHeaders);
     const snapshot = readiness.snapshot();
@@ -814,12 +823,14 @@ function registerAvailableAccountRoutes(
   options: CreateAppOptions,
   authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
 ): void {
+  registerCloudBillingRoutes(app, authService, options.cloudBilling, authOptions);
   if (
     !(
       options.agentService ||
       options.agentSchedules ||
       options.cloudAvailability ||
       options.cloudModelCatalog ||
+      options.cloudBilling ||
       options.taskService ||
       options.computerService ||
       options.sandboxService ||

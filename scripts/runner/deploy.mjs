@@ -194,12 +194,12 @@ async function readState({ server, token, appName, fetchImpl, deadline = null, n
 }
 
 /** Every read-only gate a release must pass before a mutation is even considered. */
-function validateState({ state, release, serverRevision, publicUrl }) {
+function validateState({ state, release, serverRevision, serverImage, publicUrl }) {
   if (state.isBuilding) {
     throw new Error("CapRover reports an ongoing app build; wait for it to finish before changing the Runner target");
   }
   assertRunnerEnvironment({ envVars: state.envVars, channel: release.channel, publicUrl });
-  assertServerImage({ deployedImageName: deployedImageOf(state.definition), serverRevision });
+  assertServerImage({ deployedImageName: deployedImageOf(state.definition), serverRevision, serverImage });
   return { image: state.envVars.get(RUNNER_IMAGE_KEY) ?? null, version: state.envVars.get(RUNNER_VERSION_KEY) ?? null };
 }
 
@@ -380,6 +380,7 @@ export async function runDeploy({
   mode,
   release,
   serverRevision,
+  serverImage,
   config,
   fetchImpl = fetch,
   runCommand = runLocalCommand,
@@ -405,7 +406,7 @@ export async function runDeploy({
     await waitForAppIdle({ ...context, fetchImpl, sleep, deadlineMs, intervalMs, now });
     initial = await observe("re-reading the app state after its build");
   }
-  const current = validateState({ state: initial, release, serverRevision, publicUrl: config.publicUrl });
+  const current = validateState({ state: initial, release, serverRevision, serverImage, publicUrl: config.publicUrl });
   if (mode === "apply") {
     await waitForRunnerTarget({
       publicUrl: config.publicUrl,
@@ -438,7 +439,7 @@ export async function runDeploy({
     // its proxy, so this read is as exposed as the first one. It is still only a read: retrying it
     // cannot lose a write, and the update below is decided on whatever snapshot it finally returns.
     const fresh = await observe("re-reading the app state before the update");
-    validateState({ state: fresh, release, serverRevision, publicUrl: config.publicUrl });
+    validateState({ state: fresh, release, serverRevision, serverImage, publicUrl: config.publicUrl });
     if (!isDeepStrictEqual(fresh.snapshot, initial.snapshot)) {
       throw new Error("the app configuration changed between validation and update; aborting without mutating");
     }

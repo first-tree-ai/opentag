@@ -2,6 +2,7 @@ export * from "./account.js";
 export * from "./agent.js";
 export * from "./agent-setup.js";
 export * from "./auth.js";
+export * from "./cloud-billing.js";
 export * from "./cloud-product.js";
 export {
   type AccountSandboxRunnerStatusResponse,

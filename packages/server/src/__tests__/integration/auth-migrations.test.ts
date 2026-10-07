@@ -53,6 +53,7 @@ afterAll(async () => {
 beforeEach(async () => {
   const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
   try {
+    await sql.unsafe("drop schema if exists billing cascade");
     await sql.unsafe("drop schema if exists public cascade");
     await sql.unsafe("drop schema if exists drizzle cascade");
     await sql.unsafe("create schema public");
@@ -523,6 +524,49 @@ describe("database migrations", () => {
       }
     } finally {
       await rm(legacyFolder, { force: true, recursive: true });
+    }
+  });
+
+  it("shares Account identity with the billing schema and limits its runtime role to ledger data", async () => {
+    await migrateDatabase(databaseUrl, migrationsFolder);
+    const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    const account = crypto.randomUUID();
+    try {
+      await sql`insert into public.users(id, email, display_name) values (${account}, 'billing@example.com', 'Billing')`;
+      await expect(sql`insert into billing.accounts(id) values (${crypto.randomUUID()})`).rejects.toMatchObject({
+        code: "23503",
+      });
+      await sql`insert into billing.accounts(id) values (${account})`;
+      await sql`insert into billing.grants(id, account, amount, kind) values ('trial', ${account}, 1000000, 'promotion')`;
+      await expect(sql`delete from public.users where id=${account}`).rejects.toMatchObject({ code: "23503" });
+      await expect(sql`update billing.accounts set spent_micros=-1 where id=${account}`).rejects.toMatchObject({
+        code: "23514",
+      });
+      await sql.unsafe("create role billing_runtime_test nologin");
+      await sql.unsafe("grant usage on schema billing to billing_runtime_test");
+      await sql.unsafe("grant select, insert, update on all tables in schema billing to billing_runtime_test");
+      await sql.begin(async (transaction) => {
+        await transaction.unsafe("set local role billing_runtime_test");
+        const [row] = await transaction`select amount from billing.grants where account=${account}`;
+        expect(row?.amount).toBe("1000000");
+        await transaction`update billing.accounts set spent_micros=100 where id=${account}`;
+      });
+      for (const statement of [
+        "select * from public.users",
+        "delete from billing.grants",
+        "create table billing.forbidden(id integer)",
+      ]) {
+        await expect(
+          sql.begin(async (transaction) => {
+            await transaction.unsafe("set local role billing_runtime_test");
+            await transaction.unsafe(statement);
+          }),
+        ).rejects.toMatchObject({ code: "42501" });
+      }
+      await migrateDatabase(databaseUrl, migrationsFolder);
+      expect(await sql`select * from billing.grants`).toHaveLength(1);
+    } finally {
+      await sql.end();
     }
   });
 

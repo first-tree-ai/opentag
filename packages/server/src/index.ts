@@ -10,6 +10,7 @@ import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import type { CloudBilling } from "./cloud-billing.js";
 import { cloudAvailability } from "./cloud-product-config.js";
 import {
   cloudAppOptions,
@@ -63,6 +64,8 @@ import {
   PostAuthenticationService,
 } from "./services/auth/index.js";
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
+import { createCloudBillingRuntime } from "./services/cloud-billing-composition.js";
+import { loadCloudBilling } from "./services/cloud-billing-module.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
@@ -214,11 +217,22 @@ function cloudPlatformRuntimeOptions(
 }
 
 /** One model catalog shared by settings, dispatch and diagnostics. */
-function createCloudModelRuntime(config: ServerConfig, runner: SandboxRunnerRuntime | undefined) {
+function createCloudModelRuntime(
+  config: ServerConfig,
+  runner: SandboxRunnerRuntime | undefined,
+  billing: CloudBilling | undefined,
+) {
   const model = config.cloudModel;
   if (!runner || !model.enabled) return undefined;
   const catalog = new RouterCloudModelCatalog({ upstreamBaseUrl: model.upstreamBaseUrl, masterKey: model.masterKey });
-  return { catalog, tester: new CloudAgentRuntimeTester({ catalog, config: model }) };
+  return {
+    catalog,
+    tester: new CloudAgentRuntimeTester({
+      catalog,
+      config: model,
+      ...(billing ? { billing } : {}),
+    }),
+  };
 }
 
 function optionalCloudModelCatalog(runtime: ReturnType<typeof createCloudModelRuntime>) {
@@ -428,6 +442,7 @@ function deploymentProof(config: ServerConfig) {
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  let cloudBilling: CloudBilling | undefined;
   const knownSecrets: string[] = collectKnownSecrets(process.env);
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
@@ -556,7 +571,18 @@ export async function startServer(): Promise<void> {
      * and the runtime test — shares the same catalog instance (one lazy cache, one in-flight
      * Router read per process). The catalog performs no I/O at construction.
      */
-    const cloudModelRuntime = createCloudModelRuntime(config, cloudRunnerRuntime);
+    cloudBilling = await loadCloudBilling(config.cloudBilling.enabled, {
+      databaseUrl: config.databaseUrl,
+      publicUrl: config.publicUrl,
+      environment: process.env,
+      onError: (event) => app?.log.error({ event }),
+    });
+    const billingRuntime = createCloudBillingRuntime(cloudBilling, config.cloudModel.enabled, database);
+    const cloudModelRuntime = createCloudModelRuntime(
+      config,
+      cloudRunnerRuntime,
+      billingRuntime.accountOptions.cloudBilling,
+    );
     const modelCatalogOptions = optionalCloudModelCatalog(cloudModelRuntime);
     // Exact Cloud revocation sender: the credential owner's sweep/close notifications reach the
     // owning Runner connection through the controller created below. Declared here because the
@@ -972,7 +998,9 @@ export async function startServer(): Promise<void> {
         runnerRuntime: cloudRunnerRuntime,
         composition: cloudDelivery,
         cloudModel: config.cloudModel,
+        ...billingRuntime.modelOptions,
       }),
+      ...billingRuntime.accountOptions,
       machineAuthService,
       imBindingService,
       feishuSetupService,
@@ -1115,6 +1143,7 @@ export async function startServer(): Promise<void> {
     } else {
       process.stderr.write(`Failed to start OpenTag server: ${formatStartupError(error, knownSecrets)}\n`);
     }
+    await cloudBilling?.close();
     await shutdownTelemetry();
     process.exitCode = 1;
   }

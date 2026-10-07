@@ -4,6 +4,7 @@ export * from "./agents.js";
 export * from "./auth.js";
 export * from "./auth-identities.js";
 export * from "./better-auth.js";
+export * from "./cloud-billing.js";
 export * from "./computers.js";
 export * from "./feishu-inbound-receipts.js";
 export * from "./github-connections.js";

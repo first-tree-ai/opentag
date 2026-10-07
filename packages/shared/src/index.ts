@@ -121,6 +121,7 @@ export {
   MINIMUM_SUPPORTED_CLIENT_VERSION,
   unsupportedClientVersionMessage,
 } from "./client-version.js";
+export * from "./cloud-billing.js";
 export * from "./cloud-product.js";
 export * from "./cloud-runner.js";
 export {

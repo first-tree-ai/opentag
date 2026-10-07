@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { computerConnectCodes, computerCredentials, computers, users } from "../db/schema/index.js";
+import {
+  billingAccounts,
+  billingPaymentChanges,
+  billingSettings,
+  computerConnectCodes,
+  computerCredentials,
+  computers,
+  users,
+} from "../db/schema/index.js";
 import { isUniqueViolation } from "../db/unique-violation.js";
 import { MachineAuthService } from "../services/computers/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -72,10 +80,19 @@ describe("unit database harness", () => {
   });
 
   it("clears application data between tests without losing the schema", async () => {
-    await unitDatabase.database.insert(users).values({ displayName: "Transient", email: "transient@example.com" });
+    const accountId = randomUUID();
+    await unitDatabase.database
+      .insert(users)
+      .values({ id: accountId, displayName: "Transient", email: "transient@example.com" });
+    await unitDatabase.database.insert(billingAccounts).values({ id: accountId });
+    await unitDatabase.database.insert(billingSettings).values({ id: "fixture", value: 1 });
+    await unitDatabase.database.insert(billingPaymentChanges).values({ payment: "fixture" });
     await unitDatabase.reset();
 
     expect(await unitDatabase.database.select().from(users)).toHaveLength(0);
+    expect(await unitDatabase.database.select().from(billingAccounts)).toHaveLength(0);
+    expect(await unitDatabase.database.select().from(billingSettings)).toHaveLength(0);
+    expect(await unitDatabase.database.select().from(billingPaymentChanges)).toHaveLength(0);
   });
 
   it("issues and exchanges a connect code into an Account-owned Computer", async () => {

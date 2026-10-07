@@ -37,6 +37,7 @@ jobs:
   staging:
     name: Deploy Staging
     if: >-
+      vars.OPENTAG_DEPLOYMENT_AUTHORITY != 'private' &&
       github.repository == 'first-tree-ai/opentag' &&
       ((github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&

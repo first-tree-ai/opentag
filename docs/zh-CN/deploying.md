@@ -91,7 +91,7 @@ service，不会配置 CapRover 的 server container。
 | `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用；签发全部 Account session |
 | `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `BETTER_AUTH_SECRET` 不同；仅用于签名 Slack OAuth state |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 编码的 32 字节 key，Staging 专用 |
-| `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
+| `OPENTAG_AUTO_MIGRATE` | 使用 `true`，包括[云端计费发布](cloud-billing.md)；启动时应用公开迁移 |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
 | `GOOGLE_CLOUD_PROJECT` | 可选；将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting，参见 [客户端错误上报](./error-reporting.md) |
@@ -186,3 +186,7 @@ Job summary 会记录部署的 revision、镜像 tag 和镜像 digest。之后�
 - App 的 Deployment 页显示新的镜像引用和成功的构建日志。
 - `https://<app>/healthz` 返回成功。
 - App 日志中出现预期 revision 的 migration 与监听日志。
+
+## 私有云端部署管理
+
+云端应用及 Runner 的协调发布参见[云端计费](./cloud-billing.md#协调-caprover-部署)。将公共仓库 Actions 变量 `OPENTAG_DEPLOYMENT_AUTHORITY` 设为 `private` 后，本仓库部署任务停用，制品发布继续运行。

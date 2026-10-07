@@ -238,9 +238,17 @@ export function assertRunnerEnvironment({ envVars, channel, publicUrl }) {
 /**
  * The deployed Server image must be exactly `ghcr.io/first-tree-ai/opentag:<server-revision>`
  * with an optional `@sha256:` digest suffix — the immutable per-commit coordinate the Server
- * deploy produced.
+ * deploy produced. A combined cloud release supplies its exact digest-pinned image instead.
  */
-export function assertServerImage({ deployedImageName, serverRevision }) {
+export function assertServerImage({ deployedImageName, serverRevision, serverImage }) {
+  if (serverImage !== undefined) {
+    if (
+      !/^ghcr\.io\/[a-z0-9_-]+\/[a-z0-9._-]+@sha256:[a-f0-9]{64}$/.test(serverImage) ||
+      deployedImageName !== serverImage
+    )
+      throw new Error("app deployed image differs from the selected cloud image");
+    return;
+  }
   const value = typeof deployedImageName === "string" ? deployedImageName : "";
   const at = value.indexOf("@");
   const base = at === -1 ? value : value.slice(0, at);

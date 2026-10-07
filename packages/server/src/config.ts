@@ -10,6 +10,7 @@ import {
   SLACK_OAUTH_CALLBACK_PATH,
 } from "@opentag/shared";
 import { z } from "zod";
+import { type CloudBillingConfig, resolveCloudBillingConfig } from "./cloud-billing-config.js";
 import { CloudRunnerVersionSchema, parseCloudStorageBase } from "./cloud-identities-config.js";
 import { type CloudModelConfig, resolveCloudModelConfig } from "./cloud-model-config.js";
 import { type CloudRunnerConfig, resolveCloudRunnerConfig } from "./cloud-runner-config.js";
@@ -763,6 +764,7 @@ export interface ServerConfig {
    * secondary switch was left on.
    */
   cloudModel: CloudModelConfig;
+  cloudBilling: CloudBillingConfig;
   /**
    * Optional S3-compatible object storage for Agent Skill bundles. Off by default; without it Skill
    * listing still works and every bundle read or write fails with SKILL_STORAGE_UNAVAILABLE.
@@ -998,6 +1000,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     cloudRunner,
     web: resolveWebToolsConfig(parsed),
     cloudModel: resolveCloudModelConfig(environment, cloudRunner.enabled),
+    cloudBilling: resolveCloudBillingConfig(environment),
     skillStorage: resolveSkillStorageConfig(parsed),
   };
 }

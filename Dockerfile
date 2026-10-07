@@ -38,7 +38,7 @@ COPY packages/shared/package.json packages/shared/package.json
 COPY packages/server/package.json packages/server/package.json
 RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts --prod --filter @opentag/server...
 
-FROM node:24-alpine AS runtime
+FROM node:24-alpine AS application
 
 ARG OPENTAG_BUILD_REVISION
 ENV OPENTAG_BUILD_REVISION=${OPENTAG_BUILD_REVISION}
@@ -66,3 +66,40 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 USER opentag
 
 CMD ["node", "packages/server/dist/index.mjs"]
+
+# Only the trusted commit-image workflow supplies the private named build context.
+FROM node:24-alpine AS billing-deps
+WORKDIR /module
+RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
+COPY --from=billing package.json pnpm-lock.yaml .npmrc ./
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+FROM billing-deps AS billing-build
+COPY --from=build /app /app
+COPY --from=billing tsconfig.json biome.json vitest.config.ts ./
+COPY --from=billing scripts/build.mjs scripts/link-application.mjs scripts/
+COPY --from=billing src src
+COPY --from=billing test test
+RUN node scripts/link-application.mjs /app \
+  && pnpm lint --vcs-enabled=false --vcs-use-ignore-file=false \
+  && pnpm typecheck && pnpm test && pnpm build
+
+FROM billing-deps AS billing-prod-deps
+RUN pnpm prune --prod
+
+FROM application AS cloud
+ARG OPENTAG_BILLING_REVISION
+ENV OPENTAG_BILLING_REVISION=${OPENTAG_BILLING_REVISION}
+LABEL org.opentag.billing.revision=${OPENTAG_BILLING_REVISION}
+USER root
+COPY --from=billing-prod-deps /module/node_modules /opt/opentag-cloud-billing/node_modules
+COPY --from=billing-build /module/dist/src /opt/opentag-cloud-billing/dist/src
+COPY --from=billing package.json /opt/opentag-cloud-billing/package.json
+RUN mkdir -p /opt/opentag-cloud-billing/node_modules/@opentag \
+  && ln -s /app/packages/shared /opt/opentag-cloud-billing/node_modules/@opentag/shared \
+  && ln -s /app/packages/server /opt/opentag-cloud-billing/node_modules/@opentag/server \
+  && ln -s /opt/opentag-cloud-billing /app/packages/server/node_modules/@opentag/cloud-billing
+USER opentag
+
+# The default image and pull-request builds remain independent of private source and credentials.
+FROM application AS runtime

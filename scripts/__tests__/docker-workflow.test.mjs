@@ -63,6 +63,7 @@ test("pull-request builds are isolated from registry publication", async () => {
   assert.match(pullRequestText, /uses: docker\/build-push-action@/);
   assert.match(pullRequestText, /\n {10}push: false\n/);
   assert.doesNotMatch(pullRequestText, /uses: docker\/login-action@/);
+  assert.doesNotMatch(pullRequestText, /OPENTAG_BILLING_READ_TOKEN|repository: first-tree-ai\/opentag-billing/);
 
   for (const job of jobs.values()) {
     const text = jobText(job);
@@ -73,5 +74,19 @@ test("pull-request builds are isolated from registry publication", async () => {
     assert.doesNotMatch(text, /uses: docker\/login-action@/, `${job.name} must not log in during pull requests`);
     assert.doesNotMatch(text, /\n\s+push: true\s*$/, `${job.name} must not push during pull requests`);
     assert.doesNotMatch(text, /docker buildx imagetools create/, `${job.name} must not publish during pull requests`);
+  }
+});
+
+test("only the trusted commit build bundles a pinned private billing package", async () => {
+  const jobs = readJobs(await readFile(workflowPath, "utf8"));
+  const build = jobText(jobs.get("build"));
+  assert.match(build, /github\.event_name == 'push'.*github\.ref_type == 'branch'/);
+  assert.match(build, /repository: first-tree-ai\/opentag-billing/);
+  assert.match(build, /ref: \$\{\{ steps\.billing\.outputs\.revision \}\}/);
+  assert.match(build, /persist-credentials: false/);
+  assert.match(build, /target: cloud/);
+  assert.match(build, /build-contexts: billing=\.cloud-billing/);
+  for (const job of jobs.values()) {
+    if (job.name !== "build") assert.doesNotMatch(jobText(job), /OPENTAG_BILLING_READ_TOKEN/);
   }
 });

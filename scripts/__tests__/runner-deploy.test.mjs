@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertBillingEnvironment,
   assertRunnerEnvironment,
   assertServerImage,
   caproverLogin,
@@ -31,6 +32,25 @@ const OLD_DIGEST = `sha256:${"0".repeat(64)}`;
 const RELEASE_SHA = "a".repeat(40);
 const SERVER_SHA = "c".repeat(40);
 const PASSWORD = "fixture-password";
+const BILLING_SHA = "b".repeat(40);
+
+function billingDefinition(overrides = {}) {
+  const definition = appDefinition({
+    serviceUpdateOverride: JSON.stringify({
+      UpdateConfig: { Order: "stop-first", Parallelism: 1, FailureAction: "pause" },
+      RollbackConfig: { Order: "stop-first", Parallelism: 1 },
+      TaskTemplate: { ContainerSpec: { StopGracePeriod: 630_000_000_000 } },
+    }),
+    ...overrides,
+  });
+  definition.envVars.push(
+    ...["OPENTAG_CLOUD_BILLING_ENABLED", "OPENTAG_CLOUD_MODEL_ENABLED", "OPENTAG_AUTO_MIGRATE"].map((key) => ({
+      key,
+      value: "true",
+    })),
+  );
+  return definition;
+}
 
 const release = parseReleaseRecord(
   formatReleaseRecord({
@@ -324,15 +344,6 @@ test("environment and server-image guards reject the wrong target", () => {
     /digest suffix/,
   );
   assert.throws(() => assertServerImage({ deployedImageName: undefined, serverRevision: SERVER_SHA }), /expected/);
-});
-
-test("Runner activation accepts only the exact digest-pinned combined cloud image", () => {
-  const image = `ghcr.io/first-tree-ai/opentag-billing-cloud@${DIGEST}`;
-  assertServerImage({ deployedImageName: image, serverImage: image, serverRevision: SERVER_SHA });
-  for (const deployedImageName of [undefined, `ghcr.io/first-tree-ai/opentag:${SERVER_SHA}`, `${image}0`]) {
-    assert.throws(() => assertServerImage({ deployedImageName, serverImage: image, serverRevision: SERVER_SHA }));
-  }
-  assert.throws(() => assertServerImage({ deployedImageName: image, serverImage: "ghcr.io/example/cloud:latest" }));
 });
 
 test("check is strictly read-only and reports the current and target Runner", async () => {
@@ -937,4 +948,109 @@ test("readyz deadline counts request time as well as sleep time", async () => {
   );
   assert.equal(probes, 1);
   assert.equal(time, 30);
+});
+
+test("billing configuration rejects overlapping processes, insufficient drain time and overridden build identity", () => {
+  const validate = (definition, billingRevision = BILLING_SHA) =>
+    assertBillingEnvironment({ definition, envVars: readEnvVars(definition), billingRevision });
+  validate(billingDefinition());
+  assert.throws(() => validate(billingDefinition({ instanceCount: 2 })), /one replica/);
+  assert.throws(() => validate(billingDefinition({ serviceUpdateOverride: "{}" })), /stop-first/);
+  const shortDrain = billingDefinition();
+  const override = JSON.parse(shortDrain.serviceUpdateOverride);
+  override.TaskTemplate.ContainerSpec.StopGracePeriod = 30_000_000_000;
+  shortDrain.serviceUpdateOverride = JSON.stringify(override);
+  assert.throws(() => validate(shortDrain), /drain requests/);
+  const overridden = billingDefinition();
+  overridden.envVars.push({ key: "OPENTAG_BILLING_REVISION", value: BILLING_SHA });
+  assert.throws(() => validate(overridden), /come from the image/);
+  const disabled = billingDefinition();
+  disabled.envVars.find(({ key }) => key === "OPENTAG_CLOUD_BILLING_ENABLED").value = "false";
+  assert.throws(() => validate(disabled), /must remain enabled/);
+  assert.throws(
+    () => assertBillingEnvironment({ definition: billingDefinition(), envVars: readEnvVars(billingDefinition()) }),
+    /pinned billing revision/,
+  );
+});
+
+function cloudFake({ status = 200, revision = BILLING_SHA, malformed = false } = {}) {
+  const fake = caproverFake({ definition: billingDefinition() });
+  let probes = 0;
+  const fetchImpl = async (url, options) => {
+    if (!url.endsWith("/cloud-readyz")) return fake.fetchImpl(url, options);
+    probes += 1;
+    const ready = await fake.fetchImpl(url.replace("/cloud-readyz", "/readyz"), options);
+    return {
+      ...ready,
+      status,
+      json: async () => {
+        if (malformed) throw new SyntaxError("invalid JSON");
+        return { status: status === 200 ? "ready" : "not_ready", billing: { revision } };
+      },
+    };
+  };
+  return { ...fake, fetchImpl, probes: () => probes };
+}
+
+test("cloud activation verifies billing before mutation and after the Runner update", async () => {
+  const fake = cloudFake();
+  const result = await runDeploy(deployDeps(fake, { mode: "apply", billingRevision: BILLING_SHA }));
+  assert.equal(result.updated, true);
+  assert.equal(fake.updates().length, 1);
+  assert.equal(fake.probes(), 2);
+});
+
+test("billing failures and mismatched revisions never authorize Runner activation", async () => {
+  for (const settings of [{ status: 503 }, { revision: "d".repeat(40) }, { malformed: true }]) {
+    const fake = cloudFake(settings);
+    await assert.rejects(
+      runDeploy(
+        deployDeps(fake, {
+          mode: "apply",
+          billingRevision: BILLING_SHA,
+          deadlineMs: 30,
+          intervalMs: 10,
+        }),
+      ),
+      /did not prove/,
+    );
+    assert.equal(fake.updates().length, 0);
+  }
+});
+
+test("cloud check mode requires billing readiness and remains read-only", async () => {
+  const good = cloudFake();
+  await runDeploy(deployDeps(good, { billingRevision: BILLING_SHA }));
+  assert.equal(good.updates().length, 0);
+  const bad = cloudFake({ status: 503 });
+  await assert.rejects(runDeploy(deployDeps(bad, { billingRevision: BILLING_SHA })), /gate failed/);
+  assert.equal(bad.updates().length, 0);
+});
+
+test("cloud rollout waits beyond five minutes so a full request can drain", async () => {
+  const fake = cloudFake();
+  let time = 0;
+  let probes = 0;
+  const result = await runDeploy(
+    deployDeps(fake, {
+      mode: "apply",
+      billingRevision: BILLING_SHA,
+      now: () => time,
+      sleep: async (ms) => {
+        time += ms;
+      },
+      fetchImpl: async (url, options) => {
+        const response = await fake.fetchImpl(url, options);
+        if (url.endsWith("/cloud-readyz") && ++probes === 1) {
+          assert.equal(fake.updates().length, 0);
+          time += 500_000;
+          return { ...response, status: 503 };
+        }
+        return response;
+      },
+    }),
+  );
+  assert.equal(result.updated, true);
+  assert.equal(time, 505_000);
+  assert.equal(fake.updates().length, 1);
 });

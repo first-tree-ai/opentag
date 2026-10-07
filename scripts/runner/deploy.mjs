@@ -26,8 +26,10 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { readBillingRevision } from "../cloud-billing-pin.mjs";
 import {
   APP_DEFINITION_SAFELIST,
+  assertBillingEnvironment,
   assertRunnerEnvironment,
   assertServerImage,
   CaproverUnreachableError,
@@ -111,6 +113,7 @@ async function readCaproverPassword({ secret, runCommand }) {
 export async function probeReady({
   publicUrl,
   serverRevision,
+  billingRevision,
   runnerHash,
   requireRunner = false,
   fetchImpl = fetch,
@@ -118,12 +121,17 @@ export async function probeReady({
 }) {
   let response;
   try {
-    response = await fetchImpl(`${publicUrl}/readyz`, {
+    response = await fetchImpl(`${publicUrl}/${billingRevision ? "cloud-readyz" : "readyz"}`, {
       method: "GET",
       headers: { accept: "application/json" },
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     });
+    if (billingRevision) {
+      const body = await response.json();
+      if (body.status !== "ready" || body.billing?.revision !== billingRevision)
+        return { ok: false, status: response.status, revision: null, runner: null };
+    }
   } catch {
     return { ok: false, status: 0, revision: null, runner: null };
   }
@@ -194,12 +202,13 @@ async function readState({ server, token, appName, fetchImpl, deadline = null, n
 }
 
 /** Every read-only gate a release must pass before a mutation is even considered. */
-function validateState({ state, release, serverRevision, serverImage, publicUrl }) {
+function validateState({ state, release, serverRevision, billingRevision, publicUrl }) {
   if (state.isBuilding) {
     throw new Error("CapRover reports an ongoing app build; wait for it to finish before changing the Runner target");
   }
   assertRunnerEnvironment({ envVars: state.envVars, channel: release.channel, publicUrl });
-  assertServerImage({ deployedImageName: deployedImageOf(state.definition), serverRevision, serverImage });
+  assertBillingEnvironment({ definition: state.definition, envVars: state.envVars, billingRevision });
+  assertServerImage({ deployedImageName: deployedImageOf(state.definition), serverRevision });
   return { image: state.envVars.get(RUNNER_IMAGE_KEY) ?? null, version: state.envVars.get(RUNNER_VERSION_KEY) ?? null };
 }
 
@@ -269,6 +278,7 @@ async function applyUpdate({ server, token, appName, fetchImpl, next }) {
 export async function waitForRunnerTarget({
   publicUrl,
   serverRevision,
+  billingRevision,
   runnerHash,
   fetchImpl = fetch,
   sleep = defaultSleep,
@@ -286,6 +296,7 @@ export async function waitForRunnerTarget({
     last = await probeReady({
       publicUrl,
       serverRevision,
+      billingRevision,
       runnerHash,
       requireRunner,
       fetchImpl,
@@ -380,46 +391,70 @@ export async function runDeploy({
   mode,
   release,
   serverRevision,
-  serverImage,
+  billingRevision,
   config,
   fetchImpl = fetch,
   runCommand = runLocalCommand,
   sleep = defaultSleep,
-  deadlineMs = 300_000,
+  deadlineMs,
   intervalMs = 5_000,
   now = Date.now,
 }) {
   assertFullSha(serverRevision, "--server-revision");
+  if (billingRevision !== undefined) assertFullSha(billingRevision, "billing revision");
   const runnerHash = runnerTargetHash({ image: release.image, version: release.version });
   const password = await readCaproverPassword({ secret: config.passwordSecret, runCommand });
   const token = await caproverLogin({ server: config.server, password, fetchImpl });
   const context = { server: config.server, token, appName: config.app, fetchImpl };
   const observe = (label) =>
-    whileUnreachable((budget) => readState({ ...context, ...budget }), { sleep, deadlineMs, intervalMs, now, label });
+    whileUnreachable((budget) => readState({ ...context, ...budget }), {
+      sleep,
+      deadlineMs: deadlineMs ?? 300_000,
+      intervalMs,
+      now,
+      label,
+    });
 
   // The Server's own redeploy has just restarted the app behind CapRover, so the first look at it
   // is the one most likely to find the API unreachable. It observes; it does not mutate.
   let initial = await observe("reading the app state");
+  const cloudTimeout = assertBillingEnvironment({
+    definition: initial.definition,
+    envVars: initial.envVars,
+    billingRevision,
+  });
+  // Stop-first replacement may drain a full cloud request before the next process becomes ready.
+  const rolloutDeadlineMs = deadlineMs ?? Math.max(300_000, cloudTimeout + 60_000);
   if (mode === "apply" && initial.isBuilding) {
     // The Server deploy's own CapRover build can still be running when apply starts; only apply
     // waits for it (bounded), then every gate below runs against a fresh post-build snapshot.
-    await waitForAppIdle({ ...context, fetchImpl, sleep, deadlineMs, intervalMs, now });
+    await waitForAppIdle({ ...context, fetchImpl, sleep, deadlineMs: rolloutDeadlineMs, intervalMs, now });
     initial = await observe("re-reading the app state after its build");
   }
-  const current = validateState({ state: initial, release, serverRevision, serverImage, publicUrl: config.publicUrl });
+  const current = validateState({
+    state: initial,
+    release,
+    serverRevision,
+    billingRevision,
+    publicUrl: config.publicUrl,
+  });
   if (mode === "apply") {
     await waitForRunnerTarget({
       publicUrl: config.publicUrl,
       serverRevision,
+      billingRevision,
       fetchImpl,
       sleep,
-      deadlineMs,
+      deadlineMs: rolloutDeadlineMs,
       intervalMs,
       requireRunner: false,
       now,
     });
   } else {
-    assertReadyGate(await probeReady({ publicUrl: config.publicUrl, serverRevision, fetchImpl }), serverRevision);
+    assertReadyGate(
+      await probeReady({ publicUrl: config.publicUrl, serverRevision, billingRevision, fetchImpl }),
+      serverRevision,
+    );
   }
 
   const alreadyAtTarget = current.image === release.image && current.version === release.version;
@@ -439,7 +474,7 @@ export async function runDeploy({
     // its proxy, so this read is as exposed as the first one. It is still only a read: retrying it
     // cannot lose a write, and the update below is decided on whatever snapshot it finally returns.
     const fresh = await observe("re-reading the app state before the update");
-    validateState({ state: fresh, release, serverRevision, serverImage, publicUrl: config.publicUrl });
+    validateState({ state: fresh, release, serverRevision, billingRevision, publicUrl: config.publicUrl });
     if (!isDeepStrictEqual(fresh.snapshot, initial.snapshot)) {
       throw new Error("the app configuration changed between validation and update; aborting without mutating");
     }
@@ -461,10 +496,11 @@ export async function runDeploy({
   await waitForRunnerTarget({
     publicUrl: config.publicUrl,
     serverRevision,
+    billingRevision,
     runnerHash,
     fetchImpl,
     sleep,
-    deadlineMs,
+    deadlineMs: rolloutDeadlineMs,
     intervalMs,
     now,
   });
@@ -513,6 +549,7 @@ async function main(argv) {
     mode,
     release,
     serverRevision: options["server-revision"],
+    billingRevision: readBillingRevision({ serverRevision: options["server-revision"] }),
     config: readDeployConfig(process.env),
   });
   console.log(JSON.stringify(summary));

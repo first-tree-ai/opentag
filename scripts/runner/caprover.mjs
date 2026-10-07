@@ -235,20 +235,43 @@ export function assertRunnerEnvironment({ envVars, channel, publicUrl }) {
   }
 }
 
+/** Enforce process-local admission safety and return the request timeout needed for rollout draining. */
+export function assertBillingEnvironment({ definition, envVars, billingRevision }) {
+  if (!billingRevision) {
+    if (envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") === "true")
+      throw new Error("Billing deployments require the application's pinned billing revision");
+    return 0;
+  }
+  for (const key of ["OPENTAG_CLOUD_BILLING_ENABLED", "OPENTAG_CLOUD_MODEL_ENABLED", "OPENTAG_AUTO_MIGRATE"]) {
+    if (envVars.get(key) !== "true") throw new Error(`${key} must remain enabled for cloud billing`);
+  }
+  if (envVars.get("OPENTAG_BUILD_REVISION") || envVars.get("OPENTAG_BILLING_REVISION"))
+    throw new Error("Build revisions must come from the image");
+  if (definition.instanceCount !== 1 || definition.preDeployFunction)
+    throw new Error("Cloud billing requires one replica and no predeploy function");
+  const override = JSON.parse(definition.serviceUpdateOverride || "{}");
+  const timeout = Number(envVars.get("OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS") ?? 600_000);
+  if (
+    !Number.isInteger(timeout) ||
+    timeout < 10_000 ||
+    timeout > 1_800_000 ||
+    override.UpdateConfig?.Order !== "stop-first" ||
+    override.UpdateConfig?.Parallelism !== 1 ||
+    override.UpdateConfig?.FailureAction !== "pause" ||
+    override.RollbackConfig?.Order !== "stop-first" ||
+    override.RollbackConfig?.Parallelism !== 1 ||
+    !(override.TaskTemplate?.ContainerSpec?.StopGracePeriod >= (timeout + 30_000) * 1_000_000)
+  )
+    throw new Error("Cloud billing requires stop-first replacement and enough time to drain requests");
+  return timeout;
+}
+
 /**
  * The deployed Server image must be exactly `ghcr.io/first-tree-ai/opentag:<server-revision>`
  * with an optional `@sha256:` digest suffix — the immutable per-commit coordinate the Server
- * deploy produced. A combined cloud release supplies its exact digest-pinned image instead.
+ * deploy produced.
  */
-export function assertServerImage({ deployedImageName, serverRevision, serverImage }) {
-  if (serverImage !== undefined) {
-    if (
-      !/^ghcr\.io\/[a-z0-9_-]+\/[a-z0-9._-]+@sha256:[a-f0-9]{64}$/.test(serverImage) ||
-      deployedImageName !== serverImage
-    )
-      throw new Error("app deployed image differs from the selected cloud image");
-    return;
-  }
+export function assertServerImage({ deployedImageName, serverRevision }) {
   const value = typeof deployedImageName === "string" ? deployedImageName : "";
   const at = value.indexOf("@");
   const base = at === -1 ? value : value.slice(0, at);

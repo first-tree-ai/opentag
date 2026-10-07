@@ -116,15 +116,30 @@ interface DeliveryScope {
   agentId: string;
 }
 
+function terminalStatusReaction(
+  delivery: typeof imMessageDeliveries.$inferSelect,
+  report: TurnReportRequest,
+  now: Date,
+) {
+  if (!delivery.statusReactionDesired) return {};
+  return {
+    statusReactionDesired: report.outcome === "unknown" ? ("failed" as const) : report.outcome,
+    statusReactionRetryAt: now,
+    statusReactionAttempts: 0,
+  };
+}
+
 export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   readonly #database: DatabaseClient;
   readonly #sessions: SessionService;
   readonly #now: () => Date;
+  readonly #onStatusReactionChanged?: () => void;
 
-  constructor(database: DatabaseClient, options: { now?: () => Date } = {}) {
+  constructor(database: DatabaseClient, options: { now?: () => Date; onStatusReactionChanged?: () => void } = {}) {
     this.#database = database;
     this.#sessions = new SessionService(database);
     this.#now = options.now ?? (() => new Date());
+    this.#onStatusReactionChanged = options.onStatusReactionChanged;
   }
 
   async beginDeliveryDispatch(
@@ -333,7 +348,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     turnId: string,
     context: RuntimeBusinessContext,
   ): Promise<DeliveryCustodyStatus> {
-    return this.#database.transaction(async (transaction) => {
+    const status = await this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
@@ -357,6 +372,15 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           steerTargetDeliveryId: null,
           reason: null,
           lastErrorCode: null,
+          ...(request.replyRole !== "observer" &&
+          scope.message.authorKind === "human" &&
+          scope.message.operation !== "deleted"
+            ? {
+                statusReactionDesired: "working" as const,
+                statusReactionRetryAt: this.#now(),
+                statusReactionAttempts: 0,
+              }
+            : {}),
         })
         .where(
           and(
@@ -369,6 +393,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .returning({ id: imMessageDeliveries.id });
       return accepted ? "accepted" : "conflict";
     });
+    if (status === "accepted" || status === "already_accepted") this.#onStatusReactionChanged?.();
+    return status;
   }
 
   async claimRetainedReports(
@@ -486,7 +512,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult["status"] | undefined> {
-    return this.#database.transaction(async (transaction) => {
+    const status = await this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, report.deliveryId);
       if (!scope) return undefined;
       if (!recordTurnIdentityMatches(scope, report)) return "conflict";
@@ -502,6 +528,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           turnReport: report,
           reportedAt: this.#now(),
           lastErrorCode: null,
+          ...terminalStatusReaction(scope.delivery, report, this.#now()),
         })
         .where(eq(imMessageDeliveries.id, report.deliveryId));
       if (report.outcome !== "completed") {
@@ -509,6 +536,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       }
       return "recorded";
     });
+    if (status === "recorded" || status === "already_recorded") this.#onStatusReactionChanged?.();
+    return status;
   }
 
   async #steerTargetMatches(

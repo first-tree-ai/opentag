@@ -26,6 +26,16 @@ const session: ManagedSessionContext = {
 };
 
 describe("renderManagedSystemPrompt Agent Home", () => {
+  it("allows contextual reactions while reserving automatic status reactions", () => {
+    const visible = renderManagedSystemPrompt(snapshot, session);
+    expect(visible).toContain("OpenTag automatically manages status reactions");
+    expect(visible).toContain("Do not add, remove, or duplicate these reserved status reactions");
+    expect(visible).toContain("Slack: eyes, white_check_mark, warning; Feishu: OnIt, DONE, ERROR");
+    expect(visible).toContain("optionally add one contextual emoji reaction");
+    expect(visible).toContain("never react to observer deliveries or internal Session messages");
+    const internal = renderManagedSystemPrompt(snapshot, { ...session, sessionKind: "internal" });
+    expect(internal).not.toContain("contextual emoji reaction");
+  });
   it("describes one persistent Home with prompt-only source-repos, worktrees, and files conventions", () => {
     const prompt = renderManagedSystemPrompt(snapshot, { ...session, agentHome: "/tmp/agent-home" });
 

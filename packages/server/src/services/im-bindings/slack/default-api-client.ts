@@ -3,8 +3,9 @@ import { WebClient, type WebClientOptions } from "@slack/web-api";
 import { z } from "zod";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { type BotProfile, httpsAvatar } from "../bot-profile.js";
-import type { ProviderResourceInput, ReadableResource } from "../provider-adapter.js";
+import type { ProviderResourceInput, ProviderStatusReactionInput, ReadableResource } from "../provider-adapter.js";
 import type { SlackApiClient, SlackInstallationInspection, SlackOAuthAccessResult } from "./adapter.js";
+import { syncSlackStatusReaction } from "./status-reactions.js";
 
 const SLACK_AUTH_TEST_TIMEOUT_MS = 10_000;
 const SLACK_WEB_CLIENT_TIMEOUT_MS = 15_000;
@@ -24,6 +25,14 @@ export class DefaultSlackApiClient implements SlackApiClient {
   readonly #createClient: (token: string, signal?: AbortSignal) => WebClient;
   readonly #fetch: typeof fetch;
   readonly #policy: ExternalCallPolicy;
+
+  async setStatusReaction(input: ProviderStatusReactionInput & { token: string }): Promise<void> {
+    await this.#policy.run(
+      "slack.status-reaction",
+      (signal) => syncSlackStatusReaction(this.#createClient(input.token, signal).reactions, input),
+      { circuitKey: "slack:status-reaction", maxAttempts: 1, timeoutMs: 5_000 },
+    );
+  }
 
   constructor(
     createClient?: (token: string, signal?: AbortSignal) => WebClient,

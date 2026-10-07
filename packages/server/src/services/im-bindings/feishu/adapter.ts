@@ -20,9 +20,11 @@ import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
   ImProviderAdapter,
   ProviderResourceInput,
+  ProviderStatusReactionInput,
   ReadableResource,
   VerifiedBotIdentity,
 } from "../provider-adapter.js";
+import { syncFeishuStatusReaction } from "./status-reactions.js";
 
 interface FeishuRawEnvelope {
   header?: { event_id?: string; tenant_key?: string };
@@ -608,6 +610,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   readonly #scopeList: () => Promise<FeishuScopeListResponse>;
   readonly #teamId: string | null;
   readonly #policy: ExternalCallPolicy;
+  readonly #setStatusReaction: (input: ProviderStatusReactionInput, signal: AbortSignal) => Promise<void>;
 
   constructor(input: {
     appId: string;
@@ -617,6 +620,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     channel?: FeishuChannel | null;
     http?: FeishuHttpCapability;
     scopeList?: () => Promise<FeishuScopeListResponse>;
+    setStatusReaction?: (input: ProviderStatusReactionInput, signal: AbortSignal) => Promise<void>;
     /* type-only */ policy?: ExternalCallPolicy;
   }) {
     this.#appId = input.appId;
@@ -636,6 +640,14 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       httpInstance: createFeishuHttpInstance(),
     };
     this.#client = new Client(clientOptions);
+    this.#setStatusReaction =
+      input.setStatusReaction ??
+      ((target, signal) =>
+        syncFeishuStatusReaction(
+          new Client({ ...clientOptions, httpInstance: createFeishuHttpInstance(signal) }).im.v1.messageReaction,
+          this.#appId,
+          target,
+        ));
     this.#scopeList = input.scopeList ?? (() => this.#client.application.v6.scope.list({}));
     this.#http =
       input.http ??
@@ -710,6 +722,14 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
 
   normalizeInbound(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {
     return normalizeFeishuMessage(input);
+  }
+
+  async setStatusReaction(input: ProviderStatusReactionInput): Promise<void> {
+    await this.#policy.run("feishu.status-reaction", (signal) => this.#setStatusReaction(input, signal), {
+      circuitKey: `feishu:status-reaction:${this.#appId}`,
+      maxAttempts: 1,
+      timeoutMs: 5_000,
+    });
   }
 
   async fetchResource(input: ProviderResourceInput): Promise<ReadableResource> {

@@ -68,6 +68,7 @@ import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
+import { ImStatusReactionWorker } from "./services/im/im-status-reaction-worker.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
 import {
@@ -524,7 +525,10 @@ export async function startServer(): Promise<void> {
           },
         })
       : undefined;
-    const custody = new PostgresRuntimeCustodyStore(database);
+    let wakeStatusReactions = () => {};
+    const custody = new PostgresRuntimeCustodyStore(database, {
+      onStatusReactionChanged: () => wakeStatusReactions(),
+    });
     let cloudSessionOwner: CloudSessionCollaborationOwner | undefined;
     const cloudSessionWork = new CloudSessionWorkTracker();
     const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config, {
@@ -789,6 +793,12 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
+    const imStatusReactions = new ImStatusReactionWorker({
+      database,
+      resolveAdapter: resolveImAdapter,
+      logger: serviceLogger("im-status-reactions"),
+    });
+    wakeStatusReactions = () => imStatusReactions.wake();
     const imResourceService = new ImResourceService(database, resolveImAdapter, imCallPolicy);
     const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
@@ -1073,6 +1083,7 @@ export async function startServer(): Promise<void> {
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    imStatusReactions.start();
     scheduleScheduler.start();
     sandboxIdleReclaimer?.start();
     github?.worker.start();
@@ -1094,6 +1105,7 @@ export async function startServer(): Promise<void> {
       channelTargetPoller.stop();
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
+      await imStatusReactions.stop();
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();

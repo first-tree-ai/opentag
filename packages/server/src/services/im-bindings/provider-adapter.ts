@@ -1,5 +1,12 @@
 import type { Readable } from "node:stream";
 import type { NormalizedInboundImEvent } from "@opentag/shared";
+import type { ImStatusReaction } from "../../db/schema/im-messages.js";
+
+export interface ProviderStatusReactionInput {
+  channelId: string;
+  messageExternalId: string;
+  status: ImStatusReaction;
+}
 
 export interface VerifiedBotIdentity {
   externalAppId: string;
@@ -25,4 +32,5 @@ export interface ImProviderAdapter<TVerifiedEnvelope> {
   validateBinding(input: unknown): Promise<VerifiedBotIdentity>;
   normalizeInbound(input: TVerifiedEnvelope): NormalizedInboundImEvent[];
   fetchResource(input: ProviderResourceInput): Promise<ReadableResource>;
+  setStatusReaction?(input: ProviderStatusReactionInput): Promise<void>;
 }

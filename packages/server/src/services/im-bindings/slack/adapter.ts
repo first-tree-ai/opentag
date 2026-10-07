@@ -5,6 +5,7 @@ import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
   ImProviderAdapter,
   ProviderResourceInput,
+  ProviderStatusReactionInput,
   ReadableResource,
   VerifiedBotIdentity,
 } from "../provider-adapter.js";
@@ -69,6 +70,7 @@ export interface SlackOAuthAccessResult {
 }
 
 export interface SlackApiClient {
+  setStatusReaction?(input: ProviderStatusReactionInput & { token: string }): Promise<void>;
   botProfile?(token: string, botUserId: string): Promise<BotProfile>;
   authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }>;
   inspectInstallation(token: string): Promise<SlackInstallationInspection>;
@@ -226,6 +228,11 @@ export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
     this.#teamId = input.teamId;
     this.#botUserId = input.botUserId;
     this.#botId = input.botId;
+  }
+
+  async setStatusReaction(input: ProviderStatusReactionInput): Promise<void> {
+    if (!this.#api.setStatusReaction) throw new Error("SLACK_STATUS_REACTION_UNAVAILABLE");
+    await this.#api.setStatusReaction({ ...input, token: this.#token });
   }
 
   async validateBinding(): Promise<VerifiedBotIdentity> {

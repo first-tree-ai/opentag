@@ -33,6 +33,7 @@ export const imDeliveryState = pgEnum("im_delivery_state", [
   "terminal_rejected",
   "expired",
 ]);
+export type ImStatusReaction = "working" | Exclude<TurnReportRequest["outcome"], "unknown">;
 export const imMessages = pgTable(
   "im_messages",
   {
@@ -109,6 +110,10 @@ export const imMessageDeliveries = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     reason: text("reason"),
     lastErrorCode: text("last_error_code"),
+    statusReactionDesired: text("status_reaction_desired").$type<ImStatusReaction>(),
+    statusReactionApplied: text("status_reaction_applied").$type<ImStatusReaction>(),
+    statusReactionRetryAt: timestamp("status_reaction_retry_at", { withTimezone: true }),
+    statusReactionAttempts: bigint("status_reaction_attempts", { mode: "number" }).notNull().default(0),
   },
   (table) => [
     uniqueIndex("im_message_deliveries_message_session_unique").on(table.messageId, table.sessionId),
@@ -122,6 +127,10 @@ export const imMessageDeliveries = pgTable(
     ),
     index("im_message_deliveries_steer_target_idx").on(table.steerTargetDeliveryId),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
+    index("im_message_deliveries_status_reaction_idx")
+      .on(table.statusReactionRetryAt)
+      .where(sql`${table.statusReactionDesired} is not null
+        and ${table.statusReactionDesired} is distinct from ${table.statusReactionApplied}`),
     index("im_message_deliveries_expiry_idx")
       .on(table.expiresAt, table.id)
       .where(sql`${table.state} = 'pending' and ${table.reason} is null`),

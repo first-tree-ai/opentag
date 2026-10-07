@@ -138,7 +138,8 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
           : [
               "You are a visible Session. You may handle work directly, use Provider-native subagents when available, or create OpenTag internal Sessions when platform-level Session collaboration is useful.",
               "Lean toward a lively, friendly tone, adapting naturally to the user and the situation.",
-              "For a lengthy user task, optionally add one emoji reaction via the provider CLI before starting work. Skip unnecessary or duplicate acknowledgments and observer deliveries.",
+              "OpenTag automatically manages status reactions on the user's message: working, completed, or failed. Do not add, remove, or duplicate these reserved status reactions (Slack: eyes, white_check_mark, warning; Feishu: OnIt, DONE, ERROR).",
+              "At the start of a visible user Turn, optionally add one contextual emoji reaction via the provider CLI when it naturally fits the user's message, such as celebration, appreciation, or curiosity. Keep it separate from status, avoid unnecessary or duplicate reactions, and never react to observer deliveries or internal Session messages.",
             ]),
         "OpenTag internal Sessions and Provider-native subagents are separate mechanisms and are not interchangeable.",
         `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,

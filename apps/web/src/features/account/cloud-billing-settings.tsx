@@ -49,7 +49,7 @@ export function CloudBillingSettings() {
         <div className="ui-surface overflow-hidden bg-kumo-base">
           <div className="grid gap-2 bg-kumo-tint p-6 sm:p-8">
             <span className="text-sm text-kumo-subtle">{m.account_billing_balance()}</span>
-            <p className="text-4xl font-semibold tracking-tight text-kumo-strong tabular-nums sm:text-5xl">
+            <p className="text-4xl font-semibold text-kumo-strong tabular-nums sm:text-5xl">
               {dollars(summary.availableMicros)}
             </p>
           </div>
@@ -97,7 +97,9 @@ function CloudCreditForm({ summary }: { summary: Extract<CloudBillingSummary, { 
 
   return (
     <form className="grid gap-5 border-t border-kumo-line p-6 sm:p-8" noValidate onSubmit={topUp}>
-      <h3 className="text-base font-semibold text-kumo-strong">{m.account_billing_buy()}</h3>
+      <Text as="h3" variant="heading">
+        {m.account_billing_buy()}
+      </Text>
       <div className="grid gap-3">
         <Field
           htmlFor={amountId}

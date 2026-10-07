@@ -1,5 +1,5 @@
 {
-  "id": "e8e7595f-b7a2-40c1-b251-9f69f823eb8f",
+  "id": "1b28f5b2-ce8e-4354-90c2-e1d5ba8b6bce",
   "prevId": "7a888343-5e5a-4e7b-87e5-176f3941f5b7",
   "version": "7",
   "dialect": "postgresql",
@@ -1276,6 +1276,20 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
+        },
+        "reconcile_after": {
+          "name": "reconcile_after",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "reconcile_failures": {
+          "name": "reconcile_failures",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {
@@ -1296,6 +1310,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "attempts_pending": {
+          "name": "attempts_pending",
+          "columns": [
+            {
+              "expression": "reconcile_after",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"billing\".\"attempts\".\"charge_micros\" IS NULL AND \"billing\".\"attempts\".\"generation\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1329,6 +1365,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "attempts_reconcile_failures_nonnegative": {
+          "name": "attempts_reconcile_failures_nonnegative",
+          "value": "\"billing\".\"attempts\".\"reconcile_failures\" >= 0"
+        },
         "attempts_usage_nonnegative": {
           "name": "attempts_usage_nonnegative",
           "value": "\"billing\".\"attempts\".\"input_tokens\" >= 0 AND \"billing\".\"attempts\".\"output_tokens\" >= 0 AND \"billing\".\"attempts\".\"charge_micros\" >= 0"

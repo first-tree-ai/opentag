@@ -246,6 +246,7 @@ describe("in-process cloud billing", () => {
       ACCOUNT,
       expect.objectContaining({ model: "model-a" }),
       expect.any(AbortSignal),
+      expect.objectContaining({ requestTimeoutMs: 1000, maxResponseBytes: 1024 * 1024 }),
     );
     expect(fallback).not.toHaveBeenCalled();
   });

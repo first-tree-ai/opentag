@@ -163,7 +163,10 @@ export class CloudAgentRuntimeTester {
     };
     if (this.#billing) {
       if (!accountId) throw new Error("Cloud billing requires an authenticated Account");
-      return this.#billing.model(accountId, body, signal);
+      return this.#billing.model(accountId, body, signal, {
+        requestTimeoutMs: this.#timeoutMs,
+        maxResponseBytes: this.#maxResponseBytes,
+      });
     }
     return this.#fetchImpl(`${this.#config.upstreamBaseUrl}/chat/completions`, {
       body: JSON.stringify(body),

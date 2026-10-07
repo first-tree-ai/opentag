@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CloudModelTransportLimitsSchema } from "./cloud-model-request.js";
 
 /**
  * E4 controlled model path: the Server brokers OpenAI-compatible chat completions for Sandbox Pi
@@ -40,7 +41,7 @@ const CloudModelEnvironmentSchema = z
     // staged environment from before the Router catalog boots unchanged during the rollout window.
     OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: z.string().max(4096).optional(),
     OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(1_800),
-    OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(1_800_000).default(600_000),
+    OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS: CloudModelTransportLimitsSchema.shape.requestTimeoutMs,
     OPENTAG_CLOUD_MODEL_MAX_REQUEST_BYTES: z.coerce
       .number()
       .int()
@@ -49,12 +50,7 @@ const CloudModelEnvironmentSchema = z
       // Transport protection for one chat-completions body — not a token budget: the issued
       // grant's context window and Pi's native compaction decide what fits the model.
       .default(8 * 1024 * 1024),
-    OPENTAG_CLOUD_MODEL_MAX_RESPONSE_BYTES: z.coerce
-      .number()
-      .int()
-      .min(1024 * 1024)
-      .max(64 * 1024 * 1024)
-      .default(16 * 1024 * 1024),
+    OPENTAG_CLOUD_MODEL_MAX_RESPONSE_BYTES: CloudModelTransportLimitsSchema.shape.maxResponseBytes,
     OPENTAG_CLOUD_MODEL_MAX_STREAMS_PER_TOKEN: z.coerce.number().int().min(1).max(16).default(4),
   })
   .strict();

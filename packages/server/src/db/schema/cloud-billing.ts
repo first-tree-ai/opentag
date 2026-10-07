@@ -76,9 +76,15 @@ export const billingAttempts = billingSchema.table(
     inputTokens: bigint("input_tokens", { mode: "number" }),
     outputTokens: bigint("output_tokens", { mode: "number" }),
     chargeMicros: bigint("charge_micros", { mode: "number" }),
+    reconcileAfter: timestamp("reconcile_after", { withTimezone: true }).notNull().defaultNow(),
+    reconcileFailures: integer("reconcile_failures").notNull().default(0),
   },
   (table) => [
     index("attempts_account").on(table.account, table.createdAt),
+    index("attempts_pending")
+      .on(table.reconcileAfter, table.createdAt)
+      .where(sql`${table.chargeMicros} IS NULL AND ${table.generation} IS NOT NULL`),
+    check("attempts_reconcile_failures_nonnegative", sql`${table.reconcileFailures} >= 0`),
     check(
       "attempts_usage_nonnegative",
       sql`${table.inputTokens} >= 0 AND ${table.outputTokens} >= 0 AND ${table.chargeMicros} >= 0`,

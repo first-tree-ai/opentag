@@ -6,7 +6,10 @@ CREATE TABLE "billing"."accounts" (
 	"encrypted_key" text,
 	"blocked" boolean DEFAULT false NOT NULL,
 	"needs_sync" boolean DEFAULT true NOT NULL,
+	"sync_after" timestamp with time zone DEFAULT now() NOT NULL,
+	"sync_failures" integer DEFAULT 0 NOT NULL,
 	"spent_micros" bigint DEFAULT 0 NOT NULL,
+	CONSTRAINT "accounts_sync_failures_nonnegative" CHECK ("billing"."accounts"."sync_failures" >= 0),
 	CONSTRAINT "accounts_spent_nonnegative" CHECK ("billing"."accounts"."spent_micros" >= 0)
 );
 --> statement-breakpoint
@@ -32,7 +35,6 @@ CREATE TABLE "billing"."checkouts" (
 	"amount_cents" integer NOT NULL,
 	"session" text,
 	"payment" text,
-	"paid" boolean DEFAULT false NOT NULL,
 	"refunded" integer DEFAULT 0 NOT NULL,
 	"disputed" boolean DEFAULT false NOT NULL,
 	CONSTRAINT "checkouts_session_unique" UNIQUE("session"),
@@ -64,6 +66,7 @@ ALTER TABLE "billing"."accounts" ADD CONSTRAINT "accounts_id_users_id_fk" FOREIG
 ALTER TABLE "billing"."attempts" ADD CONSTRAINT "attempts_account_accounts_id_fk" FOREIGN KEY ("account") REFERENCES "billing"."accounts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "billing"."checkouts" ADD CONSTRAINT "checkouts_account_accounts_id_fk" FOREIGN KEY ("account") REFERENCES "billing"."accounts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "billing"."grants" ADD CONSTRAINT "grants_account_accounts_id_fk" FOREIGN KEY ("account") REFERENCES "billing"."accounts"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "accounts_pending" ON "billing"."accounts" USING btree ("sync_after","id") WHERE "billing"."accounts"."needs_sync" = true;--> statement-breakpoint
 CREATE INDEX "attempts_account" ON "billing"."attempts" USING btree ("account","created_at");--> statement-breakpoint
 CREATE INDEX "attempts_pending" ON "billing"."attempts" USING btree ("reconcile_after","created_at") WHERE "billing"."attempts"."charge_micros" IS NULL AND "billing"."attempts"."generation" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "checkouts_account" ON "billing"."checkouts" USING btree ("account");--> statement-breakpoint

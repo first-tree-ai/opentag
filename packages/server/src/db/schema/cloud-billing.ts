@@ -18,9 +18,15 @@ export const billingAccounts = billingSchema.table(
     encryptedKey: text("encrypted_key"),
     blocked: boolean("blocked").notNull().default(false),
     needsSync: boolean("needs_sync").notNull().default(true),
+    syncAfter: timestamp("sync_after", { withTimezone: true }).notNull().defaultNow(),
+    syncFailures: integer("sync_failures").notNull().default(0),
     spentMicros: bigint("spent_micros", { mode: "number" }).notNull().default(0),
   },
-  (table) => [check("accounts_spent_nonnegative", sql`${table.spentMicros} >= 0`)],
+  (table) => [
+    index("accounts_pending").on(table.syncAfter, table.id).where(sql`${table.needsSync} = true`),
+    check("accounts_sync_failures_nonnegative", sql`${table.syncFailures} >= 0`),
+    check("accounts_spent_nonnegative", sql`${table.spentMicros} >= 0`),
+  ],
 );
 export const billingGrants = billingSchema.table(
   "grants",
@@ -44,7 +50,6 @@ export const billingCheckouts = billingSchema.table(
     amountCents: integer("amount_cents").notNull(),
     session: text("session").unique(),
     payment: text("payment").unique(),
-    paid: boolean("paid").notNull().default(false),
     refunded: integer("refunded").notNull().default(0),
     disputed: boolean("disputed").notNull().default(false),
   },

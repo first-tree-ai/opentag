@@ -537,6 +537,16 @@ describe("database migrations", () => {
         code: "23503",
       });
       await sql`insert into billing.accounts(id) values (${account})`;
+      const [billingAccount] =
+        await sql`select needs_sync,sync_after,sync_failures from billing.accounts where id=${account}`;
+      expect(billingAccount).toMatchObject({ needs_sync: true, sync_failures: 0 });
+      expect(billingAccount?.sync_after).toBeInstanceOf(Date);
+      await expect(sql`update billing.accounts set sync_failures=-1 where id=${account}`).rejects.toMatchObject({
+        code: "23514",
+      });
+      expect(
+        await sql`select column_name from information_schema.columns where table_schema='billing' and table_name='checkouts' and column_name='paid'`,
+      ).toHaveLength(0);
       await sql`insert into billing.grants(id, account, amount, kind) values ('trial', ${account}, 1000000, 'promotion')`;
       await expect(sql`delete from public.users where id=${account}`).rejects.toMatchObject({ code: "23503" });
       await expect(sql`update billing.accounts set spent_micros=-1 where id=${account}`).rejects.toMatchObject({

@@ -753,3 +753,43 @@ export const MCP_ERROR_CODE_METADATA: Readonly<
 export const MCP_MODERN_PROTOCOL_VERSION = "2026-07-28";
 export const MCP_LEGACY_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = [MCP_MODERN_PROTOCOL_VERSION, ...MCP_LEGACY_PROTOCOL_VERSIONS] as const;
+
+/**
+ * The Google Workspace remote MCP origins whose OAuth flows may use this deployment's
+ * pre-registered Google client.
+ *
+ * The list is an allowlist, not a hint: a Server that merely claims Google as its authorization
+ * server would otherwise be handed a genuine Google credential to send to its own endpoint. The
+ * predicate below therefore matches the exact origin — HTTPS, default port, no userinfo, and no
+ * subdomain or suffix tolerance — so only the endpoints Google itself hosts qualify.
+ */
+/** Google's authorization server, the one every Google Workspace MCP endpoint names in its metadata. */
+export const GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER = "https://accounts.google.com";
+
+export const GOOGLE_WORKSPACE_MCP_ORIGINS = [
+  "https://gmailmcp.googleapis.com",
+  "https://drivemcp.googleapis.com",
+  "https://docsmcp.googleapis.com",
+  "https://sheetsmcp.googleapis.com",
+  "https://slidesmcp.googleapis.com",
+  "https://calendarmcp.googleapis.com",
+  "https://chatmcp.googleapis.com",
+  "https://people.googleapis.com",
+] as const;
+
+/** Whether an MCP endpoint URL is one of the Google Workspace origins above. */
+export function isGoogleWorkspaceMcpEndpoint(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  // Userinfo must be refused explicitly: it is not part of `origin`, so the comparison below would
+  // otherwise accept `https://user:secret@gmailmcp.googleapis.com/mcp/v1`.
+  if (parsed.username.length > 0 || parsed.password.length > 0) return false;
+  // `new URL` elides a default port, so this refuses only a genuinely non-default one.
+  if (parsed.port.length > 0) return false;
+  return (GOOGLE_WORKSPACE_MCP_ORIGINS as readonly string[]).includes(parsed.origin);
+}

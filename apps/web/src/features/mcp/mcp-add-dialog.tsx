@@ -358,7 +358,9 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     setBusy(true);
     try {
       const binding = await ensureBinding(await resolveCatalogServer(entry));
-      await authorize(binding, catalogDraft(entry, entry.defaultAuthKind));
+      // The card's declared scopes travel with its own authorization: they are what its provider's
+      // consent screen is configured for, and an entry that declares none defers to discovery.
+      await authorize(binding, catalogDraft(entry, entry.defaultAuthKind), entry.oauthScopes);
       if (entry.defaultAuthKind !== "oauth") onAdded(binding);
     } catch (cause) {
       setError(actionError(cause, failureMessage()));

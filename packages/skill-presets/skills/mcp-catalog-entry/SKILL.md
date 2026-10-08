@@ -27,6 +27,7 @@ blog post, a client configuration in another project, or from memory.
 | --- | --- |
 | endpoint | the provider's primary remote Streamable HTTP URL |
 | authorization | the same page: anonymous, an interactive OAuth flow, or a key the user supplies |
+| OAuth scopes | for a provider whose consent screen is configured with a fixed subset (Google Workspace, for example), the documented scope list per product; record it as `oauthScopes` |
 | display name and description | the provider's product name and one short sentence, in every supported locale |
 | website | the provider's main site |
 | documentation URL | keep it for the report — the catalog has no field for it |
@@ -77,6 +78,8 @@ curl -sS -i -X POST <endpoint> \
     zh: <一句话说明。>
   url: https://<host>/mcp
   defaultAuthKind: oauth
+  oauthScopes:
+    - <documented-scope>
   category: general
   website: https://<provider-site>
   icon: <slug>.svg
@@ -93,6 +96,11 @@ curl -sS -i -X POST <endpoint> \
 - `authHeader`, `authScheme`, and `extraHeaders` exist for a `bearer` Server whose header is not
   `Authorization: Bearer`, or whose endpoint documents static headers. They are configuration and
   never a credential, and an extra header may not collide with the auth header.
+- `oauthScopes` is optional and only for a provider whose consent screen is configured with a fixed
+  scope subset: a card starts OAuth requesting exactly that list. It is bounded to at most 64 scopes
+  of at most 255 characters, and the empty list or a blank scope is refused. Omit it when the
+  provider hands out whatever scopes its discovery advertises; the flow falls back to the protected
+  resource metadata's `scopes_supported`.
 - A card's `description` is presentation only: the create contract has no description field, so the
   definition starts without one until a probe succeeds.
 
@@ -130,6 +138,8 @@ the whole web suite when you changed the generator, the entry type, or the add f
 - an entry that names a category the category source does not declare;
 - a declared category that no entry references;
 - a duplicate entry or category id;
+- an `oauthScopes` list that is empty, carries a blank or oversized scope, or exceeds the start
+  request's bounds;
 - a localized field that omits a supported locale or adds an unknown one;
 - an entry whose referenced icon file does not exist;
 - a compiled module that does not match its sources.

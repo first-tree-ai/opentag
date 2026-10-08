@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  GOOGLE_WORKSPACE_MCP_ORIGINS,
+  isGoogleWorkspaceMcpEndpoint,
   MCP_TOOL_DESCRIPTION_MAX_BYTES,
   MCP_TOOL_INPUT_SCHEMA_MAX_BYTES,
   MCP_TOOL_NAME_MAX_BYTES,
@@ -107,5 +109,55 @@ describe("MCPToolSnapshotSchema", () => {
     expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: { max: 1n } })).success).toBe(false);
     // Null stays a valid "takes no arguments" schema.
     expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: null })).success).toBe(true);
+  });
+});
+
+/**
+ * The deployment's Google client is offered only to these origins. The predicate is an allowlist
+ * against a hostile Server that advertises Google as its authorization server to harvest a Google
+ * token, so every near-miss host must be refused.
+ */
+describe("isGoogleWorkspaceMcpEndpoint", () => {
+  it("accepts every Google Workspace MCP endpoint at its documented URL", () => {
+    expect(GOOGLE_WORKSPACE_MCP_ORIGINS).toHaveLength(8);
+    expect(isGoogleWorkspaceMcpEndpoint("https://gmailmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://drivemcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://docsmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://sheetsmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://slidesmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://calendarmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://chatmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://people.googleapis.com/mcp/v1")).toBe(true);
+  });
+
+  it("is origin-based: any path on an allowed origin qualifies", () => {
+    expect(isGoogleWorkspaceMcpEndpoint("https://gmailmcp.googleapis.com/")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://gmailmcp.googleapis.com:443/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://GMAILMCP.GOOGLEAPIS.COM/mcp/v1")).toBe(true);
+  });
+
+  it("refuses a lookalike or suffixed host that is not one of the eight origins", () => {
+    for (const url of [
+      "https://gmailmcp.googleapis.com.evil.example/mcp/v1",
+      "https://evilgmailmcp.googleapis.com/mcp/v1",
+      "https://googleapis.com/mcp/v1",
+      "https://accounts.google.com/mcp/v1",
+      "https://mcp.example.com/mcp/v1",
+    ]) {
+      expect(isGoogleWorkspaceMcpEndpoint(url)).toBe(false);
+    }
+  });
+
+  it("refuses a non-HTTPS scheme, a non-default port, and any userinfo", () => {
+    expect(isGoogleWorkspaceMcpEndpoint("http://gmailmcp.googleapis.com/mcp/v1")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("https://gmailmcp.googleapis.com:8443/mcp/v1")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("https://user:secret@gmailmcp.googleapis.com/mcp/v1")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("https://user@gmailmcp.googleapis.com/mcp/v1")).toBe(false);
+  });
+
+  it("refuses a value that is not an absolute URL", () => {
+    expect(isGoogleWorkspaceMcpEndpoint("")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("/mcp/v1")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("not a url")).toBe(false);
   });
 });

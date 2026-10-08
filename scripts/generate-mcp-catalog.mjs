@@ -22,6 +22,8 @@ import { checkOutboundUrl } from "../packages/shared/src/mcp-outbound-url.ts";
 
 const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
 const ICON_PATTERN = /^[a-z0-9][a-z0-9-]*\.svg$/;
+/** biome.json's `formatter.lineWidth`: a generated line must fit it, or `biome check` reformats the module. */
+const LINE_WIDTH = 120;
 
 /** `--root` points the generator at a fixture tree; a script test sets it so it never touches the repo. */
 function flag(name) {
@@ -102,6 +104,39 @@ function readOrder(value, at, violations) {
     return undefined;
   }
   return value;
+}
+
+/** The bounds `StartMCPOAuthRequestSchema` enforces on the start request's `scopes`. */
+const MAX_OAUTH_SCOPES = 64;
+const MAX_OAUTH_SCOPE_LENGTH = 255;
+
+/**
+ * The optional `oauthScopes` a card's OAuth start requests, validated against the same bounds the
+ * Server's start request enforces so a compiled catalog can never fail a click.
+ */
+function readOAuthScopes(row, at, violations) {
+  if (row.oauthScopes === undefined) return undefined;
+  if (!Array.isArray(row.oauthScopes) || row.oauthScopes.length === 0) {
+    violations.push(`${at}.oauthScopes: must be a non-empty list of scope strings`);
+    return undefined;
+  }
+  if (row.oauthScopes.length > MAX_OAUTH_SCOPES) {
+    violations.push(`${at}.oauthScopes: at most ${MAX_OAUTH_SCOPES} scopes are allowed`);
+    return undefined;
+  }
+  const scopes = [];
+  for (const [index, scope] of row.oauthScopes.entries()) {
+    if (typeof scope !== "string" || scope.trim().length === 0) {
+      violations.push(`${at}.oauthScopes[${index}]: must be a non-empty scope string`);
+      return undefined;
+    }
+    if (scope.length > MAX_OAUTH_SCOPE_LENGTH) {
+      violations.push(`${at}.oauthScopes[${index}]: must be at most ${MAX_OAUTH_SCOPE_LENGTH} characters`);
+      return undefined;
+    }
+    scopes.push(scope);
+  }
+  return scopes;
 }
 
 function collectCategories(rows, locales, violations) {
@@ -206,14 +241,15 @@ function collectEntries(rows, categoryIds, locales, violations) {
     const title = readLocalized(row.title, `${at}.title`, locales, violations);
     const description = readLocalized(row.description, `${at}.description`, locales, violations);
     const order = readOrder(row.order, `${at}.order`, violations);
+    const oauthScopes = readOAuthScopes(row, at, violations);
     if (!title || !description || order === undefined) return;
-    entries.push(catalogEntryFrom(row, id, title, description, order));
+    entries.push(catalogEntryFrom(row, id, title, description, order, oauthScopes));
   });
   return entries;
 }
 
 /** The validated fields, read into the shape the generated module carries. */
-function catalogEntryFrom(row, id, title, description, order) {
+function catalogEntryFrom(row, id, title, description, order, oauthScopes) {
   return {
     id,
     name: typeof row.name === "string" ? row.name : "",
@@ -227,6 +263,7 @@ function catalogEntryFrom(row, id, title, description, order) {
     authHeader: typeof row.authHeader === "string" ? row.authHeader : undefined,
     authScheme: typeof row.authScheme === "string" ? row.authScheme : undefined,
     extraHeaders: isRecord(row.extraHeaders) ? row.extraHeaders : undefined,
+    oauthScopes,
     order,
   };
 }
@@ -246,6 +283,21 @@ async function resolveIcons(entries, violations) {
     identifiers.set(file, `${/^[a-z]/.test(base) ? base : `icon${base}`}IconUrl`);
   }
   return identifiers;
+}
+
+/**
+ * The `oauthScopes` lines for one entry, wrapped the way the formatter would wrap them.
+ *
+ * Inline while the array fits the line width, one scope per line past it. A fixed inline emission
+ * let `biome check` reformat the generated module, which the drift check then reported as an
+ * out-of-date catalog.
+ */
+function oauthScopeLines(entry) {
+  if (entry.oauthScopes === undefined) return [];
+  const items = entry.oauthScopes.map((scope) => JSON.stringify(scope)).join(", ");
+  const inline = `    oauthScopes: [${items}],`;
+  if (inline.length <= LINE_WIDTH) return [inline];
+  return ["    oauthScopes: [", ...entry.oauthScopes.map((scope) => `      ${JSON.stringify(scope)},`), "    ],"];
 }
 
 function localizedLines(prefix, value, locales, indent) {
@@ -296,6 +348,7 @@ function emitModule(categories, entries, locales, icons) {
     "  authHeader?: string;",
     "  authScheme?: string;",
     "  extraHeaders?: Record<string, string>;",
+    "  oauthScopes?: string[];",
     "  category: string;",
     "  website: string;",
     "  iconUrl: string;",
@@ -330,6 +383,7 @@ function emitModule(categories, entries, locales, icons) {
       const sorted = Object.fromEntries(Object.entries(entry.extraHeaders).sort(([a], [b]) => a.localeCompare(b)));
       lines.push(`    extraHeaders: ${JSON.stringify(sorted)},`);
     }
+    lines.push(...oauthScopeLines(entry));
     lines.push(
       `    category: ${JSON.stringify(entry.category)},`,
       `    website: ${JSON.stringify(entry.website)},`,

@@ -650,6 +650,33 @@ describe("parseServerConfig", () => {
     }
   });
 
+  it("requires the MCP Google client pair to be configured together", () => {
+    // Absent and empty both mean "no deployment Google client"; neither is an error.
+    expect(parseServerConfig(required).mcpGoogleOAuth).toBeUndefined();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_MCP_GOOGLE_CLIENT_ID: "",
+        OPENTAG_MCP_GOOGLE_CLIENT_SECRET: "   ",
+      }).mcpGoogleOAuth,
+    ).toBeUndefined();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_MCP_GOOGLE_CLIENT_ID: "mcp-client",
+        OPENTAG_MCP_GOOGLE_CLIENT_SECRET: "mcp-secret",
+      }),
+    ).toMatchObject({ mcpGoogleOAuth: { clientId: "mcp-client", clientSecret: "mcp-secret" } });
+    expect(() => parseServerConfig({ ...required, OPENTAG_MCP_GOOGLE_CLIENT_ID: "mcp-client" })).toThrow();
+    // The all-or-none error names the variables and never echoes configured material.
+    try {
+      parseServerConfig({ ...required, OPENTAG_MCP_GOOGLE_CLIENT_SECRET: "mcp-secret" });
+      expect.unreachable("partial MCP Google client configuration must fail");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain("mcp-secret");
+    }
+  });
+
   it("uses OPENTAG_ENV as the channel source without interpreting the hostname", () => {
     const config = parseServerConfig({
       ...required,

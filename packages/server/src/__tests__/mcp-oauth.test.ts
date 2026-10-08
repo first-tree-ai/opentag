@@ -6,6 +6,7 @@ import {
   McpOAuthClient,
   mcpCallbackRedirect,
   newRefreshClaimId,
+  normalizeAuthorizationServerIssuer,
   parseBearerChallenge,
   protectedResourceMetadataUrls,
 } from "../services/mcp/mcp-oauth.js";
@@ -159,6 +160,25 @@ describe("MCP OAuth discovery order", () => {
       .authorizationServerMetadata(ACCOUNT, "https://auth.example.com")
       .catch((caught: unknown) => caught);
     // A mismatch is a mix-up attack, so it propagates instead of falling through to the next form.
+    expect((error as { code?: string }).code).toBe(MCP_ERROR_CODES.OAUTH_FAILED);
+  });
+
+  it("still refuses a document whose issuer differs from the requested identifier by a trailing slash", async () => {
+    /*
+     * The slash tolerance lives where the Protected Resource Metadata's `authorization_servers` are
+     * consumed, not in this reader: the reader only ever sees the canonical identifier, so a
+     * mismatch here is still a mix-up and is refused outright.
+     */
+    const { client } = stubOAuth([
+      json({
+        issuer: "https://auth.example.com/",
+        authorization_endpoint: "https://auth.example.com/authorize",
+        token_endpoint: "https://auth.example.com/token",
+      }),
+    ]);
+    const error = await client
+      .authorizationServerMetadata(ACCOUNT, "https://auth.example.com")
+      .catch((caught: unknown) => caught);
     expect((error as { code?: string }).code).toBe(MCP_ERROR_CODES.OAUTH_FAILED);
   });
 
@@ -377,6 +397,27 @@ describe("MCP PKCE and the resource parameter", () => {
     );
     expect(normalizeResource(undefined, "https://mcp.example.com/")).toBe("https://mcp.example.com/");
     expect(normalizeResource("https://mcp.example.com/a/b#frag", "https://x")).toBe("https://mcp.example.com/a/b");
+  });
+});
+
+/**
+ * The one tolerance this deployment adds for a real-world issuer spelling, and its deliberate
+ * narrowness: exactly one trailing slash, nothing else.
+ */
+describe("normalizeAuthorizationServerIssuer", () => {
+  it("removes exactly one trailing slash and nothing else", () => {
+    expect(normalizeAuthorizationServerIssuer("https://accounts.google.com/")).toBe("https://accounts.google.com");
+    expect(normalizeAuthorizationServerIssuer("https://accounts.google.com")).toBe("https://accounts.google.com");
+    // A second slash is a different identifier, not another tolerance.
+    expect(normalizeAuthorizationServerIssuer("https://accounts.google.com//")).toBe("https://accounts.google.com/");
+    // No case folding, no default-port elision, no path rewriting.
+    expect(normalizeAuthorizationServerIssuer("HTTPS://ACCOUNTS.GOOGLE.COM/")).toBe("HTTPS://ACCOUNTS.GOOGLE.COM");
+    expect(normalizeAuthorizationServerIssuer("https://accounts.google.com:443/")).toBe(
+      "https://accounts.google.com:443",
+    );
+    expect(normalizeAuthorizationServerIssuer("https://accounts.google.com/tenant/")).toBe(
+      "https://accounts.google.com/tenant",
+    );
   });
 });
 
@@ -826,6 +867,39 @@ describe("MCP authorization URL and scope parameter", () => {
     expect(
       new URL(client.authorizationUrl({ ...base, scopes: ["mcp.read", "offline_access"] })).searchParams.get("scope"),
     ).toBe("mcp.read offline_access");
+  });
+
+  it("carries a client's own authorization parameters, and only that client's", () => {
+    const base = {
+      metadata: AS_METADATA,
+      clientId: "google-client",
+      state: "s1",
+      codeChallenge: "challenge",
+      resource: "https://gmailmcp.googleapis.com/mcp/v1",
+      scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+    };
+    const google = new URL(
+      client.authorizationUrl({ ...base, authorizationParams: { access_type: "offline", prompt: "consent" } }),
+    );
+    expect(google.searchParams.get("access_type")).toBe("offline");
+    expect(google.searchParams.get("prompt")).toBe("consent");
+    // A client's parameters are additions, never rewrites of the specification's own.
+    const guarded = new URL(
+      client.authorizationUrl({ ...base, authorizationParams: { client_id: "other", resource: "https://evil" } }),
+    );
+    expect(guarded.searchParams.get("client_id")).toBe("google-client");
+    expect(guarded.searchParams.get("resource")).toBe("https://gmailmcp.googleapis.com/mcp/v1");
+    // Another provider's request carries neither Google parameter.
+    const other = new URL(
+      client.authorizationUrl({
+        ...base,
+        clientId: "other-client",
+        resource: "https://mcp.example.com/mcp",
+        scopes: [],
+      }),
+    );
+    expect(other.searchParams.has("access_type")).toBe(false);
+    expect(other.searchParams.has("prompt")).toBe(false);
   });
 });
 

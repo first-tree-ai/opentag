@@ -9,6 +9,7 @@ import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
 import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computers, imBindings, imMessageDeliveries, sandboxes, sessions } from "../../db/schema/index.js";
+import type { BackgroundFailureSupervisor } from "../../observability/background-failure-supervisor.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
 import {
   CloudCapacityExceededError,
@@ -72,6 +73,11 @@ import type { WorkspaceObjectScope, WorkspaceObjectStore } from "./workspace-obj
  */
 
 export interface SandboxRunnerServiceOptions {
+  /** Composition-owned observers; allocation never depends on a consumer's successful wakeup. */
+  readinessNotifications?: {
+    onReady: (allocation: ReadyRunnerAllocation) => Promise<void>;
+    supervisor: BackgroundFailureSupervisor;
+  };
   cloudAdmin: CloudRunAdmin;
   tokens: RunnerBootstrapTokenService;
   hub: RunnerHub;
@@ -205,6 +211,11 @@ function isDefinitiveNoResourceMarker(marker: string | null): boolean {
 
 export type RunnerReadyOutcome = "ready" | "deferred" | "stale" | "version_mismatch" | "workspace_not_restored";
 
+/** Readiness of the current control connection AND its verified, persisted allocation. */
+export interface ReadyRunnerAllocation extends RunnerScope {
+  readonly resourceUid: string;
+}
+
 /** Automatic ingress allocation outcome; `restore_required` is the E5 guard, never a retry loop. */
 export type IngressAllocationOutcome = "ready" | "pending" | "stopped" | "restore_required";
 
@@ -230,6 +241,8 @@ interface IdleSiblingSnapshot {
 }
 
 export class SandboxRunnerService {
+  readonly #readinessNotifications: SandboxRunnerServiceOptions["readinessNotifications"];
+  readonly #publishedReadiness = new WeakSet<object>();
   readonly #database: DatabaseClient;
   readonly #cloud: CloudRunAdmin;
   readonly #tokens: RunnerBootstrapTokenService;
@@ -259,6 +272,7 @@ export class SandboxRunnerService {
   constructor(database: DatabaseClient, options: SandboxRunnerServiceOptions) {
     if (!options.expectedRunnerVersion) throw new Error("SandboxRunnerService requires the expected Runner version");
     this.#database = database;
+    this.#readinessNotifications = options.readinessNotifications;
     this.#cloud = options.cloudAdmin;
     this.#tokens = options.tokens;
     this.#hub = options.hub;
@@ -969,7 +983,57 @@ export class SandboxRunnerService {
 
   /** A deferred readiness report may be promoted once the verified UID is tracked. */
   async promoteDeferredReadiness(sandboxId: string): Promise<boolean> {
-    return this.#promoteReadyIfReported(sandboxId);
+    const promoted = await this.#promoteReadyIfReported(sandboxId);
+    // Already-ready reconnects can retain their verified original image after a target change.
+    // They need notification after Hub acceptance even when no preparing row was promoted.
+    this.#publishReadiness(sandboxId);
+    return promoted;
+  }
+
+  /** Read-only authority for readiness consumers; no provider I/O or allocation effects. */
+  async readyAllocation(sandboxId: string): Promise<ReadyRunnerAllocation | undefined> {
+    const socket = this.#hub.currentSocket(sandboxId);
+    const connection = this.#hub.currentConnectionIdentity(sandboxId);
+    const snapshot = this.#hub.describe(sandboxId);
+    if (!socket || !snapshot.ready || !snapshot.scope) return undefined;
+    const row = await this.#currentScopeRow(snapshot.scope);
+    if (
+      row?.lifecycle !== "ready" ||
+      row.idleReclaimAt !== null ||
+      !row.currentResourceUid ||
+      this.#hub.currentConnectionIdentity(sandboxId) !== connection ||
+      !this.#hub.isCurrent(sandboxId, socket)
+    )
+      return undefined;
+    return { ...snapshot.scope, resourceUid: row.currentResourceUid };
+  }
+
+  #publishReadiness(sandboxId: string): void {
+    const observer = this.#readinessNotifications;
+    const socket = this.#hub.currentSocket(sandboxId);
+    const connection = this.#hub.currentConnectionIdentity(sandboxId);
+    if (!observer || !socket || !connection || this.#publishedReadiness.has(connection)) return;
+    observer.supervisor.track(
+      async () => {
+        const allocation = await this.readyAllocation(sandboxId);
+        if (
+          !allocation ||
+          !this.#hub.isCurrent(sandboxId, socket) ||
+          this.#hub.currentConnectionIdentity(sandboxId) !== connection ||
+          this.#publishedReadiness.has(connection)
+        )
+          return;
+        this.#publishedReadiness.add(connection);
+        await observer.onReady(allocation);
+      },
+      {
+        code: "RUNNER_READY_NOTIFICATION_FAILED",
+        category: "internal",
+        retryability: "backoff",
+        phase: "worker",
+        operation: "sandbox-runner.readiness-notification",
+      },
+    );
   }
 
   /**
@@ -2464,7 +2528,10 @@ export class SandboxRunnerService {
         ),
       )
       .returning({ id: sandboxes.id });
-    if (promoted) return true;
+    if (promoted) {
+      this.#publishReadiness(sandboxId);
+      return true;
+    }
     const [row] = await this.#rowById(sandboxId);
     return (
       row?.lifecycle === "ready" &&

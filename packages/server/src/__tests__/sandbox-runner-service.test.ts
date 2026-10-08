@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, imBindings, sandboxes, sessions, users } from "../db/schema/index.js";
+import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { AgentService } from "../services/agents/index.js";
 import type { RunnerInstanceSpec } from "../services/cloud-run/index.js";
 import { CloudRunAdminError, type CloudRunInstanceView } from "../services/cloud-run/index.js";
@@ -104,6 +105,9 @@ async function sandboxRow(sandboxId: string) {
 function makeService(
   fake: RunnerFakeCloudRunAdmin,
   options: {
+    onReady?: (
+      allocation: import("../services/sandboxes/sandbox-runner-service.js").ReadyRunnerAllocation,
+    ) => Promise<void>;
     acceptanceTimeoutMs?: number;
     createConvergeTimeoutMs?: number;
     deleteVerifyTimeoutMs?: number;
@@ -118,6 +122,9 @@ function makeService(
   const hub = new RunnerHub();
   const service = new SandboxRunnerService(unit.database, {
     cloudAdmin: fake as never,
+    ...(options.onReady
+      ? { readinessNotifications: { onReady: options.onReady, supervisor: new BackgroundFailureSupervisor() } }
+      : {}),
     tokens,
     hub,
     environment: "staging",
@@ -520,7 +527,8 @@ describe("SandboxRunnerService start", () => {
       }),
       open: () => open(),
     };
-    const { service, hub } = makeService(fake);
+    const onReady = vi.fn(async () => undefined);
+    const { service, hub } = makeService(fake, { onReady });
     const start = service.startForAccount(owner, sandbox.sandboxId);
     await vi.waitFor(() => expect(fake.createCalls).toHaveLength(1));
     const pending = await sandboxRow(sandbox.sandboxId);
@@ -537,12 +545,82 @@ describe("SandboxRunnerService start", () => {
     // legitimate Runner.
     expect(await service.markRunnerReady(scope, READINESS)).toBe("deferred");
     expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("preparing");
+    await service.promoteDeferredReadiness(sandbox.sandboxId);
+    expect(await service.readyAllocation(sandbox.sandboxId)).toBeUndefined();
+    expect(onReady).not.toHaveBeenCalled();
     open();
     await start;
     const status = await service.statusForAccount(owner, sandbox.sandboxId);
     expect(status.lifecycle).toBe("ready");
     expect(status.runnerReady).toBe(true);
     expect(fake.createCalls).toHaveLength(1);
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
+    expect(onReady).toHaveBeenCalledWith({ ...scope, resourceUid: expect.any(String) });
+  });
+
+  it("notifies only after Hub and allocation readiness, once per current connection", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const onReady = vi.fn(async () => undefined);
+    const { service, hub } = makeService(fake, { onReady });
+    await service.startForAccount(owner, sandbox.sandboxId);
+    const row = await sandboxRow(sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName as string,
+    };
+    const first = fakeSocket();
+    hub.attach(scope, first);
+    expect(await service.markRunnerReady(scope, READINESS)).toBe("deferred");
+    expect(onReady).not.toHaveBeenCalled();
+    hub.markReady(scope, READINESS, first);
+    await service.promoteDeferredReadiness(scope.sandboxId);
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
+    await service.promoteDeferredReadiness(scope.sandboxId);
+    expect(onReady).toHaveBeenCalledTimes(1);
+    const replacement = fakeSocket();
+    hub.attach(scope, replacement);
+    expect(hub.markReady(scope, READINESS, first)).toBe(false);
+    await service.promoteDeferredReadiness(scope.sandboxId);
+    expect(onReady).toHaveBeenCalledTimes(1);
+    hub.markReady(scope, READINESS, replacement);
+    await service.promoteDeferredReadiness(scope.sandboxId);
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledTimes(2));
+    // Credential renewal can attach again using the same socket adapter.
+    hub.detach(scope.sandboxId, replacement);
+    hub.attach(scope, replacement);
+    hub.markReady(scope, READINESS, replacement);
+    await service.promoteDeferredReadiness(scope.sandboxId);
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledTimes(3));
+    await unit.database.update(sandboxes).set({ idleReclaimAt: new Date() }).where(eq(sandboxes.id, scope.sandboxId));
+    expect(await service.readyAllocation(scope.sandboxId)).toBeUndefined();
+  });
+
+  it("supervises observer failure without failing a ready allocation", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const onReady = vi.fn(async () => {
+      throw new Error("observer failed");
+    });
+    const { service, hub } = makeService(fake, { onReady });
+    await service.startForAccount(owner, sandbox.sandboxId);
+    const row = await sandboxRow(sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    expect(await service.promoteDeferredReadiness(scope.sandboxId)).toBe(true);
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
+    expect((await service.statusForAccount(owner, scope.sandboxId)).runnerReady).toBe(true);
   });
 
   it("requires the exact configured Runner version before readiness", async () => {
@@ -1342,9 +1420,13 @@ describe("SandboxRunnerService original-image reconnect after a target change", 
   }
 
   /** A fresh Server process over the same database/cloud with a changed deployment target. */
-  function restartedWithTarget(fake: RunnerFakeCloudRunAdmin, target: { image: string; version: string }) {
+  function restartedWithTarget(
+    fake: RunnerFakeCloudRunAdmin,
+    target: { image: string; version: string },
+    onReady?: NonNullable<Parameters<typeof makeService>[1]>["onReady"],
+  ) {
     fake.targetImage = target.image;
-    return makeService(fake, { expectedRunnerVersion: target.version });
+    return makeService(fake, { expectedRunnerVersion: target.version, ...(onReady ? { onReady } : {}) });
   }
 
   /** Park the next provider read so the test can mutate the row mid-verification. */
@@ -1372,7 +1454,8 @@ describe("SandboxRunnerService original-image reconnect after a target change", 
   it("accepts a previously verified READY Instance reconnecting on its original image after a target upgrade", async () => {
     const owner = await account();
     const { sandbox, fake, scope } = await readyUnderTarget(owner);
-    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION });
+    const onReady = vi.fn(async () => undefined);
+    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION }, onReady);
     const socket = fakeSocket();
     restart.hub.attach(scope, socket);
     const getsBefore = fake.getCalls;
@@ -1381,6 +1464,8 @@ describe("SandboxRunnerService original-image reconnect after a target change", 
     expect(await restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION })).toBe("ready");
     expect(fake.getCalls).toBe(getsBefore + 1);
     expect(restart.hub.markReady(scope, { ...READINESS, runnerVersion: OLD_VERSION }, socket)).toBe(true);
+    await restart.service.promoteDeferredReadiness(scope.sandboxId);
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
     const status = await restart.service.statusForAccount(owner, sandbox.sandboxId);
     expect(status.lifecycle).toBe("ready");
     expect(status.runnerReady).toBe(true);

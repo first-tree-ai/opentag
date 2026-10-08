@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH, RUNNER_WORKSPACE_PATH } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import {
   cloudAppOptions,
@@ -13,6 +13,7 @@ import {
 } from "../cloud-runtime-composition.js";
 import type { ServerConfig } from "../config.js";
 import { imBindings, sandboxes, users } from "../db/schema/index.js";
+import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { PostgresRuntimeDurableWorkStore } from "../runtime/runtime-durable-work-store.js";
@@ -163,8 +164,10 @@ describe("production Cloud runtime composition", () => {
       },
     };
     const store = new FakeWorkspaceObjectStore();
+    const onReady = vi.fn(async () => undefined);
     let issuedToken: Promise<string> | undefined;
     const runtime = createSandboxRunnerRuntime(unit.database, config, {
+      readinessNotifications: { onReady, supervisor: new BackgroundFailureSupervisor() },
       workspaceStoreFactory: ({ tokenProvider }) => {
         issuedToken = tokenProvider();
         return store;
@@ -174,6 +177,24 @@ describe("production Cloud runtime composition", () => {
     expect(runtime?.sandboxRunnerService.workspacePersistenceEnabled).toBe(true);
     // E9 admission ceilings flow from the deployment configuration into the composed service.
     expect(runtime?.sandboxRunnerService.capacityLimits).toEqual({ accountLimit: 4, platformLimit: 17 });
+    if (!runtime) throw new Error("Cloud runtime missing");
+    const allocation = {
+      sandboxId: randomUUID(),
+      sessionId: randomUUID(),
+      environmentGeneration: 1,
+      resourceName: "projects/unit/locations/unit/instances/ready",
+      resourceUid: "unit-uid",
+    };
+    const socket = { send: vi.fn(), close: vi.fn() };
+    runtime.runnerChannel.hub.attach(allocation, socket);
+    vi.spyOn(runtime.sandboxRunnerService, "readyAllocation").mockResolvedValue(allocation);
+    const ingress = createCloudIngressAllocationPort({
+      sandboxService: { ensureForAccount: vi.fn() },
+      sandboxRunnerService: runtime.sandboxRunnerService,
+    });
+    expect(await ingress.readyAllocation?.(allocation.sandboxId)).toEqual(allocation);
+    await runtime.sandboxRunnerService.promoteDeferredReadiness(allocation.sandboxId);
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledWith(allocation));
     const options = cloudAppOptions({ runnerRuntime: runtime, composition: {}, cloudModel: { enabled: false } });
     expect(options.runnerWorkspace).toBe(runtime?.runnerWorkspace);
     expect(options.runnerWorkspace).toBeDefined();

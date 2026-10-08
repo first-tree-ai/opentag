@@ -17,7 +17,7 @@ import {
 import type { ServiceLogger } from "../../../observability/service-logger.js";
 import { SkillServiceError, skillNameConflict, skillPresetNotFound } from "../errors.js";
 import { normalizeSkillArchive } from "../skill-archive.js";
-import type { SkillService } from "../skill-service.js";
+import type { SkillRowExpectation, SkillService } from "../skill-service.js";
 
 /**
  * Preset Skill discovery and installation.
@@ -65,6 +65,15 @@ function isConcurrencyLoss(error: unknown): boolean {
   );
 }
 
+/**
+ * The row an install may replace: the one it just read, so the write loses the race against anything
+ * that moved the row instead of overwriting it. `undefined` when the read found no row to replace.
+ */
+function expectedRowFor(existing: Skill | undefined): SkillRowExpectation | undefined {
+  if (existing === undefined) return undefined;
+  return { id: existing.id, revision: existing.revision, source: existing.source };
+}
+
 /** The `SkillSchema` fields of a row, without the detail-only file listing. */
 function skillSummary(skill: Skill | SkillDetail): Skill {
   return {
@@ -108,12 +117,13 @@ export class SkillPresetService {
     return this.#install(
       {
         load: () => this.#skills.list(callerUserId, agentId).then((response) => response.skills),
-        save: (preset, replace) =>
+        save: (preset, replace, expectedRow) =>
           this.#skills.upload(callerUserId, agentId, {
             bytes: preset.archive,
             format: "tar.gz",
             declaredSha256: preset.archiveSha256,
             replace,
+            ...(expectedRow ? { expectedRow } : {}),
             source: "preset",
           }),
       },
@@ -132,7 +142,7 @@ export class SkillPresetService {
     return this.#install(
       {
         load: () => this.#skills.listForAgent(agentId).then((response) => response.skills),
-        save: (preset, replace) =>
+        save: (preset, replace, expectedRow) =>
           this.#skills.uploadForAgent(
             agentId,
             {
@@ -140,6 +150,7 @@ export class SkillPresetService {
               format: "tar.gz",
               declaredSha256: preset.archiveSha256,
               replace,
+              ...(expectedRow ? { expectedRow } : {}),
             },
             "preset",
           ),
@@ -194,11 +205,19 @@ export class SkillPresetService {
    * a moved revision. Re-reading settles that case — the row now either matches the preset (report
    * `unchanged`) or is the outdated `preset` row the second caller meant to update — and a second
    * loss is rethrown rather than retried forever.
+   *
+   * `replace` is decided from this loop's read, so the write carries that same row as its expectation:
+   * a user upload landing in between makes the write lose the race instead of overwriting it, and the
+   * re-read then classifies the row by its new provenance (`name_conflict` for a user's own Skill).
    */
   async #install(
     input: {
       load: () => Promise<readonly Skill[]>;
-      save: (preset: PresetSkill, replace: boolean) => Promise<SkillDetail>;
+      save: (
+        preset: PresetSkill,
+        replace: boolean,
+        expectedRow: SkillRowExpectation | undefined,
+      ) => Promise<SkillDetail>;
     },
     presetName: string,
   ): Promise<InstallSkillPresetResponse> {
@@ -213,7 +232,7 @@ export class SkillPresetService {
       }
       if (state === "name_conflict") throw skillNameConflict();
       try {
-        const detail = await input.save(preset, state === "update_available");
+        const detail = await input.save(preset, state === "update_available", expectedRowFor(existing));
         const action = state === "not_installed" ? "installed" : "updated";
         this.#logger?.info({ agentId: detail.agentId, action, name: detail.name }, "Preset Skill installed");
         return InstallSkillPresetResponseSchema.parse({ action, skill: skillSummary(detail) });

@@ -1,7 +1,7 @@
-import { SKILL_ERROR_CODES } from "@opentag/shared";
+import { type ListAgentSkillsResponse, SKILL_ERROR_CODES } from "@opentag/shared";
 import type { PresetSkill } from "@opentag/skill-presets";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { SkillPresetService } from "../services/skills/index.js";
+import { SkillPresetService, SkillService, type SkillServiceOptions } from "../services/skills/index.js";
 import { FakeSkillObjectStore } from "./support/fake-skill-object-store.js";
 import { createSkillHarness, type SkillHarness } from "./support/skill-service-harness.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -175,6 +175,89 @@ describe("SkillPresetService runtime surface", () => {
   });
 });
 
+/**
+ * A `SkillService` that hands back the catalog snapshot it took and only then lets a user upload
+ * land. That is the interleaving a preset install has to survive: the read that decided `replace`
+ * is already stale by the time the write runs.
+ */
+class InterleavedReadSkillService extends SkillService {
+  #interleaved = false;
+  readonly #afterRead: () => Promise<void>;
+
+  constructor(options: SkillServiceOptions, afterRead: () => Promise<void>) {
+    super(options);
+    this.#afterRead = afterRead;
+  }
+
+  override async list(callerUserId: string, agentId: string): Promise<ListAgentSkillsResponse> {
+    const snapshot = await super.list(callerUserId, agentId);
+    await this.#interleaveOnce();
+    return snapshot;
+  }
+
+  override async listForAgent(agentId: string): Promise<ListAgentSkillsResponse> {
+    const snapshot = await super.listForAgent(agentId);
+    await this.#interleaveOnce();
+    return snapshot;
+  }
+
+  async #interleaveOnce(): Promise<void> {
+    if (this.#interleaved) return;
+    this.#interleaved = true;
+    await this.#afterRead();
+  }
+}
+
+/**
+ * Seed a preset, then install its newer version while a user upload of the same name lands in
+ * between. Both entry points must keep the user's row: the preset may only replace the row it read.
+ */
+async function installWithInterleavedUserUpload(surface: "account" | "runtime"): Promise<void> {
+  const { accountId, agentId } = await agentFor();
+  const store = new FakeSkillObjectStore();
+  const skills = h.serviceWith(store);
+  const seeded = new SkillPresetService({
+    skills,
+    presets: [await preset("demo-preset", "v1")],
+    categories: [...CATEGORIES],
+  });
+  await seeded.install(accountId, agentId, "demo-preset");
+
+  const user = { id: "", archiveSha256: "" };
+  const racing = new InterleavedReadSkillService({ database: h.database, store, keyPrefix: "skills" }, async () => {
+    const uploaded = await h.upload(skills, accountId, agentId, "demo-preset", {
+      replace: true,
+      source: "web_upload",
+      files: { "notes.md": "user content" },
+    });
+    user.id = uploaded.id;
+    user.archiveSha256 = uploaded.archiveSha256;
+  });
+  const service = new SkillPresetService({
+    skills: racing,
+    presets: [await preset("demo-preset", "v2")],
+    categories: [...CATEGORIES],
+  });
+  const install = () =>
+    surface === "account"
+      ? service.install(accountId, agentId, "demo-preset")
+      : service.installForAgent(agentId, "demo-preset");
+
+  // The lost race is reported as a name conflict, which is what the catalog already says about a
+  // same-named Skill the user owns — the install is refused rather than retried into an overwrite.
+  await expect(install()).rejects.toMatchObject({ code: SKILL_ERROR_CODES.NAME_CONFLICT });
+
+  const { skills: rows } = await skills.list(accountId, agentId);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: user.id,
+    source: "web_upload",
+    revision: 2,
+    archiveSha256: user.archiveSha256,
+  });
+  expect((await service.list(accountId, agentId)).presets[0]).toMatchObject({ state: "name_conflict" });
+}
+
 describe("SkillPresetService concurrency", () => {
   it("converges two racing installs into one Skill", async () => {
     const { accountId, agentId } = await agentFor();
@@ -195,5 +278,13 @@ describe("SkillPresetService concurrency", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ source: "preset", revision: 1 });
     expect((await service.list(accountId, agentId)).presets[0]).toMatchObject({ state: "installed" });
+  });
+
+  it("keeps a user upload that lands between the catalog read and the preset update", async () => {
+    await installWithInterleavedUserUpload("account");
+  });
+
+  it("keeps a user upload that lands between the runtime catalog read and the preset update", async () => {
+    await installWithInterleavedUserUpload("runtime");
   });
 });

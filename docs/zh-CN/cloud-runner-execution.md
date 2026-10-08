@@ -1,5 +1,7 @@
 # Cloud Runner 执行（E3–E8）
 
+> Synced: 2026-10-08
+
 [English](../cloud-runner-execution.md)
 
 E3 将现有 Agent Session 的 Sandbox 身份连接到真实 Cloud Run Instance 和原生 Sandbox。
@@ -30,7 +32,11 @@ Server 回复心跳，通过当前已认证连接续期令牌。重连使用父�
 校验当前归属、placement 与执行权限。
 
 云实例就绪不等于 Sandbox 就绪。Runner 必须报告真实原生执行、工具版本、Runner 版本及文件系统／
-凭证隔离检查。旧连接不能替代当前连接报告就绪或完成任务。
+凭证隔离检查。每次启动及每次清理后重置都完整重跑该探测：真实的原生 Node 执行、从不可变
+rootfs 有界读取镜像身份与锁定的 Pi 包元数据（校验形状，并要求与身份中的 Pi 包名／版本一致，
+同时确认固定的 Pi shim 及其声明的 CLI 入口可访问），以及全新的文件系统／凭证／下层 rootfs
+隔离金丝雀。运行时探测绝不启动 Pi CLI：发布期 offline 套件已真实执行过它并比对精确版本，
+元数据读取也绝不被当作完整 Pi/provider 执行的证明。旧连接不能替代当前连接报告就绪或完成任务。
 
 Account 接口为 GET /api/v1/sandboxes/:sandboxId/runner，以及 POST 后缀 /runner/start、
 /runner/stop、/runner/acceptance。继续使用 Cookie、CSRF 和归属检查。acceptance 只执行有期限的

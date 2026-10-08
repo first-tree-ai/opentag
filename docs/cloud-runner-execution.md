@@ -44,7 +44,14 @@ permission before admitting work/results.
 
 Cloud provider readiness alone does not make a Sandbox ready. The authenticated Runner must
 prove native execution, tool versions, image Runner version, and filesystem/credential isolation.
-A replaced socket cannot publish readiness or finish another connection's command.
+Every launch and every post-cleanup reset re-runs that probe in full: real native Node execution,
+a bounded read of the image identity plus the locked Pi package metadata from the immutable
+rootfs (shape-checked and required to match the identity's Pi package/version, with the fixed Pi
+shim and its declared CLI entry verified accessible), and fresh filesystem/credential/
+lower-rootfs isolation canaries. The runtime probe never launches the Pi CLI: the release-time
+offline suite already executed it and compared its exact version, and a metadata read is never
+treated as proof of full Pi/provider execution. A replaced socket cannot publish readiness or
+finish another connection's command.
 
 The current account API exposes `GET /api/v1/sandboxes/:sandboxId/runner` and POST suffixes
 `/runner/start`, `/runner/stop`, `/runner/acceptance`. Acceptance is a bounded offline or DeepSeek

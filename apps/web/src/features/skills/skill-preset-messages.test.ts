@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { SKILL_PRESET_CATEGORY_IDS } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 
@@ -11,10 +12,12 @@ import { describe, expect, it } from "vitest";
 
 type Messages = Record<string, unknown>;
 
+// Resolved from this file, not the working directory: the workspace unit-test job runs with apps/web
+// as the cwd while the coverage run measures every project from the repository root.
+const messagesRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../messages/skills");
+
 function read(locale: "en" | "zh"): Messages {
-  // Vitest runs with the Web project root as the working directory, same as the paraglide compile.
-  const path = resolve(process.cwd(), "messages/skills", `${locale}.json`);
-  return JSON.parse(readFileSync(path, "utf8")) as Messages;
+  return JSON.parse(readFileSync(resolve(messagesRoot, `${locale}.json`), "utf8")) as Messages;
 }
 
 describe("preset catalog copy", () => {

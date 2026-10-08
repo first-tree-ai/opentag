@@ -1,5 +1,7 @@
 import type {
+  InstallSkillPresetResponse,
   ListAgentSkillsResponse,
+  ListSkillPresetsResponse,
   RemoteSkillSelection,
   SkillArchiveFormat,
   SkillDetail,
@@ -151,6 +153,35 @@ export function useRemoveSkill() {
     onSuccess: async (_result, input) => {
       cache.reconcileList(input.agentId, (list) => removeSkillFromList(list, input.skillId));
       cache.removeDetail(input.agentId, input.skillId);
+      await cache.invalidate(input.agentId);
+    },
+  });
+}
+
+/**
+ * The preset catalog for one Agent. Serving state per entry is the Server's job, so the page does not
+ * join this against the Skills list; the Agent-scoped key means an install's invalidation refreshes
+ * both this and the list.
+ */
+export function useSkillPresets(agentId: string) {
+  return useQuery({
+    ...liveResourceQueryOptions,
+    queryKey: queryKeys.skills.presetCatalog(agentId),
+    queryFn: (): Promise<ListSkillPresetsResponse> => browserApi.skillPresets(agentId),
+  });
+}
+
+/**
+ * Installing or updating one preset. The confirmed write carries the resulting Skill, so it is
+ * reconciled into the list before the invalidation refetch, exactly like an upload.
+ */
+export function useInstallSkillPreset() {
+  const cache = useSkillCache();
+  return useMutation({
+    mutationFn: (input: { agentId: string; presetName: string }): Promise<InstallSkillPresetResponse> =>
+      browserApi.installSkillPreset(input.agentId, input.presetName),
+    onSuccess: async (result, input) => {
+      cache.reconcileList(input.agentId, (list) => upsertSkill(list, result.skill));
       await cache.invalidate(input.agentId);
     },
   });

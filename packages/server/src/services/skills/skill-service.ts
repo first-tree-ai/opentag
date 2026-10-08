@@ -208,9 +208,13 @@ export class SkillService {
     return this.#listSkills(agentId);
   }
 
-  async uploadForAgent(agentId: string, input: Omit<SkillUploadInput, "source">): Promise<SkillDetail> {
+  async uploadForAgent(
+    agentId: string,
+    input: Omit<SkillUploadInput, "source">,
+    source: SkillSource = "agent_upload",
+  ): Promise<SkillDetail> {
     const agent = await this.#requireActiveAgent(agentId);
-    return this.#upload(agent.accountId, agentId, { ...input, source: "agent_upload" });
+    return this.#upload(agent.accountId, agentId, { ...input, source });
   }
 
   async openBundleForAgent(agentId: string, name: string): Promise<SkillBundle> {

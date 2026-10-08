@@ -23,6 +23,7 @@
   "files": [],
   "references": [
     { "path": "./packages/shared" },
+    { "path": "./packages/skill-presets" },
     { "path": "./packages/server" },
     { "path": "./packages/client" },
     { "path": "./apps/cli" },

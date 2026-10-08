@@ -1,4 +1,10 @@
-import { type ListAgentSkillsResponse, SKILL_ERROR_CODES, type Skill, type SkillDetail } from "@opentag/shared/browser";
+import {
+  type ListAgentSkillsResponse,
+  type ListSkillPresetsResponse,
+  SKILL_ERROR_CODES,
+  type Skill,
+  type SkillDetail,
+} from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -7,8 +13,10 @@ import { ApiError, browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
 import {
   useInstallRemoteSkills,
+  useInstallSkillPreset,
   useRemoveSkill,
   useResolveRemoteSkills,
+  useSkillPresets,
   useUpdateSkill,
   useUploadSkill,
 } from "./skills-queries.js";
@@ -256,6 +264,85 @@ describe("remote installation hooks", () => {
     expect(resolve).toHaveBeenCalledWith(AGENT_ID, "owner/repo");
     expect(preview.skills.map((candidate) => candidate.name)).toEqual(["demo"]);
     // A preview writes nothing: no list write, no detail write, no invalidation.
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(cachedList(client)).toEqual(list);
+  });
+});
+
+function presetCatalog(): ListSkillPresetsResponse {
+  return {
+    categories: [{ id: "getting-started", order: 10 }],
+    presets: [
+      {
+        name: "mcp-onboarding",
+        description: "Add MCP tools to this Agent",
+        category: "getting-started",
+        order: 10,
+        archiveSha256: "a".repeat(64),
+        archiveBytes: 2048,
+        fileCount: 2,
+        state: "not_installed",
+      },
+    ],
+  };
+}
+
+describe("preset catalog hooks", () => {
+  it("reads the Agent's catalog under its own key", async () => {
+    const catalog = presetCatalog();
+    vi.spyOn(browserApi, "skillPresets").mockResolvedValue(catalog);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+
+    const { result } = renderHook(() => useSkillPresets(AGENT_ID), { wrapper });
+    await waitFor(() => expect(result.current.data).toEqual(catalog));
+
+    expect(browserApi.skillPresets).toHaveBeenCalledWith(AGENT_ID);
+    expect(client.getQueryData(queryKeys.skills.presetCatalog(AGENT_ID))).toEqual(catalog);
+  });
+
+  it("installs through the Agent named in the call, reconciles the Skill, and invalidates its catalog", async () => {
+    const installed = listSkill("mcp-onboarding", SKILL_ID);
+    vi.spyOn(browserApi, "installSkillPreset").mockResolvedValue({ action: "installed", skill: installed });
+    const existing = listSkill("zulu", OTHER_AGENT_ID);
+    const { client, invalidate, wrapper } = setup({ skills: [existing], storage: "available" });
+    const { result } = renderHook(() => useInstallSkillPreset(), { wrapper });
+
+    const response = await result.current.mutateAsync({ agentId: AGENT_ID, presetName: "mcp-onboarding" });
+
+    expect(browserApi.installSkillPreset).toHaveBeenCalledWith(AGENT_ID, "mcp-onboarding");
+    expect(response.action).toBe("installed");
+    // The confirmed Skill lands in the list cache before the refetch, in Server name order.
+    expect(cachedList(client)?.skills.map((skill) => skill.name)).toEqual(["mcp-onboarding", "zulu"]);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.skills.agentSkills(AGENT_ID) });
+  });
+
+  it("reports an updated install as the action the Server took", async () => {
+    vi.spyOn(browserApi, "installSkillPreset").mockResolvedValue({
+      action: "updated",
+      skill: listSkill("mcp-onboarding", SKILL_ID),
+    });
+    const { wrapper } = setup({ skills: [], storage: "available" });
+    const { result } = renderHook(() => useInstallSkillPreset(), { wrapper });
+
+    await expect(
+      result.current.mutateAsync({ agentId: AGENT_ID, presetName: "mcp-onboarding" }),
+    ).resolves.toMatchObject({ action: "updated" });
+  });
+
+  it("writes nothing to the cache and invalidates nothing when an install fails", async () => {
+    vi.spyOn(browserApi, "installSkillPreset").mockRejectedValue(
+      new ApiError(409, "conflict", SKILL_ERROR_CODES.NAME_CONFLICT),
+    );
+    const list = { skills: [listSkill("existing", SKILL_ID)], storage: "available" as const };
+    const { client, invalidate, wrapper } = setup(list);
+    const { result } = renderHook(() => useInstallSkillPreset(), { wrapper });
+
+    await expect(result.current.mutateAsync({ agentId: AGENT_ID, presetName: "mcp-onboarding" })).rejects.toMatchObject(
+      { code: SKILL_ERROR_CODES.NAME_CONFLICT },
+    );
     expect(invalidate).not.toHaveBeenCalled();
     expect(cachedList(client)).toEqual(list);
   });

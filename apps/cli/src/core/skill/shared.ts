@@ -1,5 +1,10 @@
 import type { OpenTagApi } from "@opentag/client";
-import type { ListAgentSkillsResponse, Skill } from "@opentag/shared";
+import type {
+  InstallSkillPresetResponse,
+  ListAgentSkillsResponse,
+  ListSkillPresetsResponse,
+  Skill,
+} from "@opentag/shared";
 import type { SkillPushResult } from "./operations.js";
 
 /**
@@ -21,6 +26,10 @@ export interface SkillApiClient
     | "listRuntimeSkills"
     | "pushRuntimeSkill"
     | "openRuntimeSkillBundle"
+    | "listSkillPresets"
+    | "installSkillPreset"
+    | "listRuntimeSkillPresets"
+    | "installRuntimeSkillPreset"
   > {}
 
 export interface SkillCommandDependencies {
@@ -83,4 +92,16 @@ export function formatSkillRemoval(skill: Skill): string {
 
 export function formatSkillEnabled(skill: Skill): string {
   return `${skill.enabled ? "Enabled" : "Disabled"} Skill ${skill.name}`;
+}
+
+export function formatSkillPresetList(result: ListSkillPresetsResponse): string {
+  if (result.presets.length === 0) return "No preset Skills are available";
+  return [
+    ["NAME", "STATE", "CATEGORY", "DESCRIPTION"].join("\t"),
+    ...result.presets.map((preset) => [preset.name, preset.state, preset.category, preset.description].join("\t")),
+  ].join("\n");
+}
+
+export function formatSkillPresetInstall(result: InstallSkillPresetResponse): string {
+  return [formatSkill(result.skill), `action\t${result.action}`].join("\n");
 }

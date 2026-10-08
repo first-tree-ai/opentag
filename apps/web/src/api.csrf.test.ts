@@ -131,6 +131,8 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   agentSkillBundleUrl: [ID, ID],
   resolveRemoteSkills: [ID, "owner/repo"],
   installRemoteSkills: [ID, { source: "owner/repo", selections: [{ name: "demo", fingerprint: "declared:abc" }] }],
+  skillPresets: [ID],
+  installSkillPreset: [ID, "mcp-onboarding"],
   resetAccountSetup: ["reboard"],
   issueComputerConnectCode: [],
   health: ["/healthz"],

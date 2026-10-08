@@ -86,7 +86,7 @@ import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-s
 import { ScheduleServiceError } from "./services/schedules/index.js";
 import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
-import { type SkillService, SkillServiceError } from "./services/skills/index.js";
+import { type SkillPresetService, type SkillService, SkillServiceError } from "./services/skills/index.js";
 import type { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
@@ -174,6 +174,8 @@ export interface CreateAppOptions {
     service: SkillService;
     /** Remote installation; absent when a caller wires only the upload/management surface. */
     remote?: RemoteSkillService;
+    /** Preset catalog discovery and installation; absent when a caller wires only the base surface. */
+    preset?: SkillPresetService;
     proofs?: Pick<SessionCliProofService, "authenticate">;
   };
   slackOAuth?: SlackOAuthRouteOptions;
@@ -679,12 +681,19 @@ export function createApp(options: CreateAppOptions = {}) {
       });
     }
     if (options.skills) {
-      registerSkillRoutes(app, options.skills.service, authService, authOptions, options.skills.remote);
+      registerSkillRoutes(
+        app,
+        options.skills.service,
+        authService,
+        authOptions,
+        options.skills.remote,
+        options.skills.preset,
+      );
       if (options.machineAuthService) {
         registerComputerSkillRoutes(app, options.machineAuthService, options.skills.service);
       }
       if (options.skills.proofs) {
-        registerRuntimeSkillRoutes(app, options.skills.service, options.skills.proofs);
+        registerRuntimeSkillRoutes(app, options.skills.service, options.skills.proofs, options.skills.preset);
       }
     }
     if (options.imResourceService && options.machineAuthService) {

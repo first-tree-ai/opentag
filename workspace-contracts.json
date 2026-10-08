@@ -23,6 +23,12 @@
       "name": "@opentag/server",
       "requiresRootExport": true,
       "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/shared", "@opentag/skill-presets"]
+    },
+    "packages/skill-presets": {
+      "name": "@opentag/skill-presets",
+      "requiresRootExport": true,
+      "requiresFiles": true,
       "allowedWorkspaceDependencies": ["@opentag/shared"]
     },
     "packages/shared": {

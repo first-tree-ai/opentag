@@ -7,9 +7,12 @@ import {
   runSkillRemove,
   runSkillSetEnabled,
 } from "../../core/skill/operations.js";
+import { runSkillPresetInstall, runSkillPresetList } from "../../core/skill/preset-operations.js";
 import {
   formatSkillEnabled,
   formatSkillList,
+  formatSkillPresetInstall,
+  formatSkillPresetList,
   formatSkillPull,
   formatSkillPush,
   formatSkillRemoval,
@@ -99,4 +102,30 @@ export function registerSkillCommand(program: Command): void {
         );
       });
   }
+
+  const preset = skill.command("preset").description("Browse and install preset Skills from the platform catalog");
+
+  preset
+    .command("list")
+    .description("List the preset Skills and how each relates to the Agent")
+    .option("--agent <agent-id>", "the Agent whose state to report, as an Account operator")
+    .option("--json", "print JSON")
+    .action(async (options: { agent?: string; json?: boolean }) => {
+      process.exitCode = await executeCommand(
+        () => runSkillPresetList(options.agent === undefined ? {} : { agentId: options.agent }),
+        { json: options.json === true, formatValue: formatSkillPresetList, phase: "request" },
+      );
+    });
+
+  preset
+    .command("install <name>")
+    .description("Install or update a preset Skill for the Agent")
+    .option("--agent <agent-id>", "the Agent to install for, as an Account operator")
+    .option("--json", "print JSON")
+    .action(async (name: string, options: { agent?: string; json?: boolean }) => {
+      process.exitCode = await executeCommand(
+        () => runSkillPresetInstall(name, options.agent === undefined ? {} : { agentId: options.agent }),
+        { json: options.json === true, formatValue: formatSkillPresetInstall, phase: "request" },
+      );
+    });
 }

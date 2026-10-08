@@ -115,7 +115,7 @@ import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandb
 import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
-import { S3SkillObjectStore, SkillObjectGc, SkillService } from "./services/skills/index.js";
+import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
 import { TaskService } from "./services/tasks/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
@@ -378,11 +378,15 @@ function createSkillRuntime(
   config: ServerConfig,
   database: DatabaseClient,
   logger: ServiceLogger,
-): { service: SkillService; remote: RemoteSkillService; gc?: SkillObjectGc } {
+): { service: SkillService; remote: RemoteSkillService; preset: SkillPresetService; gc?: SkillObjectGc } {
   const storage = config.skillStorage;
   if (!storage.enabled) {
     const service = new SkillService({ database, keyPrefix: "skills", logger });
-    return { service, remote: new RemoteSkillService({ skills: service, logger }) };
+    return {
+      service,
+      remote: new RemoteSkillService({ skills: service, logger }),
+      preset: new SkillPresetService({ skills: service, logger }),
+    };
   }
   const store = new S3SkillObjectStore({
     config: {
@@ -397,7 +401,8 @@ function createSkillRuntime(
   });
   const service = new SkillService({ database, store, keyPrefix: storage.prefix, logger });
   const remote = new RemoteSkillService({ skills: service, logger });
-  if (storage.gcIntervalSeconds <= 0) return { service, remote };
+  const preset = new SkillPresetService({ skills: service, logger });
+  if (storage.gcIntervalSeconds <= 0) return { service, remote, preset };
   const gc = new SkillObjectGc({
     database,
     store,
@@ -407,7 +412,7 @@ function createSkillRuntime(
     logger,
     onError: (error) => logger.error({ error }, "Skill object GC pass failed"),
   });
-  return { service, remote, gc };
+  return { service, remote, preset, gc };
 }
 
 /** Every configured value startup errors must never echo, including the raw key ring JSON. */
@@ -1043,7 +1048,12 @@ export async function startServer(): Promise<void> {
         proofs: sessionCliProofService,
         sessions: sessionService,
       },
-      skills: { service: skillRuntime.service, remote: skillRuntime.remote, proofs: sessionCliProofService },
+      skills: {
+        service: skillRuntime.service,
+        remote: skillRuntime.remote,
+        preset: skillRuntime.preset,
+        proofs: sessionCliProofService,
+      },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,

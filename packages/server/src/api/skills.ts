@@ -11,11 +11,12 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
-import type { SkillService } from "../services/skills/index.js";
+import type { SkillPresetService, SkillService } from "../services/skills/index.js";
 import type { RemoteSkillService } from "../services/skills/source/remote-skill-service.js";
 import { parseRequest } from "./request-validation.js";
 import { sendSkillBundle } from "./skill-bundle.js";
 import { registerRemoteSkillRoutes } from "./skill-install.js";
+import { registerSkillPresetRoutes } from "./skill-presets.js";
 import { registerSkillUploadRoute } from "./skill-upload.js";
 
 /**
@@ -46,14 +47,17 @@ export function registerSkillRoutes(
   authService: UserAuthService,
   authOptions: UserAuthPreHandlerOptions = {},
   remoteSkillService?: RemoteSkillService,
+  presetService?: SkillPresetService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions);
   /*
-   * Remote installation is part of the Account Skill surface, so it is registered from here rather
-   * than from a separate condition in `createApp`: an absent service means a caller wired only the
-   * upload/management surface, which is exactly the optionality the other route groups have.
+   * Remote installation and the preset catalog are part of the Account Skill surface, so they are
+   * registered from here rather than from a separate condition in `createApp`: an absent service
+   * means a caller wired only the upload/management surface, which is exactly the optionality the
+   * other route groups have.
    */
   if (remoteSkillService) registerRemoteSkillRoutes(app, remoteSkillService, authService, authOptions);
+  if (presetService) registerSkillPresetRoutes(app, presetService, authService, authOptions);
 
   app.get(AGENT_SKILLS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);

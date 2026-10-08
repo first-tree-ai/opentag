@@ -37,7 +37,7 @@ export const SKILL_MARKER_FILE = ".opentag-skill.json";
 /* --------------------------------- resources ------------------------------- */
 
 const SkillIdSchema = z.string().uuid();
-export const SkillSourceSchema = z.enum(["web_upload", "cli_upload", "agent_upload", "url_install"]);
+export const SkillSourceSchema = z.enum(["web_upload", "cli_upload", "agent_upload", "url_install", "preset"]);
 export type SkillSource = z.infer<typeof SkillSourceSchema>;
 export const SkillArchiveFormatSchema = z.enum(["tar.gz", "zip"]);
 export type SkillArchiveFormat = z.infer<typeof SkillArchiveFormatSchema>;
@@ -133,6 +133,7 @@ export const SKILL_UPLOAD_CONTENT_TYPE = "application/octet-stream";
 
 export const SKILL_ERROR_CODES = {
   NOT_FOUND: "SKILL_NOT_FOUND",
+  PRESET_NOT_FOUND: "SKILL_PRESET_NOT_FOUND",
   NAME_CONFLICT: "SKILL_NAME_CONFLICT",
   REVISION_CONFLICT: "SKILL_REVISION_CONFLICT",
   LIMIT_REACHED: "SKILL_LIMIT_REACHED",
@@ -163,6 +164,7 @@ export const SKILL_ERROR_CODE_METADATA: Readonly<
   Record<SkillErrorCode, { category: SkillErrorCategory; statusCode: number }>
 > = {
   [SKILL_ERROR_CODES.NOT_FOUND]: { category: "deterministic", statusCode: 404 },
+  [SKILL_ERROR_CODES.PRESET_NOT_FOUND]: { category: "deterministic", statusCode: 404 },
   [SKILL_ERROR_CODES.NAME_CONFLICT]: { category: "deterministic", statusCode: 409 },
   [SKILL_ERROR_CODES.REVISION_CONFLICT]: { category: "deterministic", statusCode: 409 },
   [SKILL_ERROR_CODES.LIMIT_REACHED]: { category: "deterministic", statusCode: 409 },

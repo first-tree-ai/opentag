@@ -378,6 +378,7 @@ function readinessService(hub: RunnerHub) {
 }
 
 function blockedRetryState(condition: string): Partial<typeof imMessageDeliveries.$inferInsert> {
+  if (condition === "future_initial") return { lastErrorCode: null };
   const lastErrorCode =
     condition === "claimed"
       ? dispatchClaimToken()
@@ -418,6 +419,23 @@ async function connectReady(fixture: Awaited<ReturnType<typeof cloudScope>>, sta
 }
 
 describe("ImDeliveryWorker accepted Runner readiness wakeup", () => {
+  it("consumes an already-due initial input before its first scanner claim", async () => {
+    const fixture = await cloudScope();
+    const stack = makeStack();
+    const ready = await connectReady(fixture, stack);
+    const service = readinessService(stack.hub);
+    const { deliveryId } = await pendingDelivery(fixture.scope.sessionId);
+    const worker = makeWorker(stack.owner, undefined, { readyAllocation: service.readyAllocation.bind(service) });
+    try {
+      await worker.notifyCloudRunnerReady(ready.allocation);
+      expect(ready.sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(1);
+      expect(ready.sent).toContainEqual(
+        expect.objectContaining({ type: "delivery:run", delivery: expect.objectContaining({ deliveryId }) }),
+      );
+    } finally {
+      worker.stop();
+    }
+  });
   it("keeps ingress ordering when an earlier input has another retry reason", async () => {
     const fixture = await cloudScope();
     const stack = makeStack();
@@ -678,6 +696,7 @@ describe("ImDeliveryWorker accepted Runner readiness wakeup", () => {
     "expired",
     "accepted",
     "terminal_rejected",
+    "future_initial",
   ])("does not advance %s input", async (condition) => {
     const fixture = await cloudScope();
     const stack = makeStack();

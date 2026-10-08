@@ -107,9 +107,10 @@ journal 会 fail closed（scope_mismatch）且不发送任何陈旧帧；同 id�
 2 秒起步、最多 30 秒的指数间隔退避。Cloud 后续消息等待当前 Turn 结束，不进入 Local steering 路径。
 
 当前 Runner 连接及其经过校验的分配均已就绪后，分配服务通过 composition 注入的回调发布通知。
-IM worker 只提前消费该 Session 和精确分配中因环境／Runner 未就绪而等待的 pending、尚未 dispatch
-输入，并立即通过已有顺序、custody 与执行 lane 约束 claim 该 Session。写入失败记录后重新检查
-就绪状态，覆盖 ready 通知早于退避写入的竞态。通知合并处理；由 ready 触发的尝试若仍失败，保留
+IM worker 唤醒已经到期的初始输入，并提前消费该 Session 和精确分配中因环境／Runner 未就绪而等待
+的 pending、尚未 dispatch 输入，立即通过已有顺序、custody 与执行 lane 约束 claim 该 Session。
+写入失败记录后重新检查就绪状态，覆盖 ready 通知早于退避写入的竞态。通知合并处理；由 ready
+触发的尝试若仍失败，保留
 有界退避。模型／容量失败、冻结的 dispatch、已 claim 或 accepted 的工作不会被重置。通知丢失时
 仍有常规扫描及重试兜底，同一连接反复报告 readiness 不会反复唤醒队列。
 

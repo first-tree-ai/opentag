@@ -1,4 +1,4 @@
-import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import { computers, imMessageDeliveries, sandboxes } from "../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
@@ -19,7 +19,10 @@ export function readySessionClaimGuard(sessionId?: string) {
     eq(computers.kind, "cloud"),
     eq(imMessageDeliveries.state, "pending"),
     isNull(imMessageDeliveries.dispatchRequestId),
-    inArray(imMessageDeliveries.lastErrorCode, CLOUD_READINESS_RETRY_CODES),
+    or(
+      inArray(imMessageDeliveries.lastErrorCode, CLOUD_READINESS_RETRY_CODES),
+      isNull(imMessageDeliveries.lastErrorCode),
+    ),
   );
 }
 
@@ -45,7 +48,7 @@ export class ImDeliveryReadyWakeup {
     this.#closed = true;
   }
 
-  /** An allocation event advances only readiness retries, then uses the existing claim/lane fences. */
+  /** Wake due initial inputs and readiness retries through the existing claim/lane fences. */
   async notify(allocation: ReadyRunnerAllocation): Promise<void> {
     if (this.#closed || !this.#input.allocation?.readyAllocation) return;
     const key = `${allocation.sandboxId}:${allocation.environmentGeneration}:${allocation.resourceUid}`;
@@ -94,7 +97,10 @@ export class ImDeliveryReadyWakeup {
           isNull(imMessageDeliveries.reason),
           isNull(imMessageDeliveries.dispatchRequestId),
           isNull(imMessageDeliveries.dispatchPayload),
-          inArray(imMessageDeliveries.lastErrorCode, CLOUD_READINESS_RETRY_CODES),
+          or(
+            inArray(imMessageDeliveries.lastErrorCode, CLOUD_READINESS_RETRY_CODES),
+            and(isNull(imMessageDeliveries.lastErrorCode), lte(imMessageDeliveries.nextAttemptAt, now)),
+          ),
           sql`${imMessageDeliveries.expiresAt} > now()`,
           exists(
             this.#input.database

@@ -386,13 +386,14 @@ well-known URL was built from. No case folding, no default-port elision, no trai
 percent-encoding normalization. A mismatch is an authorization-server mix-up, it is refused outright,
 and it does **not** fall through to the next well-known form.
 
-One spelling difference is canonicalized away before that check: the identifiers the Protected
-Resource Metadata advertises have a single trailing slash removed, so a document that advertises
-`https://accounts.google.com/` while its metadata declares `https://accounts.google.com` is one
-issuer, and the slash-free spelling is what the row records. The tolerance is exactly this and only
-exists here, because the well-known derivation already maps both spellings to the same document;
-case, ports, paths, and encoding remain significant, and the metadata document's `issuer` is still
-compared exactly against the canonical identifier.
+One spelling difference is accommodated, and only on the Google Workspace path: when the Server's
+effective origin is one of the eight Google MCP endpoints and an advertised identifier is
+`https://accounts.google.com/`, the flow requests the slash-free spelling — the one Google's
+metadata document declares, and the one `authorizationServerMetadataUrls` already maps to the same
+well-known document — and records that spelling on the row. Every other advertised identifier is
+requested exactly as published and compared exactly, so a provider whose legitimate issuer ends in a
+slash keeps its identity and still matches its own metadata document (RFC 8414 §3.3); case, ports,
+paths, and encoding remain significant.
 
 ### Choosing an authorization server
 

@@ -170,11 +170,13 @@ export function normalizeResource(advertised: string | undefined, fallback: stri
  * The canonical spelling of an authorization-server identifier: one trailing slash is removed.
  *
  * RFC 8414 requires the metadata document's `issuer` to equal the identifier exactly, and
- * `authorizationServerMetadata` still compares exactly. The tolerance exists only where a
- * Protected Resource Metadata document's `authorization_servers` are consumed, because
- * `authorizationServerMetadataUrls` already maps a slash-suffixed and a bare spelling to the same
- * well-known document — so treating them as one identifier cannot merge two different servers.
- * Only a single trailing slash is normalized; case, ports, paths, and encoding stay significant.
+ * `authorizationServerMetadata` keeps comparing exactly. This helper exists for one real-world
+ * case only: Google's Workspace MCP endpoints advertise `https://accounts.google.com/` while their
+ * metadata declares the slash-free spelling, and `authorizationServerMetadataUrls` maps both
+ * spellings to the same well-known document, so the slash-free form names the same issuer. The
+ * flow applies it to no other identifier, so a provider whose legitimate issuer ends in a slash
+ * keeps its identity (RFC 8414 §3.3). Only a single trailing slash is removed; case, ports, paths,
+ * and encoding stay significant.
  */
 export function normalizeAuthorizationServerIssuer(issuer: string): string {
   return issuer.endsWith("/") ? issuer.slice(0, -1) : issuer;

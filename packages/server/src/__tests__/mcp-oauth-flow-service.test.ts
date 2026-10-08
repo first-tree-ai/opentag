@@ -273,19 +273,65 @@ describe("McpOAuthFlowService.start", () => {
     expect(await unit.database.select().from(mcpServerAuthorizations)).toHaveLength(1);
   });
 
-  it("canonicalizes one trailing slash on the issuer the protected resource advertises", async () => {
-    const ids = await seed();
+  it("requests Google's advertised issuer in its slash-free form on a Google Workspace origin", async () => {
+    const ids = await seed(GOOGLE_MCP_URL);
     const { calls, flows } = build({
-      ...discoverableAs(),
-      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [`${ISSUER}/`] }),
+      ...googleRoutes({ registration_endpoint: REGISTER_URL }),
+      [REGISTER_URL]: doc({ client_id: "dcr_default", client_secret: "cs_default" }),
     });
     const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
-    // The metadata document declares the slash-free issuer, so the flow proceeds under that name.
+    // The document declares the slash-free issuer, so the flow proceeds under that name.
     expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_default");
-    expect(calls.some((call) => call.url === AS_URL)).toBe(true);
+    expect(calls.some((call) => call.url === GOOGLE_AS_URL)).toBe(true);
     const row = await readAuthorization(ids);
-    expect(row?.authorizationServer).toBe(ISSUER);
-    expect(row?.flowAuthorizationServer).toBe(ISSUER);
+    expect(row?.authorizationServer).toBe(GOOGLE_ISSUER);
+    expect(row?.flowAuthorizationServer).toBe(GOOGLE_ISSUER);
+  });
+
+  it("preserves a legitimate issuer that ends in a slash on an ordinary provider", async () => {
+    /*
+     * RFC 8414 §3.3: the issuer identity is compared exactly. A provider whose advertised issuer
+     * ends in a slash and whose metadata declares that same spelling must keep being discovered.
+     */
+    const ids = await seed();
+    const slashedIssuer = `${ISSUER}/`;
+    const { flows } = build({
+      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [slashedIssuer] }),
+      [AS_URL]: doc({
+        issuer: slashedIssuer,
+        authorization_endpoint: `${ISSUER}/authorize`,
+        token_endpoint: TOKEN_URL,
+        registration_endpoint: REGISTER_URL,
+      }),
+      [REGISTER_URL]: doc({ client_id: "dcr_default", client_secret: "cs_default" }),
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(started.authorizationUrl.startsWith(`${ISSUER}/authorize`)).toBe(true);
+    const row = await readAuthorization(ids);
+    // The advertised spelling is kept verbatim, not rewritten into a mismatch.
+    expect(row?.authorizationServer).toBe(slashedIssuer);
+    expect(row?.flowAuthorizationServer).toBe(slashedIssuer);
+  });
+
+  it("preserves a legitimate path-bearing issuer that ends in a slash", async () => {
+    const ids = await seed();
+    const tenantIssuer = `${ISSUER}/tenant/`;
+    const tenantAsUrl = `${ISSUER}/.well-known/oauth-authorization-server/tenant`;
+    const tenantRegister = `${ISSUER}/tenant/register`;
+    const { flows } = build({
+      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [tenantIssuer] }),
+      [tenantAsUrl]: doc({
+        issuer: tenantIssuer,
+        authorization_endpoint: `${ISSUER}/tenant/authorize`,
+        token_endpoint: `${ISSUER}/tenant/token`,
+        registration_endpoint: tenantRegister,
+      }),
+      [tenantRegister]: doc({ client_id: "dcr_tenant", client_secret: "cs_tenant" }),
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_tenant");
+    const row = await readAuthorization(ids);
+    expect(row?.authorizationServer).toBe(tenantIssuer);
   });
 
   it("still refuses an advertised issuer whose metadata declares a different identifier", async () => {
@@ -390,11 +436,17 @@ describe("McpOAuthFlowService.start", () => {
      * send to its endpoint.
      */
     const ids = await seed();
+    /*
+     * The hostile provider is self-consistent — its metadata declares the same slash-suffixed
+     * issuer its protected resource advertises — so discovery succeeds under the ordinary rules
+     * and only the origin half of the binding keeps the deployment client out of it.
+     */
+    const claimedIssuer = `${GOOGLE_ISSUER}/`;
     const { calls, flows } = build(
       {
-        [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [`${GOOGLE_ISSUER}/`], scopes_supported: ["mail"] }),
+        [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [claimedIssuer], scopes_supported: ["mail"] }),
         [GOOGLE_AS_URL]: doc({
-          issuer: GOOGLE_ISSUER,
+          issuer: claimedIssuer,
           authorization_endpoint: `${GOOGLE_ISSUER}/o/oauth2/v2/auth`,
           token_endpoint: GOOGLE_TOKEN_URL,
           registration_endpoint: `${GOOGLE_ISSUER}/register`,

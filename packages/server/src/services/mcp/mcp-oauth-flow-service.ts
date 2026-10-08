@@ -203,6 +203,23 @@ export class McpOAuthFlowService {
   }
 
   /**
+   * The identifier to request for one authorization server this Server advertises.
+   *
+   * Google's Workspace MCP endpoints advertise `https://accounts.google.com/` while their metadata
+   * declares the slash-free spelling, and the metadata reader compares the document's `issuer`
+   * exactly. Only that one identifier, and only for a Google Workspace MCP origin, is requested in
+   * its slash-free form: every other advertised identifier is used exactly as published, so a
+   * provider whose legitimate issuer ends in a slash still compares equal to its own metadata
+   * document (RFC 8414 §3.3) instead of being rewritten into a mismatch.
+   */
+  #advertisedIssuer(effectiveUrl: string, issuer: string): string {
+    if (!isGoogleWorkspaceMcpEndpoint(effectiveUrl)) return issuer;
+    const canonical = normalizeAuthorizationServerIssuer(issuer);
+    if (canonical !== GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER) return issuer;
+    return canonical;
+  }
+
+  /**
    * Resolve the authorization server for a start. The row's recorded issuer is preferred, but a
    * credential that cannot cross issuers is only reused when the issuer is unchanged.
    */
@@ -220,15 +237,13 @@ export class McpOAuthFlowService {
   }> {
     const { metadata: prm, challengeScope } = await this.#oauth.protectedResourceMetadata(accountId, url);
     /*
-     * One trailing slash is canonicalized away when the advertised identifiers are consumed, and
-     * the recorded issuer with them: a document that advertises `https://host/` while its metadata
-     * declares `https://host` is one issuer, and the slash-free spelling is what lands on the row
-     * and what every later comparison uses. The metadata reader itself stays exact, so every other
-     * difference is still refused.
+     * Each advertised identifier is requested as published, except for Google's own identifier on a
+     * Google Workspace origin (see `#advertisedIssuer`). The metadata reader compares exactly, so an
+     * ordinary provider's slash-ending issuer is preserved and still matches its own document.
      */
     const candidates = orderIssuers(
-      prm.authorizationServers.map(normalizeAuthorizationServerIssuer),
-      recordedIssuer === null ? null : normalizeAuthorizationServerIssuer(recordedIssuer),
+      prm.authorizationServers.map((issuer) => this.#advertisedIssuer(url, issuer)),
+      recordedIssuer === null ? null : this.#advertisedIssuer(url, recordedIssuer),
     );
     const failures: string[] = [];
     for (const issuer of candidates) {
@@ -312,15 +327,15 @@ export class McpOAuthFlowService {
    * Two conditions are deliberate, and both are required. The Server's effective origin must be one
    * of the eight Google Workspace endpoints, so a hostile Server that merely advertises Google as
    * its authorization server cannot obtain a Google credential for its own endpoint; and the
-   * discovered issuer must canonicalize to Google's, so a Google endpoint that unexpectedly
-   * resolves elsewhere does not receive a client bound to Google. The client is never written to
+   * discovered issuer must be exactly Google's, so a Google endpoint that unexpectedly resolves
+   * elsewhere does not receive a client bound to Google. The client is never written to
    * `mcp_client_registrations`: configuration stays authoritative, so unsetting the variables stops
    * its use immediately instead of leaving a stale row behind.
    */
   #googleClient(effectiveUrl: string, issuer: string): McpClientCredentials | undefined {
     if (!this.#googleMcpClient) return undefined;
     if (!isGoogleWorkspaceMcpEndpoint(effectiveUrl)) return undefined;
-    if (normalizeAuthorizationServerIssuer(issuer) !== GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER) return undefined;
+    if (issuer !== GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER) return undefined;
     return {
       source: "preregistered",
       clientId: this.#googleMcpClient.clientId,

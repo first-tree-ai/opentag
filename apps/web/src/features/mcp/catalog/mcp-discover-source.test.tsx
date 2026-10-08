@@ -1,10 +1,10 @@
+import type { McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPAuthorizationSummary, MCPServer } from "@opentag/shared/browser";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../../api.js";
 import { McpPage } from "../mcp-page.js";
 import { AGENT_ID, entry, openAdd, stub, wrap } from "../mcp-test-fixtures.js";
-import type { McpCatalogEntry } from "./mcp-catalog.gen.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
 
 /**
@@ -60,7 +60,7 @@ const CATALOG = vi.hoisted(() => ({
   ],
 }));
 
-vi.mock("./mcp-catalog.gen.js", () => ({
+vi.mock("@opentag/mcp-presets", () => ({
   MCP_CATALOG_CATEGORIES: CATALOG.categories,
   MCP_CATALOG_ENTRIES: CATALOG.entries,
 }));

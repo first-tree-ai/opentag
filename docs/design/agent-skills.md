@@ -409,14 +409,14 @@ A Skill the platform's own team owns is authored as a bundle under one of two ho
 `SKILL.md` and supporting files — the same shape an operator authors.
 
 `packages/skill-presets/skills/<name>/` is the **preset catalog**: these bundles ship with the
-product and are discoverable and installable through the routes above. Two live there today.
+product and are discoverable and installable through the routes above. One lives there today:
 `mcp-onboarding` tells an Agent how to find, mount, and verify an MCP Server for itself, and which of
-those steps only a human may take. `mcp-catalog-entry` is the operator's procedure for recording a
-remote Server in the marketplace catalog: the facts to collect from the provider, the entry and icon
-rules, and the gates to run.
+those steps only a human may take.
 
-Root `skills/<name>/` remains the home for a first-party bundle that is not part of the discoverable
-catalog. Nothing there ships automatically: an operator uploads one with
+Root `skills/<name>/` is the home for a first-party bundle that is not part of the discoverable
+catalog. `mcp-catalog-entry` lives there today: the operator's procedure for recording a remote
+Server in the marketplace catalog — the facts to collect from the provider, the entry and icon rules,
+and the gates to run. Nothing under root `skills/` ships automatically: an operator uploads one with
 `opentag skill push skills/<name>`, which stores it as that Agent's Skill like any other upload; the
 repository is where the content is reviewed and versioned, not a delivery channel.
 `skills/skill-preset-entry/` is one such root bundle: the procedure for recording a bundle into the

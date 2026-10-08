@@ -13,6 +13,7 @@
   "dependencies": {
     "@cloudflare/kumo": "2.13.1",
     "@fontsource/manrope": "5.2.8",
+    "@opentag/mcp-presets": "workspace:*",
     "@opentag/shared": "workspace:*",
     "@phosphor-icons/react": "2.1.10",
     "@tanstack/react-query": "^5.102.8",

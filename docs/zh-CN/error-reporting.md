@@ -2,7 +2,7 @@
 
 [English](../error-reporting.md)
 
-> Last synced with: 2026-09-23
+> Last synced with: 2026-10-08
 
 OpenTag 会把发生在 Web App 与 CLI 中的失败经由 server 中继到
 [Google Cloud Error Reporting](https://cloud.google.com/error-reporting/)。两端客户端都不持有 Google 凭据，也不直接访问
@@ -215,16 +215,13 @@ console 输出限制在缺少凭据之类的真实错误。修改该变量后请
 
 ### 位于反向代理之后
 
-默认情况下 server 忽略 `X-Forwarded-*`，所有按地址计的限流都以 socket 对端为键。位于反向代理之后时，对端就是代理，
-因此应把 `OPENTAG_TRUST_PROXY` 设为代理发起连接的地址：
+默认按地址计的限流使用 socket 对端。位于代理之后时，将 `OPENTAG_TRUST_PROXY` 设为代理的 IP、CIDR 或预设
+`loopback`、`linklocal`、`uniquelocal`，多个值以逗号分隔。只有该范围内没有可访问应用的不可信对端时，CapRover 才适用
+`uniquelocal`。`true` 信任整个转发链；公开入口应使用明确的地址范围。不支持数字跳数。
 
-- 逗号分隔的 IP 地址、CIDR 范围，以及预设 `loopback`、`linklocal` 与 `uniquelocal`（`10.0.0.0/8`、`172.16.0.0/12`、
-  `192.168.0.0/16`、`fc00::/7`）。CapRover 的 nginx 经 Docker overlay 网络访问应用，因此适合用 `uniquelocal`。
-- `true` 信任所有对端。仅在除代理外没有任何东西能访问 server 时使用，否则任何直连客户端都能通过该 header 自选地址。
-- 跳数会被拒绝：Fastify 无法凭跳数校验直接对端，会忽略它。
-
-该设置作用于整个 server，而不只是这条路由：浏览器登录限流使用同一个地址；对端受信任时，`request.hostname` 与
-`request.protocol` 也改由 `X-Forwarded-Host` 与 `X-Forwarded-Proto` 决定。
+该配置同时影响错误上报与浏览器登录限流。限定信任范围时，`X-Forwarded-For` 从右向左校验；CapRover 的 nginx 会追加
+它观察到的客户端 IP。`X-Forwarded-Host` 与 `X-Forwarded-Proto` 不校验转发链，入口必须覆盖或移除客户端传入的值。
+对外 URL、origin、重定向及 cookie 域使用 `OPENTAG_PUBLIC_URL`。
 
 ## 失败路径
 

@@ -265,19 +265,15 @@ feature with no Google dependency at all.
 
 ### Behind a reverse proxy
 
-By default the server ignores `X-Forwarded-*` and keys every per-address limit on the socket peer. Behind a
-reverse proxy that is the proxy, so set `OPENTAG_TRUST_PROXY` to the addresses the proxy connects from:
+By default, per-address limits use the socket peer. Behind a proxy, set `OPENTAG_TRUST_PROXY` to a
+comma-separated list of its IPs, CIDRs, or the presets `loopback`, `linklocal`, and `uniquelocal`. CapRover
+can use `uniquelocal` only when no untrusted peer in that range can reach the app. `true` trusts every
+forwarded hop; use a scoped list for public ingress. Numeric hop counts are rejected.
 
-- A comma-separated list of IP addresses, CIDR ranges, and the presets `loopback`, `linklocal`, and
-  `uniquelocal` (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`). CapRover's nginx reaches the
-  app over the Docker overlay network, so `uniquelocal` fits it.
-- `true` trusts every peer. Use it only when nothing but the proxy can reach the server, because any direct
-  client could then choose its own address by sending the header.
-- A hop count is rejected: Fastify cannot validate the immediate peer from a count and ignores it.
-
-The setting applies to the whole server, not only this route: the browser sign-in rate limits key on the same
-address, and `request.hostname` and `request.protocol` then come from `X-Forwarded-Host` and
-`X-Forwarded-Proto` when the peer is trusted.
+This setting affects error-report and browser sign-in limits. With scoped trust, `X-Forwarded-For` is checked
+right to left; CapRover's nginx appends the observed client IP. `X-Forwarded-Host` and `X-Forwarded-Proto` are
+not chain-validated, so the ingress must overwrite or strip client-supplied values. Use `OPENTAG_PUBLIC_URL`
+for public URLs, origins, redirects, and cookie domains.
 
 ## Failure path
 

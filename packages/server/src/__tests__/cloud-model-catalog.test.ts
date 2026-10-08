@@ -1,3 +1,4 @@
+import { CloudModelOptionsSchema } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createStaticCloudModelCatalog,
@@ -69,7 +70,8 @@ describe("RouterCloudModelCatalog", () => {
       defaultModel: "router-model-a",
       models: ["router-model-a", "router-model-b"],
     });
-    // The default is the first Router model, and membership resolves from the same list.
+    // The default follows the catalog selection rule (no preferred model offered here, so the
+    // first Router model), and membership resolves from the same list.
     await expect(catalog.defaultModel()).resolves.toBe("router-model-a");
     await expect(catalog.isModelAllowed("router-model-b")).resolves.toBe(true);
     await expect(catalog.isModelAllowed("model-z")).resolves.toBe(false);
@@ -79,6 +81,85 @@ describe("RouterCloudModelCatalog", () => {
     expect(upstream.stats.authorizations).toEqual([`Bearer ${FIXTURE_MASTER_KEY}`]);
     // Nothing but the ids crossed the boundary.
     expect(JSON.stringify(snapshot)).not.toContain("llm-router");
+  });
+
+  it("prefers the deployment default model when a Sonnet-first Router list offers it", async () => {
+    const upstream = await startCatalogUpstream({
+      kind: "json",
+      payload: {
+        object: "list",
+        data: [
+          { id: "claude-sonnet-5", context_window: 262_144, max_output_tokens: 8_192 },
+          { id: "deepseek-v4.1-flash", context_window: 262_144, max_output_tokens: 8_192 },
+          { id: "gemini-3.8-flash", context_window: 262_144, max_output_tokens: 8_192 },
+          { id: "kimi-k3", context_window: 262_144, max_output_tokens: 8_192 },
+        ],
+      },
+    });
+    const catalog = makeCatalog(upstream);
+    // Gemini is published first for existing clients; other models retain their relative order.
+    const snapshot = await catalog.list();
+    expect(snapshot).toEqual({
+      available: true,
+      defaultModel: "gemini-3.8-flash",
+      models: ["gemini-3.8-flash", "claude-sonnet-5", "deepseek-v4.1-flash", "kimi-k3"],
+    });
+    expect(CloudModelOptionsSchema.safeParse(snapshot).success).toBe(true);
+    await expect(catalog.defaultModel()).resolves.toBe("gemini-3.8-flash");
+    await expect(catalog.isModelAllowed("claude-sonnet-5")).resolves.toBe(true);
+    await expect(catalog.isModelAllowed("gemini-3.8-flash")).resolves.toBe(true);
+  });
+
+  it("never fabricates an absent or capability-ineligible preferred model and keeps the first-model fallback", async () => {
+    // Gemini absent from the Router list: the first validated Router model stays the default.
+    const absent = await startCatalogUpstream({
+      kind: "json",
+      payload: {
+        object: "list",
+        data: [
+          { id: "claude-sonnet-5", context_window: 262_144, max_output_tokens: 8_192 },
+          { id: "router-model-b", context_window: 64_000, max_output_tokens: 4_096 },
+        ],
+      },
+    });
+    await expect(makeCatalog(absent).list()).resolves.toEqual({
+      available: true,
+      defaultModel: "claude-sonnet-5",
+      models: ["claude-sonnet-5", "router-model-b"],
+    });
+
+    // Gemini listed but without verified capability metadata: it is excluded from the validated
+    // choices, so it is neither allowed nor the default, and the fallback order is preserved.
+    const ineligible = await startCatalogUpstream({
+      kind: "json",
+      payload: {
+        object: "list",
+        data: [
+          { id: "claude-sonnet-5", context_window: 262_144, max_output_tokens: 8_192 },
+          { id: "gemini-3.8-flash" },
+          { id: "router-model-b", context_window: 64_000, max_output_tokens: 4_096 },
+        ],
+      },
+    });
+    const catalog = makeCatalog(ineligible);
+    await expect(catalog.list()).resolves.toEqual({
+      available: true,
+      defaultModel: "claude-sonnet-5",
+      models: ["claude-sonnet-5", "router-model-b"],
+    });
+    await expect(catalog.isModelAllowed("gemini-3.8-flash")).resolves.toBe(false);
+    await expect(catalog.capabilitiesOf("gemini-3.8-flash")).resolves.toBeUndefined();
+
+    // The static double follows the same default-selection rule as the Router-backed catalog.
+    const double = createStaticCloudModelCatalog(["claude-sonnet-5", "gemini-3.8-flash"]);
+    await expect(double.list()).resolves.toEqual({
+      available: true,
+      defaultModel: "gemini-3.8-flash",
+      models: ["gemini-3.8-flash", "claude-sonnet-5"],
+    });
+    await expect(createStaticCloudModelCatalog(["claude-sonnet-5", "router-model-b"]).list()).resolves.toMatchObject({
+      defaultModel: "claude-sonnet-5",
+    });
   });
 
   it("retains Router-verified capability metadata per model without changing the visible list", async () => {

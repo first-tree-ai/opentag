@@ -20,7 +20,9 @@ import { z } from "zod";
  * applied), consumed through the Server-owned CloudModelCatalog. The legacy
  * OPENTAG_CLOUD_MODEL_ALLOWED_MODELS variable is retired: it is still parsed so a staged
  * environment keeps booting during the rollout window, but it no longer restricts or supplies any
- * model, and there is no default-model override — the default is the Router's first model.
+ * model, and there is no default-model override — the catalog prefers its configured default
+ * model when the validated Router list offers it and otherwise keeps the first validated Router
+ * model.
  */
 
 const UPSTREAM_BASE_PATTERN = /^https:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._~/-]*)?$/;

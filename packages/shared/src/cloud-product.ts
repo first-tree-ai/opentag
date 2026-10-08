@@ -24,7 +24,9 @@ export const CLOUD_MODEL_OPTIONS_MAX_MODELS = 256;
  * The Cloud model choices the account surface offers, sourced ONLY from the deployment Router's
  * authenticated model list (`GET {upstreamBaseUrl}/models`): the Router already applies tenant
  * permissions and the priced registry, and no Server-side static list restricts or extends it.
- * The default an Agent without an explicit model executes with is the FIRST Router model. The
+ * The default an Agent without an explicit model executes with is selected by the Server-owned
+ * catalog from that validated list. The preferred default is published first when offered;
+ * otherwise the Router's relative order is preserved. The
  * shape is coherent by construction: `available: false` always pairs with an empty list and a
  * null default, and an available list is non-empty with the default as its first entry.
  */

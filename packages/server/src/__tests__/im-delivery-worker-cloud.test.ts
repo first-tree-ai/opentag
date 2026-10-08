@@ -45,6 +45,9 @@ const unusedAccountResolver = {
   },
 };
 const MODEL = "deepseek-v4.1-flash-expires-on-0910";
+// A Sonnet-first input list for default-preference and explicit-model coverage.
+const SONNET = "claude-sonnet-5";
+const GEMINI = "gemini-3.8-flash";
 
 let unit: UnitDatabase;
 beforeAll(async () => {
@@ -441,7 +444,8 @@ describe("ImDeliveryWorker Cloud routing", () => {
       .update(agentRuntimeConfigs)
       .set({ model: null })
       .where(eq(agentRuntimeConfigs.agentId, agent.id));
-    // No injected default: the grant service resolves the catalog default (first Router model).
+    // No injected default: the grant service resolves the catalog default (the catalog's
+    // preferred default model when offered, otherwise the first validated Router model).
     const stack = makeStack();
     const sent: RunnerServerFrame[] = [];
     const socket = fakeSocket(sent);
@@ -460,6 +464,62 @@ describe("ImDeliveryWorker Cloud routing", () => {
     const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
     expect(row?.dispatchInputHash).toBe(computeDirectInputHash(run.delivery));
     expect(row?.dispatchPayload).toMatchObject({ runtime: { model: MODEL } });
+  });
+
+  it("dispatches the preferred Gemini default for a Sonnet-first catalog while both choices stay offered", async () => {
+    const { scope, cloud, agent } = await cloudScope();
+    await unit.database
+      .update(agentRuntimeConfigs)
+      .set({ model: null })
+      .where(eq(agentRuntimeConfigs.agentId, agent.id));
+    const stack = makeStack({ catalogModels: [SONNET, GEMINI] });
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    const worker = makeWorker(stack.owner);
+    await worker.runOnce();
+    const run = sent.filter((frame) => frame.type === "delivery:run")[0] as Extract<
+      RunnerServerFrame,
+      { type: "delivery:run" }
+    >;
+    // The frozen dispatch payload carries the deployment default — Gemini, not the Sonnet-first
+    // Router order — while the catalog still offers both choices to explicit selections.
+    expect(run.delivery.deliveryId).toBe(deliveryId);
+    expect(run.delivery.runtime.model).toBe(GEMINI);
+    await expect(stack.grants.isModelAllowed(SONNET)).resolves.toBe(true);
+    await expect(stack.grants.isModelAllowed(GEMINI)).resolves.toBe(true);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.dispatchInputHash).toBe(computeDirectInputHash(run.delivery));
+    expect(row?.dispatchPayload).toMatchObject({ runtime: { model: GEMINI } });
+  });
+
+  it("keeps an explicit Sonnet selection when the catalog prefers the Gemini default", async () => {
+    const { scope, cloud, agent } = await cloudScope();
+    await unit.database
+      .update(agentRuntimeConfigs)
+      .set({ model: SONNET })
+      .where(eq(agentRuntimeConfigs.agentId, agent.id));
+    const stack = makeStack({ catalogModels: [SONNET, GEMINI] });
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    const worker = makeWorker(stack.owner);
+    await worker.runOnce();
+    const run = sent.filter((frame) => frame.type === "delivery:run")[0] as Extract<
+      RunnerServerFrame,
+      { type: "delivery:run" }
+    >;
+    // The explicit per-Agent model is never rewritten to the deployment default.
+    expect(run.delivery.deliveryId).toBe(deliveryId);
+    expect(run.delivery.runtime.model).toBe(SONNET);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row?.dispatchPayload).toMatchObject({ runtime: { model: SONNET } });
   });
 
   it("never dispatches a model the Router catalog does not currently offer", async () => {

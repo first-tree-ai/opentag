@@ -1159,7 +1159,11 @@ describe("session-message worker integration", () => {
     expect(observed.systemPrompt).toContain("Session kind: visible");
     expect(observed.systemPrompt).toContain(`Current Session: ${request.message.targetSessionId}`);
     expect(observed.systemPrompt).toContain("Lean toward a lively, friendly tone");
-    expect(observed.systemPrompt).toContain("add one emoji reaction to the original user message via the provider CLI");
+    expect(observed.systemPrompt).toContain('add one emoji reaction meaning "received, working on it"');
+    expect(observed.systemPrompt).toContain("to the original user message via the provider CLI");
+    expect(observed.systemPrompt).toContain(
+      "Do not use approval or completion reactions such as thumbs-up or check marks",
+    );
     // The visible continuation keeps its real provider scope and the outbox instruction path.
     expect(observed.inputText).toContain('Default provider outbox context: {"channelId":"C0EXAMPLE"');
     expect(observed.inputText).toContain("1700000000.1234");
@@ -1349,8 +1353,10 @@ describe("session-message worker integration", () => {
     expect(opened[0]?.systemPrompt).toContain("Session kind: visible");
     expect(opened[0]?.systemPrompt).toContain(`Current Session: ${delivery.sessionId}`);
     expect(opened[0]?.systemPrompt).toContain("Lean toward a lively, friendly tone");
+    expect(opened[0]?.systemPrompt).toContain('add one emoji reaction meaning "received, working on it"');
+    expect(opened[0]?.systemPrompt).toContain("to the original user message via the provider CLI");
     expect(opened[0]?.systemPrompt).toContain(
-      "add one emoji reaction to the original user message via the provider CLI",
+      "Do not use approval or completion reactions such as thumbs-up or check marks",
     );
     expect(opened[1]?.systemPrompt).toContain("## Cloud execution context");
     expect(opened[1]?.systemPrompt).toContain("You are an internal Session");

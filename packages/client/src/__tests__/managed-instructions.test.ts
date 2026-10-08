@@ -208,8 +208,9 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("Session kind: visible");
       expect(prompt).toContain("Lean toward a lively, friendly tone");
       expect(prompt).toContain(
-        "For a lengthy user task, add one emoji reaction to the original user message via the provider CLI before starting task work.",
+        'For a lengthy user task, add one emoji reaction meaning "received, working on it" to the original user message via the provider CLI before starting task work (for example, Feishu OnIt or the provider\'s equivalent).',
       );
+      expect(prompt).toContain("Do not use approval or completion reactions such as thumbs-up or check marks");
       expect(prompt).toContain("Skip it only for duplicate acknowledgments and observer deliveries");
       expect(prompt).not.toContain("optionally");
       expect(prompt).not.toContain("unnecessary");

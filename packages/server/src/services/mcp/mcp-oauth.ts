@@ -81,6 +81,12 @@ export interface McpClientCredentials {
   clientSecret?: string;
   /** The exact `token_endpoint_auth_method` the credential must present. */
   tokenEndpointAuthMethod: string;
+  /**
+   * Provider-specific parameters this client's authorization request must carry, beyond the
+   * specification's own. Google's client uses them for `access_type=offline` and `prompt=consent`;
+   * a client with none leaves the authorization URL exactly as the specification builds it.
+   */
+  authorizationParams?: Record<string, string>;
 }
 
 export interface McpTokenSet {
@@ -158,6 +164,20 @@ export function normalizeResource(advertised: string | undefined, fallback: stri
   url.hash = "";
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) url.pathname = url.pathname.replace(/\/+$/, "");
   return url.toString();
+}
+
+/**
+ * The canonical spelling of an authorization-server identifier: one trailing slash is removed.
+ *
+ * RFC 8414 requires the metadata document's `issuer` to equal the identifier exactly, and
+ * `authorizationServerMetadata` still compares exactly. The tolerance exists only where a
+ * Protected Resource Metadata document's `authorization_servers` are consumed, because
+ * `authorizationServerMetadataUrls` already maps a slash-suffixed and a bare spelling to the same
+ * well-known document — so treating them as one identifier cannot merge two different servers.
+ * Only a single trailing slash is normalized; case, ports, paths, and encoding stay significant.
+ */
+export function normalizeAuthorizationServerIssuer(issuer: string): string {
+  return issuer.endsWith("/") ? issuer.slice(0, -1) : issuer;
 }
 
 function stringField(document: Record<string, unknown>, key: string): string | undefined {
@@ -454,6 +474,11 @@ export class McpOAuthClient {
   /**
    * Build the authorization URL. `resource` must be present here and again on the token request,
    * per the specification, and `offline_access` is requested only when the AS advertises it.
+   *
+   * `authorizationParams` are the client's own provider-specific parameters — Google's
+   * `access_type=offline` and `prompt=consent`, which are its refresh-token mechanism. They are set
+   * only when the specification's own parameter of that name is absent, so a client can add
+   * parameters but never rewrite this deployment's request.
    */
   authorizationUrl(input: {
     metadata: McpAuthorizationServerMetadata;
@@ -462,6 +487,7 @@ export class McpOAuthClient {
     codeChallenge: string;
     resource: string;
     scopes: readonly string[];
+    authorizationParams?: Record<string, string>;
   }): string {
     const url = new URL(input.metadata.authorizationEndpoint);
     url.searchParams.set("response_type", "code");
@@ -473,6 +499,9 @@ export class McpOAuthClient {
     url.searchParams.set("resource", input.resource);
     const scopes = [...input.scopes];
     if (scopes.length > 0) url.searchParams.set("scope", scopes.join(" "));
+    for (const [name, value] of Object.entries(input.authorizationParams ?? {})) {
+      if (!url.searchParams.has(name)) url.searchParams.set(name, value);
+    }
     return url.toString();
   }
 

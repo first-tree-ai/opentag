@@ -23,13 +23,25 @@ export function validAuth(draft: AuthDraft, existing: boolean): boolean {
     return false;
   return (existing && draft.headerMode !== "custom") || validHeaders(draft.headers, draft.authHeader);
 }
-/** Authorization writes stay Agent-scoped, including headers set before OAuth discovery. */
+/** The OAuth start request for one Server: the card's declared scopes only when it has any. */
+function oauthStartInput(mcpServerId: string, scopes?: readonly string[]): { mcpServerId: string; scopes?: string[] } {
+  if (!scopes || scopes.length === 0) return { mcpServerId };
+  return { mcpServerId, scopes: [...scopes] };
+}
+
+/**
+ * Authorization writes stay Agent-scoped, including headers set before OAuth discovery.
+ *
+ * `oauthScopes` are the scopes a catalog entry declares for its provider's consent screen, and they
+ * are only ever supplied by the card add flow. A manual, imported, or re-authorization flow passes
+ * none, which leaves scope selection to the flow's own discovery rules.
+ */
 export function useMcpAuthorization(agentId: string) {
   const update = useUpdateMcpBinding(agentId);
   const authorize = useSetMcpAuthorization(agentId);
   const oauth = useStartMcpOAuth(agentId);
   const saved = useRef<{ agentId: string; entry: MCPAgentServer }>(undefined);
-  return async (entry: MCPAgentServer, draft: AuthDraft) => {
+  return async (entry: MCPAgentServer, draft: AuthDraft, oauthScopes?: readonly string[]) => {
     // A failed authorization does not roll back the preceding connection write. Retry against
     // that confirmed result so restoring the opening values also restores them on the Server.
     const current =
@@ -42,7 +54,7 @@ export function useMcpAuthorization(agentId: string) {
       saved.current = { agentId, entry: await update.mutateAsync({ mcpServerId: entry.mcpServerId, ...patch }) };
     }
     if (draft.kind === "oauth") {
-      const result = await oauth.mutateAsync({ mcpServerId: entry.mcpServerId });
+      const result = await oauth.mutateAsync(oauthStartInput(entry.mcpServerId, oauthScopes));
       window.location.assign(result.authorizationUrl);
       return;
     }

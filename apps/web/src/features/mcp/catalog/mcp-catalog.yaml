@@ -12,6 +12,10 @@
 #   defaultAuthKind  a prefill for a new authorization, NEVER a claim about what the Server requires.
 #                    The catalog author confirms the method; the UI must state the method it will use
 #                    without asserting the Server demands it.
+#   oauthScopes      optional; the OAuth scopes the provider's consent screen is configured for,
+#                    requested when a card starts OAuth. The same bounds the start request enforces:
+#                    at most 64 scopes of at most 255 characters each. An entry that declares none
+#                    leaves scope selection to the flow's discovery rules.
 #   category         an id declared in `mcp-categories.yaml`
 #   website          the provider's site, linked from the card
 #   icon             a file under `apps/web/src/assets/mcp/`
@@ -78,3 +82,158 @@
   website: https://sentry.io
   icon: sentry.svg
   order: 20
+
+- id: gmail
+  name: gmail
+  title:
+    en: Gmail
+    zh: Gmail
+  description:
+    en: Read, search, and draft email.
+    zh: 阅读、搜索和起草邮件。
+  url: https://gmailmcp.googleapis.com/mcp/v1
+  defaultAuthKind: oauth
+  oauthScopes:
+    - https://www.googleapis.com/auth/gmail.readonly
+    - https://www.googleapis.com/auth/gmail.compose
+  category: google-workspace
+  website: https://workspace.google.com/products/gmail/
+  icon: gmail.svg
+  order: 10
+
+- id: google-drive
+  name: google-drive
+  title:
+    en: Google Drive
+    zh: Google Drive
+  description:
+    en: Find, read, and manage files.
+    zh: 查找、读取和管理文件。
+  url: https://drivemcp.googleapis.com/mcp/v1
+  defaultAuthKind: oauth
+  oauthScopes:
+    - https://www.googleapis.com/auth/drive.readonly
+    - https://www.googleapis.com/auth/drive.file
+  category: google-workspace
+  website: https://workspace.google.com/products/drive/
+  icon: google-drive.svg
+  order: 20
+
+- id: google-docs
+  name: google-docs
+  title:
+    en: Google Docs
+    zh: Google Docs
+  description:
+    en: Read and edit documents.
+    zh: 读取和编辑文档。
+  url: https://docsmcp.googleapis.com/mcp/v1
+  defaultAuthKind: oauth
+  oauthScopes:
+    - https://www.googleapis.com/auth/drive.readonly
+    - https://www.googleapis.com/auth/drive.file
+    - https://www.googleapis.com/auth/documents.readonly
+    - https://www.googleapis.com/auth/documents
+  category: google-workspace
+  website: https://workspace.google.com/products/docs/
+  icon: google-docs.svg
+  order: 30
+
+- id: google-sheets
+  name: google-sheets
+  title:
+    en: Google Sheets
+    zh: Google Sheets
+  description:
+    en: Read and update spreadsheets.
+    zh: 读取和更新电子表格。
+  url: https://sheetsmcp.googleapis.com/mcp/v1
+  defaultAuthKind: oauth
+  oauthScopes:
+    - https://www.googleapis.com/auth/drive.readonly
+    - https://www.googleapis.com/auth/drive.file
+    - https://www.googleapis.com/auth/spreadsheets.readonly
+    - https://www.googleapis.com/auth/spreadsheets
+  category: google-workspace
+  website: https://workspace.google.com/products/sheets/
+  icon: google-sheets.svg
+  order: 40
+
+- id: google-slides
+  name: google-slides
+  title:
+    en: Google Slides
+    zh: Google Slides
+  description:
+    en: Read and edit presentations.
+    zh: 读取和编辑演示文稿。
+  url: https://slidesmcp.googleapis.com/mcp/v1
+  defaultAuthKind: oauth
+  oauthScopes:
+    - https://www.googleapis.com/auth/drive.readonly
+    - https://www.googleapis.com/auth/drive.file
+    - https://www.googleapis.com/auth/presentations.readonly
+    - https://www.googleapis.com/auth/presentations
+  category: google-workspace
+  website: https://workspace.google.com/products/slides/
+  icon: google-slides.svg
+  order: 50
+
+- id: google-calendar
+  name: google-calendar
+  title:
+    en: Google Calendar
+    zh: Google Calendar
+  description:
+    en: View and manage events and calendars.
+    zh: 查看和管理日程与日历。
+  url: https://calendarmcp.googleapis.com/mcp/v1
+  defaultAuthKind: oauth
+  oauthScopes:
+    - https://www.googleapis.com/auth/calendar.calendarlist.readonly
+    - https://www.googleapis.com/auth/calendar.events.freebusy
+    - https://www.googleapis.com/auth/calendar.events.readonly
+  category: google-workspace
+  website: https://workspace.google.com/products/calendar/
+  icon: google-calendar.svg
+  order: 60
+
+- id: google-chat
+  name: google-chat
+  title:
+    en: Google Chat
+    zh: Google Chat
+  description:
+    en: Search conversations and send messages.
+    zh: 搜索会话并发送消息。
+  url: https://chatmcp.googleapis.com/mcp/v1
+  defaultAuthKind: oauth
+  oauthScopes:
+    - https://www.googleapis.com/auth/chat.spaces.readonly
+    - https://www.googleapis.com/auth/chat.memberships.readonly
+    - https://www.googleapis.com/auth/chat.messages.readonly
+    - https://www.googleapis.com/auth/chat.messages.create
+    - https://www.googleapis.com/auth/chat.users.readstate
+  category: google-workspace
+  website: https://workspace.google.com/products/chat/
+  icon: google-chat.svg
+  order: 70
+
+- id: google-people
+  name: google-people
+  title:
+    en: People
+    zh: People
+  description:
+    en: Look up profiles, contacts, and directory people.
+    zh: 查询个人资料、联系人和目录成员。
+  url: https://people.googleapis.com/mcp/v1
+  defaultAuthKind: oauth
+  oauthScopes:
+    - https://www.googleapis.com/auth/directory.readonly
+    - https://www.googleapis.com/auth/userinfo.profile
+    - https://www.googleapis.com/auth/contacts.readonly
+  category: google-workspace
+  website: https://developers.google.com/people
+  icon: google-people.svg
+  order: 80

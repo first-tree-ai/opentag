@@ -19,3 +19,9 @@
     en: Engineering
     zh: 工程
   order: 20
+
+- id: google-workspace
+  label:
+    en: Google Workspace
+    zh: Google Workspace
+  order: 30

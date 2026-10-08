@@ -178,11 +178,11 @@ projections of the built-in preset Skill catalog and the MCP marketplace catalog
 session, or a credential, and neither exposes archive identity, per-Agent state, endpoint URLs, or authorization
 prefill fields.
 
-On `https://app.opentag.build` both endpoints register by themselves and allow `https://opentag.build` and
-`https://www.opentag.build`, exactly like the session indicator. On any other deployment they answer `404` until
-`OPENTAG_WEBSITE_ORIGINS` names at least one origin. Configured origins are appended to the built-in official ones
-and can never remove them; a loopback HTTP origin such as `http://localhost:3000` is accepted so a local website dev
-server can call a deployed API, and every other origin must use HTTPS in a hosted environment. The value is
+On `https://app.opentag.build` both endpoints register by themselves. On any other deployment they answer `404` until
+`OPENTAG_WEBSITE_ORIGINS` names at least one origin. Whenever they are enabled, `https://opentag.build` and
+`https://www.opentag.build` are always allowed, exactly like the session indicator, and configured origins are appended
+to them and can never remove them; a loopback HTTP origin such as `http://localhost:3000` is accepted so a local website
+dev server can call a deployed API, and every other origin must use HTTPS in a hosted environment. The value is
 validated before the server listens, so an invalid entry fails the rollout instead of serving a wider allowlist.
 Responses are public and cacheable for five minutes, set `Vary: Origin`, and never allow credentials.
 

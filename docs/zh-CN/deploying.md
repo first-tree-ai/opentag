@@ -162,9 +162,9 @@ bundle 始终以调用方自己的凭据（Account session、Computer machine to
 只读、仅展示投影。两者都不校验 Account、session 或任何凭据，也不暴露归档标识、按 Agent 的状态、端点 URL 或
 授权预填字段。
 
-在 `https://app.opentag.build` 上，两个端点默认注册，并与登录状态提示一样仅允许 `https://opentag.build` 和
-`https://www.opentag.build`。其他部署在未设置 `OPENTAG_WEBSITE_ORIGINS` 时返回 `404`。配置的来源会追加到
-内置官方来源之后，永远不能移除内置来源；`http://localhost:3000` 这类 loopback HTTP 来源可用于本机官网开发
+在 `https://app.opentag.build` 上，两个端点默认注册。其他部署在未设置 `OPENTAG_WEBSITE_ORIGINS` 时返回 `404`。
+只要接口被启用，`https://opentag.build` 和 `https://www.opentag.build` 就始终被允许（与登录状态提示一致），
+配置的来源追加在其后，永远不能移除它们；`http://localhost:3000` 这类 loopback HTTP 来源可用于本机官网开发
 调用已部署的 API，其他来源在 hosted environment 中必须使用 HTTPS。配置会在服务器监听前完成校验，非法条目
 会让本次发布失败，而不是以更宽的名单启动。响应为公开缓存（5 分钟），始终带 `Vary: Origin`，且不允许携带凭据。
 

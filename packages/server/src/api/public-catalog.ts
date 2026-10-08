@@ -17,14 +17,14 @@ import { OFFICIAL_PUBLIC_ORIGIN, OFFICIAL_WEBSITE_ORIGINS } from "./website-orig
  * per-Agent state, endpoint URL, or authorization prefill field is exposed.
  *
  * The routes exist only when the deployment is the official app origin or configured at least one
- * website origin through `OPENTAG_WEBSITE_ORIGINS`. The two official website origins always apply on
- * the official deployment, and configured origins extend, never replace, them. CORS is manual like
- * `website-session.ts`: the grant is attached only for allowed origins, and any other origin is
+ * website origin through `OPENTAG_WEBSITE_ORIGINS`. Whenever they exist, the two official website
+ * origins are always allowed and configured origins extend, never replace, them. CORS is manual
+ * like `website-session.ts`: the grant is attached only for allowed origins, and any other origin is
  * served without one rather than rejected, because the data is public.
  */
 
 export interface PublicCatalogRoutesOptions {
-  /** The deployment's public origin; the built-in official origins apply only on the official one. */
+  /** The deployment's public origin; the official origin enables the routes by itself. */
   publicOrigin: string | undefined;
   /** Additional website origins parsed from `OPENTAG_WEBSITE_ORIGINS`. */
   origins: readonly string[];
@@ -34,11 +34,9 @@ export interface PublicCatalogRoutesOptions {
 const CACHE_CONTROL = "public, max-age=300";
 
 export function registerPublicCatalogRoutes(app: FastifyInstance, options: PublicCatalogRoutesOptions): void {
-  const allowed = new Set<string>(options.origins);
-  if (options.publicOrigin === OFFICIAL_PUBLIC_ORIGIN) {
-    for (const origin of OFFICIAL_WEBSITE_ORIGINS) allowed.add(origin);
-  }
-  if (allowed.size === 0) return;
+  if (options.publicOrigin !== OFFICIAL_PUBLIC_ORIGIN && options.origins.length === 0) return;
+  /* Once the surface is enabled, the official origins are always part of the allowlist. */
+  const allowed = new Set<string>([...OFFICIAL_WEBSITE_ORIGINS, ...options.origins]);
 
   /*
    * Parsed once at registration: the catalogs are compile-time data, and a strict parse here means a

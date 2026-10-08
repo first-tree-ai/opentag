@@ -170,15 +170,17 @@ describe("public catalog routes", () => {
     }
   });
 
-  it("registers on another deployment once an origin is configured", async () => {
+  it("registers on another deployment once an origin is configured, keeping the built-ins", async () => {
     const app = registered({ publicOrigin: "https://dev.opentag.build", origins: [CONFIGURED_ORIGIN] });
-    const response = await app.inject({
-      method: "GET",
-      url: PUBLIC_SKILLS_PATH,
-      headers: { origin: CONFIGURED_ORIGIN },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["access-control-allow-origin"]).toBe(CONFIGURED_ORIGIN);
+    for (const origin of [...OFFICIAL_ORIGINS, CONFIGURED_ORIGIN]) {
+      const response = await app.inject({
+        method: "GET",
+        url: PUBLIC_SKILLS_PATH,
+        headers: { origin },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe(origin);
+    }
   });
 });
 
@@ -220,13 +222,15 @@ describe("public catalog composition", () => {
     }
 
     const configured = composed({ publicOrigin: "https://dev.opentag.build", origins: [CONFIGURED_ORIGIN] });
-    const response = await configured.inject({
-      method: "GET",
-      url: PUBLIC_MCP_SERVERS_PATH,
-      headers: { origin: CONFIGURED_ORIGIN },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["access-control-allow-origin"]).toBe(CONFIGURED_ORIGIN);
+    for (const origin of [...OFFICIAL_ORIGINS, CONFIGURED_ORIGIN]) {
+      const response = await configured.inject({
+        method: "GET",
+        url: PUBLIC_MCP_SERVERS_PATH,
+        headers: { origin },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe(origin);
+    }
   });
 
   it("carries no credential into the anonymous read", async () => {

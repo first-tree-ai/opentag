@@ -6,6 +6,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches patches
 COPY packages/shared/package.json packages/shared/package.json
+COPY packages/skill-presets/package.json packages/skill-presets/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY apps/web/package.json apps/web/package.json
 # Only install inputs are copied here, so lifecycle scripts are skipped: the root `prepare` installs
@@ -21,9 +22,11 @@ ENV OPENTAG_WEB_VERSION=${OPENTAG_WEB_VERSION}
 
 COPY tsconfig.json ./
 COPY packages/shared packages/shared
+COPY packages/skill-presets packages/skill-presets
 COPY packages/server packages/server
 COPY apps/web apps/web
 RUN pnpm --filter @opentag/shared build
+RUN pnpm --filter @opentag/skill-presets build
 RUN pnpm --filter @opentag/web build
 RUN pnpm --filter @opentag/server build
 
@@ -35,6 +38,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches patches
 COPY packages/shared/package.json packages/shared/package.json
+COPY packages/skill-presets/package.json packages/skill-presets/package.json
 COPY packages/server/package.json packages/server/package.json
 RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts --prod --filter @opentag/server...
 
@@ -46,6 +50,7 @@ ENV OPENTAG_BUILD_REVISION=${OPENTAG_BUILD_REVISION}
 WORKDIR /app
 COPY --from=prod-deps /app ./
 COPY --from=build /app/packages/shared/dist packages/shared/dist
+COPY --from=build /app/packages/skill-presets/dist packages/skill-presets/dist
 COPY --from=build /app/packages/server/dist packages/server/dist
 COPY --from=build /app/packages/server/drizzle packages/server/drizzle
 COPY --from=build /app/apps/web/dist apps/web/dist

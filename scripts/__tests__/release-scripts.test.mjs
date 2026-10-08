@@ -269,6 +269,7 @@ test("generates complete notices for bundled CLI dependencies", async () => {
     "@pinojs/redact",
     "atomic-sleep",
     "commander",
+    "fflate",
     "on-exit-leak-free",
     "pino",
     "pino-std-serializers",
@@ -291,7 +292,8 @@ test("generates complete notices for bundled CLI dependencies", async () => {
   assert.match(notices, /Copyright \(c\) 2011 TJ Holowaychuk/);
   assert.match(notices, /Copyright \(c\) 2011 Einar Otto Stangvik/);
   assert.match(notices, /Copyright \(c\) 2025 Colin McDonnell/);
-  assert.equal((notices.match(/Permission is hereby granted/g) ?? []).length, 15);
+  // One section per MIT-licensed package; the Apache-2.0 ones carry different text.
+  assert.equal((notices.match(/Permission is hereby granted/g) ?? []).length, 16);
 });
 
 test("orders stable and staging release versions on one scale", () => {

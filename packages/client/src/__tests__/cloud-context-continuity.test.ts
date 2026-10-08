@@ -148,11 +148,21 @@ describe("Cloud public configuration and private continuity", () => {
     const snapshot = cloudDeliveryFixture().runtime;
     const first = join(root, "a");
     const second = join(root, "b");
-    await turn(first, randomUUID(), snapshot, "fixture-a-turn-token");
+    const firstSession = randomUUID();
+    const secondSession = randomUUID();
+    await turn(first, firstSession, snapshot, "fixture-a-turn-token");
     await writeFile(join(first, "only-a.txt"), "private to A");
-    await turn(second, randomUUID(), snapshot, "fixture-b-turn-token");
+    await turn(second, secondSession, snapshot, "fixture-b-turn-token");
     expect(requests.every((request) => !("binding" in request))).toBe(true);
-    expect(requests[0]?.systemPrompt).toBe(requests[1]?.systemPrompt);
+    // The shared managed prompt names the actual request Session in each case; everything else —
+    // heading, Platform/Agent instructions, visible-Session behavior, collaboration semantics —
+    // is byte-identical across the two Sessions.
+    const prompts = requests.map((request) => request.systemPrompt ?? "");
+    expect(prompts[0]).toContain(`Current Session: ${firstSession}`);
+    expect(prompts[1]).toContain(`Current Session: ${secondSession}`);
+    const withoutIdentity = (prompt: string) => prompt.replace(/^Current Session: .*$/m, "Current Session: <session>");
+    expect(withoutIdentity(prompts[0] ?? "")).toBe(withoutIdentity(prompts[1] ?? ""));
+    expect(prompts[0]).toContain("Session kind: visible");
     const readBinding = (workspace: string) => readFile(join(workspace, ".opentag/pi-session/pi-binding.json"), "utf8");
     expect(await readBinding(first)).not.toBe(await readBinding(second));
     await expect(readFile(join(second, "only-a.txt"))).rejects.toMatchObject({ code: "ENOENT" });

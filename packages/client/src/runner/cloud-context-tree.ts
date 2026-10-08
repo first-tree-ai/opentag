@@ -105,15 +105,6 @@ export interface CloudContextTreeInternals {
 const FALLBACK_AGENT_IDENTITY = "opentag-cloud-agent";
 
 /**
- * Extract the current Agent slug from the rendered platform instructions. The Server renders
- * them through `renderPlatformInstructions` (`OpenTag Agent slug: <slug>`) and fails closed on a
- * malformed name, so an anchored, charset-strict match is exactly the identity the Server vetted.
- */
-export function cloudAgentSlug(platformInstructions: string): string | undefined {
-  return /(?:^|\n)OpenTag Agent slug: ([a-z0-9][a-z0-9-]*)(?=\n|$)/.exec(platformInstructions)?.[1];
-}
-
-/**
  * Prepare the Session's Context Tree for one Cloud Turn. Total by contract: every failure is
  * reported in the returned status and nothing throws into Turn execution.
  */

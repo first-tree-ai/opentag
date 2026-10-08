@@ -291,7 +291,12 @@ export {
   type LocalComputerConfigurationInspection,
   type LocalConfigurationStatus,
 } from "./runtime/local-computer-configuration.js";
-export { type ManagedSessionContext, renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
+export {
+  type ManagedContextTreeStatus,
+  type ManagedEnvironment,
+  type ManagedSessionContext,
+  renderManagedSystemPrompt,
+} from "./runtime/managed-instructions.js";
 export {
   ProviderCliAccountError,
   type ProviderCliAccountLayout,

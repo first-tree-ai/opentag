@@ -18,9 +18,19 @@ const snapshot: EffectiveRuntimeSnapshot = {
 };
 
 const session: ManagedSessionContext = {
+  environment: "local",
   sessionId: "session-1",
   sessionKind: "visible",
   cliCommand: "opentag-dev",
+  sessionCliAvailable: true,
+  selfConfigurationEnabled: true,
+};
+
+const cloudSession: ManagedSessionContext = {
+  environment: "cloud",
+  sessionId: "cloud-session-1",
+  sessionKind: "visible",
+  cliCommand: "opentag",
   sessionCliAvailable: true,
   selfConfigurationEnabled: true,
 };
@@ -184,4 +194,189 @@ it("keeps preparation guidance separate from failures in a configured tree list"
   expect(prompt).toContain("not active for this Session");
   expect(prompt).toContain("Other ready trees remain usable");
   expect(prompt).not.toContain("repair the tree");
+});
+
+describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
+  it("renders the same visible Session behavior and shared sections on Local and Cloud", () => {
+    const local = renderManagedSystemPrompt(snapshot, session);
+    const cloud = renderManagedSystemPrompt(snapshot, cloudSession);
+    for (const prompt of [local, cloud]) {
+      expect(prompt).toContain("# OpenTag managed instructions");
+      expect(prompt).toContain("## Platform\n\nplatform");
+      expect(prompt).toContain("## Agent\n\nagent");
+      expect(prompt).toContain("You are a visible Session");
+      expect(prompt).toContain("Session kind: visible");
+      expect(prompt).toContain("Lean toward a lively, friendly tone");
+      expect(prompt).toContain("optionally add one emoji reaction");
+      expect(prompt).toContain("Skip unnecessary or duplicate acknowledgments and observer deliveries");
+      expect(prompt).toContain("OpenTag internal Sessions and Provider-native subagents are separate mechanisms");
+    }
+    expect(local).toContain("Current Session: session-1");
+    expect(cloud).toContain("Current Session: cloud-session-1");
+  });
+
+  it("omits user acknowledgment and direct IM publication from internal Sessions on both environments", () => {
+    for (const base of [session, cloudSession]) {
+      const prompt = renderManagedSystemPrompt(snapshot, {
+        ...base,
+        sessionKind: "internal",
+        creatorSessionId: "session-parent-1",
+      });
+      expect(prompt).toContain("You are an internal Session");
+      expect(prompt).toContain("Session kind: internal");
+      expect(prompt).toContain("do not publish directly to IM");
+      expect(prompt).toContain(
+        "report progress, questions, and the final result to the creating or coordinating Session",
+      );
+      expect(prompt).toContain("Creator Session: session-parent-1");
+      expect(prompt).not.toContain("emoji");
+      expect(prompt).not.toContain("lively, friendly tone");
+    }
+  });
+
+  it("omits the Creator Session line entirely when the request carries none", () => {
+    const prompt = renderManagedSystemPrompt(snapshot, cloudSession);
+    expect(prompt).not.toContain("Creator Session");
+  });
+
+  it("advertises Session collaboration only with real proof material", () => {
+    for (const base of [session, cloudSession]) {
+      const unavailable = renderManagedSystemPrompt(snapshot, { ...base, sessionCliAvailable: false });
+      expect(unavailable).toContain(
+        "Session collaboration commands are unavailable because managed Session context is missing.",
+      );
+      expect(unavailable).not.toContain("session create --message");
+    }
+
+    const local = renderManagedSystemPrompt(snapshot, session);
+    expect(local).toContain("Session collaboration is available through these commands:");
+    expect(local).toContain("- opentag-dev session create --message <task>");
+    expect(local).toContain("- opentag-dev session send <target-session-id> --message <text>");
+    expect(local).toContain("- opentag-dev session list");
+    expect(local).toContain("Do not pass or look for agentId or sourceSessionId arguments");
+    expect(local).toContain("An accepted result means the target accepted the message for processing");
+    expect(local).toContain("retry with the same messageId and exactly the same semantic input");
+    expect(local).not.toContain("its final text is not automatically returned to its parent");
+
+    const cloud = renderManagedSystemPrompt(snapshot, cloudSession);
+    expect(cloud).toContain("Session collaboration is available through these commands:");
+    expect(cloud).toContain("- opentag session create --message <task>");
+    expect(cloud).toContain("- opentag session send <target-session-id> --message <text>");
+    expect(cloud).toContain("- opentag session list");
+    expect(cloud).toContain("Do not copy or persist its temporary proof");
+    expect(cloud).toContain("another Session cannot read this workspace");
+    expect(cloud).toContain("An accepted result means the target accepted the message for processing");
+    expect(cloud).toContain("retry with the same messageId and exactly the same semantic input");
+    expect(cloud).toContain("its final text is not automatically returned to its parent");
+  });
+
+  it("renders session-specific instructions from the snapshot on both environments", () => {
+    const withSession: EffectiveRuntimeSnapshot = {
+      ...snapshot,
+      instructions: { ...snapshot.instructions, session: "Session child instruction." },
+    };
+    for (const context of [session, cloudSession]) {
+      const prompt = renderManagedSystemPrompt(withSession, context);
+      expect(prompt).toContain("## Session instructions\n\nSession child instruction.");
+    }
+  });
+});
+
+describe("renderManagedSystemPrompt Cloud environment", () => {
+  it("describes the Cloud workspace and omits Local-only Home, Skill, and self-configuration capabilities", () => {
+    const prompt = renderManagedSystemPrompt(snapshot, cloudSession);
+    expect(prompt).toContain("## Cloud execution context");
+    expect(prompt).toContain("Session-scoped Cloud Sandbox");
+    expect(prompt).toContain("recover from the last successful save");
+    expect(prompt).toContain("256 MiB");
+    expect(prompt).toContain("50,000 entries");
+    expect(prompt).toContain("128 MiB");
+    expect(prompt).toContain("Hard links, sockets, FIFOs");
+    expect(prompt).toContain("execution-scoped and short-lived");
+    expect(prompt).not.toContain("## Agent Home");
+    expect(prompt).not.toContain("shared across this Agent's Sessions");
+    expect(prompt).not.toContain("## Skills");
+    expect(prompt).not.toContain("skill push");
+    expect(prompt).not.toContain("## Self-configuration");
+    expect(prompt).not.toContain("agent self");
+  });
+
+  it("renders the current Context Tree truthfully with the Agent slug and exact path", () => {
+    const slugSnapshot: EffectiveRuntimeSnapshot = {
+      ...snapshot,
+      instructions: { ...snapshot.instructions, platform: "OpenTag Agent slug: tree-agent" },
+    };
+    const ready = renderManagedSystemPrompt(slugSnapshot, {
+      ...cloudSession,
+      contextTree: { status: "ready", treePath: "/ws/tree", branch: "master", sha: "a".repeat(40) },
+    });
+    expect(ready).toContain(
+      "Context Tree: /ws/tree — synchronized at the start of this Turn (branch master, commit aaaaaaaaaaaa).",
+    );
+    expect(ready).toContain("tree-agent");
+    expect(ready).toContain("members/tree-agent/");
+    expect(ready).toContain("saved and restored with it");
+
+    const dirty = renderManagedSystemPrompt(snapshot, {
+      ...cloudSession,
+      contextTree: { status: "stale", treePath: "/ws/tree", reason: "DIRTY_TREE" },
+    });
+    expect(dirty).toContain("Context Tree: /ws/tree");
+    expect(dirty).toContain("unpublished changes");
+    expect(dirty).toContain("do not reset or discard");
+
+    const stale = renderManagedSystemPrompt(snapshot, {
+      ...cloudSession,
+      contextTree: { status: "stale", treePath: "/ws/tree", reason: "TIMEOUT" },
+    });
+    expect(stale).toContain("may be outdated");
+    expect(stale).toContain("TIMEOUT");
+
+    const unconfigured = renderManagedSystemPrompt(snapshot, {
+      ...cloudSession,
+      contextTree: { status: "unconfigured" },
+    });
+    expect(unconfigured).toContain("disabled for this Agent");
+
+    const denied = renderManagedSystemPrompt(snapshot, {
+      ...cloudSession,
+      contextTree: { status: "unavailable", reason: "GITHUB_PERMISSION" },
+    });
+    expect(denied).toContain("Context Tree unavailable (GITHUB_PERMISSION)");
+    expect(denied).toContain("does not grant this Session the selected repository");
+  });
+
+  it("renders one Cloud tree section and shared guidance for multiple aliases", () => {
+    const prompt = renderManagedSystemPrompt(snapshot, {
+      ...cloudSession,
+      contextTree: {
+        status: "configured",
+        connections: [
+          {
+            alias: "team",
+            repository: "acme/team",
+            status: "ready",
+            treePath: "/trees/team",
+            branch: "main",
+            sha: "a".repeat(40),
+          },
+          { alias: "product", repository: "acme/product", status: "ready", treePath: "/trees/product" },
+          { alias: "stale", repository: "acme/stale", status: "stale", treePath: "/trees/stale", reason: "DIRTY_TREE" },
+          { alias: "denied", repository: "acme/denied", status: "unavailable", reason: "GITHUB_PERMISSION" },
+          { alias: "timeout", repository: "acme/timeout", status: "unavailable", reason: "TIMEOUT" },
+        ],
+      },
+    });
+    expect(prompt.match(/^## Context Trees$/gm)).toHaveLength(1);
+    expect(prompt).not.toMatch(/^## Context Tree$/m);
+    expect(prompt).toContain("Alias team — acme/team");
+    expect(prompt).toContain("Context Tree: /trees/product");
+    expect(prompt).toContain("branch main, commit aaaaaaaaaaaa");
+    expect(prompt).toContain("Context Tree: /trees/stale");
+    expect(prompt).toContain("do not reset or discard");
+    expect(prompt).toContain("GITHUB_PERMISSION");
+    expect(prompt.match(/Use the context-tree-read and context-tree-write skills/g)).toHaveLength(1);
+    expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
+    expect(prompt.match(/Continue the task without those trees/g)).toHaveLength(1);
+  });
 });

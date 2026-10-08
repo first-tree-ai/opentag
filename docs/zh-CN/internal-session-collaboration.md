@@ -1,7 +1,7 @@
 # Internal Session 协作
 
 > Canonical source: [internal-session-collaboration.md](../internal-session-collaboration.md)
-> Last synced with: 2026-09-19
+> Last synced with: 2026-10-08
 
 OpenTag Agent 在每个 managed Session 内通过 CLI 委派工作：
 
@@ -33,6 +33,10 @@ Cloud Session 拥有独立的 Sandbox workspace 和 Pi 历史，边界见
 [Cloud Context Tree 与 Session 协作](./cloud-context.md)。创建时可以覆盖 model、reasoning effort 和最长 Run duration。Internal Session 不接收 IM delivery 或临时
 `OPENTAG_PROVIDER_ENV_FILE`，而是通过 `opentag session send` 回报。两类 Session 都收到角色化 managed instructions，
 也都可以继续创建下一层 internal Session。
+
+Local 与 Cloud 使用同一个 managed system-prompt 生成函数及 Session 上下文接口。通用 Session 行为只定义一次，
+工作区持久化、隔离和 Context Tree 事实按执行环境生成。可见 Session 可以在开始耗时用户任务前选择添加一个表情回应，
+跳过不必要或重复的确认以及 observer delivery。Internal Session 向协调 Session 回报，不直接向 IM 发布。
 
 OpenTag Internal Session 与 Provider 原生 subagent 是两种不同机制。人明确要求使用 OpenTag Internal Session 时，
 可见 Session 必须调用 `opentag session create`，不能以 Provider 原生 subagent 代替。除此之外，OpenTag 本次不强制规定

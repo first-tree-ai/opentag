@@ -419,6 +419,10 @@ Root `skills/<name>/` remains the home for a first-party bundle that is not part
 catalog. Nothing there ships automatically: an operator uploads one with
 `opentag skill push skills/<name>`, which stores it as that Agent's Skill like any other upload; the
 repository is where the content is reviewed and versioned, not a delivery channel.
+`skills/skill-preset-entry/` is one such root bundle: the procedure for recording a bundle into the
+preset catalog. It carries the manifest, identity, category, and order rules, the `presets.yaml` row
+shape, the generator's refusal list, and the gates, so a contributor enters a Skill correctly on the
+first pass.
 
 `pnpm check` runs the preset generator over `packages/skill-presets` and
 `scripts/check-skill-bundles.mjs` over every root bundle, so a bundle the Server would refuse fails in
@@ -428,6 +432,12 @@ manifest, a reserved name, a symlinked bundle root or member, an unsupported ent
 unpacked and packed byte ceilings, and a name that disagrees with its directory are all decided here.
 It reads `@opentag/shared` from source through `scripts/tsconfig.scripts.json`, because `pnpm check`
 runs before `pnpm build`.
+
+`pnpm presets:check-candidate <candidate-directory>` pre-flights a bundle that is not in the
+repository yet. It packs the candidate with the same `packSkillDirectory` and applies the catalog
+rules the packer cannot know: a name already declared in `presets.yaml`, a category that file does
+not declare, an order the shared contract rejects, and a directory name that disagrees with the
+manifest. It is read-only, and `pnpm presets:generate` with `pnpm check` remain the gate.
 
 ## Verification
 

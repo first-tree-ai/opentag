@@ -209,6 +209,42 @@ function normalizeGitHubAppPrivateKey(value: string): string | undefined {
  * optional callback URL that stays on this server's origin (HTTPS there when hosted). Extracted from
  * the schema's refinement so the App rule reads as one unit.
  */
+/**
+ * The MCP Google client is a separate pair from the sign-in one: it has its own redirect URI and
+ * consent scopes, so a half-configured pair must fail startup rather than silently disable Google
+ * Workspace authorizations.
+ */
+function validateMcpGoogleClientPair(
+  value: {
+    OPENTAG_MCP_GOOGLE_CLIENT_ID?: string | undefined;
+    OPENTAG_MCP_GOOGLE_CLIENT_SECRET?: string | undefined;
+  },
+  context: z.RefinementCtx,
+): void {
+  if (Boolean(value.OPENTAG_MCP_GOOGLE_CLIENT_ID) === Boolean(value.OPENTAG_MCP_GOOGLE_CLIENT_SECRET)) return;
+  context.addIssue({
+    code: "custom",
+    message: "OPENTAG_MCP_GOOGLE_CLIENT_ID and OPENTAG_MCP_GOOGLE_CLIENT_SECRET must be configured together",
+  });
+}
+
+/**
+ * The resolved MCP Google client, spread into the config: absent unless both variables are set, in
+ * which case the flow offers it to the Google Workspace endpoints whose discovery resolves Google.
+ */
+function resolveMcpGoogleOAuth(parsed: {
+  OPENTAG_MCP_GOOGLE_CLIENT_ID?: string | undefined;
+  OPENTAG_MCP_GOOGLE_CLIENT_SECRET?: string | undefined;
+}): { mcpGoogleOAuth?: { clientId: string; clientSecret: string } } {
+  if (!parsed.OPENTAG_MCP_GOOGLE_CLIENT_ID || !parsed.OPENTAG_MCP_GOOGLE_CLIENT_SECRET) return {};
+  return {
+    mcpGoogleOAuth: {
+      clientId: parsed.OPENTAG_MCP_GOOGLE_CLIENT_ID,
+      clientSecret: parsed.OPENTAG_MCP_GOOGLE_CLIENT_SECRET,
+    },
+  };
+}
+
 function validateGitHubAppConfiguration(
   value: {
     OPENTAG_GITHUB_APP_ID?: string | undefined;
@@ -297,6 +333,8 @@ const ServerEnvironmentSchema = z
      * port scanner.
      */
     OPENTAG_MCP_ALLOW_LOOPBACK: booleanString("false"),
+    OPENTAG_MCP_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+    OPENTAG_MCP_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_CLIENT_ID: z.string().min(1).optional(),
@@ -424,6 +462,7 @@ const ServerEnvironmentSchema = z
     if (Boolean(value.OPENTAG_GOOGLE_CLIENT_ID) !== Boolean(value.OPENTAG_GOOGLE_CLIENT_SECRET)) {
       context.addIssue({ code: "custom", message: "Google client id and secret must be configured together" });
     }
+    validateMcpGoogleClientPair(value, context);
     const slackOAuthValues = [
       value.OPENTAG_SLACK_CLIENT_ID,
       value.OPENTAG_SLACK_CLIENT_SECRET,
@@ -728,6 +767,13 @@ export interface ServerConfig {
    * development environment, regardless of the configured value.
    */
   mcpAllowLoopback: boolean;
+  /**
+   * The deployment's pre-registered Google Workspace MCP OAuth client, present only when both
+   * variables are configured together. The flow offers it only to the Google-hosted MCP endpoints
+   * that resolve Google's authorization server, never to another Server that merely names Google.
+   * The secret stays inside the flow service; it is never logged or returned.
+   */
+  mcpGoogleOAuth?: { clientId: string; clientSecret: string };
   port: number;
   /** Peers trusted to set `X-Forwarded-*`; `false` keys `request.ip` on the socket peer. */
   trustProxy: TrustProxyConfig;
@@ -858,6 +904,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: environment.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED,
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_MCP_ALLOW_LOOPBACK: environment.OPENTAG_MCP_ALLOW_LOOPBACK,
+    OPENTAG_MCP_GOOGLE_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_ID),
+    OPENTAG_MCP_GOOGLE_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_SECRET),
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
     OPENTAG_SLACK_CLIENT_ID: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_ID),
@@ -973,6 +1021,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
     logLevel: parsed.OPENTAG_LOG_LEVEL,
     mcpAllowLoopback: !isHostedEnvironment(parsed.OPENTAG_ENV) && parsed.OPENTAG_MCP_ALLOW_LOOPBACK,
+    ...resolveMcpGoogleOAuth(parsed),
     observability: {
       tracing: {
         endpoint: parsed.OPENTAG_OTEL_ENDPOINT,

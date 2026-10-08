@@ -14,6 +14,22 @@ export type McpCatalogLocalizedText = Record<McpCatalogLocale, string>;
 export const MCP_CATALOG_ICON_URLS = {
   "exa.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5FPC90ZXh0Pjwvc3ZnPgo=",
+  "gmail.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5NPC90ZXh0Pjwvc3ZnPgo=",
+  "google-calendar.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5DPC90ZXh0Pjwvc3ZnPgo=",
+  "google-chat.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPkNoPC90ZXh0Pjwvc3ZnPgo=",
+  "google-docs.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPkRvPC90ZXh0Pjwvc3ZnPgo=",
+  "google-drive.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPkRyPC90ZXh0Pjwvc3ZnPgo=",
+  "google-people.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5QPC90ZXh0Pjwvc3ZnPgo=",
+  "google-sheets.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPlNoPC90ZXh0Pjwvc3ZnPgo=",
+  "google-slides.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPlNsPC90ZXh0Pjwvc3ZnPgo=",
   "linear.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5MPC90ZXh0Pjwvc3ZnPgo=",
   "notion.svg":
@@ -38,6 +54,7 @@ export type McpCatalogEntry = {
   authHeader?: string;
   authScheme?: string;
   extraHeaders?: Record<string, string>;
+  oauthScopes?: string[];
   category: string;
   website: string;
   iconUrl: string;
@@ -61,6 +78,14 @@ export const MCP_CATALOG_CATEGORIES: readonly McpCatalogCategory[] = [
       zh: "工程",
     },
     order: 20,
+  },
+  {
+    id: "google-workspace",
+    label: {
+      en: "Google Workspace",
+      zh: "Google Workspace",
+    },
+    order: 30,
   },
 ];
 
@@ -137,5 +162,186 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     website: "https://sentry.io",
     iconUrl: MCP_CATALOG_ICON_URLS["sentry.svg"],
     order: 20,
+  },
+  {
+    id: "gmail",
+    name: "gmail",
+    title: {
+      en: "Gmail",
+      zh: "Gmail",
+    },
+    description: {
+      en: "Read, search, and draft email.",
+      zh: "阅读、搜索和起草邮件。",
+    },
+    url: "https://gmailmcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
+    category: "google-workspace",
+    website: "https://workspace.google.com/products/gmail/",
+    iconUrl: MCP_CATALOG_ICON_URLS["gmail.svg"],
+    order: 10,
+  },
+  {
+    id: "google-drive",
+    name: "google-drive",
+    title: {
+      en: "Google Drive",
+      zh: "Google Drive",
+    },
+    description: {
+      en: "Find, read, and manage files.",
+      zh: "查找、读取和管理文件。",
+    },
+    url: "https://drivemcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"],
+    category: "google-workspace",
+    website: "https://workspace.google.com/products/drive/",
+    iconUrl: MCP_CATALOG_ICON_URLS["google-drive.svg"],
+    order: 20,
+  },
+  {
+    id: "google-docs",
+    name: "google-docs",
+    title: {
+      en: "Google Docs",
+      zh: "Google Docs",
+    },
+    description: {
+      en: "Read and edit documents.",
+      zh: "读取和编辑文档。",
+    },
+    url: "https://docsmcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/documents",
+    ],
+    category: "google-workspace",
+    website: "https://workspace.google.com/products/docs/",
+    iconUrl: MCP_CATALOG_ICON_URLS["google-docs.svg"],
+    order: 30,
+  },
+  {
+    id: "google-sheets",
+    name: "google-sheets",
+    title: {
+      en: "Google Sheets",
+      zh: "Google Sheets",
+    },
+    description: {
+      en: "Read and update spreadsheets.",
+      zh: "读取和更新电子表格。",
+    },
+    url: "https://sheetsmcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ],
+    category: "google-workspace",
+    website: "https://workspace.google.com/products/sheets/",
+    iconUrl: MCP_CATALOG_ICON_URLS["google-sheets.svg"],
+    order: 40,
+  },
+  {
+    id: "google-slides",
+    name: "google-slides",
+    title: {
+      en: "Google Slides",
+      zh: "Google Slides",
+    },
+    description: {
+      en: "Read and edit presentations.",
+      zh: "读取和编辑演示文稿。",
+    },
+    url: "https://slidesmcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/presentations.readonly",
+      "https://www.googleapis.com/auth/presentations",
+    ],
+    category: "google-workspace",
+    website: "https://workspace.google.com/products/slides/",
+    iconUrl: MCP_CATALOG_ICON_URLS["google-slides.svg"],
+    order: 50,
+  },
+  {
+    id: "google-calendar",
+    name: "google-calendar",
+    title: {
+      en: "Google Calendar",
+      zh: "Google Calendar",
+    },
+    description: {
+      en: "View and manage events and calendars.",
+      zh: "查看和管理日程与日历。",
+    },
+    url: "https://calendarmcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
+      "https://www.googleapis.com/auth/calendar.events.readonly",
+    ],
+    category: "google-workspace",
+    website: "https://workspace.google.com/products/calendar/",
+    iconUrl: MCP_CATALOG_ICON_URLS["google-calendar.svg"],
+    order: 60,
+  },
+  {
+    id: "google-chat",
+    name: "google-chat",
+    title: {
+      en: "Google Chat",
+      zh: "Google Chat",
+    },
+    description: {
+      en: "Search conversations and send messages.",
+      zh: "搜索会话并发送消息。",
+    },
+    url: "https://chatmcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/chat.spaces.readonly",
+      "https://www.googleapis.com/auth/chat.memberships.readonly",
+      "https://www.googleapis.com/auth/chat.messages.readonly",
+      "https://www.googleapis.com/auth/chat.messages.create",
+      "https://www.googleapis.com/auth/chat.users.readstate",
+    ],
+    category: "google-workspace",
+    website: "https://workspace.google.com/products/chat/",
+    iconUrl: MCP_CATALOG_ICON_URLS["google-chat.svg"],
+    order: 70,
+  },
+  {
+    id: "google-people",
+    name: "google-people",
+    title: {
+      en: "People",
+      zh: "People",
+    },
+    description: {
+      en: "Look up profiles, contacts, and directory people.",
+      zh: "查询个人资料、联系人和目录成员。",
+    },
+    url: "https://people.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/directory.readonly",
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "https://www.googleapis.com/auth/contacts.readonly",
+    ],
+    category: "google-workspace",
+    website: "https://developers.google.com/people",
+    iconUrl: MCP_CATALOG_ICON_URLS["google-people.svg"],
+    order: 80,
   },
 ];

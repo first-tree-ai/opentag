@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER, isGoogleWorkspaceMcpEndpoint } from "@opentag/shared";
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, mcpClientRegistrations, mcpServerAuthorizations } from "../../db/schema/index.js";
@@ -11,6 +12,7 @@ import {
   type McpClientCredentials,
   McpOAuthClient,
   mcpCallbackRedirect,
+  normalizeAuthorizationServerIssuer,
   normalizeResource,
 } from "./mcp-oauth.js";
 import { McpServerService } from "./mcp-server-service.js";
@@ -42,6 +44,13 @@ export interface McpOAuthFlowServiceOptions {
   cipher: McpCredentialCipher;
   oauth: McpOAuthClient;
   servers: McpServerService;
+  /**
+   * The deployment's pre-registered Google Workspace OAuth client, present only when the
+   * `OPENTAG_MCP_GOOGLE_CLIENT_*` pair is configured. It is offered only to the Google-hosted MCP
+   * endpoints that resolve Google's authorization server, ahead of every other registration
+   * mechanism, and the secret is presented only at that authorization server's token endpoint.
+   */
+  googleMcpClient?: { clientId: string; clientSecret: string };
   now?: () => Date;
 }
 
@@ -53,6 +62,7 @@ export interface StartedMcpOAuth {
 export class McpOAuthFlowService {
   readonly #cipher: McpCredentialCipher;
   readonly #database: DatabaseClient;
+  readonly #googleMcpClient: { clientId: string; clientSecret: string } | undefined;
   readonly #now: () => Date;
   readonly #oauth: McpOAuthClient;
   readonly #servers: McpServerService;
@@ -60,6 +70,7 @@ export class McpOAuthFlowService {
   constructor(options: McpOAuthFlowServiceOptions) {
     this.#cipher = options.cipher;
     this.#database = options.database;
+    this.#googleMcpClient = options.googleMcpClient;
     this.#now = options.now ?? (() => new Date());
     this.#oauth = options.oauth;
     this.#servers = options.servers;
@@ -86,7 +97,7 @@ export class McpOAuthFlowService {
     const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
     const existing = context.authorization;
 
-    const { metadata, client, registrationId, challengeScope, resource } = await this.#discoverForStart(
+    const { metadata, client, registrationId, challengeScope, resource, prmScopes } = await this.#discoverForStart(
       accountId,
       effective.url,
       existing?.authorizationServer ?? null,
@@ -100,7 +111,11 @@ export class McpOAuthFlowService {
       { mcpServerId, agentId, authorizationServer: metadata.issuer },
       pkce.verifier,
     );
-    const scopes = this.#oauth.resolveScopes(challengeScope, [], metadata, requestedScopes);
+    /*
+     * The protected resource's own scopes are the fallback the specification names, and for Google
+     * they are load-bearing: an authorization request with no `scope` at all is rejected outright.
+     */
+    const scopes = this.#oauth.resolveScopes(challengeScope, prmScopes, metadata, requestedScopes);
     const authorizationUrl = this.#oauth.authorizationUrl({
       metadata,
       clientId: client.clientId,
@@ -108,6 +123,7 @@ export class McpOAuthFlowService {
       codeChallenge: pkce.challenge,
       resource,
       scopes,
+      ...(client.authorizationParams ? { authorizationParams: client.authorizationParams } : {}),
     });
 
     await this.#database
@@ -187,6 +203,23 @@ export class McpOAuthFlowService {
   }
 
   /**
+   * The identifier to request for one authorization server this Server advertises.
+   *
+   * Google's Workspace MCP endpoints advertise `https://accounts.google.com/` while their metadata
+   * declares the slash-free spelling, and the metadata reader compares the document's `issuer`
+   * exactly. Only that one identifier, and only for a Google Workspace MCP origin, is requested in
+   * its slash-free form: every other advertised identifier is used exactly as published, so a
+   * provider whose legitimate issuer ends in a slash still compares equal to its own metadata
+   * document (RFC 8414 §3.3) instead of being rewritten into a mismatch.
+   */
+  #advertisedIssuer(effectiveUrl: string, issuer: string): string {
+    if (!isGoogleWorkspaceMcpEndpoint(effectiveUrl)) return issuer;
+    const canonical = normalizeAuthorizationServerIssuer(issuer);
+    if (canonical !== GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER) return issuer;
+    return canonical;
+  }
+
+  /**
    * Resolve the authorization server for a start. The row's recorded issuer is preferred, but a
    * credential that cannot cross issuers is only reused when the issuer is unchanged.
    */
@@ -200,9 +233,18 @@ export class McpOAuthFlowService {
     registrationId: string | null;
     challengeScope: string | undefined;
     resource: string;
+    prmScopes: readonly string[];
   }> {
     const { metadata: prm, challengeScope } = await this.#oauth.protectedResourceMetadata(accountId, url);
-    const candidates = orderIssuers(prm.authorizationServers, recordedIssuer);
+    /*
+     * Each advertised identifier is requested as published, except for Google's own identifier on a
+     * Google Workspace origin (see `#advertisedIssuer`). The metadata reader compares exactly, so an
+     * ordinary provider's slash-ending issuer is preserved and still matches its own document.
+     */
+    const candidates = orderIssuers(
+      prm.authorizationServers.map((issuer) => this.#advertisedIssuer(url, issuer)),
+      recordedIssuer === null ? null : this.#advertisedIssuer(url, recordedIssuer),
+    );
     const failures: string[] = [];
     for (const issuer of candidates) {
       try {
@@ -220,13 +262,14 @@ export class McpOAuthFlowService {
          * Reuse also keeps a flow's own client stable: the authorization request named the client
          * returned here, so nothing may replace it between this call and the callback.
          */
-        const { client, registrationId } = await this.#clientForStart(accountId, metadata);
+        const { client, registrationId } = await this.#clientForStart(accountId, url, metadata);
         return {
           metadata,
           client,
           registrationId,
           challengeScope,
           resource: normalizeResource(prm.resource, url),
+          prmScopes: prm.scopesSupported,
         };
       } catch (error) {
         /*
@@ -278,6 +321,31 @@ export class McpOAuthFlowService {
   }
 
   /**
+   * The deployment's pre-registered Google client, resolved rather than stored, or undefined when
+   * this flow must not use it.
+   *
+   * Two conditions are deliberate, and both are required. The Server's effective origin must be one
+   * of the eight Google Workspace endpoints, so a hostile Server that merely advertises Google as
+   * its authorization server cannot obtain a Google credential for its own endpoint; and the
+   * discovered issuer must be exactly Google's, so a Google endpoint that unexpectedly resolves
+   * elsewhere does not receive a client bound to Google. The client is never written to
+   * `mcp_client_registrations`: configuration stays authoritative, so unsetting the variables stops
+   * its use immediately instead of leaving a stale row behind.
+   */
+  #googleClient(effectiveUrl: string, issuer: string): McpClientCredentials | undefined {
+    if (!this.#googleMcpClient) return undefined;
+    if (!isGoogleWorkspaceMcpEndpoint(effectiveUrl)) return undefined;
+    if (issuer !== GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER) return undefined;
+    return {
+      source: "preregistered",
+      clientId: this.#googleMcpClient.clientId,
+      clientSecret: this.#googleMcpClient.clientSecret,
+      tokenEndpointAuthMethod: "client_secret_basic",
+      authorizationParams: { access_type: "offline", prompt: "consent" },
+    };
+  }
+
+  /**
    * The client a new flow should present at this issuer, plus the registration row to record on it.
    *
    * Reuse is the whole point: the row is keyed by `(Account, issuer)`, so registering on every start
@@ -286,17 +354,22 @@ export class McpOAuthFlowService {
    * and the credential was destroyed — so authorizing a second Agent silently killed the first.
    *
    * Order of preference, matching the discovery rules:
+   * - the deployment's Google client, when this Server is one it is bound to;
    * - a `preregistered` row, which is the deployment's own client and always wins;
    * - an existing DCR row, reused as-is;
    * - otherwise a fresh registration, which is the only case that writes the row.
    *
    * A CIMD client is not a row at all — it is this deployment's URL — so it is resolved rather than
-   * looked up, and `registrationId` stays null for it.
+   * looked up, and `registrationId` stays null for it. The Google client likewise has no row: it is
+   * derived from configuration, so its `registrationId` stays null too.
    */
   async #clientForStart(
     accountId: string,
+    effectiveUrl: string,
     metadata: McpAuthorizationServerMetadata,
   ): Promise<{ client: McpClientCredentials; registrationId: string | null }> {
+    const google = this.#googleClient(effectiveUrl, metadata.issuer);
+    if (google) return { client: google, registrationId: null };
     const preregistered = await this.#readPreregistered(accountId, metadata.issuer);
     if (preregistered) {
       const row = await this.#readRegistrationRow(accountId, metadata.issuer, "preregistered");
@@ -557,9 +630,18 @@ export class McpOAuthFlowService {
     this.#oauth.validateIssuer(metadata, iss, metadata.issuer);
     const binding = { mcpServerId, agentId, authorizationServer: metadata.issuer };
     const codeVerifier = this.#cipher.decryptPkceVerifier(binding, requirePkce(authorization));
-    const client = await this.#readClientCredentials(accountId, metadata, authorization.clientRegistrationId);
+    /*
+     * The effective URL is read before the client, because the deployment Google client is offered
+     * only to the Google Workspace origins and the URL is half of that decision.
+     */
     const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
     const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
+    const client = await this.#readClientCredentials(
+      accountId,
+      effective.url,
+      metadata,
+      authorization.clientRegistrationId,
+    );
     const tokens = await this.#oauth.exchangeAuthorizationCode(accountId, metadata, {
       code,
       codeVerifier,
@@ -742,15 +824,23 @@ export class McpOAuthFlowService {
    * register a second one and then present the first one's code under it — which a strict
    * authorization server refuses with `invalid_client`.
    *
-   * CIMD is the one mechanism with no row to record: the client is this deployment's metadata URL, so
-   * it is derived rather than looked up, and it is by construction the same client the authorization
+   * CIMD and the deployment's Google client are the two mechanisms with no row to record: both are
+   * derived rather than looked up, and both are by construction the same client the authorization
    * request named.
    */
   async #readClientCredentials(
     accountId: string,
+    effectiveUrl: string,
     metadata: McpAuthorizationServerMetadata,
     clientRegistrationId: string | null,
   ): Promise<McpClientCredentials> {
+    /*
+     * The deployment's Google client is resolved the same way `start` resolved it — same origin,
+     * same issuer — so the callback and every refresh present the client the authorization request
+     * named. Nothing else could have named a client at this issuer.
+     */
+    const google = this.#googleClient(effectiveUrl, metadata.issuer);
+    if (google) return google;
     /*
      * A pre-registered client is stable for the Account and issuer, so it is preferred: it is what
      * the authorization request named, and there is exactly one of them per pair.
@@ -859,9 +949,16 @@ export class McpOAuthFlowService {
     }
     try {
       const metadata = await this.#oauth.authorizationServerMetadata(row.accountId, requireIssuer(row));
-      const client = await this.#readClientCredentials(row.accountId, metadata, row.clientRegistrationId);
+      // The effective URL comes first for the same reason as in the callback: the deployment Google
+      // client is bound to the origin, not just the issuer.
       const context = await this.#servers.readProbeContext(row.accountId, row.agentId, row.mcpServerId);
       const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
+      const client = await this.#readClientCredentials(
+        row.accountId,
+        effective.url,
+        metadata,
+        row.clientRegistrationId,
+      );
       const tokens = await this.#oauth.refreshAccessToken(row.accountId, metadata, {
         refreshToken: credential.refreshToken,
         client,

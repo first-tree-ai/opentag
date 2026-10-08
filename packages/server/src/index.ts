@@ -885,7 +885,19 @@ export async function startServer(): Promise<void> {
       authorizations: mcpAuthorization,
       upstream: new McpUpstreamCaller({ fetcher: mcpRuntimeFetcher }),
     });
-    const mcpFlows = new McpOAuthFlowService({ database, cipher: mcpCipher, oauth: mcpOAuth, servers: mcpServers });
+    const mcpFlows = new McpOAuthFlowService({
+      database,
+      cipher: mcpCipher,
+      oauth: mcpOAuth,
+      servers: mcpServers,
+      /*
+       * The deployment's pre-registered Google Workspace client, present only when the
+       * OPENTAG_MCP_GOOGLE_CLIENT_* pair is configured. The flow itself re-checks the Server's
+       * origin and the resolved issuer before it uses this client, so wiring it here grants it no
+       * reach beyond the Google-hosted endpoints.
+       */
+      googleMcpClient: config.mcpGoogleOAuth,
+    });
     const mcpRefreshWorker = new McpRefreshWorker({
       authorization: mcpAuthorization,
       database,

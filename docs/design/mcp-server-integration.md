@@ -386,6 +386,15 @@ well-known URL was built from. No case folding, no default-port elision, no trai
 percent-encoding normalization. A mismatch is an authorization-server mix-up, it is refused outright,
 and it does **not** fall through to the next well-known form.
 
+One spelling difference is accommodated, and only on the Google Workspace path: when the Server's
+effective origin is one of the eight Google MCP endpoints and an advertised identifier is
+`https://accounts.google.com/`, the flow requests the slash-free spelling — the one Google's
+metadata document declares, and the one `authorizationServerMetadataUrls` already maps to the same
+well-known document — and records that spelling on the row. Every other advertised identifier is
+requested exactly as published and compared exactly, so a provider whose legitimate issuer ends in a
+slash keeps its identity and still matches its own metadata document (RFC 8414 §3.3); case, ports,
+paths, and encoding remain significant.
+
 ### Choosing an authorization server
 
 A Protected Resource Metadata document may list several authorization servers, and credentials are
@@ -404,10 +413,11 @@ currently selected.
 
 | Order | Mechanism | Condition |
 | --- | --- | --- |
-| 1 | Pre-registered | A row exists for `(Account, issuer)` with `source='preregistered'` |
-| 2 | Client ID Metadata Document | The AS advertises `client_id_metadata_document_supported` |
-| 3 | Dynamic Client Registration | The AS advertises a `registration_endpoint` |
-| 4 | — | Otherwise `MCP_REGISTRATION_UNSUPPORTED`, with the hint that a pre-registration is needed |
+| 1 | Deployment Google client | The Server's effective origin is a Google Workspace MCP origin and discovery resolves Google's authorization server |
+| 2 | Pre-registered | A row exists for `(Account, issuer)` with `source='preregistered'` |
+| 3 | Client ID Metadata Document | The AS advertises `client_id_metadata_document_supported` |
+| 4 | Dynamic Client Registration | The AS advertises a `registration_endpoint` |
+| 5 | — | Otherwise `MCP_REGISTRATION_UNSUPPORTED`, with the hint that a pre-registration is needed |
 
 The client metadata document is published at `GET /oauth/client-metadata.json`, unauthenticated,
 because it must be readable by the authorization server. Its `client_id` is this deployment's own URL
@@ -422,6 +432,31 @@ server-side callback, not a native client), the exact callback
 A registration is **not** reused across a changed issuer: the specification forbids it, and the
 authorization is revoked with a clear "authorize again" signal. A client metadata document credential
 *is* portable, so it is reused.
+
+#### The deployment Google client
+
+Google's remote MCP servers offer neither a registration endpoint nor a client metadata document, so
+a deployment that wants its Agents to use Gmail, Google Drive, Docs, Sheets, Slides, Calendar, Chat,
+or People configures its own OAuth client with `OPENTAG_MCP_GOOGLE_CLIENT_ID` and
+`OPENTAG_MCP_GOOGLE_CLIENT_SECRET` — both together or neither; a half-configured pair fails startup.
+Operator setup:
+
+- Create an OAuth client of type **Web application** in Google Cloud and register
+  `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as an authorized redirect URI.
+- On the OAuth consent screen's data access, add every scope the eight catalog entries request
+  (`oauthScopes` in `packages/mcp-presets/mcp-catalog.yaml`). The entries carry Google's
+  recommended per-product subset, which deliberately avoids restricted scopes such as
+  `https://mail.google.com/`.
+- Google issues a refresh token only for `access_type=offline`, with `prompt=consent` on
+  re-authorization; this deployment adds both to that client's authorization request, and Google does
+  not advertise `offline_access`.
+- An OAuth app left in testing mode expires refresh tokens after seven days; publish the app for
+  production use.
+
+The client is resolved from configuration, never stored, and it is offered only when both the
+Server's effective origin is one of the eight Google endpoints and the issuer canonicalizes to
+Google's — a Server that merely names Google as its authorization server cannot borrow it. Unsetting
+the variables takes effect immediately and leaves nothing to clean up.
 
 ### The authorization round trip
 
@@ -456,9 +491,12 @@ authorization is revoked with a clear "authorize again" signal. A client metadat
 On a mismatch, the response's `error`, `error_description`, and `error_uri` are neither shown nor
 adopted — a mismatched response is evidence of an attack, not a hint about what went wrong.
 
-**Scopes**, in priority order: the challenge's `scope` is authoritative; otherwise the Protected
-Resource Metadata document's `scopes_supported`; otherwise no `scope` parameter at all.
-`offline_access` is added only when the *authorization server's* metadata advertises it.
+**Scopes**, in priority order: scopes an explicit request names (the CLI's `--scopes`, or a catalog
+entry's `oauthScopes`); otherwise the challenge's `scope`; otherwise the Protected Resource Metadata
+document's `scopes_supported`; otherwise no `scope` parameter at all. The protected resource's own
+list is the fallback the specification names, and it is load-bearing for Google, whose authorization
+endpoint rejects a request carrying no `scope`. `offline_access` is added only when the
+*authorization server's* metadata advertises it.
 
 The callback lands on a fixed local surface,
 `/agents/{agentId}/mcp?mcp_oauth=success&server={serverId}` or the same with
@@ -1001,7 +1039,7 @@ The catalog is committed repository data in the `@opentag/mcp-presets` workspace
 | Source | Holds |
 | --- | --- |
 | `packages/mcp-presets/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
-| `packages/mcp-presets/mcp-catalog.yaml` | the entries: slug, localized title and description, URL, default authorization kind, category, provider site, icon, order, and optional bearer header configuration |
+| `packages/mcp-presets/mcp-catalog.yaml` | the entries: slug, localized title and description, URL, default authorization kind, category, provider site, icon, order, optional bearer header configuration, and an optional `oauthScopes` list — the scopes the provider's consent screen is configured for |
 | `packages/mcp-presets/icons/` | the monochrome card marks referenced by the entries |
 
 `scripts/generate-mcp-catalog.mjs` compiles the sources into
@@ -1024,6 +1062,13 @@ for the new authorization, never a statement about the Server. Anonymous and OAu
 from the card, with OAuth navigating to the authorization server; a bearer entry stops to collect the
 key.
 
+An entry's `oauthScopes`, when present, travel as the OAuth start request's explicit scopes, so the
+provider's consent screen is asked for exactly the scopes the catalog author recorded. An entry that
+declares none leaves scope selection to the flow's own discovery rules, and a manual, imported, or
+re-authorization flow always does — only a card has a catalog entry to consult. Google's entries
+carry Google's recommended per-product subsets, which deliberately exclude restricted scopes such as
+`https://mail.google.com/`.
+
 The generator refuses, at build time, at minimum:
 
 - an entry URL the outbound policy would refuse;
@@ -1033,6 +1078,8 @@ The generator refuses, at build time, at minimum:
 - an entry that names a category the category source does not declare;
 - a declared category that no entry references, so the tab bar never shows a tab that leads nowhere;
 - a duplicate entry or category id;
+- an `oauthScopes` list that is empty, carries a blank or oversized scope, or exceeds the start
+  request's bounds;
 - a localized field that omits any supported locale, taken from the i18n project settings;
 - an entry whose referenced icon file does not exist;
 - a compiled module that does not match its sources.

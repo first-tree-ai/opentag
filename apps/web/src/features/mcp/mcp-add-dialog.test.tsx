@@ -156,6 +156,8 @@ describe("MCP unified add journey", () => {
     expect(await screen.findByText(/was added. Authorization is not complete/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Authorize in browser" }));
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
+    // A manual flow has no catalog entry to consult, so it requests no explicit scopes.
+    expect(oauth).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, {});
     expect(create).toHaveBeenCalledTimes(1);
     expect(attach).toHaveBeenCalledTimes(1);
   });

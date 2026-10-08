@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -50,6 +51,13 @@ const TOKEN_URL = `${ISSUER}/token`;
 const REGISTER_URL = `${ISSUER}/register`;
 const FLOW_SECRET = "flow-secret";
 
+const GOOGLE_MCP_URL = "https://gmailmcp.googleapis.com/mcp/v1";
+const GOOGLE_PRM_URL = "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1";
+const GOOGLE_ISSUER = GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER;
+const GOOGLE_AS_URL = `${GOOGLE_ISSUER}/.well-known/oauth-authorization-server`;
+const GOOGLE_TOKEN_URL = `${GOOGLE_ISSUER}/token`;
+const GOOGLE_CLIENT = { clientId: "google-client-id", clientSecret: "google-client-secret" };
+
 interface StubResponse {
   status: number;
   body?: string;
@@ -83,7 +91,10 @@ function oauthNode(routes: RouteMap) {
   return { calls, fetchImpl };
 }
 
-function build(routes: RouteMap, options: { now?: () => Date } = {}) {
+function build(
+  routes: RouteMap,
+  options: { now?: () => Date; googleMcpClient?: { clientId: string; clientSecret: string } } = {},
+) {
   const { calls, fetchImpl } = oauthNode(routes);
   const fetcher = new McpOutboundFetcher({
     allowLoopback: false,
@@ -126,6 +137,28 @@ function discoverableAs(overrides: Record<string, unknown> = {}): RouteMap {
     [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [ISSUER] }),
     [AS_URL]: asMetadata(document),
     [REGISTER_URL]: doc({ client_id: "dcr_default", client_secret: "cs_default" }),
+  };
+}
+
+/**
+ * A Google Workspace endpoint with Google's real discovery shape: the Protected Resource Metadata
+ * advertises the slash-suffixed issuer, the metadata document declares the slash-free one, and no
+ * registration mechanism is offered.
+ */
+function googleRoutes(overrides: Record<string, unknown> = {}): RouteMap {
+  return {
+    [GOOGLE_PRM_URL]: doc({
+      resource: GOOGLE_MCP_URL,
+      authorization_servers: [`${GOOGLE_ISSUER}/`],
+      scopes_supported: ["https://www.googleapis.com/auth/gmail.readonly"],
+    }),
+    [GOOGLE_AS_URL]: doc({
+      issuer: GOOGLE_ISSUER,
+      authorization_endpoint: `${GOOGLE_ISSUER}/o/oauth2/v2/auth`,
+      token_endpoint: GOOGLE_TOKEN_URL,
+      authorization_response_iss_parameter_supported: true,
+      ...overrides,
+    }),
   };
 }
 
@@ -238,6 +271,209 @@ describe("McpOAuthFlowService.start", () => {
     expect(row?.revision).toBe((firstRow?.revision ?? 0) + 1);
     // A restart is one row, never a second one.
     expect(await unit.database.select().from(mcpServerAuthorizations)).toHaveLength(1);
+  });
+
+  it("requests Google's advertised issuer in its slash-free form on a Google Workspace origin", async () => {
+    const ids = await seed(GOOGLE_MCP_URL);
+    const { calls, flows } = build({
+      ...googleRoutes({ registration_endpoint: REGISTER_URL }),
+      [REGISTER_URL]: doc({ client_id: "dcr_default", client_secret: "cs_default" }),
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    // The document declares the slash-free issuer, so the flow proceeds under that name.
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_default");
+    expect(calls.some((call) => call.url === GOOGLE_AS_URL)).toBe(true);
+    const row = await readAuthorization(ids);
+    expect(row?.authorizationServer).toBe(GOOGLE_ISSUER);
+    expect(row?.flowAuthorizationServer).toBe(GOOGLE_ISSUER);
+  });
+
+  it("preserves a legitimate issuer that ends in a slash on an ordinary provider", async () => {
+    /*
+     * RFC 8414 §3.3: the issuer identity is compared exactly. A provider whose advertised issuer
+     * ends in a slash and whose metadata declares that same spelling must keep being discovered.
+     */
+    const ids = await seed();
+    const slashedIssuer = `${ISSUER}/`;
+    const { flows } = build({
+      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [slashedIssuer] }),
+      [AS_URL]: doc({
+        issuer: slashedIssuer,
+        authorization_endpoint: `${ISSUER}/authorize`,
+        token_endpoint: TOKEN_URL,
+        registration_endpoint: REGISTER_URL,
+      }),
+      [REGISTER_URL]: doc({ client_id: "dcr_default", client_secret: "cs_default" }),
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(started.authorizationUrl.startsWith(`${ISSUER}/authorize`)).toBe(true);
+    const row = await readAuthorization(ids);
+    // The advertised spelling is kept verbatim, not rewritten into a mismatch.
+    expect(row?.authorizationServer).toBe(slashedIssuer);
+    expect(row?.flowAuthorizationServer).toBe(slashedIssuer);
+  });
+
+  it("preserves a legitimate path-bearing issuer that ends in a slash", async () => {
+    const ids = await seed();
+    const tenantIssuer = `${ISSUER}/tenant/`;
+    const tenantAsUrl = `${ISSUER}/.well-known/oauth-authorization-server/tenant`;
+    const tenantRegister = `${ISSUER}/tenant/register`;
+    const { flows } = build({
+      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [tenantIssuer] }),
+      [tenantAsUrl]: doc({
+        issuer: tenantIssuer,
+        authorization_endpoint: `${ISSUER}/tenant/authorize`,
+        token_endpoint: `${ISSUER}/tenant/token`,
+        registration_endpoint: tenantRegister,
+      }),
+      [tenantRegister]: doc({ client_id: "dcr_tenant", client_secret: "cs_tenant" }),
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_tenant");
+    const row = await readAuthorization(ids);
+    expect(row?.authorizationServer).toBe(tenantIssuer);
+  });
+
+  it("still refuses an advertised issuer whose metadata declares a different identifier", async () => {
+    const ids = await seed();
+    const { flows } = build({
+      ...discoverableAs(),
+      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [`${ISSUER}/`] }),
+      [AS_URL]: doc({
+        issuer: "https://attacker.example.com",
+        authorization_endpoint: "https://attacker.example.com/authorize",
+        token_endpoint: "https://attacker.example.com/token",
+        registration_endpoint: REGISTER_URL,
+      }),
+    });
+    await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.OAUTH_FAILED,
+    });
+    // A refused discovery never writes an authorization row.
+    expect(await unit.database.select().from(mcpServerAuthorizations)).toHaveLength(0);
+  });
+
+  it("requests the protected resource's scopes when no caller requests any", async () => {
+    const ids = await seed();
+    const { flows } = build({
+      ...discoverableAs(),
+      [PRM_URL]: doc({
+        resource: MCP_URL,
+        authorization_servers: [ISSUER],
+        scopes_supported: ["gmail.readonly", "gmail.compose"],
+      }),
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("scope")).toBe("gmail.readonly gmail.compose");
+    expect((await readAuthorization(ids))?.scopes).toEqual(["gmail.readonly", "gmail.compose"]);
+  });
+
+  it("prefers explicitly requested scopes over the protected resource's", async () => {
+    const ids = await seed();
+    const { flows } = build({
+      ...discoverableAs(),
+      [PRM_URL]: doc({
+        resource: MCP_URL,
+        authorization_servers: [ISSUER],
+        scopes_supported: ["gmail.readonly", "gmail.compose"],
+      }),
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, ["custom.scope"], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("scope")).toBe("custom.scope");
+  });
+
+  it("uses the deployment Google client for a Google Workspace endpoint and registers nothing", async () => {
+    const ids = await seed(GOOGLE_MCP_URL);
+    const { calls, flows } = build(googleRoutes(), { googleMcpClient: GOOGLE_CLIENT });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    const authorizationUrl = new URL(started.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("client_id")).toBe(GOOGLE_CLIENT.clientId);
+    // The client's own parameters ride along; they are Google's refresh-token mechanism.
+    expect(authorizationUrl.searchParams.get("access_type")).toBe("offline");
+    expect(authorizationUrl.searchParams.get("prompt")).toBe("consent");
+    // Google rejects a scope-less authorization request, and the protected resource's scopes are
+    // the fallback that supplies them.
+    expect(authorizationUrl.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/gmail.readonly");
+    // The secret never reaches the browser-bound URL.
+    expect(started.authorizationUrl).not.toContain(GOOGLE_CLIENT.clientSecret);
+    // Discovery is the only thing that talked to the network: no registration was attempted.
+    expect(calls.map((call) => call.url)).toEqual([GOOGLE_PRM_URL, GOOGLE_AS_URL]);
+    expect(await unit.database.select().from(mcpClientRegistrations)).toEqual([]);
+    expect((await readAuthorization(ids))?.clientRegistrationId).toBeNull();
+  });
+
+  it("presents the deployment Google client at the callback and on refresh", async () => {
+    const ids = await seed(GOOGLE_MCP_URL);
+    const { calls, flows } = build(
+      {
+        ...googleRoutes(),
+        [GOOGLE_TOKEN_URL]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 600 }),
+      },
+      { googleMcpClient: GOOGLE_CLIENT },
+    );
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl), iss: GOOGLE_ISSUER }, FLOW_SECRET);
+    const row = await readAuthorization(ids);
+    expect(row?.status).toBe("active");
+    const basic = `Basic ${Buffer.from(`${GOOGLE_CLIENT.clientId}:${GOOGLE_CLIENT.clientSecret}`).toString("base64")}`;
+    const tokenCalls = calls.filter((call) => call.url === GOOGLE_TOKEN_URL);
+    expect(tokenCalls).toHaveLength(1);
+    expect(new Headers((tokenCalls[0]?.init.headers ?? {}) as Record<string, string>).get("authorization")).toBe(basic);
+
+    // A later refresh presents the same client and still registers nothing.
+    await flows.refreshAuthorization(row?.id as string);
+    const refreshed = calls.filter((call) => call.url === GOOGLE_TOKEN_URL);
+    expect(refreshed).toHaveLength(2);
+    expect(new Headers((refreshed[1]?.init.headers ?? {}) as Record<string, string>).get("authorization")).toBe(basic);
+    expect(await unit.database.select().from(mcpClientRegistrations)).toEqual([]);
+    expect((await readAuthorization(ids))?.status).toBe("active");
+  });
+
+  it("does not offer the deployment Google client to a non-Google endpoint that claims Google", async () => {
+    /*
+     * Without the origin half of the binding, a hostile Server that advertises Google's
+     * authorization server would obtain a genuine Google credential that the gateway would then
+     * send to its endpoint.
+     */
+    const ids = await seed();
+    /*
+     * The hostile provider is self-consistent — its metadata declares the same slash-suffixed
+     * issuer its protected resource advertises — so discovery succeeds under the ordinary rules
+     * and only the origin half of the binding keeps the deployment client out of it.
+     */
+    const claimedIssuer = `${GOOGLE_ISSUER}/`;
+    const { calls, flows } = build(
+      {
+        [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [claimedIssuer], scopes_supported: ["mail"] }),
+        [GOOGLE_AS_URL]: doc({
+          issuer: claimedIssuer,
+          authorization_endpoint: `${GOOGLE_ISSUER}/o/oauth2/v2/auth`,
+          token_endpoint: GOOGLE_TOKEN_URL,
+          registration_endpoint: `${GOOGLE_ISSUER}/register`,
+        }),
+        [`${GOOGLE_ISSUER}/register`]: doc({ client_id: "dcr_evil", client_secret: "cs_evil" }),
+      },
+      { googleMcpClient: GOOGLE_CLIENT },
+    );
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_evil");
+    // The configured secret is not on the wire anywhere, not even in a header.
+    expect(JSON.stringify(calls)).not.toContain(GOOGLE_CLIENT.clientSecret);
+  });
+
+  it("does not offer the deployment Google client when a Google endpoint resolves another issuer", async () => {
+    const ids = await seed(GOOGLE_MCP_URL);
+    const { flows } = build(
+      {
+        [GOOGLE_PRM_URL]: doc({ resource: GOOGLE_MCP_URL, authorization_servers: [ISSUER] }),
+        [AS_URL]: asMetadata({ registration_endpoint: REGISTER_URL }),
+        [REGISTER_URL]: doc({ client_id: "dcr_default", client_secret: "cs_default" }),
+      },
+      { googleMcpClient: GOOGLE_CLIENT },
+    );
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_default");
+    expect(started.authorizationUrl).not.toContain(GOOGLE_CLIENT.clientId);
   });
 
   it("prefers the deployment's pre-registered client and stores no new registration", async () => {

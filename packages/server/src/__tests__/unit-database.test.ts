@@ -4,7 +4,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   billingAccounts,
   billingPaymentChanges,
-  billingSettings,
   computerConnectCodes,
   computerCredentials,
   computers,
@@ -85,13 +84,11 @@ describe("unit database harness", () => {
       .insert(users)
       .values({ id: accountId, displayName: "Transient", email: "transient@example.com" });
     await unitDatabase.database.insert(billingAccounts).values({ id: accountId });
-    await unitDatabase.database.insert(billingSettings).values({ id: "fixture", value: 1 });
     await unitDatabase.database.insert(billingPaymentChanges).values({ payment: "fixture" });
     await unitDatabase.reset();
 
     expect(await unitDatabase.database.select().from(users)).toHaveLength(0);
     expect(await unitDatabase.database.select().from(billingAccounts)).toHaveLength(0);
-    expect(await unitDatabase.database.select().from(billingSettings)).toHaveLength(0);
     expect(await unitDatabase.database.select().from(billingPaymentChanges)).toHaveLength(0);
   });
 

@@ -128,6 +128,7 @@ export interface CreateAppOptions {
   /** E4 controlled model path; present exactly when the deployment model proxy is enabled. */
   cloudModel?: CloudModelProxyRouteOptions;
   cloudBilling?: CloudBilling;
+  cloudUsage?: import("./services/cloud-usage.js").CloudUsageService;
   /**
    * E5 Runner workspace persistence HTTP routes; present exactly when the Runner runtime
    * configured the object store. Authenticates the Runner bootstrap bearer token only — never
@@ -823,7 +824,7 @@ function registerAvailableAccountRoutes(
   options: CreateAppOptions,
   authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
 ): void {
-  registerCloudBillingRoutes(app, authService, options.cloudBilling, authOptions);
+  registerCloudBillingRoutes(app, authService, options.cloudBilling, authOptions, options.cloudUsage);
   if (
     !(
       options.agentService ||

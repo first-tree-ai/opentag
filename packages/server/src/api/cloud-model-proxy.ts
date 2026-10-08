@@ -2,13 +2,14 @@ import type { ServerResponse } from "node:http";
 import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { z } from "zod";
-import type { CloudBilling } from "../cloud-billing.js";
+import type { CloudCallContext } from "../cloud-call-contracts.js";
 import type { CloudModelConfig } from "../cloud-model-config.js";
 import {
   applyCloudModelOutputBudget,
   CLOUD_MODEL_ERROR_BODY_MAX_BYTES,
   CloudModelRequestSchema,
 } from "../cloud-model-request.js";
+import { CloudModelService } from "../services/cloud-model-service.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 
@@ -48,7 +49,8 @@ const MAX_TOKEN_CHARS = 4_096;
 export interface CloudModelProxyRouteOptions {
   config: Extract<CloudModelConfig, { enabled: true }>;
   grants: CloudModelGrantService;
-  billing?: { client: CloudBilling; accountForExecution: (claims: GrantClaims) => Promise<string | undefined> };
+  modelService?: CloudModelService;
+  contextForExecution?: (claims: GrantClaims) => Promise<CloudCallContext | undefined>;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -120,30 +122,10 @@ async function callUpstream(
   signal: AbortSignal,
   claims: GrantClaims,
 ): Promise<Response | undefined> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  try {
-    if (options.billing) {
-      const accountId = await options.billing.accountForExecution(claims);
-      if (!accountId || signal.aborted) return undefined;
-      return await options.billing.client.model(accountId, { ...body, model }, signal, options.config);
-    }
-    return await fetchImpl(`${options.config.upstreamBaseUrl}/chat/completions`, {
-      body: JSON.stringify({ ...body, model }),
-      headers: {
-        accept: body.stream === true ? SSE_CONTENT_TYPE : JSON_CONTENT_TYPE,
-        // Byte accounting and size caps apply to the bytes actually read, not a decompression ratio.
-        "accept-encoding": "identity",
-        authorization: `Bearer ${options.config.masterKey}`,
-        "content-type": JSON_CONTENT_TYPE,
-      },
-      method: "POST",
-      // A redirect from the fixed upstream must never steer the proxy to another origin.
-      redirect: "error",
-      signal,
-    });
-  } catch {
-    return undefined;
-  }
+  const service = options.modelService ?? new CloudModelService(options.config, { fetchImpl: options.fetchImpl });
+  const context = await options.contextForExecution?.(claims);
+  if (options.contextForExecution && !context) throw new Error("Cloud execution has no owner");
+  return service.request({ ...body, model }, signal, options.config, context);
 }
 
 /** Wait for socket drain, but never past a close, error, or abort. */
@@ -465,6 +447,17 @@ function finalizePipedOutcome(
   return fail(reply, 502, "CLOUD_MODEL_UPSTREAM_INVALID", "The model upstream ended without a complete response");
 }
 
+function billingFailure(error: unknown): UpstreamRejection | undefined {
+  if (!(error instanceof Error)) return undefined;
+  if ("code" in error && error.code === "usage_pending")
+    return { status: 503, code: "usage_pending", message: "Cloud usage is awaiting settlement" };
+  const status = "statusCode" in error ? error.statusCode : undefined;
+  if (status === 402) return { status, code: "insufficient_credit", message: "Cloud credit is exhausted" };
+  if (status === 429) return { status, code: "rate_limit_exceeded", message: "Too many concurrent cloud calls" };
+  if (status === 403) return { status, code: "authentication_error", message: "Cloud credit requires payment review" };
+  return undefined;
+}
+
 /** Forward one authorized request and finalize the client response in every path. */
 async function forwardChatCompletions(
   options: CloudModelProxyRouteOptions,
@@ -474,7 +467,14 @@ async function forwardChatCompletions(
   signal: AbortSignal,
   timedOut: () => boolean,
 ): Promise<FastifyReply> {
-  const upstream = await callUpstream(options, claims.model, body, signal, claims);
+  let upstream: Response | undefined;
+  try {
+    upstream = await callUpstream(options, claims.model, body, signal, claims);
+  } catch (error) {
+    const billingRejection = billingFailure(error);
+    if (billingRejection) return fail(reply, billingRejection.status, billingRejection.code, billingRejection.message);
+    return finalizeUpstreamUnavailable(reply, signal, timedOut);
+  }
   if (!upstream) return finalizeUpstreamUnavailable(reply, signal, timedOut);
   const rejection = await rejectUnusableUpstream(upstream, body, options.config.maxResponseBytes);
   if (rejection) {
@@ -496,6 +496,7 @@ export function registerCloudModelProxyRoutes(app: FastifyInstance, options: Clo
   app.addHook("preClose", async () => {
     for (const controller of [...active]) controller.abort(new Error("cloud_model_server_shutdown"));
     options.grants.close();
+    await options.modelService?.close();
   });
 
   app.post(CLOUD_MODEL_CHAT_COMPLETIONS_PATH, { bodyLimit: options.config.maxRequestBytes }, async (request, reply) => {

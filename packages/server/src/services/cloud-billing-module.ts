@@ -14,7 +14,19 @@ export async function loadCloudBilling(
   try {
     const module = await load(packageName);
     const billing = await module.createCloudBilling(options);
-    const methods = ["readiness", "summary", "usage", "checkout", "model", "webhook", "stop", "close"] as const;
+    const methods = [
+      "readiness",
+      "summary",
+      "pricedModels",
+      "beginCall",
+      "observeCall",
+      "finishCall",
+      "writeOffCall",
+      "checkout",
+      "webhook",
+      "stop",
+      "close",
+    ] as const;
     if (!billing || methods.some((name) => typeof billing[name] !== "function"))
       throw new Error("Invalid cloud billing module");
     return billing;

@@ -13,6 +13,7 @@ import type { CloudBilling } from "../cloud-billing.js";
 import { resolveCloudBillingConfig } from "../cloud-billing-config.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { loadCloudBilling } from "../services/cloud-billing-module.js";
+import { CloudModelService } from "../services/cloud-model-service.js";
 import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 
@@ -34,10 +35,11 @@ function moduleFixture() {
       maximumTopUpCents: 100000,
     }),
     checkout: vi.fn<CloudBilling["checkout"]>().mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/test" }),
-    usage: vi.fn<CloudBilling["usage"]>().mockResolvedValue({ enabled: false }),
-    model: vi
-      .fn<CloudBilling["model"]>()
-      .mockResolvedValue(new Response('{"choices":[]}', { headers: { "content-type": "application/json" } })),
+    pricedModels: vi.fn<CloudBilling["pricedModels"]>().mockReturnValue(["model-a"]),
+    beginCall: vi.fn<CloudBilling["beginCall"]>().mockResolvedValue("call"),
+    observeCall: vi.fn<CloudBilling["observeCall"]>().mockResolvedValue(),
+    finishCall: vi.fn<CloudBilling["finishCall"]>().mockResolvedValue(),
+    writeOffCall: vi.fn<CloudBilling["writeOffCall"]>().mockResolvedValue(),
     webhook: vi.fn<CloudBilling["webhook"]>().mockResolvedValue(),
     stop: vi.fn(),
     close: vi.fn<CloudBilling["close"]>().mockResolvedValue(),
@@ -61,7 +63,6 @@ describe("in-process cloud billing", () => {
       databaseUrl: "postgres://fixture",
       publicUrl: "https://app.example",
       environment: { OPENTAG_CLOUD_MODEL_ENABLED: "true" },
-      onError: vi.fn(),
     };
     const load = vi.fn().mockRejectedValue(new Error("private credentials"));
     expect(await loadCloudBilling(false, options, load)).toBeUndefined();
@@ -101,7 +102,7 @@ describe("in-process cloud billing", () => {
     expect((await app.inject({ url: CLOUD_BILLING_PATH, headers })).statusCode).toBe(200);
     expect(billing.summary).toHaveBeenCalledWith(ACCOUNT);
     expect((await app.inject({ url: `${CLOUD_USAGE_PATH}?windowDays=7`, headers })).statusCode).toBe(200);
-    expect(billing.usage).toHaveBeenCalledWith(ACCOUNT, 7);
+    expect(billing.beginCall).not.toHaveBeenCalled();
     const input = { amountCents: 1234, idempotencyKey: SESSION };
     expect(
       (
@@ -213,7 +214,25 @@ describe("in-process cloud billing", () => {
       },
       grants,
       fetchImpl: fallback,
-      billing: { client: billing, accountForExecution: async () => ACCOUNT },
+      modelService: new CloudModelService(
+        {
+          enabled: true,
+          upstreamBaseUrl: "https://gateway.example/v1",
+          masterKey: "key",
+          tokenTtlSeconds: 60,
+          maxStreamsPerToken: 1,
+          requestTimeoutMs: 1000,
+          maxRequestBytes: 65536,
+          maxResponseBytes: 1048576,
+        },
+        { billing, fetchImpl: fallback },
+      ),
+      contextForExecution: async () => ({
+        accountId: ACCOUNT,
+        agentId: ACCOUNT,
+        sessionId: SESSION,
+        source: "execution",
+      }),
     });
     cleanups.push(async () => {
       await app.close();
@@ -230,8 +249,8 @@ describe("in-process cloud billing", () => {
     expect((await app.inject({ method: "POST", url: CLOUD_MODEL_CHAT_COMPLETIONS_PATH, payload })).statusCode).toBe(
       401,
     );
-    expect(billing.model).not.toHaveBeenCalled();
-    billing.model.mockResolvedValue(Response.json({ error: { code: "insufficient_credit" } }, { status: 402 }));
+    expect(billing.beginCall).not.toHaveBeenCalled();
+    billing.beginCall.mockRejectedValue(Object.assign(new Error("No credit"), { statusCode: 402 }));
     expect(
       (
         await app.inject({
@@ -242,11 +261,9 @@ describe("in-process cloud billing", () => {
         })
       ).statusCode,
     ).toBe(402);
-    expect(billing.model).toHaveBeenCalledWith(
-      ACCOUNT,
-      expect.objectContaining({ model: "model-a" }),
-      expect.any(AbortSignal),
-      expect.objectContaining({ requestTimeoutMs: 1000, maxResponseBytes: 1024 * 1024 }),
+    expect(billing.beginCall).toHaveBeenCalledWith(
+      { accountId: ACCOUNT, agentId: ACCOUNT, sessionId: SESSION, source: "execution" },
+      { gateway: "litellm", model: "model-a" },
     );
     expect(fallback).not.toHaveBeenCalled();
   });

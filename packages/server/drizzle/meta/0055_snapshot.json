@@ -1,5 +1,5 @@
 {
-  "id": "1b28f5b2-ce8e-4354-90c2-e1d5ba8b6bce",
+  "id": "de01474c-96e8-4d80-bc99-2f1cc48aeec0",
   "prevId": "7a888343-5e5a-4e7b-87e5-176f3941f5b7",
   "version": "7",
   "dialect": "postgresql",
@@ -1163,78 +1163,15 @@
           "primaryKey": true,
           "notNull": true
         },
-        "key_hash": {
-          "name": "key_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "encrypted_key": {
-          "name": "encrypted_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "blocked": {
           "name": "blocked",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "needs_sync": {
-          "name": "needs_sync",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "spent_micros": {
-          "name": "spent_micros",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "sync_after": {
-          "name": "sync_after",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "sync_failures": {
-          "name": "sync_failures",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         }
       },
-      "indexes": {
-        "accounts_pending": {
-          "name": "accounts_pending",
-          "columns": [
-            {
-              "expression": "sync_after",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"billing\".\"accounts\".\"needs_sync\" = true",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "accounts_id_users_id_fk": {
           "name": "accounts_id_users_id_fk",
@@ -1253,16 +1190,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "accounts_spent_nonnegative": {
-          "name": "accounts_spent_nonnegative",
-          "value": "\"billing\".\"accounts\".\"spent_micros\" >= 0"
-        },
-        "accounts_sync_failures_nonnegative": {
-          "name": "accounts_sync_failures_nonnegative",
-          "value": "\"billing\".\"accounts\".\"sync_failures\" >= 0"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "billing.attempts": {
@@ -1281,15 +1209,51 @@
           "primaryKey": false,
           "notNull": true
         },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "gateway": {
+          "name": "gateway",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "model": {
           "name": "model",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "generation": {
-          "name": "generation",
+        "response_id": {
+          "name": "response_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_call_id": {
+          "name": "provider_call_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rates": {
+          "name": "rates",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -1300,8 +1264,46 @@
           "notNull": true,
           "default": "now()"
         },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'in_flight'"
+        },
+        "resolution": {
+          "name": "resolution",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolution_reason": {
+          "name": "resolution_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "usage_complete": {
+          "name": "usage_complete",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "input_tokens": {
           "name": "input_tokens",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cached_input_tokens": {
+          "name": "cached_input_tokens",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
@@ -1312,8 +1314,14 @@
           "primaryKey": false,
           "notNull": false
         },
-        "charge_micros": {
-          "name": "charge_micros",
+        "priced_micros": {
+          "name": "priced_micros",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "debited_micros": {
+          "name": "debited_micros",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
@@ -1355,6 +1363,33 @@
           "method": "btree",
           "with": {}
         },
+        "attempts_agent": {
+          "name": "attempts_agent",
+          "columns": [
+            {
+              "expression": "account",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "attempts_pending": {
           "name": "attempts_pending",
           "columns": [
@@ -1372,47 +1407,54 @@
             }
           ],
           "isUnique": false,
-          "where": "\"billing\".\"attempts\".\"charge_micros\" IS NULL AND \"billing\".\"attempts\".\"generation\" IS NOT NULL",
+          "where": "\"billing\".\"attempts\".\"state\" = 'pending_usage'",
           "concurrently": false,
           "method": "btree",
           "with": {}
         }
       },
       "foreignKeys": {
-        "attempts_account_accounts_id_fk": {
-          "name": "attempts_account_accounts_id_fk",
+        "attempts_account_users_id_fk": {
+          "name": "attempts_account_users_id_fk",
           "tableFrom": "attempts",
-          "tableTo": "accounts",
-          "schemaTo": "billing",
+          "tableTo": "users",
           "columnsFrom": [
             "account"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "attempts_generation_unique": {
-          "name": "attempts_generation_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "generation"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "attempts_reconcile_failures_nonnegative": {
-          "name": "attempts_reconcile_failures_nonnegative",
-          "value": "\"billing\".\"attempts\".\"reconcile_failures\" >= 0"
+        "attempts_source_valid": {
+          "name": "attempts_source_valid",
+          "value": "\"billing\".\"attempts\".\"source\" IN ('execution','connectivity_probe')"
+        },
+        "attempts_state_valid": {
+          "name": "attempts_state_valid",
+          "value": "\"billing\".\"attempts\".\"state\" IN ('in_flight','pending_usage','finalized')"
+        },
+        "attempts_resolution_valid": {
+          "name": "attempts_resolution_valid",
+          "value": "(\"billing\".\"attempts\".\"state\" = 'finalized') = (\"billing\".\"attempts\".\"resolution\" IS NOT NULL) AND (\"billing\".\"attempts\".\"resolution\" IS NULL OR \"billing\".\"attempts\".\"resolution\" IN ('charged','no_charge','unbilled','written_off'))"
         },
         "attempts_usage_nonnegative": {
           "name": "attempts_usage_nonnegative",
-          "value": "\"billing\".\"attempts\".\"input_tokens\" >= 0 AND \"billing\".\"attempts\".\"output_tokens\" >= 0 AND \"billing\".\"attempts\".\"charge_micros\" >= 0"
+          "value": "\"billing\".\"attempts\".\"input_tokens\" >= 0 AND \"billing\".\"attempts\".\"output_tokens\" >= 0 AND \"billing\".\"attempts\".\"cached_input_tokens\" >= 0 AND \"billing\".\"attempts\".\"cached_input_tokens\" <= \"billing\".\"attempts\".\"input_tokens\""
+        },
+        "attempts_debit_valid": {
+          "name": "attempts_debit_valid",
+          "value": "\"billing\".\"attempts\".\"priced_micros\" >= 0 AND \"billing\".\"attempts\".\"debited_micros\" >= 0 AND \"billing\".\"attempts\".\"debited_micros\" <= \"billing\".\"attempts\".\"priced_micros\""
+        },
+        "attempts_reconcile_failures_nonnegative": {
+          "name": "attempts_reconcile_failures_nonnegative",
+          "value": "\"billing\".\"attempts\".\"reconcile_failures\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -1633,31 +1675,6 @@
           "value": "\"billing\".\"payment_changes\".\"refunded\" >= 0"
         }
       },
-      "isRLSEnabled": false
-    },
-    "billing.settings": {
-      "name": "settings",
-      "schema": "billing",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "value": {
-          "name": "value",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.computer_connect_codes": {
@@ -3188,6 +3205,12 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "execution_origin": {
+          "name": "execution_origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "dispatch_request_id": {
           "name": "dispatch_request_id",

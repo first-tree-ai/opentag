@@ -4,8 +4,8 @@ import {
   RUNTIME_AGENT_RUNTIME_TEST_MAX_PENDING,
 } from "@opentag/shared";
 import { z } from "zod";
-import type { CloudBilling } from "../../cloud-billing.js";
 import type { CloudModelConfig } from "../../cloud-model-config.js";
+import { CloudModelService } from "../cloud-model-service.js";
 import { type CloudModelCatalog, readBoundedResponseText } from "../sandboxes/cloud-model-catalog.js";
 
 /**
@@ -70,7 +70,7 @@ export interface CloudAgentRuntimeTesterOptions {
   config: Extract<CloudModelConfig, { enabled: true }>;
   /** The one shared Router model catalog; admits explicit models and resolves the default. */
   catalog: CloudModelCatalog;
-  billing?: CloudBilling;
+  modelService?: CloudModelService;
   fetchImpl?: typeof fetch;
   maxPending?: number;
   maxResponseBytes?: number;
@@ -78,10 +78,8 @@ export interface CloudAgentRuntimeTesterOptions {
 }
 
 export class CloudAgentRuntimeTester {
-  readonly #billing: CloudBilling | undefined;
+  readonly #modelService: CloudModelService;
   readonly #catalog: CloudModelCatalog;
-  readonly #config: Extract<CloudModelConfig, { enabled: true }>;
-  readonly #fetchImpl: typeof fetch;
   readonly #maxPending: number;
   readonly #maxResponseBytes: number;
   readonly #timeoutMs: number;
@@ -90,10 +88,9 @@ export class CloudAgentRuntimeTester {
   #closed = false;
 
   constructor(options: CloudAgentRuntimeTesterOptions) {
-    this.#billing = options.billing;
+    this.#modelService =
+      options.modelService ?? new CloudModelService(options.config, { fetchImpl: options.fetchImpl });
     this.#catalog = options.catalog;
-    this.#config = options.config;
-    this.#fetchImpl = options.fetchImpl ?? fetch;
     this.#maxPending = options.maxPending ?? RUNTIME_AGENT_RUNTIME_TEST_MAX_PENDING;
     this.#maxResponseBytes = options.maxResponseBytes ?? CLOUD_AGENT_RUNTIME_TEST_MAX_RESPONSE_BYTES;
     this.#timeoutMs = options.timeoutMs ?? CLOUD_AGENT_RUNTIME_TEST_TIMEOUT_MS;
@@ -114,6 +111,7 @@ export class CloudAgentRuntimeTester {
    */
   async test(input: {
     accountId?: string;
+    agentId?: string;
     computerId: string;
     model: string | null;
     signal?: AbortSignal;
@@ -138,7 +136,7 @@ export class CloudAgentRuntimeTester {
       const model = input.model ?? snapshot.defaultModel;
       if (!snapshot.available || model === null || !snapshot.models.includes(model))
         return failure("provider_start_failed");
-      return await this.#probe(model, controller.signal, () => timedOut, input.signal, input.accountId);
+      return await this.#probe(model, controller.signal, () => timedOut, input.signal, input.accountId, input.agentId);
     } catch {
       return this.#mapAborted(() => timedOut, input.signal) ?? failure("provider_failed");
     } finally {
@@ -154,32 +152,24 @@ export class CloudAgentRuntimeTester {
     for (const pending of this.#pending.values()) pending.abort();
   }
 
-  #request(model: string, signal: AbortSignal, accountId: string | undefined): Promise<Response> {
+  #request(
+    model: string,
+    signal: AbortSignal,
+    accountId: string | undefined,
+    agentId: string | undefined,
+  ): Promise<Response> {
     const body = {
       model,
       messages: [{ role: "user", content: CLOUD_AGENT_RUNTIME_TEST_PROMPT }],
       max_tokens: CLOUD_AGENT_RUNTIME_TEST_MAX_OUTPUT_TOKENS,
       stream: false,
     };
-    if (this.#billing) {
-      if (!accountId) throw new Error("Cloud billing requires an authenticated Account");
-      return this.#billing.model(accountId, body, signal, {
-        requestTimeoutMs: this.#timeoutMs,
-        maxResponseBytes: this.#maxResponseBytes,
-      });
-    }
-    return this.#fetchImpl(`${this.#config.upstreamBaseUrl}/chat/completions`, {
-      body: JSON.stringify(body),
-      headers: {
-        accept: "application/json",
-        "accept-encoding": "identity",
-        authorization: `Bearer ${this.#config.masterKey}`,
-        "content-type": "application/json",
-      },
-      method: "POST",
-      redirect: "error",
+    return this.#modelService.request(
+      body,
       signal,
-    });
+      { requestTimeoutMs: this.#timeoutMs, maxResponseBytes: this.#maxResponseBytes },
+      accountId && agentId ? { accountId, agentId, sessionId: null, source: "connectivity_probe" } : undefined,
+    );
   }
 
   async #probe(
@@ -188,10 +178,11 @@ export class CloudAgentRuntimeTester {
     timedOut: () => boolean,
     callerSignal: AbortSignal | undefined,
     accountId: string | undefined,
+    agentId: string | undefined,
   ): Promise<AgentRuntimeTestResponse> {
     let response: Response;
     try {
-      response = await this.#request(model, signal, accountId);
+      response = await this.#request(model, signal, accountId, agentId);
     } catch {
       return this.#mapAborted(timedOut, callerSignal) ?? failure("provider_failed");
     }

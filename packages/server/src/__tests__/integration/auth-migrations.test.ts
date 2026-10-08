@@ -24,6 +24,7 @@ import {
   ConnectCodeService,
   hashSecret,
 } from "../../services/auth/index.js";
+import { CloudCallStore } from "../../services/cloud-call-store.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const betterAuthSecret = "im-binding-test-secret-at-least-32-characters";
@@ -536,20 +537,43 @@ describe("database migrations", () => {
       await expect(sql`insert into billing.accounts(id) values (${crypto.randomUUID()})`).rejects.toMatchObject({
         code: "23503",
       });
+      const calls = new CloudCallStore({
+        query: async (statement, parameters = []) => ({
+          rows: await sql.unsafe(statement, parameters as postgres.ParameterOrJSON<never>[]),
+        }),
+      });
+      const rates = {
+        inputMicrosPerMillion: 1000000,
+        cachedInputMicrosPerMillion: 500000,
+        outputMicrosPerMillion: 2000000,
+      };
+      const callId = await calls.create(
+        { accountId: account, agentId: crypto.randomUUID(), sessionId: null, source: "execution" },
+        { gateway: "litellm", model: "model-a" },
+        rates,
+      );
+      expect((await calls.get(callId)).rates).toEqual(rates);
+      await calls.observe(callId, { inputTokens: 100, cachedInputTokens: 40, outputTokens: 10, complete: true });
+      expect(await calls.get(callId)).toMatchObject({
+        input_tokens: 100,
+        cached_input_tokens: 40,
+        output_tokens: 10,
+        usage_complete: true,
+      });
       await sql`insert into billing.accounts(id) values (${account})`;
-      const [billingAccount] =
-        await sql`select needs_sync,sync_after,sync_failures from billing.accounts where id=${account}`;
-      expect(billingAccount).toMatchObject({ needs_sync: true, sync_failures: 0 });
-      expect(billingAccount?.sync_after).toBeInstanceOf(Date);
-      await expect(sql`update billing.accounts set sync_failures=-1 where id=${account}`).rejects.toMatchObject({
+      expect((await sql`select blocked from billing.accounts where id=${account}`)[0]).toMatchObject({
+        blocked: false,
+      });
+      await sql`insert into billing.grants(id,account,amount,kind) values ('trial',${account},1000000,'promotion')`;
+      await expect(sql`delete from public.users where id=${account}`).rejects.toMatchObject({ code: "23503" });
+      await sql`insert into billing.attempts(id,account,agent_id,source,gateway,model) values ('call',${account},${crypto.randomUUID()},'execution','litellm','model-a')`;
+      await expect(sql`update billing.attempts set input_tokens=-1 where id='call'`).rejects.toMatchObject({
         code: "23514",
       });
-      expect(
-        await sql`select column_name from information_schema.columns where table_schema='billing' and table_name='checkouts' and column_name='paid'`,
-      ).toHaveLength(0);
-      await sql`insert into billing.grants(id, account, amount, kind) values ('trial', ${account}, 1000000, 'promotion')`;
-      await expect(sql`delete from public.users where id=${account}`).rejects.toMatchObject({ code: "23503" });
-      await expect(sql`update billing.accounts set spent_micros=-1 where id=${account}`).rejects.toMatchObject({
+      await expect(
+        sql`update billing.attempts set priced_micros=1,debited_micros=2 where id='call'`,
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(sql`update billing.attempts set state='finalized' where id='call'`).rejects.toMatchObject({
         code: "23514",
       });
       await sql.unsafe("create role billing_runtime_test nologin");
@@ -559,7 +583,7 @@ describe("database migrations", () => {
         await transaction.unsafe("set local role billing_runtime_test");
         const [row] = await transaction`select amount from billing.grants where account=${account}`;
         expect(row?.amount).toBe("1000000");
-        await transaction`update billing.accounts set spent_micros=100 where id=${account}`;
+        await transaction`update billing.accounts set blocked=true where id=${account}`;
       });
       for (const statement of [
         "select * from public.users",

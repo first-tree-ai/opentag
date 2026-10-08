@@ -66,6 +66,9 @@ import {
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
 import { createCloudBillingRuntime } from "./services/cloud-billing-composition.js";
 import { loadCloudBilling } from "./services/cloud-billing-module.js";
+import { CloudCallStore } from "./services/cloud-call-store.js";
+import { CloudModelService } from "./services/cloud-model-service.js";
+import { CloudUsageService } from "./services/cloud-usage.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
@@ -217,29 +220,50 @@ function cloudPlatformRuntimeOptions(
 }
 
 /** One model catalog shared by settings, dispatch and diagnostics. */
-function createCloudModelRuntime(
+async function createCloudModelRuntime(
   config: ServerConfig,
   runner: SandboxRunnerRuntime | undefined,
   billing: CloudBilling | undefined,
+  calls: CloudCallStore,
+  onError: (event: string) => void,
 ) {
   const model = config.cloudModel;
   if (!runner || !model.enabled) return undefined;
-  const catalog = new RouterCloudModelCatalog({ upstreamBaseUrl: model.upstreamBaseUrl, masterKey: model.masterKey });
+  const catalog = new RouterCloudModelCatalog({
+    upstreamBaseUrl: model.upstreamBaseUrl,
+    masterKey: model.masterKey,
+    ...(billing ? { pricedModels: () => billing.pricedModels(model.gatewayId ?? "litellm") } : {}),
+  });
+  const service = new CloudModelService(model, { calls, billing, onError });
+  try {
+    await service.initialize();
+  } catch (error) {
+    await service.close();
+    throw error;
+  }
   return {
     catalog,
+    service,
     tester: new CloudAgentRuntimeTester({
       catalog,
       config: model,
-      ...(billing ? { billing } : {}),
+      modelService: service,
     }),
   };
 }
 
-function optionalCloudModelCatalog(runtime: ReturnType<typeof createCloudModelRuntime>) {
+function optionalCloudUsage(config: ServerConfig, cloudUsage: CloudUsageService) {
+  return config.cloudModel.enabled ? { cloudUsage } : {};
+}
+function optionalCloudModelService(runtime: Awaited<ReturnType<typeof createCloudModelRuntime>>) {
+  return runtime ? { modelService: runtime.service } : {};
+}
+
+function optionalCloudModelCatalog(runtime: Awaited<ReturnType<typeof createCloudModelRuntime>>) {
   return runtime ? { cloudModelCatalog: runtime.catalog } : {};
 }
 
-function optionalCloudModelTester(runtime: ReturnType<typeof createCloudModelRuntime>) {
+function optionalCloudModelTester(runtime: Awaited<ReturnType<typeof createCloudModelRuntime>>) {
   return runtime ? { cloud: runtime.tester } : {};
 }
 
@@ -443,6 +467,7 @@ export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
   let cloudBilling: CloudBilling | undefined;
+  let cloudModelService: CloudModelService | undefined;
   const knownSecrets: string[] = collectKnownSecrets(process.env);
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
@@ -575,14 +600,20 @@ export async function startServer(): Promise<void> {
       databaseUrl: config.databaseUrl,
       publicUrl: config.publicUrl,
       environment: process.env,
-      onError: (event) => app?.log.error({ event }),
     });
     const billingRuntime = createCloudBillingRuntime(cloudBilling, config.cloudModel.enabled, database);
-    const cloudModelRuntime = createCloudModelRuntime(
+    const cloudCalls = new CloudCallStore({
+      query: async (statement, parameters = []) => ({ rows: await sql.unsafe(statement, parameters as never[]) }),
+    });
+    const cloudUsage = new CloudUsageService(cloudCalls.db);
+    const cloudModelRuntime = await createCloudModelRuntime(
       config,
       cloudRunnerRuntime,
       billingRuntime.accountOptions.cloudBilling,
+      cloudCalls,
+      (event) => app?.log.error({ event }),
     );
+    cloudModelService = cloudModelRuntime?.service;
     const modelCatalogOptions = optionalCloudModelCatalog(cloudModelRuntime);
     // Exact Cloud revocation sender: the credential owner's sweep/close notifications reach the
     // owning Runner connection through the controller created below. Declared here because the
@@ -731,6 +762,7 @@ export async function startServer(): Promise<void> {
     const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const agentService = new AgentService(database, {
+      ...optionalCloudUsage(config, cloudUsage),
       cloudIdentitiesEnabled: cloudIdentities.enabled,
       ...modelCatalogOptions,
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
@@ -999,8 +1031,10 @@ export async function startServer(): Promise<void> {
         composition: cloudDelivery,
         cloudModel: config.cloudModel,
         ...billingRuntime.modelOptions,
+        ...optionalCloudModelService(cloudModelRuntime),
       }),
       ...billingRuntime.accountOptions,
+      ...optionalCloudUsage(config, cloudUsage),
       machineAuthService,
       imBindingService,
       feishuSetupService,
@@ -1143,6 +1177,7 @@ export async function startServer(): Promise<void> {
     } else {
       process.stderr.write(`Failed to start OpenTag server: ${formatStartupError(error, knownSecrets)}\n`);
     }
+    await cloudModelService?.close();
     await cloudBilling?.close();
     await shutdownTelemetry();
     process.exitCode = 1;

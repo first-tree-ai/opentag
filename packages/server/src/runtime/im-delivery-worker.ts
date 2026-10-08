@@ -586,6 +586,7 @@ export class ImDeliveryWorker {
         await transaction
           .update(imMessageDeliveries)
           .set({
+            executionOrigin: null,
             dispatchRequestId: null,
             dispatchInputHash: null,
             dispatchPayload: null,
@@ -601,8 +602,10 @@ export class ImDeliveryWorker {
         .set({
           attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
           ...(row.state === "pending" ? { placementGeneration: row.generation } : {}),
+          executionOrigin: sql`case when ${imMessageDeliveries.dispatchRequestId} is null then null else ${imMessageDeliveries.executionOrigin} end`,
           ...(retiredSteerCorrelation
             ? {
+                executionOrigin: null,
                 dispatchRequestId: null,
                 dispatchInputHash: null,
                 dispatchPayload: null,
@@ -763,6 +766,10 @@ export class ImDeliveryWorker {
       };
       fitDeliveryFrame(request);
       if (!(await lease.assertOwned())) return;
+      await this.#database
+        .update(imMessageDeliveries)
+        .set({ executionOrigin: "local" })
+        .where(and(eq(imMessageDeliveries.id, claim.id), eq(imMessageDeliveries.lastErrorCode, claim.claimToken)));
       const admitted = await this.#withActiveAgentAdmission(
         {
           agentId: row.agent.id,
@@ -874,6 +881,16 @@ export class ImDeliveryWorker {
      *   once a dispatch window is frozen, its runtime-budget deadline (separate from the short
      *   operationTimeoutMs and ingress TTL) bounds it; accepted-unreported custody is never expired.
      */
+    await this.#database
+      .update(imMessageDeliveries)
+      .set({ executionOrigin: row.computer.kind })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          eq(imMessageDeliveries.lastErrorCode, claimToken),
+          isNull(imMessageDeliveries.executionOrigin),
+        ),
+      );
     if (row.computer.kind === "cloud") {
       await this.#deliverCloud(row, claimToken, lease, signal);
       return;
@@ -1295,6 +1312,7 @@ export class ImDeliveryWorker {
     const [released] = await this.#database
       .update(imMessageDeliveries)
       .set({
+        executionOrigin: null,
         dispatchRequestId: null,
         dispatchInputHash: null,
         dispatchPayload: null,
@@ -1322,6 +1340,7 @@ export class ImDeliveryWorker {
       .update(imMessageDeliveries)
       .set({
         state: "terminal_rejected",
+        executionOrigin: null,
         dispatchRequestId: null,
         dispatchInputHash: null,
         dispatchPayload: null,

@@ -1,33 +1,16 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, index, integer, pgSchema, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, index, integer, jsonb, pgSchema, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import type { CloudTokenRates } from "../../cloud-billing.js";
 import { users } from "./auth.js";
 
-// The application owns migrations; the private billing module owns these rows.
+// The application owns this schema; cloud metering and the private credit module share its ledger.
 export const billingSchema = pgSchema("billing");
-export const billingSettings = billingSchema.table("settings", {
-  id: text("id").primaryKey(),
-  value: integer("value").notNull(),
+export const billingAccounts = billingSchema.table("accounts", {
+  id: uuid("id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "restrict" }),
+  blocked: boolean("blocked").notNull().default(false),
 });
-export const billingAccounts = billingSchema.table(
-  "accounts",
-  {
-    id: uuid("id")
-      .primaryKey()
-      .references(() => users.id, { onDelete: "restrict" }),
-    keyHash: text("key_hash"),
-    encryptedKey: text("encrypted_key"),
-    blocked: boolean("blocked").notNull().default(false),
-    needsSync: boolean("needs_sync").notNull().default(true),
-    syncAfter: timestamp("sync_after", { withTimezone: true }).notNull().defaultNow(),
-    syncFailures: integer("sync_failures").notNull().default(0),
-    spentMicros: bigint("spent_micros", { mode: "number" }).notNull().default(0),
-  },
-  (table) => [
-    index("accounts_pending").on(table.syncAfter, table.id).where(sql`${table.needsSync} = true`),
-    check("accounts_sync_failures_nonnegative", sql`${table.syncFailures} >= 0`),
-    check("accounts_spent_nonnegative", sql`${table.spentMicros} >= 0`),
-  ],
-);
 export const billingGrants = billingSchema.table(
   "grants",
   {
@@ -74,25 +57,47 @@ export const billingAttempts = billingSchema.table(
     id: text("id").primaryKey(),
     account: uuid("account")
       .notNull()
-      .references(() => billingAccounts.id),
+      .references(() => users.id, { onDelete: "restrict" }),
+    agentId: uuid("agent_id").notNull(),
+    sessionId: uuid("session_id"),
+    source: text("source").notNull(),
+    gateway: text("gateway").notNull(),
     model: text("model").notNull(),
-    generation: text("generation").unique(),
+    responseId: text("response_id"),
+    providerCallId: text("provider_call_id"),
+    rates: jsonb("rates").$type<CloudTokenRates>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    state: text("state").notNull().default("in_flight"),
+    resolution: text("resolution"),
+    resolutionReason: text("resolution_reason"),
+    usageComplete: boolean("usage_complete").notNull().default(false),
     inputTokens: bigint("input_tokens", { mode: "number" }),
+    cachedInputTokens: bigint("cached_input_tokens", { mode: "number" }),
     outputTokens: bigint("output_tokens", { mode: "number" }),
-    chargeMicros: bigint("charge_micros", { mode: "number" }),
+    pricedMicros: bigint("priced_micros", { mode: "number" }),
+    debitedMicros: bigint("debited_micros", { mode: "number" }),
     reconcileAfter: timestamp("reconcile_after", { withTimezone: true }).notNull().defaultNow(),
     reconcileFailures: integer("reconcile_failures").notNull().default(0),
   },
   (table) => [
     index("attempts_account").on(table.account, table.createdAt),
-    index("attempts_pending")
-      .on(table.reconcileAfter, table.createdAt)
-      .where(sql`${table.chargeMicros} IS NULL AND ${table.generation} IS NOT NULL`),
-    check("attempts_reconcile_failures_nonnegative", sql`${table.reconcileFailures} >= 0`),
+    index("attempts_agent").on(table.account, table.agentId, table.createdAt),
+    index("attempts_pending").on(table.reconcileAfter, table.createdAt).where(sql`${table.state} = 'pending_usage'`),
+    check("attempts_source_valid", sql`${table.source} IN ('execution','connectivity_probe')`),
+    check("attempts_state_valid", sql`${table.state} IN ('in_flight','pending_usage','finalized')`),
+    check(
+      "attempts_resolution_valid",
+      sql`(${table.state} = 'finalized') = (${table.resolution} IS NOT NULL) AND (${table.resolution} IS NULL OR ${table.resolution} IN ('charged','no_charge','unbilled','written_off'))`,
+    ),
     check(
       "attempts_usage_nonnegative",
-      sql`${table.inputTokens} >= 0 AND ${table.outputTokens} >= 0 AND ${table.chargeMicros} >= 0`,
+      sql`${table.inputTokens} >= 0 AND ${table.outputTokens} >= 0 AND ${table.cachedInputTokens} >= 0 AND ${table.cachedInputTokens} <= ${table.inputTokens}`,
     ),
+    check(
+      "attempts_debit_valid",
+      sql`${table.pricedMicros} >= 0 AND ${table.debitedMicros} >= 0 AND ${table.debitedMicros} <= ${table.pricedMicros}`,
+    ),
+    check("attempts_reconcile_failures_nonnegative", sql`${table.reconcileFailures} >= 0`),
   ],
 );

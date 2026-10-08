@@ -257,20 +257,18 @@ base URL and credential. The Router applies tenant permissions and model availab
 Server uses one bounded, short-lived catalog for model selection, configuration validation,
 dispatch and model grants. An Agent without an explicit model uses the first returned model;
 an explicit model must be in the current catalog. Failed refreshes and empty lists are unavailable,
-never a fallback to the Local Pi model suggestions. `OPENTAG_CLOUD_MODEL_ALLOWED_MODELS` is retired
-and no longer restricts or supplies Cloud models; remove it after the rollback window.
+never a fallback to the Local Pi model suggestions. LiteLLM publishes native limits through
+`max_input_tokens` and `max_output_tokens`; entries without valid limits are unavailable. With
+billing enabled, the catalog also requires a configured customer rate.
 
 The model settings page tests hosted model connectivity with one short Server-to-Router request.
 This consumes a small model request but creates no Session, Sandbox or Instance, and does not add
 task usage history. It proves model access only: Pi execution, tools, messaging and workspace
 recovery still require a real task check. Local model selection and daemon diagnostics are unchanged.
 
-When upgrading a deployment that directly calls a provider, configure the existing base URL and
-credential for that environment's Router tenant. Listing a provider's models directly does not
-establish Router integration. The Runner's Pi provider configuration bounds output to Router's
-8,192-token limit and disables the unsupported OpenAI `store` field. Publish the updated Runner
-through the existing joint CLI/Runner release before accepting real Cloud tasks on Router. No
-additional feature switch, database migration or Runner protocol upgrade is needed.
+The Runner bounds output to the smaller of the model’s native limit and 8,192 tokens and disables
+the OpenAI `store` field. Cloud connectivity probes use the same model gateway and call ledger
+as executions; their tokens appear in cloud usage.
 
 Keep the bounded transport defaults unless acceptance shows a need to tune them. See
 [`cloud-model-config.ts`](../packages/server/src/cloud-model-config.ts) for the optional timeout,

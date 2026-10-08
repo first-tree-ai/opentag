@@ -235,7 +235,7 @@ export function assertRunnerEnvironment({ envVars, channel, publicUrl }) {
   }
 }
 
-/** Enforce process-local admission safety and return the request timeout needed for rollout draining. */
+/** Enforce single-replica cloud recovery and return the request timeout needed for rollout draining. */
 export function assertBillingEnvironment({ definition, envVars, billingRevision }) {
   if (!billingRevision) {
     if (envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") === "true")

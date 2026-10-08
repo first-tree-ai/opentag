@@ -12,6 +12,7 @@ import type { FastifyInstance } from "fastify";
 import type { CloudBilling } from "../cloud-billing.js";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
+import type { CloudUsageService } from "../services/cloud-usage.js";
 import { parseRequest } from "./request-validation.js";
 
 /** Private provider failures must not expose credentials through public responses or logs. */
@@ -60,6 +61,7 @@ export function registerCloudBillingRoutes(
   authService: UserAuthService,
   billing: CloudBilling | undefined,
   authOptions: UserAuthPreHandlerOptions,
+  usage?: CloudUsageService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions);
   app.get(CLOUD_BILLING_PATH, { preHandler }, async (request, reply) => {
@@ -75,9 +77,7 @@ export function registerCloudBillingRoutes(
     const { windowDays } = parseRequest(CloudUsageQuerySchema, request.query);
     const accountId = request.authContext?.me.user.id;
     if (!accountId) throw new Error("Missing authenticated Account");
-    return CloudUsageSummarySchema.parse(
-      billing ? await billingOperation(() => billing.usage(accountId, windowDays)) : { enabled: false },
-    );
+    return CloudUsageSummarySchema.parse(usage ? await usage.read(accountId, windowDays) : { enabled: false });
   });
   app.post(CLOUD_BILLING_CHECKOUT_PATH, { preHandler }, async (request, reply) => {
     reply.header("cache-control", "no-store");

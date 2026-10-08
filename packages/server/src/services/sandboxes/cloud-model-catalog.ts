@@ -11,9 +11,9 @@ import { z } from "zod";
 /**
  * The single Server-owned authority for Cloud model choices. The deployment Router's
  * authenticated `GET {upstreamBaseUrl}/models` (OpenAI `{object:"list",data:[{id,...}]}`) is the
- * only source: it already applies tenant permissions and the priced registry, so the Server keeps
+ * source of availability and native limits: it applies tenant permissions, so the Server keeps
  * no static allowlist of its own. The same fixed upstream base URL and platform master key the
- * chat-completions proxy uses authorize the read; no new URL, key, or switch exists.
+ * chat-completions proxy uses authorize the read. Billing additionally requires a configured customer price.
  *
  * The catalog is lazy and bounded: the first read after construction or cache expiry performs one
  * fetch, concurrent readers share the single in-flight fetch, and a successful list is reused for
@@ -36,7 +36,7 @@ const CLOUD_MODEL_CATALOG_MAX_RESPONSE_BYTES = 256 * 1024;
 export interface CloudModelCapabilities {
   /** Router-verified native context window in tokens (a positive integer, never estimated). */
   readonly contextWindow: number;
-  /** Router-verified native output ceiling in tokens (a positive integer, at most the platform limit). */
+  /** Router-verified native output ceiling in tokens (a positive integer; execution grants clamp it to the platform limit). */
   readonly maxOutputTokens: number;
 }
 
@@ -97,6 +97,7 @@ export interface RouterCloudModelCatalogOptions {
   timeoutMs?: number;
   maxResponseBytes?: number;
   maxModels?: number;
+  pricedModels?: () => string[];
 }
 
 /**
@@ -104,26 +105,22 @@ export interface RouterCloudModelCatalogOptions {
  * crosses that boundary — and an entry whose id violates the wire budget invalidates the whole
  * response, because a Router that emits one is not the deployment's model authority. The
  * capability metadata is validated separately per entry: a malformed or absent
- * `context_window`/`max_output_tokens` pair excludes that entry from Cloud choices, while preserving the other verified models.
+ * `max_input_tokens`/`max_output_tokens` pair excludes that entry from Cloud choices, while preserving the other verified models.
  */
 const RouterModelEntrySchema = z.object({
   id: RuntimeModelSchema,
-  context_window: z.unknown().optional(),
+  max_input_tokens: z.unknown().optional(),
   max_output_tokens: z.unknown().optional(),
 });
 
 /** One entry's verified capability metadata, or undefined when it is absent or malformed. */
 function parseEntryCapabilities(entry: {
-  context_window?: unknown;
+  max_input_tokens?: unknown;
   max_output_tokens?: unknown;
 }): CloudModelCapabilities | undefined {
-  const { context_window: contextWindow, max_output_tokens: maxOutputTokens } = entry;
+  const { max_input_tokens: contextWindow, max_output_tokens: maxOutputTokens } = entry;
   if (!Number.isSafeInteger(contextWindow) || (contextWindow as number) < 1) return undefined;
-  if (
-    !Number.isSafeInteger(maxOutputTokens) ||
-    (maxOutputTokens as number) < 1 ||
-    (maxOutputTokens as number) > CLOUD_MODEL_OUTPUT_TOKEN_LIMIT
-  ) {
+  if (!Number.isSafeInteger(maxOutputTokens) || (maxOutputTokens as number) < 1) {
     return undefined;
   }
   return { contextWindow: contextWindow as number, maxOutputTokens: maxOutputTokens as number };
@@ -180,6 +177,7 @@ export class RouterCloudModelCatalog implements CloudModelCatalog {
   readonly #now: () => number;
   readonly #timeoutMs: number;
   readonly #upstreamBaseUrl: string;
+  readonly #pricedModels: (() => string[]) | undefined;
   #cached: { fetchedAtMs: number; snapshot: RouterCatalogSnapshot } | undefined;
   #inFlight: Promise<RouterCatalogSnapshot> | undefined;
 
@@ -192,6 +190,7 @@ export class RouterCloudModelCatalog implements CloudModelCatalog {
     this.#now = options.now ?? (() => Date.now());
     this.#timeoutMs = options.timeoutMs ?? CLOUD_MODEL_CATALOG_TIMEOUT_MS;
     this.#upstreamBaseUrl = options.upstreamBaseUrl;
+    this.#pricedModels = options.pricedModels;
   }
 
   /**
@@ -274,7 +273,17 @@ export class RouterCloudModelCatalog implements CloudModelCatalog {
       }
       const text = await readBoundedResponseText(response, this.#maxResponseBytes);
       if (text === undefined) return undefined;
-      return parseRouterModelList(text, this.#maxModels);
+      const snapshot = parseRouterModelList(text, this.#maxModels);
+      if (!snapshot) return undefined;
+      if (this.#pricedModels) {
+        const priced = new Set(this.#pricedModels());
+        const models = snapshot.options.models.filter((model) => priced.has(model));
+        return {
+          options: { available: models.length > 0, defaultModel: models[0] ?? null, models },
+          capabilities: new Map([...snapshot.capabilities].filter(([model]) => priced.has(model))),
+        };
+      }
+      return snapshot;
     } catch {
       return undefined;
     } finally {

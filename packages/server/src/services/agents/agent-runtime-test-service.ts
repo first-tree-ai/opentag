@@ -15,6 +15,7 @@ import { AgentServiceError } from "./errors.js";
 export interface CloudAgentRuntimeTestPort {
   test(input: {
     accountId?: string;
+    agentId?: string;
     computerId: string;
     model: string | null;
     signal?: AbortSignal;
@@ -79,6 +80,7 @@ export class AgentRuntimeTestService {
       if (!cloud) return { status: "failed", code: "computer_unavailable" };
       return cloud.test({
         accountId: callerUserId,
+        agentId,
         computerId: config.computerId,
         model: config.runtimeConfig.model,
         ...(signal ? { signal } : {}),

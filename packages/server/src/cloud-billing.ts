@@ -1,18 +1,23 @@
+import type { CloudBillingSummary, CloudCreditCheckoutRequest } from "@opentag/shared";
 import type {
-  CloudBillingSummary,
-  CloudCreditCheckoutRequest,
-  CloudUsageSummary,
-  CloudUsageWindowDays,
-} from "@opentag/shared";
-import type { CloudModelTransportLimits } from "./cloud-model-request.js";
+  CloudCallContext,
+  CloudCallOutcome,
+  CloudModelReference,
+  CloudUsageObservation,
+} from "./cloud-call-contracts.js";
 
-/** Installed only in the hosted cloud image; the public server has no private dependency. */
+export * from "./cloud-call-contracts.js";
+
+/** Installed only in the hosted image. Provider HTTP and response parsing belong to the public server. */
 export interface CloudBilling {
   readiness(): Promise<{ status: "ready"; revision: string | null }>;
+  pricedModels(gateway: string): string[];
+  beginCall(context: CloudCallContext, model: CloudModelReference): Promise<string>;
+  observeCall(callId: string, observation: CloudUsageObservation): Promise<void>;
+  finishCall(callId: string, outcome: CloudCallOutcome): Promise<void>;
+  writeOffCall(callId: string, reason: string): Promise<void>;
   summary(accountId: string): Promise<CloudBillingSummary>;
-  usage(accountId: string, windowDays: CloudUsageWindowDays): Promise<CloudUsageSummary>;
   checkout(accountId: string, input: CloudCreditCheckoutRequest): Promise<{ url: string }>;
-  model(accountId: string, body: unknown, signal: AbortSignal, limits: CloudModelTransportLimits): Promise<Response>;
   webhook(payload: Buffer, signature: string | undefined): Promise<void>;
   stop(): void;
   close(): Promise<void>;
@@ -21,14 +26,11 @@ export interface CloudBillingModuleOptions {
   databaseUrl: string;
   publicUrl: string;
   environment: NodeJS.ProcessEnv;
-  onError(event: string): void;
 }
 export type CloudBillingFactory = (options: CloudBillingModuleOptions) => Promise<CloudBilling>;
-
 export {
-  applyCloudModelOutputBudget,
-  CLOUD_MODEL_ERROR_BODY_MAX_BYTES,
-  CloudModelRequestSchema,
-  type CloudModelTransportLimits,
-  CloudModelTransportLimitsSchema,
-} from "./cloud-model-request.js";
+  type CloudCall,
+  CloudCallSchema,
+  CloudCallStore,
+  type CloudQueryConnection,
+} from "./services/cloud-call-store.js";

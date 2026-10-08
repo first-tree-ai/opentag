@@ -18,10 +18,7 @@ import { CloudModelTransportLimitsSchema } from "./cloud-model-request.js";
  *
  * Model choices are NOT configured here: the single authority is the deployment Router's
  * authenticated `GET {upstreamBaseUrl}/models` (tenant permissions and the priced registry
- * applied), consumed through the Server-owned CloudModelCatalog. The legacy
- * OPENTAG_CLOUD_MODEL_ALLOWED_MODELS variable is retired: it is still parsed so a staged
- * environment keeps booting during the rollout window, but it no longer restricts or supplies any
- * model, and there is no default-model override — the default is the Router's first model.
+ * applied), consumed through the Server-owned CloudModelCatalog.
  */
 
 const UPSTREAM_BASE_PATTERN = /^https:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._~/-]*)?$/;
@@ -35,11 +32,10 @@ const CloudModelEnvironmentSchema = z
       .enum(["true", "false"])
       .default("false")
       .transform((value) => value === "true"),
+    OPENTAG_CLOUD_MODEL_GATEWAY_ID: z.string().trim().min(1).max(256).default("litellm"),
+    OPENTAG_CLOUD_MODEL_USAGE_KEY: z.string().trim().min(1).optional(),
     OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: z.string().trim().min(1).max(1024).optional(),
     OPENTAG_CLOUD_MODEL_MASTER_KEY: z.string().min(8).max(512).optional(),
-    // Retired and ignored: the Router model list is the only model authority. Kept parseable so a
-    // staged environment from before the Router catalog boots unchanged during the rollout window.
-    OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: z.string().max(4096).optional(),
     OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(1_800),
     OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS: CloudModelTransportLimitsSchema.shape.requestTimeoutMs,
     OPENTAG_CLOUD_MODEL_MAX_REQUEST_BYTES: z.coerce
@@ -61,6 +57,8 @@ export type CloudModelConfig =
       enabled: true;
       /** Fixed upstream origin/base path; the only URL the proxy and the model catalog ever call. */
       upstreamBaseUrl: string;
+      gatewayId?: string;
+      usageKey?: string;
       /** Platform master key; lives in process memory only. */
       masterKey: string;
       /**
@@ -96,9 +94,10 @@ function normalizeUpstream(raw: string, environment: NodeJS.ProcessEnv): string 
 export function resolveCloudModelConfig(environment: NodeJS.ProcessEnv, cloudRunnerEnabled: boolean): CloudModelConfig {
   const parsed = CloudModelEnvironmentSchema.parse({
     OPENTAG_CLOUD_MODEL_ENABLED: environment.OPENTAG_CLOUD_MODEL_ENABLED,
+    OPENTAG_CLOUD_MODEL_GATEWAY_ID: environment.OPENTAG_CLOUD_MODEL_GATEWAY_ID,
+    OPENTAG_CLOUD_MODEL_USAGE_KEY: emptyToUndefined(environment.OPENTAG_CLOUD_MODEL_USAGE_KEY),
     OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: emptyToUndefined(environment.OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL),
     OPENTAG_CLOUD_MODEL_MASTER_KEY: emptyToUndefined(environment.OPENTAG_CLOUD_MODEL_MASTER_KEY),
-    OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: emptyToUndefined(environment.OPENTAG_CLOUD_MODEL_ALLOWED_MODELS),
     OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS: environment.OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS,
     OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS: environment.OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS,
     OPENTAG_CLOUD_MODEL_MAX_REQUEST_BYTES: environment.OPENTAG_CLOUD_MODEL_MAX_REQUEST_BYTES,
@@ -121,6 +120,8 @@ export function resolveCloudModelConfig(environment: NodeJS.ProcessEnv, cloudRun
   return {
     enabled: true,
     upstreamBaseUrl,
+    gatewayId: parsed.OPENTAG_CLOUD_MODEL_GATEWAY_ID,
+    ...(parsed.OPENTAG_CLOUD_MODEL_USAGE_KEY ? { usageKey: parsed.OPENTAG_CLOUD_MODEL_USAGE_KEY } : {}),
     masterKey: parsed.OPENTAG_CLOUD_MODEL_MASTER_KEY,
     tokenTtlSeconds: parsed.OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS,
     requestTimeoutMs: parsed.OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS,

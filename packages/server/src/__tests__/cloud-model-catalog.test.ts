@@ -18,7 +18,7 @@ const MODELS_PAYLOAD = {
       object: "model",
       created: 0,
       owned_by: "llm-router",
-      context_window: 262_144,
+      max_input_tokens: 262_144,
       max_output_tokens: 8_192,
     },
     {
@@ -26,7 +26,7 @@ const MODELS_PAYLOAD = {
       object: "model",
       created: 0,
       owned_by: "llm-router",
-      context_window: 64_000,
+      max_input_tokens: 64_000,
       max_output_tokens: 4_096,
     },
   ],
@@ -81,6 +81,26 @@ describe("RouterCloudModelCatalog", () => {
     expect(JSON.stringify(snapshot)).not.toContain("llm-router");
   });
 
+  it("offers only priced gateway models when billing is enabled", async () => {
+    const catalog = new RouterCloudModelCatalog({
+      upstreamBaseUrl: "https://gateway.example/v1",
+      masterKey: FIXTURE_MASTER_KEY,
+      pricedModels: () => ["router-model-b", "unavailable-model"],
+      fetchImpl: async () => Response.json(MODELS_PAYLOAD),
+    });
+    expect(await catalog.list()).toEqual({
+      available: true,
+      defaultModel: "router-model-b",
+      models: ["router-model-b"],
+    });
+    expect(await catalog.capabilitiesOf("router-model-a")).toBeUndefined();
+  });
+  it("caps a large native output limit at the issued platform budget", async () => {
+    expect(selectCloudModelExecutionProfile({ contextWindow: 258000, maxOutputTokens: 65536 })).toEqual({
+      contextWindow: 258000,
+      maxTokens: 8192,
+    });
+  });
   it("retains Router-verified capability metadata per model without changing the visible list", async () => {
     const upstream = await startCatalogUpstream({ kind: "json", payload: MODELS_PAYLOAD });
     const catalog = makeCatalog(upstream);
@@ -104,10 +124,10 @@ describe("RouterCloudModelCatalog", () => {
         object: "list",
         data: [
           { id: "router-no-caps" },
-          { id: "router-bad-window", context_window: "258000", max_output_tokens: 8_192 },
-          { id: "router-fractional", context_window: 258_000.5, max_output_tokens: 8_192 },
-          { id: "router-oversized-output", context_window: 258_000, max_output_tokens: 65_536 },
-          { id: "router-zero", context_window: 0, max_output_tokens: 8_192 },
+          { id: "router-bad-window", max_input_tokens: "258000", max_output_tokens: 8_192 },
+          { id: "router-fractional", max_input_tokens: 258_000.5, max_output_tokens: 8_192 },
+          { id: "router-bad-output", max_input_tokens: 258_000, max_output_tokens: "65536" },
+          { id: "router-zero", max_input_tokens: 0, max_output_tokens: 8_192 },
         ],
       },
     });

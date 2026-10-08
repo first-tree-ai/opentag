@@ -266,7 +266,8 @@ export function cloudAppOptions(input: {
   runnerRuntime: SandboxRunnerRuntime | undefined;
   composition: CloudDeliveryComposition;
   cloudModel: CloudModelConfig;
-  billing?: CloudModelProxyRouteOptions["billing"];
+  modelService?: CloudModelProxyRouteOptions["modelService"];
+  contextForExecution?: CloudModelProxyRouteOptions["contextForExecution"];
 }): {
   sandboxRunnerService?: SandboxRunnerService;
   runnerChannel?: {
@@ -294,7 +295,8 @@ export function cloudAppOptions(input: {
           cloudModel: {
             config: input.cloudModel,
             grants: input.composition.cloudModelGrants,
-            ...(input.billing ? { billing: input.billing } : {}),
+            ...(input.modelService ? { modelService: input.modelService } : {}),
+            ...(input.contextForExecution ? { contextForExecution: input.contextForExecution } : {}),
           },
         }
       : {}),
@@ -352,8 +354,7 @@ export function collectKnownSecrets(environment: NodeJS.ProcessEnv): string[] {
     "OPENTAG_GITHUB_APP_PRIVATE_KEY",
     "OPENTAG_GITHUB_APP_WEBHOOK_SECRET",
     "OPENTAG_CLOUD_MODEL_MASTER_KEY",
-    "BILLING_ENCRYPTION_KEY",
-    "OPENROUTER_MANAGEMENT_KEY",
+    "OPENTAG_CLOUD_MODEL_USAGE_KEY",
     "STRIPE_SECRET_KEY",
     "STRIPE_WEBHOOK_SECRET",
     "OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN",

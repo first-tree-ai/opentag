@@ -424,6 +424,7 @@ describe("Agent Runtime test Cloud branch", () => {
     // The saved model and the caller disconnect signal reach the probe; the Local owner never runs.
     expect(cloud.test).toHaveBeenCalledWith({
       accountId: userId,
+      agentId,
       computerId,
       model: "gpt-5.6",
       signal: expect.any(AbortSignal),

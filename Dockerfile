@@ -81,7 +81,7 @@ COPY --from=billing scripts/build.mjs scripts/link-application.mjs scripts/
 COPY --from=billing src src
 COPY --from=billing test test
 RUN node scripts/link-application.mjs /app \
-  && pnpm lint --vcs-enabled=false --vcs-use-ignore-file=false \
+  && pnpm lint \
   && pnpm typecheck && pnpm test && pnpm build
 
 FROM billing-deps AS billing-prod-deps

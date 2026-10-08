@@ -173,6 +173,16 @@ test("rejects an order the shared contract does not accept", (t) => {
   assert.match(result.stderr, /expected int/);
 });
 
+test("rejects an option flag that carries no value", (t) => {
+  assertRejected(t, /--category: requires a value/, {}, ["--category"]);
+  assertRejected(t, /--order: requires a value/, {}, ["--order"]);
+
+  const { candidate } = fixture(t);
+  const result = run([candidate, "--root"]);
+  assert.notEqual(result.status, 0, `expected a failure, got:\n${result.stdout}`);
+  assert.match(result.stderr, /--root: requires a value/);
+});
+
 test("writes nothing, accepted or rejected", (t) => {
   const accepted = fixture(t);
   const rejected = fixture(t, { manifest: manifestFor("other-name") });

@@ -27,10 +27,21 @@ import { parse as parseYaml } from "yaml";
 import { packSkillDirectory, SkillArchiveError } from "../packages/client/src/skills/skill-archive.ts";
 import { SkillPresetCategoryIdSchema, SkillPresetSchema } from "../packages/shared/src/skill-preset.ts";
 
-/** `--root` points the checker at a fixture tree; a script test sets it so it never touches the repo. */
-function flag(name) {
+/**
+ * The value of `--name`, or `undefined` when the option is absent. An option that is present with no
+ * value is a violation rather than an omission: `--category` typed on its own must not produce a
+ * green pre-flight that never looked at a category. `--root` points the checker at a fixture tree; a
+ * script test sets it so it never touches the repo.
+ */
+function flag(name, violations) {
   const index = process.argv.indexOf(name);
-  return index === -1 ? undefined : process.argv[index + 1];
+  if (index === -1) return undefined;
+  const value = process.argv[index + 1];
+  if (value === undefined) {
+    violations.push(`${name}: requires a value`);
+    return undefined;
+  }
+  return value;
 }
 
 /** The candidate is the first positional argument; flags may appear before or after it. */
@@ -46,10 +57,6 @@ function positional() {
   return undefined;
 }
 
-const overrideRoot = flag("--root");
-const root = overrideRoot ? `${overrideRoot.replace(/[/\\]+$/, "")}/` : fileURLToPath(new URL("..", import.meta.url));
-const metadataPath = `${root}packages/skill-presets/presets.yaml`;
-
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -62,7 +69,7 @@ function describeIssues(error) {
  * The catalog facts a candidate must be compared against: the declared category ids and the names
  * already taken. Both come from `presets.yaml`, the same source the generator reads.
  */
-async function readCatalog(violations) {
+async function readCatalog(metadataPath, violations) {
   let parsed;
   try {
     parsed = parseYaml(await readFile(metadataPath, "utf8"));
@@ -75,12 +82,12 @@ async function readCatalog(violations) {
     return { categories: [], names: new Set() };
   }
   return {
-    categories: collectCategoryIds(parsed.categories, violations),
-    names: collectPresetNames(parsed.presets, violations),
+    categories: collectCategoryIds(parsed.categories, metadataPath, violations),
+    names: collectPresetNames(parsed.presets, metadataPath, violations),
   };
 }
 
-function collectCategoryIds(value, violations) {
+function collectCategoryIds(value, metadataPath, violations) {
   if (!Array.isArray(value)) {
     violations.push(`${metadataPath}: "categories" must be a list`);
     return [];
@@ -88,7 +95,7 @@ function collectCategoryIds(value, violations) {
   return value.filter((row) => isRecord(row) && typeof row.id === "string").map((row) => row.id);
 }
 
-function collectPresetNames(value, violations) {
+function collectPresetNames(value, metadataPath, violations) {
   if (!Array.isArray(value)) {
     violations.push(`${metadataPath}: "presets" must be a list`);
     return new Set();
@@ -121,8 +128,12 @@ async function checkCandidate(candidate, violations) {
   return packed;
 }
 
-/** The two fields a contributor supplies when the category or the display order is already decided. */
-function checkSuppliedMetadata(category, order, catalog) {
+/**
+ * The two fields a contributor supplies when the category or the display order is already decided.
+ * `rawOrder` stays the argument string until its presence is established, so a value-less flag is
+ * reported as a missing value instead of being converted into a number nobody supplied.
+ */
+function checkSuppliedMetadata(category, rawOrder, catalog, metadataPath) {
   const violations = [];
   if (category !== undefined) {
     const parsed = SkillPresetCategoryIdSchema.safeParse(category);
@@ -132,8 +143,8 @@ function checkSuppliedMetadata(category, order, catalog) {
       violations.push(`--category: "${category}" is not declared in ${metadataPath}`);
     }
   }
-  if (order !== undefined) {
-    const parsed = SkillPresetSchema.shape.order.safeParse(order);
+  if (rawOrder !== undefined) {
+    const parsed = SkillPresetSchema.shape.order.safeParse(Number(rawOrder));
     if (!parsed.success) {
       violations.push(`--order: ${describeIssues(parsed.error)}`);
     }
@@ -150,14 +161,17 @@ async function main() {
   }
 
   const violations = [];
-  const catalog = await readCatalog(violations);
+  const overrideRoot = flag("--root", violations);
+  const root = overrideRoot ? `${overrideRoot.replace(/[/\\]+$/, "")}/` : fileURLToPath(new URL("..", import.meta.url));
+  const metadataPath = `${root}packages/skill-presets/presets.yaml`;
+
+  const catalog = await readCatalog(metadataPath, violations);
   const packed = await checkCandidate(candidate, violations);
   if (packed !== undefined && catalog.names.has(packed.name)) {
     violations.push(`${candidate}: name "${packed.name}" is already declared in ${metadataPath}`);
   }
-  const rawOrder = flag("--order");
   violations.push(
-    ...checkSuppliedMetadata(flag("--category"), rawOrder === undefined ? undefined : Number(rawOrder), catalog),
+    ...checkSuppliedMetadata(flag("--category", violations), flag("--order", violations), catalog, metadataPath),
   );
 
   if (violations.length > 0) {

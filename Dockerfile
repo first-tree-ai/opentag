@@ -42,6 +42,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches patches
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/skill-presets/package.json packages/skill-presets/package.json
+COPY packages/mcp-presets/package.json packages/mcp-presets/package.json
 COPY packages/server/package.json packages/server/package.json
 RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts --prod --filter @opentag/server...
 
@@ -54,6 +55,7 @@ WORKDIR /app
 COPY --from=prod-deps /app ./
 COPY --from=build /app/packages/shared/dist packages/shared/dist
 COPY --from=build /app/packages/skill-presets/dist packages/skill-presets/dist
+COPY --from=build /app/packages/mcp-presets/dist packages/mcp-presets/dist
 COPY --from=build /app/packages/server/dist packages/server/dist
 COPY --from=build /app/packages/server/drizzle packages/server/drizzle
 COPY --from=build /app/apps/web/dist apps/web/dist

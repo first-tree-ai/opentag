@@ -23,6 +23,7 @@ import {
 } from "../db/migrate.js";
 import { createComputerAuthPreHandler } from "../plugins/computer-auth.js";
 import { resolveAuthenticatedUserId } from "../plugins/user-auth.js";
+import { formatStartupError } from "../services/auth/security.js";
 
 vi.mock("postgres", () => ({ default: vi.fn() }));
 vi.mock("drizzle-orm/postgres-js", () => ({ drizzle: vi.fn(() => ({ kind: "database" })) }));
@@ -434,6 +435,26 @@ describe("parseServerConfig", () => {
       (_, index) => `https://site-${index}.example.com`,
     ).join(",");
     expect(() => parseServerConfig({ ...staging, OPENTAG_WEBSITE_ORIGINS: tooMany })).toThrow();
+  });
+
+  it("keeps an invalid origin value out of the startup error", () => {
+    const sentinel = "catalog-secret";
+    let thrown: unknown;
+    try {
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://dev.opentag.build",
+        OPENTAG_WEBSITE_ORIGINS: `https://user:${sentinel}@example.com?token=${sentinel}`,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const formatted = formatStartupError(thrown);
+    expect(formatted).toContain("OPENTAG_WEBSITE_ORIGINS entry 1");
+    expect(formatted).not.toContain(sentinel);
+    expect(formatted).not.toContain("user:");
   });
 
   it("keeps the legacy encryption defaults and fully validates the v2 key ring opt-in", () => {

@@ -81,14 +81,22 @@ const WebsiteOriginsSchema = z
   .optional()
   .transform((value, context) => {
     const origins: string[] = [];
-    for (const entry of (value ?? "").split(",")) {
+    const entries = (value ?? "").split(",");
+    for (const [index, entry] of entries.entries()) {
       const candidate = entry.trim();
       if (!candidate) continue;
       let url: URL;
       try {
         url = new URL(candidate);
       } catch {
-        context.addIssue({ code: "custom", message: `OPENTAG_WEBSITE_ORIGINS entries must be URLs: ${candidate}` });
+        /*
+         * The value never appears in the message: a failed rollout must not copy a mistyped
+         * credential from a URL's userinfo into the startup log. The position is enough to find it.
+         */
+        context.addIssue({
+          code: "custom",
+          message: `OPENTAG_WEBSITE_ORIGINS entry ${index + 1} must be a URL`,
+        });
         continue;
       }
       if (
@@ -101,7 +109,7 @@ const WebsiteOriginsSchema = z
       ) {
         context.addIssue({
           code: "custom",
-          message: `OPENTAG_WEBSITE_ORIGINS entries must be HTTP(S) origins without credentials, path, query, or fragment: ${candidate}`,
+          message: `OPENTAG_WEBSITE_ORIGINS entry ${index + 1} must be an HTTP(S) origin without credentials, path, query, or fragment`,
         });
         continue;
       }
@@ -675,15 +683,15 @@ const ServerEnvironmentSchema = z
   })
   .superRefine((value, context) => {
     if (!isHostedEnvironment(value.OPENTAG_ENV)) return;
-    for (const origin of value.OPENTAG_WEBSITE_ORIGINS) {
+    value.OPENTAG_WEBSITE_ORIGINS.forEach((origin, index) => {
       const url = new URL(origin);
       if (url.protocol !== "https:" && !isLoopbackHostname(url.hostname)) {
         context.addIssue({
           code: "custom",
-          message: `OPENTAG_WEBSITE_ORIGINS entries must use HTTPS in a hosted environment unless they are loopback: ${origin}`,
+          message: `OPENTAG_WEBSITE_ORIGINS entry ${index + 1} must use HTTPS in a hosted environment unless it is loopback`,
         });
       }
-    }
+    });
   });
 
 function isLoopbackHostname(value: string): boolean {

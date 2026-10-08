@@ -1,5 +1,7 @@
 # Cloud Runner 执行（E3–E8）
 
+> Synced: 2026-10-08
+
 [English](../cloud-runner-execution.md)
 
 E3 将现有 Agent Session 的 Sandbox 身份连接到真实 Cloud Run Instance 和原生 Sandbox。

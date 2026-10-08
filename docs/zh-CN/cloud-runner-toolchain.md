@@ -108,6 +108,11 @@ root 并交给源码自有的 init。真实验收命令单独设置 30 分钟超
 验收断言一个存活 Bash fixture 子进程被确认取消（共享的 Pi PID 跟踪集），随后删除
 容器并以 daemon 确认删除结果。
 
+这一轮 offline 检查即发布期工具验证：在 Runner 镜像发布之前真实执行每个钉版工具——包括完整的
+Pi CLI 启动，并与镜像身份做精确版本比对。E3 的运行时原生 Sandbox 就绪探测刻意不在每次
+启动／重置时重复该 Pi CLI 启动，而是从不可变 rootfs 读取锁定的 Pi 包元数据并对照镜像身份
+校验，在加快每次启动就绪的同时不削弱发布期门禁。
+
 计时字段是分开的：`startupMs` 量度全新容器加 Runner CLI 启动（`identity`）；probe/skills/
 accept 的耗时单独报告（`durations`、`acceptanceMs`）。`memory.peak` 在容器退出前于容器内读
 取，绝不在删除后读取。Runner CLI 在 `opentag-init` 下安装 SIGTERM/SIGINT 处理器，执行自身

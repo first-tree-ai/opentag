@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildSandboxDeleteArgv,
   buildSandboxExecArgv,
+  buildSandboxMetadataScript,
   buildSandboxRunArgv,
   MAX_RESOLVER_BYTES,
   NativeSandbox,
@@ -103,19 +104,47 @@ function requiredResolverCopy(args: readonly string[]): string {
   return copy;
 }
 
-/** Probe answers for the canary test: version commands, identity, then the isolation exec. */
+/** The valid combined identity + Pi metadata payload the in-Sandbox read prints. */
+const PROBE_METADATA_STDOUT = JSON.stringify({
+  runnerVersion: "1.0.0",
+  identityPiPackage: "@earendil-works/pi-coding-agent",
+  identityPiVersion: "0.84.2",
+  piName: "@earendil-works/pi-coding-agent",
+  piVersion: "0.84.2",
+});
+
+/** Probe answers for the canary test: node version, combined metadata read, then the isolation exec. */
 function respondToProbe(args: readonly string[], onCanary: (canary: string) => void) {
   if (args[0] !== "exec") return { code: 0 };
   const command = args[3];
   const commandArgs = args.slice(4);
   if (command === SANDBOX_NODE && commandArgs[0] === "--version") return { code: 0, stdout: "v24.19.0\n" };
-  if (command === SANDBOX_PI) return { code: 0, stdout: "0.84.2\n" };
   if (command !== SANDBOX_NODE || commandArgs[0] !== "-e") return { code: 0 };
   const code = commandArgs[1] ?? "";
-  if (code.includes("identity.json")) return { code: 0, stdout: "1.0.0" };
+  if (code.includes("identity.json")) return { code: 0, stdout: PROBE_METADATA_STDOUT };
   const canary = /opentag-rootfs-[0-9a-f-]+/.exec(code)?.[0];
   if (canary !== undefined) onCanary(canary);
   return { code: 0, stdout: "isolated" };
+}
+
+/** Every `sandbox exec` the probe issues, classified by what it runs inside the sandbox. */
+function probeExecKinds(calls: readonly RecordedSpawn[]): {
+  node: number;
+  metadata: number;
+  canary: number;
+  piCli: number;
+} {
+  const kinds = { node: 0, metadata: 0, canary: 0, piCli: 0 };
+  for (const call of calls) {
+    if (call.args[0] !== "exec") continue;
+    if (call.args[3] === SANDBOX_PI) kinds.piCli += 1;
+    if (call.args[3] !== SANDBOX_NODE) continue;
+    if (call.args[4] === "--version") kinds.node += 1;
+    const script = call.args[5] ?? "";
+    if (script.includes("identity.json")) kinds.metadata += 1;
+    if (script.includes("opentag-rootfs-")) kinds.canary += 1;
+  }
+  return kinds;
 }
 
 describe("native sandbox resolver snapshot", () => {
@@ -361,7 +390,7 @@ describe("native sandbox resolver snapshot", () => {
     const rootfs = await temporaryDirectory("opentag-native-rootfs-");
     const source = await resolverSourceFixture();
     const canaries: string[] = [];
-    const { spawn } = recordingSpawn((args) => respondToProbe(args, (canary) => canaries.push(canary)));
+    const { spawn, calls } = recordingSpawn((args) => respondToProbe(args, (canary) => canaries.push(canary)));
     const sandbox = new NativeSandbox({
       name: "ots-x",
       workspace,
@@ -377,6 +406,34 @@ describe("native sandbox resolver snapshot", () => {
     await sandbox.destroy();
     expect(canaries).toHaveLength(2);
     expect(canaries[1]).toBe(canaries[0]);
+    // Every probe re-runs the full set fresh: real Node execution, the combined metadata read,
+    // and the isolation canaries. Nothing is cached across probes, and no probe ever launches
+    // the Pi CLI inside the sandbox.
+    expect(probeExecKinds(calls)).toEqual({ node: 2, metadata: 2, canary: 2, piCli: 0 });
+  });
+
+  it("reports exact versions from the image metadata without launching the Pi CLI", async () => {
+    const workspace = await temporaryDirectory("opentag-native-sandbox-");
+    const rootfs = await temporaryDirectory("opentag-native-rootfs-");
+    const source = await resolverSourceFixture();
+    const { spawn, calls } = recordingSpawn((args) => respondToProbe(args, () => undefined));
+    const sandbox = new NativeSandbox({
+      name: "ots-x",
+      workspace,
+      rootfs,
+      resolverSource: source,
+      spawnProcess: spawn,
+    });
+    await sandbox.launch();
+    const probe = await sandbox.probe();
+    // The wire-facing SandboxProbeResult keeps its exact fields; piVersion is the locked package
+    // metadata validated against the image identity, not a Pi CLI launch.
+    expect(probe).toEqual({ nodeVersion: "v24.19.0", piVersion: "0.84.2", runnerVersion: "1.0.0" });
+    await sandbox.destroy();
+    const execs = calls.filter((call) => call.args[0] === "exec");
+    expect(execs.length).toBeGreaterThan(0);
+    expect(execs.every((call) => call.args[3] === SANDBOX_NODE)).toBe(true);
+    expect(calls.some((call) => call.args.includes(SANDBOX_PI))).toBe(false);
   });
 });
 
@@ -407,30 +464,71 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
         spawnProcess: recordingSpawn(respond).spawn,
         workspace,
       });
+    const metadataWith = (overrides: Record<string, unknown>) =>
+      JSON.stringify({ ...JSON.parse(PROBE_METADATA_STDOUT), ...overrides });
 
     await expect(
       probeWith((args) => (args[3] === SANDBOX_NODE && args[4] === "--version" ? { code: 1 } : { code: 0 })).probe(),
     ).rejects.toMatchObject({ code: "probe_failed", message: /working node runtime/ });
+    // The in-Sandbox metadata read failed: missing or corrupt identity/Pi package files, or an
+    // inaccessible shim/CLI artifact. The script's own bounded diagnostic is preserved.
     await expect(
       probeWith((args) => {
         if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
-        if (args[3] === SANDBOX_PI) return { code: 1 };
+        if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
+          return { code: 1, stderr: "runner-metadata:pi-package-corrupt" };
+        }
         return { code: 0 };
       }).probe(),
-    ).rejects.toMatchObject({ code: "probe_failed", message: /Pi toolchain/ });
+    ).rejects.toMatchObject({
+      code: "probe_failed",
+      message: /missing or corrupt: runner-metadata:pi-package-corrupt/,
+    });
+    // The metadata payload is not JSON at all.
     await expect(
       probeWith((args) => {
         if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
-        if (args[3] === SANDBOX_PI) return { code: 0, stdout: "0.84.2\n" };
-        if (args[3] === SANDBOX_NODE) return { code: 0, stdout: "not a version!" };
+        if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) return { code: 0, stdout: "{nope" };
+        return { code: 0 };
+      }).probe(),
+    ).rejects.toMatchObject({ code: "probe_failed", message: /no valid Runner or Pi metadata/ });
+    // The Runner version keeps its exact alphabet check.
+    await expect(
+      probeWith((args) => {
+        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
+        if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
+          return { code: 0, stdout: metadataWith({ runnerVersion: "not a version!" }) };
+        }
         return { code: 0 };
       }).probe(),
     ).rejects.toMatchObject({ code: "probe_failed", message: /valid Runner version/ });
+    // The installed Pi package version must equal the image identity's locked Pi version.
     await expect(
       probeWith((args) => {
         if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
-        if (args[3] === SANDBOX_PI) return { code: 0, stdout: "0.84.2\n" };
-        if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) return { code: 0, stdout: "1.0.0" };
+        if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
+          return { code: 0, stdout: metadataWith({ piVersion: "0.84.3" }) };
+        }
+        return { code: 0 };
+      }).probe(),
+    ).rejects.toMatchObject({ code: "probe_failed", message: /does not match the image identity/ });
+    // The installed Pi package name must equal the image identity's locked Pi package.
+    await expect(
+      probeWith((args) => {
+        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
+        if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
+          return { code: 0, stdout: metadataWith({ piName: "@earendil-works/other" }) };
+        }
+        return { code: 0 };
+      }).probe(),
+    ).rejects.toMatchObject({ code: "probe_failed", message: /does not match the image identity/ });
+    // The isolation canaries still gate readiness after a valid metadata read.
+    await expect(
+      probeWith((args) => {
+        if (args[3] === SANDBOX_NODE && args[4] === "--version") return { code: 0, stdout: "v24.19.0\n" };
+        if (args[3] === SANDBOX_NODE && (args[5] ?? "").includes("identity.json")) {
+          return { code: 0, stdout: PROBE_METADATA_STDOUT };
+        }
         return { code: 0, stdout: "not isolated" };
       }).probe(),
     ).rejects.toMatchObject({ code: "probe_failed", message: /isolation/ });
@@ -544,6 +642,165 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
     await expect(
       cancelled.exec(SANDBOX_NODE, ["--version"], { signal: aborted.signal, timeoutMs: 1_000 }),
     ).rejects.toMatchObject({ code: "exec_failed" });
+  });
+});
+
+describe("native sandbox Pi metadata script against local fixtures", () => {
+  /** Run the generated script under the real local Node runtime, exactly as `node -e` would. */
+  function runNodeScript(script: string): Promise<{ code: number; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ["-e", script], { stdio: "pipe" });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+      child.once("error", reject);
+      child.once("close", (code) =>
+        resolve({
+          code: code ?? -1,
+          stdout: Buffer.concat(stdout).toString("utf8"),
+          stderr: Buffer.concat(stderr).toString("utf8"),
+        }),
+      );
+      child.stdin.end();
+    });
+  }
+
+  interface MetadataFixturePaths {
+    readonly identityPath: string;
+    readonly piHome: string;
+    readonly shimPath: string;
+    readonly packageDir: string;
+    readonly cliMarker: string;
+  }
+
+  /**
+   * A local mirror of the fixed image layout: identity.json, the locked Pi package under
+   * node_modules, its declared dist/cli.js entry, and an executable shim. The fixture CLI is a
+   * marker writer, so any accidental execution of the Pi CLI is observable.
+   */
+  async function piMetadataFixture(
+    options: { identity?: string | false; packageJson?: string | false; shim?: boolean; cliEntry?: boolean } = {},
+  ): Promise<MetadataFixturePaths> {
+    const root = await temporaryDirectory("opentag-pi-metadata-");
+    const paths: MetadataFixturePaths = {
+      identityPath: join(root, "identity.json"),
+      piHome: join(root, "pi"),
+      shimPath: join(root, "tools", "bin", "pi"),
+      packageDir: join(root, "pi", "node_modules", "@earendil-works", "pi-coding-agent"),
+      cliMarker: join(root, "cli-executed"),
+    };
+    await mkdir(join(paths.packageDir, "dist"), { recursive: true });
+    await mkdir(dirname(paths.shimPath), { recursive: true });
+    const identity =
+      options.identity ??
+      JSON.stringify({ version: "1.0.0", piPackage: "@earendil-works/pi-coding-agent", piVersion: "0.84.2" });
+    if (identity !== false) await writeFile(paths.identityPath, identity);
+    const packageJson =
+      options.packageJson ??
+      JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.84.2", bin: { pi: "dist/cli.js" } });
+    if (packageJson !== false) await writeFile(join(paths.packageDir, "package.json"), packageJson);
+    if (options.shim !== false) {
+      await writeFile(paths.shimPath, `#!/bin/sh\nexec /usr/local/bin/node cli.js "$@"\n`, { mode: 0o755 });
+    }
+    if (options.cliEntry !== false) {
+      await writeFile(
+        join(paths.packageDir, "dist", "cli.js"),
+        `require('node:fs').writeFileSync(${JSON.stringify(paths.cliMarker)},'ran')\n`,
+      );
+    }
+    return paths;
+  }
+
+  function scriptFor(paths: MetadataFixturePaths): string {
+    return buildSandboxMetadataScript({
+      identityPath: paths.identityPath,
+      piHome: paths.piHome,
+      shimPath: paths.shimPath,
+    });
+  }
+
+  it("reads the identity and the locked Pi package metadata without executing the Pi CLI", async () => {
+    const paths = await piMetadataFixture();
+    const result = await runNodeScript(scriptFor(paths));
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      runnerVersion: "1.0.0",
+      identityPiPackage: "@earendil-works/pi-coding-agent",
+      identityPiVersion: "0.84.2",
+      piName: "@earendil-works/pi-coding-agent",
+      piVersion: "0.84.2",
+    });
+    expect(result.stderr).toBe("");
+    // The metadata read never loaded the fixture's CLI entry.
+    await expect(stat(paths.cliMarker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails closed on missing, corrupt, oversized, or escaping metadata", async () => {
+    const missingIdentity = await piMetadataFixture({ identity: false });
+    expect(await runNodeScript(scriptFor(missingIdentity))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:identity-missing",
+    });
+    const corruptIdentity = await piMetadataFixture({ identity: "{not json" });
+    expect(await runNodeScript(scriptFor(corruptIdentity))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:identity-corrupt",
+    });
+    const escaping = await piMetadataFixture({
+      identity: JSON.stringify({ version: "1.0.0", piPackage: "@earendil-works/../escape", piVersion: "0.84.2" }),
+    });
+    expect(await runNodeScript(scriptFor(escaping))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:identity-pi-package",
+    });
+    const missingPackage = await piMetadataFixture({ packageJson: false });
+    expect(await runNodeScript(scriptFor(missingPackage))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:pi-package-missing",
+    });
+    const corruptPackage = await piMetadataFixture({ packageJson: "{oops" });
+    expect(await runNodeScript(scriptFor(corruptPackage))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:pi-package-corrupt",
+    });
+    const oversized = await piMetadataFixture({ packageJson: `"${"x".repeat(70_000)}"` });
+    expect(await runNodeScript(scriptFor(oversized))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:pi-package-invalid",
+    });
+  });
+
+  it("requires the fixed shim and the declared CLI entry without loading them", async () => {
+    const missingShim = await piMetadataFixture({ shim: false });
+    expect(await runNodeScript(scriptFor(missingShim))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:pi-shim-inaccessible",
+    });
+    const missingCli = await piMetadataFixture({ cliEntry: false });
+    expect(await runNodeScript(scriptFor(missingCli))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:pi-cli-inaccessible",
+    });
+    const noBin = await piMetadataFixture({
+      packageJson: JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.84.2" }),
+    });
+    expect(await runNodeScript(scriptFor(noBin))).toMatchObject({ code: 1, stderr: "runner-metadata:pi-bin-invalid" });
+    const escapingBin = await piMetadataFixture({
+      packageJson: JSON.stringify({
+        name: "@earendil-works/pi-coding-agent",
+        version: "0.84.2",
+        bin: { pi: "../../../outside.js" },
+      }),
+    });
+    expect(await runNodeScript(scriptFor(escapingBin))).toMatchObject({
+      code: 1,
+      stderr: "runner-metadata:pi-bin-invalid",
+    });
+    // None of the failure paths executed the fixture CLI either.
+    for (const paths of [missingShim, missingCli, noBin, escapingBin]) {
+      await expect(stat(paths.cliMarker)).rejects.toMatchObject({ code: "ENOENT" });
+    }
   });
 });
 

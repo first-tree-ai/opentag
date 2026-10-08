@@ -40,7 +40,7 @@ receive role-aware managed instructions and may create further internal Sessions
 
 Local and Cloud use the same managed system-prompt renderer and Session context interface. Shared Session behavior is
 defined once; workspace persistence, isolation, and Context Tree facts are rendered for the execution environment.
-Visible Sessions may optionally add one emoji reaction before starting a lengthy user task, skipping unnecessary or
+Visible Sessions add one emoji reaction to the original user message before starting a lengthy user task, skipping only
 duplicate acknowledgments and observer deliveries. Internal Sessions report to their coordinator and do not publish to IM.
 
 OpenTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an OpenTag

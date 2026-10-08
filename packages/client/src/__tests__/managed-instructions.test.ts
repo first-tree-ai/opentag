@@ -207,8 +207,12 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("You are a visible Session");
       expect(prompt).toContain("Session kind: visible");
       expect(prompt).toContain("Lean toward a lively, friendly tone");
-      expect(prompt).toContain("optionally add one emoji reaction");
-      expect(prompt).toContain("Skip unnecessary or duplicate acknowledgments and observer deliveries");
+      expect(prompt).toContain(
+        "For a lengthy user task, add one emoji reaction to the original user message via the provider CLI before starting task work.",
+      );
+      expect(prompt).toContain("Skip it only for duplicate acknowledgments and observer deliveries");
+      expect(prompt).not.toContain("optionally");
+      expect(prompt).not.toContain("unnecessary");
       expect(prompt).toContain("OpenTag internal Sessions and Provider-native subagents are separate mechanisms");
     }
     expect(local).toContain("Current Session: session-1");

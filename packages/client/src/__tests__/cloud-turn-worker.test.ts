@@ -1154,12 +1154,12 @@ describe("session-message worker integration", () => {
     });
     expect(completion.outcome).toBe("completed");
     // The visible continuation runs the shared managed prompt as a visible Session: the friendly
-    // tone and OPTIONAL emoji policies apply, keyed to the actual target Session identity.
+    // tone and mandatory pre-work acknowledgment policies apply, keyed to the actual target Session identity.
     expect(observed.systemPrompt).toContain("You are a visible Session");
     expect(observed.systemPrompt).toContain("Session kind: visible");
     expect(observed.systemPrompt).toContain(`Current Session: ${request.message.targetSessionId}`);
     expect(observed.systemPrompt).toContain("Lean toward a lively, friendly tone");
-    expect(observed.systemPrompt).toContain("optionally add one emoji reaction");
+    expect(observed.systemPrompt).toContain("add one emoji reaction to the original user message via the provider CLI");
     // The visible continuation keeps its real provider scope and the outbox instruction path.
     expect(observed.inputText).toContain('Default provider outbox context: {"channelId":"C0EXAMPLE"');
     expect(observed.inputText).toContain("1700000000.1234");
@@ -1349,7 +1349,9 @@ describe("session-message worker integration", () => {
     expect(opened[0]?.systemPrompt).toContain("Session kind: visible");
     expect(opened[0]?.systemPrompt).toContain(`Current Session: ${delivery.sessionId}`);
     expect(opened[0]?.systemPrompt).toContain("Lean toward a lively, friendly tone");
-    expect(opened[0]?.systemPrompt).toContain("optionally add one emoji reaction");
+    expect(opened[0]?.systemPrompt).toContain(
+      "add one emoji reaction to the original user message via the provider CLI",
+    );
     expect(opened[1]?.systemPrompt).toContain("## Cloud execution context");
     expect(opened[1]?.systemPrompt).toContain("You are an internal Session");
     expect(opened[1]?.systemPrompt).toContain("Session kind: internal");

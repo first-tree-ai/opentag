@@ -20,6 +20,7 @@ export * from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
+export * from "./public-catalog.js";
 export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runtime-config.js";
 export * from "./runtime-configuration-options.js";
 export type { TurnFailureReason } from "./runtime-domain.js";

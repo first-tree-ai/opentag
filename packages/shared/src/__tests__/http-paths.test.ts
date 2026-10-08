@@ -101,6 +101,8 @@ import {
   MCP_SERVERS_PATH,
   mcpServerPath,
   mcpServersPath,
+  PUBLIC_MCP_SERVERS_PATH,
+  PUBLIC_SKILLS_PATH,
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_SKILL_BUNDLE_TEMPLATE,
   RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE,
@@ -374,6 +376,13 @@ describe("http paths", () => {
     });
   });
 
+  describe("public catalog paths", () => {
+    it("anchors both anonymous catalog reads on the documented paths", () => {
+      expect(PUBLIC_SKILLS_PATH).toBe("/api/v1/public/skills");
+      expect(PUBLIC_MCP_SERVERS_PATH).toBe("/api/v1/public/mcp-servers");
+    });
+  });
+
   describe("templates and constants stay consistent with the builders", () => {
     it("renders every template with the same id the builder takes", () => {
       const agentId = AGENT_ID;
@@ -463,6 +472,8 @@ describe("http paths", () => {
       expect(HTTP_PATHS.runtimeSkills).toBe(RUNTIME_SKILLS_PATH);
       expect(HTTP_PATHS.runtimeSkillPresets).toBe(RUNTIME_SKILL_PRESETS_PATH);
       expect(HTTP_PATHS.runtimeDurableWork).toBe(RUNTIME_DURABLE_WORK_PATH);
+      expect(HTTP_PATHS.publicSkills).toBe(PUBLIC_SKILLS_PATH);
+      expect(HTTP_PATHS.publicMcpServers).toBe(PUBLIC_MCP_SERVERS_PATH);
     });
   });
 });

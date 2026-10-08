@@ -130,6 +130,13 @@ export const AGENT_SKILL_PRESET_INSTALL_TEMPLATE = `${AGENT_SKILL_PRESETS_TEMPLA
 export const RUNTIME_SKILL_PRESETS_PATH = `${API_V1_PREFIX}/runtime/skill-presets`;
 export const RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE = `${RUNTIME_SKILL_PRESETS_PATH}/:presetName/install`;
 /*
+ * Public catalog reads for the official website. Anonymous, display-only projections of the
+ * repo-shipped Skill preset and MCP marketplace catalogs; a deployment exposes them on the official
+ * public origin or when `OPENTAG_WEBSITE_ORIGINS` adds website origins.
+ */
+export const PUBLIC_SKILLS_PATH = `${API_V1_PREFIX}/public/skills`;
+export const PUBLIC_MCP_SERVERS_PATH = `${API_V1_PREFIX}/public/mcp-servers`;
+/*
  * Agent self-configuration. Session-proof authenticated and never addressed by Agent id: the Agent
  * is always the one the proof resolves to, so a request cannot reach a different Agent.
  */
@@ -174,6 +181,8 @@ export const HTTP_PATHS = {
   mcpServers: MCP_SERVERS_PATH,
   mcpOAuthCallback: MCP_OAUTH_CALLBACK_PATH,
   mcpClientMetadata: MCP_CLIENT_METADATA_PATH,
+  publicSkills: PUBLIC_SKILLS_PATH,
+  publicMcpServers: PUBLIC_MCP_SERVERS_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,

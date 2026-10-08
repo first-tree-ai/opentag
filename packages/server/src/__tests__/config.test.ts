@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { parseRequest } from "../api/request-validation.js";
 import {
   isHostedEnvironment,
+  MAX_WEBSITE_ORIGINS,
   parseCloudStorageBase,
   parseDatabaseConfig,
   parseServerConfig,
@@ -386,6 +387,53 @@ describe("parseServerConfig", () => {
   it("accepts the configured server log level and rejects unknown levels", () => {
     expect(parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "debug" }).logLevel).toBe("debug");
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
+  });
+
+  it("parses OPENTAG_WEBSITE_ORIGINS into a canonical, de-duplicated allowlist", () => {
+    expect(parseServerConfig({ ...required, OPENTAG_ENV: "dev" }).websiteOrigins).toEqual([]);
+    expect(
+      parseServerConfig({ ...required, OPENTAG_ENV: "dev", OPENTAG_WEBSITE_ORIGINS: "  ,  " }).websiteOrigins,
+    ).toEqual([]);
+
+    const staging = { ...required, OPENTAG_ENV: "staging", OPENTAG_PUBLIC_URL: "https://dev.opentag.build" };
+    expect(
+      parseServerConfig({
+        ...staging,
+        OPENTAG_WEBSITE_ORIGINS: " https://staging.opentag.build ,https://opentag.build,https://opentag.build ",
+      }).websiteOrigins,
+    ).toEqual(["https://staging.opentag.build", "https://opentag.build"]);
+
+    // A loopback HTTP origin is how a local website dev server reaches a deployed API.
+    expect(
+      parseServerConfig({ ...staging, OPENTAG_WEBSITE_ORIGINS: "http://localhost:3000,http://127.0.0.1:5173" })
+        .websiteOrigins,
+    ).toEqual(["http://localhost:3000", "http://127.0.0.1:5173"]);
+
+    // Plain HTTP widens only in dev, and never to a non-loopback host in a hosted environment.
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "dev",
+        OPENTAG_WEBSITE_ORIGINS: "http://192.0.2.10:3000",
+      }).websiteOrigins,
+    ).toEqual(["http://192.0.2.10:3000"]);
+
+    for (const invalid of [
+      "http://example.com",
+      "https://opentag.build/site",
+      "https://user:secret@opentag.build",
+      "https://opentag.build?next=1",
+      "ftp://opentag.build",
+      "not-a-url",
+    ]) {
+      expect(() => parseServerConfig({ ...staging, OPENTAG_WEBSITE_ORIGINS: invalid })).toThrow();
+    }
+
+    const tooMany = Array.from(
+      { length: MAX_WEBSITE_ORIGINS + 1 },
+      (_, index) => `https://site-${index}.example.com`,
+    ).join(",");
+    expect(() => parseServerConfig({ ...staging, OPENTAG_WEBSITE_ORIGINS: tooMany })).toThrow();
   });
 
   it("keeps the legacy encryption defaults and fully validates the v2 key ring opt-in", () => {

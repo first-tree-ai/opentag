@@ -2,8 +2,9 @@ import { BrowserSessionStatusResponseSchema, HTTP_PATHS } from "@opentag/shared"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
+import { OFFICIAL_PUBLIC_ORIGIN, OFFICIAL_WEBSITE_ORIGINS } from "./website-origins.js";
 
-const WEBSITE_ORIGINS = new Set(["https://opentag.build", "https://www.opentag.build"]);
+const WEBSITE_ORIGINS = new Set<string>(OFFICIAL_WEBSITE_ORIGINS);
 
 /** A cookie-only, identity-free read for the official website. Other deployments expose no such surface. */
 export function registerWebsiteSessionRoutes(
@@ -12,7 +13,7 @@ export function registerWebsiteSessionRoutes(
   options: Pick<UserAuthPreHandlerOptions, "betterAuth" | "publicOrigin">,
 ): void {
   const { betterAuth, publicOrigin } = options;
-  if (publicOrigin !== "https://app.opentag.build" || !betterAuth) return;
+  if (publicOrigin !== OFFICIAL_PUBLIC_ORIGIN || !betterAuth) return;
 
   const allowWebsite = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     reply.header("Cache-Control", "no-store").header("Vary", "Origin");

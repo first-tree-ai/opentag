@@ -960,6 +960,7 @@ export async function startServer(): Promise<void> {
         secureCookies: isHostedEnvironment(config.environment),
         sessionTtlSeconds: config.sessionTtlSeconds,
       },
+      publicCatalog: { origins: config.websiteOrigins },
       connectCode: {
         environment: config.environment,
         issuer: connectCodeService,

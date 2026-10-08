@@ -34,6 +34,7 @@ import { type McpGatewayRoutesOptions, registerMcpGatewayRoutes } from "./api/mc
 import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
 import { registerMcpServerRoutes } from "./api/mcp-servers.js";
 import { registerMeRoutes } from "./api/me.js";
+import { registerPublicCatalogRoutes } from "./api/public-catalog.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { registerRunnerWorkspaceRoutes } from "./api/runner-workspace.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
@@ -139,6 +140,11 @@ export interface CreateAppOptions {
     publicUrl: string;
   };
   browserAuth?: BrowserAuthRoutesOptions;
+  /**
+   * Additional website origins (`OPENTAG_WEBSITE_ORIGINS`) that may read the public catalog APIs.
+   * The official origins apply by themselves on the official deployment; this list extends them.
+   */
+  publicCatalog?: { origins: readonly string[] };
   /** Relay for Web App and CLI failures. Always registered; without a reporter the relay only logs. */
   errorReporting?: ErrorReportRoutesOptions;
   imBindingService?: ImBindingService;
@@ -500,6 +506,18 @@ function registerSessionProofRoutes(
   if (options.runtimeAgentSchedules) registerRuntimeAgentScheduleRoutes(app, options.runtimeAgentSchedules);
 }
 
+/**
+ * Anonymous catalog reads for the official website, registered independently of the auth surface —
+ * no session, proof, or credential is ever consulted — and the module itself decides whether this
+ * deployment exposes them.
+ */
+function registerPublicCatalog(app: FastifyInstance, options: CreateAppOptions): void {
+  registerPublicCatalogRoutes(app, {
+    publicOrigin: options.browserAuth?.publicOrigin,
+    origins: options.publicCatalog?.origins ?? [],
+  });
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
     /*
@@ -521,6 +539,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const databaseReadinessProbe = createDatabaseReadinessProbe(healthDatabase);
 
   registerSessionProofRoutes(app, options);
+  registerPublicCatalog(app, options);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
   if (options.runtimeWeb) registerRuntimeWebRoutes(app, options.runtimeWeb);
   if (options.mcpGateway) registerMcpGatewayRoutes(app, options.mcpGateway);

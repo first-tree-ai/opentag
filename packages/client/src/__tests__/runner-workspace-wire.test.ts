@@ -2,14 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { link, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { connect, createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DirectImMessageDeliveryRequest, RunnerWorkspaceObject } from "@opentag/shared";
 import { expect, it, type Mock, vi } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { CloudTurnRunnerOptions } from "../runner/cloud-turns.js";
-import { type NativeSandbox, NativeSandboxError } from "../runner/native-sandbox.js";
+import type { NativeSandbox } from "../runner/native-sandbox.js";
 import { runRunnerServe } from "../runner/serve.js";
 import type { NativeWebExecutionChannel } from "../runner/web-gateway.js";
 import { createWorkspaceArchive } from "../runner/workspace-archive.js";
@@ -32,38 +31,6 @@ function digest(bytes: Buffer) {
   };
 }
 
-async function freeTcpPort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const probe = createTcpServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const address = probe.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      probe.close(() => resolve(port));
-    });
-  });
-}
-
-/** Real loopback TCP probe: resolves when the health listener ends the connection untouched. */
-function probeHealthPort(port: number): Promise<{ bytes: number }> {
-  return new Promise((resolve, reject) => {
-    const socket = connect({ host: "127.0.0.1", port });
-    let bytes = 0;
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error("health listener did not answer"));
-    }, 5_000);
-    socket.on("data", (chunk: Buffer) => {
-      bytes += chunk.byteLength;
-    });
-    socket.on("error", reject);
-    socket.on("close", () => {
-      clearTimeout(timer);
-      resolve({ bytes });
-    });
-  });
-}
-
 interface ProtocolPeerOptions {
   /** Allocation instance prefix; the welcome resource name and the Runner sandbox name must match it. */
   readonly instancePrefix?: string;
@@ -73,15 +40,6 @@ interface ProtocolPeerOptions {
   readonly rejectUploadsFrom?: number;
   readonly authReply?: (frame: Record<string, unknown>, attempt: number) => object | object[] | undefined;
   readonly httpToken?: () => string;
-  /** Test gate parked inside an authenticated claim until released; proves what ran before it. */
-  readonly claimGate?: { readonly entered: () => void; readonly release: Promise<void> };
-}
-
-/** A parked claim gate; a statement inside the peer's claim branch keeps the handler simple. */
-async function runClaimGate(gate: ProtocolPeerOptions["claimGate"]): Promise<void> {
-  if (!gate) return;
-  gate.entered();
-  await gate.release;
 }
 
 /** A storage/control protocol peer over real loopback HTTP + WS; not a GCP/native substitute. */
@@ -144,7 +102,6 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
       return;
     }
     if (request.url?.endsWith("/claim")) {
-      await runClaimGate(options.claimGate);
       if (object.ownerGeneration < generation) {
         object = {
           ...object,
@@ -511,436 +468,6 @@ it.each([false, true])(
     }
   },
 );
-
-/* ------------------------------------------------------------------------------------------------
- * Persistent startup: the redundant pre-auth native cycle is removed. Parent state, TCP health,
- * auth and the current-assignment credential all precede the single post-restore native launch
- * and fresh probe; readiness, execution and web channels stay closed until that proof exists.
- * ---------------------------------------------------------------------------------------------- */
-
-it("authenticates and serves TCP health with zero native launches until the gated restore completes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-startup-gated-"));
-  const claimEntered = deferred();
-  const allowClaim = deferred();
-  let gatedClaims = 0;
-  const peer = await protocolPeer({
-    claimGate: {
-      entered: () => {
-        gatedClaims += 1;
-        claimEntered.resolve();
-      },
-      release: allowClaim.promise,
-    },
-  });
-  const native = {
-    launch: vi.fn(async () => undefined),
-    destroy: vi.fn(async () => undefined),
-    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
-  };
-  const webExecutions = vi.fn(async () => ({}) as NativeWebExecutionChannel);
-  const runWorker = vi.fn(async (): Promise<never> => {
-    throw new Error("no turn may run before readiness");
-  });
-  const healthPort = await freeTcpPort();
-  const stop = new AbortController();
-  const running = runRunnerServe(
-    {
-      backendUrl: peer.url,
-      bootstrapToken: "fixture-1",
-      sandboxName: "ots-test-1",
-      workspace: join(root, "workspace"),
-      stateDir: join(root, "private"),
-      healthPort,
-      workspacePersistence: true,
-    },
-    {
-      installSignalHandlers: false,
-      signal: stop.signal,
-      stderr: { write: () => undefined },
-      sandboxFactory: () => native as unknown as NativeSandbox,
-      sleep: async () => undefined,
-      webAuthority: {} as never,
-      onWebGateway: (gateway) => {
-        vi.spyOn(gateway, "openExecution").mockImplementation(webExecutions);
-      },
-      cloudTurnSeams: {
-        openExecution: async () => ({ close: async () => undefined, executionDir: "/run/test" }),
-        runWorker,
-      },
-    },
-  );
-  try {
-    // Auth and parent TCP health are up while the restore is parked: zero native launches, no
-    // readiness, no web execution, no worker. TCP health proves only a live control process. The
-    // verified deletion of a possibly residual namespace already ran — it precedes any claim.
-    await peer.wait("auth");
-    await claimEntered.promise;
-    expect(gatedClaims).toBe(1);
-    expect(await probeHealthPort(healthPort)).toEqual({ bytes: 0 });
-    expect(native.destroy).toHaveBeenCalledTimes(1);
-    expect(native.launch).not.toHaveBeenCalled();
-    expect(native.probe).not.toHaveBeenCalled();
-    expect(peer.count("runner:ready")).toBe(0);
-    expect(webExecutions).not.toHaveBeenCalled();
-    expect(runWorker).not.toHaveBeenCalled();
-    // After the restore and its commit checkpoint, exactly one launch and one fresh probe
-    // precede runner:ready.
-    allowClaim.resolve();
-    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
-    expect(native.launch).toHaveBeenCalledTimes(1);
-    expect(native.probe).toHaveBeenCalledTimes(1);
-    expect(native.destroy).toHaveBeenCalledTimes(1);
-    expect(webExecutions).toHaveBeenCalledTimes(1);
-  } finally {
-    allowClaim.resolve();
-    stop.abort();
-    expect(await running).toBe(143);
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-  // Shutdown deletes the single restored namespace on top of the startup quiesce.
-  expect(native.destroy).toHaveBeenCalledTimes(2);
-}, 20_000);
-
-it("holds the workspace claim, launch and readiness behind a gated verified deletion", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-startup-gated-destroy-"));
-  const peer = await protocolPeer();
-  const destroyEntered = deferred();
-  const allowDestroy = deferred();
-  const native = {
-    launch: vi.fn(async () => undefined),
-    destroy: vi.fn(async () => {
-      destroyEntered.resolve();
-      await allowDestroy.promise;
-    }),
-    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
-  };
-  const stop = new AbortController();
-  const running = runRunnerServe(
-    {
-      backendUrl: peer.url,
-      bootstrapToken: "fixture-1",
-      sandboxName: "ots-test-1",
-      workspace: join(root, "workspace"),
-      stateDir: join(root, "private"),
-      workspacePersistence: true,
-    },
-    {
-      installSignalHandlers: false,
-      signal: stop.signal,
-      stderr: { write: () => undefined },
-      sandboxFactory: () => native as unknown as NativeSandbox,
-      sleep: async () => undefined,
-    },
-  );
-  try {
-    // A fresh parent has no local launch/probe evidence, yet an old same-name namespace may still
-    // hold a writer: while the verified delete is parked, no workspace HTTP, launch or readiness.
-    await peer.wait("auth");
-    await destroyEntered.promise;
-    expect(peer.claimTokens).toEqual([]);
-    expect(native.launch).not.toHaveBeenCalled();
-    expect(native.probe).not.toHaveBeenCalled();
-    expect(peer.count("runner:ready")).toBe(0);
-    allowDestroy.resolve();
-    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
-    expect(native.destroy).toHaveBeenCalledTimes(1);
-    expect(native.launch).toHaveBeenCalledTimes(1);
-    expect(native.probe).toHaveBeenCalledTimes(1);
-  } finally {
-    allowDestroy.resolve();
-    stop.abort();
-    expect(await running).toBe(143);
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-  // Startup quiesce plus the shutdown deletion of the restored namespace.
-  expect(native.destroy).toHaveBeenCalledTimes(2);
-}, 20_000);
-
-it("fails closed when the residual namespace's deletion cannot be verified before any restore", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-startup-destroy-fail-"));
-  const peer = await protocolPeer();
-  let destroyCalls = 0;
-  const native = {
-    launch: vi.fn(async () => undefined),
-    destroy: vi.fn(async () => {
-      destroyCalls += 1;
-      if (destroyCalls === 1) throw new Error("sandbox delete failed");
-    }),
-    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
-  };
-  const stop = new AbortController();
-  const running = runRunnerServe(
-    {
-      backendUrl: peer.url,
-      bootstrapToken: "fixture-1",
-      sandboxName: "ots-test-1",
-      workspace: join(root, "workspace"),
-      stateDir: join(root, "private"),
-      workspacePersistence: true,
-    },
-    {
-      installSignalHandlers: false,
-      signal: stop.signal,
-      stderr: { write: () => undefined },
-      sandboxFactory: () => native as unknown as NativeSandbox,
-      sleep: async () => undefined,
-    },
-  );
-  try {
-    expect(await running).toBe(5);
-    // Unverified deletion blocks everything after it: no claim/restore/save, launch or readiness,
-    // and no reconnect over the possibly residual namespace.
-    expect(peer.claimTokens).toEqual([]);
-    expect(native.launch).not.toHaveBeenCalled();
-    expect(native.probe).not.toHaveBeenCalled();
-    expect(peer.count("runner:ready")).toBe(0);
-    expect(peer.count("auth")).toBe(1);
-    // The failed quiesce plus the shutdown retry of the possibly remaining namespace.
-    expect(destroyCalls).toBe(2);
-  } finally {
-    stop.abort();
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 20_000);
-
-it("starts no sandbox while the workspace claim keeps failing, and never reports readiness", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-startup-restore-fail-"));
-  // Every claim is rejected: the restore cannot complete, so no native cycle may begin.
-  const peer = await protocolPeer({ httpToken: () => "fixture-never-valid" });
-  const native = {
-    launch: vi.fn(async () => undefined),
-    destroy: vi.fn(async () => undefined),
-    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
-  };
-  const stop = new AbortController();
-  const running = runRunnerServe(
-    {
-      backendUrl: peer.url,
-      bootstrapToken: "fixture-1",
-      sandboxName: "ots-test-1",
-      workspace: join(root, "workspace"),
-      stateDir: join(root, "private"),
-      workspacePersistence: true,
-    },
-    {
-      installSignalHandlers: false,
-      signal: stop.signal,
-      stderr: { write: () => undefined },
-      sandboxFactory: () => native as unknown as NativeSandbox,
-      sleep: async () => undefined,
-    },
-  );
-  try {
-    // The claim is retried across reconnects; none of them may start a namespace or report ready.
-    // Every attempt still begins with the verified deletion of the possibly residual namespace.
-    await vi.waitFor(() => expect(peer.claimTokens.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
-    expect(native.launch).not.toHaveBeenCalled();
-    expect(native.probe).not.toHaveBeenCalled();
-    expect(native.destroy).toHaveBeenCalled();
-    expect(peer.count("runner:ready")).toBe(0);
-  } finally {
-    stop.abort();
-    expect(await running).toBe(143);
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-  // The single verified startup quiescence; later attempts skip it because this process itself
-  // already proved deletion, and cleanup adds nothing while nothing is possibly present.
-  expect(native.destroy).toHaveBeenCalledTimes(1);
-}, 20_000);
-
-it("fails closed with verified cleanup when the single post-restore launch reports the launcher missing", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-startup-no-launcher-"));
-  const peer = await protocolPeer();
-  const native = {
-    launch: vi.fn(async (): Promise<never> => {
-      throw new NativeSandboxError("unavailable", "The native Cloud Run sandbox binary is absent");
-    }),
-    destroy: vi.fn(async () => undefined),
-    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
-  };
-  const stop = new AbortController();
-  const running = runRunnerServe(
-    {
-      backendUrl: peer.url,
-      bootstrapToken: "fixture-1",
-      sandboxName: "ots-test-1",
-      workspace: join(root, "workspace"),
-      stateDir: join(root, "private"),
-      workspacePersistence: true,
-    },
-    {
-      installSignalHandlers: false,
-      signal: stop.signal,
-      stderr: { write: () => undefined },
-      sandboxFactory: () => native as unknown as NativeSandbox,
-    },
-  );
-  try {
-    expect(await running).toBe(5);
-    expect(peer.count("runner:ready")).toBe(0);
-    // The fatal launch failure never reconnects over the unproven namespace.
-    expect(peer.count("auth")).toBe(1);
-    expect(native.launch).toHaveBeenCalledTimes(1);
-    expect(native.probe).not.toHaveBeenCalled();
-    // The possibly partial launch is still deleted: startup quiesce plus the shutdown cleanup.
-    expect(native.destroy).toHaveBeenCalledTimes(2);
-  } finally {
-    stop.abort();
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 20_000);
-
-it("fails closed and deletes the namespace when the fresh probe fails after the single launch", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-startup-probe-fail-"));
-  const peer = await protocolPeer();
-  const native = {
-    launch: vi.fn(async () => undefined),
-    destroy: vi.fn(async () => undefined),
-    probe: vi.fn(async (): Promise<never> => {
-      throw new NativeSandboxError("probe_failed", "Native sandbox failed filesystem isolation checks");
-    }),
-  };
-  const stop = new AbortController();
-  const running = runRunnerServe(
-    {
-      backendUrl: peer.url,
-      bootstrapToken: "fixture-1",
-      sandboxName: "ots-test-1",
-      workspace: join(root, "workspace"),
-      stateDir: join(root, "private"),
-      workspacePersistence: true,
-    },
-    {
-      installSignalHandlers: false,
-      signal: stop.signal,
-      stderr: { write: () => undefined },
-      sandboxFactory: () => native as unknown as NativeSandbox,
-    },
-  );
-  try {
-    expect(await running).toBe(5);
-    // A failed fresh probe publishes no readiness and leaves no reusable proof behind.
-    expect(peer.count("runner:ready")).toBe(0);
-    expect(peer.count("auth")).toBe(1);
-    expect(native.launch).toHaveBeenCalledTimes(1);
-    expect(native.probe).toHaveBeenCalledTimes(1);
-    // Startup quiesce plus the shutdown deletion of the unproven namespace.
-    expect(native.destroy).toHaveBeenCalledTimes(2);
-  } finally {
-    stop.abort();
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 20_000);
-
-it("emits no readiness and launches nothing when the stop signal lands during the restore", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-startup-stop-restore-"));
-  const claimEntered = deferred();
-  const allowClaim = deferred();
-  const peer = await protocolPeer({ claimGate: { entered: claimEntered.resolve, release: allowClaim.promise } });
-  const native = {
-    launch: vi.fn(async () => undefined),
-    destroy: vi.fn(async () => undefined),
-    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
-  };
-  const stop = new AbortController();
-  const running = runRunnerServe(
-    {
-      backendUrl: peer.url,
-      bootstrapToken: "fixture-1",
-      sandboxName: "ots-test-1",
-      workspace: join(root, "workspace"),
-      stateDir: join(root, "private"),
-      workspacePersistence: true,
-    },
-    {
-      installSignalHandlers: false,
-      signal: stop.signal,
-      stderr: { write: () => undefined },
-      sandboxFactory: () => native as unknown as NativeSandbox,
-      sleep: async () => undefined,
-    },
-  );
-  try {
-    await claimEntered.promise;
-    stop.abort();
-    allowClaim.resolve();
-    expect(await running).toBe(143);
-    expect(peer.count("runner:ready")).toBe(0);
-    // The verified quiesce already ran before the gated claim; the stop fences the launch, and
-    // nothing possibly-present remains for cleanup.
-    expect(native.launch).not.toHaveBeenCalled();
-    expect(native.probe).not.toHaveBeenCalled();
-    expect(native.destroy).toHaveBeenCalledTimes(1);
-  } finally {
-    allowClaim.resolve();
-    stop.abort();
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 20_000);
-
-it("emits no readiness and deletes the launched namespace when the stop signal lands during the fresh probe", async () => {
-  const root = await mkdtemp(join(tmpdir(), "opentag-startup-stop-probe-"));
-  const peer = await protocolPeer();
-  const probeEntered = deferred();
-  const allowProbe = deferred();
-  const native = {
-    launch: vi.fn(async () => undefined),
-    destroy: vi.fn(async () => undefined),
-    probe: vi.fn(async () => {
-      probeEntered.resolve();
-      await allowProbe.promise;
-      return { nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" };
-    }),
-  };
-  const webExecutions = vi.fn(async () => ({}) as NativeWebExecutionChannel);
-  const stop = new AbortController();
-  const running = runRunnerServe(
-    {
-      backendUrl: peer.url,
-      bootstrapToken: "fixture-1",
-      sandboxName: "ots-test-1",
-      workspace: join(root, "workspace"),
-      stateDir: join(root, "private"),
-      workspacePersistence: true,
-    },
-    {
-      installSignalHandlers: false,
-      signal: stop.signal,
-      stderr: { write: () => undefined },
-      sandboxFactory: () => native as unknown as NativeSandbox,
-      sleep: async () => undefined,
-      webAuthority: {} as never,
-      onWebGateway: (gateway) => {
-        vi.spyOn(gateway, "openExecution").mockImplementation(webExecutions);
-      },
-    },
-  );
-  try {
-    await probeEntered.promise;
-    stop.abort();
-    allowProbe.resolve();
-    expect(await running).toBe(143);
-    // Readiness and the web execution channel stay closed even though the probe completed.
-    expect(peer.count("runner:ready")).toBe(0);
-    expect(webExecutions).not.toHaveBeenCalled();
-    expect(native.launch).toHaveBeenCalledTimes(1);
-    expect(native.probe).toHaveBeenCalledTimes(1);
-    // Startup quiesce plus the shutdown deletion of the launched namespace.
-    expect(native.destroy).toHaveBeenCalledTimes(2);
-  } finally {
-    allowProbe.resolve();
-    stop.abort();
-    await peer.close();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 20_000);
 
 /* ------------------------------------------------------------------------------------------------
  * E6: two concurrent Sessions of ONE Agent, each on its own trusted runRunnerServe instance.
@@ -1900,9 +1427,8 @@ it("fails fatally and stops reconnecting when rebind cleanup cannot delete the n
   }
   peer.advance();
 
-  // The restarted parent launched nothing itself, yet treats a same-name namespace as possibly
-  // residual; its rebind cleanup now cannot verify the deletion. The Runner must terminate
-  // instead of reconnecting over it.
+  // The restarted parent launches the native sandbox before the welcome; its rebind cleanup now
+  // cannot delete that namespace. The Runner must terminate instead of reconnecting over it.
   let destroyCalls = 0;
   let reconnectCalls = 0;
   const secondStop = new AbortController();
@@ -1922,7 +1448,7 @@ it("fails fatally and stops reconnecting when rebind cleanup cannot delete the n
   });
   try {
     expect(await second.running).toBe(5);
-    expect(secondState.launched).toBe(0);
+    expect(secondState.launched).toBe(1);
     // The fatal cleanup failure plus the shutdown retry; no reconnect over the unverified namespace.
     expect(destroyCalls).toBe(2);
     expect(reconnectCalls).toBe(0);

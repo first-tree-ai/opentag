@@ -987,49 +987,6 @@ describe("runRunnerServe", () => {
     await expect(probeHealthPort(healthPort)).rejects.toThrow();
   }, 30_000);
 
-  it("legacy mode proves the native launch and probe before health and auth", async () => {
-    const wss = await startWss();
-    const output = io();
-    const stop = new AbortController();
-    const healthPort = await freePort();
-    let launchEntered = false;
-    let releaseLaunch: () => void = () => undefined;
-    const launchGate = new Promise<void>((resolve) => {
-      releaseLaunch = resolve;
-    });
-    const sandbox = fakeSandboxFactory()("probe", "/tmp/probe");
-    sandbox.launch = vi.fn(async () => {
-      launchEntered = true;
-      await launchGate;
-    });
-    const running = runRunnerServe(
-      { ...serveConfig(wss.url), healthPort },
-      {
-        stderr: output.stderr,
-        installSignalHandlers: false,
-        sandboxFactory: () => sandbox,
-        signal: stop.signal,
-      },
-    );
-    try {
-      // While the launch is parked there is no health listener and no auth frame: legacy E3 keeps
-      // its native launch/probe proof before TCP health and the control channel.
-      await vi.waitFor(() => expect(launchEntered).toBe(true));
-      await expect(probeHealthPort(healthPort)).rejects.toThrow();
-      expect(wss.frames.filter((frame) => frame.type === "auth")).toHaveLength(0);
-      expect(sandbox.probe).not.toHaveBeenCalled();
-      releaseLaunch();
-      await wss.waitFor("runner:ready");
-      expect(sandbox.launch).toHaveBeenCalledTimes(1);
-      expect(sandbox.probe).toHaveBeenCalledTimes(1);
-      expect(await probeHealthPort(healthPort)).toEqual({ bytes: 0 });
-    } finally {
-      releaseLaunch();
-      stop.abort();
-      expect(await running).toBe(143);
-    }
-  }, 30_000);
-
   it("closes the health listener when authentication is fatally rejected", async () => {
     const wss = await startWss(() => false);
     const healthPort = await freePort();

@@ -1,39 +1,43 @@
 # 云端计费
 
-云端模型调用和连通性测试使用已配置的自托管 LiteLLM 网关。公开 OpenTag 服务负责身份验证、网关请求、有界流式转发、用量捕获和统计。私有 `@opentag/cloud-billing` 包在应用进程内负责客户定价、额度准入、结算及 Stripe Checkout。两者使用同一 PostgreSQL 数据库；公开仓库管理 `billing` schema 和迁移。本地 Agent 保持现有执行和用量路径。
+云端模型调用和连通性测试通过 `llm-router`，由它在内部调用自托管 LiteLLM。Router 负责规范化 Provider 用量、持久化请求状态及核对未完成请求。OpenTag 负责可信的账户和 Agent 归属、有界转发及用量统计。私有 `@opentag/cloud-billing` 包在 OpenTag 进程内负责客户价格、额度和 Stripe Checkout。应用和计费包共用 PostgreSQL；公开仓库管理 `billing` schema 和迁移。本地 Agent 使用现有执行和用量路径。
 
-## 计量与定价
+## 用量与价格
 
-每次云端模型调用只有一条持久记录，包括账户、Agent、可选 Session、来源、网关标识、模型、请求 ID、Token 数量和结算状态。执行归属来自已验证授权及数据库关系；连通性测试使用已验证所有权的 Agent 和登录账户。账本不保存提示词或响应内容。
+发送请求前，OpenTag 创建一条持久化调用记录，包含账户、Agent、可选会话、来源、网关、模型及客户价格快照。调用 UUID 是 Router 的 `Idempotency-Key`。执行归属来自经验证的授权和数据库关系；连通性测试使用已验证所有权的 Agent 和已登录账户。账本不保存提示词或响应正文。
 
-LiteLLM 返回 OpenAI 兼容用量。流式请求强制设置 `stream_options.include_usage=true`。输入总数包含缓存输入；推理 Token 已包含在输出总数中，不重复相加。可用模型需要经验证的 `max_input_tokens` 和 `max_output_tokens` 元数据；开启计费时还必须具有客户价格。在 LiteLLM 模型元数据中配置这些能力，并验证部署版本为每个模型返回的字段。
+OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它使用模型调用的同一服务端 Router 租户凭证查询 `GET /v1/requests/usage?idempotency_key=<调用 UUID>`。Router 返回关联的请求 ID、模型及三种状态之一：包含全部四类 Token 计数的 `complete`、`no_charge` 或 `pending`。带 `request_not_found` 的 404 表示用量未知，不能当作免费调用。OpenTag 验证身份、模型及计数后才结算。
 
-私有 `BILLING_PRICES` 配置按网关及模型标识提供每百万输入、缓存输入、输出 Token 的整数微美元费率。准入保存费率快照。结算计算 `(输入-缓存)*输入费率 + 缓存*缓存费率 + 输出*输出费率`，除以一百万，再通过整数运算一次性向上取整至微美元。调整价格只影响之后的调用。没有缓存计数的网关必须配置相同的普通输入和缓存输入费率；缓存折扣需要完整缓存计量。
+规范化输入总数包含普通输入、缓存读取和缓存写入。缓存读取与写入是输入中互不重叠的子集。输出包含推理 Token。Router 统一规范化计数并处理 Provider 响应格式。可用模型需要经验证的输入和输出限制；开启客户计费时还需要客户价格。
 
-账户和 Agent 云端用量读取同一调用账本。派发时保存执行来源，用于合并本地报告与云端账本；云端任务报告中的 Token 不重复加入聚合。任务数量及结果仍来自任务报告。账户用量包含连通性测试，提供 1、7、30、90 天总量及每日图表。未知数量显示为不完整数据。
+`BILLING_PRICES` 按网关和模型 ID 配置每百万 Token 的整数微美元价格：`inputMicrosPerMillion`、`cachedInputMicrosPerMillion`、`cacheWriteInputMicrosPerMillion` 和 `outputMicrosPerMillion`。默认网关 ID 是 `llm-router`。结算计算 `(input-cached-write)*input_rate + cached*cached_rate + write*write_rate + output*output_rate`，除以一百万，并用整数运算统一向上取整。价格快照保证改价只影响后续调用。客户价格独立于 Router 的 Provider 成本账本。
+
+账户和 Agent 云端统计读取同一调用记录的最终计数，包括关闭客户计费时的调用。本地报告与云端账本按发送时保存的执行来源合并；云端任务报告中的 Token 不重复计入。任务数量及结果仍来自任务报告。账户用量包含连通性测试，支持 1、7、30 和 90 天总量及每日图表。缺失计数视为不完整数据。
 
 ## 额度与结算
 
-在云端镜像中开启 `OPENTAG_CLOUD_BILLING_ENABLED=true`。准入在短数据库事务内锁定账户，应用已知付款阻断，检查可用额度及并发数量，并在联系 LiteLLM 前插入带价格的调用记录。余额等于已授予额度减去已结算扣款。每账户默认一次性赠送 1 美元，默认最多并发两次调用。关闭计费时仍使用相同网关和账本，不扣额度。
+在云端镜像中开启 `OPENTAG_CLOUD_BILLING_ENABLED=true`。准入在短事务中锁定账户，应用付款阻断，检查可用额度、未解决调用及并发数量，并在发送前插入带价格快照的调用。余额等于已授予额度减去最终扣款。每账户默认一次性赠送 1 美元，最多并发两次调用。关闭计费时，云端调用仍使用相同 Router 状态及统计路径，不扣额度。
 
-公开模型服务直接将规范化用量写入账本。结算在同一事务内锁定账户和调用记录，读取已记录用量并记录扣款。重复观察、付款入账及结算均不会重复扣款或发放额度。已准入调用可能超出剩余余额；实际扣款最多为可用额度，计算价格与扣款的差额由 OpenTag 承担。公开执行授权限制输出最多 8,192 Token。请求体、响应、超时和并发限制约束风险，但超时本身不保证固定美元上限。接受真实付款前验证各模型的风险。
+结算锁定账户和调用，在同一事务内保存全部最终计数及额度扣款。重复结算不会再次扣款或修改已结束的计数。已准入调用可能超过剩余额度；扣款上限为可用余额，OpenTag 承担差额。执行授权将输出限制为最多 8,192 Token。请求体、响应、超时和并发限制控制风险；超时本身不能保证金额上限。接收真实付款前需验证所提供模型的风险。
 
-确认尚未发送的请求以零扣款结束。已发送而缺少最终用量的请求进入 `pending_usage`，阻止该账户继续发起计费调用，但不影响充值和余额查询。公开后台任务通过 `x-litellm-call-id` 和响应 ID 查询 LiteLLM `/spend/logs?request_id=...`，持久化重试间隔从 30 秒递增至一小时。空结果、多义记录、失败记录和不完整用量保持待处理。日志异步写入；如需单独日志访问凭证，配置仅服务端使用的 `OPENTAG_CLOUD_MODEL_USAGE_KEY`，否则使用模型凭证。验证部署版本的权限、请求关联和缓存字段。
+发送前取消、Router 确认的发送前拒绝（`X-Router-Dispatch: not_dispatched`），以及 Router 返回的 `no_charge` 均以零扣款结束。OpenTag 每次操作使用新键，模型请求只发送一次，未知执行不会重新发送。未知或待核对用量进入 `pending_usage`，阻止该账户继续发起计费调用，但不影响充值和余额查询。公开后台任务仅重试状态查询，持久化间隔从 30 秒递增至一小时。中断执行和缺失用量在 Router 中核对，OpenTag 读取其最终状态。
 
-启动时在云端就绪前将遗留运行中计费调用标记为待处理。结算失败的调用在执行超时加宽限期后进入恢复流程。操作员可在已构建的私有仓库中使用应用环境运行 `node scripts/write-off.mjs <call-id> <reason>`，审核后豁免未解决调用并保存原因。更换网关标识或地址前，先停止活动调用并解决待处理记录。
+启动时在云端就绪前将遗留调用标为待核对，包括关闭计费时的调用。超过请求超时加宽限期的执行中记录也进入待核对状态。更换网关身份或地址前，应排空活动调用并处理待核对记录。操作员可在构建后的私有 checkout 中，使用应用环境执行 `node scripts/write-off.mjs <call-id> <reason>`，豁免已审核但无法解决的客户调用；原因会保存。
 
 ## 付款
 
-账户展示包含起始额度及购买额度的统一美元余额，支持 10 至 1,000 美元自定义充值，精确到美分。Stripe 托管 Checkout 返回 `/account`；只有已验证的已付款会话增加额度。签名 Webhook 为 `/stripe/webhook`，注册 `checkout.session.completed`、`checkout.session.async_payment_succeeded`、`charge.refunded`、`charge.dispute.created`。退款只撤回一次购买额度；退款及争议阻止继续消费，等待操作员审核。先于入账到达的事件持久保存。付款入账和余额查询不依赖模型提供商可用性。
+账户页显示一个可用美元余额，包含起始额度和购买额度，支持以美分精度自定义充值 10 至 1,000 美元。Stripe 托管 Checkout 返回 `/account`；只有经验证的已付款会话增加额度。签名 Webhook 地址为 `/stripe/webhook`，需注册 `checkout.session.completed`、`checkout.session.async_payment_succeeded`、`charge.refunded` 和 `charge.dispute.created`。退款只移除一次购买额度；退款和争议阻止云端消费，等待操作员审核。入账前收到的事件持久化保存。Provider 可用性不影响入账或余额查询。
 
-在应用环境配置 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、`BILLING_PRICES`，以及可选的 `BILLING_FREE_CENTS`、`BILLING_MAX_CONCURRENT_PER_ACCOUNT`。验收使用 Stripe 测试模式。本 MVP 不包含自动充值、订阅、请求预留或计费管理界面。
+在应用环境配置 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、`BILLING_PRICES`，可选配置 `BILLING_FREE_CENTS` 和 `BILLING_MAX_CONCURRENT_PER_ACCOUNT`。验收使用 Stripe 测试模式。自动充值、订阅、请求预留及计费管理界面不在 MVP 范围内。
 
 ## CapRover 部署
 
-公开仓库的 `Docker`、`Deploy Staging`、`Deploy Runner` 工作流同时发布应用及计费包。`cloud-billing.json` 固定私有包提交。为 `first-tree-ai/opentag-billing` 配置只读 Contents 权限的 `OPENTAG_BILLING_READ_TOKEN`；可信 main 构建检出该版本，对应用运行包检查及测试，然后打入 `ghcr.io/first-tree-ai/opentag:<应用 SHA>`。镜像记录两个源码版本。PR 和默认本地镜像无需私有仓库访问权限。生产镜像包含私有代码，允许公开；运行时密钥保留在 CapRover。
+公开仓库的 `Docker`、`Deploy Staging` 和 `Deploy Runner` 工作流一起发布应用和计费包。`cloud-billing.json` 固定私有包提交。配置仅可读 `first-tree-ai/opentag-billing` Contents 的 `OPENTAG_BILLING_READ_TOKEN`；可信 main 镜像构建检出该提交，针对应用运行检查及测试，再打包进 `ghcr.io/first-tree-ai/opentag:<应用 SHA>`。镜像记录两个源代码版本。PR 和默认本地镜像不需要私有访问权限。生产镜像可能公开，包含私有包代码；运行时凭证保存在 CapRover。
 
-开启云端身份、云端模型、计费及 `OPENTAG_AUTO_MIGRATE=true`。启动先应用公开迁移，再构造服务。暂存流程发布应用及 CLI/Runner，部署应用，再激活匹配 Runner。`/cloud-readyz` 验证应用及计费版本；`/readyz` 独立于计费可用性。
+先部署 Router 用量端点，并使用 OpenTag 租户键验证（`llm` scope）。`OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` 指向其 `/v1` 地址，`OPENTAG_CLOUD_MODEL_MASTER_KEY` 使用该租户键。验证每个模型的最终、待核对、缺失及拒绝状态，再开启云端身份、云端模型、计费及 `OPENTAG_AUTO_MIGRATE=true`。启动先运行公开迁移再创建服务。Staging 工作流发布应用和 CLI/Runner，部署应用后启用匹配的 Runner。`/cloud-readyz` 验证应用和计费版本；`/readyz` 独立于计费可用性。
 
-使用单应用副本、无 predeploy 函数、stop-first 更新及回滚。`UpdateConfig` 设置为 `{"Order":"stop-first","Parallelism":1,"FailureAction":"pause"}`，`RollbackConfig` 为 `{"Order":"stop-first","Parallelism":1}`，`TaskTemplate.ContainerSpec.StopGracePeriod` 至少为 `(OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS + 30000) * 1000000` 纳秒。默认 600 秒超时要求 `630000000000`。这避免启动恢复将其他活动进程的调用误判为遗留任务。`OPENTAG_BUILD_REVISION` 和 `OPENTAG_BILLING_REVISION` 由镜像提供。备份共享数据库；已应用迁移需要兼容应用镜像，优先使用向前修复。
+使用单应用副本，无 predeploy function，更新和回滚均先停止旧实例。`UpdateConfig` 为 `{"Order":"stop-first","Parallelism":1,"FailureAction":"pause"}`，`RollbackConfig` 为 `{"Order":"stop-first","Parallelism":1}`，`TaskTemplate.ContainerSpec.StopGracePeriod` 至少为 `(OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS + 30000) * 1000000` 纳秒。默认 600 秒超时需要 `630000000000`，避免启动恢复误将其他活动进程调用视为遗留调用。让镜像提供 `OPENTAG_BUILD_REVISION` 和 `OPENTAG_BILLING_REVISION`。备份共享数据库；已运行的迁移需要兼容镜像，优先向前修复。
 
-参考：[LiteLLM 用量](https://docs.litellm.ai/docs/completion/output)、[LiteLLM 费用日志](https://docs.litellm.ai/docs/proxy/cost_tracking)、[Stripe 入账](https://docs.stripe.com/checkout/fulfillment)。
+## 验收测试
+
+使用独立 Router PostgreSQL/Redis、OpenTag 测试数据库及 Stripe 测试模式。验证普通和流式响应记录与 Router 完全一致的计数（包括缓存读写），并对应一次额度扣款。重复结算后计数和余额应不变。中断流式响应，检查待核对状态，在 Router 完成核对后确认 OpenTag 后台任务结算同一调用且没有再次执行模型。确认拒绝请求不扣款、租户键无法读取其他租户用量、异常或未知用量保持待核对，以及关闭计费时云端用量仍可见。最后完成一次测试 Checkout 并重放签名 Webhook，验证只授予一次额度。

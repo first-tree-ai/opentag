@@ -18,7 +18,18 @@ export function createTestCloudModelService(
   fetchImpl?: typeof fetch,
 ) {
   const calls = new CloudCallStore({ query: vi.fn(async () => ({ rows: [] })) });
-  const service = new CloudModelService(config, { calls, fetchImpl });
+  const models = new Map<string, string>();
+  const transport: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/requests/usage")) {
+      const key = url.searchParams.get("idempotency_key") ?? "";
+      return Response.json({ status: "no_charge", requestId: key, idempotencyKey: key, model: models.get(key) });
+    }
+    const key = new Headers(init?.headers).get("idempotency-key") ?? "";
+    models.set(key, JSON.parse(String(init?.body)).model);
+    return (fetchImpl ?? fetch)(input, init);
+  };
+  const service = new CloudModelService(config, { calls, fetchImpl: transport });
   services.push(service);
   return service;
 }

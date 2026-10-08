@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudBilling } from "../cloud-billing.js";
 import { users } from "../db/schema/index.js";
 import { CloudAgentRuntimeTester } from "../services/agents/cloud-agent-runtime-tester.js";
 import { CloudCallStore } from "../services/cloud-call-store.js";
-import { CloudModelService, CloudUsageObserver, parseCloudUsage } from "../services/cloud-model-service.js";
+import { CloudModelService } from "../services/cloud-model-service.js";
 import { CloudUsageService } from "../services/cloud-usage.js";
 import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
-import { createUnitDatabase } from "./support/unit-database.js";
+import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const config = {
   enabled: true as const,
-  gatewayId: "litellm",
+  gatewayId: "llm-router",
   upstreamBaseUrl: "https://gateway.example/v1",
-  masterKey: "platform-key",
+  masterKey: "tenant-key",
   tokenTtlSeconds: 60,
   maxStreamsPerToken: 2,
   requestTimeoutMs: 1000,
@@ -22,272 +22,272 @@ const config = {
 };
 const context = { accountId: randomUUID(), agentId: randomUUID(), sessionId: null, source: "execution" as const };
 const body = { model: "model-a", messages: [{ role: "user", content: "hello" }] };
-const rates = { inputMicrosPerMillion: 1, cachedInputMicrosPerMillion: 1, outputMicrosPerMillion: 1 };
-const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => {
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+const rates = {
+  inputMicrosPerMillion: 1,
+  cachedInputMicrosPerMillion: 1,
+  cacheWriteInputMicrosPerMillion: 1,
+  outputMicrosPerMillion: 1,
+};
+const usage = { inputTokens: 1000, cachedInputTokens: 600, cacheWriteInputTokens: 100, outputTokens: 200 };
+let unit: UnitDatabase;
+const services: CloudModelService[] = [];
+beforeAll(async () => {
+  unit = await createUnitDatabase();
 });
-async function fixture(billed = false) {
-  const unit = await createUnitDatabase();
-  cleanups.push(() => unit.close());
+beforeEach(async () => {
+  await unit.reset();
   await unit.database.insert(users).values({ id: context.accountId, email: "cloud@example.com", displayName: "Cloud" });
+});
+afterEach(async () => {
+  for (const service of services.splice(0)) await service.close();
+});
+afterAll(async () => {
+  await unit.close();
+});
+function fixture(billed = false) {
   const calls = new CloudCallStore({ query: (statement, parameters) => unit.engine.query(statement, parameters) });
   const billing = {
     beginCall: vi.fn<CloudBilling["beginCall"]>((context, model) => calls.create(context, model, rates)),
-    finishCall: vi.fn<CloudBilling["finishCall"]>(async (id) => {
-      const call = await calls.get(id);
-      await calls.db.query("UPDATE billing.attempts SET state=$2,resolution=$3 WHERE id=$1", [
-        id,
-        call.usage_complete ? "finalized" : "pending_usage",
-        call.usage_complete ? "charged" : null,
-      ]);
-    }),
+    finishCall: vi.fn<CloudBilling["finishCall"]>((id, result) =>
+      calls.finalize(id, result, {
+        resolution: result.status === "complete" ? "charged" : "no_charge",
+        pricedMicros: 0,
+        debitedMicros: 0,
+      }),
+    ),
   };
-  const fetchImpl = vi.fn<typeof fetch>();
+  let key = "";
+  const requestId = randomUUID();
+  const status = vi.fn((): unknown => ({
+    status: "complete",
+    requestId,
+    idempotencyKey: key,
+    model: body.model,
+    usage,
+  }));
+  const completion = vi.fn(() => Response.json({ choices: [], usage: { prompt_tokens: 999999 } }));
+  const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+    if (String(input).includes("/requests/usage")) {
+      key = new URL(String(input)).searchParams.get("idempotency_key") ?? "";
+      const result = status();
+      return result instanceof Response ? result : Response.json(result);
+    }
+    key = new Headers(init?.headers).get("idempotency-key") ?? "";
+    return completion();
+  });
   const service = new CloudModelService(config, {
     calls,
     fetchImpl,
     ...(billed ? { billing: billing as unknown as CloudBilling } : {}),
   });
-  cleanups.push(() => service.close());
-  return { unit, calls, billing, fetchImpl, service };
+  services.push(service);
+  const row = async () => {
+    const [record] = (await calls.db.query("SELECT id FROM billing.attempts")).rows as Array<{ id: string }>;
+    if (!record) throw new Error("Missing cloud record");
+    return calls.get(record.id);
+  };
+  const run = async () => (await service.request(body, new AbortController().signal, config, context)).text();
+  return { calls, billing, fetchImpl, service, status, completion, row, run };
 }
-describe("single cloud gateway lifecycle", () => {
-  it("normalizes cache counts as a subset and ignores separate reasoning-token details", () => {
-    expect(
-      parseCloudUsage({
-        id: "r",
-        usage: {
-          prompt_tokens: 1000,
-          completion_tokens: 200,
-          prompt_tokens_details: { cached_tokens: 600 },
-          completion_tokens_details: { reasoning_tokens: 100 },
-        },
-      }),
-    ).toEqual({ responseId: "r", inputTokens: 1000, cachedInputTokens: 600, outputTokens: 200, complete: true });
-    expect(parseCloudUsage({ id: "r", usage: { prompt_tokens: -1, completion_tokens: 1 } })).toEqual({
-      responseId: "r",
-      outputTokens: 1,
-      complete: false,
-    });
-  });
-  it("preserves usable counts when cache metadata is malformed and leaves cache unknown", () => {
-    expect(
-      parseCloudUsage({
-        usage: { prompt_tokens: 4, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 9 } },
-      }),
-    ).toEqual({ inputTokens: 4, outputTokens: 2, complete: true });
-    expect(
-      parseCloudUsage({
-        usage: { prompt_tokens: 4, completion_tokens: 2, prompt_tokens_details: { cached_tokens: "0" } },
-      }),
-    ).toEqual({ inputTokens: 4, outputTokens: 2, complete: true });
-  });
-  it("observes fragmented SSE once and never counts output chunks as tokens", async () => {
-    const observed = vi.fn().mockResolvedValue(undefined);
-    const observer = new CloudUsageObserver(true, observed, 1024);
-    const text =
-      'data: {"id":"r","choices":[{"delta":{"content":"hello"}}]}\n\ndata: {"id":"r","usage":{"prompt_tokens":4,"completion_tokens":2}}\n\ndata: [DONE]\n';
-    const bytes = new TextEncoder().encode(text);
-    for (let i = 0; i < bytes.length; i += 7) await observer.push(bytes.slice(i, i + 7));
-    await observer.finish();
-    expect(observed.mock.calls.map(([value]) => value)).toEqual([
-      { responseId: "r", complete: false },
-      { responseId: "r", inputTokens: 4, outputTokens: 2, complete: true },
-    ]);
-  });
-  it.each([false, true])("uses the same configured gateway with billing enabled=%s", async (billed) => {
-    const { service, fetchImpl, calls, billing } = await fixture(billed);
-    const responseBody = {
-      id: "response",
-      usage: { prompt_tokens: 1000, completion_tokens: 200, prompt_tokens_details: { cached_tokens: 600 } },
-      choices: [],
-    };
-    fetchImpl.mockResolvedValue(Response.json(responseBody, { headers: { "x-litellm-call-id": "gateway-call" } }));
-    const response = await service.request(body, new AbortController().signal, config, context);
-    expect(await response.json()).toEqual(responseBody);
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "https://gateway.example/v1/chat/completions",
-      expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer platform-key" }) }),
-    );
-    const [row] = (await calls.db.query("SELECT * FROM billing.attempts")).rows as Array<{ id: string }>;
-    if (!row) throw new Error("Missing record");
-    expect(await calls.get(row.id)).toMatchObject({
+describe("router-authoritative cloud usage", () => {
+  it.each([false, true])("records final router counts with customer billing enabled=%s", async (billed) => {
+    const f = fixture(billed);
+    await f.run();
+    const call = await f.row();
+    expect(call).toMatchObject({
       account: context.accountId,
       agent_id: context.agentId,
-      provider_call_id: "gateway-call",
-      response_id: "response",
+      state: "finalized",
       input_tokens: 1000,
       cached_input_tokens: 600,
+      cache_write_input_tokens: 100,
       output_tokens: 200,
-      state: "finalized",
     });
-    expect(billing.beginCall).toHaveBeenCalledTimes(billed ? 1 : 0);
-  });
-  it("forces final streaming usage even when a caller disables it", async () => {
-    const { service, fetchImpl } = await fixture();
-    fetchImpl.mockResolvedValue(
-      new Response('data: {"id":"r","usage":{"prompt_tokens":3,"completion_tokens":2}}\n\ndata: [DONE]\n', {
-        headers: { "content-type": "text/event-stream" },
+    expect(f.fetchImpl).toHaveBeenCalledTimes(2);
+    expect(f.fetchImpl.mock.calls[0]).toEqual([
+      "https://gateway.example/v1/chat/completions",
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: "Bearer tenant-key", "idempotency-key": call.id }),
       }),
-    );
-    const response = await service.request(
+    ]);
+    expect(f.fetchImpl.mock.calls[1]?.[0]).toBe(`https://gateway.example/v1/requests/usage?idempotency_key=${call.id}`);
+    expect(f.billing.finishCall).toHaveBeenCalledTimes(billed ? 1 : 0);
+  });
+  it("forwards SSE without parsing or rewriting its usage options", async () => {
+    const f = fixture();
+    const text = 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n';
+    f.completion.mockImplementation(() => new Response(text, { headers: { "content-type": "text/event-stream" } }));
+    const response = await f.service.request(
       { ...body, stream: true, stream_options: { include_usage: false } },
       new AbortController().signal,
       config,
       context,
     );
-    await response.text();
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
-      stream_options: { include_usage: true },
+    expect(await response.text()).toBe(text);
+    expect(JSON.parse(String(f.fetchImpl.mock.calls[0]?.[1]?.body))).toMatchObject({
+      stream_options: { include_usage: false },
     });
+    expect(await f.row()).toMatchObject({ state: "finalized", input_tokens: 1000 });
   });
-  it("does not send a gateway request when admission fails", async () => {
-    const { service, billing, fetchImpl } = await fixture(true);
-    billing.beginCall.mockRejectedValue(Object.assign(new Error("empty"), { statusCode: 402 }));
-    await expect(service.request(body, new AbortController().signal, config, context)).rejects.toMatchObject({
-      statusCode: 402,
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(service.active.size).toBe(0);
-  });
-  it("requires trusted attribution before sending a metered call", async () => {
-    const { service, fetchImpl } = await fixture();
-    // @ts-expect-error Attribution is required even if an untyped caller bypasses the contract.
-    await expect(service.request(body, new AbortController().signal, config)).rejects.toThrow("trusted attribution");
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-  it("marks uncertain network failures for settlement instead of assuming zero usage", async () => {
-    const { service, billing } = await fixture(true);
-    const { fetchImpl } = service;
-    vi.mocked(fetchImpl).mockRejectedValue(new Error("network"));
-    await expect(service.request(body, new AbortController().signal, config, context)).rejects.toThrow();
-    expect(billing.finishCall).toHaveBeenCalledWith(expect.any(String), "finished");
-  });
-  it("settles after timeout and releases an unread stream", async () => {
-    const { service, billing, fetchImpl } = await fixture(true);
-    fetchImpl.mockResolvedValue(
-      new Response(
-        new ReadableStream({
-          start: (controller) => controller.enqueue(new TextEncoder().encode('data: {"id":"r"}\n\n')),
-        }),
-        { headers: { "content-type": "text/event-stream" } },
+  it("finishes confirmed pre-dispatch rejections without a usage lookup", async () => {
+    const f = fixture(true);
+    f.completion.mockImplementation(() =>
+      Response.json(
+        { error: { code: "insufficient_balance" } },
+        { status: 402, headers: { "X-Router-Dispatch": "not_dispatched" } },
       ),
     );
-    const response = await service.request(
-      { ...body, stream: true },
-      new AbortController().signal,
-      { ...config, requestTimeoutMs: 20 },
-      context,
-    );
-    await expect(response.text()).rejects.toThrow();
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(billing.finishCall).toHaveBeenCalledWith(expect.any(String), "finished");
-    expect(service.active.size).toBe(0);
+    await f.run();
+    expect(f.status).not.toHaveBeenCalled();
+    expect(await f.row()).toMatchObject({ state: "finalized", input_tokens: null, priced_micros: 0 });
+    expect(f.billing.finishCall).toHaveBeenCalledWith(expect.any(String), { status: "no_charge" });
   });
-  it("records cloud probes through the same gateway service with agent attribution", async () => {
-    const { service, fetchImpl, calls } = await fixture();
-    fetchImpl.mockResolvedValue(
-      Response.json({
-        id: "r",
-        choices: [{ message: { role: "assistant", content: "ok" } }],
-        usage: { prompt_tokens: 5, completion_tokens: 1 },
-      }),
-    );
-    const tester = new CloudAgentRuntimeTester({
-      catalog: createStaticCloudModelCatalog(["model-a"]),
-      modelService: service,
+  it("does not interpret an HTTP error or missing router record as free usage", async () => {
+    const f = fixture(true);
+    f.completion.mockImplementation(() => Response.json({ error: {} }, { status: 409 }));
+    f.status.mockReturnValue(Response.json({ error: { code: "request_not_found" } }, { status: 404 }));
+    await f.run();
+    expect(await f.row()).toMatchObject({ state: "pending_usage", input_tokens: null });
+    expect(f.billing.finishCall).not.toHaveBeenCalled();
+  });
+  it.each([
+    { status: "pending" },
+    { status: "complete", usage: { ...usage, cachedInputTokens: 1001 } },
+    { status: "complete", usage: { ...usage, cacheWriteInputTokens: -1 } },
+    { status: "complete", usage: { ...usage, outputTokens: "200" } },
+    { status: "complete", usage },
+  ])("keeps incomplete, malformed, or unrelated results pending: %j", async (result) => {
+    const f = fixture(true);
+    f.status.mockImplementation(() => ({
+      requestId: randomUUID(),
+      idempotencyKey: new Headers(f.fetchImpl.mock.calls[0]?.[1]?.headers).get("idempotency-key"),
+      model: body.model,
+      ...result,
+      ...(result.status === "complete" && result.usage === usage ? { idempotencyKey: "unrelated" } : {}),
+    }));
+    await f.run();
+    expect((await f.row()).state).toBe("pending_usage");
+    expect(f.billing.finishCall).not.toHaveBeenCalled();
+  });
+  it("checks the model identity even for no-charge results", async () => {
+    const f = fixture(true);
+    f.status.mockImplementation(() => ({
+      status: "no_charge",
+      requestId: randomUUID(),
+      idempotencyKey: new Headers(f.fetchImpl.mock.calls[0]?.[1]?.headers).get("idempotency-key"),
+      model: "different",
+    }));
+    await f.run();
+    expect((await f.row()).state).toBe("pending_usage");
+  });
+  it("recovers pending usage without redispatching or settling twice", async () => {
+    const f = fixture(true);
+    const complete = f.status.getMockImplementation();
+    if (!complete) throw new Error("Missing router fixture");
+    f.status.mockImplementation(() => {
+      const { requestId, idempotencyKey, model } = complete() as {
+        requestId: string;
+        idempotencyKey: string;
+        model: string;
+      };
+      return { requestId, idempotencyKey, model, status: "pending" };
     });
-    expect(
-      await tester.test({
-        accountId: context.accountId,
-        agentId: context.agentId,
-        computerId: randomUUID(),
-        model: "model-a",
-      }),
-    ).toEqual({ status: "passed" });
-    tester.close();
-    expect((await calls.db.query("SELECT source,agent_id FROM billing.attempts")).rows).toEqual([
-      { source: "connectivity_probe", agent_id: context.agentId },
-    ]);
+    await f.run();
+    expect((await f.row()).state).toBe("pending_usage");
+    f.status.mockImplementation(complete);
+    await f.service.reconcile();
+    await f.service.reconcile();
+    expect((await f.row()).state).toBe("finalized");
+    expect(f.completion).toHaveBeenCalledTimes(1);
+    expect(f.billing.finishCall).toHaveBeenCalledTimes(1);
   });
-  it("recovers usage by matching gateway identity without treating an absent log as free", async () => {
-    const { service, fetchImpl } = await fixture();
-    fetchImpl
-      .mockResolvedValueOnce(Response.json([]))
-      .mockResolvedValueOnce(
-        Response.json([{ request_id: "response", model_group: "model-a", prompt_tokens: 10, completion_tokens: 2 }]),
-      );
-    expect(await service.lookup("call", "response", "model-a")).toMatchObject({
-      inputTokens: 10,
-      outputTokens: 2,
-      complete: true,
-    });
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://gateway.example/spend/logs?request_id=call");
-    fetchImpl.mockResolvedValue(Response.json([]));
-    expect(await service.lookup("call", null, "model-a")).toBeUndefined();
+  it("retries a failed local settlement using the same complete router result", async () => {
+    const f = fixture(true);
+    f.billing.finishCall.mockRejectedValueOnce(new Error("database unavailable"));
+    await f.run();
+    expect((await f.row()).state).toBe("pending_usage");
+    await f.service.reconcile();
+    expect((await f.row()).state).toBe("finalized");
+    expect(f.completion).toHaveBeenCalledTimes(1);
   });
-  it("refuses ambiguous or unrelated spend-log rows", async () => {
-    const { service, fetchImpl } = await fixture();
-    fetchImpl.mockResolvedValue(Response.json([{ request_id: "other", prompt_tokens: 1, completion_tokens: 1 }]));
-    expect(await service.lookup("call", null, "model-a")).toBeUndefined();
-    fetchImpl.mockResolvedValue(
-      Response.json([{ request_id: "call", model_group: "other", prompt_tokens: 1, completion_tokens: 1 }]),
-    );
-    expect(await service.lookup("call", null, "model-a")).toBeUndefined();
-    fetchImpl.mockResolvedValue(
-      Response.json([
-        { request_id: "call", prompt_tokens: 1, completion_tokens: 1 },
-        { request_id: "call", prompt_tokens: 2, completion_tokens: 2 },
-      ]),
-    );
-    expect(await service.lookup("call", null, "model-a")).toBeUndefined();
+  it("does not dispatch when credit admission fails or attribution is missing", async () => {
+    const f = fixture(true);
+    f.billing.beginCall.mockRejectedValue(Object.assign(new Error("empty"), { statusCode: 402 }));
+    await expect(f.run()).rejects.toMatchObject({ statusCode: 402 });
+    // @ts-expect-error An untyped caller must not bypass trusted attribution.
+    await expect(f.service.request(body, new AbortController().signal, config)).rejects.toThrow("trusted attribution");
+    expect(f.fetchImpl).not.toHaveBeenCalled();
+    expect(f.service.active.size).toBe(0);
   });
-  it("marks abandoned calls pending before readiness without waiting for gateway recovery", async () => {
-    const { service, calls, fetchImpl } = await fixture(true);
-    const id = await calls.create(context, { gateway: "litellm", model: "model-a" }, rates);
-    await calls.observe(id, { providerCallId: "call", complete: false });
-    fetchImpl.mockImplementation(
+  it("keeps a network failure pending when status reads also fail", async () => {
+    const f = fixture(true);
+    f.fetchImpl.mockRejectedValue(new Error("network"));
+    await expect(f.run()).rejects.toThrow("network");
+    expect((await f.row()).state).toBe("pending_usage");
+    expect(f.billing.finishCall).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("recovers abandoned calls on startup, billing=%s", async (billed) => {
+    const f = fixture(billed);
+    const id = await f.calls.create(context, { gateway: config.gatewayId, model: body.model }, billed ? rates : null);
+    await f.service.initialize();
+    await f.service.job;
+    expect(await f.calls.get(id)).toMatchObject({ state: "finalized", input_tokens: 1000 });
+    expect(f.completion).not.toHaveBeenCalled();
+  });
+  it("does not wait for gateway recovery before startup readiness", async () => {
+    const f = fixture(true);
+    const id = await f.calls.create(context, { gateway: config.gatewayId, model: body.model }, rates);
+    f.fetchImpl.mockImplementation(
       async (_input, init) =>
         new Promise((_resolve, reject) => {
           if (init?.signal?.aborted) reject(new Error("cancelled"));
           else init?.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
         }),
     );
-    await service.initialize();
-    expect((await calls.get(id)).state).toBe("pending_usage");
-    expect(service.job).toBeDefined();
-    await service.close();
+    await f.service.initialize();
+    expect((await f.calls.get(id)).state).toBe("pending_usage");
+    expect(f.service.job).toBeDefined();
+    await f.service.close();
   });
-  it("preserves pending records across restart and recovers into the existing record", async () => {
-    const { service, calls, fetchImpl } = await fixture(true);
-    const id = await calls.create(context, { gateway: "litellm", model: "model-a" }, rates);
-    await calls.observe(id, { providerCallId: "call", complete: false });
-    fetchImpl.mockResolvedValue(
-      Response.json([{ request_id: "response", litellm_call_id: "call", prompt_tokens: 10, completion_tokens: 2 }]),
+  it("attributes cloud probes through the same usage path", async () => {
+    const f = fixture();
+    f.completion.mockImplementation(() =>
+      Response.json({ choices: [{ message: { role: "assistant", content: "ok" } }] }),
     );
-    await service.initialize();
-    await service.job;
-    expect((await calls.get(id)).state).toBe("finalized");
-    expect((await calls.db.query("SELECT * FROM billing.attempts")).rows).toHaveLength(1);
+    const tester = new CloudAgentRuntimeTester({
+      catalog: createStaticCloudModelCatalog(["model-a"]),
+      modelService: f.service,
+    });
+    expect(await tester.test({ ...context, computerId: randomUUID(), model: body.model })).toEqual({
+      status: "passed",
+    });
+    tester.close();
+    expect(await f.row()).toMatchObject({ source: "connectivity_probe", input_tokens: 1000 });
   });
-  it("keeps totals consistent with daily usage across dates and fills empty days", async () => {
-    const { calls } = await fixture();
-    const now = new Date("2026-10-08T12:00:00.000Z");
+  it("reads consistent account and agent totals from final records, including unbilled cloud calls", async () => {
+    const f = fixture();
+    const now = new Date("2026-10-08T12:00:00Z");
     for (const [createdAt, inputTokens, outputTokens] of [
       ["2026-10-06T23:59:00Z", 10, 2],
       ["2026-10-08T00:01:00Z", 20, 3],
     ] as const) {
-      const id = await calls.create(context, { gateway: "litellm", model: "model-a" }, null);
-      await calls.observe(id, { inputTokens, outputTokens, cachedInputTokens: 1, complete: true });
-      await calls.finishUnbilled(id);
-      await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [id, createdAt]);
+      const id = await f.calls.create(context, { gateway: config.gatewayId, model: body.model }, null);
+      await f.calls.finalize(
+        id,
+        { status: "complete", usage: { inputTokens, outputTokens, cachedInputTokens: 1, cacheWriteInputTokens: 0 } },
+        { resolution: "unbilled", pricedMicros: 0, debitedMicros: 0 },
+      );
+      await f.calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [id, createdAt]);
     }
-    const partial = await calls.create(context, { gateway: "litellm", model: "model-a" }, null);
-    await calls.observe(partial, { inputTokens: 999, complete: false });
-    await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [partial, now.toISOString()]);
-    const query = vi.spyOn(calls.db, "query");
-    const detail = await new CloudUsageService(calls.db).readDetail(context.accountId, 7, undefined, now);
+    const partial = await f.calls.create(
+      { ...context, agentId: randomUUID() },
+      { gateway: config.gatewayId, model: body.model },
+      null,
+    );
+    await f.calls.markPending(partial);
+    const query = vi.spyOn(f.calls.db, "query");
+    const usageService = new CloudUsageService(f.calls.db);
+    const detail = await usageService.readDetail(context.accountId, 7, undefined, now);
     expect(query).toHaveBeenCalledTimes(1);
     expect(detail).toMatchObject({
       requests: 3,
@@ -296,29 +296,14 @@ describe("single cloud gateway lifecycle", () => {
       outputTokens: 5,
       cachedInputTokens: 2,
     });
-    expect(detail.points.find(({ date }) => date === "2026-10-07")).toEqual({
-      date: "2026-10-07",
-      tokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedInputTokens: 0,
-    });
+    expect(detail.points.find(({ date }) => date === "2026-10-07")).toMatchObject({ tokens: 0 });
     expect(detail.points.reduce((total, point) => total + point.tokens, 0)).toBe(
       detail.inputTokens + detail.outputTokens,
     );
-  });
-  it("reads account and agent usage from the same records, with missing counts marked partial", async () => {
-    const { calls } = await fixture();
-    const id = await calls.create(context, { gateway: "litellm", model: "model-a" }, null);
-    await calls.observe(id, { inputTokens: 10, outputTokens: 2, complete: true });
-    await calls.finishUnbilled(id);
-    await calls.create({ ...context, agentId: randomUUID() }, { gateway: "litellm", model: "model-a" }, null);
-    const usage = new CloudUsageService(calls.db);
-    expect(await usage.read(context.accountId, 7)).toMatchObject({ requests: 2, measuredRequests: 1, tokens: 12 });
-    expect(await usage.readDetail(context.accountId, 7, context.agentId)).toMatchObject({
-      requests: 1,
-      measuredRequests: 1,
+    expect(await usageService.readDetail(context.accountId, 7, context.agentId, now)).toMatchObject({
+      requests: 2,
+      measuredRequests: 2,
     });
-    expect(await usage.read(randomUUID(), 7)).toMatchObject({ requests: 0, tokens: 0 });
+    expect(await usageService.read(randomUUID(), 7)).toMatchObject({ requests: 0, tokens: 0 });
   });
 });

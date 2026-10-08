@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   type CloudCallContext,
+  type CloudCallResult,
+  CloudCallResultSchema,
   type CloudModelReference,
   type CloudTokenRates,
   CloudTokenRatesSchema,
-  type CloudUsageObservation,
-  CloudUsageObservationSchema,
 } from "../cloud-call-contracts.js";
 
 export interface CloudQueryConnection {
@@ -21,13 +21,11 @@ export const CloudCallSchema = z.object({
   source: z.enum(["execution", "connectivity_probe"]),
   gateway: z.string(),
   model: z.string(),
-  response_id: z.string().nullable(),
-  provider_call_id: z.string().nullable(),
   rates: CloudTokenRatesSchema.nullable(),
   state: z.enum(["in_flight", "pending_usage", "finalized"]),
-  usage_complete: z.boolean(),
   input_tokens: integer.nullable(),
   cached_input_tokens: integer.nullable(),
+  cache_write_input_tokens: integer.nullable(),
   output_tokens: integer.nullable(),
   priced_micros: integer.nullable(),
   debited_micros: integer.nullable(),
@@ -54,27 +52,31 @@ export class CloudCallStore {
     const { rows } = await connection.query("SELECT * FROM billing.attempts WHERE id=$1", [id]);
     return CloudCallSchema.parse(rows[0]);
   }
-  async observe(id: string, raw: CloudUsageObservation, connection = this.db): Promise<void> {
-    const value = CloudUsageObservationSchema.parse(raw);
+  async finalize(
+    id: string,
+    raw: CloudCallResult,
+    charge: { resolution: "charged" | "no_charge" | "unbilled"; pricedMicros: number; debitedMicros: number },
+    connection = this.db,
+  ): Promise<void> {
+    const result = CloudCallResultSchema.parse(raw);
+    const usage = result.status === "complete" ? result.usage : undefined;
     await connection.query(
-      `UPDATE billing.attempts SET
-      response_id=coalesce(response_id,$2),provider_call_id=coalesce(provider_call_id,$3),
-      input_tokens=coalesce($4,input_tokens),cached_input_tokens=coalesce($5,cached_input_tokens),output_tokens=coalesce($6,output_tokens),usage_complete=usage_complete OR $7
-      WHERE id=$1 AND state <> 'finalized' AND (NOT usage_complete OR state='pending_usage')`,
+      `UPDATE billing.attempts SET state='finalized',resolution=$2,input_tokens=$3,cached_input_tokens=$4,cache_write_input_tokens=$5,output_tokens=$6,priced_micros=$7,debited_micros=$8,finished_at=coalesce(finished_at,now()) WHERE id=$1 AND state <> 'finalized' AND (rates IS NULL OR $2 <> 'unbilled')`,
       [
         id,
-        value.responseId ?? null,
-        value.providerCallId ?? null,
-        value.inputTokens ?? null,
-        value.cachedInputTokens ?? null,
-        value.outputTokens ?? null,
-        value.complete,
+        charge.resolution,
+        usage?.inputTokens ?? null,
+        usage?.cachedInputTokens ?? null,
+        usage?.cacheWriteInputTokens ?? null,
+        usage?.outputTokens ?? null,
+        charge.pricedMicros,
+        charge.debitedMicros,
       ],
     );
   }
-  async finishUnbilled(id: string): Promise<void> {
+  async markPending(id: string): Promise<void> {
     await this.db.query(
-      "UPDATE billing.attempts SET state='finalized',resolution='unbilled',finished_at=now() WHERE id=$1 AND rates IS NULL AND state <> 'finalized'",
+      "UPDATE billing.attempts SET state='pending_usage',finished_at=coalesce(finished_at,now()) WHERE id=$1 AND state <> 'finalized'",
       [id],
     );
   }
@@ -98,17 +100,14 @@ export class CloudCallStore {
   }
   async expire(before: Date): Promise<void> {
     await this.db.query(
-      "UPDATE billing.attempts SET state='pending_usage',finished_at=coalesce(finished_at,now()) WHERE state='in_flight' AND rates IS NOT NULL AND created_at<$1",
+      "UPDATE billing.attempts SET state='pending_usage',finished_at=coalesce(finished_at,now()) WHERE state='in_flight' AND created_at<$1",
       [before.toISOString()],
     );
   }
-  /** Single replica, stop-first deployments ensure the previous process has stopped. */
+  /** Unfinished calls are recovered from router status, including billing-disabled calls. */
   async abandon(): Promise<void> {
     await this.db.query(
-      "UPDATE billing.attempts SET state='pending_usage',finished_at=now() WHERE state='in_flight' AND rates IS NOT NULL",
-    );
-    await this.db.query(
-      "UPDATE billing.attempts SET state='finalized',resolution='unbilled',finished_at=now() WHERE state='in_flight' AND rates IS NULL",
+      "UPDATE billing.attempts SET state='pending_usage',finished_at=coalesce(finished_at,now()) WHERE state='in_flight'",
     );
   }
 }

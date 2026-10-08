@@ -545,6 +545,7 @@ describe("database migrations", () => {
       const rates = {
         inputMicrosPerMillion: 1000000,
         cachedInputMicrosPerMillion: 500000,
+        cacheWriteInputMicrosPerMillion: 1500000,
         outputMicrosPerMillion: 2000000,
       };
       const callId = await calls.create(
@@ -553,12 +554,19 @@ describe("database migrations", () => {
         rates,
       );
       expect((await calls.get(callId)).rates).toEqual(rates);
-      await calls.observe(callId, { inputTokens: 100, cachedInputTokens: 40, outputTokens: 10, complete: true });
+      await calls.finalize(
+        callId,
+        {
+          status: "complete",
+          usage: { inputTokens: 100, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 10 },
+        },
+        { resolution: "charged", pricedMicros: 110, debitedMicros: 110 },
+      );
       expect(await calls.get(callId)).toMatchObject({
         input_tokens: 100,
         cached_input_tokens: 40,
         output_tokens: 10,
-        usage_complete: true,
+        cache_write_input_tokens: 20,
       });
       await sql`insert into billing.accounts(id) values (${account})`;
       expect((await sql`select blocked from billing.accounts where id=${account}`)[0]).toMatchObject({

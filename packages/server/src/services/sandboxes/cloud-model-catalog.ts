@@ -105,20 +105,20 @@ export interface RouterCloudModelCatalogOptions {
  * crosses that boundary — and an entry whose id violates the wire budget invalidates the whole
  * response, because a Router that emits one is not the deployment's model authority. The
  * capability metadata is validated separately per entry: a malformed or absent
- * `max_input_tokens`/`max_output_tokens` pair excludes that entry from Cloud choices, while preserving the other verified models.
+ * `context_window`/`max_output_tokens` pair excludes that entry from Cloud choices, while preserving the other verified models.
  */
 const RouterModelEntrySchema = z.object({
   id: RuntimeModelSchema,
-  max_input_tokens: z.unknown().optional(),
+  context_window: z.unknown().optional(),
   max_output_tokens: z.unknown().optional(),
 });
 
 /** One entry's verified capability metadata, or undefined when it is absent or malformed. */
 function parseEntryCapabilities(entry: {
-  max_input_tokens?: unknown;
+  context_window?: unknown;
   max_output_tokens?: unknown;
 }): CloudModelCapabilities | undefined {
-  const { max_input_tokens: contextWindow, max_output_tokens: maxOutputTokens } = entry;
+  const { context_window: contextWindow, max_output_tokens: maxOutputTokens } = entry;
   if (!Number.isSafeInteger(contextWindow) || (contextWindow as number) < 1) return undefined;
   if (!Number.isSafeInteger(maxOutputTokens) || (maxOutputTokens as number) < 1) {
     return undefined;

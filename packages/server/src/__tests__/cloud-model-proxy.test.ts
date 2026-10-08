@@ -572,7 +572,7 @@ describe("Cloud model proxy route", () => {
       const response = await postModel(port, body, issued.token);
       expect(response.status, field).toBe(200);
       await response.text();
-      expect(upstream.stats.lastRequestBody, field).toEqual({ ...body, stream_options: { include_usage: true } });
+      expect(upstream.stats.lastRequestBody, field).toEqual(body);
       const echoed = (
         upstream.stats.lastRequestBody as {
           messages: { reasoning_details?: { data?: string; format?: string; index?: number }[] }[];

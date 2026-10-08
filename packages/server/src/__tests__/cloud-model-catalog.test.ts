@@ -18,7 +18,7 @@ const MODELS_PAYLOAD = {
       object: "model",
       created: 0,
       owned_by: "llm-router",
-      max_input_tokens: 262_144,
+      context_window: 262_144,
       max_output_tokens: 8_192,
     },
     {
@@ -26,7 +26,7 @@ const MODELS_PAYLOAD = {
       object: "model",
       created: 0,
       owned_by: "llm-router",
-      max_input_tokens: 64_000,
+      context_window: 64_000,
       max_output_tokens: 4_096,
     },
   ],
@@ -124,10 +124,10 @@ describe("RouterCloudModelCatalog", () => {
         object: "list",
         data: [
           { id: "router-no-caps" },
-          { id: "router-bad-window", max_input_tokens: "258000", max_output_tokens: 8_192 },
-          { id: "router-fractional", max_input_tokens: 258_000.5, max_output_tokens: 8_192 },
-          { id: "router-bad-output", max_input_tokens: 258_000, max_output_tokens: "65536" },
-          { id: "router-zero", max_input_tokens: 0, max_output_tokens: 8_192 },
+          { id: "router-bad-window", context_window: "258000", max_output_tokens: 8_192 },
+          { id: "router-fractional", context_window: 258_000.5, max_output_tokens: 8_192 },
+          { id: "router-bad-output", context_window: 258_000, max_output_tokens: "65536" },
+          { id: "router-zero", context_window: 0, max_output_tokens: 8_192 },
         ],
       },
     });

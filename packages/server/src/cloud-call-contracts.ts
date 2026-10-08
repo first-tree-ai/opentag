@@ -18,27 +18,27 @@ export const CloudTokenRatesSchema = z
   .object({
     inputMicrosPerMillion: tokens,
     cachedInputMicrosPerMillion: tokens,
+    cacheWriteInputMicrosPerMillion: tokens,
     outputMicrosPerMillion: tokens,
   })
   .strict();
 export type CloudTokenRates = z.infer<typeof CloudTokenRatesSchema>;
-export const CloudUsageObservationSchema = z
+/** Router-normalized input includes disjoint cache-read and cache-write subsets. */
+export const CloudTokenUsageSchema = z
   .object({
-    responseId: z.string().min(1).max(256).optional(),
-    providerCallId: z.string().min(1).max(256).optional(),
-    inputTokens: tokens.optional(),
-    cachedInputTokens: tokens.optional(),
-    outputTokens: tokens.optional(),
-    complete: z.boolean().default(false),
+    inputTokens: tokens,
+    cachedInputTokens: tokens,
+    cacheWriteInputTokens: tokens,
+    outputTokens: tokens,
   })
   .strict()
   .refine(
-    (value) =>
-      value.cachedInputTokens === undefined ||
-      value.inputTokens === undefined ||
-      value.cachedInputTokens <= value.inputTokens,
-    "Cached input exceeds total input",
+    (value) => value.cachedInputTokens + value.cacheWriteInputTokens <= value.inputTokens,
+    "Cache tokens exceed total input",
   );
-export type CloudUsageObservation = z.infer<typeof CloudUsageObservationSchema>;
-export const CloudCallOutcomeSchema = z.enum(["finished", "not_sent"]);
-export type CloudCallOutcome = z.infer<typeof CloudCallOutcomeSchema>;
+export type CloudTokenUsage = z.infer<typeof CloudTokenUsageSchema>;
+export const CloudCallResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("complete"), usage: CloudTokenUsageSchema }).strict(),
+  z.object({ status: z.literal("no_charge") }).strict(),
+]);
+export type CloudCallResult = z.infer<typeof CloudCallResultSchema>;

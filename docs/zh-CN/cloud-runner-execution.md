@@ -190,7 +190,7 @@ provider 收发验收仍待完成；当前证据只有本地组合与外部本�
 Cloud 模型选项来自 Router 的认证 `GET /models` 响应，复用上述地址和凭证。Router 负责租户权限
 和模型可用性筛选；Server 使用同一个有界、短期缓存的目录完成选项展示、配置校验、任务派发和
 模型凭证签发。Agent 未指定模型时使用返回的第一项；显式模型必须属于当前目录。刷新失败或列表
-为空时显示不可用，不回退到 Local Pi 的建议模型。LiteLLM 通过 `max_input_tokens` 和
+为空时显示不可用，不回退到 Local Pi 的建议模型。Router 通过 `context_window` 和
 `max_output_tokens` 提供原生上限；缺少有效上限的模型不可用。启用计费后，目录还要求模型具有客户费率。
 
 模型设置页通过一次简短的 Server → Router 请求测试托管模型连接。这会消耗少量模型配额，但不

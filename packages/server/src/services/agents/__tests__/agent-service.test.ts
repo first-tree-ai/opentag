@@ -468,8 +468,14 @@ describe("AgentService", () => {
       null,
     );
     await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [id, NOW.toISOString()]);
-    await calls.observe(id, { inputTokens: 120, cachedInputTokens: 40, outputTokens: 10, complete: true });
-    await calls.finishUnbilled(id);
+    await calls.finalize(
+      id,
+      {
+        status: "complete",
+        usage: { inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 0, outputTokens: 10 },
+      },
+      { resolution: "unbilled", pricedMicros: 0, debitedMicros: 0 },
+    );
     const service = new AgentService(unitDatabase.database, {
       now: () => NOW,
       cloudUsage: new CloudUsageService(calls.db),

@@ -262,7 +262,7 @@ describe("in-process cloud billing", () => {
     ).toBe(402);
     expect(billing.beginCall).toHaveBeenCalledWith(
       { accountId: ACCOUNT, agentId: ACCOUNT, sessionId: SESSION, source: "execution" },
-      { gateway: "litellm", model: "model-a" },
+      { gateway: "llm-router", model: "model-a" },
     );
     expect(fallback).not.toHaveBeenCalled();
   });

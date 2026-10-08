@@ -32,8 +32,7 @@ const CloudModelEnvironmentSchema = z
       .enum(["true", "false"])
       .default("false")
       .transform((value) => value === "true"),
-    OPENTAG_CLOUD_MODEL_GATEWAY_ID: z.string().trim().min(1).max(256).default("litellm"),
-    OPENTAG_CLOUD_MODEL_USAGE_KEY: z.string().trim().min(1).optional(),
+    OPENTAG_CLOUD_MODEL_GATEWAY_ID: z.string().trim().min(1).max(256).default("llm-router"),
     OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: z.string().trim().min(1).max(1024).optional(),
     OPENTAG_CLOUD_MODEL_MASTER_KEY: z.string().min(8).max(512).optional(),
     OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(1_800),
@@ -58,7 +57,6 @@ export type CloudModelConfig =
       /** Fixed upstream origin/base path; the only URL the proxy and the model catalog ever call. */
       upstreamBaseUrl: string;
       gatewayId?: string;
-      usageKey?: string;
       /** Platform master key; lives in process memory only. */
       masterKey: string;
       /**
@@ -95,7 +93,6 @@ export function resolveCloudModelConfig(environment: NodeJS.ProcessEnv, cloudRun
   const parsed = CloudModelEnvironmentSchema.parse({
     OPENTAG_CLOUD_MODEL_ENABLED: environment.OPENTAG_CLOUD_MODEL_ENABLED,
     OPENTAG_CLOUD_MODEL_GATEWAY_ID: environment.OPENTAG_CLOUD_MODEL_GATEWAY_ID,
-    OPENTAG_CLOUD_MODEL_USAGE_KEY: emptyToUndefined(environment.OPENTAG_CLOUD_MODEL_USAGE_KEY),
     OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: emptyToUndefined(environment.OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL),
     OPENTAG_CLOUD_MODEL_MASTER_KEY: emptyToUndefined(environment.OPENTAG_CLOUD_MODEL_MASTER_KEY),
     OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS: environment.OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS,
@@ -121,7 +118,6 @@ export function resolveCloudModelConfig(environment: NodeJS.ProcessEnv, cloudRun
     enabled: true,
     upstreamBaseUrl,
     gatewayId: parsed.OPENTAG_CLOUD_MODEL_GATEWAY_ID,
-    ...(parsed.OPENTAG_CLOUD_MODEL_USAGE_KEY ? { usageKey: parsed.OPENTAG_CLOUD_MODEL_USAGE_KEY } : {}),
     masterKey: parsed.OPENTAG_CLOUD_MODEL_MASTER_KEY,
     tokenTtlSeconds: parsed.OPENTAG_CLOUD_MODEL_TOKEN_TTL_SECONDS,
     requestTimeoutMs: parsed.OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS,

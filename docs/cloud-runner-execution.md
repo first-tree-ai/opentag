@@ -257,8 +257,8 @@ base URL and credential. The Router applies tenant permissions and model availab
 Server uses one bounded, short-lived catalog for model selection, configuration validation,
 dispatch and model grants. An Agent without an explicit model uses the first returned model;
 an explicit model must be in the current catalog. Failed refreshes and empty lists are unavailable,
-never a fallback to the Local Pi model suggestions. LiteLLM publishes native limits through
-`max_input_tokens` and `max_output_tokens`; entries without valid limits are unavailable. With
+never a fallback to the Local Pi model suggestions. Router publishes native limits through
+`context_window` and `max_output_tokens`; entries without valid limits are unavailable. With
 billing enabled, the catalog also requires a configured customer rate.
 
 The model settings page tests hosted model connectivity with one short Server-to-Router request.

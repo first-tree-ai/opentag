@@ -53,13 +53,10 @@ describe("resolveCloudModelConfig", () => {
     expect(resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "false" }, false)).toEqual({ enabled: false });
   });
 
-  it("reads gateway identity and a separate recovery credential from the environment", () => {
+  it("reads the router identity from the environment", () => {
     expect(
-      resolveCloudModelConfig(
-        enabledEnvironment({ OPENTAG_CLOUD_MODEL_GATEWAY_ID: "gateway-b", OPENTAG_CLOUD_MODEL_USAGE_KEY: "spend-key" }),
-        true,
-      ),
-    ).toMatchObject({ gatewayId: "gateway-b", usageKey: "spend-key" });
+      resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_GATEWAY_ID: "gateway-b" }), true),
+    ).toMatchObject({ gatewayId: "gateway-b" });
   });
   it("normalizes a fixed HTTPS upstream and sources models from the Router, not the environment", () => {
     const config = resolveCloudModelConfig(enabledEnvironment(), true);

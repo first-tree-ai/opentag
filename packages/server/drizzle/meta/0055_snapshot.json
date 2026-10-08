@@ -1239,18 +1239,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "response_id": {
-          "name": "response_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_call_id": {
-          "name": "provider_call_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "rates": {
           "name": "rates",
           "type": "jsonb",
@@ -1288,13 +1276,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "usage_complete": {
-          "name": "usage_complete",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "input_tokens": {
           "name": "input_tokens",
@@ -1339,6 +1320,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "cache_write_input_tokens": {
+          "name": "cache_write_input_tokens",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1446,7 +1433,7 @@
         },
         "attempts_usage_nonnegative": {
           "name": "attempts_usage_nonnegative",
-          "value": "\"billing\".\"attempts\".\"input_tokens\" >= 0 AND \"billing\".\"attempts\".\"output_tokens\" >= 0 AND \"billing\".\"attempts\".\"cached_input_tokens\" >= 0 AND \"billing\".\"attempts\".\"cached_input_tokens\" <= \"billing\".\"attempts\".\"input_tokens\""
+          "value": "((\"billing\".\"attempts\".\"input_tokens\" IS NULL AND \"billing\".\"attempts\".\"output_tokens\" IS NULL AND \"billing\".\"attempts\".\"cached_input_tokens\" IS NULL AND \"billing\".\"attempts\".\"cache_write_input_tokens\" IS NULL) OR (\"billing\".\"attempts\".\"input_tokens\" IS NOT NULL AND \"billing\".\"attempts\".\"output_tokens\" IS NOT NULL AND \"billing\".\"attempts\".\"cached_input_tokens\" IS NOT NULL AND \"billing\".\"attempts\".\"cache_write_input_tokens\" IS NOT NULL AND \"billing\".\"attempts\".\"input_tokens\" >= 0 AND \"billing\".\"attempts\".\"output_tokens\" >= 0 AND \"billing\".\"attempts\".\"cached_input_tokens\" >= 0 AND \"billing\".\"attempts\".\"cache_write_input_tokens\" >= 0 AND \"billing\".\"attempts\".\"cache_write_input_tokens\" <= \"billing\".\"attempts\".\"input_tokens\" - \"billing\".\"attempts\".\"cached_input_tokens\"))"
         },
         "attempts_debit_valid": {
           "name": "attempts_debit_valid",

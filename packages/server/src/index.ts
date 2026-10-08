@@ -233,7 +233,7 @@ async function createCloudModelRuntime(
   const catalog = new RouterCloudModelCatalog({
     upstreamBaseUrl: model.upstreamBaseUrl,
     masterKey: model.masterKey,
-    ...(billing ? { pricedModels: () => billing.pricedModels(model.gatewayId ?? "litellm") } : {}),
+    ...(billing ? { pricedModels: () => billing.pricedModels(model.gatewayId ?? "llm-router") } : {}),
   });
   const service = new CloudModelService(model, { calls, billing, onError });
   try {

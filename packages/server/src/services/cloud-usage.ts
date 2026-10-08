@@ -11,7 +11,7 @@ const TotalsSchema = z.object({
   cachedInputTokens: count,
 });
 const DaySchema = TotalsSchema.extend({ date: z.string() });
-const measured = "usage_complete AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL";
+const measured = "input_tokens IS NOT NULL AND output_tokens IS NOT NULL";
 export class CloudUsageService {
   constructor(readonly db: CloudQueryConnection) {}
   async read(account: string, windowDays: CloudUsageWindowDays) {

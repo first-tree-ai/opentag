@@ -297,6 +297,17 @@ per-archive ceilings and the total catalog budget, and writes the committed
 presets:generate` writes it; `pnpm check` runs the same script with `--check` and fails on drift, so a
 bundle the Server would refuse fails the pull request that wrote it.
 
+**Packing is byte-stable across platforms, because the committed module is drift-checked.** A checked-in
+artifact whose bytes depend on the host cannot be verified: `node:zlib` output differs between the
+toolchains the repository supports (a macOS and a Linux checkout disagree on the same tar at the same
+level), so a clean macOS checkout would fail the drift check and regenerating there would move the
+drift to Linux. `packSkillDirectory` therefore compresses with `fflate` (pure JavaScript, one input has
+one encoding everywhere) and pins the gzip MTIME to zero, which otherwise defaults to `Date.now()` and
+would make every pack differ from the last. The tar layer is already canonical: fixed entry order,
+zeroed mtimes, normalized modes. `packages/client/src/__tests__/skill-archive.test.ts` asserts both
+properties — repeated packs are byte-identical with a zeroed MTIME, and packing fails the test if it
+ever reaches for the host compressor.
+
 **The Server serves canonical archive identity.** The generator packs with the Client packer, whose
 bytes differ from the Server's canonical repack (compression level, directory entries), so
 `SkillPresetService` normalizes each packaged archive once through `normalizeSkillArchive` before it
@@ -327,9 +338,17 @@ canonical archive identity, and the target Agent's state:
 `SKILL_NAME_CONFLICT` without touching the row. Because `update_available` requires
 `source === "preset"`, the catalog can never overwrite content a user uploaded: replacing a
 preset-installed Skill through an upload writes that source, and the preset reads back as a conflict.
-Two racing installs converge — the loser of the insert or revision race re-reads once and reports
-`unchanged` or re-runs the update it meant to. Renaming or removing a preset orphans the installed
-copy, which stops appearing in the catalog and is removed by hand; the Server never auto-prunes it.
+
+**A preset replaces exactly the row it read.** `update_available` is decided from a catalog read, so the
+write carries that row as its expectation (`SkillUploadInput.expectedRow`: id, revision, provenance) and
+the guard runs inside the write path against the same read the conditional update uses. Without it, a
+user upload landing between the two — a Web or CLI replace of the same name — would still satisfy a bare
+`replace: true`, and the preset would overwrite the user's content and stamp `source: "preset"` over it.
+With it, that write loses as `SKILL_REVISION_CONFLICT`, the re-read classifies the row by its new
+provenance, and the install reports `SKILL_NAME_CONFLICT`. Two racing installs converge — the loser of
+the insert or revision race re-reads once and reports `unchanged` or re-runs the update it meant to.
+Renaming or removing a preset orphans the installed copy, which stops appearing in the catalog and is
+removed by hand; the Server never auto-prunes it.
 
 Web surfaces the catalog as a Presets dialog on the Agent's Skills page, and
 `opentag skill preset list [--agent <id>]` / `opentag skill preset install <name> [--agent <id>]`
@@ -436,6 +455,7 @@ The Server and Web lanes add the coverage those layers owe:
 | `packages/server/src/__tests__/s3-skill-object-store.test.ts` | Signing, path-/virtual-hosted URLs, status mapping, secret redaction, and the `list` request shape, XML parsing (including an escaped key), continuation, and malformed/invalid responses |
 | `packages/server/src/__tests__/skill-object-gc.test.ts` | Deleting an old orphan, keeping a young or referenced object, keeping a key that becomes referenced between listing and deletion, ignoring non-Skill keys, the exact-prefix binding (a live object under a nested prefix and an adjacent sibling are never collected, across two databases), collecting an orphan under a slash-spelled prefix, pagination, the per-run cap, a failed delete continuing the run, and the replace→collect round trip |
 | `packages/server/src/__tests__/skill-object-prefix.test.ts` | The bound key matcher (exact match, extra namespace segment, different prefix with a valid tail, a string-prefix of the first segment, malformed tail) and the normalizer (leading/trailing/repeated slashes, empty and all-slash rejected, traversal rejected) |
+| `packages/server/src/__tests__/skill-preset-service.test.ts` | Per-Agent preset state, install/update semantics and provenance on both install surfaces over a real `SkillService`, and that a user upload landing between the catalog read and the preset write survives — the preset replaces only the row it read |
 | `packages/server/src/__tests__/integration/skills-api.test.ts` | The account lifecycle and Computer manifest over real HTTP and PostgreSQL, with the bundle headers |
 | `apps/web/src/features/skills/*.test.ts(x)` | The error-code map is exhaustive over the contract, an upload/toggle revision conflict reports the new sentence without opening the Replace dialog, and every other page rule |
 

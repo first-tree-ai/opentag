@@ -64,9 +64,9 @@ import {
   PostAuthenticationService,
 } from "./services/auth/index.js";
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
-import { createCloudBillingRuntime } from "./services/cloud-billing-composition.js";
 import { loadCloudBilling } from "./services/cloud-billing-module.js";
 import { CloudCallStore } from "./services/cloud-call-store.js";
+import { createCloudExecutionContext } from "./services/cloud-model-context.js";
 import { CloudModelService } from "./services/cloud-model-service.js";
 import { CloudUsageService } from "./services/cloud-usage.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
@@ -225,6 +225,7 @@ async function createCloudModelRuntime(
   runner: SandboxRunnerRuntime | undefined,
   billing: CloudBilling | undefined,
   calls: CloudCallStore,
+  database: DatabaseClient,
   onError: (event: string) => void,
 ) {
   const model = config.cloudModel;
@@ -243,10 +244,10 @@ async function createCloudModelRuntime(
   }
   return {
     catalog,
+    routeDependencies: { modelService: service, contextForExecution: createCloudExecutionContext(database) },
     service,
     tester: new CloudAgentRuntimeTester({
       catalog,
-      config: model,
       modelService: service,
     }),
   };
@@ -255,10 +256,6 @@ async function createCloudModelRuntime(
 function optionalCloudUsage(config: ServerConfig, cloudUsage: CloudUsageService) {
   return config.cloudModel.enabled ? { cloudUsage } : {};
 }
-function optionalCloudModelService(runtime: Awaited<ReturnType<typeof createCloudModelRuntime>>) {
-  return runtime ? { modelService: runtime.service } : {};
-}
-
 function optionalCloudModelCatalog(runtime: Awaited<ReturnType<typeof createCloudModelRuntime>>) {
   return runtime ? { cloudModelCatalog: runtime.catalog } : {};
 }
@@ -601,7 +598,6 @@ export async function startServer(): Promise<void> {
       publicUrl: config.publicUrl,
       environment: process.env,
     });
-    const billingRuntime = createCloudBillingRuntime(cloudBilling, config.cloudModel.enabled, database);
     const cloudCalls = new CloudCallStore({
       query: async (statement, parameters = []) => ({ rows: await sql.unsafe(statement, parameters as never[]) }),
     });
@@ -609,8 +605,9 @@ export async function startServer(): Promise<void> {
     const cloudModelRuntime = await createCloudModelRuntime(
       config,
       cloudRunnerRuntime,
-      billingRuntime.accountOptions.cloudBilling,
+      cloudBilling,
       cloudCalls,
+      database,
       (event) => app?.log.error({ event }),
     );
     cloudModelService = cloudModelRuntime?.service;
@@ -1030,10 +1027,9 @@ export async function startServer(): Promise<void> {
         runnerRuntime: cloudRunnerRuntime,
         composition: cloudDelivery,
         cloudModel: config.cloudModel,
-        ...billingRuntime.modelOptions,
-        ...optionalCloudModelService(cloudModelRuntime),
+        model: cloudModelRuntime?.routeDependencies,
       }),
-      ...billingRuntime.accountOptions,
+      cloudBilling,
       ...optionalCloudUsage(config, cloudUsage),
       machineAuthService,
       imBindingService,

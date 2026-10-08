@@ -10,13 +10,7 @@ const TotalsSchema = z.object({
   outputTokens: count,
   cachedInputTokens: count,
 });
-const DaySchema = z.object({
-  date: z.string(),
-  tokens: count,
-  inputTokens: count,
-  outputTokens: count,
-  cachedInputTokens: count,
-});
+const DaySchema = TotalsSchema.extend({ date: z.string() });
 const measured = "usage_complete AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL";
 export class CloudUsageService {
   constructor(readonly db: CloudQueryConnection) {}
@@ -53,26 +47,37 @@ export class CloudUsageService {
       startedAt = new Date(now.getTime() - windowDays * 86_400_000).toISOString();
     const filter = `account=$1 AND created_at>=$2 AND created_at<=$3${agentId ? " AND agent_id=$4" : ""}`;
     const args = agentId ? [account, startedAt, endedAt, agentId] : [account, startedAt, endedAt];
-    const totals = TotalsSchema.parse(
-      (
-        await this.db.query(
-          `SELECT count(*) AS requests,count(*) FILTER(WHERE ${measured}) AS "measuredRequests",coalesce(sum(input_tokens) FILTER(WHERE ${measured}),0) AS "inputTokens",coalesce(sum(output_tokens) FILTER(WHERE ${measured}),0) AS "outputTokens",coalesce(sum(cached_input_tokens) FILTER(WHERE ${measured}),0) AS "cachedInputTokens" FROM billing.attempts WHERE ${filter}`,
-          args,
-        )
-      ).rows[0],
-    );
-    const points = z
+    const rows = z
       .array(DaySchema)
       .parse(
         (
           await this.db.query(
-            `SELECT to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS date,coalesce(sum(input_tokens+output_tokens) FILTER(WHERE ${measured}),0) AS tokens,coalesce(sum(input_tokens) FILTER(WHERE ${measured}),0) AS "inputTokens",coalesce(sum(output_tokens) FILTER(WHERE ${measured}),0) AS "outputTokens",coalesce(sum(cached_input_tokens) FILTER(WHERE ${measured}),0) AS "cachedInputTokens" FROM billing.attempts WHERE ${filter} GROUP BY date ORDER BY date`,
+            `SELECT to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS date,count(*) AS requests,count(*) FILTER(WHERE ${measured}) AS "measuredRequests",coalesce(sum(input_tokens) FILTER(WHERE ${measured}),0) AS "inputTokens",coalesce(sum(output_tokens) FILTER(WHERE ${measured}),0) AS "outputTokens",coalesce(sum(cached_input_tokens) FILTER(WHERE ${measured}),0) AS "cachedInputTokens" FROM billing.attempts WHERE ${filter} GROUP BY date ORDER BY date`,
             args,
           )
         ).rows,
       );
+    const totals = TotalsSchema.parse(
+      rows.reduce(
+        (total, row) => ({
+          requests: total.requests + row.requests,
+          measuredRequests: total.measuredRequests + row.measuredRequests,
+          inputTokens: total.inputTokens + row.inputTokens,
+          outputTokens: total.outputTokens + row.outputTokens,
+          cachedInputTokens: total.cachedInputTokens + row.cachedInputTokens,
+        }),
+        { requests: 0, measuredRequests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+      ),
+    );
+    const points = rows.map(({ date, inputTokens, outputTokens, cachedInputTokens }) => ({
+      date,
+      inputTokens,
+      outputTokens,
+      cachedInputTokens,
+      tokens: inputTokens + outputTokens,
+    }));
     const byDate = new Map(points.map((point) => [point.date, point]));
-    const daily: Array<z.infer<typeof DaySchema>> = [];
+    const daily: typeof points = [];
     for (let day = Date.parse(`${startedAt.slice(0, 10)}T00:00:00.000Z`); day <= now.getTime(); day += 86_400_000) {
       const date = new Date(day).toISOString().slice(0, 10);
       daily.push(byDate.get(date) ?? { date, tokens: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 });

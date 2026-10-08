@@ -1,10 +1,5 @@
 import type { CloudBillingSummary, CloudCreditCheckoutRequest } from "@opentag/shared";
-import type {
-  CloudCallContext,
-  CloudCallOutcome,
-  CloudModelReference,
-  CloudUsageObservation,
-} from "./cloud-call-contracts.js";
+import type { CloudCallContext, CloudCallOutcome, CloudModelReference } from "./cloud-call-contracts.js";
 
 export * from "./cloud-call-contracts.js";
 
@@ -13,7 +8,6 @@ export interface CloudBilling {
   readiness(): Promise<{ status: "ready"; revision: string | null }>;
   pricedModels(gateway: string): string[];
   beginCall(context: CloudCallContext, model: CloudModelReference): Promise<string>;
-  observeCall(callId: string, observation: CloudUsageObservation): Promise<void>;
   finishCall(callId: string, outcome: CloudCallOutcome): Promise<void>;
   writeOffCall(callId: string, reason: string): Promise<void>;
   summary(accountId: string): Promise<CloudBillingSummary>;

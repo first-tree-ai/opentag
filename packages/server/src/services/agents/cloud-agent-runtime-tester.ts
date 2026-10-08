@@ -4,8 +4,7 @@ import {
   RUNTIME_AGENT_RUNTIME_TEST_MAX_PENDING,
 } from "@opentag/shared";
 import { z } from "zod";
-import type { CloudModelConfig } from "../../cloud-model-config.js";
-import { CloudModelService } from "../cloud-model-service.js";
+import type { CloudModelService } from "../cloud-model-service.js";
 import { type CloudModelCatalog, readBoundedResponseText } from "../sandboxes/cloud-model-catalog.js";
 
 /**
@@ -66,12 +65,9 @@ const CompletionSchema = z.object({
 });
 
 export interface CloudAgentRuntimeTesterOptions {
-  /** The enabled Cloud model configuration: fixed Router base URL and platform master key. */
-  config: Extract<CloudModelConfig, { enabled: true }>;
   /** The one shared Router model catalog; admits explicit models and resolves the default. */
   catalog: CloudModelCatalog;
-  modelService?: CloudModelService;
-  fetchImpl?: typeof fetch;
+  modelService: CloudModelService;
   maxPending?: number;
   maxResponseBytes?: number;
   timeoutMs?: number;
@@ -88,8 +84,7 @@ export class CloudAgentRuntimeTester {
   #closed = false;
 
   constructor(options: CloudAgentRuntimeTesterOptions) {
-    this.#modelService =
-      options.modelService ?? new CloudModelService(options.config, { fetchImpl: options.fetchImpl });
+    this.#modelService = options.modelService;
     this.#catalog = options.catalog;
     this.#maxPending = options.maxPending ?? RUNTIME_AGENT_RUNTIME_TEST_MAX_PENDING;
     this.#maxResponseBytes = options.maxResponseBytes ?? CLOUD_AGENT_RUNTIME_TEST_MAX_RESPONSE_BYTES;
@@ -110,8 +105,8 @@ export class CloudAgentRuntimeTester {
    * without spending a model request on it.
    */
   async test(input: {
-    accountId?: string;
-    agentId?: string;
+    accountId: string;
+    agentId: string;
     computerId: string;
     model: string | null;
     signal?: AbortSignal;
@@ -152,12 +147,7 @@ export class CloudAgentRuntimeTester {
     for (const pending of this.#pending.values()) pending.abort();
   }
 
-  #request(
-    model: string,
-    signal: AbortSignal,
-    accountId: string | undefined,
-    agentId: string | undefined,
-  ): Promise<Response> {
+  #request(model: string, signal: AbortSignal, accountId: string, agentId: string): Promise<Response> {
     const body = {
       model,
       messages: [{ role: "user", content: CLOUD_AGENT_RUNTIME_TEST_PROMPT }],
@@ -168,7 +158,7 @@ export class CloudAgentRuntimeTester {
       body,
       signal,
       { requestTimeoutMs: this.#timeoutMs, maxResponseBytes: this.#maxResponseBytes },
-      accountId && agentId ? { accountId, agentId, sessionId: null, source: "connectivity_probe" } : undefined,
+      { accountId, agentId, sessionId: null, source: "connectivity_probe" },
     );
   }
 
@@ -177,8 +167,8 @@ export class CloudAgentRuntimeTester {
     signal: AbortSignal,
     timedOut: () => boolean,
     callerSignal: AbortSignal | undefined,
-    accountId: string | undefined,
-    agentId: string | undefined,
+    accountId: string,
+    agentId: string,
   ): Promise<AgentRuntimeTestResponse> {
     let response: Response;
     try {

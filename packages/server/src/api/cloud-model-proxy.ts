@@ -9,7 +9,7 @@ import {
   CLOUD_MODEL_ERROR_BODY_MAX_BYTES,
   CloudModelRequestSchema,
 } from "../cloud-model-request.js";
-import { CloudModelService } from "../services/cloud-model-service.js";
+import type { CloudModelService } from "../services/cloud-model-service.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 
@@ -49,9 +49,8 @@ const MAX_TOKEN_CHARS = 4_096;
 export interface CloudModelProxyRouteOptions {
   config: Extract<CloudModelConfig, { enabled: true }>;
   grants: CloudModelGrantService;
-  modelService?: CloudModelService;
-  contextForExecution?: (claims: GrantClaims) => Promise<CloudCallContext | undefined>;
-  fetchImpl?: typeof fetch;
+  modelService: CloudModelService;
+  contextForExecution: (claims: GrantClaims) => Promise<CloudCallContext | undefined>;
   now?: () => number;
 }
 
@@ -122,10 +121,9 @@ async function callUpstream(
   signal: AbortSignal,
   claims: GrantClaims,
 ): Promise<Response | undefined> {
-  const service = options.modelService ?? new CloudModelService(options.config, { fetchImpl: options.fetchImpl });
-  const context = await options.contextForExecution?.(claims);
-  if (options.contextForExecution && !context) throw new Error("Cloud execution has no owner");
-  return service.request({ ...body, model }, signal, options.config, context);
+  const context = await options.contextForExecution(claims);
+  if (!context) throw new Error("Cloud execution has no owner");
+  return options.modelService.request({ ...body, model }, signal, options.config, context);
 }
 
 /** Wait for socket drain, but never past a close, error, or abort. */
@@ -496,7 +494,7 @@ export function registerCloudModelProxyRoutes(app: FastifyInstance, options: Clo
   app.addHook("preClose", async () => {
     for (const controller of [...active]) controller.abort(new Error("cloud_model_server_shutdown"));
     options.grants.close();
-    await options.modelService?.close();
+    await options.modelService.close();
   });
 
   app.post(CLOUD_MODEL_CHAT_COMPLETIONS_PATH, { bodyLimit: options.config.maxRequestBytes }, async (request, reply) => {

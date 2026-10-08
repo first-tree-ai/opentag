@@ -266,8 +266,7 @@ export function cloudAppOptions(input: {
   runnerRuntime: SandboxRunnerRuntime | undefined;
   composition: CloudDeliveryComposition;
   cloudModel: CloudModelConfig;
-  modelService?: CloudModelProxyRouteOptions["modelService"];
-  contextForExecution?: CloudModelProxyRouteOptions["contextForExecution"];
+  model?: Pick<CloudModelProxyRouteOptions, "modelService" | "contextForExecution">;
 }): {
   sandboxRunnerService?: SandboxRunnerService;
   runnerChannel?: {
@@ -280,6 +279,8 @@ export function cloudAppOptions(input: {
   cloudModel?: CloudModelProxyRouteOptions;
   cloudModelCatalog?: CloudModelCatalog;
 } {
+  if (input.composition.cloudModelGrants && input.cloudModel.enabled && !input.model)
+    throw new Error("Cloud model routes require metering dependencies");
   const runnerOptions = sandboxRunnerRouteOptions(
     input.runnerRuntime,
     input.composition.cloudDeliveryOwner,
@@ -290,13 +291,12 @@ export function cloudAppOptions(input: {
     // The workspace routes exist exactly when the runtime configured persistence; without them a
     // workspace Runner can never claim/restore and fails closed before readiness.
     ...(input.runnerRuntime?.runnerWorkspace ? { runnerWorkspace: input.runnerRuntime.runnerWorkspace } : {}),
-    ...(input.composition.cloudModelGrants && input.cloudModel.enabled
+    ...(input.composition.cloudModelGrants && input.cloudModel.enabled && input.model
       ? {
           cloudModel: {
             config: input.cloudModel,
             grants: input.composition.cloudModelGrants,
-            ...(input.modelService ? { modelService: input.modelService } : {}),
-            ...(input.contextForExecution ? { contextForExecution: input.contextForExecution } : {}),
+            ...input.model,
           },
         }
       : {}),

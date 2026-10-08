@@ -34,7 +34,6 @@ async function fixture(billed = false) {
   const calls = new CloudCallStore({ query: (statement, parameters) => unit.engine.query(statement, parameters) });
   const billing = {
     beginCall: vi.fn<CloudBilling["beginCall"]>((context, model) => calls.create(context, model, rates)),
-    observeCall: vi.fn<CloudBilling["observeCall"]>((id, value) => calls.observe(id, value)),
     finishCall: vi.fn<CloudBilling["finishCall"]>(async (id) => {
       const call = await calls.get(id);
       await calls.db.query("UPDATE billing.attempts SET state=$2,resolution=$3 WHERE id=$1", [
@@ -154,6 +153,7 @@ describe("single cloud gateway lifecycle", () => {
   });
   it("requires trusted attribution before sending a metered call", async () => {
     const { service, fetchImpl } = await fixture();
+    // @ts-expect-error Attribution is required even if an untyped caller bypasses the contract.
     await expect(service.request(body, new AbortController().signal, config)).rejects.toThrow("trusted attribution");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -195,7 +195,6 @@ describe("single cloud gateway lifecycle", () => {
       }),
     );
     const tester = new CloudAgentRuntimeTester({
-      config,
       catalog: createStaticCloudModelCatalog(["model-a"]),
       modelService: service,
     });
@@ -271,6 +270,42 @@ describe("single cloud gateway lifecycle", () => {
     await service.job;
     expect((await calls.get(id)).state).toBe("finalized");
     expect((await calls.db.query("SELECT * FROM billing.attempts")).rows).toHaveLength(1);
+  });
+  it("keeps totals consistent with daily usage across dates and fills empty days", async () => {
+    const { calls } = await fixture();
+    const now = new Date("2026-10-08T12:00:00.000Z");
+    for (const [createdAt, inputTokens, outputTokens] of [
+      ["2026-10-06T23:59:00Z", 10, 2],
+      ["2026-10-08T00:01:00Z", 20, 3],
+    ] as const) {
+      const id = await calls.create(context, { gateway: "litellm", model: "model-a" }, null);
+      await calls.observe(id, { inputTokens, outputTokens, cachedInputTokens: 1, complete: true });
+      await calls.finishUnbilled(id);
+      await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [id, createdAt]);
+    }
+    const partial = await calls.create(context, { gateway: "litellm", model: "model-a" }, null);
+    await calls.observe(partial, { inputTokens: 999, complete: false });
+    await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [partial, now.toISOString()]);
+    const query = vi.spyOn(calls.db, "query");
+    const detail = await new CloudUsageService(calls.db).readDetail(context.accountId, 7, undefined, now);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(detail).toMatchObject({
+      requests: 3,
+      measuredRequests: 2,
+      inputTokens: 30,
+      outputTokens: 5,
+      cachedInputTokens: 2,
+    });
+    expect(detail.points.find(({ date }) => date === "2026-10-07")).toEqual({
+      date: "2026-10-07",
+      tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    });
+    expect(detail.points.reduce((total, point) => total + point.tokens, 0)).toBe(
+      detail.inputTokens + detail.outputTokens,
+    );
   });
   it("reads account and agent usage from the same records, with missing counts marked partial", async () => {
     const { calls } = await fixture();

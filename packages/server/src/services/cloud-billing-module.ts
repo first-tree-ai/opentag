@@ -19,7 +19,6 @@ export async function loadCloudBilling(
       "summary",
       "pricedModels",
       "beginCall",
-      "observeCall",
       "finishCall",
       "writeOffCall",
       "checkout",

@@ -13,6 +13,7 @@ import type { CloudBilling } from "../cloud-billing.js";
 import { resolveCloudBillingConfig } from "../cloud-billing-config.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { loadCloudBilling } from "../services/cloud-billing-module.js";
+import { CloudCallStore } from "../services/cloud-call-store.js";
 import { CloudModelService } from "../services/cloud-model-service.js";
 import { createStaticCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
@@ -37,7 +38,6 @@ function moduleFixture() {
     checkout: vi.fn<CloudBilling["checkout"]>().mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/test" }),
     pricedModels: vi.fn<CloudBilling["pricedModels"]>().mockReturnValue(["model-a"]),
     beginCall: vi.fn<CloudBilling["beginCall"]>().mockResolvedValue("call"),
-    observeCall: vi.fn<CloudBilling["observeCall"]>().mockResolvedValue(),
     finishCall: vi.fn<CloudBilling["finishCall"]>().mockResolvedValue(),
     writeOffCall: vi.fn<CloudBilling["writeOffCall"]>().mockResolvedValue(),
     webhook: vi.fn<CloudBilling["webhook"]>().mockResolvedValue(),
@@ -213,7 +213,6 @@ describe("in-process cloud billing", () => {
         maxResponseBytes: 1048576,
       },
       grants,
-      fetchImpl: fallback,
       modelService: new CloudModelService(
         {
           enabled: true,
@@ -225,7 +224,7 @@ describe("in-process cloud billing", () => {
           maxRequestBytes: 65536,
           maxResponseBytes: 1048576,
         },
-        { billing, fetchImpl: fallback },
+        { billing, fetchImpl: fallback, calls: new CloudCallStore({ query: vi.fn(async () => ({ rows: [] })) }) },
       ),
       contextForExecution: async () => ({
         accountId: ACCOUNT,

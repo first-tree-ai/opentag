@@ -35,6 +35,7 @@ import { RunnerHub } from "../services/sandboxes/runner-hub.js";
 import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
+import { cloudTestOwner, createTestCloudModelService } from "./support/cloud-model-service.js";
 import { FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -45,6 +46,13 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
  * (the earlier confirmed 404) and the model master secret omission are caught here rather than in
  * a stand-alone route fixture.
  */
+
+function modelDependencies() {
+  return {
+    modelService: createTestCloudModelService(CLOUD_MODEL),
+    contextForExecution: async () => ({ ...cloudTestOwner, sessionId: null, source: "execution" as const }),
+  };
+}
 
 const RUNNER_VERSION = "0.0.5";
 const cloudIdentities = { enabled: true as const, runnerVersion: RUNNER_VERSION, storageBase: "gs://unit-cloud/x" };
@@ -133,7 +141,12 @@ describe("production Cloud runtime composition", () => {
       },
     });
     expect(composition.cloudSessionOwner).toBeInstanceOf(CloudSessionCollaborationOwner);
-    const appOptions = cloudAppOptions({ runnerRuntime: runtime, composition, cloudModel: CLOUD_MODEL });
+    expect(() => cloudAppOptions({ runnerRuntime: runtime, composition, cloudModel: CLOUD_MODEL })).toThrow(
+      "metering dependencies",
+    );
+    const model = modelDependencies();
+    const appOptions = cloudAppOptions({ runnerRuntime: runtime, composition, cloudModel: CLOUD_MODEL, model });
+    expect(appOptions.cloudModel?.modelService).toBe(model.modelService);
     expect(appOptions.runnerChannel?.cloudSession).toBe(composition.cloudSessionOwner);
     expect(appOptions.runnerChannel?.cloudDelivery).toBe(composition.cloudDeliveryOwner);
     expect(appOptions.cloudModel?.grants).toBe(composition.cloudModelGrants);
@@ -216,11 +229,12 @@ describe("production Cloud runtime composition", () => {
     // The one injected catalog instance is the composition's single shared catalog.
     expect(composition.cloudModelCatalog).toBeDefined();
 
-    const appOptions = cloudAppOptions({
-      runnerRuntime: runtime,
-      composition,
-      cloudModel: CLOUD_MODEL,
-    });
+    expect(() => cloudAppOptions({ runnerRuntime: runtime, composition, cloudModel: CLOUD_MODEL })).toThrow(
+      "metering dependencies",
+    );
+    const model = modelDependencies();
+    const appOptions = cloudAppOptions({ runnerRuntime: runtime, composition, cloudModel: CLOUD_MODEL, model });
+    expect(appOptions.cloudModel?.modelService).toBe(model.modelService);
     // The exact owner instance reaches the Runner channel and the exact grant instance reaches
     // the model route; neither is re-created at registration time.
     expect(appOptions.runnerChannel?.cloudDelivery).toBe(composition.cloudDeliveryOwner);

@@ -85,7 +85,7 @@ export class CloudUsageObserver {
 
 export interface CloudModelServiceOptions {
   billing?: CloudBilling;
-  calls?: CloudCallStore;
+  calls: CloudCallStore;
   fetchImpl?: typeof fetch;
   onError?: (event: string) => void;
 }
@@ -99,7 +99,7 @@ export class CloudModelService {
   stopped = false;
   constructor(
     readonly config: Extract<CloudModelConfig, { enabled: true }>,
-    readonly options: CloudModelServiceOptions = {},
+    readonly options: CloudModelServiceOptions,
   ) {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
@@ -107,8 +107,8 @@ export class CloudModelService {
     return this.config.gatewayId ?? "litellm";
   }
   async initialize(): Promise<void> {
-    await this.options.calls?.abandon();
-    if (!this.options.billing || !this.options.calls) return;
+    await this.options.calls.abandon();
+    if (!this.options.billing) return;
     this.startRecovery();
     this.timer = setInterval(() => this.startRecovery(), 30_000);
     this.timer.unref();
@@ -123,24 +123,23 @@ export class CloudModelService {
   report(event: string) {
     this.options.onError?.(event);
   }
-  async begin(context: CloudCallContext | undefined, model: string): Promise<string | undefined> {
-    if (!this.options.billing && !this.options.calls) return undefined;
+  async begin(context: CloudCallContext, model: string): Promise<string> {
     if (!context) throw new Error("Cloud usage requires trusted attribution");
     const reference = { gateway: this.gateway, model };
     return this.options.billing
       ? this.options.billing.beginCall(context, reference)
-      : this.options.calls?.create(context, reference, null);
+      : this.options.calls.create(context, reference, null);
   }
   async finish(id: string | undefined, sent: boolean): Promise<void> {
     if (!id) return;
     if (this.options.billing) await this.options.billing.finishCall(id, sent ? "finished" : "not_sent");
-    else await this.options.calls?.finishUnbilled(id);
+    else await this.options.calls.finishUnbilled(id);
   }
   async request(
     raw: unknown,
     signal: AbortSignal,
     limits: CloudModelTransportLimits,
-    context?: CloudCallContext,
+    context: CloudCallContext,
   ): Promise<Response> {
     if (this.stopped) throw new Error("Cloud models stopped");
     const body = CloudModelRequestSchema.parse(raw);
@@ -164,8 +163,7 @@ export class CloudModelService {
     let settled: Promise<void> | undefined;
     const observe = async (value: CloudUsageObservation) => {
       if (!id) return;
-      if (this.options.billing) await this.options.billing.observeCall(id, value);
-      else await this.options.calls?.observe(id, value);
+      await this.options.calls.observe(id, value);
     };
     const settle = () =>
       (settled ??= (async () => {
@@ -280,7 +278,7 @@ export class CloudModelService {
   }
   async reconcile(): Promise<void> {
     const { calls, billing } = this.options;
-    if (!calls || !billing || this.stopped) return;
+    if (!billing || this.stopped) return;
     await calls.expire(new Date(Date.now() - this.config.requestTimeoutMs - 60_000));
     for (const call of await calls.pending()) {
       try {
@@ -290,7 +288,7 @@ export class CloudModelService {
         {
           const usage = await this.lookup(call.provider_call_id, call.response_id, call.model);
           if (!usage) throw new Error("Final cloud usage unavailable");
-          await billing.observeCall(call.id, usage);
+          await calls.observe(call.id, usage);
         }
         await billing.finishCall(call.id, "finished");
       } catch {

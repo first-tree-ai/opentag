@@ -996,22 +996,26 @@ An Agent with no Server mounted has an empty tool surface and no way in unless i
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
 that an Agent can add in one action, from the add flow's Discover source and from its empty state.
 
-The catalog is committed repository data, not a service:
+The catalog is committed repository data in the `@opentag/mcp-presets` workspace, not a service:
 
 | Source | Holds |
 | --- | --- |
-| `apps/web/src/features/mcp/catalog/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
-| `apps/web/src/features/mcp/catalog/mcp-catalog.yaml` | the entries: slug, localized title and description, URL, default authorization kind, category, provider site, icon, order, and optional bearer header configuration |
+| `packages/mcp-presets/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
+| `packages/mcp-presets/mcp-catalog.yaml` | the entries: slug, localized title and description, URL, default authorization kind, category, provider site, icon, order, and optional bearer header configuration |
+| `packages/mcp-presets/icons/` | the monochrome card marks referenced by the entries |
 
-`scripts/generate-mcp-catalog.mjs` compiles both into
-`apps/web/src/features/mcp/catalog/mcp-catalog.gen.ts`, mirroring `generate-web-theme.mjs`: run
-`pnpm catalog:generate` to write it, and `pnpm check` runs the same script with `--check` to reject
-drift. It runs under `tsx` because it reads the shared runtime schemas from source — `pnpm check` runs
-before `pnpm build`, so `packages/shared/dist` does not exist yet.
+`scripts/generate-mcp-catalog.mjs` compiles the sources into
+`packages/mcp-presets/src/mcp-catalog.gen.ts`, embedding each icon as a data URL so the compiled
+module carries no asset imports. It mirrors `generate-web-theme.mjs`: run `pnpm catalog:generate` to
+write it, and `pnpm check` runs the same script with `--check` to reject drift. It runs under `tsx`
+because it reads the shared runtime schemas from source — `pnpm check` runs before `pnpm build`, so
+`packages/shared/dist` does not exist yet. The Web App reads the catalog through the package's public
+export; no catalog source lives under `apps/web`.
 
 The procedure an operator follows to add an entry — the facts to collect from the provider, the slug
-and category rules, the icon, and the gates to run — is a first-party Skill,
-`packages/skill-presets/skills/mcp-catalog-entry`.
+and category rules, the icon, and the gates to run — is a first-party Skill at
+`skills/mcp-catalog-entry`. It is a contributor bundle rather than a shipped preset: an operator
+uploads it explicitly, and the Presets catalog never offers it.
 
 Adding from a card is a prefill of the chain this page already documents, not a new API. The entry's
 URL is matched against the Account's definitions, and an existing definition is mounted rather than

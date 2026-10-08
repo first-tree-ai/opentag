@@ -28,6 +28,13 @@ export default defineConfig({
       }),
       defineProject({
         test: {
+          name: "mcp-presets",
+          root: "packages/mcp-presets",
+          sequence: { groupOrder: 3 },
+        },
+      }),
+      defineProject({
+        test: {
           name: "client",
           root: "packages/client",
           sequence: { groupOrder: 4 },

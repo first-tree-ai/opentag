@@ -51,6 +51,7 @@ export const COVERAGE_PROJECTS = [
   { name: "web", root: "apps/web", sources: "apps/web/src" },
   { name: "shared", root: "packages/shared", sources: "packages/shared/src" },
   { name: "skill-presets", root: "packages/skill-presets", sources: "packages/skill-presets/src" },
+  { name: "mcp-presets", root: "packages/mcp-presets", sources: "packages/mcp-presets/src" },
   { name: "client", root: "packages/client", sources: "packages/client/src" },
   { name: "server", root: "packages/server", sources: "packages/server/src" },
 ];
@@ -85,6 +86,7 @@ const ROOT_COVERAGE_INCLUDE_PATTERNS = [
   "apps/web/src/**/*.{ts,tsx}",
   "packages/shared/src/**/*.{ts,tsx}",
   "packages/skill-presets/src/**/*.{ts,tsx}",
+  "packages/mcp-presets/src/**/*.{ts,tsx}",
   "packages/client/src/**/*.{ts,tsx}",
   "packages/server/src/**/*.{ts,tsx}",
 ];

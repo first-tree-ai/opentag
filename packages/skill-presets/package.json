@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsdown src/index.ts --format esm --dts --sourcemap",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --maxWorkers=1"
+    "test": "vitest run --maxWorkers=1 --passWithNoTests"
   },
   "dependencies": {
     "@opentag/shared": "workspace:*"

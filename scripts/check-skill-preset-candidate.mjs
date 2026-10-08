@@ -21,7 +21,7 @@
  * `packages/shared/dist` does not exist yet.
  */
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { packSkillDirectory, SkillArchiveError } from "../packages/client/src/skills/skill-archive.ts";
@@ -107,7 +107,11 @@ function collectPresetNames(value, metadataPath, violations) {
   return names;
 }
 
-/** Pack the candidate and require the directory name to be the name the catalog will address it by. */
+/**
+ * Pack the candidate and require the directory name to be the name the catalog will address it by.
+ * The identity comes from the resolved path, the same normalization the packer applies, so
+ * `skills/<name>`, `skills/<name>/`, `skills/<name>/.`, and `.` inside the bundle are one directory.
+ */
 async function checkCandidate(candidate, violations) {
   let packed;
   try {
@@ -119,7 +123,7 @@ async function checkCandidate(candidate, violations) {
     }
     throw error;
   }
-  const directoryName = basename(candidate.replace(/[/\\]+$/, ""));
+  const directoryName = basename(resolve(candidate));
   if (packed.name !== directoryName) {
     violations.push(
       `${candidate}: manifest name "${packed.name}" does not match the candidate directory name "${directoryName}"; the catalog addresses a bundle by its directory name, so rename the directory before entry`,

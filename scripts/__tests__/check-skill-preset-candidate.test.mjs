@@ -69,9 +69,9 @@ function manifestFor(name) {
   ].join("\n");
 }
 
-function run(args) {
+function run(args, cwd = repositoryRoot) {
   const result = spawnSync(tsx, ["--tsconfig", tsconfig, checker, ...args], {
-    cwd: repositoryRoot,
+    cwd,
     encoding: "utf8",
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
@@ -118,6 +118,20 @@ test("accepts a candidate with no category and still reports the declared catego
   const result = run([candidate, "--root", root]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /declared categories: getting-started/);
+});
+
+test("accepts the same bundle addressed with a trailing separator, a dot segment, or from inside it", (t) => {
+  const { root, candidate } = fixture(t);
+  const spellings = [candidate, `${candidate}/`, `${candidate}/.`, relative(repositoryRoot, candidate)];
+  for (const spelling of spellings) {
+    const result = run([spelling, "--root", root, "--category", "getting-started"]);
+    assert.equal(result.status, 0, `"${spelling}" should be accepted: ${result.stderr}`);
+    assert.match(result.stdout, /name: new-skill/);
+  }
+
+  const fromInside = run([".", "--root", root, "--category", "getting-started"], candidate);
+  assert.equal(fromInside.status, 0, fromInside.stderr);
+  assert.match(fromInside.stdout, /name: new-skill/);
 });
 
 test("rejects a candidate without a manifest", (t) => {

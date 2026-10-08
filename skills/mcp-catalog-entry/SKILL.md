@@ -1,22 +1,23 @@
 ---
 name: mcp-catalog-entry
-description: Record a remote MCP Server in this repository's marketplace catalog. Use when a task adds, verifies, or corrects an entry under apps/web/src/features/mcp/catalog, when a provider's MCP endpoint must appear in the Agent add flow's Discover surface, or when someone asks to 录入 MCP, 上架 MCP, add an MCP server to the marketplace, or check whether a listed endpoint is still right.
+description: Record a remote MCP Server in this repository's marketplace catalog. Use when a task adds, verifies, or corrects an entry under packages/mcp-presets, when a provider's MCP endpoint must appear in the Agent add flow's Discover surface, or when someone asks to 录入 MCP, 上架 MCP, add an MCP server to the marketplace, or check whether a listed endpoint is still right.
 ---
 
 # MCP catalog entry
 
 The marketplace catalog is committed repository data, not a service. Recording a Server means
-editing two YAML sources, compiling them, and letting the repository gates reject anything a user
-would otherwise meet as a broken card.
+editing two YAML sources in the `@opentag/mcp-presets` workspace, compiling them, and letting the
+repository gates reject anything a user would otherwise meet as a broken card.
 
 | Source | Holds |
 | --- | --- |
-| `apps/web/src/features/mcp/catalog/mcp-categories.yaml` | the category set, each with a localized label and a tab order |
-| `apps/web/src/features/mcp/catalog/mcp-catalog.yaml` | one entry per Server |
+| `packages/mcp-presets/mcp-categories.yaml` | the category set, each with a localized label and a tab order |
+| `packages/mcp-presets/mcp-catalog.yaml` | one entry per Server |
 
-`apps/web/src/features/mcp/catalog/mcp-catalog.gen.ts` is generated. Never edit it by hand:
-`pnpm catalog:generate` writes it, and `pnpm check` runs the same script with `--check` to reject
-drift.
+Icons live in `packages/mcp-presets/icons/`, one SVG per referenced entry. The generated module
+`packages/mcp-presets/src/mcp-catalog.gen.ts` embeds those icon bytes as data URLs and is what the Web
+App reads through the package's public export. Never edit it by hand: `pnpm catalog:generate` writes
+it, and `pnpm check` runs the same script with `--check` to reject drift.
 
 ## Step 1 — Collect the facts from the provider
 
@@ -106,15 +107,17 @@ curl -sS -i -X POST <endpoint> \
 
 ## Step 4 — Add the icon
 
-Create `apps/web/src/assets/mcp/<slug>.svg`: a 24×24 monochrome mark that paints with `currentColor`,
-in the shape of the ones already in that directory. The generator fails when the file is missing. A
-remote favicon is not an option — the card must not reach the provider before the user picks it.
+Create `packages/mcp-presets/icons/<slug>.svg`: a 24×24 monochrome mark that paints with
+`currentColor`, in the shape of the ones already in that directory. The generator fails when the file
+is missing, and it embeds the file's bytes into the generated module, so there is no separate asset
+import to update. A remote favicon is not an option — the card must not reach the provider before the
+user picks it.
 
 ## Step 5 — Compile and gate
 
 ```sh
 pnpm catalog:generate
-npx biome check apps packages scripts e2e
+pnpm --filter @opentag/mcp-presets test
 pnpm --filter @opentag/web test src/features/mcp
 ```
 
@@ -123,12 +126,14 @@ and the repository policy scripts. It can be red before your change for unrelate
 when it is, name the failing step and prove yours is green on its own, rather than reporting the gate
 as passing. On this workstation biome is the step that is red before any change, because it reaches
 the agent-scratch paths (`.opencode/`, `.omo/`) that only the global gitignore excludes; the scoped
-form above is the same gate for the paths this repository owns. There is nothing for biome to lint
-inside a Skill bundle: a bundle is markdown and `pnpm check` validates it with
-`scripts/check-skill-bundles.mjs` instead.
+form `npx biome check apps packages scripts e2e` is the same gate for the paths this repository owns.
+There is nothing for biome to lint inside a Skill bundle: a bundle is markdown and `pnpm check`
+validates it with `scripts/check-skill-bundles.mjs` instead.
 
-The web command is the smallest test set that covers the catalog model and the Discover surface. Run
-the whole web suite when you changed the generator, the entry type, or the add flow.
+The package test checks the generated catalog's shape — category and entry ordering, uniqueness, and
+the embedded icons. The web command is the smallest test set that covers the catalog model and the
+Discover surface. Run the whole web suite when you changed the generator, the entry type, or the add
+flow.
 
 ## What the generator refuses
 

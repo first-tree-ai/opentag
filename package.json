@@ -30,6 +30,7 @@
     "notices:write": "node scripts/third-party-notices.mjs --write",
     "theme:generate": "node scripts/generate-web-theme.mjs",
     "catalog:generate": "tsx scripts/generate-mcp-catalog.mjs",
+    "presets:check-candidate": "tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-preset-candidate.mjs",
     "presets:generate": "tsx --tsconfig scripts/tsconfig.scripts.json scripts/generate-skill-presets.mjs",
     "skills:check": "tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-bundles.mjs"
   },

@@ -1,9 +1,9 @@
+import type { McpCatalogCategory, McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
 import * as m from "../../../paraglide/messages.js";
 import { Button, Field, KumoInputControl } from "../../../ui/design-system.js";
-import type { McpCatalogCategory, McpCatalogEntry } from "./mcp-catalog.gen.js";
 import {
   catalogEntryState,
   entriesInCategory,

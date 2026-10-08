@@ -11,10 +11,16 @@
       "name": "@opentag/web",
       "requiresRootExport": false,
       "requiresFiles": false,
-      "allowedWorkspaceDependencies": ["@opentag/shared"]
+      "allowedWorkspaceDependencies": ["@opentag/mcp-presets", "@opentag/shared"]
     },
     "packages/client": {
       "name": "@opentag/client",
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/shared"]
+    },
+    "packages/mcp-presets": {
+      "name": "@opentag/mcp-presets",
       "requiresRootExport": true,
       "requiresFiles": true,
       "allowedWorkspaceDependencies": ["@opentag/shared"]

@@ -18,7 +18,7 @@
 #                    leaves scope selection to the flow's discovery rules.
 #   category         an id declared in `mcp-categories.yaml`
 #   website          the provider's site, linked from the card
-#   icon             a file under `apps/web/src/assets/mcp/`
+#   icon             a file under `packages/mcp-presets/icons/`
 #   order            position within the category
 #
 # Entries carry no credential of any kind.

@@ -1,3 +1,4 @@
+import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
 import {
   CreateMCPServerRequestSchema,
   type MCPAgentServer,
@@ -9,7 +10,6 @@ import {
 import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
-import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "./catalog/mcp-catalog.gen.js";
 import { comparableUrl, findAccountServer } from "./catalog/mcp-catalog-model.js";
 import { McpDiscoverSource } from "./catalog/mcp-discover-source.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorize-dialog.js";

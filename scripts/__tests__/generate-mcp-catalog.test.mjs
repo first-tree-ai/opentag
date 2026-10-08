@@ -45,9 +45,9 @@ function entry(overrides = {}) {
 function fixtureDirectory(t, { categories = [category()], entries = [entry()], icons = ["notion.svg"] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "opentag-mcp-catalog-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const catalogDirectory = join(root, "apps/web/src/features/mcp/catalog");
-  const iconDirectory = join(root, "apps/web/src/assets/mcp");
-  mkdirSync(catalogDirectory, { recursive: true });
+  const catalogDirectory = join(root, "packages/mcp-presets");
+  const iconDirectory = join(catalogDirectory, "icons");
+  mkdirSync(join(catalogDirectory, "src"), { recursive: true });
   mkdirSync(iconDirectory, { recursive: true });
   mkdirSync(join(root, "apps/web/project.inlang"), { recursive: true });
   writeFileSync(
@@ -60,7 +60,7 @@ function fixtureDirectory(t, { categories = [category()], entries = [entry()], i
   return {
     root,
     catalogDirectory,
-    target: join(catalogDirectory, "mcp-catalog.gen.ts"),
+    target: join(catalogDirectory, "src/mcp-catalog.gen.ts"),
     entriesPath: join(catalogDirectory, "mcp-catalog.yaml"),
   };
 }
@@ -94,6 +94,9 @@ test("writes a module carrying every entry", (t) => {
   assert.match(generated, /export const MCP_CATALOG_ENTRIES/);
   assert.match(generated, /id: "notion"/);
   assert.match(generated, /id: "linear"/);
+  assert.match(generated, /export type McpCatalogLocale = "en" \| "zh";/);
+  assert.match(generated, /iconUrl: MCP_CATALOG_ICON_URLS\["notion\.svg"\]/);
+  assert.doesNotMatch(generated, /import .*\.svg/);
 });
 
 test("rejects an endpoint the outbound policy refuses", (t) => {
@@ -135,7 +138,7 @@ test("rejects an unknown locale", (t) => {
 });
 
 test("rejects a missing icon file", (t) => {
-  assertRejected(t, /does not exist under apps\/web\/src\/assets\/mcp\//, { icons: [] });
+  assertRejected(t, /does not exist under packages\/mcp-presets\/icons\//, { icons: [] });
 });
 
 test("rejects an unknown default authorization kind", (t) => {

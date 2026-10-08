@@ -7,6 +7,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches patches
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/skill-presets/package.json packages/skill-presets/package.json
+COPY packages/mcp-presets/package.json packages/mcp-presets/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY apps/web/package.json apps/web/package.json
 # Only install inputs are copied here, so lifecycle scripts are skipped: the root `prepare` installs
@@ -23,10 +24,12 @@ ENV OPENTAG_WEB_VERSION=${OPENTAG_WEB_VERSION}
 COPY tsconfig.json ./
 COPY packages/shared packages/shared
 COPY packages/skill-presets packages/skill-presets
+COPY packages/mcp-presets packages/mcp-presets
 COPY packages/server packages/server
 COPY apps/web apps/web
 RUN pnpm --filter @opentag/shared build
 RUN pnpm --filter @opentag/skill-presets build
+RUN pnpm --filter @opentag/mcp-presets build
 RUN pnpm --filter @opentag/web build
 RUN pnpm --filter @opentag/server build
 

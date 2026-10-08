@@ -10,13 +10,8 @@
 categories:
   - id: getting-started
     order: 10
-  - id: engineering
-    order: 20
 
 presets:
   - name: mcp-onboarding
     category: getting-started
     order: 10
-  - name: mcp-catalog-entry
-    category: engineering
-    order: 20

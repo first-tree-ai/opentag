@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Compile the MCP marketplace catalog from its committed YAML sources into a committed TypeScript
- * module.
+ * Compile the MCP marketplace catalog from its committed YAML sources and icons in
+ * `packages/mcp-presets` into a committed TypeScript module in the same package.
  *
  * The sources are edited by an operator; this script is what turns that edit into a validated
  * artifact. It mirrors `generate-web-theme.mjs`: run it to write the module, run it with `--check` to
@@ -9,12 +9,13 @@
  *
  * Every catalog invariant is enforced here rather than at a user's click: an endpoint the outbound
  * policy would refuse, a name the Server would reject, an undeclared or unreferenced category, a
- * duplicate id, a missing locale, or a missing icon all fail the build.
+ * duplicate id, a missing locale, or a missing icon all fail the build. Icon bytes are embedded as
+ * data URLs so the generated module carries no asset imports and builds with plain `tsdown`.
  *
  * It runs under `tsx` because it reads the shared runtime schemas from source: `pnpm check` runs
  * before `pnpm build`, so `packages/shared/dist` does not exist yet.
  */
-import { access, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { CreateMCPServerRequestSchema, MCPServerUrlSchema } from "../packages/shared/src/mcp.ts";
@@ -22,8 +23,8 @@ import { checkOutboundUrl } from "../packages/shared/src/mcp-outbound-url.ts";
 
 const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
 const ICON_PATTERN = /^[a-z0-9][a-z0-9-]*\.svg$/;
-/** biome.json's `formatter.lineWidth`: a generated line must fit it, or `biome check` reformats the module. */
-const LINE_WIDTH = 120;
+/** `biome.json` `formatter.lineWidth`; the emitted module must already be in biome's format. */
+const PRINT_WIDTH = 120;
 
 /** `--root` points the generator at a fixture tree; a script test sets it so it never touches the repo. */
 function flag(name) {
@@ -33,11 +34,11 @@ function flag(name) {
 
 const overrideRoot = flag("--root");
 const root = overrideRoot ? `${overrideRoot.replace(/[/\\]+$/, "")}/` : fileURLToPath(new URL("..", import.meta.url));
-const catalogDirectory = `${root}apps/web/src/features/mcp/catalog`;
-const iconDirectory = `${root}apps/web/src/assets/mcp`;
+const catalogDirectory = `${root}packages/mcp-presets`;
+const iconDirectory = `${catalogDirectory}/icons`;
 const categoriesPath = `${catalogDirectory}/mcp-categories.yaml`;
 const entriesPath = `${catalogDirectory}/mcp-catalog.yaml`;
-const targetPath = `${catalogDirectory}/mcp-catalog.gen.ts`;
+const targetPath = `${catalogDirectory}/src/mcp-catalog.gen.ts`;
 const localeSettingsPath = `${root}apps/web/project.inlang/settings.json`;
 
 function isRecord(value) {
@@ -268,21 +269,19 @@ function catalogEntryFrom(row, id, title, description, order, oauthScopes) {
   };
 }
 
-/** Verify every referenced icon exists, and reserve one import identifier per distinct file. */
+/** Verify every referenced icon exists, and read its bytes into the data URL the module embeds. */
 async function resolveIcons(entries, violations) {
-  const identifiers = new Map();
+  const urls = new Map();
   const files = [...new Set(entries.map((entry) => entry.icon))].sort();
   for (const file of files) {
     try {
-      await access(`${iconDirectory}/${file}`);
+      const svg = await readFile(`${iconDirectory}/${file}`);
+      urls.set(file, `data:image/svg+xml;base64,${svg.toString("base64")}`);
     } catch {
-      violations.push(`${entriesPath}: icon "${file}" does not exist under apps/web/src/assets/mcp/`);
-      continue;
+      violations.push(`${entriesPath}: icon "${file}" does not exist under packages/mcp-presets/icons/`);
     }
-    const base = file.replace(/\.svg$/, "").replace(/-([a-z0-9])/g, (_match, character) => character.toUpperCase());
-    identifiers.set(file, `${/^[a-z]/.test(base) ? base : `icon${base}`}IconUrl`);
   }
-  return identifiers;
+  return urls;
 }
 
 /**
@@ -296,7 +295,7 @@ function oauthScopeLines(entry) {
   if (entry.oauthScopes === undefined) return [];
   const items = entry.oauthScopes.map((scope) => JSON.stringify(scope)).join(", ");
   const inline = `    oauthScopes: [${items}],`;
-  if (inline.length <= LINE_WIDTH) return [inline];
+  if (inline.length <= PRINT_WIDTH) return [inline];
   return ["    oauthScopes: [", ...entry.oauthScopes.map((scope) => `      ${JSON.stringify(scope)},`), "    ],"];
 }
 
@@ -318,19 +317,31 @@ function emitModule(categories, entries, locales, icons) {
   );
 
   const iconFiles = [...new Set(orderedEntries.map((entry) => entry.icon))].filter((file) => icons.has(file)).sort();
-  const iconImports = iconFiles.map((file) => `import ${icons.get(file)} from "../../../assets/mcp/${file}";`);
+  const iconLines = iconFiles.map((file) => {
+    const key = JSON.stringify(file);
+    const value = JSON.stringify(icons.get(file));
+    const single = `  ${key}: ${value},`;
+    return single.length <= PRINT_WIDTH ? single : `  ${key}:\n    ${value},`;
+  });
+  const localeUnion = locales.map((locale) => JSON.stringify(locale)).join(" | ");
 
   const lines = [
     "/**",
-    " * Generated by scripts/generate-mcp-catalog.mjs from mcp-categories.yaml and mcp-catalog.yaml.",
+    " * Generated by scripts/generate-mcp-catalog.mjs from mcp-categories.yaml, mcp-catalog.yaml, and icons/*.",
     " * Do not edit by hand. Run `pnpm catalog:generate`.",
     " */",
     'import type { MCPAuthKind } from "@opentag/shared/browser";',
-    ...iconImports,
-    'import type { Locale } from "../../../i18n/locale.js";',
+    "",
+    "/** The locales the Web App supports, taken from its i18n project settings. */",
+    `export type McpCatalogLocale = ${localeUnion};`,
     "",
     "/** Card and tab copy. Every supported locale is required, so a card never falls back silently. */",
-    "export type McpCatalogLocalizedText = Record<Locale, string>;",
+    "export type McpCatalogLocalizedText = Record<McpCatalogLocale, string>;",
+    "",
+    "/** The card marks, embedded as data URLs: one declaration per distinct icon file. */",
+    "export const MCP_CATALOG_ICON_URLS = {",
+    ...iconLines,
+    "} as const;",
     "",
     "export type McpCatalogCategory = {",
     "  id: string;",
@@ -387,7 +398,7 @@ function emitModule(categories, entries, locales, icons) {
     lines.push(
       `    category: ${JSON.stringify(entry.category)},`,
       `    website: ${JSON.stringify(entry.website)},`,
-      `    iconUrl: ${icons.get(entry.icon)},`,
+      `    iconUrl: MCP_CATALOG_ICON_URLS[${JSON.stringify(entry.icon)}],`,
       `    order: ${entry.order},`,
       "  },",
     );

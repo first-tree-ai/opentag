@@ -29,6 +29,8 @@ import {
   AGENT_MCP_SERVER_TEMPLATE,
   AGENT_MCP_SERVERS_TEMPLATE,
   AGENT_SKILL_BUNDLE_TEMPLATE,
+  AGENT_SKILL_PRESET_INSTALL_TEMPLATE,
+  AGENT_SKILL_PRESETS_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
   AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
   AGENT_SKILLS_INSTALL_TEMPLATE,
@@ -62,6 +64,8 @@ import {
   agentSetupRefreshPath,
   agentSkillBundlePath,
   agentSkillPath,
+  agentSkillPresetInstallPath,
+  agentSkillPresetsPath,
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
@@ -99,10 +103,13 @@ import {
   mcpServersPath,
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_SKILL_BUNDLE_TEMPLATE,
+  RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE,
+  RUNTIME_SKILL_PRESETS_PATH,
   RUNTIME_SKILLS_PATH,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,
+  runtimeSkillPresetInstallPath,
   runtimeWebSocketUrl,
   SANDBOX_RUNNER_WEBSOCKET_PATH,
   sandboxRunnerWebSocketUrl,
@@ -345,6 +352,28 @@ describe("http paths", () => {
     });
   });
 
+  describe("preset skill paths", () => {
+    it("nests the agent catalog and install paths under skill-presets", () => {
+      const presets = `/api/v1/agents/${AGENT_ID}/skill-presets`;
+      expect(agentSkillPresetsPath(AGENT_ID)).toBe(presets);
+      expect(agentSkillPresetInstallPath(AGENT_ID, "mcp-onboarding")).toBe(`${presets}/mcp-onboarding/install`);
+    });
+
+    it("keeps the runtime catalog free of an agent id", () => {
+      expect(runtimeSkillPresetInstallPath("mcp-onboarding")).toBe(
+        "/api/v1/runtime/skill-presets/mcp-onboarding/install",
+      );
+    });
+
+    it("percent-encodes every argument", () => {
+      expect(agentSkillPresetsPath("a/b c")).toBe("/api/v1/agents/a%2Fb%20c/skill-presets");
+      expect(agentSkillPresetInstallPath(AGENT_ID, "a/b c")).toBe(
+        `/api/v1/agents/${AGENT_ID}/skill-presets/a%2Fb%20c/install`,
+      );
+      expect(runtimeSkillPresetInstallPath("a/b c")).toBe("/api/v1/runtime/skill-presets/a%2Fb%20c/install");
+    });
+  });
+
   describe("templates and constants stay consistent with the builders", () => {
     it("renders every template with the same id the builder takes", () => {
       const agentId = AGENT_ID;
@@ -404,6 +433,13 @@ describe("http paths", () => {
         computerAgentSkillBundlePath(agentId, OTHER_ID),
       );
       expect(render(RUNTIME_SKILL_BUNDLE_TEMPLATE, { name: "pdf-tools" })).toBe(runtimeSkillBundlePath("pdf-tools"));
+      expect(render(AGENT_SKILL_PRESETS_TEMPLATE, { agentId })).toBe(agentSkillPresetsPath(agentId));
+      expect(render(AGENT_SKILL_PRESET_INSTALL_TEMPLATE, { agentId, presetName: "mcp-onboarding" })).toBe(
+        agentSkillPresetInstallPath(agentId, "mcp-onboarding"),
+      );
+      expect(render(RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE, { presetName: "mcp-onboarding" })).toBe(
+        runtimeSkillPresetInstallPath("mcp-onboarding"),
+      );
       expect(render(RUNTIME_DURABLE_WORK_PATH, {})).toBe(RUNTIME_DURABLE_WORK_PATH);
     });
 
@@ -425,6 +461,7 @@ describe("http paths", () => {
       expect(HTTP_PATHS.mcpOAuthCallback).toBe(MCP_OAUTH_CALLBACK_PATH);
       expect(HTTP_PATHS.mcpClientMetadata).toBe(MCP_CLIENT_METADATA_PATH);
       expect(HTTP_PATHS.runtimeSkills).toBe(RUNTIME_SKILLS_PATH);
+      expect(HTTP_PATHS.runtimeSkillPresets).toBe(RUNTIME_SKILL_PRESETS_PATH);
       expect(HTTP_PATHS.runtimeDurableWork).toBe(RUNTIME_DURABLE_WORK_PATH);
     });
   });

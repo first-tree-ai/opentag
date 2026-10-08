@@ -54,6 +54,8 @@ import {
   agentSetupRefreshPath,
   agentSkillBundlePath,
   agentSkillPath,
+  agentSkillPresetInstallPath,
+  agentSkillPresetsPath,
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
@@ -107,6 +109,8 @@ import {
   type ImBindingUnbindRequiredDetail,
   type InstallRemoteSkillsResponse,
   InstallRemoteSkillsResponseSchema,
+  type InstallSkillPresetResponse,
+  InstallSkillPresetResponseSchema,
   type InternalNavigationVisibility,
   InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
@@ -123,6 +127,8 @@ import {
   ListAvailableMCPServersResponseSchema,
   type ListMCPServersResponse,
   ListMCPServersResponseSchema,
+  type ListSkillPresetsResponse,
+  ListSkillPresetsResponseSchema,
   type ListTaskRepliesResponse,
   ListTaskRepliesResponseSchema,
   type ListTasksResponse,
@@ -870,6 +876,23 @@ export class BrowserApi {
     return this.request(agentSkillsInstallPath(agentId), InstallRemoteSkillsResponseSchema, {
       method: "POST",
       body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  /*
+   * The preset catalog. The catalog content is global, but the state each entry reports is this
+   * Agent's, so both calls are addressed under it; install performs the write the Server records as
+   * `preset` provenance.
+   */
+  skillPresets(agentId: string): Promise<ListSkillPresetsResponse> {
+    return this.request(agentSkillPresetsPath(agentId), ListSkillPresetsResponseSchema);
+  }
+
+  installSkillPreset(agentId: string, presetName: string): Promise<InstallSkillPresetResponse> {
+    return this.request(agentSkillPresetInstallPath(agentId, presetName), InstallSkillPresetResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({}),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }

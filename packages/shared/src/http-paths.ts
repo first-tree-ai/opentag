@@ -121,6 +121,15 @@ export const COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE = `${COMPUTER_AGENT_SKILLS_TEM
 export const RUNTIME_SKILLS_PATH = `${API_V1_PREFIX}/runtime/skills`;
 export const RUNTIME_SKILL_BUNDLE_TEMPLATE = `${RUNTIME_SKILLS_PATH}/:name/bundle`;
 /*
+ * Preset Skill catalog. The catalog content is global, but its install state is per Agent, so the
+ * Account path is addressed under an Agent and the runtime path is session-proof authenticated.
+ * Install is a named subresource: a preset is installed by name and the Server records the action.
+ */
+export const AGENT_SKILL_PRESETS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/skill-presets`;
+export const AGENT_SKILL_PRESET_INSTALL_TEMPLATE = `${AGENT_SKILL_PRESETS_TEMPLATE}/:presetName/install`;
+export const RUNTIME_SKILL_PRESETS_PATH = `${API_V1_PREFIX}/runtime/skill-presets`;
+export const RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE = `${RUNTIME_SKILL_PRESETS_PATH}/:presetName/install`;
+/*
  * Agent self-configuration. Session-proof authenticated and never addressed by Agent id: the Agent
  * is always the one the proof resolves to, so a request cannot reach a different Agent.
  */
@@ -187,6 +196,7 @@ export const HTTP_PATHS = {
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
   runtimeSkills: RUNTIME_SKILLS_PATH,
+  runtimeSkillPresets: RUNTIME_SKILL_PRESETS_PATH,
   runtimeDurableWork: RUNTIME_DURABLE_WORK_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
@@ -477,4 +487,16 @@ export function runtimeAgentMcpServerPath(mcpServerId: string): string {
 
 export function runtimeSkillBundlePath(name: string): string {
   return `${RUNTIME_SKILLS_PATH}/${encodeURIComponent(name)}/bundle`;
+}
+
+export function agentSkillPresetsPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/skill-presets`;
+}
+
+export function agentSkillPresetInstallPath(agentId: string, presetName: string): string {
+  return `${agentSkillPresetsPath(agentId)}/${encodeURIComponent(presetName)}/install`;
+}
+
+export function runtimeSkillPresetInstallPath(presetName: string): string {
+  return `${RUNTIME_SKILL_PRESETS_PATH}/${encodeURIComponent(presetName)}/install`;
 }

@@ -14,6 +14,7 @@ import {
   runSkillRemove,
   runSkillSetEnabled,
 } from "../core/skill/operations.js";
+import { runSkillPresetInstall, runSkillPresetList } from "../core/skill/preset-operations.js";
 import type { SkillApiClient } from "../core/skill/shared.js";
 
 const roots: string[] = [];
@@ -66,7 +67,32 @@ function accountApi(overrides: Partial<SkillApiClient> = {}): SkillApiClient {
     listRuntimeSkills: vi.fn(async () => ({ skills: [], storage: "available" as const })),
     pushRuntimeSkill: vi.fn(async () => skillRecord("my-skill")),
     openRuntimeSkillBundle: vi.fn(async () => new Response()),
+    listSkillPresets: vi.fn(async () => presetCatalog()),
+    installSkillPreset: vi.fn(async () => ({ action: "installed" as const, skill: skillRecord("mcp-onboarding") })),
+    listRuntimeSkillPresets: vi.fn(async () => presetCatalog()),
+    installRuntimeSkillPreset: vi.fn(async () => ({
+      action: "updated" as const,
+      skill: skillRecord("mcp-onboarding"),
+    })),
     ...overrides,
+  };
+}
+
+function presetCatalog() {
+  return {
+    categories: [{ id: "getting-started" as const, order: 10 }],
+    presets: [
+      {
+        name: "mcp-onboarding",
+        description: "Add MCP tools to this Agent",
+        category: "getting-started" as const,
+        order: 10,
+        archiveSha256: "a".repeat(64),
+        archiveBytes: 128,
+        fileCount: 1,
+        state: "not_installed" as const,
+      },
+    ],
   };
 }
 
@@ -579,5 +605,70 @@ describe("skill name conflict with a request id", () => {
     await expect(
       runSkillPush(directory, { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),
     ).rejects.toMatchObject({ code: SKILL_ERROR_CODES.NAME_CONFLICT, requestId: "req-conflict-1" });
+  });
+});
+
+describe("skill preset operations", () => {
+  it("lists the catalog through the Account surface and the Session surface", async () => {
+    const account = accountApi();
+    const listed = await runSkillPresetList(
+      { agentId: "agent-a" },
+      { accessToken: "fixture-account-access", api: account },
+    );
+    expect(account.listSkillPresets).toHaveBeenCalledWith("fixture-account-access", "agent-a");
+    expect(listed.presets[0]).toMatchObject({ name: "mcp-onboarding", state: "not_installed" });
+
+    const runtime = accountApi();
+    const proof = "p".repeat(32);
+    await runSkillPresetList(
+      {},
+      { api: runtime, proof, environment: { OPENTAG_SESSION_PROOF_FILE: "/tmp/proof.json" } },
+    );
+    expect(runtime.listRuntimeSkillPresets).toHaveBeenCalledWith(proof);
+  });
+
+  it("installs through the Account surface and the Session surface", async () => {
+    const account = accountApi();
+    const installed = await runSkillPresetInstall(
+      "mcp-onboarding",
+      { agentId: "agent-a" },
+      { accessToken: "fixture-account-access", api: account },
+    );
+    expect(account.installSkillPreset).toHaveBeenCalledWith("fixture-account-access", "agent-a", "mcp-onboarding");
+    expect(installed.action).toBe("installed");
+
+    const runtime = accountApi();
+    const proof = "p".repeat(32);
+    const updated = await runSkillPresetInstall(
+      "mcp-onboarding",
+      {},
+      { api: runtime, proof, environment: { OPENTAG_SESSION_PROOF_FILE: "/tmp/proof.json" } },
+    );
+    expect(runtime.installRuntimeSkillPreset).toHaveBeenCalledWith(proof, "mcp-onboarding");
+    expect(updated.action).toBe("updated");
+  });
+
+  it("requires --agent outside a Session and rejects it inside one", async () => {
+    await expect(runSkillPresetList({}, { api: accountApi(), environment: {} })).rejects.toMatchObject({
+      code: "SKILL_AGENT_REQUIRED",
+    });
+    await expect(
+      runSkillPresetInstall(
+        "mcp-onboarding",
+        { agentId: "agent-a" },
+        { api: accountApi(), proof: "p".repeat(32), environment: { OPENTAG_SESSION_PROOF_FILE: "/tmp/proof.json" } },
+      ),
+    ).rejects.toMatchObject({ code: "SKILL_AGENT_FLAG_FORBIDDEN" });
+  });
+
+  it("surfaces an unknown preset as the shared error code", async () => {
+    const api = accountApi({
+      installSkillPreset: vi.fn(async () => {
+        throw new OpenTagApiError(SKILL_ERROR_CODES.PRESET_NOT_FOUND, "deterministic", "No such preset", 404);
+      }),
+    });
+    await expect(
+      runSkillPresetInstall("not-a-preset", { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),
+    ).rejects.toMatchObject({ code: SKILL_ERROR_CODES.PRESET_NOT_FOUND });
   });
 });

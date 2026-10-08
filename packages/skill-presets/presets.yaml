@@ -1,0 +1,22 @@
+# The preset Skill catalog.
+#
+# Every `presets` entry names a bundle under `skills/<name>/` whose root `SKILL.md` is the source of
+# truth for the display name and description. `categories` declares which of the shared category ids
+# the catalog uses, in tab order; the generator rejects an undeclared category, a declared category
+# no preset uses, a duplicate name, and a bundle the upload packer would refuse.
+#
+# Run `pnpm presets:generate` after editing this file or a bundle, and `pnpm check` (which runs the
+# same generator with `--check`) rejects drift.
+categories:
+  - id: getting-started
+    order: 10
+  - id: engineering
+    order: 20
+
+presets:
+  - name: mcp-onboarding
+    category: getting-started
+    order: 10
+  - name: mcp-catalog-entry
+    category: engineering
+    order: 20

@@ -199,4 +199,51 @@ describe("Agent Skill API methods", () => {
     );
     await expect(api.listAgentSkills("account-access", AGENT_ID)).rejects.toBeInstanceOf(OpenTagApiError);
   });
+
+  it("addresses the preset catalog on both surfaces", async () => {
+    const catalog = {
+      categories: [{ id: "getting-started", order: 10 }],
+      presets: [
+        {
+          name: "mcp-onboarding",
+          description: "Add MCP tools to this Agent",
+          category: "getting-started",
+          order: 10,
+          archiveSha256: "a".repeat(64),
+          archiveBytes: 5,
+          fileCount: 1,
+          state: "not_installed",
+        },
+      ],
+    };
+    const install = { action: "installed", skill: skillRecord() };
+
+    const accountList = await loopback((_request, response) => json(response, catalog));
+    await expect(accountList.api.listSkillPresets("account-access", AGENT_ID)).resolves.toMatchObject({
+      presets: [{ name: "mcp-onboarding", state: "not_installed" }],
+    });
+    expect(accountList.requests[0]?.path).toBe(`/api/v1/agents/${AGENT_ID}/skill-presets`);
+    expect(accountList.requests[0]?.headers.authorization).toBe("Bearer account-access");
+
+    const accountInstall = await loopback((_request, response) => json(response, install));
+    await expect(
+      accountInstall.api.installSkillPreset("account-access", AGENT_ID, "mcp-onboarding"),
+    ).resolves.toMatchObject({
+      action: "installed",
+    });
+    expect(accountInstall.requests[0]?.method).toBe("POST");
+    expect(accountInstall.requests[0]?.path).toBe(`/api/v1/agents/${AGENT_ID}/skill-presets/mcp-onboarding/install`);
+    expect(accountInstall.requests[0]?.headers["content-type"]).toBe("application/json");
+
+    const runtimeList = await loopback((_request, response) => json(response, catalog));
+    await runtimeList.api.listRuntimeSkillPresets("proof-token");
+    expect(runtimeList.requests[0]?.path).toBe("/api/v1/runtime/skill-presets");
+    expect(runtimeList.requests[0]?.headers[SESSION_CLI_PROOF_HEADER]).toBe("proof-token");
+
+    const runtimeInstall = await loopback((_request, response) => json(response, install));
+    await runtimeInstall.api.installRuntimeSkillPreset("proof-token", "mcp-onboarding");
+    expect(runtimeInstall.requests[0]?.method).toBe("POST");
+    expect(runtimeInstall.requests[0]?.path).toBe("/api/v1/runtime/skill-presets/mcp-onboarding/install");
+    expect(runtimeInstall.requests[0]?.headers[SESSION_CLI_PROOF_HEADER]).toBe("proof-token");
+  });
 });

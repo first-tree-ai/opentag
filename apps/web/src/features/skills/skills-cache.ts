@@ -1,4 +1,4 @@
-import type { ListAgentSkillsResponse, Skill, SkillDetail } from "@opentag/shared/browser";
+import type { ListAgentSkillsResponse, Skill } from "@opentag/shared/browser";
 
 /**
  * Reconciling a confirmed Skill write into the list cache.
@@ -19,7 +19,7 @@ import type { ListAgentSkillsResponse, Skill, SkillDetail } from "@opentag/share
  * are named rather than spread-and-deleted so a new `SkillDetail` field is a typecheck error here
  * instead of silently leaking into the list cache.
  */
-function listItemOf(detail: SkillDetail): Skill {
+function listItemOf(detail: Skill): Skill {
   return {
     id: detail.id,
     agentId: detail.agentId,
@@ -42,14 +42,14 @@ function sortByName(skills: readonly Skill[]): Skill[] {
 }
 
 /** Insert or replace one Skill by id, keeping the Server's name order. */
-export function upsertSkill(list: ListAgentSkillsResponse, detail: SkillDetail): ListAgentSkillsResponse {
+export function upsertSkill(list: ListAgentSkillsResponse, detail: Skill): ListAgentSkillsResponse {
   const item = listItemOf(detail);
   const without = list.skills.filter((skill) => skill.id !== item.id);
   return { ...list, skills: sortByName([...without, item]) };
 }
 
 /** Replace the item with the same id in place, preserving its list position. */
-export function updateSkillInList(list: ListAgentSkillsResponse, detail: SkillDetail): ListAgentSkillsResponse {
+export function updateSkillInList(list: ListAgentSkillsResponse, detail: Skill): ListAgentSkillsResponse {
   const item = listItemOf(detail);
   return { ...list, skills: list.skills.map((skill) => (skill.id === item.id ? item : skill)) };
 }

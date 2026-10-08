@@ -2,6 +2,7 @@ import type { Skill } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import * as skillOperations from "../core/skill/operations.js";
+import * as presetOperations from "../core/skill/preset-operations.js";
 
 /**
  * `commands/skill/index.ts` is registration and option mapping only, so it is driven through the real
@@ -61,6 +62,28 @@ function spyAll() {
     pull: vi.spyOn(skillOperations, "runSkillPull").mockResolvedValue({ skill: skill(), directory: "/tmp/my-skill" }),
     remove: vi.spyOn(skillOperations, "runSkillRemove").mockResolvedValue(skill()),
     setEnabled: vi.spyOn(skillOperations, "runSkillSetEnabled").mockResolvedValue(skill()),
+    presetList: vi.spyOn(presetOperations, "runSkillPresetList").mockResolvedValue(presetCatalog()),
+    presetInstall: vi
+      .spyOn(presetOperations, "runSkillPresetInstall")
+      .mockResolvedValue({ action: "installed", skill: skill() }),
+  };
+}
+
+function presetCatalog() {
+  return {
+    categories: [{ id: "getting-started" as const, order: 10 }],
+    presets: [
+      {
+        name: "mcp-onboarding",
+        description: "Add MCP tools to this Agent",
+        category: "getting-started" as const,
+        order: 10,
+        archiveSha256: "a".repeat(64),
+        archiveBytes: 128,
+        fileCount: 1,
+        state: "not_installed" as const,
+      },
+    ],
   };
 }
 
@@ -75,7 +98,7 @@ afterEach(() => {
 });
 
 describe("skill command registration", () => {
-  it("advertises push, list, pull, remove, and both switch directions", () => {
+  it("advertises push, list, pull, remove, both switch directions, and the preset catalog", () => {
     const skillCommand = createProgram().commands.find((command) => command.name() === "skill");
     expect(skillCommand?.commands.map((command) => command.name())).toEqual([
       "push",
@@ -84,12 +107,16 @@ describe("skill command registration", () => {
       "remove",
       "enable",
       "disable",
+      "preset",
     ]);
   });
 
-  it("keeps --agent optional on every subcommand, because a Session supplies the Agent", () => {
+  it("keeps --agent optional on every leaf subcommand, because a Session supplies the Agent", () => {
     const skillCommand = createProgram().commands.find((command) => command.name() === "skill");
-    for (const sub of skillCommand?.commands ?? []) {
+    const leaves = (skillCommand?.commands ?? []).flatMap((command) =>
+      command.commands.length > 0 ? command.commands : [command],
+    );
+    for (const sub of leaves) {
       expect(sub.options.find((option) => option.long === "--agent")?.mandatory).toBe(false);
     }
     expect(
@@ -286,6 +313,46 @@ describe("skill enable and disable", () => {
     try {
       const result = await runCommand(["skill", "disable", "my-skill"]);
       expect(result.stdout).toContain("Disabled Skill my-skill");
+    } finally {
+      restore(spies);
+    }
+  });
+});
+
+describe("skill preset", () => {
+  it("omits --agent when it was not given and renders each preset with its state", async () => {
+    const spies = spyAll();
+    try {
+      const result = await runCommand(["skill", "preset", "list"]);
+      expect(spies.presetList).toHaveBeenCalledWith({});
+      expect(result.stdout).toContain("mcp-onboarding");
+      expect(result.stdout).toContain("not_installed");
+    } finally {
+      restore(spies);
+    }
+  });
+
+  it("forwards --agent on list and install", async () => {
+    const spies = spyAll();
+    try {
+      await runCommand(["skill", "preset", "list", "--agent", agentId]);
+      expect(spies.presetList).toHaveBeenCalledWith({ agentId });
+      await runCommand(["skill", "preset", "install", "mcp-onboarding", "--agent", agentId]);
+      expect(spies.presetInstall).toHaveBeenCalledWith("mcp-onboarding", { agentId });
+    } finally {
+      restore(spies);
+    }
+  });
+
+  it("reports the action taken and prints JSON on request", async () => {
+    const spies = spyAll();
+    try {
+      const result = await runCommand(["skill", "preset", "install", "mcp-onboarding"]);
+      expect(spies.presetInstall).toHaveBeenCalledWith("mcp-onboarding", {});
+      expect(result.stdout).toContain("action\tinstalled");
+
+      const asJson = await runCommand(["skill", "preset", "install", "mcp-onboarding", "--json"]);
+      expect(JSON.parse(asJson.stdout)).toMatchObject({ ok: true, result: { action: "installed" } });
     } finally {
       restore(spies);
     }

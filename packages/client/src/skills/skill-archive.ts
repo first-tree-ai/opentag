@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, type Readable, Transform, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createGunzip, createGzip } from "node:zlib";
+import { createGunzip } from "node:zlib";
 import {
   isReservedSkillName,
   parseSkillManifest,
@@ -15,6 +15,7 @@ import {
   SKILL_MAX_PATH_BYTES,
   SKILL_UNPACKED_MAX_BYTES,
 } from "@opentag/shared";
+import { Gzip } from "fflate";
 import { type Headers as TarHeaders, extract as tarExtract, pack as tarPack } from "tar-stream";
 import { assertWithin, ensurePrivateDirectory } from "../storage/durable-file.js";
 
@@ -213,6 +214,45 @@ function addTarEntry(pack: ReturnType<typeof tarPack>, header: TarHeaders, sourc
   });
 }
 
+/**
+ * A gzip stream whose bytes depend only on its input.
+ *
+ * `node:zlib` compresses with whatever zlib the host Node links — its output differs across the
+ * supported toolchains (macOS and Linux disagree on level-1 bytes for the same tar), which turns the
+ * archive the preset catalog commits into platform drift: a clean macOS checkout fails the generated
+ * module check, and regenerating there moves the drift to Linux. fflate is pure JavaScript, so one
+ * input has one encoding everywhere. `mtime` is pinned to zero because it otherwise defaults to
+ * `Date.now()` and would make every pack differ from the last.
+ */
+class PortableGzip extends Transform {
+  readonly #gzip: Gzip;
+
+  constructor() {
+    super();
+    this.#gzip = new Gzip({ level: 1, mtime: 0 }, (chunk) => {
+      if (chunk.byteLength > 0) this.push(Buffer.from(chunk));
+    });
+  }
+
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
+    try {
+      this.#gzip.push(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength), false);
+      callback();
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  override _flush(callback: TransformCallback): void {
+    try {
+      this.#gzip.push(new Uint8Array(0), true);
+      callback();
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+}
+
 export async function packSkillDirectory(directory: string): Promise<PackedSkillDirectory> {
   const root = resolve(directory);
   let stats: Awaited<ReturnType<typeof lstat>>;
@@ -260,7 +300,7 @@ export async function packSkillDirectory(directory: string): Promise<PackedSkill
     }
     chunks.push(chunk);
   });
-  const output = pipeline(pack, createGzip({ level: 1 }), meter);
+  const output = pipeline(pack, new PortableGzip(), meter);
   output.catch(() => pack.destroy());
 
   try {

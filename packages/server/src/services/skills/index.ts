@@ -18,6 +18,7 @@ export {
   skillNameConflict,
   skillNameReserved,
   skillNotFound,
+  skillPresetNotFound,
   skillRevisionConflict,
   skillSourceBlocked,
   skillSourceInvalid,
@@ -27,6 +28,7 @@ export {
   skillStorageFailure,
   skillStorageUnavailable,
 } from "./errors.js";
+export { SkillPresetService, type SkillPresetServiceOptions } from "./preset/skill-preset-service.js";
 export {
   S3SkillObjectStore,
   type S3SkillObjectStoreConfig,

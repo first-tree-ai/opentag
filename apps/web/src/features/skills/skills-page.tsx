@@ -6,6 +6,7 @@ import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Empty, Icon, Loader, Text } from "../../ui/design-system.js";
 import { InstallSkillDialog } from "./install-skill-dialog.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
+import { SkillPresetDialog } from "./skill-preset-dialog.js";
 import { SkillRow } from "./skill-row.js";
 import {
   checkSkillArchiveFile,
@@ -64,6 +65,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
    * started for rather than reading "whichever Agent is mounted now".
    */
   const [installOpen, setInstallOpen] = useState(false);
+  const [presetOpen, setPresetOpen] = useState(false);
 
   /*
    * Three states, not two. Storage is only "available" once a successful list says so; before that it
@@ -82,6 +84,11 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const openInstaller = () => {
     setActionError(undefined);
     setInstallOpen(true);
+  };
+
+  const openPresetCatalog = () => {
+    setActionError(undefined);
+    setPresetOpen(true);
   };
 
   /*
@@ -173,6 +180,18 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
     </Button>
   );
 
+  const presetAction = (
+    <Button
+      aria-label={m.skills_preset_button()}
+      disabled={!storageAvailable}
+      onClick={openPresetCatalog}
+      variant="secondary"
+    >
+      <Icon name="overview" />
+      {m.skills_preset_button()}
+    </Button>
+  );
+
   const uploadAction = (
     <Button
       aria-label={m.skills_upload()}
@@ -208,6 +227,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           ref={fileInputRef}
         />
         {installAction}
+        {presetAction}
         {uploadAction}
       </PageHeader>
 
@@ -231,6 +251,8 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
         hasData={skills.data !== undefined}
         isPending={skills.isPending}
         onDelete={setDeleteTarget}
+        onOpenPresets={openPresetCatalog}
+        presetsAvailable={storageAvailable}
         skills={skills.data?.skills ?? []}
         storageAvailable={storageAvailable}
       />
@@ -245,6 +267,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
       ) : null}
       {deleteTarget ? <RemoveSkillDialog onClose={() => setDeleteTarget(undefined)} skill={deleteTarget} /> : null}
       {installOpen ? <InstallSkillDialog agentId={agentId} onClose={() => setInstallOpen(false)} /> : null}
+      {presetOpen ? <SkillPresetDialog agentId={agentId} onClose={() => setPresetOpen(false)} /> : null}
     </section>
   );
 }
@@ -260,12 +283,16 @@ function SkillList({
   hasData,
   isPending,
   onDelete,
+  onOpenPresets,
+  presetsAvailable,
   skills,
   storageAvailable,
 }: {
   hasData: boolean;
   isPending: boolean;
   onDelete: (skill: Skill) => void;
+  onOpenPresets: () => void;
+  presetsAvailable: boolean;
   skills: Skill[];
   storageAvailable: boolean;
 }) {
@@ -286,9 +313,14 @@ function SkillList({
         title={m.skills_empty()}
         description={m.skills_empty_description()}
         contents={
-          <Text as="p" size="sm" variant="secondary">
-            {m.skills_upload_requirements()}
-          </Text>
+          <>
+            <Button disabled={!presetsAvailable} onClick={onOpenPresets} variant="secondary">
+              {m.skills_preset_button()}
+            </Button>
+            <Text as="p" size="sm" variant="secondary">
+              {m.skills_upload_requirements()}
+            </Text>
+          </>
         }
       />
     );

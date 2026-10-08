@@ -29,6 +29,7 @@ export * from "./schedules.js";
 export * from "./sign-in-destination.js";
 export * from "./skill.js";
 export * from "./skill-discovery.js";
+export * from "./skill-preset.js";
 export * from "./skill-source.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,

@@ -257,9 +257,13 @@ export function defaultRunnerStateDir(sandboxName: string, temporaryRoot: string
 
 interface WorkState {
   active?: { requestId: string; abort: AbortController; done: Promise<void> };
-  probe: SandboxProbeResult;
+  /** Fresh proof of the current namespace; cleared on destruction or a new launch. */
+  probe?: SandboxProbeResult;
   stopping: boolean;
   fatal: boolean;
+  /**
+   * Possibly present until verified deletion: a detached namespace may outlive a crashed parent.
+   */
   present: boolean;
   /** Session workspace bearer for the CURRENT assignment; replaced by `server:credential`. */
   token: string;
@@ -398,6 +402,9 @@ function createCloudTurnRunner(input: {
       return (
         current !== undefined &&
         !current.stopping &&
+        !current.fatal &&
+        current.present &&
+        current.probe !== undefined &&
         current.active === undefined &&
         (!input.workspacePersistence || current.workspace?.ready === true)
       );
@@ -581,6 +588,9 @@ async function discardSealedAssignment(input: {
     }
     current.present = false;
   }
+  // The discarded assignment's probe evidence dies with its namespace; the new assignment may
+  // publish readiness only from its own fresh probe after its restore.
+  current.probe = undefined;
   await current.journal.resetScope({
     sandboxId: assignment.sandboxId,
     sessionId: assignment.sessionId,
@@ -700,12 +710,16 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   try {
     await mkdir(config.workspace, { recursive: true, mode: 0o700 });
     if (stopping) return exitCode;
-    launchAttempted = true;
-    await sandbox.launch();
+    // Persistent mode defers launch/probe until authenticated workspace restoration. Its existing
+    // quiesce still verifies deletion before restoration; legacy E3 keeps pre-auth native proof.
+    // Track the legacy attempt before awaiting startup so a partial launch is still deleted.
+    launchAttempted = config.workspacePersistence !== true;
+    const startup = await startNativeStartup(sandbox, launchAttempted);
     state = {
-      probe: await sandbox.probe(),
+      probe: startup.probe,
       stopping,
       fatal: false,
+      // A fresh parent may inherit a residual namespace despite having launched nothing itself.
       present: true,
       token: config.bootstrapToken,
       ...(config.controlToken ? { controlToken: config.controlToken } : {}),
@@ -722,8 +736,9 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     attachWorkspace(config, options, state, sandbox, bridge, web);
     await prepareServeWebExecution(state, webGateway, sandbox, options);
     // The platform's default TCP startup probe needs a listening socket on the declared port,
-    // which `loadRunnerServeConfig` always supplies (declared 8080 unless PORT overrides). Start
-    // it only after native readiness is proven.
+    // which `loadRunnerServeConfig` always supplies (declared 8080 unless PORT overrides). In
+    // persistent mode this listener is parent-process liveness only — never execution readiness;
+    // legacy E3 reaches it only after the pre-auth native launch/probe.
     health = await startServeHealthListener(config, options, stopping);
     await maintainConnections(config, state, sandbox, options, stopListeners, bridge, rebindAssignment);
     result = stopping ? exitCode : state.fatal ? 5 : 1;
@@ -747,6 +762,13 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     }
   }
   return result;
+}
+
+/** Legacy E3 proves native readiness before health/auth; persistent mode defers to workspace restore. */
+async function startNativeStartup(sandbox: NativeSandbox, preAuth: boolean): Promise<{ probe?: SandboxProbeResult }> {
+  if (!preAuth) return {};
+  await sandbox.launch();
+  return { probe: await sandbox.probe() };
 }
 
 /** Acceptance-harness path: opens the acceptance run's own channel when an authority was injected. */
@@ -775,7 +797,7 @@ async function openServeWebExecution(
   options.onWebExecution?.(channel);
 }
 
-/** Platform TCP startup probe: started after native readiness when a health port is configured. */
+/** Zero-data platform TCP liveness probe; execution readiness requires the current native probe. */
 async function startServeHealthListener(
   config: RunnerServeConfig,
   options: RunnerServeOptions,
@@ -961,11 +983,14 @@ async function serveOnce(
       options.authTimeoutMs ?? (config.workspacePersistence ? PERSISTENT_AUTH_TIMEOUT_MS : DEFAULT_AUTH_TIMEOUT_MS),
     );
     const ready = () => {
+      // Parent liveness cannot substitute for the current namespace's fresh execution proof.
+      const probe = state.probe;
+      if (state.stopping || state.fatal || !state.present || probe === undefined) return;
       if (state.workspace && !state.workspace.ready) return;
       send({
         type: "runner:ready",
         requestId: randomUUID(),
-        readiness: { sandboxName: config.sandboxName, rootfs: SANDBOX_ROOTFS, ...state.probe },
+        readiness: { sandboxName: config.sandboxName, rootfs: SANDBOX_ROOTFS, ...probe },
         ...(state.workspace?.ready ? { workspaceRestored: true } : {}),
       });
     };
@@ -1039,7 +1064,15 @@ async function serveOnce(
       return;
     };
     const onAcceptance = (data: RunnerAcceptanceRunFrame) => {
-      if (state.active || state.turns.hasPendingWork || (state.workspace && !state.workspace.ready)) {
+      if (
+        state.active ||
+        state.turns.hasPendingWork ||
+        state.stopping ||
+        state.fatal ||
+        !state.present ||
+        state.probe === undefined ||
+        (state.workspace && !state.workspace.ready)
+      ) {
         send({
           type: "acceptance:result",
           requestId: data.requestId,
@@ -1330,7 +1363,9 @@ async function cleanupRunner(
     state.active?.abort.abort();
     await state.active?.done;
   }
-  if (launchAttempted && (!state || state.present)) {
+  // Live state tracks partial launches and crash residuals until verified deletion. Before state
+  // exists, only the legacy pre-auth attempt can require cleanup.
+  if (state ? state.present : launchAttempted) {
     try {
       await sandbox.destroy();
       logLine(options.stderr, "native sandbox deleted");
@@ -1361,6 +1396,8 @@ async function recycleNativeSandbox(sandbox: NativeSandbox, state: WorkState): P
   try {
     await sandbox.destroy();
     state.present = false;
+    // Only the replacement namespace's fresh probe may reopen execution.
+    state.probe = undefined;
     if (state.stopping) return;
     state.present = true;
     await sandbox.launch();

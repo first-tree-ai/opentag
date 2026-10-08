@@ -23,13 +23,20 @@ Runner 属于 Client，沿用 CLI 发布版本；不新增数据表或迁移。
 资源名，并发请求核对同一个分配。创建或删除结果不明时保留归属和错误状态；创建仍可能到达时，
 GET 404 不代表已清理。删除同时校验 UID 和 etag，避免误删同名替换资源。
 
-Instance 内运行 opentag-runner serve。声明唯一的容器端口 8080；原生就绪验证通过后，Runner 默认
-监听该**声明端口**（注入的 PORT 仍是显式覆盖），因此即使运行时未提供 PORT，平台默认 TCP 启动探针
-也一定有可用 socket。该监听器只接受连接并立即结束，不读写数据，也不提供命令、HTTP 或凭证接口。
-控制通道仍是 Runner 主动连接 /api/v1/sandbox-runners/ws 的 WSS；Instance 不开放父容器 HTTP
-控制接口。令牌在首帧发送，绑定当前 Sandbox、Session、generation、资源名，不进入 URL。
-Server 回复心跳，通过当前已认证连接续期令牌。重连使用父进程内存中的新令牌；接收工作及结果前
-校验当前归属、placement 与执行权限。
+Instance 内运行 opentag-runner serve。声明唯一的容器端口 8080，Runner 默认监听该**声明端口**
+（注入的 PORT 仍是显式覆盖），因此即使运行时未提供 PORT，平台默认 TCP 启动探针也一定有可用
+socket。该监听器只接受连接并立即结束，不读写数据，也不提供命令、HTTP 或凭证接口。socket 能
+证明什么取决于模式：持久化（E5+）Runner 只建立可信父进程状态后就启动监听，先于任何连接拨号
+和原生操作，此时 socket 仅表示控制进程存活，绝不代表执行就绪——它不能发出 runner:ready、不能
+放行 acceptance 或 Cloud Turn，也不能打开 web 执行。持久化 Runner 先完成认证、收到当前分配的
+凭证，再验证删除可能残留的同名命名空间——原生命名空间可能在父进程崩溃后仍然存活——然后才做
+当前分配的工作区恢复及其提交检查点；之后才执行恰好一次原生启动与全新就绪探测，runner:ready
+指向的就是这个经过证明且已恢复的命名空间。删除无法验证时，恢复、检查点、目录重置、启动与就绪
+都不会发生。旧的非持久化 E3 Runner 保持原顺序——先原生启动与
+完整探测，再启动健康监听，然后才发送首个认证帧。控制通道仍是 Runner 主动连接
+/api/v1/sandbox-runners/ws 的 WSS；Instance 不开放父容器 HTTP 控制接口。令牌在首帧发送，绑定
+当前 Sandbox、Session、generation、资源名，不进入 URL。Server 回复心跳，通过当前已认证连接
+续期令牌。重连使用父进程内存中的新令牌；接收工作及结果前校验当前归属、placement 与执行权限。
 
 云实例就绪不等于 Sandbox 就绪。Runner 必须报告真实原生执行、工具版本、Runner 版本及文件系统／
 凭证隔离检查。每次启动及每次清理后重置都完整重跑该探测：真实的原生 Node 执行、从不可变
@@ -37,6 +44,9 @@ rootfs 有界读取镜像身份与锁定的 Pi 包元数据（校验形状，并
 同时确认固定的 Pi shim 及其声明的 CLI 入口可访问），以及全新的文件系统／凭证／下层 rootfs
 隔离金丝雀。运行时探测绝不启动 Pi CLI：发布期 offline 套件已真实执行过它并比对精确版本，
 元数据读取也绝不被当作完整 Pi/provider 执行的证明。旧连接不能替代当前连接报告就绪或完成任务。
+探测证据只属于一个命名空间：命名空间销毁或新启动开始时即被清除，因此一次失败的全新探测绝不会
+留下上一命名空间的就绪状态；在恢复、启动或探测之前或期间收到停止信号不会发出任何就绪报告，
+随后仍会对已尝试的命名空间做经过验证的删除。
 
 Account 接口为 GET /api/v1/sandboxes/:sandboxId/runner，以及 POST 后缀 /runner/start、
 /runner/stop、/runner/acceptance。继续使用 Cookie、CSRF 和归属检查。acceptance 只执行有期限的

@@ -4,10 +4,12 @@ import type { CloudWorkspace } from "./cloud-workspace.js";
 import type { NativeSandbox, SandboxProbeResult } from "./native-sandbox.js";
 
 export interface WorkspaceNativeState {
+  /** Possibly present until a verified `delete --force` succeeds; never an exact observation. */
   present: boolean;
   stopping: boolean;
   fatal: boolean;
-  probe: SandboxProbeResult;
+  /** Fresh proof of the current namespace; cleared on destruction or a new launch. */
+  probe?: SandboxProbeResult;
   active?: { abort: AbortController; done: Promise<void> };
 }
 
@@ -57,6 +59,9 @@ export class ServeWorkspace {
       await this.#workspace.initialize();
       if (this.#workspace.sealed || this.#sealing || this.#state().stopping) return false;
       await this.#launch();
+      // A stop (or a seal) that landed during the launch left no fresh probe: never admit work
+      // or report readiness for an unproven namespace.
+      if (this.#state().stopping || this.#state().probe === undefined) return false;
       this.#blocked = false;
       return true;
     });
@@ -96,10 +101,13 @@ export class ServeWorkspace {
 
   async #quiesce(): Promise<void> {
     const state = this.#state();
+    // A fresh parent also verifies deletion: no local launch does not rule out a crash residual.
     if (!state.present) return;
     try {
       await this.#sandbox.destroy();
       state.present = false;
+      // The destroyed namespace's probe is stale evidence from this point on.
+      state.probe = undefined;
     } catch (error) {
       state.fatal = true;
       throw error;
@@ -109,9 +117,15 @@ export class ServeWorkspace {
   async #launch(): Promise<void> {
     const state = this.#state();
     if (this.#sealing || state.stopping) return;
+    // Set before the launch so a failed or partial namespace is still deleted by cleanup.
     state.present = true;
+    // A replacement namespace must supply its own fresh readiness proof.
+    state.probe = undefined;
     try {
       await this.#sandbox.launch();
+      // A stop that arrived during the launch skips the probe; the launched namespace stays
+      // tracked by `present` for verified cleanup.
+      if (state.stopping) return;
       state.probe = await this.#sandbox.probe();
     } catch (error) {
       state.fatal = true;

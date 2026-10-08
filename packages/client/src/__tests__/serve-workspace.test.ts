@@ -44,7 +44,8 @@ function fixture() {
     }),
     probe: vi.fn(async () => {
       events.push("probe");
-      return state.probe;
+      // A real probe always describes the namespace it just ran in, never the caller's state.
+      return { nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" };
     }),
   };
   const turns = {
@@ -167,5 +168,60 @@ describe("Runner workspace occupation", () => {
     expect(f.state.fatal).toBe(true);
     expect(f.workspace.initialize).not.toHaveBeenCalled();
     expect(f.workspace.save).not.toHaveBeenCalled();
+  });
+
+  it("clears the destroyed namespace's probe and proves only the freshly launched one", async () => {
+    const f = fixture();
+    const entered = deferred();
+    const release = deferred();
+    f.sandbox.probe.mockImplementationOnce(async () => {
+      f.events.push("probe");
+      entered.resolve();
+      await release.promise;
+      return { nodeVersion: "v24.20.0", piVersion: "fresh", runnerVersion: "0.0.5" };
+    });
+    const preparing = f.controller.prepare();
+    await entered.promise;
+    // The quiesce destroyed the old namespace, so its probe evidence is already gone; the new
+    // launch has begun but not yet proven anything.
+    expect(f.events).toEqual(["destroy", "restore", "launch", "probe"]);
+    expect(f.state.probe).toBeUndefined();
+    expect(f.controller.ready).toBe(false);
+    release.resolve();
+    expect(await preparing).toBe(true);
+    expect(f.state.probe?.piVersion).toBe("fresh");
+    expect(f.controller.ready).toBe(true);
+  });
+
+  it("a failed fresh launch leaves no executable readiness from the previous namespace", async () => {
+    const f = fixture();
+    f.sandbox.launch.mockRejectedValueOnce(new Error("launcher missing"));
+    await expect(f.controller.prepare()).rejects.toThrow("launcher missing");
+    expect(f.state.probe).toBeUndefined();
+    // The possibly partial namespace stays tracked for verified cleanup, and the failure is fatal.
+    expect(f.state.present).toBe(true);
+    expect(f.state.fatal).toBe(true);
+    expect(f.controller.ready).toBe(false);
+  });
+
+  it("never probes or reports prepared when a stop lands during the launch", async () => {
+    const f = fixture();
+    const entered = deferred();
+    const release = deferred();
+    f.sandbox.launch.mockImplementationOnce(async () => {
+      f.events.push("launch");
+      entered.resolve();
+      await release.promise;
+    });
+    const preparing = f.controller.prepare();
+    await entered.promise;
+    f.state.stopping = true;
+    release.resolve();
+    expect(await preparing).toBe(false);
+    expect(f.sandbox.probe).not.toHaveBeenCalled();
+    expect(f.state.probe).toBeUndefined();
+    // The launched namespace remains tracked so shutdown cleanup still deletes it.
+    expect(f.state.present).toBe(true);
+    expect(f.controller.ready).toBe(false);
   });
 });

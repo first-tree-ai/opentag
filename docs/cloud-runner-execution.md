@@ -29,12 +29,22 @@ allocation. An uncertain create or delete retains the row's resource reference a
 error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
 etag protect deletion against name reuse.
 
-The Instance runs `opentag-runner serve`. It declares the single container port `8080`, and after
-native readiness is verified the Runner listens on that **declared port by default** (an injected
-`PORT` remains the explicit override), so the platform's default TCP startup probe always has a
-socket even when the runtime does not provide `PORT`. The listener only accepts and immediately
-ends connections — no data is read or written, and it carries no command, HTTP, or credential
-surface. The control channel
+The Instance runs `opentag-runner serve`. It declares the single container port `8080`, and the
+Runner listens on that **declared port by default** (an injected `PORT` remains the explicit
+override), so the platform's default TCP startup probe always has a socket even when the runtime
+does not provide `PORT`. The listener only accepts and immediately ends connections — no data is
+read or written, and it carries no command, HTTP, or credential surface. What the socket proves
+differs by mode. A persistent (E5+) Runner starts it with only the trusted parent state up,
+before dialing and before any native work: the socket then reports a live control process and
+never execution readiness — it cannot emit `runner:ready`, admit an acceptance or Cloud Turn, or
+open web execution. The persistent Runner authenticates, receives the current assignment's
+credential, and verifies deletion of any possibly residual same-name namespace — a detached
+namespace can outlive a crashed parent process — before the current assignment's workspace
+restore and its commit checkpoint; only then does it perform exactly one native launch and fresh
+readiness probe, and `runner:ready` names that proven, restored namespace. If the deletion cannot
+be verified, no restore, checkpoint, directory reset, launch or readiness follows. A legacy
+non-persistent E3 Runner keeps the original order — native
+launch and full probe, then the health listener, then the first auth frame. The control channel
 remains the Runner's outbound WSS connection to `/api/v1/sandbox-runners/ws`; the Instance exposes
 no parent HTTP control service. Authentication is
 in the first frame, never the URL. Tokens are scoped to the current Sandbox/Session/generation/
@@ -51,7 +61,10 @@ shim and its declared CLI entry verified accessible), and fresh filesystem/crede
 lower-rootfs isolation canaries. The runtime probe never launches the Pi CLI: the release-time
 offline suite already executed it and compared its exact version, and a metadata read is never
 treated as proof of full Pi/provider execution. A replaced socket cannot publish readiness or
-finish another connection's command.
+finish another connection's command. Probe evidence belongs to one namespace: it is cleared when
+the namespace is destroyed or a new launch begins, so a failed fresh probe can never leave the
+previous namespace's readiness behind, and a stop before or during the restore, launch or probe
+emits no readiness and is followed by verified deletion of any attempted namespace.
 
 The current account API exposes `GET /api/v1/sandboxes/:sandboxId/runner` and POST suffixes
 `/runner/start`, `/runner/stop`, `/runner/acceptance`. Acceptance is a bounded offline or DeepSeek

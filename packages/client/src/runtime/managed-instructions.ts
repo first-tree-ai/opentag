@@ -123,7 +123,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
       : [
           "You are a visible Session. You may handle work directly, use Provider-native subagents when available, or create OpenTag internal Sessions when platform-level Session collaboration is useful.",
           "Lean toward a lively, friendly tone, adapting naturally to the user and the situation.",
-          "For a lengthy user task, optionally add one emoji reaction via the provider CLI before starting work. Skip unnecessary or duplicate acknowledgments and observer deliveries.",
+          "For a lengthy user task, add one emoji reaction to the original user message via the provider CLI before starting task work. Skip it only for duplicate acknowledgments and observer deliveries.",
         ]),
     "OpenTag internal Sessions and Provider-native subagents are separate mechanisms and are not interchangeable.",
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,

@@ -583,14 +583,24 @@ export function buildAgentInput(
   if (!runtime) throw new Error("A steer input requires the root runtime snapshot");
   const sessionInstructions = runtime.instructions.session?.trim() || "No additional Session instructions.";
   const provider = request.content.providerRef.provider;
-  const attentionMeaning =
-    request.attention === "direct"
-      ? "A human explicitly addressed this Agent/Session. Handle the message normally, then choose whether to reply, react, send proactively, or take no provider action."
-      : "This Agent overheard the message. Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.";
   const observer = request.replyRole === "observer";
+  /*
+   * Attention states what the inbound message means to this Session. The generic owner guidance
+   * ("handle the message", "choose whether to reply") would contradict an observer delivery, which
+   * never handles the task, so an observer gets only the fact plus a pointer to the reply role.
+   */
+  const attentionFact =
+    request.attention === "direct"
+      ? "A human explicitly addressed this Agent/Session."
+      : "This Agent overheard the message.";
+  const attentionMeaning = observer
+    ? `${attentionFact} Treat it as ambient channel context only; the observer reply role below governs what this Session may do with it.`
+    : request.attention === "direct"
+      ? `${attentionFact} Handle the message normally, then choose whether to reply, react, or send proactively; choosing not to reply remains valid.`
+      : `${attentionFact} Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.`;
   const replyRoleMeaning = observer
-    ? "A Thread Session owns the provider reply for this same message. Use this Channel delivery only for ambient channel context; do not reply, react, or perform any other provider mutation for this message."
-    : "This Session is the reply owner for this message. It may reply, react, send another provider message, or take no provider action.";
+    ? "A Thread Session owns the provider reply and the task execution for this same message. Use this Channel delivery only for ambient channel context; do not reply, react, or perform any other provider mutation for this message, and do not investigate, execute or repeat, delegate, or create artifacts for that task. Finish this observer Turn without tool calls or task work."
+    : "This Session is the reply owner for this message. It may reply, react, send another provider message, or choose not to reply.";
   // Rebind the provider's native user-facing output to OpenTag's runtime console. Merely saying that
   // final text is not auto-sent is too weak when the provider treats its final channel as the reply.
   const context = [
@@ -610,7 +620,7 @@ export function buildAgentInput(
     ...buildProviderOutboxInstructions({
       actionInstruction: observer
         ? "Do not run a provider CLI mutation for this observer copy. The CLI and credentials remain available because they are Session capabilities, not reply-role authorization."
-        : "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
+        : "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
       provider,
       target: request.content.providerRef,
       targetLabel: "Current provider reference",
@@ -620,7 +630,7 @@ export function buildAgentInput(
     "Attention does not change provider CLI or credential availability for this Turn.",
     `Reply role: ${observer ? "observer" : "owner"}`,
     `Reply role meaning: ${replyRoleMeaning}`,
-    "Reply role constrains provider actions for this delivery; it does not change this Session's authority or credential availability.",
+    "Reply role constrains task execution and provider actions for this delivery; it does not change this Session's authority or credential availability.",
     "Session instructions:",
     sessionInstructions,
     "</opentag-im-context>",

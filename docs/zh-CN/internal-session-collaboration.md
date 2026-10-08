@@ -35,8 +35,8 @@ Cloud Session 拥有独立的 Sandbox workspace 和 Pi 历史，边界见
 也都可以继续创建下一层 internal Session。
 
 Local 与 Cloud 使用同一个 managed system-prompt 生成函数及 Session 上下文接口。通用 Session 行为只定义一次，
-工作区持久化、隔离和 Context Tree 事实按执行环境生成。可见 Session 可以在开始耗时用户任务前选择添加一个表情回应，
-跳过不必要或重复的确认以及 observer delivery。Internal Session 向协调 Session 回报，不直接向 IM 发布。
+工作区持久化、隔离和 Context Tree 事实按执行环境生成。可见 Session 在开始耗时用户任务的工作前，先在原始用户消息上添加一个表情回应，
+仅在重复确认或 observer delivery 时跳过。Internal Session 向协调 Session 回报，不直接向 IM 发布。
 
 OpenTag Internal Session 与 Provider 原生 subagent 是两种不同机制。人明确要求使用 OpenTag Internal Session 时，
 可见 Session 必须调用 `opentag session create`，不能以 Provider 原生 subagent 代替。除此之外，OpenTag 本次不强制规定

@@ -14,7 +14,7 @@ repository gates reject anything a user would otherwise meet as a broken card.
 | `packages/mcp-presets/mcp-categories.yaml` | the category set, each with a localized label and a tab order |
 | `packages/mcp-presets/mcp-catalog.yaml` | one entry per Server |
 
-Icons live in `packages/mcp-presets/icons/`, one SVG per referenced entry. The generated module
+Icons live in `packages/mcp-presets/icons/`, one SVG or PNG per referenced entry. The generated module
 `packages/mcp-presets/src/mcp-catalog.gen.ts` embeds those icon bytes as data URLs and is what the Web
 App reads through the package's public export. Never edit it by hand: `pnpm catalog:generate` writes
 it, and `pnpm check` runs the same script with `--check` to reject drift.
@@ -107,11 +107,13 @@ curl -sS -i -X POST <endpoint> \
 
 ## Step 4 — Add the icon
 
-Create `packages/mcp-presets/icons/<slug>.svg`: a 24×24 monochrome mark that paints with
-`currentColor`, in the shape of the ones already in that directory. The generator fails when the file
-is missing, and it embeds the file's bytes into the generated module, so there is no separate asset
-import to update. A remote favicon is not an option — the card must not reach the provider before the
-user picks it.
+Download a product mark from an official brand resource into `packages/mcp-presets/icons/<slug>.svg`
+or `<slug>.png`. Preserve the official colors and proportions, record the source in the icons README,
+and set `iconIsOfficial: true` on the catalog entry only after verifying its origin. Unverified assets
+remain unmarked and the UI renders its neutral connection icon instead.
+
+The generator requires every referenced file and embeds its bytes in the generated module. A remote
+favicon is not an option: rendering the card must not contact the provider.
 
 ## Step 5 — Compile and gate
 

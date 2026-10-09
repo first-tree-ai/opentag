@@ -1,4 +1,82 @@
 /* MCP-specific geometry; controls, colors and typography retain the shared theme. */
+/* Reserve both action tracks in every state; error details render in a portal. */
+.mcp-server-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(50%);
+  align-items: center;
+  gap: 1.5rem;
+  min-height: 6.75rem;
+}
+.mcp-server-controls {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(2rem, auto) minmax(2rem, auto);
+  justify-items: end;
+  gap: 0.5rem;
+}
+.mcp-server-identity h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-server-actions {
+  max-width: 100%;
+}
+.mcp-server-actions > * {
+  flex-shrink: 0;
+}
+.mcp-server-status {
+  min-width: 0;
+  flex-shrink: 1;
+}
+.mcp-server-status-short {
+  display: none;
+}
+@container content (max-width: 40rem) {
+  .mcp-server-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: minmax(3rem, auto) minmax(2.75rem, auto);
+    gap: 0.5rem 0.75rem;
+    min-height: 8.5rem;
+  }
+  .mcp-server-controls {
+    display: contents;
+  }
+  .mcp-server-identity {
+    grid-area: 1 / 1;
+  }
+  .mcp-server-toggles {
+    grid-area: 1 / 2;
+  }
+  .mcp-server-actions {
+    grid-area: 2 / 1 / 3 / -1;
+    justify-self: end;
+    max-width: 100%;
+    gap: 0.5rem;
+  }
+}
+/* Match the shared 44px touch targets even just above the container layout breakpoint. */
+@media (max-width: 47.999rem) {
+  .mcp-server-row {
+    min-height: 8.5rem;
+  }
+  .mcp-server-controls {
+    grid-template-rows: minmax(2.75rem, auto) minmax(2.75rem, auto);
+  }
+}
+/* Keep the cached-list recovery controls on one track at the minimum width. */
+@container content (max-width: 24rem) {
+  /* The visible Authorize action already explains the required next step. */
+  .mcp-server-auth-status {
+    display: none;
+  }
+  .mcp-server-status-full {
+    display: none;
+  }
+  .mcp-server-status-short {
+    display: inline;
+  }
+}
 .mcp-form-dialog,
 .mcp-confirm-dialog,
 .mcp-tools-dialog {

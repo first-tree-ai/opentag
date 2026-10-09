@@ -10,7 +10,7 @@ OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它�
 
 规范化输入总数包含普通输入、缓存读取和缓存写入。缓存读取与写入是输入中互不重叠的子集。输出包含推理 Token。Router 统一规范化计数并处理 Provider 响应格式。可用模型需要经验证的输入和输出限制；开启客户计费时还需要客户价格。
 
-`BILLING_PRICES` 按网关和模型 ID 配置每百万 Token 的整数微美元价格：`inputMicrosPerMillion`、`cachedInputMicrosPerMillion`、`cacheWriteInputMicrosPerMillion` 和 `outputMicrosPerMillion`。默认网关 ID 是 `llm-router`。结算计算 `(input-cached-write)*input_rate + cached*cached_rate + write*write_rate + output*output_rate`，除以一百万，并用整数运算统一向上取整。价格快照保证改价只影响后续调用。客户价格独立于 Router 的 Provider 成本账本。
+客户价格保存在私有计费仓库的 `src/prices.json`，按网关和 Router 的精确模型 ID 配置。默认网关 ID 是 `llm-router`。每个模型包含 `input`、`cachedInput`、`cacheWrite` 和 `output`，用最多六位小数的美元字符串表示每百万 Token 的价格。计费包在启动时验证文件，并精确转换为整数微美元。结算计算 `(input-cached-write)*input_rate + cached*cached_rate + write*write_rate + output*output_rate`，除以一百万，并用整数运算统一向上取整。价格快照保证改价只影响后续调用。客户价格独立于 Router 的 Provider 成本账本。更新价格时，提交私有价格文件，更新应用的 `cloud-billing.json` 固定版本，再部署应用。价格文件不进入公开源码，但会打包进生产镜像。
 
 账户和 Agent 云端统计读取同一调用记录的最终计数，包括关闭客户计费时的调用。本地报告与云端账本按发送时保存的执行来源合并；云端任务报告中的 Token 不重复计入。任务数量及结果仍来自任务报告。账户用量包含连通性测试，支持 1、7、30 和 90 天总量及每日图表。缺失计数视为不完整数据。
 
@@ -28,7 +28,7 @@ OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它�
 
 账户页显示一个可用美元余额，包含起始额度和购买额度，支持以美分精度自定义充值 10 至 1,000 美元。Stripe 托管 Checkout 返回 `/account`；只有经验证的已付款会话增加额度。签名 Webhook 地址为 `/stripe/webhook`，需注册 `checkout.session.completed`、`checkout.session.async_payment_succeeded`、`charge.refunded` 和 `charge.dispute.created`。退款只移除一次购买额度；退款和争议阻止云端消费，等待操作员审核。入账前收到的事件持久化保存。Provider 可用性不影响入账或余额查询。
 
-在应用环境配置 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、`BILLING_PRICES`，可选配置 `BILLING_FREE_CENTS` 和 `BILLING_MAX_CONCURRENT_PER_ACCOUNT`。验收使用 Stripe 测试模式。自动充值、订阅、请求预留及计费管理界面不在 MVP 范围内。
+在应用环境配置 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`，可选配置 `BILLING_FREE_CENTS` 和 `BILLING_MAX_CONCURRENT_PER_ACCOUNT`。价格来自打包的私有价格文件。验收使用 Stripe 测试模式。自动充值、订阅、请求预留及计费管理界面不在 MVP 范围内。
 
 ## CapRover 部署
 

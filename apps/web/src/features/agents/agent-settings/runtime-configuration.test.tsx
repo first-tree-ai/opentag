@@ -1,15 +1,17 @@
 import type { AgentAdminConfig, AgentRuntimeOptions } from "@opentag/shared/browser";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, screen, render as testingRender, waitFor, within } from "@testing-library/react";
+import { focusManager, onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, screen, render as testingRender, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../../api.js";
+import { createQueryClient } from "../../../query/client.js";
 import { queryKeys } from "../../../query/keys.js";
+import { LIVE_REFETCH_INTERVAL_MS } from "../../../query/live.js";
 import { RuntimeConfigurationForm, runtimeConfigurationFromForm } from "./runtime-configuration.js";
 
 const queryClients: QueryClient[] = [];
 function render(element: ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createQueryClient();
   queryClients.push(client);
   return testingRender(<QueryClientProvider client={client}>{element}</QueryClientProvider>);
 }
@@ -18,7 +20,23 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const client of queryClients.splice(0)) client.clear();
+  focusManager.setFocused(undefined);
+  onlineManager.setOnline(true);
+  vi.useRealTimers();
 });
+
+async function returnToPage() {
+  await act(async () => {
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+  });
+}
+
+async function advance(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
@@ -126,13 +144,105 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.queryByRole("textbox", { name: "Custom model ID" })).toBeNull();
     expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration", "High"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh models and effort" }));
+    expect(screen.queryByRole("button", { name: "Refresh models and effort" })).toBeNull();
+    await returnToPage();
     await waitFor(() => expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
     const refreshed = await optionLabels("Model");
     expect(refreshed).toEqual(expect.arrayContaining([...entry.expected, ...entry.discovered, "live/added"]));
     expect(new Set(refreshed).size).toBe(refreshed.length);
     expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain(entry.model);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("updates only while the model page is visible and online, and refreshes on return or reconnect", async () => {
+    vi.mocked(browserApi.agentRuntimeOptions).mockResolvedValue({
+      modelSuggestions: ["live/model"],
+      reasoningEffortAllowedValues: ["high"],
+    });
+    vi.useFakeTimers();
+    const client = createQueryClient();
+    queryClients.push(client);
+    const save = vi.fn();
+    const view = testingRender(
+      <QueryClientProvider client={client}>
+        <RuntimeConfigurationForm initialConfig={config} save={save} />
+      </QueryClientProvider>,
+    );
+    try {
+      await advance(0);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(1);
+      await advance(LIVE_REFETCH_INTERVAL_MS - 1);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(1);
+      await advance(1);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(2);
+
+      focusManager.setFocused(false);
+      await advance(LIVE_REFETCH_INTERVAL_MS * 3);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(2);
+      focusManager.setFocused(true);
+      await advance(0);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(3);
+
+      onlineManager.setOnline(false);
+      await advance(LIVE_REFETCH_INTERVAL_MS);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(3);
+      onlineManager.setOnline(true);
+      await advance(0);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(4);
+
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <RuntimeConfigurationForm computerOnline={false} initialConfig={config} save={save} />
+        </QueryClientProvider>,
+      );
+      await advance(LIVE_REFETCH_INTERVAL_MS * 2);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(4);
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <RuntimeConfigurationForm initialConfig={config} save={save} />
+        </QueryClientProvider>,
+      );
+      await advance(0);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(5);
+      view.unmount();
+      await advance(LIVE_REFETCH_INTERVAL_MS * 2);
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(5);
+      expect(save).not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it("quietly refreshes confirmed options without changing unsaved model or effort selections", async () => {
+    let resolveRefresh!: (options: AgentRuntimeOptions) => void;
+    const options = { modelSuggestions: ["gpt-6-sol"], reasoningEffortAllowedValues: ["high", "max"] };
+    vi.mocked(browserApi.agentRuntimeOptions)
+      .mockResolvedValueOnce(options)
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveRefresh = resolve;
+          }),
+      );
+    const configured = {
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, model: "gpt-6-sol", reasoningEffort: "high" },
+    };
+    const save = vi.fn();
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} />);
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    await chooseOption("Reasoning effort", "Max");
+    await returnToPage();
+    expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Reading local models…")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain("gpt-6-sol");
+    expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent).toContain("Max");
+    expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(false);
+    resolveRefresh({ ...options, modelSuggestions: [...options.modelSuggestions, "live/new"] });
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    expect(await optionLabels("Model")).toContain("live/new");
+    expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent).toContain("Max");
     expect(save).not.toHaveBeenCalled();
   });
 
@@ -217,12 +327,8 @@ describe("RuntimeConfigurationForm", () => {
     await waitFor(() =>
       expect(browserApi.agentRuntimeOptions).toHaveBeenCalledWith(config.id, "other/private", expect.any(AbortSignal)),
     );
-    await waitFor(() =>
-      expect((screen.getByRole("button", { name: "Refresh models and effort" }) as HTMLButtonElement).disabled).toBe(
-        false,
-      ),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Refresh models and effort" }));
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    await returnToPage();
     await waitFor(() =>
       expect(
         vi.mocked(browserApi.agentRuntimeOptions).mock.calls.filter((call) => call[1] === "other/private").length,
@@ -257,7 +363,7 @@ describe("RuntimeConfigurationForm", () => {
     resolveOld({ modelSuggestions: ["gpt-6-sol"], reasoningEffortAllowedValues: ["ultra"] });
     expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration", "High"]);
     expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain("gpt-6-luna");
-    fireEvent.click(screen.getByRole("button", { name: "Refresh models and effort" }));
+    await returnToPage();
     expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain("gpt-6-luna");
   });
 
@@ -297,6 +403,7 @@ describe("RuntimeConfigurationForm", () => {
     ).toBeTruthy();
     expect(screen.queryByText("Choose a common model or enter a custom model ID.")).toBeNull();
     expect(screen.queryByText("Provider default lets the runtime choose.")).toBeNull();
+    expect(screen.queryByText(/^OpenTag omits model and effort overrides/)).toBeNull();
     expect(
       screen.queryByText(
         "Be concise and specific. These instructions apply in addition to OpenTag's platform guidance.",

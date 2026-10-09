@@ -85,13 +85,16 @@ model. The Server rechecks Agent placement before returning the response.
 
 | Data | Location and identity | Lifetime |
 | --- | --- | --- |
-| Web query result | Browser memory, keyed by `agentId`, `computerId`, provider, and model | Fresh for 60 seconds; manual refresh requests again; signing out clears the cache |
+| Web query result | Browser memory, keyed by `agentId`, `computerId`, provider, and model | Fresh for 30 seconds; a visible model page polls every 30 seconds; focus and reconnect request again; signing out clears the cache |
 | Server request | In-memory pending map, keyed by a random `requestId` and fenced by `computerId` and `instanceId` | Removed on completion, cancellation, or timeout; no model catalog is persisted |
 | Native provider catalog | Owned by the CLI and its local provider configuration | Provider-specific; OpenTag does not clear or persist this cache |
 | Saved model and effort | PostgreSQL `agent_runtime_configs`, keyed by `agent_id` | Written only when configuration is saved, with an expected-revision check |
 
-The HTTP response uses `Cache-Control: no-store`. A refresh is a new native query,
-not a background catalog upload or a provider-cache purge. Computers do not overwrite
+The HTTP response uses `Cache-Control: no-store`. The model page updates automatically
+while mounted and visible, and stops polling when hidden, unmounted, or its Computer
+is offline. Background updates preserve unsaved selections and do not show a loading
+message over confirmed options. Each update is a new native query, not a background
+catalog upload or a provider-cache purge. Computers do not overwrite
 a shared Server catalog. A response from another Computer or an old daemon instance
 cannot complete the pending request.
 

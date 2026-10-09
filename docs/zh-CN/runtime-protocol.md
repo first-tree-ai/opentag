@@ -81,13 +81,15 @@ Computer 投影同时遵循当前 daemon 连接协商的 provider 范围。范�
 
 | 数据 | 保存位置与隔离标识 | 生命周期 |
 | --- | --- | --- |
-| Web 查询结果 | 浏览器内存，键包含 `agentId`、`computerId`、provider、model | 60 秒内视为新鲜；手动刷新仍重新请求；退出登录清空缓存 |
+| Web 查询结果 | 浏览器内存，键包含 `agentId`、`computerId`、provider、model | 30 秒内视为新鲜；可见的模型页面每 30 秒轮询；页面重新激活和网络恢复时重新请求；退出登录清空缓存 |
 | Server 请求 | 内存中的待处理 Map，以随机 `requestId` 标识，并校验 `computerId` 和 `instanceId` | 完成、取消或超时后删除；不持久化模型目录 |
 | 原生 provider 目录 | CLI 及其本地 provider 配置自行管理 | 随 provider 而异；OpenTag 不清除或持久化此缓存 |
 | 用户保存的模型与强度 | PostgreSQL `agent_runtime_configs`，按 `agent_id` 保存 | 仅保存配置时写入，并校验预期 revision |
 
-HTTP 响应使用 `Cache-Control: no-store`。刷新会发起一次新的原生查询，不是后台上传
-模型目录，也不会清除 provider 自身的缓存。不同 Computer 不会覆盖 Server 上的一份
+HTTP 响应使用 `Cache-Control: no-store`。模型页面挂载且可见时自动更新，隐藏页面、
+离开页面或 Computer 离线后停止轮询。后台更新保留未保存的选择，不在已确认的选项上
+显示加载提示。每次更新会发起一次新的原生查询，不是后台上传模型目录，也不会清除
+provider 自身的缓存。不同 Computer 不会覆盖 Server 上的一份
 共享模型目录。其他 Computer 或旧 daemon 实例的响应不能完成当前待处理请求。
 
 Web 模型选择器合并原生结果与预置建议并去重，较小的原生目录不会隐藏预置项。

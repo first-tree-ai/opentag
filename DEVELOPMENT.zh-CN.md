@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-09-28
+> 同步日期：2026-10-09
 
 ## 从源码在本地运行
 
@@ -124,6 +124,11 @@ pnpm --filter @opentag/server test:integration
 
 服务器集成测试需要 Docker。修改覆盖率配置或排查覆盖率缺口时，运行 `pnpm test:coverage`。
 浏览器测试见 [E2E 指南](./e2e/README.md)。
+
+每个 PostgreSQL 集成测试 fixture 启动独立的一次性数据库。本机 Docker 的随机映射端口只绑定
+`127.0.0.1`；远程 Docker 保留默认绑定方式。启动后先从宿主机执行 `SELECT 1`，连接超时为五秒，
+成功后才开始迁移或测试。若容器健康检查通过，但该查询失败，应检查 Docker 端口转发：TCP 端口开放
+不代表 PostgreSQL 请求已到达容器。查询失败时，fixture 会关闭探测连接并删除容器。
 
 CI 将格式检查、构建、类型检查、仓库脚本测试、PostgreSQL 集成测试和 Agent Runtime 覆盖率检查放在并行任务中执行。
 工作区单元测试在 Node.js 22.22.2、24 和 26 上运行，每个版本使用三个 Vitest 分片。

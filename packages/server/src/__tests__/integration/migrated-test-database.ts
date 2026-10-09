@@ -1,7 +1,8 @@
 import { fileURLToPath } from "node:url";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import postgres from "postgres";
 import { migrateDatabase } from "../../db/migrate.js";
+import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -14,7 +15,7 @@ export interface MigratedTestDatabase {
 // Stable-schema suites can preserve the migration ledger and clear only application data.
 // Migration contract tests intentionally use their own empty-schema setup instead of this helper.
 export async function startMigratedTestDatabase(): Promise<MigratedTestDatabase> {
-  const container = await new PostgreSqlContainer("postgres:17-alpine").start();
+  const container = await startPostgresTestContainer();
   const databaseUrl = container.getConnectionUri();
 
   try {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
@@ -9,12 +9,13 @@ import { agents, computers, imBindings, sandboxes, sessionPlacements, sessions, 
 import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
 import { SandboxService } from "../../services/sandboxes/index.js";
 import { SessionService } from "../../services/sessions/index.js";
+import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 let container: StartedPostgreSqlContainer;
 let client: ReturnType<typeof createDatabaseClient>;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer("postgres:17-alpine").start();
+  container = await startPostgresTestContainer();
   await migrateDatabase(container.getConnectionUri(), fileURLToPath(new URL("../../../drizzle", import.meta.url)));
   client = createDatabaseClient(container.getConnectionUri());
 }, 120_000);

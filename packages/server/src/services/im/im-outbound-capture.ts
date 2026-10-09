@@ -4,9 +4,9 @@ import {
   RUNTIME_OUTGOING_REPLY_TEXT_MAX_BYTES,
   type RuntimeCredentialProvider,
 } from "@opentag/shared";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { imBindings, imMessages } from "../../db/schema/index.js";
+import { imBindings, imMessages, slackWorkingTargets } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 
 /**
@@ -22,7 +22,8 @@ import type { ServiceLogger } from "../../observability/service-logger.js";
  *   Only the verified platform response is a confirmed body; the request supplies at most the
  *   verified target (Feishu `receive_id` with `receive_id_type=chat_id`, Slack `channel`).
  * - No inbox, delivery, Session, or Agent side effects: one `INSERT ... ON CONFLICT DO NOTHING`
- *   on the existing semantic unique key, plus bounded lookups for binding identity and the local
+ *   on the existing semantic unique key, plus an optional bounded working-status refresh cue.
+ *   Bounded lookups resolve binding identity and the local
  *   same-binding parent a Feishu reply needs when the response omits thread/root.
  * - Capture failures are isolated: they are logged with codes and identifiers (never headers,
  *   tokens, or message bodies) and must never turn a confirmed send into a failure or a resend.
@@ -587,6 +588,7 @@ export function parseCapturedOutbound(event: OutboundCaptureEvent): OutboundCapt
 }
 
 export interface ImOutboundCaptureOptions {
+  slackWorkingStatus?: boolean;
   now?: () => Date;
   logger?: Pick<ServiceLogger, "error" | "warn">;
   /** Test/deployment override for the bounded capture budget; defaults to the production budget. */
@@ -663,9 +665,11 @@ export class ImOutboundCapture {
   readonly #logger: Pick<ServiceLogger, "error" | "warn"> | undefined;
   readonly #now: () => Date;
   readonly #deadlineMs: number;
+  readonly #slackWorkingStatus: boolean;
 
   constructor(database: DatabaseClient, options: ImOutboundCaptureOptions = {}) {
     this.#database = database;
+    this.#slackWorkingStatus = options.slackWorkingStatus === true;
     this.#now = options.now ?? (() => new Date());
     this.#logger = options.logger;
     this.#deadlineMs = options.deadlineMs ?? OUTBOUND_CAPTURE_DEADLINE_MS;
@@ -727,6 +731,20 @@ export class ImOutboundCapture {
       })
       .onConflictDoNothing();
     await this.#statement(statement, deadlineAt);
+    if (this.#slackWorkingStatus && event.provider === "slack" && thread.threadKey) {
+      // Slack clears the native indicator on a reply. Refresh only from this confirmed receipt.
+      const refresh = this.#database
+        .update(slackWorkingTargets)
+        .set({ working: false, nextAttemptAt: this.#now(), revision: sql`${slackWorkingTargets.revision} + 1` })
+        .where(
+          and(
+            eq(slackWorkingTargets.bindingId, event.bindingId),
+            eq(slackWorkingTargets.channelId, parsed.message.channelId),
+            eq(slackWorkingTargets.threadTs, thread.threadKey),
+          ),
+        );
+      await this.#statement(refresh, deadlineAt);
+    }
   }
 
   /**

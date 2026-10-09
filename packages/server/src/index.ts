@@ -72,6 +72,8 @@ import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
+import { SlackWorkingStore } from "./services/im/slack-working-store.js";
+import { SlackWorkingWorker, slackWorkingCredentialResolver } from "./services/im/slack-working-worker.js";
 import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
 import {
   DefaultFeishuRegistrationGateway,
@@ -592,6 +594,7 @@ export async function startServer(): Promise<void> {
      */
     const mcpServers = new McpServerService({ database });
     const platformRuntime = await createPlatformRuntime({
+      slackWorkingStatus: true,
       config,
       database,
       cipher: applicationCipher,
@@ -709,7 +712,9 @@ export async function startServer(): Promise<void> {
       sessionAuthority.proof,
     );
     const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
+    const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
+      onTurnActivity: (frame, context) => slackWorkingStore.record(frame, context),
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
@@ -808,6 +813,12 @@ export async function startServer(): Promise<void> {
       cloudAvailability: (now) => cloudAvailability(config, now),
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
+    const slackWorkingWorker = new SlackWorkingWorker({
+      store: slackWorkingStore,
+      api: slackApi,
+      token: slackWorkingCredentialResolver(database, applicationCipher),
+      logger: serviceLogger("slack-working-status"),
+    });
     const slackConfigurationService = new SlackConfigurationService({
       onDiagnostic: reportDiagnostic,
       api: slackApi,
@@ -836,6 +847,7 @@ export async function startServer(): Promise<void> {
      * factory and grant instance feed the owner and the createApp model route below.
      */
     const cloudDelivery = createCloudDeliveryComposition({
+      onTurnActivity: (frame, context) => slackWorkingStore.record(frame, context),
       cloudModel: config.cloudModel,
       jwtSecret: config.jwtSecret,
       publicUrl: config.publicUrl,
@@ -1128,6 +1140,7 @@ export async function startServer(): Promise<void> {
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    slackWorkingWorker.start();
     scheduleScheduler.start();
     sandboxIdleReclaimer?.start();
     github?.worker.start();
@@ -1150,6 +1163,7 @@ export async function startServer(): Promise<void> {
       channelTargetPoller.stop();
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
+      await slackWorkingWorker.stop();
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();

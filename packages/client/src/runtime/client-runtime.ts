@@ -1,3 +1,4 @@
+import type { TurnActivityResult } from "@opentag/shared";
 import {
   type AgentRuntimeOptions,
   type AgentRuntimeOptionsRequestFrame,
@@ -44,7 +45,8 @@ type ResidualBusinessFrame = Extract<
       | "agent-runtime:options:cancel"
       | "agent-runtime:test"
       | "agent-runtime:test:cancel"
-      | "turn:report:result";
+      | "turn:report:result"
+      | "turn:activity:result";
   }
 >;
 
@@ -61,6 +63,7 @@ export interface ClientRuntimeOptions {
   logger?: ClientLogger;
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
+  handleTurnActivityResult?(result: TurnActivityResult): void;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequestV3,
@@ -243,6 +246,7 @@ export class ClientRuntime {
       this.#tests.get(frame.requestId)?.abort();
       return;
     }
+    if (frame.type === "turn:activity:result") this.#options.handleTurnActivityResult?.(frame);
     if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);
   }
 

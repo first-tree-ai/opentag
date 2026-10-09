@@ -306,6 +306,26 @@ export async function runImDeliveryRetention(
       using candidates
       where delivery.id = candidates.id
     `);
+    // Retire successfully cleared projections after custody retention removes their turns.
+    // Unconfirmed cleanup on the current credential generation and active claims must survive.
+    await transaction.execute(sql`
+      with candidates as (
+        select target.id
+        from slack_working_targets as target
+        where target.working = false
+          and target.claim_id is null
+          and target.next_attempt_at = '9999-12-31T00:00:00.000Z'::timestamptz
+          and not exists (
+            select 1 from slack_working_turns as turn where turn.target_id = target.id
+          )
+        order by target.id
+        limit ${options.retentionBatchSize}
+        for update skip locked
+      )
+      delete from slack_working_targets as target
+      using candidates
+      where target.id = candidates.id
+    `);
     await transaction.execute(sql`
       with candidates as (
         select message.id

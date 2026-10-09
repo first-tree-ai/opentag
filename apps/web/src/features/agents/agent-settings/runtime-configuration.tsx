@@ -12,7 +12,7 @@ import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import { liveResourceQueryOptions } from "../../../query/live.js";
-import { Banner, Button, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
+import { Banner, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
 import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
 import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./runtime-model-field.js";
@@ -335,7 +335,7 @@ function useLocalRuntimeOptions(config: AgentAdminConfig, model: string, enabled
     queryFn: ({ signal }) => browserApi.agentRuntimeOptions(config.id, model.trim() || undefined, signal),
     enabled: enabled && Boolean(config.computerId),
     retry: false,
-    staleTime: 60_000,
+    ...liveResourceQueryOptions,
   });
 }
 
@@ -350,7 +350,7 @@ function formRuntimeOptions(
 ): RuntimeConfigurationOptions {
   const fallback = getRuntimeConfigurationOptions(provider);
   return {
-    modelSuggestions: discovered?.modelSuggestions ?? fallback.modelSuggestions,
+    modelSuggestions: [...new Set([...(discovered?.modelSuggestions ?? []), ...fallback.modelSuggestions])],
     reasoningEffortAllowedValues: discovered?.reasoningEffortAllowedValues ?? fallback.reasoningEffortAllowedValues,
   };
 }
@@ -393,28 +393,19 @@ function LocalRuntimeOptionsFeedback({
         {denied ? m.agent_settings_runtime_options_denied() : m.agent_settings_runtime_options_unavailable()}
       </p>
     );
-  else if (query.isFetching) feedback = <p role="status">{m.agent_settings_runtime_options_loading()}</p>;
+  else if (query.isPending && query.isFetching)
+    feedback = <p role="status">{m.agent_settings_runtime_options_loading()}</p>;
+  const reasoningUnknown = !discovered || discovered.reasoningEffortAllowedValues === null;
+  if (!feedback && !reasoningUnknown && !reasoningInvalid) return null;
   return (
     <div className="grid gap-2">
-      <p className="text-sm text-kumo-subtle">{m.agent_settings_inherit_local_description()}</p>
       {feedback}
-      {!discovered || discovered.reasoningEffortAllowedValues === null ? (
-        <p className="text-sm text-kumo-subtle">{m.agent_settings_reasoning_unknown()}</p>
-      ) : null}
+      {reasoningUnknown ? <p className="text-sm text-kumo-subtle">{m.agent_settings_reasoning_unknown()}</p> : null}
       {reasoningInvalid ? (
         <p role="alert" className="text-sm text-kumo-danger">
           {m.agent_settings_reasoning_unsupported()}
         </p>
       ) : null}
-      <Button
-        type="button"
-        size="compact"
-        variant="secondary"
-        disabled={!computerOnline || query.isFetching}
-        onClick={() => void query.refetch()}
-      >
-        {m.agent_settings_runtime_options_refresh()}
-      </Button>
     </div>
   );
 }

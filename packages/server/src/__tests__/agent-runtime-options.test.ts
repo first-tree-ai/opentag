@@ -18,8 +18,7 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-async function fixture(capability = true, ttlMs = 1000) {
-  const registry = new ConnectionRegistry();
+async function fixture(capability = true, ttlMs = 1000, registry = new ConnectionRegistry()) {
   const computerId = randomUUID();
   const instanceId = randomUUID();
   const installationId = randomUUID();
@@ -54,6 +53,37 @@ async function fixture(capability = true, ttlMs = 1000) {
 }
 
 describe("Agent runtime options", () => {
+  it("isolates concurrent Computer queries and ignores cross-routed results", async () => {
+    const first = await fixture();
+    const second = await fixture(true, 1000, first.registry);
+    const firstQuery = first.owner.start(first.input);
+    const secondQuery = first.owner.start(second.input);
+    const firstRequestId = first.frames[0]?.requestId;
+    const secondRequestId = second.frames[0]?.requestId;
+    expect(firstRequestId).not.toBe(secondRequestId);
+    const firstOptions = { modelSuggestions: ["computer-a/model"], reasoningEffortAllowedValues: ["high"] };
+    const secondOptions = { modelSuggestions: ["computer-b/model"], reasoningEffortAllowedValues: ["max"] };
+    const firstResult = {
+      type: "agent-runtime:options:result",
+      requestId: firstRequestId,
+      result: { status: "completed", options: firstOptions },
+    };
+    const secondResult = {
+      type: "agent-runtime:options:result",
+      requestId: secondRequestId,
+      result: { status: "completed", options: secondOptions },
+    };
+    const business = first.owner.businessOptions();
+    await business.handle(firstResult, second.context);
+    await business.handle(secondResult, first.context);
+    await business.handle(secondResult, second.context);
+    expect(await secondQuery).toEqual(secondOptions);
+    await business.handle(firstResult, first.context);
+    expect(await firstQuery).toEqual(firstOptions);
+    first.owner.close();
+    second.owner.close();
+  });
+
   it("correlates results with the current Computer instance and rejects foreign/late results", async () => {
     const f = await fixture();
     const promise = f.owner.start(f.input);

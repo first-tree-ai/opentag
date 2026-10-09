@@ -60,6 +60,7 @@ export const RUNTIME_CAPABILITY = {
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
+  turnActivity: "runtime.turnActivity",
   webTools: "runtime.webTools",
   mcpGateway: "runtime.mcpGateway",
 } as const;
@@ -83,6 +84,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.turnActivity]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.mcpGateway]: { min: 1, max: 1 },
 } as const;

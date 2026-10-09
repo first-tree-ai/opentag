@@ -1068,7 +1068,7 @@ describe("ImDeliveryWorker database workflow", () => {
 
       await vi.advanceTimersByTimeAsync(10);
       expect(database.transaction).toHaveBeenCalledTimes(3);
-      expect(retentionTransaction.execute).toHaveBeenCalledTimes(6);
+      expect(retentionTransaction.execute).toHaveBeenCalledTimes(7);
       worker.stop();
     } finally {
       vi.useRealTimers();

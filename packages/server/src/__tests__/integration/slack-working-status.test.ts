@@ -592,4 +592,32 @@ describe("durable Slack working projection", () => {
     await h.worker.runOnce();
     expect(h.calls.at(-1)).toBe("");
   });
+  it("does not create an empty credential-generation target for a replay after reauthorization", async () => {
+    const h = await fixture(),
+      { frame } = await h.delivery();
+    await h.store.record(frame, h.context);
+    await h.worker.runOnce();
+    await new ImBindingService(client.database, cipher).activateSlack(
+      {
+        intent: "reauthorize",
+        agentId: frame.agentId,
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+        botAccessToken: "unit-secret-rotated",
+        signingSecret: "unit-signing",
+        installedAt: clock,
+      },
+      "B1",
+    );
+    expect((await h.store.record(frame, h.context)).status).toBe("already_recorded");
+    await h.worker.runOnce();
+    expect(h.calls).toEqual(["is working"]);
+    expect(await client.database.select().from(slackWorkingTargets)).toHaveLength(1);
+    clock = new Date(clock.getTime() + 30_000);
+    await h.store.record({ ...frame, sequence: 2 }, h.context);
+    await h.worker.runOnce();
+    expect(h.calls).toEqual(["is working", "is working"]);
+  });
 });

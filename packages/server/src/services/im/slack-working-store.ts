@@ -69,6 +69,11 @@ export class SlackWorkingStore {
       const { delivery, binding, installation } = scope;
       const request = workingRequest(delivery.dispatchPayload, installation);
       if (!request) return "stale_generation" as const;
+      const [previous] = await tx
+        .select()
+        .from(slackWorkingTurns)
+        .where(eq(slackWorkingTurns.deliveryId, frame.deliveryId));
+      if (isReplay(previous, frame)) return "already_recorded" as const;
       const ref = request.content.providerRef;
       const threadTs = ref.threadTs ?? ref.messageTs;
       const targetId = createHash("sha256")
@@ -93,11 +98,6 @@ export class SlackWorkingStore {
         .from(slackWorkingTargets)
         .where(eq(slackWorkingTargets.id, targetId))
         .for("update");
-      const [previous] = await tx
-        .select()
-        .from(slackWorkingTurns)
-        .where(eq(slackWorkingTurns.deliveryId, frame.deliveryId));
-      if (isReplay(previous, frame)) return "already_recorded" as const;
       await migrateSiblingTurns(tx, targetId, installation, ref.channelId, threadTs, now, previous?.targetId);
       const deadlineAt = previous?.deadlineAt ?? executionDeadline(request, now);
       const phase = now >= deadlineAt ? "terminal" : frame.phase;

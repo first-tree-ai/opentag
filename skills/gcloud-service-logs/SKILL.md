@@ -32,9 +32,14 @@ which one produced each piece of evidence.
 - **The login belongs to the operator.** `gcloud auth login` and `gcloud auth application-default
   login` open a browser and block. Never run them on someone's behalf; detect the missing login,
   hand over the exact commands, and wait for the operator to confirm.
-- **Read-only by default.** `logging read`, `list`, `describe`, and `compute ssh` running `docker
-  logs` are safe. Restarting, scaling, deploying, or editing configuration is a separate request;
-  ask first.
+- **Read-only by default, with one setup side effect to respect.** `logging read`, `list`, and
+  `describe` never change anything. `gcloud compute ssh` is only a pure read once SSH access already
+  exists: with no usable key it can generate a key pair, save the private key locally (with an empty
+  passphrase when `--quiet` suppresses the prompt), and register the public key in project or
+  instance metadata. Treat that provisioning as a configuration change: verify access first, hand
+  the setup to the operator when it is missing, and only run unattended reads after that boundary is
+  satisfied (Step 3). Restarting, scaling, deploying, and editing configuration remain separate
+  requests; ask first.
 - **Do not leak what logs leak.** Log lines can carry access tokens, email addresses, and customer
   data. Quote only the lines that answer the question, redact secrets, and never copy a whole log
   stream into a report or a chat message.
@@ -54,7 +59,7 @@ gcloud config get-value project
 | `gcloud` missing | point the operator at the install guide (https://cloud.google.com/sdk/docs/install) and stop |
 | no active account | hand over `gcloud auth login` and wait for the operator before any log call |
 | no project configured | ask which project serves the environment, or hand over `gcloud config set project <PROJECT_ID>` |
-| account and project present | carry the project explicitly on every later call (`--project=<PROJECT_ID>`) so a config switch mid-session cannot silently retarget the search |
+| account and project present | carry `--project=<PROJECT_ID>` on every later call — every example in Steps 1–4 includes it — because an omitted flag falls back to the mutable `core/project` setting and a configuration switch mid-session would silently retarget the search |
 
 If the operator keeps several configurations, `gcloud config configurations list` shows them and
 `gcloud config configurations activate <NAME>` selects one — confirm the active configuration before
@@ -67,17 +72,18 @@ runtime. When two candidates could serve the same domain, ask instead of picking
 
 | Runtime | Discovery command |
 | --- | --- |
-| Cloud Run | `gcloud run services list --platform=managed --format='value(metadata.name,metadata.region,status.url)'` |
-| Compute Engine VM | `gcloud compute instances list --format='value(name,zone,status,networkInterfaces[0].accessConfigs[0].natIP)'` |
-| GKE | `gcloud container clusters list --format='value(name,location,status)'` |
-| App Engine | `gcloud app describe --format='value(id,defaultHostname)'` |
+| Cloud Run | `gcloud run services list --project=<PROJECT_ID> --platform=managed --format='value(metadata.name,metadata.region,status.url)'` |
+| Compute Engine VM | `gcloud compute instances list --project=<PROJECT_ID> --format='value(name,id,zone,status,networkInterfaces[0].accessConfigs[0].natIP)'` |
+| GKE | `gcloud container clusters list --project=<PROJECT_ID> --format='value(name,location,status)'` |
+| App Engine | `gcloud app describe --project=<PROJECT_ID> --format='value(id,defaultHostname)'` |
 
 The instance name often carries the environment. Describe a candidate before assuming it is the
-target:
+target, and record its numeric ID — Cloud Logging's standard `gce_instance` entries are keyed by
+`resource.labels.instance_id`, not by name:
 
 ```sh
-gcloud compute instances describe <INSTANCE> --zone=<ZONE> \
-  --format='value(status,machineType,tags.items)'
+gcloud compute instances describe <INSTANCE> --project=<PROJECT_ID> --zone=<ZONE> \
+  --format='value(status,machineType,id,tags.items)'
 ```
 
 ## Step 2 — Cloud Logging first
@@ -100,10 +106,10 @@ gcloud logging read '<FILTER>' \
   | Goal | Filter fragment |
   | --- | --- |
   | one Cloud Run service | `resource.type="cloud_run_revision" AND resource.labels.service_name="<SERVICE>"` |
-  | one Compute Engine VM | `resource.type="gce_instance" AND resource.labels.instance_name="<INSTANCE>"` |
+  | one Compute Engine VM | `resource.type="gce_instance" AND resource.labels.instance_id="<NUMERIC_INSTANCE_ID>"` (the standard resource carries `project_id`, `instance_id`, and `zone` — never `instance_name`) |
   | container logs collected by the Ops Agent | `logName:"docker_containers"` (the exact log name depends on the driver and agent) |
   | a Swarm service in those entries | `jsonPayload.attrs."com.docker.swarm.service.name"="<SERVICE>"` |
-  | a VM whose entries carry no `instance_name` label | `labels."compute.googleapis.com/resource_name":"<INSTANCE>"` (substring match; see the note below) |
+  | a VM whose entries carry an Ops-Agent host label | `labels."compute.googleapis.com/resource_name":"<INSTANCE>"` (substring match; confirm from a sample entry first) |
   | errors and worse only | `severity>=ERROR` (see the note below for container logs) |
   | a structured message field | `jsonPayload.msg="..."` |
   | an application error code | `jsonPayload.errorCode="<CODE>"` |
@@ -118,33 +124,63 @@ gcloud logging read '<FILTER>' \
   an Ops-Agent host `severity>=ERROR` can still match syslog noise (sshd, kernel) while missing every
   container error, so keep the two streams apart. An empty result from the wrong field is not
   evidence of health.
-- `gcloud logging logs list` names the log streams the project actually has, but print it with
-  `--format=json`: a `--format='value(name)'` read prints blank lines because the response is a flat
-  array, and an empty list is inconclusive rather than proof that no stream exists.
+- `gcloud logging logs list --project=<PROJECT_ID>` names the log streams the project actually has,
+  but print it with `--format=json`: a `--format='value(name)'` read prints blank lines because the
+  response is a flat array, and an empty list is inconclusive rather than proof that no stream exists.
 - Before trusting a label filter, dump one entry with the coarse filter and `--limit=1 --format=json`
-  to see which labels and payload fields exist and what they hold. Label values are often more than
-  the bare name: a `resource_name` label may carry the full internal host name, so match it as a
-  substring (`labels."compute.googleapis.com/resource_name":"<INSTANCE>"`) instead of an exact
-  equality.
+  to see which labels and payload fields exist and what they hold: the standard `gce_instance`
+  resource never has `instance_name`, and labels such as `compute.googleapis.com/resource_name` are
+  Ops-Agent additions that not every GCE log carries. Label values are often more than the bare
+  name — a `resource_name` value may be the full internal host name — so match those as substrings
+  rather than exact equalities.
 - Prefer the narrowest query that answers the question: a tight filter with `--format='value(...)'`
   and a small `--limit`. Widen, or move to Step 3, only when it is genuinely empty; re-reading whole
   streams burns context without adding evidence.
 - An empty result means "no matching entries in this window", not "no incidents". Report the window
-  and filter, then continue to Step 3. `PERMISSION_DENIED` is different: name the missing role
-  (`roles/logging.viewer`) instead of retrying as if the result were empty.
+  and filter — then continue to Step 3 **only when Step 1 identified a self-hosted Compute Engine
+  deployment**. Managed runtimes have no host to SSH into: a Cloud Run or App Engine service stays
+  on its own resource-specific filter, and a GKE workload uses the cluster-scoped pod path in
+  Step 3. Never fall back to enumerating unrelated VMs because a managed query came back empty.
+  `PERMISSION_DENIED` is different: name the missing role (`roles/logging.viewer`) instead of
+  retrying as if the result were empty.
 
 ## Step 3 — Read logs on the host (self-hosted fallback)
 
-For a VM that runs containers itself, gcloud is the transport and `docker` is the log source.
+This Step applies only to a Compute Engine VM that Step 1 identified as the self-hosted host of the
+service. A GKE workload uses the Kubernetes row below; Cloud Run and App Engine have no host and
+stay in Step 2.
+
+### Verify SSH access before the first unattended read
+
+`gcloud compute ssh` provisions access when none exists: it can create a key pair, save the private
+key locally (with an empty passphrase when `--quiet` swallows the prompt), and register the public
+key in project or instance metadata. Provisioning is a configuration change, so confirm existing
+access read-only before any unattended use:
 
 ```sh
-timeout 60 gcloud compute ssh <INSTANCE> --zone=<ZONE> --quiet \
-  --command='sudo docker service ls --format "{{.Name}} {{.Replicas}} {{.Image}}"'
+# Is there already a gcloud-managed key pair on this machine?
+ls ~/.ssh/google_compute_engine ~/.ssh/google_compute_engine.pub 2>/dev/null
+# Is the operator already granted access (OS Login profile, or ssh-keys in metadata)?
+gcloud compute os-login describe-profile --project=<PROJECT_ID> 2>/dev/null | head -20
+gcloud compute instances describe <INSTANCE> --project=<PROJECT_ID> --zone=<ZONE> \
+  --format='json(metadata.items)' | grep -iE "ssh-keys|public-keys" || true
+gcloud compute project-info describe --project=<PROJECT_ID> \
+  --format='json(metadata.items)' | grep -iE "ssh-keys|public-keys" || true
 ```
 
-- "External IP address was not found; defaulting to using IAP tunneling" is normal on a private VM.
-  SSH then also needs `roles/iap.tunnelResourceAccessor`, not just Compute access.
-- Find the service, then read its logs:
+When both checks confirm existing access, unattended `--quiet` reads reuse it and change nothing.
+When they do not, stop and hand the operator the one-time interactive setup, naming its side
+effects (a local private key may be created and its public half registered):
+
+```sh
+gcloud compute ssh <INSTANCE> --project=<PROJECT_ID> --zone=<ZONE>
+```
+
+Only after the operator confirms does the read-only SSH usage below begin. "External IP address was
+not found; defaulting to using IAP tunneling" is normal on a private VM; SSH then also needs
+`roles/iap.tunnelResourceAccessor`, not just Compute access.
+
+- Find the service from the verified host, then read its logs:
 
   | Deployment | Service listing | Log command |
   | --- | --- | --- |
@@ -153,7 +189,7 @@ timeout 60 gcloud compute ssh <INSTANCE> --zone=<ZONE> --quiet \
   | Kubernetes | `kubectl get pods` | `kubectl logs <POD> --since=1h` |
 
   ```sh
-  timeout 90 gcloud compute ssh <INSTANCE> --zone=<ZONE> --quiet \
+  timeout 90 gcloud compute ssh <INSTANCE> --project=<PROJECT_ID> --zone=<ZONE> --quiet \
     --command='sudo docker service logs --since 6h --timestamps <SERVICE> 2>&1 | tail -n 200'
   ```
 
@@ -176,7 +212,7 @@ A log line explains behavior; the image tag explains which code produced it. Whe
 to be live, verify what is actually running before drawing conclusions:
 
 ```sh
-timeout 60 gcloud compute ssh <INSTANCE> --zone=<ZONE> --quiet \
+timeout 60 gcloud compute ssh <INSTANCE> --project=<PROJECT_ID> --zone=<ZONE> --quiet \
   --command='sudo docker service ls --format "{{.Name}} {{.Image}}"'
 ```
 

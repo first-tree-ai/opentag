@@ -1,19 +1,11 @@
+import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
 import type { MCPAgentServer } from "@opentag/shared/browser";
+import { useId } from "react";
 import * as m from "../../paraglide/messages.js";
-import {
-  Banner,
-  Button,
-  Collapsible,
-  DropdownMenu,
-  Icon,
-  Loader,
-  StatusIndicator,
-  Switch,
-  Text,
-  Tooltip,
-} from "../../ui/design-system.js";
+import { Button, DropdownMenu, Icon, Info, Loader, Popover, Switch, Text, Tooltip } from "../../ui/design-system.js";
+import { findCatalogEntryByUrl } from "./catalog/mcp-catalog-model.js";
 import { canRevoke } from "./mcp-page-model.js";
-import { McpPartialTools } from "./mcp-tools-dialog.js";
+import { McpServiceIcon } from "./mcp-service-icon.js";
 
 export type ServerAction = "authorize" | "edit" | "remove" | "revoke" | "tools" | "details";
 export function McpServerCard({
@@ -37,23 +29,31 @@ export function McpServerCard({
   error?: string;
   highlighted?: boolean;
 }) {
+  const catalogEntry = findCatalogEntryByUrl(entry.effective.url, MCP_CATALOG_ENTRIES);
   const authorized = entry.authorization?.status === "active";
   const pending = probing || entry.authorization?.probeState === "pending";
   const saved = entry.snapshot !== null;
   const count = entry.snapshot?.tools?.length ?? 0;
-  const previous = !authorized || entry.authorization?.probeState !== "succeeded" || probing;
   return (
     <li
       id={`mcp-server-${entry.mcpServerId}`}
       tabIndex={-1}
-      className={`grid min-w-0 gap-3 p-4 outline-offset-[-2px] ${highlighted ? "outline-2 outline-kumo-ring" : ""}`}
+      className={`mcp-server-row min-w-0 p-4 outline-offset-[-2px] ${highlighted ? "outline-2 outline-kumo-ring" : ""}`}
       data-ui="mcp-server-row"
     >
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 wrap-anywhere">
-        <Text as="h2" variant="heading">
-          {entry.name}
-        </Text>
-        <div className="flex shrink-0 items-center gap-2">
+      <div className="mcp-server-identity flex min-w-0 items-center gap-3">
+        <McpServiceIcon src={catalogEntry?.iconIsOfficial ? catalogEntry.iconUrl : undefined} />
+        <div className="grid min-w-0 gap-1">
+          <Text as="h2" title={entry.name} variant="heading">
+            {entry.name}
+          </Text>
+          <Tooltip content={entry.effective.url} render={<p className="truncate text-sm text-kumo-subtle" />}>
+            {entry.effective.url}
+          </Tooltip>
+        </div>
+      </div>
+      <div className="mcp-server-controls">
+        <div className="mcp-server-toggles flex shrink-0 items-center gap-2">
           <Tooltip
             content={m.mcp_toggle_label({ agent: agentName, name: entry.name })}
             render={
@@ -70,16 +70,8 @@ export function McpServerCard({
           />
           <ServerMenu entry={entry} pending={pending} onAction={onAction} onProbe={onProbe} />
         </div>
-        <p className="col-span-2 wrap-anywhere text-sm text-kumo-subtle">{entry.effective.url}</p>
-      </div>
-      {entry.description ? (
-        <p className="wrap-anywhere line-clamp-2 text-sm text-kumo-subtle">{entry.description}</p>
-      ) : null}
-      <div className="grid gap-3 border-t border-kumo-line pt-3 @min-[36rem]/content:grid-cols-[minmax(0,1fr)_auto] @min-[36rem]/content:items-start">
-        <div className="min-w-0 empty:hidden" aria-live="polite">
-          <ToolStatus entry={entry} agentName={agentName} pending={pending} />
-        </div>
-        <div className="flex flex-wrap items-center gap-2 @min-[36rem]/content:col-start-2 @min-[36rem]/content:row-start-1">
+        <div className="mcp-server-actions flex min-w-0 items-center justify-end gap-3" aria-live="polite">
+          <ToolStatus entry={entry} agentName={agentName} pending={pending} error={error} />
           {entry.enabled && !authorized ? (
             <Button size="compact" variant="secondary" onClick={() => onAction("authorize")}>
               {m.mcp_authorize_action()}
@@ -87,51 +79,76 @@ export function McpServerCard({
           ) : null}
           {entry.enabled && authorized && entry.authorization?.probeState === "failed" ? (
             <Button
+              className={saved ? "px-1" : undefined}
               aria-label={m.mcp_retry()}
               disabled={pending}
-              loading={probing}
               size="compact"
-              variant="secondary"
+              variant={saved ? "ghost" : "secondary"}
               onClick={onProbe}
             >
               {m.mcp_retry()}
             </Button>
           ) : null}
           {saved ? (
-            <Button variant="ghost" size="compact" onClick={() => onAction("tools")}>
-              {previous ? m.mcp_saved_tools_action({ count }) : m.mcp_tools_action({ count })}
+            <Button className="px-1" variant="ghost" size="compact" onClick={() => onAction("tools")}>
+              {m.mcp_tools_action({ count })}
               <Icon name="chevron-right" />
             </Button>
           ) : null}
         </div>
       </div>
-      {error ? <Banner variant="error">{error}</Banner> : null}
-      {entry.enabled &&
-      authorized &&
-      entry.authorization?.probeState === "failed" &&
-      !pending &&
-      entry.authorization.probeError ? (
-        <McpProbeError error={entry.authorization.probeError} />
-      ) : null}
     </li>
   );
 }
-function ToolStatus({ entry, agentName, pending }: { entry: MCPAgentServer; agentName: string; pending: boolean }) {
+function ToolStatus({
+  entry,
+  agentName,
+  pending,
+  error,
+}: {
+  entry: MCPAgentServer;
+  agentName: string;
+  pending: boolean;
+  error?: string;
+}) {
+  if (error) return <McpRowError key={error} label={m.mcp_row_action_failed()} error={error} defaultOpen />;
   if (!entry.enabled)
-    return <span className="text-sm text-kumo-subtle">{m.mcp_disabled_for({ agent: agentName })}</span>;
-  if (entry.authorization?.status !== "active")
-    return <StatusIndicator label={m.mcp_authorization_required()} tone="warning" />;
-  if (pending)
     return (
-      <span className="flex items-center gap-2 text-sm text-kumo-subtle">
-        <Loader size="sm" />
-        {entry.authorization.kind === "oauth" ? m.mcp_probe_oauth_pending() : m.mcp_probe_state_pending()}
+      <span
+        className="mcp-server-status truncate text-sm text-kumo-subtle"
+        title={m.mcp_disabled_for({ agent: agentName })}
+      >
+        <span className="mcp-server-status-full">{m.mcp_disabled_for({ agent: agentName })}</span>
+        <span className="mcp-server-status-short">{m.mcp_mount_disabled()}</span>
       </span>
     );
-  if (entry.authorization.probeState === "failed")
-    return <span className="text-sm text-kumo-danger">{m.mcp_probe_state_failed()}</span>;
+  if (entry.authorization?.status !== "active")
+    return (
+      <span className="mcp-server-auth-status mcp-server-status flex items-center gap-2 text-sm text-kumo-subtle">
+        <Info aria-hidden className="size-4 shrink-0 text-kumo-warning" />
+        {m.mcp_authorization_required()}
+      </span>
+    );
+  if (pending)
+    return (
+      <span className="mcp-server-status flex items-center gap-2 text-sm text-kumo-subtle">
+        <Loader size="sm" />
+        {m.mcp_probe_state_pending()}
+      </span>
+    );
+  if (entry.authorization.probeState === "failed") {
+    const label = entry.snapshot === null ? m.mcp_row_load_failed() : m.mcp_row_refresh_failed();
+    return entry.authorization.probeError ? (
+      <McpRowError label={label} error={entry.authorization.probeError} />
+    ) : (
+      <span className="mcp-server-status text-sm text-kumo-danger">
+        <span className="mcp-server-status-full">{label}</span>
+        <span className="mcp-server-status-short">{m.mcp_row_failed()}</span>
+      </span>
+    );
+  }
   if (entry.snapshot === null) return <span className="text-sm text-kumo-subtle">{m.mcp_probe_state_not_run()}</span>;
-  return entry.authorization.toolsTruncated ? <McpPartialTools /> : null;
+  return null;
 }
 function ServerMenu({
   entry,
@@ -175,18 +192,37 @@ function ServerMenu({
     </DropdownMenu>
   );
 }
-export function McpProbeError({ error }: { error: string }) {
+function McpRowError({ label, error, defaultOpen = false }: { label: string; error: string; defaultOpen?: boolean }) {
+  const hintId = useId();
   return (
-    <Collapsible.Root className="min-w-0">
-      <Collapsible.Trigger render={<Button className="text-kumo-subtle" size="compact" variant="ghost" />}>
-        {m.mcp_error_details()}
-        <Icon className="size-3.5" name="chevron-down" />
-      </Collapsible.Trigger>
-      <Collapsible.Panel className="pt-2">
-        <p className="wrap-anywhere whitespace-pre-wrap rounded bg-kumo-recessed p-3 font-mono text-xs text-kumo-subtle">
+    <Popover defaultOpen={defaultOpen}>
+      <Popover.Trigger
+        render={
+          <Button
+            aria-describedby={hintId}
+            className="mcp-server-status px-0 text-kumo-danger"
+            size="compact"
+            variant="ghost"
+          />
+        }
+      >
+        <Info aria-hidden className="size-4 shrink-0" />
+        <span className="mcp-server-status-full">{label}</span>
+        <span className="mcp-server-status-short">{m.mcp_row_failed()}</span>
+      </Popover.Trigger>
+      <span id={hintId} className="sr-only">
+        {m.mcp_error_details_hint()}
+      </span>
+      <Popover.Content align="end" side="top" className="z-50 max-w-xs">
+        <Popover.Title>{m.mcp_error_details()}</Popover.Title>
+        <p className="mt-1 text-sm">{label}</p>
+        <p
+          className="mt-2 wrap-anywhere whitespace-pre-wrap font-mono text-xs text-kumo-subtle"
+          role={defaultOpen ? "alert" : undefined}
+        >
           {error}
         </p>
-      </Collapsible.Panel>
-    </Collapsible.Root>
+      </Popover.Content>
+    </Popover>
   );
 }

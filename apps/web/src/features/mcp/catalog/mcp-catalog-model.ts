@@ -25,6 +25,23 @@ export function comparableUrl(value: string): string {
   }
 }
 
+/** Match a known endpoint, allowing connection-specific query parameters and a trailing slash. */
+export function findCatalogEntryByUrl(value: string, entries: readonly McpCatalogEntry[]): McpCatalogEntry | undefined {
+  const target = catalogEndpoint(value);
+  if (!target) return undefined;
+  return entries.find((entry) => catalogEndpoint(entry.url) === target);
+}
+
+function catalogEndpoint(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.username || url.password) return undefined;
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Whether an entry matches the catalog search, over its name, its URL, and the active locale. */
 export function matchesCatalogEntry(entry: McpCatalogEntry, query: string, locale: Locale = getLocale()): boolean {
   const term = query.trim().toLowerCase();

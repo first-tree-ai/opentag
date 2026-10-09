@@ -37,7 +37,7 @@ describe("mcp preset catalog shape", () => {
 
   it("embeds every icon as a self-contained data URL", () => {
     for (const entry of MCP_CATALOG_ENTRIES) {
-      expect(entry.iconUrl.startsWith("data:image/svg+xml;base64,")).toBe(true);
+      expect(entry.iconUrl).toMatch(/^data:image\/(?:svg\+xml|png);base64,/);
     }
   });
 });

@@ -20,6 +20,7 @@ import {
   RuntimeReasoningEffortSchema,
   runtimeUtf8Length as utf8Length,
 } from "./runtime-config.js";
+import { AgentRuntimeOptionsSchema } from "./runtime-configuration-options.js";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
 import { SessionMessageScheduledOriginSchema } from "./schedules.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
@@ -812,6 +813,38 @@ export const TurnReportResultSchema = z
   })
   .strict();
 
+export const AgentRuntimeOptionsRequestFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:options"),
+    requestId: RuntimeRequestIdSchema,
+    agentId: z.string().uuid(),
+    computerId: z.string().uuid(),
+    provider: AgentRuntimeProviderSchema,
+    model: RuntimeModelSchema.optional(),
+  })
+  .strict();
+export const AgentRuntimeOptionsCancelFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:options:cancel"),
+    requestId: RuntimeRequestIdSchema,
+  })
+  .strict();
+export const AgentRuntimeOptionsResultFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:options:result"),
+    requestId: RuntimeRequestIdSchema,
+    result: z.discriminatedUnion("status", [
+      z.object({ status: z.literal("completed"), options: AgentRuntimeOptionsSchema }).strict(),
+      z
+        .object({
+          status: z.literal("failed"),
+          code: z.enum(["capability_missing", "provider_failed", "cancelled", "busy"]),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+
 export const AgentRuntimeTestRequestFrameSchema = z
   .object({
     type: z.literal("agent-runtime:test"),
@@ -1146,6 +1179,8 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionMessageDeliveryRequestV3Schema,
   TurnReportResultSchema,
   RuntimeImCredentialGrantResultSchema,
+  AgentRuntimeOptionsRequestFrameSchema,
+  AgentRuntimeOptionsCancelFrameSchema,
   AgentRuntimeTestRequestFrameSchema,
   AgentRuntimeTestCancelFrameSchema,
   ProviderCliPrewarmFrameSchema,
@@ -1201,6 +1236,9 @@ export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
 export type TurnReportRequest = z.infer<typeof TurnReportRequestSchema>;
 export type TurnReportResult = z.infer<typeof TurnReportResultSchema>;
+export type AgentRuntimeOptionsRequestFrame = z.infer<typeof AgentRuntimeOptionsRequestFrameSchema>;
+export type AgentRuntimeOptionsCancelFrame = z.infer<typeof AgentRuntimeOptionsCancelFrameSchema>;
+export type AgentRuntimeOptionsResultFrame = z.infer<typeof AgentRuntimeOptionsResultFrameSchema>;
 export type AgentRuntimeTestRequestFrame = z.infer<typeof AgentRuntimeTestRequestFrameSchema>;
 export type AgentRuntimeTestCancelFrame = z.infer<typeof AgentRuntimeTestCancelFrameSchema>;
 export type AgentRuntimeTestResultFrame = z.infer<typeof AgentRuntimeTestResultFrameSchema>;

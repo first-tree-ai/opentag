@@ -53,6 +53,7 @@ import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
+import type { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
   type AgentRuntimeTestService,
@@ -103,6 +104,7 @@ export interface CreateAppOptions {
   /** Whether this deployment can start the first-party Slack OAuth flow. */
   slackOAuthAvailable?: boolean;
   agentSetupService?: AgentSetupService;
+  agentRuntimeOptionsService?: AgentRuntimeOptionsService;
   agentRuntimeTestService?: AgentRuntimeTestService;
   contextTreeOperationService?: ContextTreeOperationService;
   computerService?: ComputerService;
@@ -673,6 +675,7 @@ export function createApp(options: CreateAppOptions = {}) {
             : undefined),
         options.slackOAuthAvailable,
         options.imResourceService,
+        options.agentRuntimeOptionsService,
       );
     }
     registerAvailableAccountRoutes(app, authService, options, authOptions);

@@ -25,6 +25,8 @@ export const queryKeys = {
     listRoot: () => ["agents", "list"] as const,
     list: (accountId: string) => ["agents", "list", accountId] as const,
     detail: (agentId: string) => ["agents", agentId, "detail"] as const,
+    runtimeOptions: (agentId: string, computerId: string | null, provider: string, model: string) =>
+      ["agents", agentId, "runtime-options", computerId, provider, model] as const,
     config: (agentId: string) => ["agents", agentId, "config"] as const,
     imBinding: (agentId: string) => ["agents", agentId, "imBinding"] as const,
     feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,

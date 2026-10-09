@@ -1,8 +1,23 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { browserApi } from "../../../api.js";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, screen, render as testingRender, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError, browserApi } from "../../../api.js";
 import { RuntimeConfigurationForm, runtimeConfigurationFromForm } from "./runtime-configuration.js";
+
+const queryClients: QueryClient[] = [];
+function render(element: ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClients.push(client);
+  return testingRender(<QueryClientProvider client={client}>{element}</QueryClientProvider>);
+}
+beforeEach(() => {
+  vi.spyOn(browserApi, "agentRuntimeOptions").mockRejectedValue(new ApiError(501, "Older client"));
+});
+afterEach(() => {
+  for (const client of queryClients.splice(0)) client.clear();
+});
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
@@ -42,7 +57,8 @@ async function optionLabels(label: string): Promise<string[]> {
 async function chooseOption(label: string, value: string): Promise<void> {
   const trigger = screen.getByRole("combobox", { name: label });
   fireEvent.click(trigger);
-  const optionName = value === "" ? "Provider default" : value === "__custom_model__" ? "Custom model ID…" : value;
+  const optionName =
+    value === "" ? "Inherit local configuration" : value === "__custom_model__" ? "Custom model ID…" : value;
   const option = await screen.findByRole("option", { name: optionName });
   if (!option) throw new Error(`Missing ${label} option ${value}`);
   fireEvent.pointerMove(option, { pointerType: "mouse" });
@@ -50,11 +66,105 @@ async function chooseOption(label: string, value: string): Promise<void> {
   fireEvent.pointerUp(option, { pointerType: "mouse" });
   fireEvent.click(option);
   await waitFor(() => expect(trigger.textContent?.trim()).toContain(optionName));
+  await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
 }
 
 describe("RuntimeConfigurationForm", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("uses per-model efforts, preserves historical values, and requires an explicit supported selection", async () => {
+    vi.mocked(browserApi.agentRuntimeOptions).mockImplementation(async (_id, model) => ({
+      modelSuggestions: ["gpt-6-sol", "gpt-6-luna"],
+      reasoningEffortAllowedValues: model === "gpt-6-luna" ? ["high", "max"] : ["high", "max", "ultra"],
+    }));
+    const configured = {
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, model: "gpt-6-sol", reasoningEffort: "ultra" },
+    };
+    const save = vi.fn().mockResolvedValue(configured);
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} />);
+    await waitFor(() =>
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledWith(config.id, "gpt-6-sol", expect.any(AbortSignal)),
+    );
+    expect(await optionLabels("Reasoning effort")).toContain("Ultra");
+    await chooseOption("Model", "gpt-6-luna");
+    await screen.findByText(
+      "Choose a supported effort or inherit local configuration before saving this model change.",
+    );
+    expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(await optionLabels("Reasoning effort")).toEqual([
+      "Inherit local configuration",
+      "ultra (saved value)",
+      "High",
+      "Max",
+    ]);
+    await chooseOption("Reasoning effort", "");
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        expectedRevision: 4,
+        runtimeConfig: { model: "gpt-6-luna", reasoningEffort: null },
+      }),
+    );
+  });
+
+  it("shows no explicit efforts for a confirmed empty list and refreshes custom model capabilities", async () => {
+    vi.mocked(browserApi.agentRuntimeOptions).mockResolvedValue({
+      modelSuggestions: ["custom/model"],
+      reasoningEffortAllowedValues: [],
+    });
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration"]);
+    await chooseOption("Model", "__custom_model__");
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom model ID" }), { target: { value: "other/private" } });
+    await waitFor(() =>
+      expect(browserApi.agentRuntimeOptions).toHaveBeenCalledWith(config.id, "other/private", expect.any(AbortSignal)),
+    );
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Refresh models and effort" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models and effort" }));
+    await waitFor(() =>
+      expect(
+        vi.mocked(browserApi.agentRuntimeOptions).mock.calls.filter((call) => call[1] === "other/private").length,
+      ).toBe(2),
+    );
+  });
+
+  it("shows authorization failures instead of presenting a failed directory as confirmed", async () => {
+    vi.mocked(browserApi.agentRuntimeOptions).mockRejectedValue(new ApiError(403, "Forbidden"));
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "You do not have access to this Agent’s local model options.",
+    );
+    expect(await optionLabels("Model")).toContain("Custom model ID…");
+  });
+
+  it("ignores a late response for a previous model and keeps drafts while refreshing", async () => {
+    let resolveOld!: (value: { modelSuggestions: string[]; reasoningEffortAllowedValues: string[] }) => void;
+    vi.mocked(browserApi.agentRuntimeOptions).mockImplementation((_id, model) =>
+      model === "gpt-6-sol"
+        ? new Promise((resolve) => {
+            resolveOld = resolve;
+          })
+        : Promise.resolve({ modelSuggestions: ["gpt-6-sol", "gpt-6-luna"], reasoningEffortAllowedValues: ["high"] }),
+    );
+    const configured = { ...config, runtimeConfig: { ...config.runtimeConfig, model: "gpt-6-sol" } };
+    render(<RuntimeConfigurationForm initialConfig={configured} save={vi.fn()} />);
+    await waitFor(() => expect(resolveOld).toBeTypeOf("function"));
+    await chooseOption("Model", "gpt-6-luna");
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    resolveOld({ modelSuggestions: ["gpt-6-sol"], reasoningEffortAllowedValues: ["ultra"] });
+    expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration", "High"]);
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain("gpt-6-luna");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models and effort" }));
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain("gpt-6-luna");
   });
 
   it("presents model suggestions and the complete Codex reasoning list", async () => {
@@ -64,24 +174,31 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.getByText("Codex")).toBeTruthy();
     expect(screen.getByText("Fixed when this Agent is created.")).toBeTruthy();
     expect(await optionLabels("Model")).toEqual([
-      "Provider default",
+      "Inherit local configuration",
+      "gpt-6.1-sol",
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-5.3-codex",
       "Custom model ID…",
     ]);
     expect(await optionLabels("Reasoning effort")).toEqual([
-      "Provider default",
+      "Inherit local configuration",
       "Minimal",
       "Low",
       "Medium",
       "High",
       "Extra high",
+      "Max",
+      "Ultra",
     ]);
-    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain("Provider default");
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain(
+      "Inherit local configuration",
+    );
     expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent?.trim()).toContain(
-      "Provider default",
+      "Inherit local configuration",
     );
     expect(screen.getByRole("heading", { name: "Instructions" })).toBeTruthy();
     expect(
@@ -103,12 +220,14 @@ describe("RuntimeConfigurationForm", () => {
 
     await chooseOption("Reasoning effort", "High");
     expect(await optionLabels("Reasoning effort")).toEqual([
-      "Provider default",
+      "Inherit local configuration",
       "Minimal",
       "Low",
       "Medium",
       "High",
       "Extra high",
+      "Max",
+      "Ultra",
     ]);
     expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent?.trim()).toContain("High");
   });
@@ -132,7 +251,7 @@ describe("RuntimeConfigurationForm", () => {
       expectedRevision: 4,
       runtimeConfig: { model: "workspace/fine-tuned-model", reasoningEffort: null },
     });
-    expect((await screen.findByRole("status")).textContent).toBe("Model settings saved.");
+    expect(await screen.findByText("Model settings saved.")).toBeTruthy();
     expect((screen.getByLabelText("Custom model ID") as HTMLInputElement).value).toBe("workspace/fine-tuned-model");
   });
 
@@ -165,21 +284,22 @@ describe("RuntimeConfigurationForm", () => {
     const claudeConfig: AgentAdminConfig = {
       ...config,
       runtimeProvider: "claude-code",
-      runtimeConfig: { ...config.runtimeConfig, model: "claude-sonnet-5", reasoningEffort: "max" },
+      runtimeConfig: { ...config.runtimeConfig, model: "claude-sonnet-5-5", reasoningEffort: "max" },
     };
     render(<RuntimeConfigurationForm initialConfig={claudeConfig} save={vi.fn()} />);
 
     expect(screen.getByText("Claude Code")).toBeTruthy();
     expect(await optionLabels("Model")).toEqual([
-      "Provider default",
-      "claude-opus-5",
-      "claude-sonnet-5",
-      "claude-haiku-4-5",
+      "Inherit local configuration",
+      "claude-fable-5-1",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
       "Custom model ID…",
     ]);
-    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain("claude-sonnet-5");
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain("claude-sonnet-5-5");
     expect(await optionLabels("Reasoning effort")).toEqual([
-      "Provider default",
+      "Inherit local configuration",
       "Low",
       "Medium",
       "High",
@@ -193,21 +313,23 @@ describe("RuntimeConfigurationForm", () => {
     const piConfig: AgentAdminConfig = {
       ...config,
       runtimeProvider: "pi",
-      runtimeConfig: { ...config.runtimeConfig, model: "claude-sonnet-4", reasoningEffort: "off" },
+      runtimeConfig: { ...config.runtimeConfig, model: "anthropic/claude-sonnet-5-5", reasoningEffort: "off" },
     };
     render(<RuntimeConfigurationForm initialConfig={piConfig} save={vi.fn()} />);
 
     expect(screen.getByText("Pi")).toBeTruthy();
     expect(await optionLabels("Model")).toEqual([
-      "Provider default",
-      "claude-opus-4-7",
-      "claude-sonnet-4",
-      "gpt-5.6-sol",
+      "Inherit local configuration",
+      "anthropic/claude-opus-5-5",
+      "anthropic/claude-sonnet-5-5",
+      "openai/gpt-6.1-sol",
       "Custom model ID…",
     ]);
-    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain("claude-sonnet-4");
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain(
+      "anthropic/claude-sonnet-5-5",
+    );
     expect(await optionLabels("Reasoning effort")).toEqual([
-      "Provider default",
+      "Inherit local configuration",
       "Off",
       "Minimal",
       "Low",
@@ -255,13 +377,15 @@ describe("RuntimeConfigurationForm", () => {
     render(<RuntimeConfigurationForm initialConfig={historicalConfig} save={save} section="execution" />);
 
     expect(await optionLabels("Reasoning effort")).toEqual([
-      "Provider default",
+      "Inherit local configuration",
       "historical-effort (saved value)",
       "Minimal",
       "Low",
       "Medium",
       "High",
       "Extra high",
+      "Max",
+      "Ultra",
     ]);
     expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent?.trim()).toContain(
       "historical-effort",
@@ -367,13 +491,15 @@ describe("RuntimeConfigurationForm", () => {
       "historical-effort",
     );
     expect(await optionLabels("Reasoning effort")).toEqual([
-      "Provider default",
+      "Inherit local configuration",
       "historical-effort (saved value)",
       "Minimal",
       "Low",
       "Medium",
       "High",
       "Extra high",
+      "Max",
+      "Ultra",
     ]);
     expect(screen.queryByText("Unsaved changes")).toBeNull();
     expect(save).not.toHaveBeenCalled();
@@ -420,12 +546,12 @@ describe("RuntimeConfigurationForm", () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Run test" }));
-    expect((await screen.findByRole("status")).textContent).toMatch(/^Connection succeeded\./);
+    expect(await screen.findByText(/^Connection succeeded\./)).toBeTruthy();
 
     await chooseOption("Model", "gpt-5.6-sol");
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
-    expect((await screen.findByRole("status")).textContent).toBe("Model settings saved.");
+    expect(await screen.findByText("Model settings saved.")).toBeTruthy();
     expect(screen.queryByText(/Connection succeeded/)).toBeNull();
   });
 });

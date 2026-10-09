@@ -76,13 +76,14 @@ export function agentSettingsSummary(
 ): string {
   if (section === "execution") {
     const provider = runtimeProviderName(config.runtimeProvider);
+    const defaultLabel = runtimeDefaultLabel(agent);
     if (!config.runtimeConfig.model && !config.runtimeConfig.reasoningEffort) {
-      return m.agent_settings_provider_defaults_summary({ providerName: provider });
+      return defaultRuntimeSummary(agent, provider);
     }
     return m.agent_settings_model_summary({
       providerName: provider,
-      model: config.runtimeConfig.model ?? m.agent_settings_provider_default(),
-      reasoning: reasoningSummary(config.runtimeConfig.reasoningEffort),
+      model: config.runtimeConfig.model ?? defaultLabel,
+      reasoning: reasoningSummary(config.runtimeConfig.reasoningEffort, defaultLabel),
     });
   }
   if (section === "messaging") {
@@ -110,16 +111,28 @@ export function agentSettingsSummary(
     : m.agent_settings_paused_not_accepting_requests();
 }
 
-function reasoningSummary(value: string | null): string {
-  if (!value) return m.agent_settings_provider_default();
+function runtimeDefaultLabel(agent: AgentDetailView): string {
+  return agent.computerKind === "local" ? m.agent_settings_inherit_local() : m.agent_settings_provider_default();
+}
+
+function defaultRuntimeSummary(agent: AgentDetailView, providerName: string): string {
+  return agent.computerKind === "local"
+    ? `${providerName} · ${m.agent_settings_inherit_local()}`
+    : m.agent_settings_provider_defaults_summary({ providerName });
+}
+
+function reasoningSummary(value: string | null, defaultLabel: string): string {
+  if (!value) return defaultLabel;
   return (
     {
+      off: m.agent_settings_reasoning_off(),
       minimal: m.agent_settings_reasoning_minimal(),
       low: m.agent_settings_reasoning_low(),
       medium: m.agent_settings_reasoning_medium(),
       high: m.agent_settings_reasoning_high(),
       xhigh: m.agent_settings_reasoning_extra_high(),
       max: m.agent_settings_reasoning_max(),
+      ultra: m.agent_settings_reasoning_ultra(),
     }[value] ?? value
   );
 }

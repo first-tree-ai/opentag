@@ -34,6 +34,7 @@ import {
   shutdownTelemetry,
 } from "./observability/index.js";
 import { createPlatformRuntime } from "./platform-runtime.js";
+import { AgentRuntimeOptionsOwner } from "./runtime/agent-runtime-options-owner.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { type AgentSessionStopDependencies, stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -44,6 +45,7 @@ import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owne
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
@@ -715,6 +717,7 @@ export async function startServer(): Promise<void> {
         computerService.hasActiveAgentWithoutMessagingSetup(computerId),
     });
     const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
+    const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const agentService = new AgentService(database, {
       cloudIdentitiesEnabled: cloudIdentities.enabled,
@@ -740,6 +743,18 @@ export async function startServer(): Promise<void> {
       imBindingService,
       agentService,
       contextTreeOperationOwner,
+    );
+    const agentRuntimeOptionsService = new AgentRuntimeOptionsService(
+      agentService,
+      agentRuntimeOptionsOwner,
+      async (computerId) => {
+        const [row] = await database
+          .select({ kind: computers.kind })
+          .from(computers)
+          .where(eq(computers.id, computerId))
+          .limit(1);
+        return row?.kind;
+      },
     );
     const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner, {
       // The branch key is the server-derived bound Computer kind; ownership was already enforced.
@@ -969,6 +984,7 @@ export async function startServer(): Promise<void> {
       slackOAuthAvailable: config.slackOAuth !== undefined,
       agentSetupService,
       agentRuntimeTestService,
+      agentRuntimeOptionsService,
       contextTreeOperationService,
       authService,
       browserAuth: {
@@ -1047,6 +1063,7 @@ export async function startServer(): Promise<void> {
         registry,
         domainOwner,
         agentRuntimeTestOwner,
+        agentRuntimeOptionsOwner,
         contextTreeOperationOwner,
         providerCliReconcileOwner,
         channelTarget: () => channelTargetPoller.get(),

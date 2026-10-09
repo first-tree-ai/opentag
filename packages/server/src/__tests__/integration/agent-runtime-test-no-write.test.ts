@@ -6,9 +6,11 @@ import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { computers } from "../../db/schema/index.js";
+import { AgentRuntimeOptionsOwner } from "../../runtime/agent-runtime-options-owner.js";
 import { AgentRuntimeTestOwner } from "../../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
+import { AgentRuntimeOptionsService } from "../../services/agents/agent-runtime-options-service.js";
 import { AgentRuntimeTestService, AgentService } from "../../services/agents/index.js";
 import type { UserAuthService } from "../../services/auth/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -81,7 +83,10 @@ describe("Agent Runtime test Postgres no-write", () => {
           installationId: computer.installationId,
           instanceId,
           lastHeartbeatAt: Date.now(),
-          negotiatedCapabilities: { [RUNTIME_CAPABILITY.agentRuntimeTest]: 1 },
+          negotiatedCapabilities: {
+            [RUNTIME_CAPABILITY.agentRuntimeTest]: 1,
+            [RUNTIME_CAPABILITY.agentRuntimeOptions]: 1,
+          },
           socket: {
             readyState: WebSocket.OPEN,
             close: vi.fn(),
@@ -96,10 +101,12 @@ describe("Agent Runtime test Postgres no-write", () => {
       );
       const owner = new AgentRuntimeTestOwner(registry);
       const runtimeTest = new AgentRuntimeTestService(agents, owner);
+      const optionsOwner = new AgentRuntimeOptionsOwner(registry);
       const app = createApp({
         authService: authService(bootstrap.userId),
         agentService: agents,
         agentRuntimeTestService: runtimeTest,
+        agentRuntimeOptionsService: new AgentRuntimeOptionsService(agents, optionsOwner, async () => "local"),
       });
       appHolders.push(app);
 
@@ -131,6 +138,37 @@ describe("Agent Runtime test Postgres no-write", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ status: "passed" });
       expect(owner.pendingCount()).toBe(0);
+
+      const optionsRequest = app.inject({
+        method: "GET",
+        url: `/api/v1/agents/${created.id}/runtime-options?model=custom%2Fmodel`,
+        headers: { authorization: "Bearer access" },
+      });
+      await vi.waitFor(() => expect(frames).toHaveLength(2));
+      const optionsFrame = frames[1] as { requestId: string };
+      expect(frames[1]).toMatchObject({
+        type: "agent-runtime:options",
+        agentId: created.id,
+        computerId: computer.id,
+        model: "custom/model",
+      });
+      await optionsOwner.businessOptions().handle(
+        {
+          type: "agent-runtime:options:result",
+          requestId: optionsFrame.requestId,
+          result: {
+            status: "completed",
+            options: { modelSuggestions: ["custom/model"], reasoningEffortAllowedValues: null },
+          },
+        },
+        context,
+      );
+      const optionsResponse = await optionsRequest;
+      expect(optionsResponse.statusCode).toBe(200);
+      expect(optionsResponse.json()).toEqual({
+        modelSuggestions: ["custom/model"],
+        reasoningEffortAllowedValues: null,
+      });
 
       const after = await snapshotPublicData(client.sql);
       expect(after).toEqual(before);

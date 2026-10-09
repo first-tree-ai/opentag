@@ -1,6 +1,7 @@
 import { HTTP_PATHS, negotiateProviderReadinessFromHeaders } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createServiceLoggerPort } from "../observability/index.js";
+import type { AgentRuntimeOptionsOwner } from "../runtime/agent-runtime-options-owner.js";
 import type { AgentRuntimeTestOwner } from "../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type { ContextTreeOperationOwner } from "../runtime/context-tree-operation-owner.js";
@@ -11,6 +12,7 @@ import type { ComputerAuthVerifier, ComputerService } from "../services/computer
 import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-config/index.js";
 
 export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
+  agentRuntimeOptionsOwner?: AgentRuntimeOptionsOwner;
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;
   contextTreeOperationOwner?: ContextTreeOperationOwner;
   domainOwner?: RuntimeDomainOwner;
@@ -82,6 +84,7 @@ export function registerRuntimeRoutes(
       composeRuntimeBusinessOptions(
         providerCliReconcileOwner?.businessOptions(),
         agentRuntimeTestOwner?.businessOptions(),
+        options.agentRuntimeOptionsOwner?.businessOptions(),
         options.contextTreeOperationOwner?.businessOptions(),
         domainOwner?.businessOptions(),
         options.runtimeCredentialOwner?.businessOptions(),
@@ -119,6 +122,7 @@ export function registerRuntimeRoutes(
   app.addHook("onClose", async () => {
     clearInterval(sweep);
     agentRuntimeTestOwner?.close();
+    options.agentRuntimeOptionsOwner?.close();
     options.contextTreeOperationOwner?.close();
     providerCliReconcileOwner?.close();
     domainOwner?.close();

@@ -393,7 +393,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         message: "does not implement the common tool allow-list contract",
       },
       { request: withConfiguration({ model: " " }), message: "model" },
-      { request: withConfiguration({ reasoningEffort: "extreme" }), message: "reasoning effort" },
+      { request: withConfiguration({ reasoningEffort: " " }), message: "reasoning effort" },
       { request: withConfiguration({ provider: [] }), message: "must be an object" },
       { request: withConfiguration({ provider: { unknown: true } }), message: "unknown" },
       { request: withConfiguration({ provider: { appendSystemPrompt: "removed" } }), message: "unknown" },
@@ -566,11 +566,11 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       await runtime.close();
     }
 
-    const rejectedProcess = new ManualClaudeCodeProcess([successResult()]);
-    await expect(factory(rejectedProcess).create(withConfiguration({ reasoningEffort: "ultracode" }))).rejects.toThrow(
-      "reasoning effort",
-    );
-    expect(rejectedProcess.args).toEqual([]);
+    const futureProcess = new ManualClaudeCodeProcess([successResult()]);
+    const future = await factory(futureProcess).create(withConfiguration({ reasoningEffort: "ultracode" }));
+    await future.prompt({ runId: "future-effort", input: input("args") });
+    expect(argumentAfter(futureProcess.args, "--effort")).toBe("ultracode");
+    await future.close();
   });
 
   it.each([

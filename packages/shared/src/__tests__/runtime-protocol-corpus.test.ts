@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  AgentRuntimeOptionsRequestFrameSchema,
+  AgentRuntimeOptionsResultFrameSchema,
   AgentRuntimeTestRequestFrameSchema,
   AgentRuntimeTestResultFrameSchema,
   AgentTraceBatchSchema,
@@ -24,6 +26,8 @@ const corpus = JSON.parse(readFileSync(new URL("./runtime-protocol-corpus.json",
 }>;
 
 const schemas = {
+  AgentRuntimeOptionsRequestFrameSchema,
+  AgentRuntimeOptionsResultFrameSchema,
   AgentRuntimeTestRequestFrameSchema,
   AgentRuntimeTestResultFrameSchema,
   AgentTraceBatchSchema,

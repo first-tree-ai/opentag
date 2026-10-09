@@ -6,17 +6,17 @@ describe("getRuntimeConfigurationOptions", () => {
   it.each([
     [
       "codex",
-      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.3-codex"],
-      ["minimal", "low", "medium", "high", "xhigh"],
+      ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+      ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     ],
     [
       "claude-code",
-      ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+      ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
       ["low", "medium", "high", "xhigh", "max"],
     ],
     [
       "pi",
-      ["claude-opus-4-7", "claude-sonnet-4", "gpt-5.6-sol"],
+      ["anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol"],
       ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     ],
   ] as const)("returns the complete %s options", (provider, modelSuggestions, reasoningEffortAllowedValues) => {

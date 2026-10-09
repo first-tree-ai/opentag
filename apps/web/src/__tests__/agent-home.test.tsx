@@ -219,7 +219,7 @@ describe("OpenTag Web App Shell", () => {
     // Every row in the list opens; a row that is a link only sometimes cannot be predicted.
     expect(screen.getByRole("link", { name: /^Computer\s?\S/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Pause or delete/ })).toBeTruthy();
-    expect(screen.getByText("Codex · Provider defaults")).toBeTruthy();
+    expect(screen.getByText("Codex · Inherit local configuration")).toBeTruthy();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
     expect(screen.getByText("Ada's Mac · macOS · Online")).toBeTruthy();
     expect(screen.queryByText("Runtime")).toBeNull();

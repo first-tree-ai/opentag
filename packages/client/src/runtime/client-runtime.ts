@@ -1,4 +1,8 @@
 import {
+  type AgentRuntimeOptions,
+  type AgentRuntimeOptionsRequestFrame,
+  type AgentRuntimeOptionsResultFrame,
+  AgentRuntimeOptionsResultFrameSchema,
   type AgentRuntimeTestRequestFrame,
   type AgentRuntimeTestResultFrame,
   AgentRuntimeTestResultFrameSchema,
@@ -36,6 +40,8 @@ type ResidualBusinessFrame = Extract<
       | "provider-cli:validation:run"
       | "provider-cli:cancel"
       | "context-tree:operation"
+      | "agent-runtime:options"
+      | "agent-runtime:options:cancel"
       | "agent-runtime:test"
       | "agent-runtime:test:cancel"
       | "turn:report:result";
@@ -59,6 +65,7 @@ export interface ClientRuntimeOptions {
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequestV3,
   ): Promise<SessionMessageDeliveryResult> | SessionMessageDeliveryResult;
+  getRuntimeOptions?(frame: AgentRuntimeOptionsRequestFrame, signal: AbortSignal): Promise<AgentRuntimeOptions>;
   availabilityTester?: {
     run(
       request: AgentRuntimeTestRequestFrame,
@@ -84,6 +91,7 @@ export class ClientRuntime {
   readonly #options: ClientRuntimeOptions;
   readonly #logger: ClientLogger;
   readonly #abort = new AbortController();
+  readonly #optionQueries = new Map<string, AbortController>();
   readonly #tests = new Map<string, AbortController>();
   #unsubscribe?: () => void;
 
@@ -198,6 +206,14 @@ export class ClientRuntime {
   }
 
   async #handleResidualFrame(frame: ResidualBusinessFrame): Promise<void> {
+    if (frame.type === "agent-runtime:options:cancel") {
+      this.#optionQueries.get(frame.requestId)?.abort();
+      return;
+    }
+    if (frame.type === "agent-runtime:options") {
+      await this.#queryRuntimeOptions(frame);
+      return;
+    }
     if (frame.type.startsWith("provider-cli:")) return;
     if (frame.type === "context-tree:operation") {
       let result: ContextTreeOperationResponse;
@@ -228,6 +244,31 @@ export class ClientRuntime {
       return;
     }
     if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);
+  }
+
+  async #queryRuntimeOptions(frame: AgentRuntimeOptionsRequestFrame): Promise<void> {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, this.#abort.signal, AbortSignal.timeout(18_000)]);
+    if (this.#optionQueries.size >= 32 || this.#optionQueries.has(frame.requestId)) return;
+    this.#optionQueries.set(frame.requestId, controller);
+    let result: AgentRuntimeOptionsResultFrame["result"];
+    try {
+      result = this.#options.getRuntimeOptions
+        ? { status: "completed", options: await this.#options.getRuntimeOptions(frame, signal) }
+        : { status: "failed", code: "capability_missing" };
+    } catch {
+      result = { status: "failed", code: signal.aborted ? "cancelled" : "provider_failed" };
+    } finally {
+      this.#optionQueries.delete(frame.requestId);
+    }
+    await this.#connection.send(
+      AgentRuntimeOptionsResultFrameSchema.parse({
+        type: "agent-runtime:options:result",
+        requestId: frame.requestId,
+        result,
+      }),
+      { priority: "result", signal: this.#abort.signal },
+    );
   }
 
   async #runAgentRuntimeTest(frame: AgentRuntimeTestRequestFrame): Promise<void> {

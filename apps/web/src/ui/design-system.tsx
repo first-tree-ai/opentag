@@ -55,6 +55,7 @@ import {
   Eye,
   EyeSlash,
   FileText,
+  Fingerprint,
   Gear,
   House,
   type IconWeight,
@@ -524,6 +525,7 @@ export type IconName =
   | "plus"
   | "settings"
   | "shield"
+  | "soul"
   | "sign-out"
   | "tree"
   | "upload"
@@ -553,6 +555,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   plus: Plus,
   settings: Gear,
   shield: Shield,
+  soul: Fingerprint,
   "sign-out": ArrowRight,
   tree: TreeStructure,
   upload: UploadSimple,

@@ -26,20 +26,26 @@ export function SettingsSaveActions({
   busy,
   onDiscard,
   saveDisabled = false,
+  saveLabel = m.agent_settings_save_changes_action(),
+  savingLabel = m.agent_settings_saving_action(),
+  statusLabel = m.agent_settings_unsaved_changes(),
 }: {
   busy: boolean;
   onDiscard: () => void;
   saveDisabled?: boolean;
+  saveLabel?: string;
+  savingLabel?: string;
+  statusLabel?: string;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-      <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
+      <span className="text-sm text-kumo-subtle">{statusLabel}</span>
       <div className="flex flex-wrap justify-end gap-2">
         <Button disabled={busy} type="button" variant="ghost" onClick={onDiscard}>
           {m.agent_settings_discard_action()}
         </Button>
         <Button disabled={busy || saveDisabled} type="submit">
-          {busy ? m.agent_settings_saving_action() : m.agent_settings_save_changes_action()}
+          {busy ? savingLabel : saveLabel}
         </Button>
       </div>
     </div>

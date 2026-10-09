@@ -12,12 +12,13 @@ import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import { liveResourceQueryOptions } from "../../../query/live.js";
-import { Banner, Button, InputArea, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
+import { Banner, Button, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
 import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
 import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./runtime-model-field.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
+import { SoulEditor } from "./soul-editor.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 const PROVIDER_DEFAULT_OPTION = "__provider_default__";
@@ -153,9 +154,9 @@ function RuntimeConfigurationEditor({
       });
       setConfig(updated);
       setInstructionsDraft(updated.runtimeConfig.instructions);
-      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_instructions_saved() });
+      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_soul_updated() });
     } catch {
-      setMessage({ kind: "error", section: "instructions", text: m.agent_settings_instructions_save_failed() });
+      setMessage({ kind: "error", section: "instructions", text: m.agent_settings_soul_apply_failed() });
     } finally {
       setSaving(undefined);
     }
@@ -283,7 +284,7 @@ function RuntimeConfigurationEditor({
         >
           {section === "instructions" ? (
             <AgentSettingsPageHeader
-              description={m.agent_settings_instructions_description()}
+              description={m.agent_settings_instructions_description({ agentName: config.displayName })}
               id="agent-instructions-heading"
               title={m.agent_settings_instructions_title()}
             />
@@ -292,18 +293,15 @@ function RuntimeConfigurationEditor({
               <Text as="h3" id="agent-instructions-heading" variant="heading">
                 {m.agent_settings_instructions_title()}
               </Text>
-              <p className="text-sm text-kumo-subtle">{m.agent_settings_instructions_description()}</p>
+              <p className="text-sm text-kumo-subtle">
+                {m.agent_settings_instructions_description({ agentName: config.displayName })}
+              </p>
             </header>
           )}
           <form className="grid gap-4" onSubmit={saveInstructions}>
-            <InputArea
-              aria-label={m.agent_settings_instructions_title()}
-              autoResize
+            <SoulEditor
+              disabled={Boolean(saving)}
               id={fieldId("instructions")}
-              maxRows={16}
-              minRows={8}
-              name="instructions"
-              placeholder={m.agent_settings_instructions_placeholder()}
               value={instructionsDraft}
               onValueChange={(value) => {
                 setInstructionsDraft(value);
@@ -311,13 +309,19 @@ function RuntimeConfigurationEditor({
               }}
             />
             {instructionsDirty ? (
-              <SettingsSaveActions
-                busy={Boolean(saving)}
-                onDiscard={() => {
-                  setInstructionsDraft(config.runtimeConfig.instructions);
-                  setMessage(undefined);
-                }}
-              />
+              <div className="grid gap-3">
+                <SettingsSaveActions
+                  busy={Boolean(saving)}
+                  saveLabel={m.agent_settings_soul_apply_action()}
+                  savingLabel={m.agent_settings_soul_applying_action()}
+                  statusLabel={m.agent_settings_soul_unapplied_changes()}
+                  onDiscard={() => {
+                    setInstructionsDraft(config.runtimeConfig.instructions);
+                    setMessage(undefined);
+                  }}
+                />
+                <p className="text-xs leading-relaxed text-kumo-subtle">{m.agent_settings_soul_next_turn_notice()}</p>
+              </div>
             ) : null}
           </form>
           {message?.section === "instructions" ? <SaveMessage message={message} /> : null}

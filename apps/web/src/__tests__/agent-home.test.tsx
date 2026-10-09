@@ -211,7 +211,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "How it works" })).toBeNull();
     // jsdom 30 no longer contributes inter-element whitespace to accessible names, so the
     // label/value boundary may collapse; \s? keeps these queries engine-agnostic.
-    expect(within(setup).queryByText("Instructions")).toBeNull();
+    expect(within(setup).queryByText("Soul")).toBeNull();
     expect(screen.getByRole("link", { name: /^Model\s?\S/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /^Name\s?Reviewer$/ })).toBeTruthy();

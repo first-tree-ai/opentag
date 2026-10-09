@@ -65,6 +65,7 @@ import {
   PostAuthenticationService,
 } from "./services/auth/index.js";
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
+import { createRunnerImagePrewarmWorker } from "./services/cloud-run/runner-image-prewarm-worker.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
@@ -544,6 +545,13 @@ export async function startServer(): Promise<void> {
         },
         supervisor: backgroundFailureSupervisor,
       },
+    });
+    const runnerImagePrewarmWorker = createRunnerImagePrewarmWorker({
+      environment: config.environment,
+      config: config.cloudRunner,
+      databaseUrl: config.databaseUrl,
+      logger: serviceLogger("runner-image-prewarm"),
+      supervisor: backgroundFailureSupervisor,
     });
     /*
      * E7 idle reclamation runs on the existing Server lifecycle: one fixed 15s cadence, one idle
@@ -1137,6 +1145,7 @@ export async function startServer(): Promise<void> {
     app.addHook("onClose", async () => {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
+      const imagePrewarmStopped = runnerImagePrewarmWorker?.stop();
       await scheduleScheduler.stop();
       channelTargetPoller.stop();
       await sandboxIdleReclaimer?.stop();
@@ -1148,6 +1157,7 @@ export async function startServer(): Promise<void> {
       await platformRuntime.close();
       await feishuSetupService.stop();
       await feishuConnections.stop();
+      await imagePrewarmStopped;
       await sql.end();
       await shutdownTelemetry();
     });
@@ -1155,6 +1165,7 @@ export async function startServer(): Promise<void> {
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");
+    runnerImagePrewarmWorker?.start();
   } catch (error) {
     if (app) {
       app.log.error({ detail: formatStartupError(error, knownSecrets) }, "Failed to start OpenTag server");

@@ -56,6 +56,8 @@ export const CloudRunnerEnvironmentSchema = z
      */
     OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN: z.string().min(1).max(8192).optional(),
     OPENTAG_CLOUD_RUNNER_API_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+    OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED: z.enum(["true", "false"]).optional(),
+    OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
     OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(120_000),
     OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS: z.coerce.number().int().min(300).max(7_200).default(1_800),
     OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS: z.coerce.number().int().min(60_000).max(1_800_000).default(900_000),
@@ -104,6 +106,8 @@ export type CloudRunnerConfig =
       /** Static acceptance-harness token; absent in production (metadata server is used). */
       staticAccessToken?: string;
       apiTimeoutMs: number;
+      /** Optional for embedded runtimes; hosted config enables background image preparation by default. */
+      prewarm?: { enabled: boolean; intervalMs: number };
       createConvergeTimeoutMs: number;
       bootstrapTokenTtlSeconds: number;
       acceptanceTimeoutMs: number;
@@ -146,6 +150,8 @@ export function resolveCloudRunnerConfig(
     OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_EXECUTION_TAG),
     OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN),
     OPENTAG_CLOUD_RUNNER_API_TIMEOUT_MS: environment.OPENTAG_CLOUD_RUNNER_API_TIMEOUT_MS,
+    OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED),
+    OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS: environment.OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS,
     OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS: environment.OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS,
     OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS: environment.OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS,
     OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS: environment.OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS,
@@ -181,6 +187,13 @@ export function resolveCloudRunnerConfig(
       ? { staticAccessToken: parsed.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN }
       : {}),
     apiTimeoutMs: parsed.OPENTAG_CLOUD_RUNNER_API_TIMEOUT_MS,
+    prewarm: {
+      enabled:
+        parsed.OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED === undefined
+          ? environment.OPENTAG_ENV === "staging" || environment.OPENTAG_ENV === "prod"
+          : parsed.OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED === "true",
+      intervalMs: parsed.OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS,
+    },
     createConvergeTimeoutMs: parsed.OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS,
     bootstrapTokenTtlSeconds: parsed.OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS,
     acceptanceTimeoutMs: parsed.OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS,

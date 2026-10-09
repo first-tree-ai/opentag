@@ -32,11 +32,16 @@ describe("Agent Soul page", () => {
     const editor = screen.getByRole("textbox", { name: "Soul" });
     fireEvent.change(editor, { target: { value: "Be concise." } });
     fireEvent.click(within(navigation).getByRole("link", { name: "Overview" }));
-    expect(await screen.findByRole("dialog", { name: "Discard unsaved changes?" })).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Discard your changes?" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
     expect((editor as HTMLTextAreaElement).value).toBe("Be concise.");
+    fireEvent.click(within(navigation).getByRole("link", { name: "Overview" }));
+    const dialog = await screen.findByRole("dialog", { name: "Discard your changes?" });
+    expect(within(dialog).getByText("Your edits will be lost if you leave.")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Discard and leave" })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
     fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
-    expect(await screen.findByText("Updated. Applies from the next turn.")).toBeTruthy();
+    expect(await screen.findByText("Changes applied.")).toBeTruthy();
     expect(save).toHaveBeenCalledWith(agentId, {
       expectedRevision: config.revision,
       runtimeConfig: { instructions: "Be concise." },

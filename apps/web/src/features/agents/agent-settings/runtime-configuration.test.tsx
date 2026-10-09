@@ -419,6 +419,32 @@ describe("RuntimeConfigurationForm", () => {
     });
   });
 
+  it("disables Soul controls while applying and clears feedback on the next edit", async () => {
+    let resolveSave!: (updated: AgentAdminConfig) => void;
+    const save = vi.fn(
+      () =>
+        new Promise<AgentAdminConfig>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    fireEvent.change(editor, { target: { value: "Be direct." } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(editor.disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Applying…" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Discard changes" })).toHaveProperty("disabled", true);
+    resolveSave({ ...config, revision: 5, runtimeConfig: { ...config.runtimeConfig, instructions: "Be direct." } });
+    expect(await screen.findByRole("status")).toHaveProperty("textContent", "Changes applied.");
+    expect(editor.disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    fireEvent.change(editor, { target: { value: "Be direct and concise." } });
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Apply changes" })).toBeTruthy();
+  });
+
   it("keeps the example on focus, hides it on input, and restores it on clear or discard", () => {
     const emptyConfig: AgentAdminConfig = {
       ...config,
@@ -430,7 +456,7 @@ describe("RuntimeConfigurationForm", () => {
     const instructions = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
     expect(instructions.value).toBe("");
     expect(screen.getByText("Example")).toBeTruthy();
-    expect(screen.getByText("For complex tasks, make a short plan, then work through it step by step.")).toBeTruthy();
+    expect(screen.getByText("For longer writing tasks, start with an outline before drafting.")).toBeTruthy();
     expect(instructions.getAttribute("aria-describedby")).toContain("-example");
     expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
 
@@ -438,14 +464,14 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.getByText("Example")).toBeTruthy();
     fireEvent.change(instructions, { target: { value: "My own workflow." } });
     expect(screen.queryByText("Example")).toBeNull();
-    expect(screen.getByText("Unapplied changes")).toBeTruthy();
-    expect(screen.getByText(/Existing tasks start a fresh AI conversation/)).toBeTruthy();
+    expect(screen.queryByText("Unapplied changes")).toBeNull();
+    expect(screen.getByText(/Existing tasks won’t carry over earlier conversation context/)).toBeTruthy();
     fireEvent.change(instructions, { target: { value: "" } });
     expect(screen.getByText("Example")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
 
     fireEvent.change(instructions, { target: { value: "Another draft." } });
-    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
     expect(instructions.value).toBe("");
     expect(screen.getByText("Example")).toBeTruthy();
   });
@@ -465,13 +491,15 @@ describe("RuntimeConfigurationForm", () => {
 
     fireEvent.change(editor, { target: { value: "" } });
     expect(screen.getByText("Example")).toBeTruthy();
+    expect(screen.getByText("Apply to clear Soul.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
-    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn’t apply the changes. Try again.");
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn’t confirm the update. Try again.");
     expect(editor.value).toBe("");
     expect(screen.getByText("Example")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
-    expect(await screen.findByText("Updated. Applies from the next turn.")).toBeTruthy();
+    expect(await screen.findByText("Changes applied.")).toBeTruthy();
+    expect(screen.queryByText("Apply to clear Soul.")).toBeNull();
     expect(save).toHaveBeenLastCalledWith({ expectedRevision: 4, runtimeConfig: { instructions: "" } });
     expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
   });

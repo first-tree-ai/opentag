@@ -29,20 +29,22 @@ export function SettingsSaveActions({
   saveLabel = m.agent_settings_save_changes_action(),
   savingLabel = m.agent_settings_saving_action(),
   statusLabel = m.agent_settings_unsaved_changes(),
+  discardLabel = m.agent_settings_discard_action(),
 }: {
   busy: boolean;
   onDiscard: () => void;
   saveDisabled?: boolean;
   saveLabel?: string;
   savingLabel?: string;
-  statusLabel?: string;
+  statusLabel?: string | null;
+  discardLabel?: string;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-      <span className="text-sm text-kumo-subtle">{statusLabel}</span>
-      <div className="flex flex-wrap justify-end gap-2">
+      {statusLabel ? <span className="text-sm text-kumo-subtle">{statusLabel}</span> : null}
+      <div className="ml-auto flex flex-wrap justify-end gap-2">
         <Button disabled={busy} type="button" variant="ghost" onClick={onDiscard}>
-          {m.agent_settings_discard_action()}
+          {discardLabel}
         </Button>
         <Button disabled={busy || saveDisabled} type="submit">
           {busy ? savingLabel : saveLabel}
@@ -52,7 +54,7 @@ export function SettingsSaveActions({
   );
 }
 
-export function UnsavedChangesGuard({ when }: { when: boolean }) {
+export function UnsavedChangesGuard({ when, soul = false }: { when: boolean; soul?: boolean }) {
   const router = useRouter({ warn: false });
   const unblockRef = useRef<(() => void) | undefined>(undefined);
   const resolverRef = useRef<((blocked: boolean) => void) | undefined>(undefined);
@@ -94,8 +96,8 @@ export function UnsavedChangesGuard({ when }: { when: boolean }) {
 
   return confirming ? (
     <Dialog
-      description={m.agent_settings_unsaved_confirm_description()}
-      title={m.agent_settings_unsaved_confirm_title()}
+      description={soul ? m.agent_settings_soul_leave_description() : m.agent_settings_unsaved_confirm_description()}
+      title={soul ? m.agent_settings_soul_leave_title() : m.agent_settings_unsaved_confirm_title()}
       onClose={() => settle(true)}
     >
       <div className="flex flex-wrap justify-end gap-3">
@@ -103,7 +105,7 @@ export function UnsavedChangesGuard({ when }: { when: boolean }) {
           {m.agent_settings_keep_editing()}
         </Button>
         <Button variant="secondary" onClick={() => settle(false)}>
-          {m.agent_settings_discard_action()}
+          {soul ? m.agent_settings_soul_discard_and_leave() : m.agent_settings_discard_action()}
         </Button>
       </div>
     </Dialog>

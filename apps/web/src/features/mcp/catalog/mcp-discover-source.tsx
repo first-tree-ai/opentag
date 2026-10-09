@@ -4,6 +4,7 @@ import { useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
 import * as m from "../../../paraglide/messages.js";
 import { Button, Field, KumoInputControl } from "../../../ui/design-system.js";
+import { McpServiceIcon } from "../mcp-service-icon.js";
 import {
   catalogEntryState,
   entriesInCategory,
@@ -107,7 +108,7 @@ function McpCatalogCard({
   return (
     <li className="flex items-center justify-between gap-3 rounded-lg border border-kumo-line p-3">
       <div className="flex min-w-0 items-start gap-3">
-        <img className="size-6 shrink-0 text-kumo-subtle" src={entry.iconUrl} alt="" width={24} height={24} />
+        <McpServiceIcon src={entry.iconIsOfficial ? entry.iconUrl : undefined} size={24} />
         <div className="grid min-w-0 gap-1">
           <strong className="text-sm font-medium">{title}</strong>
           <p className="text-xs leading-relaxed text-kumo-subtle">{localizedText(entry.description, locale)}</p>

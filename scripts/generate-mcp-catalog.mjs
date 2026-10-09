@@ -22,7 +22,7 @@ import { CreateMCPServerRequestSchema, MCPServerUrlSchema } from "../packages/sh
 import { checkOutboundUrl } from "../packages/shared/src/mcp-outbound-url.ts";
 
 const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
-const ICON_PATTERN = /^[a-z0-9][a-z0-9-]*\.svg$/;
+const ICON_PATTERN = /^[a-z0-9][a-z0-9-]*\.(?:svg|png)$/;
 /** `biome.json` `formatter.lineWidth`; the emitted module must already be in biome's format. */
 const PRINT_WIDTH = 120;
 
@@ -222,8 +222,11 @@ function validateCatalogMembership(row, at, categoryIds, violations) {
   if (typeof row.website !== "string" || !isHttpUrl(row.website)) {
     violations.push(`${at}.website: must be an absolute http(s) URL`);
   }
+  if (row.iconIsOfficial !== undefined && typeof row.iconIsOfficial !== "boolean") {
+    violations.push(`${at}.iconIsOfficial: must be a boolean when supplied`);
+  }
   if (typeof row.icon !== "string" || !ICON_PATTERN.test(row.icon)) {
-    violations.push(`${at}.icon: must be a lowercase SVG file name`);
+    violations.push(`${at}.icon: must be a lowercase SVG or PNG file name`);
   }
 }
 
@@ -261,6 +264,7 @@ function catalogEntryFrom(row, id, title, description, order, oauthScopes) {
     category: row.category,
     website: typeof row.website === "string" ? row.website : "",
     icon: typeof row.icon === "string" ? row.icon : "",
+    iconIsOfficial: row.iconIsOfficial === true,
     authHeader: typeof row.authHeader === "string" ? row.authHeader : undefined,
     authScheme: typeof row.authScheme === "string" ? row.authScheme : undefined,
     extraHeaders: isRecord(row.extraHeaders) ? row.extraHeaders : undefined,
@@ -275,8 +279,9 @@ async function resolveIcons(entries, violations) {
   const files = [...new Set(entries.map((entry) => entry.icon))].sort();
   for (const file of files) {
     try {
-      const svg = await readFile(`${iconDirectory}/${file}`);
-      urls.set(file, `data:image/svg+xml;base64,${svg.toString("base64")}`);
+      const bytes = await readFile(`${iconDirectory}/${file}`);
+      const mime = file.endsWith(".png") ? "image/png" : "image/svg+xml";
+      urls.set(file, `data:${mime};base64,${bytes.toString("base64")}`);
     } catch {
       violations.push(`${entriesPath}: icon "${file}" does not exist under packages/mcp-presets/icons/`);
     }
@@ -363,6 +368,7 @@ function emitModule(categories, entries, locales, icons) {
     "  category: string;",
     "  website: string;",
     "  iconUrl: string;",
+    "  iconIsOfficial?: boolean;",
     "  order: number;",
     "};",
     "",
@@ -399,6 +405,7 @@ function emitModule(categories, entries, locales, icons) {
       `    category: ${JSON.stringify(entry.category)},`,
       `    website: ${JSON.stringify(entry.website)},`,
       `    iconUrl: MCP_CATALOG_ICON_URLS[${JSON.stringify(entry.icon)}],`,
+      ...(entry.iconIsOfficial ? ["    iconIsOfficial: true,"] : []),
       `    order: ${entry.order},`,
       "  },",
     );

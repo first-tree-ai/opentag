@@ -26,10 +26,7 @@ Retrieved on 2026-10-09:
 | `tavily.svg` | [Tavily brand guidelines](https://www.tavily.com/brand) | [Official black product mark](https://www.tavily.com/logos/tavily-mark-black.svg) |
 | `firecrawl.svg` | [Firecrawl press and brand kit](https://www.firecrawl.dev/press-brand) | `firecrawl-logo.svg` from the [official brand archive](https://www.firecrawl.dev/brand/brand-assets.zip) |
 | `zapier.png` | [Zapier website](https://zapier.com/press) | [Official website favicon](https://zapier.com/favicon.ico), losslessly decoded to PNG using its original 192×192 frame |
-| `atlassian.svg` | [Atlassian Design logos](https://atlassian.design/foundations/logos/) | `Atlassian/Atlassian Mark/SVG/Atlassian mark brand RGB.svg` from the [official logo archive](https://atlassian.design/assets/5f37a2b999c5/logos/atlassian_logo.zip) |
-| `airtable.png` | [Airtable website](https://www.airtable.com/) | [Official 48px website favicon](https://www.airtable.com/favicon.ico); the response is already PNG, retained without conversion |
 | `supabase.svg` | [Supabase brand assets](https://supabase.com/brand-assets) | `brand-assets/supabase-logo-icon.svg` from the [official brand archive](https://supabase.com/brand-assets.zip) |
-| `amplitude.png` | [Amplitude website](https://amplitude.com/) | [Official website Apple touch icon](https://amplitude.com/nextjs-public/favicon/apple-touch-icon.png) |
 | `stripe.svg` | [Stripe website](https://stripe.com/) | [Official website SVG product mark](https://images.stripeassets.com/fzn2n1nzq965/1hgcBNd12BfT9VLgbId7By/01d91920114b124fb4cf6d448f9f06eb/favicon.svg) |
 
 The People API documentation does not identify a separate product mark. Its catalog entry keeps the neutral connection icon instead of borrowing the Google Contacts logo.

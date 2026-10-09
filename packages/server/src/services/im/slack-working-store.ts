@@ -249,7 +249,8 @@ export class SlackWorkingStore {
       cooldownMs?: number;
     },
   ): Promise<void> {
-    if (!target.claimId) return;
+    const claimId = target.claimId;
+    if (!claimId) return;
     const now = this.now();
     const retryAt = input.dormant ? new Date("9999-12-31T00:00:00.000Z") : new Date(now.getTime() + input.delayMs);
     await this.database.transaction(async (tx) => {
@@ -272,7 +273,7 @@ export class SlackWorkingStore {
           nextAttemptAt: sql`case when ${slackWorkingTargets.revision} <> ${target.revision} and ${input.failed ?? false} = false then ${now.toISOString()}::timestamptz
         else ${retryAt.toISOString()}::timestamptz end`,
         })
-        .where(and(eq(slackWorkingTargets.id, target.id), eq(slackWorkingTargets.claimId, target.claimId)));
+        .where(and(eq(slackWorkingTargets.id, target.id), eq(slackWorkingTargets.claimId, claimId)));
     });
   }
 }

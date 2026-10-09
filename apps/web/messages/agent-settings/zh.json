@@ -94,8 +94,6 @@
   "agent_settings_instructions_description": "塑造{agentName}的个性与行为。",
   "agent_settings_instructions_dialog_description": "这些指令会在 OpenTag 平台指导之外进一步指导此 Agent。",
   "agent_settings_instructions_label": "指令",
-  "agent_settings_instructions_placeholder": "例如：保持回复简洁，指出重要风险，并解释你的建议。",
-  "agent_settings_instructions_save_failed": "无法保存指令，请重试。",
   "agent_settings_instructions_saved": "指令已保存。",
   "agent_settings_instructions_title": "Soul",
   "agent_settings_keep_active": "保持活跃",

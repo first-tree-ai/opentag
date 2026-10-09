@@ -94,8 +94,6 @@
   "agent_settings_instructions_description": "Shape {agentName}’s personality and behavior.",
   "agent_settings_instructions_dialog_description": "These instructions guide this Agent in addition to OpenTag's platform guidance.",
   "agent_settings_instructions_label": "Instructions",
-  "agent_settings_instructions_placeholder": "For example: Keep responses concise, flag important risks, and explain your recommendations.",
-  "agent_settings_instructions_save_failed": "Couldn’t save the instructions. Try again.",
   "agent_settings_instructions_saved": "Instructions saved.",
   "agent_settings_instructions_title": "Soul",
   "agent_settings_keep_active": "Keep active",

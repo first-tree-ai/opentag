@@ -96,7 +96,7 @@ interface ClaudeCodeRuntimeOptions {
   readonly emptyNativeToolAllowList?: boolean;
   readonly eventSink: AgentRuntimeEventSink;
   readonly hostedTools?: AgentHostedTools;
-  readonly skills: { readonly cwd: string; readonly paths: readonly string[] };
+  readonly skillPaths: readonly string[];
   readonly resume: boolean;
   readonly startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly systemPrompt: string;
@@ -165,7 +165,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly #emptyNativeToolAllowList: boolean;
   readonly #hostedTools?: AgentHostedTools;
-  readonly #skills: { readonly cwd: string; readonly paths: readonly string[] };
+  readonly #skillPaths: readonly string[];
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly #systemPrompt: string;
   readonly #textBlocks = new Map<string, TextBlockState>();
@@ -195,7 +195,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#createProcess = options.createProcess;
     this.#emptyNativeToolAllowList = options.emptyNativeToolAllowList === true;
     this.#hostedTools = options.hostedTools;
-    this.#skills = options.skills;
+    this.#skillPaths = options.skillPaths;
     this.#startHostedToolBridge = options.startHostedToolBridge;
     this.#systemPrompt = options.systemPrompt;
     this.#sessionExists = options.resume;
@@ -231,7 +231,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           this.#hostedTools,
           request.runId,
           context.signal,
-          this.#skills,
+          this.#skillPaths,
           mcpGateway,
         );
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
@@ -875,7 +875,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         emptyNativeToolAllowList: isEmptyNativeToolAllowList(request.policy),
         eventSink: request.eventSink,
         hostedTools: request.hostedTools,
-        skills: { cwd: request.workspace.cwd, paths: request.skillPaths ?? [] },
+        skillPaths: request.skillPaths ?? [],
         resume: mode === "resume",
         startHostedToolBridge: this.#startHostedToolBridge,
         systemPrompt: request.systemPrompt,

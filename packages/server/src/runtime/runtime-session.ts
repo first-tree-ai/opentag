@@ -440,7 +440,9 @@ export class RuntimeSession {
       );
       if (this.#isClosing()) {
         if (this.#registry.remove(authContext.computerId, frame.instanceId, this.#socket)) {
-          await this.#computers.disconnect(authContext.computerId, frame.instanceId).catch(() => undefined);
+          await this.#computers
+            .disconnect(authContext.computerId, frame.instanceId, connectionId)
+            .catch(() => undefined);
         }
         return;
       }
@@ -465,7 +467,7 @@ export class RuntimeSession {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }
-      if (!(await this.#computers.heartbeat(authContext, instanceId))) {
+      if (!(await this.#computers.heartbeat(authContext, instanceId, this.#connectionId))) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }
@@ -649,7 +651,7 @@ export class RuntimeSession {
       this.#instanceId &&
       this.#registry.remove(this.#computerId, this.#instanceId, this.#socket)
     ) {
-      await this.#computers.disconnect(this.#computerId, this.#instanceId).catch(() => undefined);
+      await this.#computers.disconnect(this.#computerId, this.#instanceId, this.#connectionId).catch(() => undefined);
     }
   }
 

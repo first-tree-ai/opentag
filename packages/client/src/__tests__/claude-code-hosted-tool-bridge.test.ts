@@ -6,7 +6,7 @@ import type { AgentHostedTools } from "../agent-runtime/types.js";
 import { startClaudeCodeHostedToolBridge } from "../providers/claude-code/hosted-tool-bridge.js";
 
 describe("Claude Code hosted tool bridge", () => {
-  it("exposes only Agent Home skills through a private plugin and cleans up its wrapper", async () => {
+  it("exposes only selected skills through a private plugin and cleans up its wrapper", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-claude-skills-test-"));
     const settingsRoot = join(home, ".claude");
     const skills = join(settingsRoot, "skills");
@@ -15,13 +15,14 @@ describe("Claude Code hosted tool bridge", () => {
     await writeFile(join(settingsRoot, "settings.json"), '{"apiKeyHelper":"untrusted-command"}');
     await mkdir(join(settingsRoot, "hooks"));
     await writeFile(join(settingsRoot, "hooks", "hooks.json"), '{"hooks":{}}');
-    const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-skills", new AbortController().signal, {
-      cwd: home,
-      paths: [join(skills, "example")],
-    });
+    const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-skills", new AbortController().signal, [
+      join(skills, "example"),
+    ]);
     try {
       expect(await readdir(bridge.pluginPath)).toEqual(["skills"]);
-      expect(await realpath(join(bridge.pluginPath, "skills"))).not.toBe(await realpath(skills));
+      expect(await realpath(join(bridge.pluginPath, "skills", "example"))).toBe(
+        await realpath(join(skills, "example")),
+      );
       await expect(readFile(join(bridge.pluginPath, "skills", "example", "SKILL.md"), "utf8")).resolves.toContain(
         "Help.",
       );
@@ -36,10 +37,7 @@ describe("Claude Code hosted tool bridge", () => {
   });
 
   it("always supplies a private strict-MCP configuration and removes it idempotently", async () => {
-    const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-empty", new AbortController().signal, {
-      cwd: "/workspace",
-      paths: [],
-    });
+    const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-empty", new AbortController().signal, []);
     expect(bridge.allowedTools).toEqual([]);
     await expect(readFile(bridge.configPath, "utf8")).resolves.toBe('{"mcpServers":{}}\n');
     expect((await stat(bridge.configPath)).mode & 0o777).toBe(0o600);
@@ -69,7 +67,7 @@ describe("Claude Code hosted tool bridge", () => {
       },
       "run-1",
       new AbortController().signal,
-      { cwd: "/workspace", paths: [] },
+      [],
     );
     const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
       mcpServers: { opentag: { headers: Record<string, string>; url: string } };
@@ -160,16 +158,16 @@ describe("Claude Code hosted tool bridge", () => {
   it("rejects aborted setup and duplicate hosted definitions before opening a bridge", async () => {
     const controller = new AbortController();
     controller.abort(new Error("turn cancelled"));
-    await expect(
-      startClaudeCodeHostedToolBridge(undefined, "run", controller.signal, { cwd: "/workspace", paths: [] }),
-    ).rejects.toThrow("turn cancelled");
+    await expect(startClaudeCodeHostedToolBridge(undefined, "run", controller.signal, [])).rejects.toThrow(
+      "turn cancelled",
+    );
     const definition = { name: "duplicate", inputSchema: { type: "object" } } as const;
     await expect(
       startClaudeCodeHostedToolBridge(
         { definitions: [definition, definition], handler: async () => ({ success: true, content: [] }) },
         "run",
         new AbortController().signal,
-        { cwd: "/workspace", paths: [] },
+        [],
       ),
     ).rejects.toThrow("unique names");
   });
@@ -184,7 +182,7 @@ describe("Claude Code hosted tool bridge", () => {
       },
       "run-failing-handler",
       new AbortController().signal,
-      { cwd: "/workspace", paths: [] },
+      [],
     );
     const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
       mcpServers: { opentag: { headers: Record<string, string>; url: string } };
@@ -217,7 +215,7 @@ describe("Claude Code MCP gateway entry", () => {
       undefined,
       "run-mcp-only",
       new AbortController().signal,
-      { cwd: "/workspace", paths: [] },
+      [],
       gateway,
     );
     try {
@@ -245,7 +243,7 @@ describe("Claude Code MCP gateway entry", () => {
       undefined,
       "run-mcp-allow",
       new AbortController().signal,
-      { cwd: "/workspace", paths: [] },
+      [],
       gateway,
     );
     try {
@@ -260,7 +258,7 @@ describe("Claude Code MCP gateway entry", () => {
       { definitions: [{ name: "example", inputSchema: { type: "object" } }], handler: vi.fn() },
       "run-both",
       new AbortController().signal,
-      { cwd: "/workspace", paths: [] },
+      [],
       gateway,
     );
     try {
@@ -275,10 +273,7 @@ describe("Claude Code MCP gateway entry", () => {
   });
 
   it("writes no remote entry when the execution holds no bearer", async () => {
-    const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-none", new AbortController().signal, {
-      cwd: "/workspace",
-      paths: [],
-    });
+    const bridge = await startClaudeCodeHostedToolBridge(undefined, "run-none", new AbortController().signal, []);
     try {
       await expect(readFile(bridge.configPath, "utf8")).resolves.toBe('{"mcpServers":{}}\n');
     } finally {

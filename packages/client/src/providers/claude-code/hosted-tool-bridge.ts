@@ -7,7 +7,7 @@ import { MCP_GATEWAY_ALLOWED_TOOL_RULE, MCP_GATEWAY_SERVER_NAME } from "@opentag
 import type { AgentHostedTools, JsonValue } from "../../agent-runtime/types.js";
 import { assertJsonValue } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
-import { materializeClaudeSkills } from "./skill-plugin.js";
+import { linkClaudeSkills } from "./skill-plugin.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -32,7 +32,7 @@ export async function startClaudeCodeHostedToolBridge(
   hostedTools: AgentHostedTools | undefined,
   runId: string,
   signal: AbortSignal,
-  skills: { readonly cwd: string; readonly paths: readonly string[] },
+  skillPaths: readonly string[],
   mcpGateway?: ClaudeCodeMcpGatewayEndpoint,
 ): Promise<ClaudeCodeHostedToolBridge> {
   signal.throwIfAborted();
@@ -46,7 +46,7 @@ export async function startClaudeCodeHostedToolBridge(
   const pluginPath = join(directory, "opentag");
   let server: Server | undefined;
   try {
-    await materializeClaudeSkills(pluginPath, skills.cwd, skills.paths);
+    await linkClaudeSkills(pluginPath, skillPaths);
     /*
      * The two entries are independent. The loopback bridge exists only when this run has hosted
      * tools; the remote gateway only when the execution holds a bearer. An MCP-only run must still

@@ -248,7 +248,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       undefined,
       "run-gateway",
       expect.anything(),
-      { cwd: createRequest(() => undefined).workspace.cwd, paths: ["/workspace/.claude/skills/selected"] },
+      ["/workspace/.claude/skills/selected"],
       {
         url: "https://server.example.test/api/v1/mcp",
         token: "otmg_secret",

@@ -19,6 +19,7 @@ import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.j
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
+import { codexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
@@ -722,9 +723,20 @@ describe("createClientRuntime production composition", () => {
     expect(launches).toContain("--version");
     expect(launches).toContain("app-server --help");
     expect(launches).toContain("login status");
-    expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(3);
+    const baseSessionArgs = [
+      ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      'approvals_reviewer="user"',
+      "-c",
+      `projects.${JSON.stringify(process.cwd())}.trust_level="trusted"`,
+    ];
+    expect(launches.filter((line) => line === baseSessionArgs.join(" "))).toHaveLength(3);
     const managedSessionArgs = [
       ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      'approvals_reviewer="user"',
+      "-c",
+      `projects.${JSON.stringify(await runtime.runtimeManager.cwd("session-1"))}.trust_level="trusted"`,
       "-c",
       `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`,
     ];
@@ -943,7 +955,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const command = resolve(home, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nexit 1\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts auto --append-system-prompt\\n"; exit 0; fi\nexit 1\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -977,10 +989,27 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       provider: "claude-code",
       execution: { approvalPolicy: "never", networkAccess: true },
     };
+    expect(
+      codexRuntimePolicy({
+        ...claudeSnapshot,
+        provider: "codex",
+        execution: {
+          approvalPolicy: "on-request",
+          networkAccess: false,
+          allowCommands: ["git status"],
+        },
+      }),
+    ).toMatchObject({
+      fileSystem: "workspace-write",
+      network: "disabled",
+      approvals: "on-request",
+      allowedCommands: ["git status"],
+    });
     expect(claudeCodeRuntimePolicy(claudeSnapshot)).toEqual({
       fileSystem: "unrestricted",
       network: "enabled",
       approvals: "never",
+      allowedCommands: [],
       tools: { mode: "provider-default" },
     });
     expect(validateClaudeCodeRuntimePolicy(claudeSnapshot)).toBeUndefined();
@@ -989,7 +1018,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         ...claudeSnapshot,
         execution: { approvalPolicy: "on-request", networkAccess: true },
       } as unknown as EffectiveRuntimeSnapshot),
-    ).toBe("configuration_unsupported");
+    ).toBeUndefined();
     expect(
       validateClaudeCodeRuntimePolicy({
         ...claudeSnapshot,
@@ -1279,8 +1308,9 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const server = await runtimeServer();
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
     const observed: number[] = [];
-    let ready = true;
+    const ready = false;
     const factory = {
       manifest: {
         providerId: "codex",
@@ -1324,10 +1354,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory,
       home,
     });
+    readinessUpdates.mockClear();
     const running = runtime.run();
     await vi.waitFor(() => expect(observed[0]).toBe(1));
-    ready = false;
     await vi.waitFor(() => expect(observed.filter((value) => value === 1).length).toBeGreaterThan(1));
+    await vi.waitFor(() => expect(readinessUpdates).toHaveBeenCalledWith({ provider: "codex", status: "install" }));
+    expect(readinessUpdates.mock.calls.map(([observation]) => observation.status)).not.toContain("checking");
     runtime.stop();
     await running;
   });
@@ -2549,7 +2581,7 @@ async function composeClaudeCodeRuntime(options: {
   const command = resolve(options.home, "claude-env-fixture");
   await writeFile(
     command,
-    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
+    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts auto --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
     "utf8",
   );
   await chmod(command, 0o755);

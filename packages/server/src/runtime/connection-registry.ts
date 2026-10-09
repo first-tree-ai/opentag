@@ -312,7 +312,8 @@ export class ConnectionRegistry {
   }
 
   /**
-   * Accepts only the latest result for the exact live Computer instance. A quarantined fallback
+   * Accepts only the latest result for the exact live Computer instance. A runtime-only result
+   * updates that row but retains the fence until messaging results arrive. A quarantined fallback
    * keeps the fence identity so a matching result can still apply; heartbeats cannot release it.
    */
   completePreparation(
@@ -321,7 +322,7 @@ export class ConnectionRegistry {
     result: {
       requestId: string;
       runtime: RuntimeProviderReadinessCollection[number];
-      providers: RuntimeImCliReadinessCollection;
+      providers?: RuntimeImCliReadinessCollection;
     },
     now = Date.now(),
     options: { quarantine?: boolean } = {},
@@ -331,18 +332,28 @@ export class ConnectionRegistry {
       !current ||
       current.preparationRequestId !== result.requestId ||
       current.preparationRuntimeProvider !== result.runtime.provider ||
-      !sameProviders(
-        current.preparationProviders,
-        result.providers.map((observation) => observation.provider),
-      )
+      (result.providers !== undefined &&
+        !sameProviders(
+          current.preparationProviders,
+          result.providers.map((observation) => observation.provider),
+        ))
     ) {
       return false;
     }
-    current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, result.runtime);
+    const runtimeAlreadySettled =
+      options.quarantine &&
+      current.providerReadiness?.some(
+        (observation) => observation.provider === result.runtime.provider && observation.status !== "checking",
+      );
+    if (!runtimeAlreadySettled) {
+      current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, result.runtime);
+    }
     current.providerReadinessObservedAt = now;
-    current.imCliReadiness = result.providers.map((observation) => ({ ...observation }));
-    current.imCliReadinessObservedAt = now;
-    if (!options.quarantine) clearPreparationFence(current);
+    if (result.providers !== undefined) {
+      current.imCliReadiness = result.providers.map((observation) => ({ ...observation }));
+      current.imCliReadinessObservedAt = now;
+      if (!options.quarantine) clearPreparationFence(current);
+    }
     return true;
   }
 

@@ -1,5 +1,6 @@
 import {
   type AgentAdminConfig,
+  type AgentRuntimeProvider,
   getRuntimeConfigurationOptions,
   type UpdateAgentRequest,
   type UpdateAgentRuntimeConfig,
@@ -13,6 +14,7 @@ import { liveResourceQueryOptions } from "../../../query/live.js";
 import { Banner, InputArea, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
 import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
+import { PermissionsField } from "./permissions-field.js";
 import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./runtime-model-field.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
@@ -68,6 +70,7 @@ function RuntimeConfigurationEditor({
     initialConfig.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION,
   );
   const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
+  const [permissionsDraft, setPermissionsDraft] = useState(initialConfig.runtimeConfig.permissions);
   const [message, setMessage] = useState<{
     kind: "error" | "success";
     section: "runtime" | "instructions";
@@ -79,6 +82,7 @@ function RuntimeConfigurationEditor({
   const TroubleshootingHeading = section === "execution" ? "h2" : "h3";
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
   const cloud = computerKind === "cloud";
+  const permissionsAvailable = supportsPermissionSettings(computerKind, config.runtimeProvider);
   const cloudOptions = cloudModelState?.kind === "ready" ? cloudModelState.value : undefined;
   const modelField = runtimeModelField({ cloud, cloudOptions, modelDraft, modelSelection, runtimeOptions });
   const { unavailable: cloudModelsUnavailable, invalid: modelInvalid } = modelField;
@@ -86,9 +90,12 @@ function RuntimeConfigurationEditor({
     reasoningSelection !== PROVIDER_DEFAULT_OPTION &&
     !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningSelection);
   const reasoningDraft = reasoningSelection === PROVIDER_DEFAULT_OPTION ? "" : reasoningSelection;
+  const permissionsDirty =
+    permissionsAvailable && JSON.stringify(permissionsDraft) !== JSON.stringify(config.runtimeConfig.permissions);
   const runtimeDirty =
     modelDraft !== (config.runtimeConfig.model ?? "") ||
-    reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
+    reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "") ||
+    permissionsDirty;
   const instructionsDirty = instructionsDraft !== config.runtimeConfig.instructions;
 
   async function saveRuntime(event: FormEvent<HTMLFormElement>) {
@@ -98,12 +105,14 @@ function RuntimeConfigurationEditor({
     setMessage(undefined);
     try {
       const runtimeConfig: UpdateAgentRuntimeConfig = {
+        ...(permissionsDirty ? { permissions: permissionsDraft } : {}),
         model: nullableText(modelDraft),
         reasoningEffort: nullableText(reasoningDraft),
       };
       const updated = await save({ expectedRevision: config.revision, runtimeConfig });
       const updatedOptions = getRuntimeConfigurationOptions(updated.runtimeProvider);
       setConfig(updated);
+      setPermissionsDraft(updated.runtimeConfig.permissions);
       setModelDraft(updated.runtimeConfig.model ?? "");
       setModelSelection(modelSelectionFor(updated.runtimeConfig.model, updatedOptions.modelSuggestions));
       setReasoningSelection(updated.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
@@ -136,6 +145,7 @@ function RuntimeConfigurationEditor({
   }
 
   function discardRuntimeChanges() {
+    setPermissionsDraft(config.runtimeConfig.permissions);
     setModelDraft(config.runtimeConfig.model ?? "");
     setModelSelection(modelSelectionFor(config.runtimeConfig.model, runtimeOptions.modelSuggestions));
     setReasoningSelection(config.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
@@ -212,6 +222,9 @@ function RuntimeConfigurationEditor({
                   </Select>
                 </div>
               </SettingsRow>
+              {permissionsAvailable ? (
+                <PermissionsField value={permissionsDraft} onChange={setPermissionsDraft} />
+              ) : null}
             </SettingsList>
             {runtimeDirty ? (
               <SettingsSaveActions
@@ -347,4 +360,8 @@ function runtimeTestDisabledReason(input: { runtimeDirty: boolean; computerOnlin
   if (input.runtimeDirty) return m.agent_settings_runtime_test_disabled_unsaved();
   if (!input.computerOnline) return m.agent_settings_runtime_test_disabled_computer();
   return undefined;
+}
+
+function supportsPermissionSettings(computerKind: "local" | "cloud", provider: AgentRuntimeProvider): boolean {
+  return computerKind === "local" && provider !== "pi";
 }

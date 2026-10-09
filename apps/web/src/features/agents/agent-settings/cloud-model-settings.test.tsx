@@ -18,6 +18,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 7,
     model: null,
@@ -92,6 +93,9 @@ describe("Cloud model settings", () => {
     });
     mount(config, save);
     await screen.findByText("Platform default (router-model-a)");
+    expect(screen.queryByLabelText("Approval user ID")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Ask for approval" })).toBeNull();
+    expect(screen.queryByText("Additional allowed commands")).toBeNull();
     fireEvent.click(screen.getByRole("combobox", { name: "Model" }));
     expect((await screen.findAllByRole("option")).map((option) => option.textContent?.trim())).toEqual([
       "Platform default (router-model-a)",

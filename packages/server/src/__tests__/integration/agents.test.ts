@@ -1,4 +1,4 @@
-import type { TurnReportRequest } from "@opentag/shared";
+import type { RuntimeApprovalRequest, TurnReportRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -10,9 +10,13 @@ import {
   imBindings,
   imMessageDeliveries,
   imMessages,
+  sessionPlacements,
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { loadApprovalAuthority } from "../../runtime/approval-authority.js";
+import { PostgresApprovalStore } from "../../runtime/approval-store.js";
+import { RuntimeApprovalOwner } from "../../runtime/runtime-approval-owner.js";
 import { AgentService } from "../../services/agents/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
@@ -90,6 +94,207 @@ function deferred<T>() {
 }
 
 describe("Agent persistence and authorization", () => {
+  it("routes a persisted approval to the triggering message sender in a private chat", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const created = await value.service.createForAccount(value.bootstrap.userId, {
+        ...createInput(computer.id),
+        runtimeConfig: { permissions: { approvalPolicy: "on-request", allowCommands: [] } },
+      });
+      const now = new Date();
+      const [binding] = await value.database
+        .insert(imBindings)
+        .values({
+          agentId: created.id,
+          provider: "feishu",
+          status: "active",
+          externalAppId: "cli_fixture",
+          externalBotId: "ou_bot",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: "fixture",
+          activatedAt: now,
+        })
+        .returning();
+      if (!binding) throw new Error("Binding fixture missing");
+      const [session] = await value.database
+        .insert(sessions)
+        .values({ imBindingId: binding.id, channelId: "oc_channel", conversationKind: "channel", kind: "channel" })
+        .returning();
+      if (!session) throw new Error("Session fixture missing");
+      await value.database
+        .insert(sessionPlacements)
+        .values({ sessionId: session.id, computerId: computer.id, generation: 1 });
+      const [message] = await value.database
+        .insert(imMessages)
+        .values({
+          imBindingId: binding.id,
+          channelId: "oc_channel",
+          externalMessageId: "om_root",
+          providerRevisionKey: "v1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "ou_sender",
+          content: { version: 1, fallbackText: "work", blocks: [{ type: "text", text: "work" }], truncated: false },
+          providerContext: { provider: "feishu" },
+          occurredAt: now,
+        })
+        .returning();
+      if (!message) throw new Error("Message fixture missing");
+      const instanceId = crypto.randomUUID();
+      const [delivery] = await value.database
+        .insert(imMessageDeliveries)
+        .values({
+          messageId: message.id,
+          sessionId: session.id,
+          attention: "direct",
+          state: "accepted",
+          placementGeneration: 1,
+          inputHash: "input",
+          turnId: "turn-live",
+          reportOwnerInstanceId: instanceId,
+          acceptedAt: now,
+          expiresAt: new Date(now.getTime() + 60_000),
+        })
+        .returning();
+      if (!delivery) throw new Error("Delivery fixture missing");
+      const request: RuntimeApprovalRequest = {
+        type: "approval:request",
+        requestId: crypto.randomUUID(),
+        sessionId: session.id,
+        deliveryId: delivery.id,
+        placementGeneration: 1,
+        turnId: "turn-live",
+        title: "Approve Bash",
+        description: "git push",
+        expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+      };
+      const context = {
+        computerId: computer.id,
+        instanceId,
+        connectionId: "socket-1",
+        installationId: computer.installationId,
+        signal: new AbortController().signal,
+      };
+      expect(
+        await loadApprovalAuthority(value.database, request, { ...context, instanceId: crypto.randomUUID() }),
+      ).toBeUndefined();
+      const store = new PostgresApprovalStore(value.database);
+      const serverInstanceId = crypto.randomUUID();
+      const sent: unknown[] = [];
+      const owner = new RuntimeApprovalOwner({
+        store,
+        serverInstanceId,
+        authority: (input, scope) => loadApprovalAuthority(value.database, input, scope),
+        registry: {
+          isCurrentConnection: () => true,
+          send: async (_computer, _instance, frame) => {
+            sent.push(frame);
+          },
+        },
+        messenger: {
+          post: async () => ({ messageId: "om_card", channelId: "oc_sender_dm" }),
+          finish: async () => undefined,
+        },
+        onError: () => {
+          throw new Error("Unexpected approval failure");
+        },
+      });
+      await owner.request(request, context);
+      const row = (await store.list(serverInstanceId))[0];
+      if (!row) throw new Error("Approval not persisted");
+      expect(row.authority.senderExternalId).toBe("ou_sender");
+      const action = {
+        approvalId: row.id,
+        decision: "accept" as const,
+        userId: "ou_sender",
+        provider: "feishu" as const,
+        generation: 1,
+        imBindingId: binding.id,
+        messageId: "om_card",
+        channelId: "oc_sender_dm",
+      };
+      expect(await owner.decide({ ...action, userId: "ou_stranger" })).toBe("unavailable");
+      expect(await owner.decide(action)).toBe("recorded");
+      await owner.poll();
+      expect(sent).toEqual([
+        expect.objectContaining({
+          type: "approval:decision",
+          requestId: request.requestId,
+          turnId: "turn-live",
+          decision: "accept",
+        }),
+      ]);
+      await owner.poll();
+      expect(sent).toHaveLength(1);
+      await owner.businessOptions().handle(
+        {
+          type: "approval:result",
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          deliveryId: request.deliveryId,
+          placementGeneration: 1,
+          turnId: request.turnId,
+          status: "applied",
+        },
+        context,
+      );
+      expect((await store.find(row.id))?.status).toBe("approved");
+      owner.close();
+      await value.database.update(agents).set({ runtimeProvider: "pi" }).where(eq(agents.id, created.id));
+      expect(await loadApprovalAuthority(value.database, request, context)).toBeUndefined();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("persists local allowed commands and rejects Cloud permission configuration", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const created = await value.service.createForAccount(value.bootstrap.userId, createInput(computer.id));
+      expect(created.runtimeConfig.permissions).toEqual({ approvalPolicy: "on-request", allowCommands: [] });
+      const permissions = {
+        approvalPolicy: "on-request" as const,
+        allowCommands: ["git status"],
+      };
+      const updated = await value.service.updateById(value.bootstrap.userId, created.id, {
+        expectedRevision: created.revision,
+        runtimeConfig: { permissions },
+      });
+      expect((await value.service.getConfigById(value.bootstrap.userId, created.id)).runtimeConfig.permissions).toEqual(
+        permissions,
+      );
+      const commandsUpdated = await value.service.updateById(value.bootstrap.userId, created.id, {
+        expectedRevision: updated.revision,
+        runtimeConfig: { permissions: { ...permissions, allowCommands: ["docker ps"] } },
+      });
+      expect(commandsUpdated.runtimeConfig.permissions?.allowCommands).toEqual(["docker ps"]);
+      expect(commandsUpdated.runtimeConfig.revision).toBe(updated.runtimeConfig.revision + 1);
+      const unrestricted = await value.service.updateById(value.bootstrap.userId, created.id, {
+        expectedRevision: commandsUpdated.revision,
+        runtimeConfig: { permissions: { ...permissions, allowCommands: ["docker ps"], approvalPolicy: "never" } },
+      });
+      expect(unrestricted.runtimeConfig.permissions).toEqual({
+        ...permissions,
+        allowCommands: ["docker ps"],
+        approvalPolicy: "never",
+      });
+      expect(unrestricted.runtimeConfig.revision).toBe(commandsUpdated.runtimeConfig.revision + 1);
+      await value.database.update(computers).set({ kind: "cloud" }).where(eq(computers.id, computer.id));
+      await expect(
+        value.service.updateById(value.bootstrap.userId, created.id, {
+          expectedRevision: unrestricted.revision,
+          runtimeConfig: { permissions },
+        }),
+      ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("resets standalone sequences without changing the migration ledger", async () => {
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     try {

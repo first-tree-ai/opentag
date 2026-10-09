@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import https from "node:https";
@@ -5,6 +6,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type WebSocket as ServerWebSocket, WebSocketServer } from "ws";
 import type { RuntimeProxyStreamResponse } from "../runtime/runtime-proxy-data-client.js";
@@ -1184,6 +1186,35 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]?.headers["x-opentag-provider-origin"]).toBe("api.github.com");
     tunnel.destroy();
+  });
+
+  it("transfers Slack attachment handles with literal curl arguments", async () => {
+    const { adapter, requests, bodies } = await startAdapter();
+    const root = await mkdtemp(join(tmpdir(), "opentag-curl-"));
+    roots.push(root);
+    const file = join(root, "attachment.txt");
+    await writeFile(file, "attachment-bytes");
+    const args = [
+      "https://slack.com",
+      "--request-target",
+      "/__opentag__/handles/file-id",
+      "--proxy",
+      adapter.connectProxyUrl,
+      "--cacert",
+      adapter.caCertPath,
+      "--noproxy",
+      "",
+      "--fail",
+      "--silent",
+      "--show-error",
+    ];
+    const execute = promisify(execFile);
+    await execute("curl", [...args, "--request", "POST", "--data-binary", `@${file}`]);
+    expect(requests[0]).toMatchObject({ provider: "slack", method: "POST", path: "/__opentag__/handles/file-id" });
+    expect(bodies).toEqual(["attachment-bytes"]);
+    await execute("curl", [...args, "--output", file]);
+    expect(requests[1]).toMatchObject({ provider: "slack", method: "GET", path: "/__opentag__/handles/file-id" });
+    expect(await readFile(file, "utf8")).toBe("{}");
   });
 
   it("round-trips Server handle URLs on provider origins without local handle material", async () => {

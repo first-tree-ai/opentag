@@ -949,6 +949,51 @@ describe("ConnectionRegistry", () => {
     ).toBe("unavailable");
   });
 
+  it("preserves a settled runtime when messaging CLI preparation times out", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const requestId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+        providerReadinessProviders: ["claude-code"],
+      },
+      async () => undefined,
+    );
+    expect(registry.beginPreparation(computerId, instanceId, requestId, "claude-code", ["feishu"], 10)).toBe(true);
+    expect(
+      registry.completePreparation(
+        computerId,
+        instanceId,
+        { requestId, runtime: { provider: "claude-code", status: "sign-in" } },
+        20,
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, 20)[0]?.observation.status).toBe("sign-in");
+    expect(registry.imCliReadiness(computerId, 20)[0]?.observation.status).toBe("checking");
+    expect(
+      registry.completePreparation(
+        computerId,
+        instanceId,
+        {
+          requestId,
+          runtime: { provider: "claude-code", status: "unavailable" },
+          providers: [{ provider: "feishu", status: "unavailable" }],
+        },
+        30,
+        { quarantine: true },
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, 30)[0]?.observation.status).toBe("sign-in");
+    expect(registry.imCliReadiness(computerId, 30)[0]?.observation.status).toBe("unavailable");
+  });
+
   it("still applies a matching preparation result after a quarantined fallback", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();

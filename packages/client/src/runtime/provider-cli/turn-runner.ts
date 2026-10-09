@@ -132,8 +132,8 @@ export async function executeProviderCliTurnPlan(options: ExecuteProviderCliTurn
   const entry = requireProviderCliCatalogEntry(plan.provider, options.catalog ?? PROVIDER_CLI_CATALOG);
   const baseEnv = options.env ?? process.env;
   const env = plan.selectionKind === "managed" ? { ...baseEnv, ...entry.managedEnvironment } : { ...baseEnv };
-  // Runtime proxy mode: merge the current execution manifest (null unsets) so the CLI
-  // receives the execution-local handle, loopback proxy, and CA without manual source.
+  // Merge the current execution manifest (null unsets) so the CLI receives the granted
+  // credentials and, in proxy mode, routing and CA without manual source.
   if (plan.environmentManifest) await mergeEnvironmentManifest(env, plan.environmentManifest);
   const args = await turnPlanArguments(plan, options.argv, entry);
   const plansRoot = options.plansRoot ?? resolveProviderCliAccountLayout(resolveAccountHome()).plans;
@@ -192,7 +192,9 @@ export async function executeProviderCliTurnPlan(options: ExecuteProviderCliTurn
 
 export async function runProviderCliTurnRunner(
   argv: readonly string[],
-  options: { readonly plansRoot?: string } = {},
+  options: {
+    readonly plansRoot?: string;
+  } = {},
 ): Promise<number> {
   try {
     const parsed = parseProviderCliTurnRunnerArgv(argv);

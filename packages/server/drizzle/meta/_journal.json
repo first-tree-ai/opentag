@@ -386,6 +386,13 @@
       "when": 1790849432690,
       "tag": "0054_shallow_whiplash",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1791267717132,
+      "tag": "0055_agent_permissions",
+      "breakpoints": true
     }
   ]
 }

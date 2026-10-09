@@ -54,6 +54,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #instanceId: string;
   readonly #imBindings: ImBindingService;
   readonly #createAdapter: (input: {
+    onCardAction?: (event: unknown) => Promise<unknown>;
     appId: string;
     appSecret: string;
     teamId: string | null;
@@ -71,6 +72,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #maintenanceBackoffBaseMs: number;
   readonly #maintenanceBackoffMaxMs: number;
   readonly #now: () => Date;
+  readonly #onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
   readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
   readonly #maintenanceControllers = new Map<string, AbortController>();
@@ -82,11 +84,13 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   #shutdownEpoch = 0;
 
   constructor(input: {
+    onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
     database: DatabaseClient;
     inbox: ImMessageInbox;
     instanceId: string;
     imBindings: ImBindingService;
     createAdapter?: (input: {
+      onCardAction?: (event: unknown) => Promise<unknown>;
       appId: string;
       appSecret: string;
       teamId: string | null;
@@ -107,6 +111,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     /* type-only */ now?: () => Date;
   }) {
     this.#database = input.database;
+    this.#onCardAction = input.onCardAction;
     this.#inbox = input.inbox;
     this.#instanceId = input.instanceId;
     this.#imBindings = input.imBindings;
@@ -316,6 +321,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     await this.#assertActivationClaim(input);
     this.#assertActivationRunning(input, shutdownEpoch);
     const candidate = this.#createAdapter({
+      onCardAction: async (event) =>
+        handoff ? this.#onCardAction?.(event, handoff.imBindingId, handoff.generation) : undefined,
       appId: input.appId,
       appSecret: input.appSecret,
       teamId: null,
@@ -619,6 +626,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           const material = await this.#imBindings.getFeishuConnectionMaterial(imBindingId);
           if (!material) throw new FeishuOperationError("FEISHU_BINDING_NOT_ACTIVE");
           const createdAdapter = this.#createAdapter({
+            onCardAction: (event) =>
+              this.#onCardAction?.(event, imBindingId, material.generation) ?? Promise.resolve(undefined),
             appId: material.appId,
             appSecret: material.appSecret,
             teamId: material.teamId,

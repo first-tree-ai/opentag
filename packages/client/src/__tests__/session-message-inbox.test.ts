@@ -876,7 +876,7 @@ describe("SessionMessageInbox", () => {
         chatId: "oc_visible",
       },
     });
-    expect(feishuInput.items[0]?.text).toContain("OPENTAG_LARK_BODY");
+    expect(feishuInput.items[0]?.text).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
     expect(feishuInput.items[0]?.text).not.toContain("slack api chat.postMessage --json");
   });
 

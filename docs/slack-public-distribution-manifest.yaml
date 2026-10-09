@@ -39,6 +39,9 @@ oauth_config:
       - team:read
       - users:read
 settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://YOUR_OPENTAG_ORIGIN/api/v1/im-bindings/slack/interactions
   event_subscriptions:
     request_url: https://YOUR_OPENTAG_ORIGIN/api/v1/im-bindings/slack/events
     bot_events:

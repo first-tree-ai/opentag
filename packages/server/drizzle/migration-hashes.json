@@ -275,6 +275,11 @@
       "idx": 54,
       "tag": "0054_shallow_whiplash",
       "sha256": "288793772d790dfeb88bce965a1821fc99a3d66e8986ebc32cff049bd0470100"
+    },
+    {
+      "idx": 55,
+      "tag": "0055_agent_permissions",
+      "sha256": "8a13b5f83f115b44b0b9ca70b8634910d2259074ed6ed6c532eb9b16296a8103"
     }
   ]
 }

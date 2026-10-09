@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentPermissionsSchema } from "./agent-permissions.js";
 import { ContextTreesSchema } from "./context-tree.js";
 import {
   AGENT_SLUG_MAX_LENGTH,
@@ -49,11 +50,13 @@ export const AgentRuntimeConfigSchema = z
     instructions: AgentInstructionsSchema,
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable(),
     contextTrees: ContextTreesSchema,
+    permissions: AgentPermissionsSchema,
   })
   .strict();
 
 export const CreateAgentRuntimeConfigSchema = z
   .object({
+    permissions: AgentPermissionsSchema.optional(),
     model: RuntimeModelSchema.nullable().optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.nullable().optional(),
     instructions: AgentInstructionsSchema.optional(),
@@ -63,6 +66,7 @@ export const CreateAgentRuntimeConfigSchema = z
 
 export const UpdateAgentRuntimeConfigSchema = z
   .object({
+    permissions: AgentPermissionsSchema.optional(),
     model: RuntimeModelSchema.nullable().optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.nullable().optional(),
     instructions: AgentInstructionsSchema.optional(),

@@ -11,6 +11,7 @@ import type { ComputerAuthVerifier, ComputerService } from "../services/computer
 import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-config/index.js";
 
 export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
+  approvalOwner?: { businessOptions(): RuntimeBusinessOptions; close(): void };
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;
   contextTreeOperationOwner?: ContextTreeOperationOwner;
   domainOwner?: RuntimeDomainOwner;
@@ -80,6 +81,7 @@ export function registerRuntimeRoutes(
     business:
       options.business ??
       composeRuntimeBusinessOptions(
+        options.approvalOwner?.businessOptions(),
         providerCliReconcileOwner?.businessOptions(),
         agentRuntimeTestOwner?.businessOptions(),
         options.contextTreeOperationOwner?.businessOptions(),
@@ -118,6 +120,7 @@ export function registerRuntimeRoutes(
   sweep.unref();
   app.addHook("onClose", async () => {
     clearInterval(sweep);
+    options.approvalOwner?.close();
     agentRuntimeTestOwner?.close();
     options.contextTreeOperationOwner?.close();
     providerCliReconcileOwner?.close();

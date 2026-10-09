@@ -6,6 +6,7 @@ describe("runtime configuration policy", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).toBe("");
     expect(DEFAULT_AGENT_RUNTIME_CONFIG).toEqual({
       contextTrees: [],
+      permissions: { approvalPolicy: "on-request", allowCommands: [] },
       model: null,
       reasoningEffort: null,
       instructions: DEFAULT_AGENT_INSTRUCTIONS,
@@ -21,6 +22,7 @@ describe("runtime configuration policy", () => {
       { model: "gpt-5", reasoningEffort: "high", maxDurationMs: 10_000 },
       {
         contextTrees: [],
+        permissions: { approvalPolicy: "on-request", allowCommands: [] },
         model: "gpt-5",
         reasoningEffort: "high",
         instructions: DEFAULT_AGENT_INSTRUCTIONS,
@@ -31,6 +33,7 @@ describe("runtime configuration policy", () => {
       { instructions: "Use the managed tools.", model: null },
       {
         contextTrees: [],
+        permissions: { approvalPolicy: "on-request", allowCommands: [] },
         model: null,
         reasoningEffort: null,
         instructions: "Use the managed tools.",

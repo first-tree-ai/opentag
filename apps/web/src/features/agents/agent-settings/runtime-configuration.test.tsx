@@ -18,6 +18,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 7,
     model: null,
@@ -55,6 +56,99 @@ async function chooseOption(label: string, value: string): Promise<void> {
 describe("RuntimeConfigurationForm", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("omits approval controls and permission updates for local Pi", async () => {
+    const piConfig = { ...config, runtimeProvider: "pi" as const };
+    const save = vi.fn(async () => piConfig);
+    render(<RuntimeConfigurationForm initialConfig={piConfig} save={save} section="execution" />);
+    expect(screen.queryByRole("switch", { name: "Ask for approval" })).toBeNull();
+    expect(screen.queryByText("Additional allowed commands")).toBeNull();
+    await chooseOption("Model", "__custom_model__");
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom model ID" }), { target: { value: "pi-model" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { model: "pi-model", reasoningEffort: null },
+    });
+  });
+
+  it("turns off approvals while preserving allowed commands", async () => {
+    const permissions = {
+      approvalPolicy: "on-request" as const,
+      allowCommands: ["docker ps"],
+    };
+    const configured = { ...config, runtimeConfig: { ...config.runtimeConfig, permissions } };
+    const save = vi.fn(async () => ({
+      ...configured,
+      revision: 5,
+      runtimeConfig: { ...configured.runtimeConfig, permissions: { ...permissions, approvalPolicy: "never" as const } },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} section="execution" />);
+
+    expect(
+      (screen.getByRole("switch", { name: "Ask for approval" }) as HTMLButtonElement).dataset.checked,
+    ).toBeDefined();
+    fireEvent.click(screen.getByRole("switch", { name: "Ask for approval" }));
+    expect(screen.queryByText("Additional allowed commands")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: null,
+        permissions: { ...permissions, approvalPolicy: "never" },
+      },
+    });
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+  });
+
+  it("adds and removes only additional commands, then saves the allowlist", async () => {
+    const permissions = { approvalPolicy: "on-request" as const, allowCommands: [] };
+    const save = vi.fn(async () => ({
+      ...config,
+      revision: 5,
+      runtimeConfig: {
+        ...config.runtimeConfig,
+        permissions: { ...permissions, allowCommands: ["docker ps"] },
+      },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
+
+    expect(screen.queryByRole("list", { name: "Additional allowed commands" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add git status" }));
+    expect(screen.getByRole("button", { name: "Remove git status" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove git status" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Command to allow" }), {
+      target: { value: "docker ps" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: null,
+        permissions: { ...permissions, allowCommands: ["docker ps"] },
+      },
+    });
+  });
+
+  it("rejects shell syntax and duplicate commands in the simple editor", () => {
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} section="execution" />);
+    const input = screen.getByRole("textbox", { name: "Command to allow" });
+    fireEvent.change(input, { target: { value: "git status && rm -rf /" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    expect(screen.getByRole("alert").textContent).toContain("without shell operators or wildcards");
+    fireEvent.click(screen.getByRole("button", { name: "Add git status" }));
+    fireEvent.change(input, { target: { value: "git status" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    expect(screen.getByRole("alert").textContent).toBe("This command is already added.");
   });
 
   it("presents model suggestions and the complete Codex reasoning list", async () => {

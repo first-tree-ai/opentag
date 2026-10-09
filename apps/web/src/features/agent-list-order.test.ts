@@ -465,6 +465,7 @@ describe("Agent availability model and presentation", () => {
       status: agent.status,
       revision: 1,
       runtimeConfig: {
+        permissions: { approvalPolicy: "on-request", allowCommands: [] },
         contextTrees: [],
         revision: 1,
         instructions: "Custom",

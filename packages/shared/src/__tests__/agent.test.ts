@@ -84,6 +84,7 @@ const agent = {
   status: "active",
   revision: 1,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 1,
     model: null,
@@ -272,6 +273,8 @@ describe("Agent contracts", () => {
     ).toThrow();
     expect(() => AgentAdminConfigSchema.parse({ ...agent, deletedAt: null })).toThrow();
     expect(() => AgentRuntimeConfigSchema.parse({ ...agent.runtimeConfig, allowedTools: [] })).toThrow();
+    const { permissions: _permissions, ...missingPermissions } = agent.runtimeConfig;
+    expect(() => AgentRuntimeConfigSchema.parse(missingPermissions)).toThrow();
   });
 
   it("validates detailed Agent usage and supported periods", () => {

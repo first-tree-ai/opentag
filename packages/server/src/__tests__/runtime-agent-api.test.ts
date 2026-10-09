@@ -39,6 +39,7 @@ const config: AgentAdminConfig = {
   computerId: source.computerId,
   revision: 3,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     revision: 7,
     model: null,
     reasoningEffort: null,

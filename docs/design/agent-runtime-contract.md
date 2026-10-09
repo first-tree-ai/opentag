@@ -87,9 +87,12 @@ The frozen readiness v1 vocabulary contains only Codex and Claude Code; Pi is
 advertised only after explicit readiness v2 negotiation. See
 [Runtime protocol compatibility](../runtime-protocol.md).
 
-Local Pi runs with unrestricted filesystem access, enabled network, and no approval
-gate. Unsupported stricter product settings are rejected. Pi's read-only adapter
-mode limits exposed tools; it is not an OS isolation boundary. Automatic extensions,
+Local Pi keeps enabled network and always runs without approvals or a permission
+extension. Claude Code uses `auto` with its native permission callback; Codex uses
+`workspace-write` and `on-request` approvals. Cloud runs always use full permissions.
+See [Agent permissions](../agent-permissions.md) for allowed-command settings and the
+Slack/Feishu approval flow. Pi's read-only adapter mode limits exposed tools without
+providing an OS isolation boundary. Automatic extensions,
 ambient skills, prompt templates, themes, and context-file discovery are disabled.
 Packaged Context Tree skills are passed explicitly. Model credentials come from the
 operator's configured Pi environment; Local E1 does not introduce a hosted secret

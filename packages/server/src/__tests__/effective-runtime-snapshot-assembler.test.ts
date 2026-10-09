@@ -19,6 +19,7 @@ function authority(overrides: Record<string, unknown> = {}) {
     selfConfigurationEnabled: false,
     imBindingStatus: "active",
     runtimeConfig: {
+      permissions: { approvalPolicy: "on-request", allowCommands: [] },
       contextTrees: [],
       revision: 7,
       model: "gpt-5",
@@ -42,6 +43,59 @@ function assembler(loadAuthority: (value: string) => Promise<ReturnType<typeof a
 }
 
 describe("EffectiveRuntimeSnapshotAssembler", () => {
+  it.each(["codex", "claude-code"] as const)(
+    "keeps %s local permissions configurable and Cloud fully permissive",
+    async (runtimeProvider) => {
+      const permissions = { approvalPolicy: "on-request", allowCommands: [] };
+      const config = { ...authority().runtimeConfig, permissions };
+      const local = await assembler(async () =>
+        authority({ runtimeProvider, computerKind: "local", runtimeConfig: config }),
+      ).assembleForSession(sessionId);
+      const cloud = await assembler(async () =>
+        authority({ runtimeProvider, computerKind: "cloud", runtimeConfig: config }),
+      ).assembleForSession(sessionId);
+      expect(local.execution).toEqual({
+        approvalPolicy: "on-request",
+        networkAccess: runtimeProvider !== "codex",
+        allowCommands: permissions.allowCommands,
+      });
+      expect(cloud.execution).toEqual({ approvalPolicy: "never", networkAccess: true });
+    },
+  );
+
+  it.each(["codex", "claude-code"] as const)(
+    "runs local %s without approvals when disabled and changes the runtime revision",
+    async (runtimeProvider) => {
+      const runtimeConfig = authority().runtimeConfig;
+      const enabled = await assembler(async () =>
+        authority({ runtimeProvider, computerKind: "local", runtimeConfig }),
+      ).assembleForSession(sessionId);
+      const disabled = await assembler(async () =>
+        authority({
+          runtimeProvider,
+          computerKind: "local",
+          runtimeConfig: {
+            ...runtimeConfig,
+            revision: 8,
+            permissions: { approvalPolicy: "never", allowCommands: [] },
+          },
+        }),
+      ).assembleForSession(sessionId);
+      expect(disabled.execution).toEqual({ approvalPolicy: "never", networkAccess: true });
+      expect(disabled.revision.session.id).not.toBe(enabled.revision.session.id);
+      expect(computeRuntimeSnapshotHashes(disabled).effectiveSnapshotHash).not.toBe(
+        computeRuntimeSnapshotHashes(enabled).effectiveSnapshotHash,
+      );
+    },
+  );
+
+  it("always runs local Pi without approvals or an allowed-command configuration", async () => {
+    const result = await assembler(async () =>
+      authority({ runtimeProvider: "pi", computerKind: "local" }),
+    ).assembleForSession(sessionId);
+    expect(result.execution).toEqual({ approvalPolicy: "never", networkAccess: true });
+  });
+
   it("compiles one deterministic effective snapshot from Server authority", async () => {
     const first = await assembler(async (value) => {
       expect(value).toBe(sessionId);
@@ -162,7 +216,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
 
     expect(snapshot).toMatchObject({
       provider: "claude-code",
-      execution: { approvalPolicy: "never", networkAccess: true },
+      execution: { approvalPolicy: "on-request", networkAccess: true },
     });
   });
 

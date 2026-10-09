@@ -95,11 +95,12 @@ export async function writeManagedTurnSelection(
 export function runTurnLauncher(
   launcherPath: string,
   args: readonly string[],
-  options: { env?: NodeJS.ProcessEnv; input?: string } = {},
+  options: { env?: NodeJS.ProcessEnv; input?: string; cwd?: string } = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve, reject) => {
     const child = spawn(launcherPath, [...args], {
       env: options.env ?? { ...process.env },
+      cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

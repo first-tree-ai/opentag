@@ -1,5 +1,5 @@
 {
-  "id": "fb5f2c92-695f-4e04-bf24-9a7d4df844e5",
+  "id": "10063f1d-9e4d-46bf-8107-f5f36dc1ad17",
   "prevId": "1048c8e7-ae89-481c-b400-7cc295df1bd7",
   "version": "7",
   "dialect": "postgresql",
@@ -6446,8 +6446,8 @@
           "method": "btree",
           "with": {}
         },
-        "slack_working_targets_thread_idx": {
-          "name": "slack_working_targets_thread_idx",
+        "slack_working_targets_thread_unique": {
+          "name": "slack_working_targets_thread_unique",
           "columns": [
             {
               "expression": "installation_id",
@@ -6466,15 +6466,9 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            },
-            {
-              "expression": "credential_generation",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}

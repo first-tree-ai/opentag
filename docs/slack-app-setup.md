@@ -56,8 +56,10 @@ The server refreshes Slack at 45-second intervals;
 a confirmed same-thread provider reply schedules an immediate refresh because Slack automatically clears on replies.
 An execution that disconnects without a terminal signal expires; the next worker pass clears it (up to 45 additional
 seconds under normal availability). A terminal Turn Report commits cleanup in the custody transaction.
-A later live heartbeat wakes a cleared target. Same-identity reauthorization atomically moves all sibling turns
-in the thread to the current credential target. Successfully cleared targets are retired once delivery retention
+A later live heartbeat wakes a cleared target. Each installation/thread has one stable target across credential
+rotations. Claiming refreshes its credential fence from the current installation, so sibling turns stay aggregated
+and terminal cleanup can use renewed credentials without replaying liveness. Activity and terminal cleanup share
+a transaction mutex before locking targets or turns. Successfully cleared targets are retired once delivery retention
 removes all referencing turns.
 
 The persisted outbox survives Server restarts, aggregates concurrent turns, and serializes each target across workers.

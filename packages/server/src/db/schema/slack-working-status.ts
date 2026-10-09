@@ -1,4 +1,4 @@
-import { bigint, boolean, index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { imBindings } from "./im-bindings.js";
 import { imMessageDeliveries } from "./im-messages.js";
 import { slackInstallations } from "./slack-installations.js";
@@ -28,7 +28,7 @@ export const slackWorkingTargets = pgTable(
   },
   (t) => [
     index("slack_working_targets_due_idx").on(t.disabled, t.nextAttemptAt),
-    index("slack_working_targets_thread_idx").on(t.installationId, t.channelId, t.threadTs, t.credentialGeneration),
+    uniqueIndex("slack_working_targets_thread_unique").on(t.installationId, t.channelId, t.threadTs),
   ],
 );
 

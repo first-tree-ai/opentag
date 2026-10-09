@@ -6,7 +6,7 @@ import {
   type TurnActivityRequest,
   type TurnActivityResult,
 } from "@opentag/shared";
-import { and, eq, getTableColumns, gt, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, gt, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   imBindings,
@@ -24,12 +24,33 @@ export const WORKING_LEASE_MS = 90_000;
 
 /** Called inside the custody transaction: a committed terminal report always schedules cleanup. */
 export async function finishSlackWorkingTurn(tx: DatabaseTransaction, deliveryId: string, now: Date): Promise<void> {
+  const [target] = await tx
+    .select({
+      installationId: slackWorkingTargets.installationId,
+      channelId: slackWorkingTargets.channelId,
+      threadTs: slackWorkingTargets.threadTs,
+    })
+    .from(slackWorkingTurns)
+    .innerJoin(slackWorkingTargets, eq(slackWorkingTargets.id, slackWorkingTurns.targetId))
+    .where(eq(slackWorkingTurns.deliveryId, deliveryId));
+  if (!target) return;
+  await lockThread(tx, target.installationId, target.channelId, target.threadTs);
   const rows = await tx
     .update(slackWorkingTurns)
     .set({ phase: "terminal", leaseExpiresAt: now })
     .where(eq(slackWorkingTurns.deliveryId, deliveryId))
     .returning({ targetId: slackWorkingTurns.targetId });
   for (const row of rows) await dirtyTarget(tx, row.targetId, now);
+}
+
+async function lockThread(
+  tx: DatabaseTransaction,
+  installationId: string,
+  channelId: string,
+  threadTs: string,
+): Promise<void> {
+  const key = `slack-working:${JSON.stringify([installationId, channelId, threadTs])}`;
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
 }
 
 async function dirtyTarget(tx: DatabaseTransaction, id: string, now: Date): Promise<void> {
@@ -64,7 +85,7 @@ export class SlackWorkingStore {
 
   async record(frame: TurnActivityRequest, context: RuntimeBusinessContext): Promise<TurnActivityResult> {
     const status = await this.database.transaction(async (tx) => {
-      const scope = await this.#scope(tx, frame, context);
+      const scope = await this.#lockedScope(tx, frame, context);
       if (!scope || context.signal.aborted) return "stale_generation" as const;
       const { delivery, binding, installation } = scope;
       const request = workingRequest(delivery.dispatchPayload, installation);
@@ -76,29 +97,8 @@ export class SlackWorkingStore {
       if (isReplay(previous, frame)) return "already_recorded" as const;
       const ref = request.content.providerRef;
       const threadTs = ref.threadTs ?? ref.messageTs;
-      const targetId = createHash("sha256")
-        .update(JSON.stringify([installation.id, installation.credentialGeneration, ref.channelId, threadTs]))
-        .digest("hex");
       const now = this.now();
-      await tx
-        .insert(slackWorkingTargets)
-        .values({
-          id: targetId,
-          bindingId: binding.id,
-          installationId: installation.id,
-          credentialGeneration: installation.credentialGeneration,
-          channelId: ref.channelId,
-          threadTs,
-          nextAttemptAt: now,
-          notBeforeAt: now,
-        })
-        .onConflictDoNothing();
-      await tx
-        .select({ id: slackWorkingTargets.id })
-        .from(slackWorkingTargets)
-        .where(eq(slackWorkingTargets.id, targetId))
-        .for("update");
-      await migrateSiblingTurns(tx, targetId, installation, ref.channelId, threadTs, now, previous?.targetId);
+      const targetId = await prepareTarget(tx, binding.id, installation, ref.channelId, threadTs, now);
       const deadlineAt = previous?.deadlineAt ?? executionDeadline(request, now);
       const phase = now >= deadlineAt ? "terminal" : frame.phase;
       const leaseExpiresAt = new Date(Math.min(now.getTime() + WORKING_LEASE_MS, deadlineAt.getTime()));
@@ -132,6 +132,17 @@ export class SlackWorkingStore {
       sequence: frame.sequence,
       status,
     };
+  }
+
+  async #lockedScope(tx: DatabaseTransaction, frame: TurnActivityRequest, context: RuntimeBusinessContext) {
+    const initial = await this.#scope(tx, frame, context);
+    if (!initial) return;
+    const request = workingRequest(initial.delivery.dispatchPayload, initial.installation);
+    if (!request) return;
+    const ref = request.content.providerRef;
+    await lockThread(tx, initial.installation.id, ref.channelId, ref.threadTs ?? ref.messageTs);
+    // Authorization may rotate while this transaction waits for the stable thread mutex.
+    return this.#scope(tx, frame, context);
   }
 
   async #scope(tx: DatabaseTransaction, frame: TurnActivityRequest, context: RuntimeBusinessContext) {
@@ -174,12 +185,15 @@ export class SlackWorkingStore {
     const now = this.now();
     return this.database.transaction(async (tx) => {
       const [target] = await tx
-        .select(getTableColumns(slackWorkingTargets))
+        .select({ ...getTableColumns(slackWorkingTargets), currentGeneration: slackInstallations.credentialGeneration })
         .from(slackWorkingTargets)
         .innerJoin(slackInstallations, eq(slackInstallations.id, slackWorkingTargets.installationId))
         .where(
           and(
-            eq(slackWorkingTargets.disabled, false),
+            or(
+              eq(slackWorkingTargets.disabled, false),
+              lt(slackWorkingTargets.credentialGeneration, slackInstallations.credentialGeneration),
+            ),
             lte(slackWorkingTargets.nextAttemptAt, now),
             lte(slackWorkingTargets.notBeforeAt, now),
             lte(slackInstallations.workingStatusNotBeforeAt, now),
@@ -192,7 +206,13 @@ export class SlackWorkingStore {
       if (!target) return;
       const [claimed] = await tx
         .update(slackWorkingTargets)
-        .set({ claimId: randomUUID(), claimExpiresAt: new Date(now.getTime() + 30_000) })
+        .set({
+          claimId: randomUUID(),
+          claimExpiresAt: new Date(now.getTime() + 30_000),
+          credentialGeneration: Math.max(target.credentialGeneration, target.currentGeneration),
+          disabled: false,
+          failures: target.credentialGeneration < target.currentGeneration ? 0 : target.failures,
+        })
         .where(eq(slackWorkingTargets.id, target.id))
         .returning();
       return claimed;
@@ -209,6 +229,7 @@ export class SlackWorkingStore {
         and(
           eq(slackWorkingTargets.id, target.id),
           eq(slackWorkingTargets.claimId, target.claimId),
+          eq(slackWorkingTargets.credentialGeneration, target.credentialGeneration),
           gt(slackWorkingTargets.claimExpiresAt, new Date(this.now().getTime() + 5_000)),
           lte(slackInstallations.workingStatusNotBeforeAt, this.now()),
         ),
@@ -274,7 +295,13 @@ export class SlackWorkingStore {
           nextAttemptAt: sql`case when ${slackWorkingTargets.revision} <> ${target.revision} and ${input.failed ?? false} = false then ${now.toISOString()}::timestamptz
         else ${retryAt.toISOString()}::timestamptz end`,
         })
-        .where(and(eq(slackWorkingTargets.id, target.id), eq(slackWorkingTargets.claimId, claimId)));
+        .where(
+          and(
+            eq(slackWorkingTargets.id, target.id),
+            eq(slackWorkingTargets.claimId, claimId),
+            eq(slackWorkingTargets.credentialGeneration, target.credentialGeneration),
+          ),
+        );
     });
   }
 }
@@ -293,37 +320,50 @@ function workingRequest(payload: unknown, installation: typeof slackInstallation
   return { ...parsed.data, content: { ...parsed.data.content, providerRef: ref } };
 }
 
-async function migrateSiblingTurns(
+async function prepareTarget(
   tx: DatabaseTransaction,
-  targetId: string,
+  bindingId: string,
   installation: typeof slackInstallations.$inferSelect,
   channelId: string,
   threadTs: string,
   now: Date,
-  previousTargetId?: string,
-): Promise<void> {
-  if (previousTargetId === targetId) return;
-  const oldTargets = and(
-    eq(slackWorkingTargets.installationId, installation.id),
-    eq(slackWorkingTargets.channelId, channelId),
-    eq(slackWorkingTargets.threadTs, threadTs),
-    lt(slackWorkingTargets.credentialGeneration, installation.credentialGeneration),
-  );
-  const moved = await tx
-    .update(slackWorkingTurns)
-    .set({ targetId })
-    .where(
-      inArray(
-        slackWorkingTurns.targetId,
-        tx.select({ id: slackWorkingTargets.id }).from(slackWorkingTargets).where(oldTargets),
-      ),
-    )
-    .returning({ id: slackWorkingTurns.deliveryId });
-  if (moved.length) await dirtyTarget(tx, targetId, now);
+): Promise<string> {
+  const targetId = createHash("sha256")
+    .update(JSON.stringify([installation.id, channelId, threadTs]))
+    .digest("hex");
   await tx
-    .update(slackWorkingTargets)
-    .set({ disabled: true, working: false, claimId: null, claimExpiresAt: null })
-    .where(and(oldTargets, eq(slackWorkingTargets.disabled, false)));
+    .insert(slackWorkingTargets)
+    .values({
+      id: targetId,
+      bindingId,
+      installationId: installation.id,
+      credentialGeneration: installation.credentialGeneration,
+      channelId,
+      threadTs,
+      nextAttemptAt: now,
+      notBeforeAt: now,
+    })
+    .onConflictDoNothing();
+  const [target] = await tx
+    .select()
+    .from(slackWorkingTargets)
+    .where(eq(slackWorkingTargets.id, targetId))
+    .for("update");
+  if (target && target.credentialGeneration < installation.credentialGeneration)
+    await tx
+      .update(slackWorkingTargets)
+      .set({
+        bindingId,
+        credentialGeneration: installation.credentialGeneration,
+        disabled: false,
+        failures: 0,
+        claimId: null,
+        claimExpiresAt: null,
+        revision: sql`${slackWorkingTargets.revision} + 1`,
+        nextAttemptAt: now,
+      })
+      .where(eq(slackWorkingTargets.id, targetId));
+  return targetId;
 }
 
 function executionDeadline(request: DirectImMessageDeliveryRequest, startedAt: Date): Date {

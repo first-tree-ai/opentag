@@ -31,5 +31,5 @@ ALTER TABLE "slack_working_targets" ADD CONSTRAINT "slack_working_targets_instal
 ALTER TABLE "slack_working_turns" ADD CONSTRAINT "slack_working_turns_delivery_id_im_message_deliveries_id_fk" FOREIGN KEY ("delivery_id") REFERENCES "public"."im_message_deliveries"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "slack_working_turns" ADD CONSTRAINT "slack_working_turns_target_id_slack_working_targets_id_fk" FOREIGN KEY ("target_id") REFERENCES "public"."slack_working_targets"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "slack_working_targets_due_idx" ON "slack_working_targets" USING btree ("disabled","next_attempt_at");--> statement-breakpoint
-CREATE INDEX "slack_working_targets_thread_idx" ON "slack_working_targets" USING btree ("installation_id","channel_id","thread_ts","credential_generation");--> statement-breakpoint
+CREATE UNIQUE INDEX "slack_working_targets_thread_unique" ON "slack_working_targets" USING btree ("installation_id","channel_id","thread_ts");--> statement-breakpoint
 CREATE INDEX "slack_working_turns_target_idx" ON "slack_working_turns" USING btree ("target_id");

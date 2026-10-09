@@ -101,7 +101,7 @@ async function fixture() {
   const store = new SlackWorkingStore(client.database, () => clock);
   const calls: string[] = [];
   const api = {
-    setThreadStatus: vi.fn(async (input: { status: string }) => {
+    setThreadStatus: vi.fn(async (input: { status: string; token: string }) => {
       calls.push(input.status);
     }),
   };
@@ -538,10 +538,10 @@ describe("durable Slack working projection", () => {
     expect(current).toBeDefined();
     expect(turn?.targetId).toBe(current?.id);
     expect(current?.working).toBe(true);
-    expect(targets.find((target) => target.credentialGeneration === 1)?.disabled).toBe(true);
+    expect(targets).toHaveLength(1);
     expect(h.calls).toEqual(["is working", "is working"]);
   });
-  it("moves all sibling turns atomically so a completion during reauthorization cannot clear live work", async () => {
+  it("keeps sibling turns on one stable target so completion during reauthorization cannot clear live work", async () => {
     const h = await fixture(),
       first = await h.delivery(),
       second = await h.delivery();
@@ -619,5 +619,224 @@ describe("durable Slack working projection", () => {
     await h.store.record({ ...frame, sequence: 2 }, h.context);
     await h.worker.runOnce();
     expect(h.calls).toEqual(["is working", "is working"]);
+  });
+  it("serializes old and new generation activity before locking sibling turn rows", async () => {
+    const h = await fixture(),
+      first = await h.delivery(),
+      second = await h.delivery();
+    const siblingSession = randomUUID();
+    await client.database.insert(sessions).values({
+      id: siblingSession,
+      imBindingId: h.binding.id,
+      channelId: "C1",
+      conversationKind: "channel",
+      kind: "thread",
+      threadKey: "1.1",
+    });
+    await client.database
+      .insert(sessionPlacements)
+      .values({ sessionId: siblingSession, computerId: h.context.computerId, generation: 1 });
+    second.frame.sessionId = siblingSession;
+    second.request.sessionId = siblingSession;
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ sessionId: siblingSession, dispatchPayload: second.request })
+      .where(eq(imMessageDeliveries.id, second.frame.deliveryId));
+    await h.store.record(first.frame, h.context);
+    await h.store.record(second.frame, h.context);
+    const [target] = await client.database.select().from(slackWorkingTargets);
+    if (!target) throw new Error("missing target");
+    let unlock = () => {},
+      signalReady = () => {};
+    const released = new Promise<void>((resolve) => {
+      unlock = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      signalReady = resolve;
+    });
+    const holding = client.sql.begin(async (tx) => {
+      await tx`select id from slack_working_targets where id = ${target.id} for update`;
+      signalReady();
+      await released;
+    });
+    await ready;
+    const old = h.store.record({ ...first.frame, sequence: 2 }, h.context).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let current: typeof old | undefined;
+    try {
+      await expect
+        .poll(
+          async () => {
+            const [row] =
+              await client.sql`select count(*)::int as count from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like '%slack_working_targets%'`;
+            return Number(row?.count);
+          },
+          { timeout: 5_000 },
+        )
+        .toBeGreaterThanOrEqual(1);
+      await new ImBindingService(client.database, cipher).activateSlack(
+        {
+          intent: "reauthorize",
+          agentId: first.frame.agentId,
+          appId: "A1",
+          teamId: "T1",
+          botUserId: "U1",
+          grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+          botAccessToken: "unit-secret-rotated",
+          signingSecret: "unit-signing",
+          installedAt: clock,
+        },
+        "B1",
+      );
+      current = h.store.record({ ...second.frame, sequence: 2 }, h.context).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await expect
+        .poll(
+          async () => {
+            const [row] =
+              await client.sql`select count(*)::int as count from pg_stat_activity where datname = current_database() and wait_event = 'advisory'`;
+            return Number(row?.count);
+          },
+          { timeout: 5_000 },
+        )
+        .toBe(1);
+    } finally {
+      unlock();
+      await holding;
+      const outcomes = await Promise.all([old, current]);
+      expect(outcomes).toEqual([
+        expect.objectContaining({ value: expect.objectContaining({ status: "recorded" }) }),
+        expect.objectContaining({ value: expect.objectContaining({ status: "recorded" }) }),
+      ]);
+    }
+    const targets = await client.database.select().from(slackWorkingTargets);
+    const latest = targets.find((row) => row.credentialGeneration === 2);
+    const turns = await client.database.select().from(slackWorkingTurns);
+    expect(turns.every((turn) => turn.targetId === latest?.id)).toBe(true);
+  }, 20_000);
+  it("reuses one target across rotations and retires it after confirmed cleanup", async () => {
+    const h = await fixture(),
+      first = await h.delivery();
+    await h.store.record(first.frame, h.context);
+    await h.worker.runOnce();
+    await h.store.record({ ...first.frame, sequence: 2, phase: "terminal" }, h.context);
+    await h.worker.runOnce();
+    const [old] = await client.database.select().from(slackWorkingTargets);
+    if (!old) throw new Error("missing target");
+    await client.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, first.frame.deliveryId));
+    await new ImBindingService(client.database, cipher).activateSlack(
+      {
+        intent: "reauthorize",
+        agentId: first.frame.agentId,
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+        botAccessToken: "unit-secret-rotated",
+        signingSecret: "unit-signing",
+        installedAt: clock,
+      },
+      "B1",
+    );
+    const second = await h.delivery();
+    await h.store.record(second.frame, h.context);
+    await h.worker.runOnce();
+    await client.database.insert(slackWorkingTargets).values({
+      ...old,
+      id: "unresolved-current",
+      threadTs: "9.9",
+      credentialGeneration: 2,
+      disabled: true,
+      working: false,
+      nextAttemptAt: clock,
+      claimId: null,
+      claimExpiresAt: null,
+    });
+    await runImDeliveryRetention(client.database, {
+      clock: () => clock,
+      expiryBatchSize: 100,
+      retentionBatchSize: 100,
+      imMessagesRetentionMs: 1_000,
+      imMessageDeliveriesRetentionMs: 1_000,
+      slackWebhookReceiptsRetentionMs: 1_000,
+      feishuInboundReceiptsRetentionMs: 1_000,
+    });
+    const targets = await client.database.select().from(slackWorkingTargets);
+    expect(targets.some((row) => row.credentialGeneration === 1)).toBe(false);
+    expect(targets.some((row) => row.id === "unresolved-current")).toBe(true);
+    expect(targets.some((row) => row.working)).toBe(true);
+    expect(targets.find((row) => row.working)?.id).toBe(old.id);
+    await h.store.record({ ...second.frame, sequence: 2, phase: "terminal" }, h.context);
+    await h.worker.runOnce();
+    await client.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, second.frame.deliveryId));
+    await runImDeliveryRetention(client.database, {
+      clock: () => clock,
+      expiryBatchSize: 100,
+      retentionBatchSize: 100,
+      imMessagesRetentionMs: 1_000,
+      imMessageDeliveriesRetentionMs: 1_000,
+      slackWebhookReceiptsRetentionMs: 1_000,
+      feishuInboundReceiptsRetentionMs: 1_000,
+    });
+    expect((await client.database.select().from(slackWorkingTargets)).map((row) => row.id)).toEqual([
+      "unresolved-current",
+    ]);
+  });
+  it("uses current credentials to clear terminal activity whose ACK was lost across reauthorization", async () => {
+    const h = await fixture(),
+      { frame } = await h.delivery();
+    await h.store.record(frame, h.context);
+    await h.worker.runOnce();
+    const terminal = { ...frame, sequence: 2, phase: "terminal" as const };
+    await h.store.record(terminal, h.context);
+    await new ImBindingService(client.database, cipher).activateSlack(
+      {
+        intent: "reauthorize",
+        agentId: frame.agentId,
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+        botAccessToken: "unit-secret-rotated",
+        signingSecret: "unit-signing",
+        installedAt: clock,
+      },
+      "B1",
+    );
+    expect((await h.store.record(terminal, h.context)).status).toBe("already_recorded");
+    await h.worker.runOnce();
+    expect(h.calls).toEqual(["is working", ""]);
+    expect(h.api.setThreadStatus.mock.calls[1]?.[0].token).toBe("unit-secret-rotated");
+  });
+  it("reactivates failed cleanup after credentials advance without reviving the old token", async () => {
+    const h = await fixture(),
+      { frame } = await h.delivery();
+    await h.store.record(frame, h.context);
+    await h.worker.runOnce();
+    await h.store.record({ ...frame, sequence: 2, phase: "terminal" }, h.context);
+    h.api.setThreadStatus.mockRejectedValueOnce(new SlackThreadStatusError("invalid_auth"));
+    await h.worker.runOnce();
+    await new ImBindingService(client.database, cipher).activateSlack(
+      {
+        intent: "reauthorize",
+        agentId: frame.agentId,
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+        botAccessToken: "unit-secret-rotated",
+        signingSecret: "unit-signing",
+        installedAt: clock,
+      },
+      "B1",
+    );
+    clock = new Date(clock.getTime() + 2_001);
+    await h.worker.runOnce();
+    expect(h.calls).toEqual(["is working", ""]);
+    expect(h.api.setThreadStatus.mock.calls[2]?.[0].token).toBe("unit-secret-rotated");
   });
 });

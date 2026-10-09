@@ -34,6 +34,7 @@ export {
   type AgentRuntime,
   type AgentRuntimeBinding,
   type AgentRuntimeCapabilities,
+  type AgentRuntimeConfigurationOptionsRequest,
   type AgentRuntimeEvent,
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,

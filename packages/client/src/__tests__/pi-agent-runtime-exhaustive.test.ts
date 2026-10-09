@@ -555,7 +555,7 @@ describe("PiAgentRuntime exhaustive behavior", () => {
         },
       },
       { ...request(() => undefined), configuration: { model: " " } },
-      { ...request(() => undefined), configuration: { reasoningEffort: "ultra" } },
+      { ...request(() => undefined), configuration: { reasoningEffort: " " } },
       { ...request(() => undefined), configuration: { provider: [] } },
       { ...request(() => undefined), configuration: { provider: { unknown: true } } },
       { ...request(() => undefined), configuration: { provider: { appendSystemPrompt: "removed" } } },
@@ -1022,7 +1022,7 @@ exit 1
 `);
     await expect(
       localProbe(noModelsCli).probe({
-        configuration: { reasoningEffort: "bad" },
+        configuration: { reasoningEffort: " " },
       }),
     ).resolves.toMatchObject({
       ready: false,

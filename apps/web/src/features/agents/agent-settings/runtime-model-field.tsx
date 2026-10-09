@@ -27,7 +27,7 @@ export function runtimeModelField({
   const unavailable = cloud && !cloudOptions;
   const unsupported = cloud && Boolean(modelDraft) && !choices.includes(modelDraft);
   const invalid = cloud ? unavailable || unsupported : modelSelection === CUSTOM && !modelDraft.trim();
-  let defaultLabel = m.agent_settings_provider_default();
+  let defaultLabel = m.agent_settings_inherit_local();
   if (cloud) {
     defaultLabel = cloudOptions?.defaultModel
       ? m.agent_settings_cloud_model_default({ model: cloudOptions.defaultModel })

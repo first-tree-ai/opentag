@@ -114,10 +114,13 @@ describe("AgentModelSettings", () => {
     const dialog = await screen.findByRole("dialog", { name: "Change model" });
     expect(await optionLabels(dialog, "Model")).toEqual([
       "Provider default",
+      "gpt-6.1-sol",
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-5.3-codex",
       "Custom model ID…",
     ]);
     await chooseOption(dialog, "Model", "gpt-5.6-sol");

@@ -47,6 +47,54 @@ function issues(result: AgentRuntimeProbeResult): string[] {
 }
 
 describe("resolved provider factories candidate fallback", () => {
+  it("queries each resolved Factory before readiness without running its probe, then reuses the ready Factory", async () => {
+    const root = await temporaryRoot();
+    const command = await executable(root, "provider");
+    const options = {
+      command,
+      environment: {},
+      sourceEnvironment: {},
+      discovery: { includeLoginShell: false, pathDelimiter: delimiter },
+    };
+    const metadata = { modelSuggestions: ["custom"], reasoningEffortAllowedValues: ["future"] };
+    const codex = new CodexAgentRuntimeFactory({
+      clientVersion: "test",
+      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
+    });
+    const claude = new ClaudeCodeAgentRuntimeFactory({
+      probeRunner: async () => ({ streamJson: true, credential: true, version: "test" }),
+    });
+    const pi = new PiAgentRuntimeFactory({
+      probeRunner: async () => ({ rpc: true, credential: true, version: "test" }),
+    });
+    const query = vi.fn().mockResolvedValue(metadata);
+    vi.spyOn(codex, "getConfigurationOptions").mockImplementation(query);
+    vi.spyOn(claude, "getConfigurationOptions").mockImplementation(query);
+    vi.spyOn(pi, "getConfigurationOptions").mockImplementation(query);
+    const factories = [
+      resolvedCodexFactory({ ...options, codexHome: root, clientVersion: "test", createCandidateFactory: () => codex }),
+      resolvedClaudeCodeFactory({ ...options, claudeCodeHome: root, createCandidateFactory: () => claude }),
+      resolvedPiFactory({ ...options, piHome: root, sessionDirectory: root, createCandidateFactory: () => pi }),
+    ];
+    for (const factory of factories) {
+      expect(await factory.getConfigurationOptions?.({ cwd: root })).toEqual(metadata);
+      await factory.probe({});
+      expect(await factory.getConfigurationOptions?.({ cwd: root, signal: new AbortController().signal })).toEqual(
+        metadata,
+      );
+    }
+    const legacy = resolvedCodexFactory({
+      ...options,
+      discovery: undefined,
+      clientVersion: "test",
+      codexHome: root,
+      createCandidateFactory: () => ({ manifest: codex.manifest }) as CodexAgentRuntimeFactory,
+    });
+    await expect(legacy.getConfigurationOptions?.({ cwd: root })).rejects.toThrow(
+      "configuration options are unavailable",
+    );
+  });
+
   it("advances to the next same-Provider candidate on version_incompatible and does not spawn login-shell", async () => {
     const root = await temporaryRoot();
     const caller = join(root, "caller");

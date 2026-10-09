@@ -208,5 +208,32 @@
       "code": "PROTOCOL_ERROR",
       "message": "The request is invalid."
     }
+  },
+  {
+    "name": "agent-runtime-options",
+    "schema": "AgentRuntimeOptionsRequestFrameSchema",
+    "payload": {
+      "type": "agent-runtime:options",
+      "requestId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "agentId": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+      "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      "provider": "pi",
+      "model": "custom/model"
+    }
+  },
+  {
+    "name": "agent-runtime-options-unknown-effort",
+    "schema": "AgentRuntimeOptionsResultFrameSchema",
+    "payload": {
+      "type": "agent-runtime:options:result",
+      "requestId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "result": {
+        "status": "completed",
+        "options": {
+          "modelSuggestions": ["custom/model"],
+          "reasoningEffortAllowedValues": null
+        }
+      }
+    }
   }
 ]

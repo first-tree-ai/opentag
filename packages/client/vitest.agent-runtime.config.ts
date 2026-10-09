@@ -16,6 +16,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: [
+      "src/__tests__/runtime-options.test.ts",
       "src/__tests__/agent-runtime-contract.test.ts",
       "src/__tests__/agent-runtime-availability-tester.test.ts",
       "src/__tests__/agent-runtime-event-validator.test.ts",

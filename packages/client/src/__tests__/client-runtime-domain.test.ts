@@ -274,6 +274,42 @@ describe("ClientRuntime domain dispatch", () => {
     ]);
   });
 
+  it("dispatches runtime metadata without Session reconcile and reports unavailable handlers", async () => {
+    const frame = {
+      type: "agent-runtime:options",
+      requestId: randomUUID(),
+      agentId: randomUUID(),
+      computerId: randomUUID(),
+      provider: "pi",
+      model: "custom/model",
+    };
+    const getRuntimeOptions = vi
+      .fn()
+      .mockResolvedValue({ modelSuggestions: ["custom/model"], reasoningEffortAllowedValues: ["off", "max"] });
+    const connection = new FrameConnection([frame]);
+    await new ClientRuntime(connection as unknown as RuntimeConnection, { getRuntimeOptions }).run();
+    expect(getRuntimeOptions).toHaveBeenCalledWith(frame, expect.any(AbortSignal));
+    expect(connection.sent).toEqual([
+      {
+        type: "agent-runtime:options:result",
+        requestId: frame.requestId,
+        result: {
+          status: "completed",
+          options: { modelSuggestions: ["custom/model"], reasoningEffortAllowedValues: ["off", "max"] },
+        },
+      },
+    ]);
+    const unavailable = new FrameConnection([frame]);
+    await new ClientRuntime(unavailable as unknown as RuntimeConnection).run();
+    expect(unavailable.sent).toEqual([
+      {
+        type: "agent-runtime:options:result",
+        requestId: frame.requestId,
+        result: { status: "failed", code: "capability_missing" },
+      },
+    ]);
+  });
+
   it("dispatches Agent Runtime test results without Session reconcile", async () => {
     const requestId = randomUUID();
     const availabilityTester = {

@@ -6,6 +6,7 @@ import {
   AGENT_CONFIG_TEMPLATE,
   AGENT_CONTEXT_TREE_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
+  AGENT_RUNTIME_OPTIONS_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SETUP_REFRESH_TEMPLATE,
   AGENT_SETUP_TEMPLATE,
@@ -16,6 +17,8 @@ import {
   AgentCloudOverviewQuerySchema,
   AgentCloudOverviewSchema,
   AgentDetailSchema,
+  AgentRuntimeOptionsQuerySchema,
+  AgentRuntimeOptionsSchema,
   AgentRuntimeTestRequestSchema,
   AgentRuntimeTestResponseSchema,
   AgentSetupSnapshotSchema,
@@ -29,6 +32,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import type { AgentRuntimeOptionsService } from "../services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -80,6 +84,7 @@ export function registerAgentRoutes(
   cloudOverview?: CloudOverviewService,
   slackOAuthAvailable?: boolean,
   imResourceService?: ImResourceService,
+  runtimeOptions?: AgentRuntimeOptionsService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
 
@@ -201,6 +206,21 @@ export function registerAgentRoutes(
         await contextTree.run(authenticatedUserId(request), agentId, input),
       );
       return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+  if (runtimeOptions)
+    app.get(AGENT_RUNTIME_OPTIONS_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const { model } = parseRequest(AgentRuntimeOptionsQuerySchema, request.query);
+      const disconnect = requestDisconnectSignal(request, reply);
+      try {
+        const response = AgentRuntimeOptionsSchema.parse(
+          await runtimeOptions.get(authenticatedUserId(request), agentId, model, disconnect.signal),
+        );
+        return reply.header("Cache-Control", "no-store").send(response);
+      } finally {
+        disconnect.dispose();
+      }
     });
 
   if (!runtimeTest) return;

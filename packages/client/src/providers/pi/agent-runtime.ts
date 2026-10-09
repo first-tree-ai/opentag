@@ -3,7 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { MCP_GATEWAY_PATH } from "@opentag/shared";
+import { AgentRuntimeOptionsSchema, MCP_GATEWAY_PATH, RuntimeReasoningEffortSchema } from "@opentag/shared";
+import { z } from "zod";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -17,6 +18,7 @@ import {
   type AgentProviderRunResult,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
+  type AgentRuntimeConfigurationOptionsRequest,
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,
   type AgentRuntimeManifest,
@@ -31,6 +33,7 @@ import {
 } from "../../agent-runtime/types.js";
 import {
   assertBinding,
+  assertConfigurationStrings,
   assertJsonValue,
   assertSystemPrompt,
   runWithAbortSignal,
@@ -43,7 +46,6 @@ const PI_BINDING_SCHEMA_VERSION = 1;
 const PI_PROVIDER_ID = "pi";
 const logger = createLogger("provider-pi-runtime");
 const PI_MINIMUM_VERSION = [0, 80, 6] as const;
-const PI_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 const PI_STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
 const PI_RESOURCE_DISABLE_ARGUMENTS = [
@@ -828,6 +830,12 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
     const environment = piAgentRuntimeEnvironment(options.process?.env ?? process.env);
     const command = options.process?.command ?? "pi";
     const prefix = options.process?.args ?? [];
+    const resourceFlags = ["--skill", "-e", "--extension", "--prompt-template", "--theme"];
+    const queryPrefix = prefix.filter(
+      (argument, index) =>
+        !resourceFlags.some((flag) => argument === flag || argument.startsWith(`${flag}=`)) &&
+        !resourceFlags.includes(prefix[index - 1] ?? ""),
+    );
     const sessionDirectory = options.process?.sessionDirectory;
     if (sessionDirectory && !isAbsolute(sessionDirectory)) {
       throw new AgentRuntimeError("configuration_invalid", "Pi sessionDirectory must be absolute");
@@ -848,7 +856,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       ((cwd, args, workspaceEnvironment, pathPrepend) =>
         new PiRpcProcess({
           command,
-          args: [...prefix, ...args],
+          args: [...(args.includes("--no-session") ? queryPrefix : prefix), ...args],
           cwd,
           env: composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend),
           maxLineBytes: options.process?.maxLineBytes,
@@ -879,6 +887,51 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       issues.push({ code: "artifact_missing", message: "Pi CLI could not be executed" });
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
+  }
+
+  async getConfigurationOptions(request: AgentRuntimeConfigurationOptionsRequest) {
+    assertConfigurationStrings({ model: request.model });
+    const signal = request.signal
+      ? AbortSignal.any([request.signal, AbortSignal.timeout(15_000)])
+      : AbortSignal.timeout(15_000);
+    signal.throwIfAborted();
+    // RPC setters persist Pi defaults in supported releases, including with --no-session.
+    const client = this.#createClient(request.cwd, [
+      "--mode",
+      "rpc",
+      "--no-session",
+      ...PI_RESOURCE_DISABLE_ARGUMENTS,
+      ...(request.model ? ["--model", request.model] : []),
+    ]);
+    try {
+      const models = z
+        .object({ models: z.array(z.object({ provider: z.string().min(1), id: z.string().min(1) })) })
+        .parse(await client.request({ type: "get_available_models" }, signal)).models;
+      const state = z
+        .object({ model: z.object({ provider: z.string(), id: z.string() }).nullable().optional() })
+        .parse(await client.request({ type: "get_state" }, signal));
+      const actualModel = state.model ? `${state.model.provider}/${state.model.id}` : undefined;
+      let levels: string[] | null = null;
+      if (actualModel && (!request.model || actualModel === request.model || state.model?.id === request.model)) {
+        try {
+          levels = z
+            .object({ levels: z.array(RuntimeReasoningEffortSchema) })
+            .parse(await client.request({ type: "get_available_thinking_levels" }, signal)).levels;
+        } catch (error) {
+          signal.throwIfAborted();
+          logger.debug(
+            { code: "thinking_levels_unavailable", error: String(error) },
+            "Pi thinking levels could not be read",
+          );
+        }
+      }
+      return AgentRuntimeOptionsSchema.parse({
+        modelSuggestions: [...new Set(models.map((entry) => `${entry.provider}/${entry.id}`))],
+        reasoningEffortAllowedValues: levels,
+      });
+    } finally {
+      await client.close();
+    }
   }
 
   create(request: CreateAgentRuntimeRequest): Promise<PiAgentRuntime> {
@@ -1136,12 +1189,7 @@ function validateToolPolicy(policy: AgentRuntimePolicy): void {
 
 function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
   if (!configuration) return;
-  if (configuration.model !== undefined && configuration.model.trim().length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "model must be non-empty");
-  }
-  if (configuration.reasoningEffort && !PI_THINKING_LEVELS.has(configuration.reasoningEffort)) {
-    throw new AgentRuntimeError("configuration_invalid", "Pi thinking level is unsupported");
-  }
+  assertConfigurationStrings(configuration);
   parseProviderConfiguration(configuration.provider);
 }
 

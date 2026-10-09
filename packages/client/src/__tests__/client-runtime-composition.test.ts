@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -7,6 +7,7 @@ import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type ContextTreeOperationFrame,
+  computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
@@ -284,6 +285,79 @@ describe("createClientRuntime production composition", () => {
       executionEnvironment.mockRestore();
       runtime.stop();
       await runtime.run();
+    }
+  });
+
+  it("queries the existing Agent workspace, uses an ephemeral cwd for a new Agent, and fails closed on workspace errors", async () => {
+    const home = await temporaryDirectory("opentag-runtime-options-composition-");
+    const connection = runtimeConnection();
+    const listeners: Array<Parameters<RuntimeConnection["subscribeBusinessFrames"]>[0]> = [];
+    const subscribe = connection.subscribeBusinessFrames.bind(connection);
+    const businessFrames = vi.spyOn(connection, "subscribeBusinessFrames").mockImplementation((listener) => {
+      listeners.push(listener);
+      return subscribe(listener);
+    });
+    const sent: Array<Record<string, unknown>> = [];
+    const send = vi.spyOn(connection, "send").mockImplementation(async (frame) => {
+      sent.push(frame as Record<string, unknown>);
+    });
+    const getConfigurationOptions = vi
+      .fn<NonNullable<AgentRuntimeFactory["getConfigurationOptions"]>>()
+      .mockResolvedValue({ modelSuggestions: ["private"], reasoningEffortAllowedValues: null });
+    const factory = { ...readyFactory(), getConfigurationOptions };
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory,
+      home,
+    });
+    let running: Promise<void> | undefined;
+    const agentId = randomUUID();
+    const frame = {
+      type: "agent-runtime:options",
+      requestId: randomUUID(),
+      agentId,
+      computerId: randomUUID(),
+      provider: "codex",
+      model: "private",
+    };
+    const dispatch = async (value = frame) => {
+      for (const listener of listeners) await listener(value);
+    };
+    try {
+      running = runtime.run().catch(() => undefined);
+      await vi.waitFor(() => expect(listeners.length).toBeGreaterThan(0));
+      await dispatch();
+      const ephemeral = getConfigurationOptions.mock.calls[0]?.[0].cwd;
+      expect(ephemeral).toContain("opentag-runtime-options-");
+      await expect(access(ephemeral as string)).rejects.toMatchObject({ code: "ENOENT" });
+      const current = { ...snapshot(), agentId };
+      await runtime.workspace.prepareAgent(current, computeRuntimeSnapshotHashes(current));
+      await dispatch();
+      expect(getConfigurationOptions.mock.calls[1]?.[0].cwd).toBe(runtime.workspace.paths(agentId).workspaceRoot);
+      await dispatch({ ...frame, provider: "pi" });
+      expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+      const state = runtime.workspace.paths(agentId).workspaceState;
+      await writeFile(state, "invalid");
+      await dispatch();
+      expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+      await rm(state);
+      const paths = runtime.workspace.paths(agentId);
+      await writeFile(resolve(home, "not-directory"), "file");
+      const badPaths = vi
+        .spyOn(runtime.workspace, "paths")
+        .mockReturnValue({ ...paths, workspaceState: resolve(home, "not-directory", "state.json") });
+      await dispatch();
+      expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+      badPaths.mockRestore();
+      getConfigurationOptions.mockRejectedValueOnce(new Error("native query failed"));
+      await dispatch();
+      expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+    } finally {
+      runtime.stop();
+      await running;
+      send.mockRestore();
+      businessFrames.mockRestore();
     }
   });
 

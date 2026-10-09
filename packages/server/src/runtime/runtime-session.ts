@@ -393,7 +393,7 @@ export class RuntimeSession {
           negotiatedCapabilities,
           socket: this.#socket,
         },
-        () => this.#computers.register(authContext, frame),
+        () => this.#computers.register(authContext, frame, connectionId),
         () => {
           if (this.#isClosing()) return;
           this.#installationId = frame.installationId;

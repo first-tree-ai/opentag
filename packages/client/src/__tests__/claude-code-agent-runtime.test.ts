@@ -33,6 +33,7 @@ describe("ClaudeCodeAgentRuntime", () => {
       expect(processes[0]?.args).not.toContain("--bare");
       expect(JSON.parse(argumentAfter(processes[0]?.args ?? [], "--settings") as string)).toEqual({
         disableAllHooks: true,
+        disableSkillShellExecution: true,
         permissions: {
           allow: expect.arrayContaining([
             "Bash(lark-cli im +messages-reply *)",
@@ -166,6 +167,7 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(processes[0]?.args).not.toContain("--allowedTools");
     expect(JSON.parse(argumentAfter(processes[0]?.args ?? [], "--settings") as string)).toEqual({
       disableAllHooks: true,
+      disableSkillShellExecution: true,
     });
     await runtime.close();
   });

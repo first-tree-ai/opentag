@@ -25,11 +25,11 @@ export interface ApprovalAction {
 }
 interface Options {
   store: ApprovalStore;
-  registry: Pick<ConnectionRegistry, "currentConnectionId" | "isCurrentConnection" | "send">;
+  registry: Pick<ConnectionRegistry, "isCurrentConnection" | "send">;
   serverInstanceId: string;
   authority: (
     request: RuntimeApprovalRequest,
-    context: Pick<RuntimeBusinessContext, "computerId" | "instanceId">,
+    context: Pick<RuntimeBusinessContext, "computerId" | "instanceId" | "connectionId">,
   ) => ReturnType<typeof loadApprovalAuthority>;
   messenger: {
     post(approval: PendingApproval): Promise<{ messageId: string; channelId: string }>;
@@ -56,11 +56,6 @@ export class RuntimeApprovalOwner {
     clearInterval(this.#timer);
     this.#timer = undefined;
     this.#sent.clear();
-  }
-
-  async onComputerRegistered(input: { computerId: string; instanceId: string }): Promise<void> {
-    const connectionId = this.options.registry.currentConnectionId(input.computerId, input.instanceId);
-    if (connectionId) await this.options.store.invalidateConnections(input.computerId, connectionId);
   }
 
   businessOptions(): RuntimeBusinessOptions {
@@ -120,8 +115,9 @@ export class RuntimeApprovalOwner {
       messageChannelId: null,
       cardUpdatedAt: null,
     };
-    if (!(await this.options.store.insert(row))) return;
-    if (!this.current(row)) {
+    const inserted = await this.options.store.insert(row);
+    if (inserted === "duplicate") return;
+    if (inserted === "stale" || !this.current(row)) {
       await this.options.store.update(row.id, "pending", { status: "stale" });
       return decline(request);
     }
@@ -190,12 +186,15 @@ export class RuntimeApprovalOwner {
     // Fence before sending; an uncertain write never replays an approval.
     this.#sent.add(row.id);
     try {
-      await this.options.registry.send(
-        row.computerId,
-        row.instanceId,
-        { ...decline(row.request), decision: row.status },
-        row.connectionId,
+      const delivered = await this.options.store.deliver(row, () =>
+        this.options.registry.send(
+          row.computerId,
+          row.instanceId,
+          { ...decline(row.request), decision: row.status },
+          row.connectionId,
+        ),
       );
+      if (!delivered) await this.invalidate(row, false);
     } catch {
       await this.options.store.update(row.id, row.status, { status: "stale" });
       this.#sent.delete(row.id);

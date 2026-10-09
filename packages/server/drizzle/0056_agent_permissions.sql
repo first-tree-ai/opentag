@@ -15,6 +15,7 @@ CREATE TABLE "runtime_approvals" (
 );
 --> statement-breakpoint
 ALTER TABLE "agent_runtime_configs" ADD COLUMN "permissions" jsonb DEFAULT '{"approvalPolicy":"on-request","allowCommands":[]}'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "computers" ADD COLUMN "current_connection_id" text;--> statement-breakpoint
 ALTER TABLE "runtime_approvals" ADD CONSTRAINT "runtime_approvals_computer_id_computers_id_fk" FOREIGN KEY ("computer_id") REFERENCES "public"."computers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runtime_approvals" ADD CONSTRAINT "runtime_approvals_im_binding_id_im_bindings_id_fk" FOREIGN KEY ("im_binding_id") REFERENCES "public"."im_bindings"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "runtime_approvals_dispatch_idx" ON "runtime_approvals" USING btree ("server_instance_id","status","expires_at");

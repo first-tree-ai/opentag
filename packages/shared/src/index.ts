@@ -271,6 +271,7 @@ export {
   AGENT_MCP_SERVER_TEMPLATE,
   AGENT_MCP_SERVERS_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
+  AGENT_RUNTIME_OPTIONS_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SCHEDULE_PAUSE_TEMPLATE,
   AGENT_SCHEDULE_RESUME_TEMPLATE,
@@ -317,6 +318,7 @@ export {
   agentMcpServerPath,
   agentMcpServersPath,
   agentReactivatePath,
+  agentRuntimeOptionsPath,
   agentRuntimeTestPath,
   agentSchedulePath,
   agentSchedulePausePath,
@@ -413,12 +415,21 @@ export * from "./mcp-outbound-url.js";
 export * from "./public-catalog.js";
 export * from "./runner-workspace.js";
 export {
+  type AgentRuntimeOptions,
+  AgentRuntimeOptionsQuerySchema,
+  AgentRuntimeOptionsSchema,
   getRuntimeConfigurationOptions,
   type RuntimeConfigurationOptions,
 } from "./runtime-configuration-options.js";
 export * from "./runtime-credentials.js";
 export {
   AGENT_SLUG_MAX_LENGTH,
+  type AgentRuntimeOptionsCancelFrame,
+  AgentRuntimeOptionsCancelFrameSchema,
+  type AgentRuntimeOptionsRequestFrame,
+  AgentRuntimeOptionsRequestFrameSchema,
+  type AgentRuntimeOptionsResultFrame,
+  AgentRuntimeOptionsResultFrameSchema,
   type AgentRuntimeTestCancelFrame,
   AgentRuntimeTestCancelFrameSchema,
   type AgentRuntimeTestRequestFrame,

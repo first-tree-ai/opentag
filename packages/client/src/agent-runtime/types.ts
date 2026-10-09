@@ -1,3 +1,5 @@
+import type { AgentRuntimeOptions } from "@opentag/shared";
+
 export const AGENT_RUNTIME_CONTRACT_VERSION = 2;
 export const AGENT_RUNTIME_BINDING_MAX_BYTES = 64 * 1024;
 export const AGENT_RUNTIME_DESCRIPTION_MAX_BYTES = 1024;
@@ -315,8 +317,15 @@ export interface AgentRuntime {
   close(): Promise<void>;
 }
 
+export interface AgentRuntimeConfigurationOptionsRequest {
+  readonly model?: string;
+  readonly cwd: string;
+  readonly signal?: AbortSignal;
+}
+
 export interface AgentRuntimeFactory {
   readonly manifest: AgentRuntimeManifest;
+  getConfigurationOptions?(request: AgentRuntimeConfigurationOptionsRequest): Promise<AgentRuntimeOptions>;
   probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult>;
   create(request: CreateAgentRuntimeRequest): Promise<AgentRuntime>;
   resume(request: ResumeAgentRuntimeRequest): Promise<AgentRuntime>;

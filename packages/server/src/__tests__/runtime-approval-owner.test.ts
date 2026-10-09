@@ -9,13 +9,30 @@ import { type ApprovalAction, RuntimeApprovalOwner } from "../runtime/runtime-ap
 function setup(provider: "slack" | "feishu" = "slack") {
   let now = Date.now();
   const rows = new Map<string, PendingApproval>();
+  let durableConnectionId: string;
+  const invalidateConnections = async (computerId: string, connectionId: string) => {
+    for (const row of rows.values()) {
+      if (
+        row.computerId === computerId &&
+        row.connectionId !== connectionId &&
+        ["pending", "accept", "decline"].includes(row.status)
+      )
+        rows.set(row.id, { ...row, status: "stale" });
+    }
+  };
   const store: ApprovalStore = {
     insert: async (row) => {
-      if (rows.has(row.id)) return false;
+      if (row.connectionId !== durableConnectionId) return "stale";
+      if (rows.has(row.id)) return "duplicate";
       rows.set(row.id, {
         ...structuredClone(row),
         authority: Object.fromEntries(Object.entries(row.authority).sort()) as PendingApproval["authority"],
       });
+      return "inserted";
+    },
+    deliver: async (row, send) => {
+      if (row.connectionId !== durableConnectionId || rows.get(row.id)?.status !== row.status) return false;
+      await send();
       return true;
     },
     find: async (id) => rows.get(id),
@@ -33,16 +50,6 @@ function setup(provider: "slack" | "feishu" = "slack") {
             row.messageId !== null &&
             row.cardUpdatedAt === null),
       ),
-    invalidateConnections: async (computerId, connectionId) => {
-      for (const row of rows.values()) {
-        if (
-          row.computerId === computerId &&
-          row.connectionId !== connectionId &&
-          ["pending", "accept", "decline"].includes(row.status)
-        )
-          rows.set(row.id, { ...row, status: "stale" });
-      }
-    },
     invalidateExpired: async (date) => {
       for (const row of rows.values()) {
         if (row.expiresAt <= date && ["pending", "accept", "decline"].includes(row.status))
@@ -58,6 +65,7 @@ function setup(provider: "slack" | "feishu" = "slack") {
     connectionId: randomUUID(),
     signal: new AbortController().signal,
   };
+  durableConnectionId = context.connectionId;
   const authority = {
     senderExternalId: "sender",
     provider,
@@ -123,6 +131,10 @@ function setup(provider: "slack" | "feishu" = "slack") {
     registry,
     messenger,
     load,
+    register: async () => {
+      durableConnectionId = registry.currentConnectionId();
+      await invalidateConnections(context.computerId, durableConnectionId);
+    },
     advance: () => {
       now += 60_001;
     },
@@ -294,13 +306,11 @@ describe("Runtime approvals", () => {
     await entered;
     s.registry.currentConnectionId.mockReturnValue(randomUUID());
     s.registry.isCurrentConnection.mockReturnValue(false);
-    await s.owner.onComputerRegistered(s.context);
+    await s.register();
     resume();
     expect(await request).toMatchObject({ decision: "decline", requestId: s.request.requestId });
-    expect(s.row().status).toBe("stale");
-    expect(s.row().messageId).toBeNull();
+    expect(s.rows.size).toBe(0);
     expect(s.messenger.post).not.toHaveBeenCalled();
-    expect(await s.owner.decide(s.action())).toBe("unavailable");
     await s.owner.poll();
     expect(s.registry.send).not.toHaveBeenCalled();
   });
@@ -354,7 +364,7 @@ describe("Runtime approvals", () => {
       s.owner.close();
       const replacement = new RuntimeApprovalOwner({ ...s.options, serverInstanceId: randomUUID() });
       s.registry.currentConnectionId.mockReturnValue(randomUUID());
-      await replacement.onComputerRegistered(s.context);
+      await s.register();
       expect(await replacement.decide(s.action())).toBe("unavailable");
       await replacement.poll();
       expect(s.registry.send).not.toHaveBeenCalled();
@@ -380,7 +390,7 @@ describe("Runtime approvals", () => {
     const request = s.owner.request(s.request, s.context);
     await posted;
     s.registry.currentConnectionId.mockReturnValue(randomUUID());
-    await s.owner.onComputerRegistered(s.context);
+    await s.register();
     expect(s.row().status).toBe("stale");
     resume({ messageId: "approval-message", channelId: "sender-dm" });
     expect(await request).toMatchObject({ decision: "decline" });
@@ -398,7 +408,7 @@ describe("Runtime approvals", () => {
     const other = { ...s.row(), id: randomUUID(), computerId: randomUUID(), serverInstanceId: randomUUID() };
     s.rows.set(other.id, other);
     const replacement = new RuntimeApprovalOwner({ ...s.options, serverInstanceId: randomUUID() });
-    await replacement.onComputerRegistered(s.context);
+    await s.register();
     await replacement.poll();
     expect(s.row().status).toBe("pending");
     expect(s.rows.get(other.id)?.status).toBe("pending");

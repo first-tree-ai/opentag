@@ -3,7 +3,14 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
-import { getRuntimeConfigurationOptions, hashTuple, MCP_GATEWAY_SERVER_NAME } from "@opentag/shared";
+import {
+  AgentRuntimeOptionsSchema,
+  hashTuple,
+  MCP_GATEWAY_SERVER_NAME,
+  RuntimeModelSchema,
+  RuntimeReasoningEffortSchema,
+} from "@opentag/shared";
+import { z } from "zod";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -27,6 +34,7 @@ import {
   type AgentQuestionResponse,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
+  type AgentRuntimeConfigurationOptionsRequest,
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,
   type AgentRuntimeManifest,
@@ -41,6 +49,7 @@ import {
 } from "../../agent-runtime/types.js";
 import {
   assertBinding,
+  assertConfigurationStrings,
   assertHostedTools,
   assertJsonValue,
   assertSystemPrompt,
@@ -1120,6 +1129,65 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
   }
 
+  async getConfigurationOptions(request: AgentRuntimeConfigurationOptionsRequest) {
+    assertConfigurationStrings({ model: request.model });
+    const signal = request.signal
+      ? AbortSignal.any([request.signal, AbortSignal.timeout(15_000)])
+      : AbortSignal.timeout(15_000);
+    signal.throwIfAborted();
+    const client = this.#createClient(request.cwd);
+    try {
+      await client.initialize(this.#clientVersion, signal);
+      const entry = z.object({
+        model: RuntimeModelSchema,
+        supportedReasoningEfforts: z.array(z.object({ reasoningEffort: RuntimeReasoningEffortSchema })).optional(),
+      });
+      const page = z.object({ data: z.array(entry), nextCursor: z.string().nullable().optional() });
+      const models: z.infer<typeof entry>[] = [];
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const response = page.parse(
+          await client.request(
+            "model/list",
+            { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) },
+            signal,
+          ),
+        );
+        models.push(...response.data);
+        cursor = response.nextCursor ?? undefined;
+        if (cursor && cursors.has(cursor)) throw protocolError("Codex model/list repeated a cursor");
+        if (cursor) cursors.add(cursor);
+        if (models.length > 4096) throw protocolError("Codex model/list exceeds the model limit");
+      } while (cursor);
+      const model = request.model ?? (await this.#configuredModel(client, signal));
+      const selected = models.find((entry) => entry.model === model);
+      return AgentRuntimeOptionsSchema.parse({
+        modelSuggestions: [...new Set(models.map((entry) => entry.model))],
+        reasoningEffortAllowedValues:
+          selected?.supportedReasoningEfforts?.map((entry) => entry.reasoningEffort) ?? null,
+      });
+    } finally {
+      await client.close();
+    }
+  }
+
+  async #configuredModel(client: InteractiveCodexAppServerClient, signal: AbortSignal): Promise<string | undefined> {
+    try {
+      const response = z
+        .object({ config: z.object({ model: z.string().nullable().optional() }) })
+        .parse(await client.request("config/read", { includeLayers: false }, signal));
+      return response.config.model ?? undefined;
+    } catch (error) {
+      signal.throwIfAborted();
+      logger.debug(
+        { code: "model_config_unavailable", error: String(error) },
+        "Codex effective model could not be read",
+      );
+      return undefined;
+    }
+  }
+
   create(request: CreateAgentRuntimeRequest): Promise<CodexAgentRuntime> {
     return this.#open(request, "create");
   }
@@ -1337,15 +1405,7 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
 
 function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
   if (!configuration) return;
-  if (configuration.model !== undefined && configuration.model.trim().length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "model must be non-empty");
-  }
-  if (
-    configuration.reasoningEffort &&
-    !getRuntimeConfigurationOptions("codex").reasoningEffortAllowedValues.includes(configuration.reasoningEffort)
-  ) {
-    throw new AgentRuntimeError("configuration_invalid", "Codex reasoning effort is unsupported");
-  }
+  assertConfigurationStrings(configuration);
   parseProviderConfiguration(configuration.provider);
 }
 

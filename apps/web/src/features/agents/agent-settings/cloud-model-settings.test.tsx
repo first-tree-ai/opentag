@@ -76,7 +76,11 @@ describe("Cloud model settings", () => {
       revision: 5,
       runtimeConfig: { ...config.runtimeConfig, instructions: "Be concise.", revision: 8 },
     });
-    render(<RuntimeConfigurationForm computerKind="cloud" initialConfig={config} save={save} section="instructions" />);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <RuntimeConfigurationForm computerKind="cloud" initialConfig={config} save={save} section="instructions" />
+      </QueryClientProvider>,
+    );
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Be concise." } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByText("Instructions saved.")).toBeTruthy();

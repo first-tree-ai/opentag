@@ -17,8 +17,9 @@ import type { RuntimeBusinessContext } from "./runtime-session.js";
 export async function loadApprovalAuthority(
   database: DatabaseClient,
   request: RuntimeApprovalRequest,
-  context: Pick<RuntimeBusinessContext, "computerId" | "instanceId">,
+  context: Pick<RuntimeBusinessContext, "computerId" | "instanceId" | "connectionId">,
 ) {
+  if (!context.connectionId) return undefined;
   const [row] = await database
     .select({
       imBindingId: imBindings.id,
@@ -56,6 +57,8 @@ export async function loadApprovalAuthority(
         eq(sessionPlacements.computerId, context.computerId),
         eq(sessionPlacements.generation, request.placementGeneration),
         eq(computers.kind, "local"),
+        eq(computers.currentInstanceId, context.instanceId),
+        eq(computers.currentConnectionId, context.connectionId),
         isNull(computers.deletedAt),
         isNull(computers.disconnectedAt),
         eq(agents.status, "active"),

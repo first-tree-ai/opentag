@@ -1,8 +1,9 @@
 import { type ChildProcessWithoutNullStreams, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
-import { getRuntimeConfigurationOptions } from "@opentag/shared";
+import { AgentRuntimeOptionsSchema, RuntimeModelSchema, RuntimeReasoningEffortSchema } from "@opentag/shared";
+import { z } from "zod";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -17,6 +18,7 @@ import {
   type AgentProviderRunResult,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
+  type AgentRuntimeConfigurationOptionsRequest,
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,
   type AgentRuntimeManifest,
@@ -29,6 +31,7 @@ import {
 } from "../../agent-runtime/types.js";
 import {
   assertBinding,
+  assertConfigurationStrings,
   assertHostedTools,
   assertJsonValue,
   assertSystemPrompt,
@@ -93,7 +96,7 @@ interface ClaudeCodeRuntimeOptions {
   readonly emptyNativeToolAllowList?: boolean;
   readonly eventSink: AgentRuntimeEventSink;
   readonly hostedTools?: AgentHostedTools;
-  readonly skillsDirectory: string;
+  readonly skills: { readonly cwd: string; readonly paths: readonly string[] };
   readonly resume: boolean;
   readonly startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly systemPrompt: string;
@@ -162,7 +165,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly #emptyNativeToolAllowList: boolean;
   readonly #hostedTools?: AgentHostedTools;
-  readonly #skillsDirectory: string;
+  readonly #skills: { readonly cwd: string; readonly paths: readonly string[] };
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly #systemPrompt: string;
   readonly #textBlocks = new Map<string, TextBlockState>();
@@ -192,7 +195,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#createProcess = options.createProcess;
     this.#emptyNativeToolAllowList = options.emptyNativeToolAllowList === true;
     this.#hostedTools = options.hostedTools;
-    this.#skillsDirectory = options.skillsDirectory;
+    this.#skills = options.skills;
     this.#startHostedToolBridge = options.startHostedToolBridge;
     this.#systemPrompt = options.systemPrompt;
     this.#sessionExists = options.resume;
@@ -228,7 +231,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           this.#hostedTools,
           request.runId,
           context.signal,
-          this.#skillsDirectory,
+          this.#skills,
           mcpGateway,
         );
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
@@ -338,6 +341,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "--settings",
       JSON.stringify({
         disableAllHooks: true,
+        disableSkillShellExecution: true,
         ...(this.#policy.approvals === "never"
           ? {}
           : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? []) }),
@@ -765,6 +769,76 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
   }
 
+  async getConfigurationOptions(request: AgentRuntimeConfigurationOptionsRequest) {
+    assertConfigurationStrings({ model: request.model });
+    const signal = request.signal
+      ? AbortSignal.any([request.signal, AbortSignal.timeout(15_000)])
+      : AbortSignal.timeout(15_000);
+    signal.throwIfAborted();
+    const process = this.#createProcess(request.cwd, [
+      "--print",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--no-session-persistence",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+      "--settings",
+      '{"disableAllHooks":true}',
+      ...CLAUDE_CODE_SETTING_SOURCES,
+    ]);
+    const requestId = randomUUID();
+    let execution: Promise<unknown> | undefined;
+    try {
+      const response = await runWithAbortSignal(
+        () =>
+          new Promise<unknown>((resolve, reject) => {
+            execution = process.execute(
+              { type: "control_request", request_id: requestId, request: { subtype: "initialize", hooks: {} } },
+              (message) => {
+                if (message.type !== "control_response") return;
+                const envelope = record(message.response);
+                if (envelope?.request_id !== requestId) return;
+                if (envelope.subtype !== "success") reject(protocolError("Claude Code initialization failed"));
+                else resolve(envelope.response);
+              },
+              signal,
+            );
+            // execute waits for process exit; initialization itself has no model turn/result.
+            void execution.then(() => reject(protocolError("Claude Code exited before initialization")), reject);
+          }),
+        signal,
+      );
+      const models = z
+        .object({
+          models: z.array(
+            z.object({
+              value: RuntimeModelSchema,
+              supportsEffort: z.boolean().optional(),
+              supportedEffortLevels: z.array(RuntimeReasoningEffortSchema).optional(),
+            }),
+          ),
+        })
+        .parse(response).models;
+      const selected = models.find((entry) => entry.value === (request.model ?? "default"));
+      return AgentRuntimeOptionsSchema.parse({
+        modelSuggestions: [...new Set(models.filter((entry) => entry.value !== "default").map((entry) => entry.value))],
+        reasoningEffortAllowedValues:
+          request.model && selected?.supportsEffort === false
+            ? []
+            : request.model
+              ? (selected?.supportedEffortLevels ?? null)
+              : null,
+      });
+    } finally {
+      await process.close();
+      await execution?.catch(() => undefined);
+    }
+  }
+
   create(request: CreateAgentRuntimeRequest): Promise<ClaudeCodeAgentRuntime> {
     return this.#open(request, "create");
   }
@@ -801,7 +875,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         emptyNativeToolAllowList: isEmptyNativeToolAllowList(request.policy),
         eventSink: request.eventSink,
         hostedTools: request.hostedTools,
-        skillsDirectory: join(request.workspace.cwd, ".claude", "skills"),
+        skills: { cwd: request.workspace.cwd, paths: request.skillPaths ?? [] },
         resume: mode === "resume",
         startHostedToolBridge: this.#startHostedToolBridge,
         systemPrompt: request.systemPrompt,
@@ -997,15 +1071,7 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
 
 function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
   if (!configuration) return;
-  if (configuration.model !== undefined && configuration.model.trim().length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "model must be non-empty");
-  }
-  if (
-    configuration.reasoningEffort &&
-    !getRuntimeConfigurationOptions("claude-code").reasoningEffortAllowedValues.includes(configuration.reasoningEffort)
-  ) {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code reasoning effort is unsupported");
-  }
+  assertConfigurationStrings(configuration);
   parseProviderConfiguration(configuration.provider);
 }
 

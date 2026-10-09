@@ -98,6 +98,7 @@ export const AGENT_RUNTIME_COVERAGE_INCLUDE = [
   "src/agent-runtime/**/*.ts",
   "src/providers/claude-code/agent-runtime.ts",
   "src/providers/claude-code/hosted-tool-bridge.ts",
+  "src/providers/claude-code/skill-plugin.ts",
   "src/providers/claude-code/process-wire.ts",
   "src/providers/claude-code/runtime-policy.ts",
   "src/providers/codex/agent-runtime.ts",

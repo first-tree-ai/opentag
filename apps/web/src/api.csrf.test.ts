@@ -63,6 +63,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   refreshAgentSetup: [ID],
   agentUsage: [ID, 7],
   agentConfig: [ID],
+  agentRuntimeOptions: [ID, "custom/model"],
   agentSchedules: [ID],
   agentSchedule: [ID, ID],
   pauseAgentSchedule: [ID, ID, 1],

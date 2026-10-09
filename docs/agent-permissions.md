@@ -6,8 +6,11 @@ Local Codex Agents use `workspace-write` with `on-request` approvals and disable
 access. Local Claude Code Agents use `auto`: its native classifier reviews actions and its permission
 callback sends remaining requests to the task sender. Claude Code must support `auto` and
 `--permission-prompt-tool`. Claude's native gate does not provide an OS sandbox.
-Claude loads no user or project settings and disables hooks, including skill hooks. Agent Home skills
-remain available through a private skills-only plugin as `opentag:<skill-name>`; subscription login is preserved.
+Claude loads no user or project settings and disables hooks and dynamic skill shell execution.
+Only explicitly synced skills and packaged Context Tree skills are copied into a private skills-only
+plugin as `opentag:<skill-name>`. Symlinked or unavailable skills are skipped. Copies retain their
+instructions and resources, but native frontmatter is limited to the name and description so a skill
+cannot pre-approve tools. Subscription login is preserved.
 Pi always runs without approvals and has no permission settings or permission extension.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation
@@ -46,7 +49,9 @@ runtime acknowledges the answer. A failed card update is retried while the serve
 changed permission settings, and replaced runtime connections cannot approve an action.
 
 Requests expire with the existing turn deadline. A replacement runtime connection invalidates requests
-tied to its old connection. Any server replica can expire orphaned requests and retry resolved card updates
+tied to its old connection in the registration transaction. Decision delivery checks the durable
+connection and approval under the same Computer row lock, so a replacement on another server replica
+cannot race an old acceptance. Any server replica can expire orphaned requests and retry resolved card updates
 after a server restart; approvals are never replayed onto a new connection. Request records are removed after seven days.
 This first version supports one-action decisions, with no session-wide approval button or arbitrary
 provider question dialogs. Requests too large to display in full are denied.

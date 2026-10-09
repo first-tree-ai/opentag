@@ -1,5 +1,5 @@
 {
-  "id": "74a602f3-c567-4c83-8f95-4985cc6b8de4",
+  "id": "39b08146-8352-4e77-bed5-1c6b49e55c9f",
   "prevId": "1048c8e7-ae89-481c-b400-7cc295df1bd7",
   "version": "7",
   "dialect": "postgresql",
@@ -1587,6 +1587,12 @@
         "current_instance_id": {
           "name": "current_instance_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "current_connection_id": {
+          "name": "current_connection_id",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

@@ -238,6 +238,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       startHostedToolBridge: gatewayBridge as never,
     }).create({
       ...createRequest(() => undefined),
+      skillPaths: ["/workspace/.claude/skills/selected"],
       configuration: {
         provider: { mcpGateway: { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" } },
       },
@@ -247,7 +248,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       undefined,
       "run-gateway",
       expect.anything(),
-      join(createRequest(() => undefined).workspace.cwd, ".claude", "skills"),
+      { cwd: createRequest(() => undefined).workspace.cwd, paths: ["/workspace/.claude/skills/selected"] },
       {
         url: "https://server.example.test/api/v1/mcp",
         token: "otmg_secret",
@@ -400,7 +401,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         message: "does not implement the common tool allow-list contract",
       },
       { request: withConfiguration({ model: " " }), message: "model" },
-      { request: withConfiguration({ reasoningEffort: "extreme" }), message: "reasoning effort" },
+      { request: withConfiguration({ reasoningEffort: " " }), message: "reasoning effort" },
       { request: withConfiguration({ provider: [] }), message: "must be an object" },
       { request: withConfiguration({ provider: { unknown: true } }), message: "unknown" },
       { request: withConfiguration({ provider: { appendSystemPrompt: "removed" } }), message: "unknown" },
@@ -502,7 +503,10 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: withPolicy({ fileSystem: "unrestricted", network: "enabled" }),
         expected: (args) => {
           expect(argumentAfter(args, "--permission-mode")).toBe("bypassPermissions");
-          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({ disableAllHooks: true });
+          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({
+            disableAllHooks: true,
+            disableSkillShellExecution: true,
+          });
           expect(args).not.toContain("--tools");
         },
       },
@@ -510,7 +514,10 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: withPolicy({ tools: { mode: "allow-list", names: [] } }),
         expected: (args) => {
           expect(argumentAfter(args, "--tools")).toBe("");
-          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({ disableAllHooks: true });
+          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({
+            disableAllHooks: true,
+            disableSkillShellExecution: true,
+          });
         },
       },
       {
@@ -573,11 +580,11 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       await runtime.close();
     }
 
-    const rejectedProcess = new ManualClaudeCodeProcess([successResult()]);
-    await expect(factory(rejectedProcess).create(withConfiguration({ reasoningEffort: "ultracode" }))).rejects.toThrow(
-      "reasoning effort",
-    );
-    expect(rejectedProcess.args).toEqual([]);
+    const futureProcess = new ManualClaudeCodeProcess([successResult()]);
+    const future = await factory(futureProcess).create(withConfiguration({ reasoningEffort: "ultracode" }));
+    await future.prompt({ runId: "future-effort", input: input("args") });
+    expect(argumentAfter(futureProcess.args, "--effort")).toBe("ultracode");
+    await future.close();
   });
 
   it.each([
@@ -776,7 +783,7 @@ exit 1
     const vanishingCommand = join(directory, "claude-vanishing");
     await writeFile(
       vanishingCommand,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; touch "$0.version-read"; exit 0; fi\nif [ "$1" = "--help" ]; then while [ ! -f "$0.version-read" ]; do sleep 0.01; done; printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
       "utf8",
     );
     await chmod(vanishingCommand, 0o755);

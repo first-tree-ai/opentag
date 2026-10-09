@@ -1185,7 +1185,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       { ...valid, policy: { ...valid.policy, fileSystem: "read-only", network: "enabled" } },
       { ...valid, policy: { ...valid.policy, fileSystem: "unrestricted", network: "disabled" } },
       { ...valid, configuration: { model: " " } },
-      { ...valid, configuration: { reasoningEffort: "extreme" } },
+      { ...valid, configuration: { reasoningEffort: " " } },
       { ...valid, configuration: { provider: "not-object" } },
       { ...valid, configuration: { provider: { unknown: true } } },
       { ...valid, configuration: { provider: { personality: "" } } },

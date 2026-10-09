@@ -11,6 +11,8 @@ import {
   AgentCloudOverviewSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentRuntimeOptions,
+  AgentRuntimeOptionsSchema,
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
   AgentRuntimeTestResponseSchema,
@@ -45,6 +47,7 @@ import {
   agentMcpServerPath,
   agentMcpServersPath,
   agentReactivatePath,
+  agentRuntimeOptionsPath,
   agentRuntimeTestPath,
   agentSchedulePath,
   agentSchedulePausePath,
@@ -435,6 +438,15 @@ export class BrowserApi {
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
+  }
+
+  agentRuntimeOptions(agentId: string, model?: string, signal?: AbortSignal): Promise<AgentRuntimeOptions> {
+    const query = new URLSearchParams(model ? { model } : {});
+    return this.request(
+      `${agentRuntimeOptionsPath(agentId)}${query.size ? `?${query}` : ""}`,
+      AgentRuntimeOptionsSchema,
+      { ...(signal ? { signal } : {}) },
+    );
   }
 
   testAgentRuntime(

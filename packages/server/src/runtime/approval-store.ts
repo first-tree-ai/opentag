@@ -1,10 +1,11 @@
-import { and, eq, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
-import { runtimeApprovals } from "../db/schema/index.js";
+import { computers, runtimeApprovals } from "../db/schema/index.js";
 
 export type PendingApproval = typeof runtimeApprovals.$inferSelect;
 export interface ApprovalStore {
-  insert(approval: PendingApproval): Promise<boolean>;
+  insert(approval: PendingApproval): Promise<"inserted" | "duplicate" | "stale">;
+  deliver(approval: PendingApproval, send: () => Promise<void>): Promise<boolean>;
   find(id: string): Promise<PendingApproval | undefined>;
   update(
     id: string,
@@ -12,22 +13,52 @@ export interface ApprovalStore {
     change: Partial<Pick<PendingApproval, "status" | "messageId" | "messageChannelId" | "cardUpdatedAt">>,
   ): Promise<boolean>;
   list(serverInstanceId: string): Promise<PendingApproval[]>;
-  invalidateConnections(computerId: string, connectionId: string): Promise<void>;
   invalidateExpired(now: Date): Promise<void>;
   purge(before: Date): Promise<void>;
 }
 export class PostgresApprovalStore implements ApprovalStore {
   constructor(private readonly database: DatabaseClient) {}
   async insert(approval: PendingApproval) {
-    return (
-      (
-        await this.database
-          .insert(runtimeApprovals)
-          .values(approval)
-          .onConflictDoNothing()
-          .returning({ id: runtimeApprovals.id })
-      ).length === 1
-    );
+    return this.database.transaction(async (transaction) => {
+      const [computer] = await transaction
+        .select()
+        .from(computers)
+        .where(eq(computers.id, approval.computerId))
+        .for("update");
+      if (!isCurrentConnection(computer, approval)) return "stale" as const;
+      const inserted = await transaction
+        .insert(runtimeApprovals)
+        .values(approval)
+        .onConflictDoNothing()
+        .returning({ id: runtimeApprovals.id });
+      return inserted.length === 1 ? ("inserted" as const) : ("duplicate" as const);
+    });
+  }
+  async deliver(approval: PendingApproval, send: () => Promise<void>): Promise<boolean> {
+    return this.database.transaction(async (transaction) => {
+      // Registration takes this same row lock before replacing the durable connection and staling approvals.
+      const [computer] = await transaction
+        .select()
+        .from(computers)
+        .where(eq(computers.id, approval.computerId))
+        .for("update");
+      if (!isCurrentConnection(computer, approval)) return false;
+      const [current] = await transaction
+        .select({ id: runtimeApprovals.id })
+        .from(runtimeApprovals)
+        .where(
+          and(
+            eq(runtimeApprovals.id, approval.id),
+            eq(runtimeApprovals.serverInstanceId, approval.serverInstanceId),
+            eq(runtimeApprovals.status, approval.status),
+            gt(runtimeApprovals.expiresAt, new Date()),
+          ),
+        )
+        .for("update");
+      if (!current) return false;
+      await send();
+      return true;
+    });
   }
   async find(id: string) {
     return (await this.database.select().from(runtimeApprovals).where(eq(runtimeApprovals.id, id)).limit(1))[0];
@@ -71,18 +102,6 @@ export class PostgresApprovalStore implements ApprovalStore {
       )
       .limit(1024);
   }
-  async invalidateConnections(computerId: string, connectionId: string): Promise<void> {
-    await this.database
-      .update(runtimeApprovals)
-      .set({ status: "stale" })
-      .where(
-        and(
-          eq(runtimeApprovals.computerId, computerId),
-          ne(runtimeApprovals.connectionId, connectionId),
-          inArray(runtimeApprovals.status, ["pending", "accept", "decline"]),
-        ),
-      );
-  }
   async invalidateExpired(now: Date): Promise<void> {
     await this.database
       .update(runtimeApprovals)
@@ -94,4 +113,14 @@ export class PostgresApprovalStore implements ApprovalStore {
   async purge(before: Date) {
     await this.database.delete(runtimeApprovals).where(lt(runtimeApprovals.expiresAt, before));
   }
+}
+
+function isCurrentConnection(computer: typeof computers.$inferSelect | undefined, approval: PendingApproval): boolean {
+  return Boolean(
+    computer &&
+      computer.currentInstanceId === approval.instanceId &&
+      computer.currentConnectionId === approval.connectionId &&
+      !computer.deletedAt &&
+      !computer.disconnectedAt,
+  );
 }

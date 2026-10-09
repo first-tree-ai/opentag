@@ -3,6 +3,7 @@ export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_SETUP_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/setup`;
 export const AGENT_SETUP_REFRESH_TEMPLATE = `${AGENT_SETUP_TEMPLATE}/refresh`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
+export const AGENT_RUNTIME_OPTIONS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-options`;
 export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_CLOUD_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/cloud`;
@@ -314,6 +315,10 @@ export function agentSetupRefreshPath(agentId: string): string {
 
 export function agentConfigPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/config`;
+}
+
+export function agentRuntimeOptionsPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/runtime-options`;
 }
 
 export function agentRuntimeTestPath(agentId: string): string {

@@ -1,6 +1,7 @@
 import { HTTP_PATHS, negotiateProviderReadinessFromHeaders } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createServiceLoggerPort } from "../observability/index.js";
+import type { AgentRuntimeOptionsOwner } from "../runtime/agent-runtime-options-owner.js";
 import type { AgentRuntimeTestOwner } from "../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type { ContextTreeOperationOwner } from "../runtime/context-tree-operation-owner.js";
@@ -13,9 +14,9 @@ import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-con
 export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
   approvalOwner?: {
     businessOptions(): RuntimeBusinessOptions;
-    onComputerRegistered(input: { computerId: string; instanceId: string }): Promise<void>;
     close(): void;
   };
+  agentRuntimeOptionsOwner?: AgentRuntimeOptionsOwner;
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;
   contextTreeOperationOwner?: ContextTreeOperationOwner;
   domainOwner?: RuntimeDomainOwner;
@@ -88,6 +89,7 @@ export function registerRuntimeRoutes(
         options.approvalOwner?.businessOptions(),
         providerCliReconcileOwner?.businessOptions(),
         agentRuntimeTestOwner?.businessOptions(),
+        options.agentRuntimeOptionsOwner?.businessOptions(),
         options.contextTreeOperationOwner?.businessOptions(),
         domainOwner?.businessOptions(),
         options.runtimeCredentialOwner?.businessOptions(),
@@ -98,7 +100,6 @@ export function registerRuntimeRoutes(
     logger,
     now: options.now,
     onRegistered: async (input) => {
-      await options.approvalOwner?.onComputerRegistered(input);
       await options.onRegistered?.(input);
       await providerCliReconcileOwner?.onComputerRegistered(input);
     },
@@ -127,6 +128,7 @@ export function registerRuntimeRoutes(
     clearInterval(sweep);
     options.approvalOwner?.close();
     agentRuntimeTestOwner?.close();
+    options.agentRuntimeOptionsOwner?.close();
     options.contextTreeOperationOwner?.close();
     providerCliReconcileOwner?.close();
     domainOwner?.close();

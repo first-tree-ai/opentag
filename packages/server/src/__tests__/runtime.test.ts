@@ -235,10 +235,14 @@ describe("Computer runtime WebSocket", () => {
     };
     socket.send(JSON.stringify(register));
     expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
-    expect(computers.register).toHaveBeenCalledWith(machineContext, {
-      ...register,
-      capabilities: { imCredentialGrant: 0 },
-    });
+    expect(computers.register).toHaveBeenCalledWith(
+      machineContext,
+      {
+        ...register,
+        capabilities: { imCredentialGrant: 0 },
+      },
+      runtimeFence(socket).connectionId,
+    );
     expect(registry.providerReadiness(machineContext.computerId)).toMatchObject([
       {
         observation: { provider: "codex", status: "install" },

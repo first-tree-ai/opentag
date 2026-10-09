@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
+import { access, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import {
   type AgentRuntimeProvider,
@@ -11,6 +11,7 @@ import {
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import type {
+  AgentRuntimeConfigurationOptionsRequest,
   AgentRuntimeFactory,
   AgentRuntimeProbeRequest,
   AgentRuntimeProbeResult,
@@ -50,6 +51,7 @@ import {
   iterateAgentRuntimeExecutables,
   type ResolveAgentRuntimeExecutableOptions,
   type ResolvedAgentRuntimeExecutable,
+  resolveAgentRuntimeExecutable,
 } from "./agent-runtime-installation.js";
 import {
   type AgentRuntimeProviderRegistration,
@@ -869,6 +871,25 @@ export async function createClientRuntime(
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
     handleApproval: runner.respondToApproval.bind(runner),
     availabilityTester,
+    async getRuntimeOptions(frame, signal) {
+      const factory = factories.find((factory) => factory.manifest.providerId === frame.provider);
+      if (!factory?.getConfigurationOptions) throw new Error("Provider configuration options are unavailable");
+      const hasWorkspaceState = await access(workspace.paths(frame.agentId).workspaceState).then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+          throw error;
+        },
+      );
+      // An Agent that has never run has no workspace yet. Do not create or migrate one for a query.
+      const temporary = hasWorkspaceState ? undefined : await mkdtemp(join(tmpdir(), "opentag-runtime-options-"));
+      const cwd = temporary ?? (await workspace.cwd(frame.agentId));
+      try {
+        return await factory.getConfigurationOptions({ cwd, model: frame.model, signal });
+      } finally {
+        if (temporary) await rm(temporary, { recursive: true, force: true });
+      }
+    },
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
   return new ComposedClientRuntime(runtime, {
@@ -1101,6 +1122,32 @@ async function nextExecutableCandidate(
   }
 }
 
+async function resolvedFactoryConfigurationOptions(
+  request: AgentRuntimeConfigurationOptionsRequest,
+  readyFactory: AgentRuntimeFactory | undefined,
+  options: Pick<
+    ResolvedFactoryProbeOptions<AgentRuntimeFactory>,
+    "provider" | "command" | "sourceEnvironment" | "discovery" | "environment" | "createCandidate"
+  >,
+) {
+  request.signal?.throwIfAborted();
+  let factory = readyFactory;
+  if (!factory) {
+    const executable = await resolveAgentRuntimeExecutable(
+      options.provider,
+      options.command,
+      options.sourceEnvironment,
+      options.discovery,
+    );
+    factory = options.createCandidate(
+      executable.path,
+      withSearchBinOnPath(options.environment, executable, options.discovery?.pathDelimiter ?? delimiter),
+    );
+  }
+  if (!factory.getConfigurationOptions) throw new Error("Provider configuration options are unavailable");
+  return factory.getConfigurationOptions(request);
+}
+
 export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
   let readyFactory: CodexAgentRuntimeFactory | undefined;
   const createCandidate =
@@ -1125,6 +1172,8 @@ export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): Agen
           readyFactory = factory;
         },
       }),
+    getConfigurationOptions: (request) =>
+      resolvedFactoryConfigurationOptions(request, readyFactory, { ...options, provider: "codex", createCandidate }),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyCodexFactory(readyFactory).create(request);
     },
@@ -1170,6 +1219,12 @@ export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOpti
         onReady: (factory) => {
           readyFactory = factory;
         },
+      }),
+    getConfigurationOptions: (request) =>
+      resolvedFactoryConfigurationOptions(request, readyFactory, {
+        ...options,
+        provider: "claude-code",
+        createCandidate,
       }),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyClaudeCodeFactory(readyFactory).create(request);
@@ -1227,6 +1282,8 @@ export function resolvedPiFactory(options: ResolvedPiFactoryOptions): AgentRunti
           readyFactory = factory;
         },
       }),
+    getConfigurationOptions: (request) =>
+      resolvedFactoryConfigurationOptions(request, readyFactory, { ...options, provider: "pi", createCandidate }),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyPiFactory(readyFactory).create(request);
     },

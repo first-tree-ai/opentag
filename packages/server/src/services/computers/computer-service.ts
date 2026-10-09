@@ -7,7 +7,14 @@ import type {
 } from "@opentag/shared";
 import { and, asc, eq, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computerConnectCodes, computerCredentials, computers, imBindings } from "../../db/schema/index.js";
+import {
+  agents,
+  computerConnectCodes,
+  computerCredentials,
+  computers,
+  imBindings,
+  runtimeApprovals,
+} from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AuthServiceError } from "../auth/index.js";
 import { lockActiveAccount } from "./account-lock.js";
@@ -282,7 +289,7 @@ export class ComputerService {
     return row;
   }
 
-  async register(context: ComputerAuthContext, frame: ComputerRegisterFrame): Promise<void> {
+  async register(context: ComputerAuthContext, frame: ComputerRegisterFrame, connectionId?: string): Promise<void> {
     rejectUnsupportedClientVersion(frame.clientVersion);
     if (frame.installationId !== context.installationId) {
       throw new AuthServiceError(
@@ -301,6 +308,7 @@ export class ComputerService {
         arch: frame.arch,
         clientVersion: frame.clientVersion,
         currentInstanceId: frame.instanceId,
+        currentConnectionId: connectionId ?? null,
         connectedAt: now,
         lastSeenAt: now,
         updatedAt: now,
@@ -317,6 +325,16 @@ export class ComputerService {
         )
         .returning({ id: computers.id });
       if (updated.length !== 1) throw unavailableComputer();
+      await transaction
+        .update(runtimeApprovals)
+        .set({ status: "stale" })
+        .where(
+          and(
+            eq(runtimeApprovals.computerId, context.computerId),
+            connectionId === undefined ? undefined : ne(runtimeApprovals.connectionId, connectionId),
+            inArray(runtimeApprovals.status, ["pending", "accept", "decline"]),
+          ),
+        );
     });
   }
 

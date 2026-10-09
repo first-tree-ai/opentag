@@ -280,6 +280,11 @@
       "idx": 55,
       "tag": "0055_first_angel",
       "sha256": "0c0f54d374186d6f9dd7d81cde5bd917987362cb8024c406278325642c28f316"
+    },
+    {
+      "idx": 56,
+      "tag": "0056_thick_aqueduct",
+      "sha256": "d7be293e3a28d276e0bd49d15512595fd76b1a721bcdcf2669c561c1cd4b5294"
     }
   ]
 }

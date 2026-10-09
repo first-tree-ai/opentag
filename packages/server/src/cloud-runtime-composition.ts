@@ -151,6 +151,7 @@ export function createCloudDeliveryComposition(input: {
    */
   cloudModelCatalog?: CloudModelCatalog;
   sessionProofs?: CloudDeliveryOwnerOptions["sessionProofs"];
+  onTurnActivity?: CloudDeliveryOwnerOptions["onTurnActivity"];
   sessionCollaboration?: Pick<
     CloudSessionCollaborationOwnerOptions,
     "assembler" | "work" | "proofs" | "sessions" | "durableWork" | "allocation"
@@ -188,6 +189,7 @@ export function createCloudDeliveryComposition(input: {
   const cloudDeliveryOwner = new CloudDeliveryOwner({
     ...common,
     custody: input.custody,
+    ...(input.onTurnActivity ? { onTurnActivity: input.onTurnActivity } : {}),
     credentials: { owner: input.credentialOwner },
     ...(input.sessionProofs ? { sessionProofs: input.sessionProofs } : {}),
     ...(input.allocationStatus ? { allocationStatus: input.allocationStatus } : {}),

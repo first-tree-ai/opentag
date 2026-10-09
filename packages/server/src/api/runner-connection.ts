@@ -260,6 +260,8 @@ export class RunnerConnection {
    * Authentication and channel attachment
    * ---------------------------------------------------------------------------------------- */
 
+  #wantsTurnActivity = false;
+
   async #handleAuth(
     token: string,
     requestId: string | undefined,
@@ -524,6 +526,7 @@ export class RunnerConnection {
         // E8: gated on the explicit auth opt-in, so a legacy E7 Runner's fence record never
         // receives a Session-CLI proof field or a session:message frame.
         sessionCollaborationVersion: sessionCollaborationVersion || undefined,
+        turnActivityVersion: this.#wantsTurnActivity ? 1 : undefined,
       });
     }
     this.#sendAuthResult(true, requestId);
@@ -581,6 +584,7 @@ export class RunnerConnection {
       environmentGeneration: input.validated.environmentGeneration,
       resourceName: input.validated.resourceName,
       ...(input.cloudNegotiated ? { cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION } : {}),
+      ...(input.cloudNegotiated && this.#wantsTurnActivity ? { turnActivityVersion: 1 as const } : {}),
       ...(input.cloudNegotiated && input.fence?.resourceUid ? { resourceUid: input.fence.resourceUid } : {}),
       ...(input.workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
       ...(input.control?.reuseCapable === true ? { reuseVersion: RUNNER_REUSE_VERSION } : {}),
@@ -863,6 +867,15 @@ export class RunnerConnection {
     else await cloud.owner.handleInactiveDeliveryReceived(cloud.connection, frame);
   }
 
+  async #handleTurnActivity(
+    current: RunnerScope,
+    frame: Extract<RunnerClientFrame, { type: "turn:activity" }>,
+  ): Promise<void> {
+    if (!(await this.#channelHolds(current))) return;
+    const cloud = this.#requireCloudContext();
+    if (cloud) await cloud.owner.handleTurnActivity(cloud.connection, frame);
+  }
+
   async #handleDeliveryReport(
     current: RunnerScope,
     frame: Extract<RunnerClientFrame, { type: "delivery:report" }>,
@@ -1047,6 +1060,7 @@ export class RunnerConnection {
       return this.#handleReady(current, data.readiness, data.workspaceRestored === true);
     if (data.type === "acceptance:result") return this.#handleResult(current, data);
     if (data.type === "delivery:received") return this.#handleDeliveryReceived(current, data);
+    if (data.type === "turn:activity") return this.#handleTurnActivity(current, data);
     if (data.type === "delivery:report") return this.#handleDeliveryReport(current, data);
     if (data.type === "delivery:query:result") return this.#handleQueryResult(current, data);
     if (data.type === "session:message:received") return this.#handleSessionMessageReceived(current, data);
@@ -1063,6 +1077,7 @@ export class RunnerConnection {
     // E4/E5/E8 capability negotiation happens on the auth frame; a legacy E3 auth never sets any
     // capability and keeps the exact legacy welcome/behavior, and an E7 Runner that does not send
     // the E8 request never receives a Session-collaboration field or frame.
+    this.#wantsTurnActivity = data.turnActivityVersion === 1;
     await this.#handleAuth(
       data.token,
       data.requestId,

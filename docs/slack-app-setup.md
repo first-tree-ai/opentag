@@ -27,6 +27,52 @@ Profile-fetch failure is nonfatal; cached metadata is retained only for the same
 Existing installations acquire an avatar on reconnection. Later Slack-side changes remain cached
 until the next reconnection, and missing or failed images fall back to initials in OpenTag.
 
+## Native working indicator
+
+OpenTag uses [`assistant.threads.setStatus`](https://docs.slack.dev/reference/methods/assistant.threads.setStatus/)
+with `status: "is working"` and clears it with `status: ""`. Slack supplies the App name and native animation.
+The existing bot scope `chat:write` is sufficient following Slack's
+[scope update](https://docs.slack.dev/changelog/2026/03/05/set-status-scope-update/); the fixed manifest does not change.
+This does not enable Agent sessions or request `assistant:write`.
+
+The indicator represents active execution for the installed bot in a specific Slack thread:
+
+| Execution state | Indicator |
+| --- | --- |
+| Webhook received, queued, delivery accepted, credentials preparing | Hidden |
+| Local provider `run_started`, or Cloud worker invocation after verification | `OpenTag is working` |
+| Running model/tool work, including concurrent turns for the same bot/thread | Visible while at least one live turn remains |
+| Waiting for user, completion, failure, cancellation, timeout, reporting | Cleared when no other live turn remains |
+| Observer delivery, Feishu, Web, Session-to-Session message | Hidden |
+
+The target is `providerRef.channelId` and `providerRef.threadTs ?? providerRef.messageTs`, matching the inbound
+reply thread. Slack shows the installed App identity, not an internal subagent identity. A root DM may open a thread.
+The current providers finish their turn when asking the user for input; no waiting state is inferred from prose.
+
+Execution heartbeats arrive every 30 seconds and lease liveness for at most 90 seconds, bounded by the delivery
+execution deadline. Only a new sequence extends the lease. The server refreshes Slack at 45-second intervals;
+a confirmed same-thread provider reply schedules an immediate refresh because Slack automatically clears on replies.
+An execution that disconnects without a terminal signal expires; the next worker pass clears it (up to 45 additional
+seconds under normal availability). A terminal Turn Report commits cleanup in the custody transaction.
+A later live heartbeat wakes a cleared target. Same-identity reauthorization moves an active turn to the current
+credential target. Successfully cleared targets are retired once delivery retention removes all referencing turns.
+
+The persisted outbox survives Server restarts, aggregates concurrent turns, and serializes each target across workers.
+A provider request, including response-body consumption, has a 3-second deadline, no hidden transport retry,
+and at most four transient failures per target activation. Shared-circuit waits do not consume that retry budget.
+HTTP 200 with `ok: false` is failure; installation-specific errors do not open the shared transport circuit.
+HTTP 429 persists `Retry-After` for every thread of the installation, including new targets and restarted workers;
+completion cannot bypass this cooldown. Rate-limit waits do not consume the transient retry budget.
+Authorization errors disable that target; credential rotation never reuses a stale token. If explicit clearing cannot
+reach Slack, Slack's native inactivity timeout remains the final fallback. Status failures never change the Turn result.
+
+Local clients negotiate optional `runtime.turnActivity: 1`. Cloud Runners request `turnActivityVersion: 1` in auth and
+require the same welcome echo. Deploy the Server and migration before a new Runner image: the existing strict Cloud
+auth schema on an old Server rejects unknown fields. Older peers that do not negotiate activity keep existing behavior.
+
+Local automated coverage includes real PostgreSQL migrations/outbox behavior and mocked Slack HTTP; it is not live
+Slack visual acceptance. See [Slack live acceptance](./slack-live-acceptance.md) before claiming a deployed result.
+
 ## Fixed Slack capability contract
 
 The first-party OpenTag Slack App requests the complete capability set on the first connection and every later

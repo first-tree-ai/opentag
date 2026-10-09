@@ -88,6 +88,22 @@
   iconIsOfficial: true
   order: 20
 
+- id: atlassian
+  name: atlassian
+  title:
+    en: Atlassian
+    zh: Atlassian
+  description:
+    en: Jira issues, Confluence pages, and team knowledge.
+    zh: Jira 事务、Confluence 页面与团队知识。
+  url: https://mcp.atlassian.com/v2/mcp?tools=all
+  defaultAuthKind: oauth
+  category: engineering
+  website: https://www.atlassian.com
+  icon: atlassian.svg
+  iconIsOfficial: true
+  order: 30
+
 - id: gmail
   name: gmail
   title:
@@ -394,10 +410,28 @@
   iconIsOfficial: true
   order: 10
 
-# Official business and data endpoints; authenticated OpenTag compatibility is not yet verified.
-# Atlassian, Airtable, and Amplitude are withheld because their published resource identifiers fail
-# the current OAuth discovery check. Reconsider catalog registration after the assessment in #814.
-# Supabase and Stripe still need end-to-end authorization and tool-call verification.
+# Official business and data endpoints. Atlassian, Airtable, and Amplitude are enabled by the
+# protected-resource identity compatibility for issue #814: discovery accepts the identity each
+# provider's well-known metadata document encodes. Amplitude's authorization remains unverified until
+# OpenTag supports its token-endpoint authentication methods (its server advertises
+# `client_secret_post` and `none`, not `client_secret_basic`); see #814 for the follow-up.
+# These presets still need end-to-end authorization and tool-call verification.
+
+- id: airtable
+  name: airtable
+  title:
+    en: Airtable
+    zh: Airtable
+  description:
+    en: Bases, tables, records, and business workflows.
+    zh: 数据库、数据表、记录与业务流程。
+  url: https://mcp.airtable.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://www.airtable.com
+  icon: airtable.png
+  iconIsOfficial: true
+  order: 10
 
 - id: supabase
   name: supabase
@@ -414,6 +448,22 @@
   icon: supabase.svg
   iconIsOfficial: true
   order: 20
+
+- id: amplitude
+  name: amplitude
+  title:
+    en: Amplitude
+    zh: Amplitude
+  description:
+    en: Product analytics, funnels, and retention.
+    zh: 产品分析、漏斗与留存。
+  url: https://mcp.amplitude.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://amplitude.com
+  icon: amplitude.png
+  iconIsOfficial: true
+  order: 30
 
 - id: stripe
   name: stripe

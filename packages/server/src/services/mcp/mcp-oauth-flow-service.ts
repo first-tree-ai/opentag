@@ -14,6 +14,7 @@ import {
   mcpCallbackRedirect,
   normalizeAuthorizationServerIssuer,
   normalizeResource,
+  resourceRelatesToEndpoint,
 } from "./mcp-oauth.js";
 import { McpServerService } from "./mcp-server-service.js";
 
@@ -136,6 +137,7 @@ export class McpOAuthFlowService {
         // A row created by a flow has no credential yet, so the flow's issuer is also its own.
         authorizationServer: metadata.issuer,
         flowAuthorizationServer: metadata.issuer,
+        flowOauthResource: resource,
         clientRegistrationId: registrationId,
         // Stored hashed: the raw state is only ever in the URL the browser carries.
         state: hashSecret(state),
@@ -167,6 +169,12 @@ export class McpOAuthFlowService {
            * it.
            */
           flowAuthorizationServer: metadata.issuer,
+          /*
+           * The flow's audience goes in `flow_oauth_resource`, mirroring the issuer split: the
+           * credential's `oauth_resource` is replaced only at the callback, together with the
+           * credential it belongs to, so an abandoned flow cannot change a working credential.
+           */
+          flowOauthResource: resource,
           /*
            * `authorizationServer` is only written when the row has no credential to protect.
            *
@@ -268,7 +276,12 @@ export class McpOAuthFlowService {
           client,
           registrationId,
           challengeScope,
-          resource: normalizeResource(prm.resource, url),
+          /*
+           * The reader's value is the accepted spelling — the advertised one, or the endpoint when
+           * the document named none — and it travels verbatim: normalization is comparison-only, so
+           * the authorization request and the token request cannot disagree.
+           */
+          resource: prm.resource,
           prmScopes: prm.scopesSupported,
         };
       } catch (error) {
@@ -642,11 +655,17 @@ export class McpOAuthFlowService {
       metadata,
       authorization.clientRegistrationId,
     );
+    /*
+     * The audience the authorization request named is repeated verbatim on the exchange. A live
+     * flow from before the column existed has no recorded resource; it keeps the effective-endpoint
+     * derivation it was started with.
+     */
+    const resource = authorization.flowOauthResource ?? normalizeResource(undefined, effective.url);
     const tokens = await this.#oauth.exchangeAuthorizationCode(accountId, metadata, {
       code,
       codeVerifier,
       client,
-      resource: normalizeResource(undefined, effective.url),
+      resource,
     });
     const sealed = this.#cipher.encryptAuthorizationCredential(binding, {
       accessToken: tokens.accessToken,
@@ -660,6 +679,10 @@ export class McpOAuthFlowService {
         status: "active",
         ciphertext: sealed.ciphertext,
         keyId: sealed.keyId,
+        // The credential and the audience it was issued for are written together; the flow's own
+        // resource is dropped in the same write.
+        oauthResource: resource,
+        flowOauthResource: null,
         scopes: tokens.scope ? tokens.scope.split(/\s+/).filter(Boolean) : authorization.scopes,
         accessTokenExpiresAt: accessTokenExpiry(now, tokens.expiresIn),
         failureCode: null,
@@ -762,7 +785,14 @@ export class McpOAuthFlowService {
   async #clearFlow(id: string): Promise<void> {
     await this.#database
       .update(mcpServerAuthorizations)
-      .set({ state: null, stateExpiresAt: null, pkceCiphertext: null, loginSessionHash: null, updatedAt: this.#now() })
+      .set({
+        state: null,
+        stateExpiresAt: null,
+        pkceCiphertext: null,
+        loginSessionHash: null,
+        flowOauthResource: null,
+        updatedAt: this.#now(),
+      })
       .where(eq(mcpServerAuthorizations.id, id));
   }
 
@@ -801,6 +831,7 @@ export class McpOAuthFlowService {
         stateExpiresAt: null,
         pkceCiphertext: null,
         loginSessionHash: null,
+        flowOauthResource: null,
         ...(failureCode === undefined
           ? {}
           : {
@@ -948,11 +979,23 @@ export class McpOAuthFlowService {
       return;
     }
     try {
-      const metadata = await this.#oauth.authorizationServerMetadata(row.accountId, requireIssuer(row));
-      // The effective URL comes first for the same reason as in the callback: the deployment Google
-      // client is bound to the origin, not just the issuer.
+      /*
+       * The effective URL is read before the authorization server is contacted, because the
+       * credential's audience is checked against it first: a row whose endpoint no longer accepts
+       * the recorded resource must fail as requiring reauthorization, not have a fresh token minted
+       * for an audience the token will never be presented to.
+       */
       const context = await this.#servers.readProbeContext(row.accountId, row.agentId, row.mcpServerId);
       const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
+      const resource = row.oauthResource ?? normalizeResource(undefined, effective.url);
+      if (row.oauthResource !== null && !resourceRelatesToEndpoint(row.oauthResource, effective.url)) {
+        throw new McpServiceError(
+          MCP_ERROR_CODES.AUTHORIZATION_REQUIRED,
+          "The authorization's resource no longer matches the MCP endpoint",
+        );
+      }
+      const metadata = await this.#oauth.authorizationServerMetadata(row.accountId, requireIssuer(row));
+      // The deployment Google client is bound to the origin, not just the issuer.
       const client = await this.#readClientCredentials(
         row.accountId,
         effective.url,
@@ -962,7 +1005,7 @@ export class McpOAuthFlowService {
       const tokens = await this.#oauth.refreshAccessToken(row.accountId, metadata, {
         refreshToken: credential.refreshToken,
         client,
-        resource: normalizeResource(undefined, effective.url),
+        resource,
       });
       const sealed = this.#cipher.encryptAuthorizationCredential(binding, {
         accessToken: tokens.accessToken,
@@ -1067,7 +1110,15 @@ export class McpOAuthFlowService {
       .update(mcpServerAuthorizations)
       .set({
         ...(terminal
-          ? { status: "revoked", ciphertext: null, keyId: null, accessTokenExpiresAt: null }
+          ? {
+              status: "revoked",
+              ciphertext: null,
+              keyId: null,
+              // The audience is dropped with the credential. The flow's own resource is left alone:
+              // a reauthorization may be in flight and its callback still needs it.
+              oauthResource: null,
+              accessTokenExpiresAt: null,
+            }
           : unknownOutcome
             ? // Result unknown: keep the refresh token, refuse to auto-retry, and ask a human. The
               // specification's point is that a blind retry could spend a token the AS already

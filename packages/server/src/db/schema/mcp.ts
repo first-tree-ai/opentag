@@ -194,6 +194,18 @@ export const mcpServerAuthorizations = pgTable(
     authorizationServer: text("authorization_server"),
     /** The issuer this row's in-flight flow discovered; null when no flow is in progress. */
     flowAuthorizationServer: text("flow_authorization_server"),
+    /**
+     * The accepted OAuth `resource` (RFC 9728 / RFC 8707) this row's credential was issued for.
+     *
+     * It is the credential's audience binding and travels verbatim on the authorization request, the
+     * code exchange, and every refresh. Deliberately outside the credential envelope's AAD: adding a
+     * field would version the envelope and invalidate existing credentials, and a writer able to
+     * change this column can already redirect the credential by changing the Server URL. Null means
+     * the row predates the column; its resource is derived from the effective endpoint as before.
+     */
+    oauthResource: text("oauth_resource"),
+    /** The accepted `resource` of this row's in-flight OAuth flow; null when no flow is in progress. */
+    flowOauthResource: text("flow_oauth_resource"),
     clientRegistrationId: uuid("client_registration_id").references(() => mcpClientRegistrations.id, {
       onDelete: "set null",
     }),
@@ -282,6 +294,23 @@ export const mcpServerAuthorizations = pgTable(
       sql`${table.kind} <> 'oauth' or (
         ${table.status} not in ('active', 'expired') or ${table.ciphertext} is not null
       )`,
+    ),
+    check(
+      "mcp_server_authorizations_oauth_resource_bounds",
+      sql`${table.oauthResource} is null or char_length(${table.oauthResource}) between 1 and 2048`,
+    ),
+    check(
+      "mcp_server_authorizations_flow_oauth_resource_bounds",
+      sql`${table.flowOauthResource} is null or char_length(${table.flowOauthResource}) between 1 and 2048`,
+    ),
+    /*
+     * One-directional on purpose: a flow started by the previous release has `state` set and no
+     * flow resource, and the callback falls back to the endpoint-derived value for it. Requiring
+     * the pair would fail any write that touches such a row while its flow is live.
+     */
+    check(
+      "mcp_server_authorizations_flow_oauth_resource_requires_flow",
+      sql`${table.flowOauthResource} is null or ${table.state} is not null`,
     ),
     /**
      * A live flow keeps state, its deadline, the encrypted PKCE verifier, and the initiator binding

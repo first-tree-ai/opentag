@@ -126,6 +126,9 @@ export class McpAuthorizationService {
           scopes: null,
           accessTokenExpiresAt: null,
           authorizationServer: null,
+          // Replacing or switching the credential replaces its audience; the flow's resource follows
+          // `state`, cleared below.
+          oauthResource: null,
           clientRegistrationId: null,
           state: null,
           stateExpiresAt: null,
@@ -137,6 +140,7 @@ export class McpAuthorizationService {
            * it could store anything.
            */
           loginSessionHash: null,
+          flowOauthResource: null,
           refreshClaimId: null,
           refreshClaimedAt: null,
           probeState: "pending",
@@ -157,6 +161,8 @@ export class McpAuthorizationService {
         status: "revoked",
         ciphertext: null,
         keyId: null,
+        // The credential and its audience go together; the flow's resource follows `state` below.
+        oauthResource: null,
         accessTokenExpiresAt: null,
         state: null,
         stateExpiresAt: null,
@@ -164,6 +170,7 @@ export class McpAuthorizationService {
         // Paired with `state` by `mcp_server_authorizations_flow_binding_shape`; clearing one alone is
         // refused by the datastore, and this is the write that ends the row's flow.
         loginSessionHash: null,
+        flowOauthResource: null,
         refreshClaimId: null,
         refreshClaimedAt: null,
         probeState: "pending",

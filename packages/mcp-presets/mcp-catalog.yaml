@@ -237,3 +237,84 @@
   website: https://developers.google.com/people
   icon: google-people.svg
   order: 80
+
+# Official business and data endpoints; authenticated OpenTag compatibility is not yet verified.
+# Airtable and Amplitude advertise origin-only OAuth resource identifiers. Atlassian's gateway
+# endpoint below advertises a resource without the tools query. The current exact-resource check
+# rejects these three OAuth discoveries; resolving that incompatibility is separate follow-up work.
+# Supabase and Stripe also need end-to-end authorization and tool-call verification.
+
+- id: atlassian
+  name: atlassian
+  title:
+    en: Atlassian
+    zh: Atlassian
+  description:
+    en: Jira issues, Confluence pages, and team knowledge.
+    zh: Jira 事务、Confluence 页面与团队知识。
+  url: https://mcp.atlassian.com/v2/mcp?tools=all
+  defaultAuthKind: oauth
+  category: engineering
+  website: https://www.atlassian.com
+  icon: atlassian.svg
+  order: 30
+
+- id: airtable
+  name: airtable
+  title:
+    en: Airtable
+    zh: Airtable
+  description:
+    en: Bases, tables, records, and business workflows.
+    zh: 数据库、数据表、记录与业务流程。
+  url: https://mcp.airtable.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://www.airtable.com
+  icon: airtable.svg
+  order: 10
+
+- id: supabase
+  name: supabase
+  title:
+    en: Supabase
+    zh: Supabase
+  description:
+    en: Projects, databases, and backend development.
+    zh: 项目、数据库与后端开发。
+  url: https://mcp.supabase.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://supabase.com
+  icon: supabase.svg
+  order: 20
+
+- id: amplitude
+  name: amplitude
+  title:
+    en: Amplitude
+    zh: Amplitude
+  description:
+    en: Product analytics, funnels, and retention.
+    zh: 产品分析、漏斗与留存。
+  url: https://mcp.amplitude.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://amplitude.com
+  icon: amplitude.svg
+  order: 30
+
+- id: stripe
+  name: stripe
+  title:
+    en: Stripe
+    zh: Stripe
+  description:
+    en: Payments, customers, and subscriptions.
+    zh: 支付、客户与订阅。
+  url: https://mcp.stripe.com
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://stripe.com
+  icon: stripe.svg
+  order: 40

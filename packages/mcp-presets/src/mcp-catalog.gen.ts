@@ -12,6 +12,12 @@ export type McpCatalogLocalizedText = Record<McpCatalogLocale, string>;
 
 /** The card marks, embedded as data URLs: one declaration per distinct icon file. */
 export const MCP_CATALOG_ICON_URLS = {
+  "airtable.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5BPC90ZXh0Pjwvc3ZnPgo=",
+  "amplitude.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5BPC90ZXh0Pjwvc3ZnPgo=",
+  "atlassian.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5BPC90ZXh0Pjwvc3ZnPgo=",
   "exa.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5FPC90ZXh0Pjwvc3ZnPgo=",
   "gmail.svg":
@@ -35,6 +41,10 @@ export const MCP_CATALOG_ICON_URLS = {
   "notion.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5OPC90ZXh0Pjwvc3ZnPgo=",
   "sentry.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5TPC90ZXh0Pjwvc3ZnPgo=",
+  "stripe.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5TPC90ZXh0Pjwvc3ZnPgo=",
+  "supabase.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5TPC90ZXh0Pjwvc3ZnPgo=",
 } as const;
 
@@ -86,6 +96,14 @@ export const MCP_CATALOG_CATEGORIES: readonly McpCatalogCategory[] = [
       zh: "Google Workspace",
     },
     order: 30,
+  },
+  {
+    id: "business-data",
+    label: {
+      en: "Business & Data",
+      zh: "业务与数据",
+    },
+    order: 80,
   },
 ];
 
@@ -162,6 +180,24 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     website: "https://sentry.io",
     iconUrl: MCP_CATALOG_ICON_URLS["sentry.svg"],
     order: 20,
+  },
+  {
+    id: "atlassian",
+    name: "atlassian",
+    title: {
+      en: "Atlassian",
+      zh: "Atlassian",
+    },
+    description: {
+      en: "Jira issues, Confluence pages, and team knowledge.",
+      zh: "Jira 事务、Confluence 页面与团队知识。",
+    },
+    url: "https://mcp.atlassian.com/v2/mcp?tools=all",
+    defaultAuthKind: "oauth",
+    category: "engineering",
+    website: "https://www.atlassian.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["atlassian.svg"],
+    order: 30,
   },
   {
     id: "gmail",
@@ -343,5 +379,77 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     website: "https://developers.google.com/people",
     iconUrl: MCP_CATALOG_ICON_URLS["google-people.svg"],
     order: 80,
+  },
+  {
+    id: "airtable",
+    name: "airtable",
+    title: {
+      en: "Airtable",
+      zh: "Airtable",
+    },
+    description: {
+      en: "Bases, tables, records, and business workflows.",
+      zh: "数据库、数据表、记录与业务流程。",
+    },
+    url: "https://mcp.airtable.com/mcp",
+    defaultAuthKind: "oauth",
+    category: "business-data",
+    website: "https://www.airtable.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["airtable.svg"],
+    order: 10,
+  },
+  {
+    id: "supabase",
+    name: "supabase",
+    title: {
+      en: "Supabase",
+      zh: "Supabase",
+    },
+    description: {
+      en: "Projects, databases, and backend development.",
+      zh: "项目、数据库与后端开发。",
+    },
+    url: "https://mcp.supabase.com/mcp",
+    defaultAuthKind: "oauth",
+    category: "business-data",
+    website: "https://supabase.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["supabase.svg"],
+    order: 20,
+  },
+  {
+    id: "amplitude",
+    name: "amplitude",
+    title: {
+      en: "Amplitude",
+      zh: "Amplitude",
+    },
+    description: {
+      en: "Product analytics, funnels, and retention.",
+      zh: "产品分析、漏斗与留存。",
+    },
+    url: "https://mcp.amplitude.com/mcp",
+    defaultAuthKind: "oauth",
+    category: "business-data",
+    website: "https://amplitude.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["amplitude.svg"],
+    order: 30,
+  },
+  {
+    id: "stripe",
+    name: "stripe",
+    title: {
+      en: "Stripe",
+      zh: "Stripe",
+    },
+    description: {
+      en: "Payments, customers, and subscriptions.",
+      zh: "支付、客户与订阅。",
+    },
+    url: "https://mcp.stripe.com",
+    defaultAuthKind: "oauth",
+    category: "business-data",
+    website: "https://stripe.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["stripe.svg"],
+    order: 40,
   },
 ];

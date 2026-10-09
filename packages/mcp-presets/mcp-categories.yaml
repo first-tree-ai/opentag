@@ -25,3 +25,9 @@
     en: Google Workspace
     zh: Google Workspace
   order: 30
+
+- id: business-data
+  label:
+    en: Business & Data
+    zh: 业务与数据
+  order: 80

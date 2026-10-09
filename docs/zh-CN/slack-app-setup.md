@@ -57,8 +57,10 @@ delivery 保留期清理移除所有关联 Turn 后，成功清除状态的目�
 HTTP 200 的 `ok: false` 仍视为失败，安装专属错误不会触发共享传输熔断。
 HTTP 5xx 计入共享熔断，支持上游中断时的保护及恢复。
 429 将 `Retry-After` 持久化到整个安装的所有线程，覆盖新目标和 worker 重启；终态信号也不能绕过冷却，
-限流等待不消耗瞬时失败的重试预算。权限错误停用该目标；凭证换代不会复用旧 token。明确清理无法到达 Slack 时，平台原生的
-无活动超时作为最终兜底。状态调用失败不改变 Turn 的业务结果。
+限流等待不消耗瞬时失败的重试预算。权限错误停用该目标。调用 provider 前再次检查安装仍为 active 且凭证代次与 claim 一致；
+settlement 在写入目标状态或冷却时间之前锁定并复查安装，因此旧代次响应不能影响新代次。
+换代前已获准发出的请求仍可能在 Slack 完成，其过期响应在本地丢弃。
+明确清理无法到达 Slack 时，平台原生的无活动超时作为最终兜底。状态调用失败不改变 Turn 的业务结果。
 
 Local client 协商可选能力 `runtime.turnActivity: 1`。Cloud Runner 在 auth 请求 `turnActivityVersion: 1`，
 必须收到 welcome 的同版本回显。发布时先部署 Server 和迁移，再更新 Runner 镜像：旧 Server 的严格 Cloud auth

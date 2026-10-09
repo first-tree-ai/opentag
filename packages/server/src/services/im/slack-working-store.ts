@@ -190,6 +190,7 @@ export class SlackWorkingStore {
         .innerJoin(slackInstallations, eq(slackInstallations.id, slackWorkingTargets.installationId))
         .where(
           and(
+            eq(slackInstallations.status, "active"),
             or(
               eq(slackWorkingTargets.disabled, false),
               lt(slackWorkingTargets.credentialGeneration, slackInstallations.credentialGeneration),
@@ -230,6 +231,8 @@ export class SlackWorkingStore {
           eq(slackWorkingTargets.id, target.id),
           eq(slackWorkingTargets.claimId, target.claimId),
           eq(slackWorkingTargets.credentialGeneration, target.credentialGeneration),
+          eq(slackInstallations.status, "active"),
+          eq(slackInstallations.credentialGeneration, target.credentialGeneration),
           gt(slackWorkingTargets.claimExpiresAt, new Date(this.now().getTime() + 5_000)),
           lte(slackInstallations.workingStatusNotBeforeAt, this.now()),
         ),
@@ -276,6 +279,19 @@ export class SlackWorkingStore {
     const now = this.now();
     const retryAt = input.dormant ? new Date("9999-12-31T00:00:00.000Z") : new Date(now.getTime() + input.delayMs);
     await this.database.transaction(async (tx) => {
+      // Serialize settlement with reauthorization before touching the target or installation cooldown.
+      const [installation] = await tx
+        .select({ id: slackInstallations.id })
+        .from(slackInstallations)
+        .where(
+          and(
+            eq(slackInstallations.id, target.installationId),
+            eq(slackInstallations.status, "active"),
+            eq(slackInstallations.credentialGeneration, target.credentialGeneration),
+          ),
+        )
+        .for("update");
+      if (!installation) return;
       if (input.cooldownMs !== undefined)
         await tx
           .update(slackInstallations)

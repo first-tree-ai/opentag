@@ -1,26 +1,15 @@
 import { randomUUID } from "node:crypto";
-import {
-  computeTurnResultHash,
-  type DirectImMessageDeliveryRequest,
-  SLACK_REQUIRED_BOT_SCOPES,
-  type TurnActivityRequest,
-  type TurnReportRequest,
-} from "@opentag/shared";
+import { computeTurnResultHash, SLACK_REQUIRED_BOT_SCOPES, type TurnReportRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import {
-  agents,
-  computers,
-  imBindings,
   imMessageDeliveries,
-  imMessages,
   sessionPlacements,
   sessions,
   slackInstallations,
   slackWorkingTargets,
   slackWorkingTurns,
-  users,
 } from "../../db/schema/index.js";
 import { runImDeliveryRetention } from "../../runtime/im-delivery-janitor.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
@@ -33,6 +22,7 @@ import {
   slackWorkingCredentialResolver,
 } from "../../services/im/slack-working-worker.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
+import { createSlackWorkingFixture } from "../support/slack-working-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -53,145 +43,77 @@ beforeEach(async () => {
 });
 
 async function fixture() {
-  const userId = randomUUID(),
-    computerId = randomUUID(),
-    agentId = randomUUID(),
-    sessionId = randomUUID(),
-    instanceId = randomUUID();
-  await client.database.insert(users).values({ id: userId, email: `${userId}@example.test`, displayName: "Working" });
-  await client.database.insert(computers).values({
-    id: computerId,
-    ownerAccountId: userId,
-    currentInstallationId: randomUUID(),
-    displayName: "Working",
-    platform: "darwin",
-    arch: "arm64",
-    clientVersion: "test",
-  });
-  await client.database.insert(agents).values({
-    id: agentId,
-    createdByUserId: userId,
-    computerId,
-    name: "working",
-    displayName: "Working",
-    runtimeProvider: "codex",
-  });
+  return createSlackWorkingFixture(client.database, cipher, () => clock);
+}
+
+async function rotate(agentId: string, transaction?: import("../../db/client.js").DatabaseTransaction) {
   await new ImBindingService(client.database, cipher).activateSlack(
     {
-      intent: "create",
+      intent: "reauthorize",
       agentId,
       appId: "A1",
       teamId: "T1",
       botUserId: "U1",
       grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
-      botAccessToken: "unit-secret",
+      botAccessToken: "unit-secret-rotated",
       signingSecret: "unit-signing",
       installedAt: clock,
     },
     "B1",
+    transaction,
   );
-  const [binding] = await client.database.select().from(imBindings);
-  if (!binding) throw new Error("missing binding");
-  const bindingId = binding.id;
-  await client.database
-    .insert(sessions)
-    .values({ id: sessionId, imBindingId: bindingId, channelId: "C1", conversationKind: "channel", kind: "channel" });
-  await client.database.insert(sessionPlacements).values({ sessionId, computerId, generation: 1 });
-  const context = { computerId, installationId: randomUUID(), instanceId, signal: new AbortController().signal };
-  const store = new SlackWorkingStore(client.database, () => clock);
-  const calls: string[] = [];
-  const api = {
-    setThreadStatus: vi.fn(async (input: { status: string; token: string }) => {
-      calls.push(input.status);
-    }),
-  };
-  const worker = new SlackWorkingWorker({ store, api, token: slackWorkingCredentialResolver(client.database, cipher) });
-  async function delivery(threadTs = "1.1", replyRole?: "observer") {
-    const messageId = randomUUID(),
-      deliveryId = randomUUID(),
-      turnId = randomUUID(),
-      requestId = randomUUID();
-    const request: DirectImMessageDeliveryRequest = {
-      type: "im:deliver",
-      requestId,
-      deliveryId,
-      imMessageId: messageId,
-      sessionId,
-      agentId,
-      placementGeneration: 1,
-      attention: "direct",
-      ...(replyRole ? { replyRole } : {}),
-      content: {
-        kind: "text",
-        text: "work",
-        providerRef: {
-          provider: "slack",
-          appId: "A1",
-          teamId: "T1",
-          botUserId: "U1",
-          channelId: "C1",
-          messageTs: "2.2",
-          threadTs,
-        },
-      },
-      runtime: {
-        agentId,
-        contextTrees: [],
-        instructions: { agent: "A", platform: "P" },
-        provider: "codex",
-        revision: { agent: { id: randomUUID(), sequence: 1 }, session: { id: randomUUID(), sequence: 1 } },
-        execution: { approvalPolicy: "never", networkAccess: true },
-        workspace: { workspaceId: randomUUID(), mode: "empty_on_create", sharing: "agent" },
-        budget: { maxDurationMs: 600_000 },
-      },
-    };
-    await client.database.insert(imMessages).values({
-      id: messageId,
-      imBindingId: bindingId,
-      channelId: "C1",
-      externalMessageId: messageId,
-      providerRevisionKey: "1",
-      direction: "inbound",
-      operation: "created",
-      authorKind: "human",
-      authorExternalId: "U2",
-      content: { version: 1, fallbackText: "work", blocks: [], truncated: false },
-      providerContext: { provider: "slack" },
-      occurredAt: clock,
-    });
-    await client.database.insert(imMessageDeliveries).values({
-      id: deliveryId,
-      messageId,
-      sessionId,
-      attention: "direct",
-      state: "accepted",
-      placementGeneration: 1,
-      dispatchRequestId: requestId,
-      dispatchInputHash: "a".repeat(64),
-      dispatchPayload: request,
-      inputHash: "a".repeat(64),
-      turnId,
-      reportOwnerInstanceId: instanceId,
-      acceptedAt: clock,
-      expiresAt: new Date(clock.getTime() + 600_000),
-    });
-    const frame: TurnActivityRequest = {
-      type: "turn:activity",
-      requestId: randomUUID(),
-      deliveryId,
-      sessionId,
-      agentId,
-      placementGeneration: 1,
-      turnId,
-      sequence: 1,
-      phase: "running",
-    };
-    return { request, frame };
-  }
-  return { store, worker, calls, api, delivery, binding, context, sessionId };
+}
+async function target() {
+  const [row] = await client.database.select().from(slackWorkingTargets);
+  if (!row) throw new Error("missing target");
+  return row;
 }
 
 describe("durable Slack working projection", () => {
+  it("rechecks the installation fence after waiting for a concurrent reauthorization commit", async () => {
+    const h = await fixture(),
+      { frame } = await h.delivery();
+    await h.store.record(frame, h.context);
+    const claim = await h.store.claim();
+    if (!claim) throw new Error("missing claim");
+    const before = await target();
+    let unlock = () => {},
+      signalReady = () => {};
+    const released = new Promise<void>((resolve) => {
+      unlock = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      signalReady = resolve;
+    });
+    const rotating = client.database.transaction(async (tx) => {
+      await rotate(frame.agentId, tx);
+      signalReady();
+      await released;
+    });
+    await ready;
+    const settling = h.store.settle(claim, { working: false, delayMs: 60_000, cooldownMs: 60_000 });
+    try {
+      await expect
+        .poll(
+          async () => {
+            const [row] =
+              await client.sql`select count(*)::int as count from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like '%slack_installations%'`;
+            return Number(row?.count);
+          },
+          { timeout: 5_000 },
+        )
+        .toBeGreaterThanOrEqual(1);
+    } finally {
+      unlock();
+      await rotating;
+      await settling;
+    }
+    expect(await target()).toEqual(before);
+    expect((await client.database.select().from(slackInstallations))[0]?.workingStatusNotBeforeAt.getTime()).toBe(0);
+    await h.store.record({ ...frame, sequence: 2 }, h.context);
+    await h.worker.runOnce();
+    expect(h.api.setThreadStatus.mock.calls.at(-1)?.[0].token).toBe("unit-secret-rotated");
+  });
   it("uses an explicit execution deadline without adding a default 30-minute cap", async () => {
     const h = await fixture(),
       { frame, request } = await h.delivery();
@@ -839,4 +761,49 @@ describe("durable Slack working projection", () => {
     expect(h.calls).toEqual(["is working", ""]);
     expect(h.api.setThreadStatus.mock.calls[2]?.[0].token).toBe("unit-secret-rotated");
   });
+  it("rejects a token resolved before real reauthorization without sending the old token", async () => {
+    const h = await fixture(),
+      { frame } = await h.delivery();
+    await h.store.record(frame, h.context);
+    const resolveToken = slackWorkingCredentialResolver(client.database, cipher);
+    const worker = new SlackWorkingWorker({
+      store: h.store,
+      api: h.api,
+      token: async (claim) => {
+        const token = await resolveToken(claim);
+        expect(token).toBe("unit-secret");
+        await rotate(frame.agentId);
+        return token;
+      },
+    });
+    await worker.runOnce();
+    expect(h.api.setThreadStatus).not.toHaveBeenCalled();
+    await h.store.record({ ...frame, sequence: 2 }, h.context);
+    await h.worker.runOnce();
+    expect(h.api.setThreadStatus).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ token: "unit-secret-rotated" }),
+    );
+  });
+
+  it.each(["success", "ratelimited"])(
+    "rejects an old-generation %s settlement after real reauthorization",
+    async (outcome) => {
+      const h = await fixture(),
+        { frame } = await h.delivery();
+      await h.store.record(frame, h.context);
+      let afterRotation: Awaited<ReturnType<typeof target>> | undefined;
+      h.api.setThreadStatus.mockImplementationOnce(async () => {
+        await rotate(frame.agentId);
+        afterRotation = await target();
+        if (outcome === "ratelimited") throw new SlackThreadStatusError("ratelimited", 60_000);
+      });
+      await h.worker.runOnce();
+      expect(await target()).toEqual(afterRotation);
+      const [installation] = await client.database.select().from(slackInstallations);
+      expect(installation?.workingStatusNotBeforeAt.getTime()).toBe(0);
+      await h.store.record({ ...frame, sequence: 2 }, h.context);
+      await h.worker.runOnce();
+      expect(h.api.setThreadStatus.mock.calls.at(-1)?.[0].token).toBe("unit-secret-rotated");
+    },
+  );
 });

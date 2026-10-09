@@ -69,8 +69,12 @@ HTTP 200 with `ok: false` is failure; installation-specific errors do not open t
 HTTP 5xx responses count toward that circuit, allowing shared outage protection and recovery.
 HTTP 429 persists `Retry-After` for every thread of the installation, including new targets and restarted workers;
 completion cannot bypass this cooldown. Rate-limit waits do not consume the transient retry budget.
-Authorization errors disable that target; credential rotation never reuses a stale token. If explicit clearing cannot
-reach Slack, Slack's native inactivity timeout remains the final fallback. Status failures never change the Turn result.
+Authorization errors disable that target. Immediately before a provider call, ownership requires the installation
+to remain active at the claim's credential generation. Settlement locks and rechecks that installation before
+writing target state or cooldowns, so responses from a prior generation cannot affect the new generation.
+A request already admitted before rotation may still finish at Slack; its stale response is discarded locally.
+If explicit clearing cannot reach Slack, Slack's native inactivity timeout remains the final fallback.
+Status failures never change the Turn result.
 
 Local clients negotiate optional `runtime.turnActivity: 1`. Cloud Runners request `turnActivityVersion: 1` in auth and
 require the same welcome echo. Deploy the Server and migration before a new Runner image: the existing strict Cloud

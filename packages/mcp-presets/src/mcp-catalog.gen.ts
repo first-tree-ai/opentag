@@ -12,8 +12,16 @@ export type McpCatalogLocalizedText = Record<McpCatalogLocale, string>;
 
 /** The card marks, embedded as data URLs: one declaration per distinct icon file. */
 export const MCP_CATALOG_ICON_URLS = {
+  "asana.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5BPC90ZXh0Pjwvc3ZnPgo=",
+  "canva.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5DPC90ZXh0Pjwvc3ZnPgo=",
   "exa.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5FPC90ZXh0Pjwvc3ZnPgo=",
+  "figma.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5GPC90ZXh0Pjwvc3ZnPgo=",
+  "firecrawl.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPkZjPC90ZXh0Pjwvc3ZnPgo=",
   "gmail.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5NPC90ZXh0Pjwvc3ZnPgo=",
   "google-calendar.svg":
@@ -30,12 +38,22 @@ export const MCP_CATALOG_ICON_URLS = {
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPlNoPC90ZXh0Pjwvc3ZnPgo=",
   "google-slides.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPlNsPC90ZXh0Pjwvc3ZnPgo=",
+  "hubspot.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTUuNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJjdXJyZW50Q29sb3IiPkhzPC90ZXh0Pjwvc3ZnPgo=",
   "linear.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5MPC90ZXh0Pjwvc3ZnPgo=",
+  "microsoft-365.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5NPC90ZXh0Pjwvc3ZnPgo=",
+  "monday.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5NPC90ZXh0Pjwvc3ZnPgo=",
   "notion.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5OPC90ZXh0Pjwvc3ZnPgo=",
   "sentry.svg":
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5TPC90ZXh0Pjwvc3ZnPgo=",
+  "tavily.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5UPC90ZXh0Pjwvc3ZnPgo=",
+  "zapier.svg":
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgYXJpYS1oaWRkZW49InRydWUiPjxyZWN0IHg9IjIuNzUiIHk9IjIuNzUiIHdpZHRoPSIxOC41IiBoZWlnaHQ9IjE4LjUiIHJ4PSI1IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIxLjUiLz48dGV4dCB4PSIxMiIgeT0iMTYuMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9Ik1hbnJvcGUsIHN5c3RlbS11aSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iY3VycmVudENvbG9yIj5aPC90ZXh0Pjwvc3ZnPgo=",
 } as const;
 
 export type McpCatalogCategory = {
@@ -86,6 +104,38 @@ export const MCP_CATALOG_CATEGORIES: readonly McpCatalogCategory[] = [
       zh: "Google Workspace",
     },
     order: 30,
+  },
+  {
+    id: "productivity",
+    label: {
+      en: "Productivity",
+      zh: "生产力",
+    },
+    order: 40,
+  },
+  {
+    id: "design",
+    label: {
+      en: "Design",
+      zh: "设计",
+    },
+    order: 50,
+  },
+  {
+    id: "search",
+    label: {
+      en: "Search",
+      zh: "搜索",
+    },
+    order: 60,
+  },
+  {
+    id: "automation",
+    label: {
+      en: "Automation",
+      zh: "自动化",
+    },
+    order: 70,
   },
 ];
 
@@ -343,5 +393,167 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     website: "https://developers.google.com/people",
     iconUrl: MCP_CATALOG_ICON_URLS["google-people.svg"],
     order: 80,
+  },
+  {
+    id: "microsoft-365",
+    name: "microsoft-365",
+    title: {
+      en: "Microsoft 365",
+      zh: "Microsoft 365",
+    },
+    description: {
+      en: "Microsoft 365 roadmap, Azure updates, and release communications.",
+      zh: "Microsoft 365 路线图、Azure 更新与发布信息。",
+    },
+    url: "https://www.microsoft.com/releasecommunications/mcp",
+    defaultAuthKind: "none",
+    category: "productivity",
+    website: "https://www.microsoft.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["microsoft-365.svg"],
+    order: 10,
+  },
+  {
+    id: "asana",
+    name: "asana",
+    title: {
+      en: "Asana",
+      zh: "Asana",
+    },
+    description: {
+      en: "Tasks, projects, and workspaces.",
+      zh: "任务、项目与工作区。",
+    },
+    url: "https://mcp.asana.com/v2/mcp",
+    defaultAuthKind: "oauth",
+    category: "productivity",
+    website: "https://asana.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["asana.svg"],
+    order: 20,
+  },
+  {
+    id: "monday",
+    name: "monday",
+    title: {
+      en: "monday.com",
+      zh: "monday.com",
+    },
+    description: {
+      en: "Work management, boards, and automations.",
+      zh: "工作管理、看板与自动化。",
+    },
+    url: "https://mcp.monday.com/mcp",
+    defaultAuthKind: "oauth",
+    category: "productivity",
+    website: "https://monday.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["monday.svg"],
+    order: 30,
+  },
+  {
+    id: "hubspot",
+    name: "hubspot",
+    title: {
+      en: "HubSpot",
+      zh: "HubSpot",
+    },
+    description: {
+      en: "CRM, marketing, and customer data.",
+      zh: "CRM、营销与客户数据。",
+    },
+    url: "https://mcp.hubspot.com",
+    defaultAuthKind: "oauth",
+    category: "productivity",
+    website: "https://www.hubspot.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["hubspot.svg"],
+    order: 40,
+  },
+  {
+    id: "figma",
+    name: "figma",
+    title: {
+      en: "Figma",
+      zh: "Figma",
+    },
+    description: {
+      en: "Files, designs, and Dev Mode context.",
+      zh: "文件、设计与开发模式上下文。",
+    },
+    url: "https://mcp.figma.com/mcp",
+    defaultAuthKind: "oauth",
+    category: "design",
+    website: "https://www.figma.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["figma.svg"],
+    order: 10,
+  },
+  {
+    id: "canva",
+    name: "canva",
+    title: {
+      en: "Canva",
+      zh: "Canva",
+    },
+    description: {
+      en: "Designs, assets, and exports.",
+      zh: "设计、素材与导出。",
+    },
+    url: "https://mcp.canva.com/mcp",
+    defaultAuthKind: "oauth",
+    category: "design",
+    website: "https://www.canva.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["canva.svg"],
+    order: 20,
+  },
+  {
+    id: "tavily",
+    name: "tavily",
+    title: {
+      en: "Tavily",
+      zh: "Tavily",
+    },
+    description: {
+      en: "Web search and research.",
+      zh: "网页搜索与研究。",
+    },
+    url: "https://mcp.tavily.com/mcp",
+    defaultAuthKind: "none",
+    category: "search",
+    website: "https://tavily.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["tavily.svg"],
+    order: 10,
+  },
+  {
+    id: "firecrawl",
+    name: "firecrawl",
+    title: {
+      en: "Firecrawl",
+      zh: "Firecrawl",
+    },
+    description: {
+      en: "Web scraping, crawling, and extraction.",
+      zh: "网页抓取、爬取与提取。",
+    },
+    url: "https://mcp.firecrawl.dev/v2/mcp",
+    defaultAuthKind: "none",
+    category: "search",
+    website: "https://www.firecrawl.dev",
+    iconUrl: MCP_CATALOG_ICON_URLS["firecrawl.svg"],
+    order: 20,
+  },
+  {
+    id: "zapier",
+    name: "zapier",
+    title: {
+      en: "Zapier",
+      zh: "Zapier",
+    },
+    description: {
+      en: "Connect to 9,000+ apps and workflows.",
+      zh: "连接 9,000+ 应用与自动化流程。",
+    },
+    url: "https://mcp.zapier.com/api/v1/connect",
+    defaultAuthKind: "oauth",
+    category: "automation",
+    website: "https://zapier.com",
+    iconUrl: MCP_CATALOG_ICON_URLS["zapier.svg"],
+    order: 10,
   },
 ];

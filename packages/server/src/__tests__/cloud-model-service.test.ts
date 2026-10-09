@@ -285,6 +285,7 @@ describe("router-authoritative cloud usage", () => {
       null,
     );
     await f.calls.markPending(partial);
+    await f.calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [partial, now.toISOString()]);
     const query = vi.spyOn(f.calls.db, "query");
     const usageService = new CloudUsageService(f.calls.db);
     const detail = await usageService.readDetail(context.accountId, 7, undefined, now);

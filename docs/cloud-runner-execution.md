@@ -143,6 +143,16 @@ environment rejects input explicitly. Transient model/Runner unavailability rema
 deadline, with exponential delays from two seconds to a thirty-second cap using the existing
 attempt counter. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
 
+Once the current Runner connection and its verified allocation are both ready, the allocation
+service publishes a composition-injected notification. The IM worker wakes already-due initial inputs
+and advances undispatched pending inputs waiting on environment/Runner readiness for that exact
+Session and allocation, then claims that Session immediately through the existing ordering, custody
+and lane fences. A readiness
+recheck after recording failure closes the ready-before-backoff-write race. Notifications coalesce;
+a ready-triggered attempt that still fails retains bounded backoff. Model/capacity failures, frozen
+dispatches and claimed or accepted work are not reset. Missed notifications retain the regular scan
+and retry fallback; repeated readiness reports on one connection do not repeatedly wake the queue.
+
 Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to

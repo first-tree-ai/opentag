@@ -531,10 +531,17 @@ export async function startServer(): Promise<void> {
       : undefined;
     const custody = new PostgresRuntimeCustodyStore(database);
     let cloudSessionOwner: CloudSessionCollaborationOwner | undefined;
+    let imDeliveryWorker: ImDeliveryWorker | undefined;
     const cloudSessionWork = new CloudSessionWorkTracker();
     const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config, {
       sessionWorkBusy: (allocation) => cloudSessionWork.isBusy(allocation),
       sessionWorkBarrier: (input) => cloudSessionOwner?.hasUnsettledSessionWork(input) ?? Promise.resolve(false),
+      readinessNotifications: {
+        onReady: async (allocation) => {
+          await imDeliveryWorker?.notifyCloudRunnerReady(allocation);
+        },
+        supervisor: backgroundFailureSupervisor,
+      },
     });
     /*
      * E7 idle reclamation runs on the existing Server lifecycle: one fixed 15s cadence, one idle
@@ -905,7 +912,7 @@ export async function startServer(): Promise<void> {
       servers: mcpServers,
       onError: (error) => app?.log.error({ error }, "MCP refresh pass failed"),
     });
-    const imDeliveryWorker = new ImDeliveryWorker({
+    imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
       domain: domainOwner,

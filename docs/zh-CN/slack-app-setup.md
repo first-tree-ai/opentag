@@ -23,6 +23,52 @@ Slack 共享机器人头像缓存在安装记录中，并同步到关联绑定�
 现有安装将在重新连接时获取头像。Slack 端后续修改的头像会缓存到下一次重新连接；
 图片缺失或加载失败时，OpenTag 显示名称缩写。
 
+## 原生工作状态动效
+
+OpenTag 调用 [`assistant.threads.setStatus`](https://docs.slack.dev/reference/methods/assistant.threads.setStatus/)，
+设置 `status: "is working"`，结束时设置 `status: ""`。Slack 自动添加 App 名称并显示原生动效。
+根据 Slack 的[权限更新](https://docs.slack.dev/changelog/2026/03/05/set-status-scope-update/)，现有 bot scope
+`chat:write` 已足够，固定 manifest 无需变更；本功能不启用 Agent sessions，也不申请 `assistant:write`。
+
+| 执行状态 | 展示 |
+| --- | --- |
+| Webhook 接收、排队、delivery accepted、准备凭证 | 隐藏 |
+| Local provider 发出 `run_started`，或 Cloud 验证后启动执行 worker | `OpenTag is working` |
+| 模型及工具运行、同一 bot/thread 并发任务 | 至少一个任务仍在有效执行时显示 |
+| 等待用户、完成、失败、取消、超时、上报结果 | 无其他有效任务时清除 |
+| observer delivery、飞书、Web、Session 间消息 | 隐藏 |
+
+展示目标为 `providerRef.channelId` 和 `providerRef.threadTs ?? providerRef.messageTs`，对应入站消息的回复线程。
+Slack 显示安装的 App 身份，不显示内部子智能体身份。根 DM 可能自动打开线程。现有 provider 在询问用户后结束
+Turn；不会从自然语言猜测等待状态。
+
+执行端每 30 秒发送状态心跳，租约最长 90 秒，且受 delivery 执行截止时间约束。显式截止时间不叠加默认时长上限；
+时长预算从首次执行观测开始，后续心跳不会延长预算。只有新 sequence 延长租约。
+服务端每 45 秒刷新 Slack；同线程的 provider 回复得到确认后立即安排刷新，因为 Slack 在收到回复时会自动清除提示。
+断线且无终态信号时租约过期，下一次 worker 执行时清除（正常可用时最多再等 45 秒）。终态 Turn Report 与清理记录
+在同一个 custody 事务中提交。
+后续有效心跳会重新唤醒已清除的目标。每个安装和线程在凭证换代期间复用同一个稳定目标。
+worker 领取目标时从当前安装刷新凭证栅栏，所有兄弟 Turn 保持聚合，终态清理也能使用新凭证，重放不会续租。
+状态上报和终态清理在锁定目标或 Turn 前取得同线程的事务互斥锁。
+delivery 保留期清理移除所有关联 Turn 后，成功清除状态的目标也会被回收。
+
+持久化 outbox 支持 Server 重启恢复、同线程并发聚合和多个 worker 间的目标串行处理。单次 Slack 请求（含响应正文读取）超时 3 秒，
+无传输层隐式重试，每次目标激活最多允许四次瞬时失败；等待共享熔断恢复不消耗该重试预算。
+HTTP 200 的 `ok: false` 仍视为失败，安装专属错误不会触发共享传输熔断。
+HTTP 5xx 计入共享熔断，支持上游中断时的保护及恢复。
+429 将 `Retry-After` 持久化到整个安装的所有线程，覆盖新目标和 worker 重启；终态信号也不能绕过冷却，
+限流等待不消耗瞬时失败的重试预算。权限错误停用该目标。调用 provider 前再次检查安装仍为 active 且凭证代次与 claim 一致；
+settlement 在写入目标状态或冷却时间之前锁定并复查安装，因此旧代次响应不能影响新代次。
+换代前已获准发出的请求仍可能在 Slack 完成，其过期响应在本地丢弃。
+明确清理无法到达 Slack 时，平台原生的无活动超时作为最终兜底。状态调用失败不改变 Turn 的业务结果。
+
+Local client 协商可选能力 `runtime.turnActivity: 1`。Cloud Runner 在 auth 请求 `turnActivityVersion: 1`，
+必须收到 welcome 的同版本回显。发布时先部署 Server 和迁移，再更新 Runner 镜像：旧 Server 的严格 Cloud auth
+schema 会拒绝未知字段。未协商该能力的旧端保持原有行为。
+
+本地自动化验证使用真实 PostgreSQL 迁移及 outbox、模拟 Slack HTTP，不等同于真实 Slack 的动效验收。
+对外确认部署效果前仍需完成 [Slack 实际验收](./slack-live-acceptance.md)。
+
 ## 固定的 Slack 能力契约
 
 一等 OpenTag Slack App 在首次连接以及后续重新授权时始终请求完整能力集。`mention_only` 与 `all_message` 共用同一份

@@ -72,6 +72,7 @@ export * from "./web-service.js";
 export * from "./write-outcome.js";
 
 export interface RuntimeCredentialServicesOptions {
+  slackWorkingStatus?: boolean;
   database: DatabaseClient;
   cipher: ApplicationCipher;
   registry: ConnectionRegistry;
@@ -390,6 +391,7 @@ function createImAdapters(
 ): Map<RuntimeCredentialProvider, ProviderProxyAdapter> {
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
   const outboundCapture = new ImOutboundCapture(options.database, {
+    slackWorkingStatus: options.slackWorkingStatus,
     ...(options.logger ? { logger: options.logger } : {}),
   });
   const defaults = [

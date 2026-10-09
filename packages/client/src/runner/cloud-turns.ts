@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
+import type { TurnActivityResult } from "@opentag/shared";
 import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
@@ -33,6 +34,7 @@ import { turnTimeoutMs } from "../runtime/agent-turn-runner.js";
 import { truncateUtf8 } from "../runtime/provider-cli/outgoing-reply-process.js";
 import { RuntimeCredentialRelay, type RuntimeCredentialRelayOptions } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
+import { TurnActivityReporter } from "../runtime/turn-activity-reporter.js";
 import { WebToolsServerClient } from "../runtime/web-tools-client.js";
 import { createExecutionWebDispatch } from "../runtime/web-tools-dispatch.js";
 import { type CloudCredentialChannel, CloudCredentialConnection } from "./cloud-credential-connection.js";
@@ -116,6 +118,7 @@ export interface CloudTurnRunnerOptions {
    */
   readonly relayOptions?: Pick<RuntimeCredentialRelayOptions, "dataConnectionFactory">;
   readonly send: (frame: RunnerClientFrame) => void;
+  readonly turnActivityEnabled?: () => boolean;
   /** The #633 tunnel over the current Runner connection. */
   readonly credentialChannel: () => CloudCredentialChannel;
   /** Allocation-stable in-sandbox directory for Pi conversation continuity. */
@@ -261,6 +264,7 @@ const UNKNOWN_COMPLETION: TurnCompletion = {
 
 export class CloudTurnRunner {
   readonly #options: CloudTurnRunnerOptions;
+  readonly #activity: TurnActivityReporter;
   readonly #cancelRequested = new Set<string>();
   /** Verified entries waiting for the single Session-serial turn slot, keyed by request id. */
   readonly #queue = new Map<string, QueuedVerified>();
@@ -282,6 +286,10 @@ export class CloudTurnRunner {
 
   constructor(options: CloudTurnRunnerOptions) {
     this.#options = options;
+    this.#activity = new TurnActivityReporter({
+      send: options.send,
+      enabled: () => options.turnActivityEnabled?.() === true,
+    });
   }
 
   get activeDeliveryId(): string | undefined {
@@ -651,6 +659,10 @@ export class CloudTurnRunner {
       if (entry.kind === "delivery") await this.#reportTerminal(entry, cancelledBeforeStart());
       else await this.#settleSessionTerminal(entry, "cancelled");
     }).catch((error) => this.#reportPersistenceError(error));
+  }
+
+  handleActivityResult(result: TurnActivityResult): void {
+    this.#activity.acknowledge(result);
   }
 
   /** The Server durably recorded (or definitively refused) the report: retire the entry. */
@@ -1406,8 +1418,10 @@ export class CloudTurnRunner {
         ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
       });
       const timeoutMs = turnTimeoutMs(delivery, Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
+      this.#activity.start(delivery, entry.turnId);
       return await this.#runWorker({ stdin, timeoutMs }, signal, execution);
     } finally {
+      this.#activity.end(entry.turnId);
       await execution.close().catch((error) => this.#reportPersistenceError(error));
     }
   }

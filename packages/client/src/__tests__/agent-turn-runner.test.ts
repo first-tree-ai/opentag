@@ -4,6 +4,8 @@ import {
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeImSteerRequest,
+  type TurnActivityRequest,
+  TurnActivityRequestSchema,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AgentProviderError } from "../agent-runtime/errors.js";
@@ -32,6 +34,37 @@ import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("AgentTurnRunner", () => {
+  it.each([false, true])("reports actual execution and terminal liveness (failure=%s)", async (fail) => {
+    const h = outgoingHarness();
+    h.request.agentId = randomUUID();
+    h.request.runtime.agentId = h.request.agentId;
+    h.request.sessionId = randomUUID();
+    h.request.deliveryId = randomUUID();
+    h.request.content.providerRef = providerRef("1.1");
+    h.capabilityVersion.mockImplementation((capability?: string) => (capability === "runtime.turnActivity" ? 1 : 2));
+    h.prompt.mockImplementationOnce(async () => {
+      await h.emit({ type: "run_started", runId: "turn-1" });
+      await h.emit({
+        type: "run_completed",
+        runId: "unrelated",
+        result: { runId: "unrelated", status: "completed", output: [] },
+      });
+      expect(h.send.mock.calls.map(([frame]) => frame).filter((frame) => frame.type === "turn:activity")).toMatchObject(
+        [{ phase: "running" }],
+      );
+      if (fail) throw new Error("worker failed");
+      return { runId: "turn-1", status: "completed", output: [] };
+    });
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    const frames = h.send.mock.calls.map(([frame]) => frame).filter((frame) => frame.type === "turn:activity");
+    for (const frame of frames) expect(TurnActivityRequestSchema.safeParse(frame).success).toBe(true);
+    expect(frames.map((frame) => frame.phase)).toEqual(["running", "terminal"]);
+    const terminal = frames.at(-1) as TurnActivityRequest;
+    h.runner.handleActivityResult({ ...terminal, type: "turn:activity:result", status: "recorded" });
+    h.runner.stop();
+  });
+
   it("compiles only dynamic Session, message, history, and resource context into AgentInput", () => {
     const request = delivery();
     request.runtime.instructions.session = "session instructions";
@@ -1468,20 +1501,28 @@ function outgoingHarness() {
     requestId: randomUUID(),
     resultHash: "c".repeat(64),
   }));
-  const capabilityVersion = vi.fn((): number | undefined => 2);
+  const capabilityVersion = vi.fn((_capability?: string): number | undefined => 2);
   const prepare = vi.fn(async (_input: ProviderCliTurnPlanPrepareInput, _signal?: AbortSignal) => undefined);
   const prompt = vi.fn(async (): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }));
   const logs: RecordedLog[] = [];
+  let observer: AgentRuntimeEventSink | undefined;
+  const send = vi.fn(async (_frame: { type: string; phase?: string }) => undefined);
   const runner = new AgentTurnRunner({
+    now: Date.now,
     bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
-    connection: { send: vi.fn(async () => undefined), capabilityVersion },
+    connection: { send, capabilityVersion },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
     reportOwner: { create, submit } as unknown as TurnReportOwner,
     runtimeManager: {
       sessionKind: () => "visible",
       ensureRuntime: async () => ({ prompt }),
       cwd: () => "/workspace",
-      observe: () => () => undefined,
+      observe: (_sessionId: string, sink: AgentRuntimeEventSink) => {
+        observer = sink;
+        return () => {
+          observer = undefined;
+        };
+      },
     } as unknown as SessionRuntimeManager,
     credentialEnvironment: {
       prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
@@ -1491,7 +1532,21 @@ function outgoingHarness() {
     outgoingReplies: { collect, cleanup },
     logger: recordingLogger(logs),
   });
-  return { runner, request, collect, cleanup, markReporting, submit, create, capabilityVersion, prepare, prompt, logs };
+  return {
+    send,
+    emit: (event: Parameters<AgentRuntimeEventSink>[0]) => observer?.(event),
+    runner,
+    request,
+    collect,
+    cleanup,
+    markReporting,
+    submit,
+    create,
+    capabilityVersion,
+    prepare,
+    prompt,
+    logs,
+  };
 }
 
 function liveOwner(request: DirectImMessageDeliveryRequest): LiveTurnOwner {

@@ -18,6 +18,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { requeueSteeredDeliveries } from "./im-delivery-recovery.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
@@ -504,6 +505,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           lastErrorCode: null,
         })
         .where(eq(imMessageDeliveries.id, report.deliveryId));
+      await finishSlackWorkingTurn(transaction, report.deliveryId, this.#now());
       if (report.outcome !== "completed") {
         await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now(), this.#sessions);
       }

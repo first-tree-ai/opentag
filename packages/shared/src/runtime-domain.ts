@@ -23,6 +23,7 @@ import {
 import { AgentRuntimeOptionsSchema } from "./runtime-configuration-options.js";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
 import { SessionMessageScheduledOriginSchema } from "./schedules.js";
+import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-activity.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
 export {
@@ -1178,6 +1179,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
    */
   SessionMessageDeliveryRequestV3Schema,
   TurnReportResultSchema,
+  TurnActivityResultSchema,
   RuntimeImCredentialGrantResultSchema,
   AgentRuntimeOptionsRequestFrameSchema,
   AgentRuntimeOptionsCancelFrameSchema,
@@ -1198,6 +1200,7 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionMessageDeliveryResultSchema,
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
+  TurnActivityRequestSchema,
   RuntimeImCredentialGrantRequestSchema,
   ProviderCliArtifactStatusFrameSchema,
   ProviderCliPrewarmResultFrameSchema,

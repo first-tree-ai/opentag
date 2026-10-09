@@ -853,6 +853,8 @@
   "TaskTitleUpdateRequestSchema",
   "TaskTitleUpdateResponseSchema",
   "TaskTurnSchema",
+  "TurnActivityRequestSchema",
+  "TurnActivityResultSchema",
   "TurnFailureReasonSchema",
   "TurnOutgoingReplyContentSchema",
   "TurnOutgoingReplyMsgTypeSchema",

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { TurnActivityRequest, TurnActivityResult } from "@opentag/shared";
 import {
   computeDirectInputHash,
   computeTurnResultHash,
@@ -104,6 +105,7 @@ export interface CloudDeliveryOwnerCredentialDeps {
 }
 
 export interface CloudDeliveryOwnerOptions {
+  onTurnActivity?(frame: TurnActivityRequest, context: RuntimeBusinessContext): Promise<TurnActivityResult>;
   custody: RuntimeCustodyStore;
   database: DatabaseClient;
   fence: CloudRuntimeFence;
@@ -184,7 +186,10 @@ export class CloudDeliveryOwner {
     }
   >();
 
+  readonly #onTurnActivity: CloudDeliveryOwnerOptions["onTurnActivity"];
+
   constructor(options: CloudDeliveryOwnerOptions) {
+    this.#onTurnActivity = options.onTurnActivity;
     this.#credentials = options.credentials;
     this.#custody = options.custody;
     this.#database = options.database;
@@ -679,6 +684,15 @@ export class CloudDeliveryOwner {
    * Turn Report -> durable record -> ack
    * ---------------------------------------------------------------------------------------- */
 
+  async handleTurnActivity(connection: CloudConnectionRecord, frame: TurnActivityRequest): Promise<void> {
+    if (!this.#isExactConnection(connection) || connection.turnActivityVersion !== 1 || !connection.executionEligible)
+      return;
+    const allocation = await this.#loadCurrentAllocation(connection);
+    if (!allocation || !this.#isExactConnection(connection)) return;
+    const result = await this.#onTurnActivity?.(frame, this.#context(connection));
+    if (result) this.#sendToConnection(connection, result);
+  }
+
   async handleDeliveryReport(
     connection: CloudConnectionRecord,
     frame: { requestId: string; report: TurnReportRequest },
@@ -1031,6 +1045,7 @@ export class CloudDeliveryOwner {
     socket?: RunnerControlSocket;
     /** False for a report-only reconnect: settle/report only, never mint execution permission. */
     executionEligible?: boolean;
+    turnActivityVersion?: 1;
     /** E8: only when the Runner negotiated the collaboration capability at the same handshake. */
     sessionCollaborationEligible?: boolean;
     /** Exact E8 collaboration version; required to authorize a scheduled-origin frame. */

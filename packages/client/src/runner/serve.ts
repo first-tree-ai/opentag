@@ -403,6 +403,7 @@ function createCloudTurnRunner(input: {
       );
     },
     credentialChannel: () => input.bridge,
+    turnActivityEnabled: () => input.bridge.turnActivityEnabled,
     journal: input.journal,
     onPersistenceError: (error) => input.state()?.persistenceFailure?.(error),
     publicDirectory: input.publicRoot,
@@ -445,6 +446,7 @@ class RunnerChannelBridge implements CloudCredentialChannel {
   scope?: CloudTurnScope;
   /** True only after a negotiated `cloudDeliveryVersion: 1` welcome. Legacy E3 stays Cloud-free. */
   cloudEnabled = false;
+  turnActivityEnabled = false;
   /*
    * The negotiated E8 Session-collaboration version echoed at the current welcome (0 when the
    * Server did not echo the capability). The exact number is the fence: a scheduled-origin
@@ -919,6 +921,7 @@ async function serveOnce(
       bridge.sendFn = undefined;
       bridge.scope = undefined;
       bridge.cloudEnabled = false;
+      bridge.turnActivityEnabled = false;
       bridge.sessionCollaborationVersion = 0;
       bridge.emitState("closed");
       state.turns.onChannelClosed();
@@ -975,6 +978,7 @@ async function serveOnce(
         requestId: randomUUID(),
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
+        turnActivityVersion: 1,
         /*
          * This build speaks Session collaboration v2 (scheduled origin). An older Server whose
          * auth schema only admits v1 fails the strict handshake; a foundation Server that parses
@@ -1015,6 +1019,7 @@ async function serveOnce(
         resourceUid: data.resourceUid ?? null,
       };
       bridge.cloudEnabled = cloudCapable;
+      bridge.turnActivityEnabled = cloudCapable && data.turnActivityVersion === 1;
       bridge.sessionCollaborationVersion = negotiatedRunnerSessionCollaborationVersion(data);
       bridge.sendFn = send;
       bridge.emitState("registered");
@@ -1583,6 +1588,7 @@ type CloudServerFrame = Extract<
       | "delivery:run"
       | "delivery:verified"
       | "delivery:cancel"
+      | "turn:activity:result"
       | "delivery:report:ack"
       | "delivery:query"
       | "session:message:run"
@@ -1595,6 +1601,7 @@ type CloudServerFrame = Extract<
 
 function isCloudServerFrame(frame: RunnerServerFrame): frame is CloudServerFrame {
   return (
+    frame.type === "turn:activity:result" ||
     frame.type === "delivery:run" ||
     frame.type === "delivery:verified" ||
     frame.type === "delivery:cancel" ||
@@ -1636,6 +1643,10 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
     return;
   }
   switch (data.type) {
+    case "turn:activity:result":
+      if (c.bridge.turnActivityEnabled) c.turns.handleActivityResult(data);
+      else c.finish();
+      break;
     case "delivery:run":
       c.enqueueCloudControl("delivery:run", () => c.turns.handleDeliveryRun(data));
       break;

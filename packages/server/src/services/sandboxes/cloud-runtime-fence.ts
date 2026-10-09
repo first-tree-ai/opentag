@@ -40,6 +40,7 @@ export interface CloudConnectionRecord {
    * or reported, but no grant is ever minted until a fresh active handshake replaces the record.
    */
   readonly executionEligible: boolean;
+  readonly turnActivityVersion: 0 | 1;
 }
 
 /**
@@ -69,6 +70,7 @@ export class CloudRuntimeFence {
     scope: RunnerScope;
     socket?: RunnerControlSocket;
     executionEligible?: boolean;
+    turnActivityVersion?: 1;
     sessionCollaborationEligible?: boolean;
     sessionCollaborationVersion?: 1 | 2;
   }): CloudConnectionRecord {
@@ -84,6 +86,7 @@ export class CloudRuntimeFence {
       scope: input.scope,
       ...(input.socket ? { socket: input.socket } : {}),
       executionEligible: input.executionEligible !== false,
+      turnActivityVersion: input.turnActivityVersion ?? 0,
       sessionCollaborationEligible: sessionCollaborationVersion > 0,
       sessionCollaborationVersion,
     };

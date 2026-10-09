@@ -50,7 +50,8 @@ describe("probedServerDescription", () => {
 /**
  * The stored tool snapshot is parsed back with this schema before it reaches a live catalogue, so
  * it must accept at least what any release's probe may store — bounded in UTF-8 bytes, not in code
- * units — and the description's reader bound leads the writer's so a rollback stays readable.
+ * units — and the description's reader bound may never be narrower than the writer's, so a rollback
+ * stays readable.
  */
 describe("MCPToolSnapshotSchema", () => {
   const tool = (overrides: Record<string, unknown>) => ({

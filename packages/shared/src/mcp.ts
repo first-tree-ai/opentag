@@ -302,9 +302,9 @@ const MCPToolInputSchemaSchema = z.unknown().refine(
 
 /**
  * One `tools/list` entry snapshot. The name and input schema are bounded exactly as the probe
- * bounds them; the description is bounded by the reader bound, which is deliberately wider than the
- * writer's so a snapshot this release wrote — or a later one writes after the follow-up raises the
- * writer — stays readable by the release a rollback brings back.
+ * bounds them; the description is bounded by the reader bound, which must never be narrower than the
+ * writer's. The two are equal today, after the wider reader shipped ahead of the writer raise, so a
+ * snapshot this release writes stays readable by the release a rollback brings back.
  */
 export const MCPToolSnapshotSchema = z
   .object({

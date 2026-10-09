@@ -242,22 +242,22 @@ export const MCPServerUrlSchema = z
  * a writer bound and reports the snapshot as truncated; {@link MCPToolSnapshotSchema} refuses a
  * stored tool that violates a reader bound.
  *
- * The description has a writer bound and a reader bound, and the reader's is deliberately the wider
- * one. A stored snapshot is durable state: a rollback restores the older Server image while the rows
- * it wrote stay behind (`docs/deploying.md`). If both bounds moved together, the first re-probe after
- * this release could write a description the previous reader rejects — and because it parses the
- * whole snapshot array at once, that reader would drop every tool for the Server, not just the
- * oversized one. The reader therefore moves first, accepting descriptions no current writer
- * produces; the writer moves only once the wider reader has shipped. Keep the reader bound ≥ the
- * writer bound.
+ * The description keeps a writer bound and a reader bound, and the reader's must never be the
+ * narrower one. A stored snapshot is durable state: a rollback restores the older Server image while
+ * the rows it wrote stay behind (`docs/deploying.md`). If both bounds moved together, the first
+ * re-probe after a release could write a description the previous reader rejects — and because it
+ * parses the whole snapshot array at once, that reader would drop every tool for the Server, not
+ * just the oversized one. The reader therefore moves first, accepting descriptions no current writer
+ * produces; the writer moves only once the wider reader has shipped. The two are equal at 64 KiB
+ * today, after that sequence, and the ordering rule remains for any future raise.
  *
  * The bounds are sized for real hosted Servers: Linear and Notion ship tool descriptions of several
  * KiB and input schemas past 8 KiB, and Google's Docs MCP ships an `update_doc` description of
- * ~35 KiB, which is what the reader accepts ahead of the writer.
+ * ~35 KiB, which the writer now stores and the reader accepts.
  */
 export const MCP_TOOL_NAME_MAX_BYTES = 128;
 /** The largest description a probe may store, in UTF-8 bytes. */
-export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 16 * 1024;
+export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 64 * 1024;
 /** The largest description a stored snapshot may carry, in UTF-8 bytes. Deliberately ≥ the writer. */
 export const MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES = 64 * 1024;
 export const MCP_TOOL_INPUT_SCHEMA_MAX_BYTES = 64 * 1024;

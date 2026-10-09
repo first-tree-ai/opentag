@@ -71,12 +71,12 @@ describe("MCPToolSnapshotSchema", () => {
     ).toBe(false);
   });
 
-  it("reads a description the probe still refuses to write, so a rollback stays readable", () => {
-    // The reader leads the writer: Google's Docs `update_doc` description is the case the writer
-    // raise exists for, and this release must already accept it before any probe can store it.
+  it("accepts Google's update_doc description under both the writer and reader bounds", () => {
+    // The reader shipped first and the writer followed; both now store the ~35 KiB description that
+    // motivated the raise, and the reader must never be the narrower of the two.
     const googleUpdateDocBytes = 35_410;
     expect(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES).toBeGreaterThanOrEqual(MCP_TOOL_DESCRIPTION_MAX_BYTES);
-    expect(googleUpdateDocBytes).toBeGreaterThan(MCP_TOOL_DESCRIPTION_MAX_BYTES);
+    expect(googleUpdateDocBytes).toBeLessThanOrEqual(MCP_TOOL_DESCRIPTION_MAX_BYTES);
     expect(googleUpdateDocBytes).toBeLessThanOrEqual(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES);
     expect(MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(googleUpdateDocBytes) })).success).toBe(true);
   });

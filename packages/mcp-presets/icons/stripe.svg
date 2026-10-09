@@ -1,1 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.75" y="2.75" width="18.5" height="18.5" rx="5" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="12" y="16.2" text-anchor="middle" font-family="Manrope, system-ui, sans-serif" font-size="11" font-weight="700" fill="currentColor">S</text></svg>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_159_20)">
+<rect width="512" height="512" fill="#533AFD"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M120 392L392 334.317V120L120 178.357V392Z" fill="white"/>
+</g>
+<defs>
+<clipPath id="clip0_159_20">
+<rect width="512" height="512" rx="64" fill="white"/>
+</clipPath>
+</defs>
+</svg>

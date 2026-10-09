@@ -10,9 +10,9 @@ paths, tried in order — Cloud Logging first, because it needs no SSH and survi
 
 1. **Cloud Logging** — `gcloud logging read`. Works for Cloud Run, GKE, and anything whose log
    driver ships records to Google Cloud.
-2. **Host logs** — `gcloud compute ssh` plus `docker`, `systemd`, or `kubectl` on the machine that
-   runs the service. This is the path for self-hosted deployments (CapRover or plain Docker Swarm
-   on a Compute Engine VM) whose container logs never reach Cloud Logging.
+2. **Host logs** — `gcloud compute ssh` plus `docker` or `systemd` on the machine that runs the
+   service. This is the path for self-hosted deployments (CapRover or plain Docker Swarm on a
+   Compute Engine VM) whose container logs never reach Cloud Logging.
 
 An empty Cloud Logging result is not evidence of health. A container's stdout only appears in Cloud
 Logging when the Docker daemon's log driver is configured for it; on a minimal self-hosted host it
@@ -36,10 +36,10 @@ which one produced each piece of evidence.
   `describe` never change anything. `gcloud compute ssh` is only a pure read once SSH access already
   exists: with no usable key it can generate a key pair, save the private key locally (with an empty
   passphrase when `--quiet` suppresses the prompt), and register the public key in project or
-  instance metadata. Treat that provisioning as a configuration change: verify access first, hand
-  the setup to the operator when it is missing, and only run unattended reads after that boundary is
-  satisfied (Step 3). Restarting, scaling, deploying, and editing configuration remain separate
-  requests; ask first.
+  instance metadata. That provisioning is a configuration change, and it cannot be ruled out by
+  inspecting local files or metadata from the outside: require the operator to complete and confirm
+  a first connection to the target before any unattended read (Step 3). Restarting, scaling,
+  deploying, and editing configuration remain separate requests; ask first.
 - **Do not leak what logs leak.** Log lines can carry access tokens, email addresses, and customer
   data. Quote only the lines that answer the question, redact secrets, and never copy a whole log
   stream into a report or a chat message.
@@ -138,55 +138,49 @@ gcloud logging read '<FILTER>' \
   streams burns context without adding evidence.
 - An empty result means "no matching entries in this window", not "no incidents". Report the window
   and filter — then continue to Step 3 **only when Step 1 identified a self-hosted Compute Engine
-  deployment**. Managed runtimes have no host to SSH into: a Cloud Run or App Engine service stays
-  on its own resource-specific filter, and a GKE workload uses the cluster-scoped pod path in
-  Step 3. Never fall back to enumerating unrelated VMs because a managed query came back empty.
+  deployment**. Managed runtimes have no host to SSH into: a Cloud Run, GKE, or App Engine service
+  stays on its own resource-specific filter. Never fall back to enumerating unrelated VMs because a
+  managed query came back empty.
   `PERMISSION_DENIED` is different: name the missing role (`roles/logging.viewer`) instead of
   retrying as if the result were empty.
 
 ## Step 3 — Read logs on the host (self-hosted fallback)
 
 This Step applies only to a Compute Engine VM that Step 1 identified as the self-hosted host of the
-service. A GKE workload uses the Kubernetes row below; Cloud Run and App Engine have no host and
-stay in Step 2.
+service. Cloud Run, GKE, and App Engine have no self-hosted host and stay on their own log streams
+in Step 2; direct pod logs would need an explicitly context-pinned `kubectl` workflow, which is out
+of scope here.
 
-### Verify SSH access before the first unattended read
+### Gate unattended SSH on a confirmed first connection
 
 `gcloud compute ssh` provisions access when none exists: it can create a key pair, save the private
 key locally (with an empty passphrase when `--quiet` swallows the prompt), and register the public
-key in project or instance metadata. Provisioning is a configuration change, so confirm existing
-access read-only before any unattended use:
+key in project or instance metadata (or the OS Login profile). Whether the next unattended call will
+provision cannot be proven from the outside — a local key file does not say whether the target
+accepts it, OS Login ignores metadata keys, project keys can be blocked per instance, and a metadata
+entry for someone else's key says nothing about the current one.
 
-```sh
-# Is there already a gcloud-managed key pair on this machine?
-ls ~/.ssh/google_compute_engine ~/.ssh/google_compute_engine.pub 2>/dev/null
-# Is the operator already granted access (OS Login profile, or ssh-keys in metadata)?
-gcloud compute os-login describe-profile --project=<PROJECT_ID> 2>/dev/null | head -20
-gcloud compute instances describe <INSTANCE> --project=<PROJECT_ID> --zone=<ZONE> \
-  --format='json(metadata.items)' | grep -iE "ssh-keys|public-keys" || true
-gcloud compute project-info describe --project=<PROJECT_ID> \
-  --format='json(metadata.items)' | grep -iE "ssh-keys|public-keys" || true
-```
-
-When both checks confirm existing access, unattended `--quiet` reads reuse it and change nothing.
-When they do not, stop and hand the operator the one-time interactive setup, naming its side
-effects (a local private key may be created and its public half registered):
+So do not try to verify access yourself. Before the first `--quiet` read, require the operator to
+connect to this exact target once and confirm it:
 
 ```sh
 gcloud compute ssh <INSTANCE> --project=<PROJECT_ID> --zone=<ZONE>
 ```
 
-Only after the operator confirms does the read-only SSH usage below begin. "External IP address was
-not found; defaulting to using IAP tunneling" is normal on a private VM; SSH then also needs
-`roles/iap.tunnelResourceAccessor`, not just Compute access.
+This one interactive command is their setup step; it may create and register a key, and only the
+operator sees what it did. After they confirm a successful connection, the `--quiet` reads below
+reuse that provisioned access and change nothing. If no connection to this target has been confirmed,
+stop and hand the command over instead of running the reads.
 
-- Find the service from the verified host, then read its logs:
+"External IP address was not found; defaulting to using IAP tunneling" is normal on a private VM;
+SSH then also needs `roles/iap.tunnelResourceAccessor`, not just Compute access.
+
+- Find the service from the confirmed host, then read its logs:
 
   | Deployment | Service listing | Log command |
   | --- | --- | --- |
   | Docker Swarm / CapRover | `sudo docker service ls` | `sudo docker service logs --since <window> --timestamps <SERVICE>` |
   | plain Docker | `sudo docker ps` | `sudo docker logs --since <window> --timestamps <CONTAINER>` |
-  | Kubernetes | `kubectl get pods` | `kubectl logs <POD> --since=1h` |
 
   ```sh
   timeout 90 gcloud compute ssh <INSTANCE> --project=<PROJECT_ID> --zone=<ZONE> --quiet \

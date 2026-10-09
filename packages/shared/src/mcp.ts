@@ -239,17 +239,27 @@ export const MCPServerUrlSchema = z
 
 /**
  * Per-tool bounds on one `tools/list` entry, in UTF-8 bytes. The probe skips a tool that violates
- * any of them and reports the snapshot as truncated; {@link MCPToolSnapshotSchema} refuses the same
- * tool on read, so a stored snapshot can never hold what a probe would not have stored.
+ * a writer bound and reports the snapshot as truncated; {@link MCPToolSnapshotSchema} refuses a
+ * stored tool that violates a reader bound.
  *
- * The description and schema bounds are sized for real hosted Servers, and they are deliberately
- * equal: Linear and Notion ship tool descriptions of several KiB and input schemas past 8 KiB, and
- * Google's Docs MCP ships an `update_doc` description of ~35 KiB that a 16 KiB bound silently
- * dropped. A bound that fails real Servers buys nothing over one that fits them, because the
- * list-level caps below still bound the whole snapshot.
+ * The description has a writer bound and a reader bound, and the reader's is deliberately the wider
+ * one. A stored snapshot is durable state: a rollback restores the older Server image while the rows
+ * it wrote stay behind (`docs/deploying.md`). If both bounds moved together, the first re-probe after
+ * this release could write a description the previous reader rejects — and because it parses the
+ * whole snapshot array at once, that reader would drop every tool for the Server, not just the
+ * oversized one. The reader therefore moves first, accepting descriptions no current writer
+ * produces; the writer moves only once the wider reader has shipped. Keep the reader bound ≥ the
+ * writer bound.
+ *
+ * The bounds are sized for real hosted Servers: Linear and Notion ship tool descriptions of several
+ * KiB and input schemas past 8 KiB, and Google's Docs MCP ships an `update_doc` description of
+ * ~35 KiB, which is what the reader accepts ahead of the writer.
  */
 export const MCP_TOOL_NAME_MAX_BYTES = 128;
-export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 64 * 1024;
+/** The largest description a probe may store, in UTF-8 bytes. */
+export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 16 * 1024;
+/** The largest description a stored snapshot may carry, in UTF-8 bytes. Deliberately ≥ the writer. */
+export const MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES = 64 * 1024;
 export const MCP_TOOL_INPUT_SCHEMA_MAX_BYTES = 64 * 1024;
 
 /**
@@ -291,14 +301,15 @@ const MCPToolInputSchemaSchema = z.unknown().refine(
 );
 
 /**
- * One `tools/list` entry snapshot. Bounded exactly as the probe bounds it, on every field: this
- * schema is what the gateway parses a stored snapshot back through, so a row written by an older
- * bound, or damaged out of band, cannot put an oversized tool into a live catalogue.
+ * One `tools/list` entry snapshot. The name and input schema are bounded exactly as the probe
+ * bounds them; the description is bounded by the reader bound, which is deliberately wider than the
+ * writer's so a snapshot this release wrote — or a later one writes after the follow-up raises the
+ * writer — stays readable by the release a rollback brings back.
  */
 export const MCPToolSnapshotSchema = z
   .object({
     name: utf8Bounded(z.string().min(1), MCP_TOOL_NAME_MAX_BYTES, "tool name"),
-    description: utf8Bounded(z.string(), MCP_TOOL_DESCRIPTION_MAX_BYTES, "tool description").nullable(),
+    description: utf8Bounded(z.string(), MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES, "tool description").nullable(),
     inputSchema: MCPToolInputSchemaSchema.nullable(),
   })
   .strict();

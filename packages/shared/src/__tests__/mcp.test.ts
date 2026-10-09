@@ -5,6 +5,7 @@ import {
   MCP_TOOL_DESCRIPTION_MAX_BYTES,
   MCP_TOOL_INPUT_SCHEMA_MAX_BYTES,
   MCP_TOOL_NAME_MAX_BYTES,
+  MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES,
   MCPToolSnapshotSchema,
   probedServerDescription,
 } from "../mcp.js";
@@ -48,7 +49,8 @@ describe("probedServerDescription", () => {
 
 /**
  * The stored tool snapshot is parsed back with this schema before it reaches a live catalogue, so
- * it must accept exactly what the probe stores — bounded in UTF-8 bytes, not in code units.
+ * it must accept at least what any release's probe may store — bounded in UTF-8 bytes, not in code
+ * units — and the description's reader bound leads the writer's so a rollback stays readable.
  */
 describe("MCPToolSnapshotSchema", () => {
   const tool = (overrides: Record<string, unknown>) => ({
@@ -58,22 +60,35 @@ describe("MCPToolSnapshotSchema", () => {
     ...overrides,
   });
 
-  it("accepts a description at the byte bound and refuses one byte over it", () => {
+  it("accepts a description at the reader bound and refuses one byte over it", () => {
     expect(
-      MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES) })).success,
+      MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES) }))
+        .success,
     ).toBe(true);
     expect(
-      MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES + 1) })).success,
+      MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES + 1) }))
+        .success,
     ).toBe(false);
+  });
+
+  it("reads a description the probe still refuses to write, so a rollback stays readable", () => {
+    // The reader leads the writer: Google's Docs `update_doc` description is the case the writer
+    // raise exists for, and this release must already accept it before any probe can store it.
+    const googleUpdateDocBytes = 35_410;
+    expect(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES).toBeGreaterThanOrEqual(MCP_TOOL_DESCRIPTION_MAX_BYTES);
+    expect(googleUpdateDocBytes).toBeGreaterThan(MCP_TOOL_DESCRIPTION_MAX_BYTES);
+    expect(googleUpdateDocBytes).toBeLessThanOrEqual(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES);
+    expect(MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(googleUpdateDocBytes) })).success).toBe(true);
   });
 
   it("counts multi-byte text in bytes, so a short string of wide characters can still be over", () => {
     // Half the bound in code units, but two bytes each: 65538 bytes, over by two.
-    const wide = "é".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES / 2 + 1);
-    expect(wide.length).toBeLessThan(MCP_TOOL_DESCRIPTION_MAX_BYTES);
+    const wide = "é".repeat(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES / 2 + 1);
+    expect(wide.length).toBeLessThan(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES);
     expect(MCPToolSnapshotSchema.safeParse(tool({ description: wide })).success).toBe(false);
     expect(
-      MCPToolSnapshotSchema.safeParse(tool({ description: "é".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES / 2) })).success,
+      MCPToolSnapshotSchema.safeParse(tool({ description: "é".repeat(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES / 2) }))
+        .success,
     ).toBe(true);
   });
 

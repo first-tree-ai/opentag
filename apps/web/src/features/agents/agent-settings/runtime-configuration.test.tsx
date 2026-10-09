@@ -1,9 +1,10 @@
-import type { AgentAdminConfig } from "@opentag/shared/browser";
+import type { AgentAdminConfig, AgentRuntimeOptions } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, screen, render as testingRender, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../../api.js";
+import { queryKeys } from "../../../query/keys.js";
 import { RuntimeConfigurationForm, runtimeConfigurationFromForm } from "./runtime-configuration.js";
 
 const queryClients: QueryClient[] = [];
@@ -72,6 +73,99 @@ async function chooseOption(label: string, value: string): Promise<void> {
 describe("RuntimeConfigurationForm", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it.each([
+    {
+      provider: "codex" as const,
+      model: "gpt-6.1-sol",
+      discovered: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+      expected: ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"],
+    },
+    {
+      provider: "claude-code" as const,
+      model: "claude-fable-5-1",
+      discovered: ["sonnet"],
+      expected: ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+    },
+    {
+      provider: "pi" as const,
+      model: "openai/gpt-6.1-sol",
+      discovered: ["google/gemini-3.8-flash"],
+      expected: ["anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol"],
+    },
+  ])("keeps $provider suggestions when loading and refreshing a smaller native catalog", async (entry) => {
+    let resolveInitial!: (options: AgentRuntimeOptions) => void;
+    vi.mocked(browserApi.agentRuntimeOptions)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveInitial = resolve;
+          }),
+      )
+      .mockResolvedValue({
+        modelSuggestions: [...entry.discovered, "live/added"],
+        reasoningEffortAllowedValues: ["high"],
+      });
+    const configured = {
+      ...config,
+      runtimeProvider: entry.provider,
+      runtimeConfig: { ...config.runtimeConfig, model: entry.model },
+    };
+    const save = vi.fn();
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} />);
+    await waitFor(() => expect(resolveInitial).toBeTypeOf("function"));
+    expect(await optionLabels("Model")).toEqual(expect.arrayContaining(entry.expected));
+
+    resolveInitial({ modelSuggestions: entry.discovered, reasoningEffortAllowedValues: ["high"] });
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    const initial = await optionLabels("Model");
+    expect(initial).toEqual(expect.arrayContaining([...entry.expected, ...entry.discovered]));
+    expect(new Set(initial).size).toBe(initial.length);
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain(entry.model);
+    expect(screen.queryByRole("textbox", { name: "Custom model ID" })).toBeNull();
+    expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration", "High"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh models and effort" }));
+    await waitFor(() => expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    const refreshed = await optionLabels("Model");
+    expect(refreshed).toEqual(expect.arrayContaining([...entry.expected, ...entry.discovered, "live/added"]));
+    expect(new Set(refreshed).size).toBe(refreshed.length);
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain(entry.model);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("keeps separate Computer caches when the same Agent moves between Computers", async () => {
+    const first = { modelSuggestions: ["computer-a/model"], reasoningEffortAllowedValues: ["high"] };
+    const second = { modelSuggestions: ["computer-b/model"], reasoningEffortAllowedValues: ["max"] };
+    vi.mocked(browserApi.agentRuntimeOptions).mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClients.push(client);
+    const view = testingRender(
+      <QueryClientProvider client={client}>
+        <RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    expect(await optionLabels("Model")).toContain("computer-a/model");
+    const moved = { ...config, computerId: "b35db6ac-90fe-4a92-831d-0b698127d948" };
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <RuntimeConfigurationForm initialConfig={moved} save={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    const labels = await optionLabels("Model");
+    expect(labels).toContain("computer-b/model");
+    expect(labels).not.toContain("computer-a/model");
+    expect(client.getQueryData(queryKeys.agents.runtimeOptions(config.id, config.computerId, "codex", ""))).toEqual(
+      first,
+    );
+    expect(client.getQueryData(queryKeys.agents.runtimeOptions(config.id, moved.computerId, "codex", ""))).toEqual(
+      second,
+    );
   });
 
   it("uses per-model efforts, preserves historical values, and requires an explicit supported selection", async () => {
@@ -179,9 +273,6 @@ describe("RuntimeConfigurationForm", () => {
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
       "Custom model ID…",
     ]);
     expect(await optionLabels("Reasoning effort")).toEqual([
@@ -344,7 +435,7 @@ describe("RuntimeConfigurationForm", () => {
   it("maps Provider default to null while preserving expectedRevision", async () => {
     const configured: AgentAdminConfig = {
       ...config,
-      runtimeConfig: { ...config.runtimeConfig, model: "gpt-5.6-sol", reasoningEffort: "high" },
+      runtimeConfig: { ...config.runtimeConfig, model: "gpt-6.1-sol", reasoningEffort: "high" },
     };
     const save = vi.fn(async () => ({
       ...configured,
@@ -372,7 +463,7 @@ describe("RuntimeConfigurationForm", () => {
     const save = vi.fn(async () => ({
       ...historicalConfig,
       revision: 5,
-      runtimeConfig: { ...historicalConfig.runtimeConfig, revision: 8, model: "gpt-5.6-sol" },
+      runtimeConfig: { ...historicalConfig.runtimeConfig, revision: 8, model: "gpt-6.1-sol" },
     }));
     render(<RuntimeConfigurationForm initialConfig={historicalConfig} save={save} section="execution" />);
 
@@ -391,13 +482,13 @@ describe("RuntimeConfigurationForm", () => {
       "historical-effort",
     );
 
-    await chooseOption("Model", "gpt-5.6-sol");
+    await chooseOption("Model", "gpt-6.1-sol");
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save).toHaveBeenCalledWith({
       expectedRevision: 4,
-      runtimeConfig: { model: "gpt-5.6-sol", reasoningEffort: "historical-effort" },
+      runtimeConfig: { model: "gpt-6.1-sol", reasoningEffort: "historical-effort" },
     });
   });
 
@@ -454,15 +545,15 @@ describe("RuntimeConfigurationForm", () => {
     });
     render(<RuntimeConfigurationForm initialConfig={historicalConfig} save={save} />);
 
-    await chooseOption("Model", "gpt-5.6-sol");
+    await chooseOption("Model", "gpt-6.1-sol");
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t save the model settings. Try again.");
     expect(save).toHaveBeenCalledWith({
       expectedRevision: 4,
-      runtimeConfig: { model: "gpt-5.6-sol", reasoningEffort: "historical-effort" },
+      runtimeConfig: { model: "gpt-6.1-sol", reasoningEffort: "historical-effort" },
     });
-    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain("gpt-5.6-sol");
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain("gpt-6.1-sol");
     expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent?.trim()).toContain(
       "historical-effort",
     );
@@ -541,14 +632,14 @@ describe("RuntimeConfigurationForm", () => {
     const save = vi.fn(async () => ({
       ...config,
       revision: 5,
-      runtimeConfig: { ...config.runtimeConfig, revision: 8, model: "gpt-5.6-sol" },
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, model: "gpt-6.1-sol" },
     }));
     render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Run test" }));
     expect(await screen.findByText(/^Connection succeeded\./)).toBeTruthy();
 
-    await chooseOption("Model", "gpt-5.6-sol");
+    await chooseOption("Model", "gpt-6.1-sol");
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(await screen.findByText("Model settings saved.")).toBeTruthy();

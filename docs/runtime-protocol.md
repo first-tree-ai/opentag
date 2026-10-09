@@ -74,6 +74,39 @@ provider awaiting a fresh observation remains `checking`. Thus a new Web/CLI cal
 can see that Pi is unavailable on a v1-only daemon instead of waiting indefinitely.
 Replacing the connection replaces this support boundary as well.
 
+## Local model options and cache ownership
+
+The optional `runtime.agentRuntimeOptions` capability (version 1) serves
+`GET /api/v1/agents/:agentId/runtime-options?model=...`. The Server checks Account
+ownership, resolves the Agent's bound Local Computer and provider, then sends an
+`agent-runtime:options` request to that Computer's current daemon. The Client queries
+the native provider CLI and returns model IDs and reasoning efforts for the selected
+model. The Server rechecks Agent placement before returning the response.
+
+| Data | Location and identity | Lifetime |
+| --- | --- | --- |
+| Web query result | Browser memory, keyed by `agentId`, `computerId`, provider, and model | Fresh for 60 seconds; manual refresh requests again; signing out clears the cache |
+| Server request | In-memory pending map, keyed by a random `requestId` and fenced by `computerId` and `instanceId` | Removed on completion, cancellation, or timeout; no model catalog is persisted |
+| Native provider catalog | Owned by the CLI and its local provider configuration | Provider-specific; OpenTag does not clear or persist this cache |
+| Saved model and effort | PostgreSQL `agent_runtime_configs`, keyed by `agent_id` | Written only when configuration is saved, with an expected-revision check |
+
+The HTTP response uses `Cache-Control: no-store`. A refresh is a new native query,
+not a background catalog upload or a provider-cache purge. Computers do not overwrite
+a shared Server catalog. A response from another Computer or an old daemon instance
+cannot complete the pending request.
+
+The Web model selector merges native results with preset suggestions and removes
+duplicates, so a smaller native catalog does not hide the presets. Codex presets
+include the current `gpt-6.1-sol`, `gpt-6-astra`, and `gpt-6-luna` models plus
+`gpt-6-sol` for compatibility; see the [OpenAI model catalog](https://developers.openai.com/api/docs/models).
+Older IDs remain usable through native results, saved configuration, or custom input.
+Suggestions are not proof of account access. Reasoning efforts still use the selected
+model's native metadata; unknown metadata remains explicitly unconfirmed.
+
+Refreshing options does not save Agent configuration or modify the local CLI's
+defaults. Saving `null` model or effort values means inheriting local configuration;
+these are per-Agent overrides, not per-Computer model catalogs.
+
 ## Parsing and fencing
 
 - The base v1 handshake and control schemas remain strict and byte-compatible. A Client offers the optional, separately versioned Provider-readiness extension through its WebSocket headers; only an acknowledging Server may add its welcome field and accept readiness on register or heartbeat frames.

@@ -1,7 +1,7 @@
 # Runtime 协议兼容
 
 > Canonical source: [../runtime-protocol.md](../runtime-protocol.md)
-> Last synced with: 2026-09-15
+> Last synced with: 2026-10-09
 
 ## 范围
 
@@ -70,6 +70,34 @@ Computer 投影同时遵循当前 daemon 连接协商的 provider 范围。范�
 显示为 `unavailable`，不生成探测时间；已协商但尚未收到新观测的 provider 仍为 `checking`。
 因此，新 Web/CLI 查看仅支持 v1 的 daemon 时，Pi 会显示为不可用，不会无限等待。
 连接替换后，支持范围也随之替换。
+
+## 本地模型选项与缓存归属
+
+可选的 `runtime.agentRuntimeOptions` capability（版本 1）服务于
+`GET /api/v1/agents/:agentId/runtime-options?model=...`。Server 校验 Account 权限，
+读取 Agent 绑定的 Local Computer 和 provider，再向该 Computer 当前 daemon 发送
+`agent-runtime:options` 请求。Client 查询原生 provider CLI，返回模型 ID 和所选模型的
+推理强度。Server 返回结果前再次核对 Agent 归属的 Computer 和 provider。
+
+| 数据 | 保存位置与隔离标识 | 生命周期 |
+| --- | --- | --- |
+| Web 查询结果 | 浏览器内存，键包含 `agentId`、`computerId`、provider、model | 60 秒内视为新鲜；手动刷新仍重新请求；退出登录清空缓存 |
+| Server 请求 | 内存中的待处理 Map，以随机 `requestId` 标识，并校验 `computerId` 和 `instanceId` | 完成、取消或超时后删除；不持久化模型目录 |
+| 原生 provider 目录 | CLI 及其本地 provider 配置自行管理 | 随 provider 而异；OpenTag 不清除或持久化此缓存 |
+| 用户保存的模型与强度 | PostgreSQL `agent_runtime_configs`，按 `agent_id` 保存 | 仅保存配置时写入，并校验预期 revision |
+
+HTTP 响应使用 `Cache-Control: no-store`。刷新会发起一次新的原生查询，不是后台上传
+模型目录，也不会清除 provider 自身的缓存。不同 Computer 不会覆盖 Server 上的一份
+共享模型目录。其他 Computer 或旧 daemon 实例的响应不能完成当前待处理请求。
+
+Web 模型选择器合并原生结果与预置建议并去重，较小的原生目录不会隐藏预置项。
+Codex 预置包含当前的 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-luna`，以及兼容用的
+`gpt-6-sol`，来源见 [OpenAI 模型目录](https://developers.openai.com/api/docs/models)。
+旧 ID 仍可通过原生结果、已保存配置或自定义输入使用。建议项不能证明账号权限。
+推理强度仍使用所选模型的原生元数据；未知元数据明确标为未确认。
+
+刷新选项不会保存 Agent 配置，也不会修改本地 CLI 默认值。将模型或强度保存为 `null`
+表示继承本地配置；它们是每个 Agent 的覆盖值，不是每台 Computer 的模型目录。
 
 ## 解析与 fencing
 

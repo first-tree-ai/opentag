@@ -25,3 +25,27 @@
     en: Google Workspace
     zh: Google Workspace
   order: 30
+
+- id: productivity
+  label:
+    en: Productivity
+    zh: 生产力
+  order: 40
+
+- id: design
+  label:
+    en: Design
+    zh: 设计
+  order: 50
+
+- id: search
+  label:
+    en: Search
+    zh: 搜索
+  order: 60
+
+- id: automation
+  label:
+    en: Automation
+    zh: 自动化
+  order: 70

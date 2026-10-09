@@ -50,17 +50,21 @@ reply thread. Slack shows the installed App identity, not an internal subagent i
 The current providers finish their turn when asking the user for input; no waiting state is inferred from prose.
 
 Execution heartbeats arrive every 30 seconds and lease liveness for at most 90 seconds, bounded by the delivery
-execution deadline. Only a new sequence extends the lease. The server refreshes Slack at 45-second intervals;
+execution deadline. An explicit deadline is used without adding the default duration cap; duration budgets begin
+at the first execution observation and are never extended by heartbeats. Only a new sequence extends the lease.
+The server refreshes Slack at 45-second intervals;
 a confirmed same-thread provider reply schedules an immediate refresh because Slack automatically clears on replies.
 An execution that disconnects without a terminal signal expires; the next worker pass clears it (up to 45 additional
 seconds under normal availability). A terminal Turn Report commits cleanup in the custody transaction.
-A later live heartbeat wakes a cleared target. Same-identity reauthorization moves an active turn to the current
-credential target. Successfully cleared targets are retired once delivery retention removes all referencing turns.
+A later live heartbeat wakes a cleared target. Same-identity reauthorization atomically moves all sibling turns
+in the thread to the current credential target. Successfully cleared targets are retired once delivery retention
+removes all referencing turns.
 
 The persisted outbox survives Server restarts, aggregates concurrent turns, and serializes each target across workers.
 A provider request, including response-body consumption, has a 3-second deadline, no hidden transport retry,
 and at most four transient failures per target activation. Shared-circuit waits do not consume that retry budget.
 HTTP 200 with `ok: false` is failure; installation-specific errors do not open the shared transport circuit.
+HTTP 5xx responses count toward that circuit, allowing shared outage protection and recovery.
 HTTP 429 persists `Retry-After` for every thread of the installation, including new targets and restarted workers;
 completion cannot bypass this cooldown. Rate-limit waits do not consume the transient retry budget.
 Authorization errors disable that target; credential rotation never reuses a stale token. If explicit clearing cannot

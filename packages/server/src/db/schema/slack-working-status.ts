@@ -26,7 +26,10 @@ export const slackWorkingTargets = pgTable(
     claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
     failures: bigint("failures", { mode: "number" }).notNull().default(0),
   },
-  (t) => [index("slack_working_targets_due_idx").on(t.disabled, t.nextAttemptAt)],
+  (t) => [
+    index("slack_working_targets_due_idx").on(t.disabled, t.nextAttemptAt),
+    index("slack_working_targets_thread_idx").on(t.installationId, t.channelId, t.threadTs, t.credentialGeneration),
+  ],
 );
 
 export const slackWorkingTurns = pgTable(

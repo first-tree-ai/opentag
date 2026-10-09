@@ -65,6 +65,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
           body: JSON.stringify({ channel_id: input.channelId, thread_ts: input.threadTs, status: input.status }),
           signal,
         });
+        if (response.status >= 500) throw new SlackThreadStatusError("upstream_unavailable");
         return { response, payload: response.ok ? await response.json() : undefined };
       },
       { circuitKey: "slack:assistant.threads.setStatus", maxAttempts: 1, timeoutMs: 3_000 },

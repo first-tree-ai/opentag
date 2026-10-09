@@ -6,7 +6,7 @@ import {
   type TurnActivityRequest,
   type TurnActivityResult,
 } from "@opentag/shared";
-import { and, eq, getTableColumns, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, gt, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   imBindings,
@@ -75,7 +75,6 @@ export class SlackWorkingStore {
         .update(JSON.stringify([installation.id, installation.credentialGeneration, ref.channelId, threadTs]))
         .digest("hex");
       const now = this.now();
-      const deadlineAt = executionDeadline(request, delivery.acceptedAt ?? now);
       await tx
         .insert(slackWorkingTargets)
         .values({
@@ -99,6 +98,8 @@ export class SlackWorkingStore {
         .from(slackWorkingTurns)
         .where(eq(slackWorkingTurns.deliveryId, frame.deliveryId));
       if (isReplay(previous, frame)) return "already_recorded" as const;
+      await migrateSiblingTurns(tx, targetId, installation, ref.channelId, threadTs, now, previous?.targetId);
+      const deadlineAt = previous?.deadlineAt ?? executionDeadline(request, now);
       const phase = now >= deadlineAt ? "terminal" : frame.phase;
       const leaseExpiresAt = new Date(Math.min(now.getTime() + WORKING_LEASE_MS, deadlineAt.getTime()));
       await tx
@@ -292,13 +293,44 @@ function workingRequest(payload: unknown, installation: typeof slackInstallation
   return { ...parsed.data, content: { ...parsed.data.content, providerRef: ref } };
 }
 
-function executionDeadline(request: DirectImMessageDeliveryRequest, acceptedAt: Date): Date {
-  return new Date(
-    Math.min(
-      acceptedAt.getTime() + (request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS),
-      request.deadlineAt ? Date.parse(request.deadlineAt) : Number.POSITIVE_INFINITY,
-    ),
+async function migrateSiblingTurns(
+  tx: DatabaseTransaction,
+  targetId: string,
+  installation: typeof slackInstallations.$inferSelect,
+  channelId: string,
+  threadTs: string,
+  now: Date,
+  previousTargetId?: string,
+): Promise<void> {
+  if (previousTargetId === targetId) return;
+  const oldTargets = and(
+    eq(slackWorkingTargets.installationId, installation.id),
+    eq(slackWorkingTargets.channelId, channelId),
+    eq(slackWorkingTargets.threadTs, threadTs),
+    lt(slackWorkingTargets.credentialGeneration, installation.credentialGeneration),
   );
+  const moved = await tx
+    .update(slackWorkingTurns)
+    .set({ targetId })
+    .where(
+      inArray(
+        slackWorkingTurns.targetId,
+        tx.select({ id: slackWorkingTargets.id }).from(slackWorkingTargets).where(oldTargets),
+      ),
+    )
+    .returning({ id: slackWorkingTurns.deliveryId });
+  if (moved.length) await dirtyTarget(tx, targetId, now);
+  await tx
+    .update(slackWorkingTargets)
+    .set({ disabled: true, working: false, claimId: null, claimExpiresAt: null })
+    .where(and(oldTargets, eq(slackWorkingTargets.disabled, false)));
+}
+
+function executionDeadline(request: DirectImMessageDeliveryRequest, startedAt: Date): Date {
+  const limits: number[] = [];
+  if (request.runtime.budget?.maxDurationMs) limits.push(startedAt.getTime() + request.runtime.budget.maxDurationMs);
+  if (request.deadlineAt) limits.push(Date.parse(request.deadlineAt));
+  return new Date(Math.min(...(limits.length ? limits : [startedAt.getTime() + RUNTIME_DEFAULT_MAX_DURATION_MS])));
 }
 
 function isReplay(previous: typeof slackWorkingTurns.$inferSelect | undefined, frame: TurnActivityRequest): boolean {

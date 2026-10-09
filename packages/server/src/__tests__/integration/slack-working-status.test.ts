@@ -192,6 +192,39 @@ async function fixture() {
 }
 
 describe("durable Slack working projection", () => {
+  it("uses an explicit execution deadline without adding a default 30-minute cap", async () => {
+    const h = await fixture(),
+      { frame, request } = await h.delivery();
+    delete request.runtime.budget;
+    request.deadlineAt = new Date(clock.getTime() + 60 * 60_000).toISOString();
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ dispatchPayload: request, expiresAt: new Date(request.deadlineAt) })
+      .where(eq(imMessageDeliveries.id, frame.deliveryId));
+    await h.store.record(frame, h.context);
+    await h.worker.runOnce();
+    clock = new Date(clock.getTime() + 31 * 60_000);
+    await h.store.record({ ...frame, sequence: 2 }, h.context);
+    await h.worker.runOnce();
+    const [turn] = await client.database.select().from(slackWorkingTurns);
+    expect(turn?.phase).toBe("running");
+    expect(turn?.deadlineAt.toISOString()).toBe(request.deadlineAt);
+    expect(h.calls).toEqual(["is working", "is working"]);
+  });
+  it("starts a duration budget at execution instead of consuming it in the queue", async () => {
+    const h = await fixture(),
+      { frame } = await h.delivery();
+    clock = new Date(clock.getTime() + 60_000);
+    await h.store.record(frame, h.context);
+    clock = new Date(clock.getTime() + 9 * 60_000 + 30_000);
+    await h.store.record({ ...frame, sequence: 2 }, h.context);
+    await h.worker.runOnce();
+    expect(h.calls).toEqual(["is working"]);
+    clock = new Date(clock.getTime() + 31_000);
+    await h.store.record({ ...frame, sequence: 3 }, h.context);
+    await h.worker.runOnce();
+    expect(h.calls).toEqual(["is working", ""]);
+  });
   it("renews a live execution with new sequences and refreshes long-running work", async () => {
     const h = await fixture(),
       { frame } = await h.delivery();
@@ -507,5 +540,56 @@ describe("durable Slack working projection", () => {
     expect(current?.working).toBe(true);
     expect(targets.find((target) => target.credentialGeneration === 1)?.disabled).toBe(true);
     expect(h.calls).toEqual(["is working", "is working"]);
+  });
+  it("moves all sibling turns atomically so a completion during reauthorization cannot clear live work", async () => {
+    const h = await fixture(),
+      first = await h.delivery(),
+      second = await h.delivery();
+    const siblingSession = randomUUID();
+    await client.database.insert(sessions).values({
+      id: siblingSession,
+      imBindingId: h.binding.id,
+      channelId: "C1",
+      conversationKind: "channel",
+      kind: "thread",
+      threadKey: "1.1",
+    });
+    await client.database
+      .insert(sessionPlacements)
+      .values({ sessionId: siblingSession, computerId: h.context.computerId, generation: 1 });
+    second.request.sessionId = siblingSession;
+    second.frame.sessionId = siblingSession;
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ sessionId: siblingSession, dispatchPayload: second.request })
+      .where(eq(imMessageDeliveries.id, second.frame.deliveryId));
+    await h.store.record(first.frame, h.context);
+    await h.store.record(second.frame, h.context);
+    await h.worker.runOnce();
+    await new ImBindingService(client.database, cipher).activateSlack(
+      {
+        intent: "reauthorize",
+        agentId: first.frame.agentId,
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+        botAccessToken: "unit-secret-rotated",
+        signingSecret: "unit-signing",
+        installedAt: clock,
+      },
+      "B1",
+    );
+    clock = new Date(clock.getTime() + 30_000);
+    await h.store.record({ ...first.frame, sequence: 2 }, h.context);
+    await h.worker.runOnce();
+    await h.store.record({ ...first.frame, sequence: 3, phase: "terminal" }, h.context);
+    await h.worker.runOnce();
+    expect(h.calls).toEqual(["is working", "is working", "is working"]);
+    const turns = await client.database.select().from(slackWorkingTurns);
+    expect(new Set(turns.map((turn) => turn.targetId)).size).toBe(1);
+    await h.store.record({ ...second.frame, sequence: 2, phase: "terminal" }, h.context);
+    await h.worker.runOnce();
+    expect(h.calls.at(-1)).toBe("");
   });
 });

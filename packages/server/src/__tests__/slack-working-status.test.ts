@@ -111,6 +111,26 @@ describe("Slack working outbox", () => {
 });
 
 describe("Slack native status API", () => {
+  it("opens the shared circuit on HTTP 5xx and recovers after its cooldown", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockImplementation(async () => new Response("unavailable", { status: 503 }));
+      const api = new DefaultSlackApiClient(undefined, fetchImpl);
+      const input = { token: "unit-secret", channelId: "C1", threadTs: "1.1", status: "is working" as const };
+      for (let attempt = 0; attempt < 3; attempt += 1)
+        await expect(api.setThreadStatus(input)).rejects.toMatchObject({ code: "upstream_unavailable" });
+      await expect(api.setThreadStatus(input)).rejects.toMatchObject({ code: "IM_PROVIDER_CIRCUIT_OPEN" });
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(31_000);
+      fetchImpl.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
+      await api.setThreadStatus(input);
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("does not let installation authorization failures trip the shared transport circuit", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

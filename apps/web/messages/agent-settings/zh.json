@@ -91,7 +91,7 @@
   "agent_settings_execution_save_failed": "无法保存模型设置，请重试。",
   "agent_settings_inherit_local": "继承本地配置",
   "agent_settings_inherit_local_description": "OpenTag 不覆盖模型和推理强度。新会话使用本地 CLI 的生效配置；恢复的会话可能保留会话内已保存的模型和强度。",
-  "agent_settings_instructions_description": "塑造{agentName}的个性与行为。",
+  "agent_settings_instructions_description": "告诉{agentName}，你希望它如何回复、如何做事。",
   "agent_settings_instructions_dialog_description": "这些指令会在 OpenTag 平台指导之外进一步指导此 Agent。",
   "agent_settings_instructions_label": "指令",
   "agent_settings_instructions_saved": "指令已保存。",

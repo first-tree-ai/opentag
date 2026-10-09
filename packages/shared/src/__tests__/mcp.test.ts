@@ -68,7 +68,7 @@ describe("MCPToolSnapshotSchema", () => {
   });
 
   it("counts multi-byte text in bytes, so a short string of wide characters can still be over", () => {
-    // Half the bound in code units, but two bytes each: 16386 bytes, over by two.
+    // Half the bound in code units, but two bytes each: 65538 bytes, over by two.
     const wide = "é".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES / 2 + 1);
     expect(wide.length).toBeLessThan(MCP_TOOL_DESCRIPTION_MAX_BYTES);
     expect(MCPToolSnapshotSchema.safeParse(tool({ description: wide })).success).toBe(false);

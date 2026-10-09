@@ -587,14 +587,16 @@ not allow it, but many serializers emit it for an unset optional field, and it c
 that could name a further page, so end-of-list is its only meaning.
 
 - At most 200 tools, and at most 256 KiB for the whole snapshot.
-- Per tool: `name` ≤ 128 bytes, `description` ≤ 16 KiB, `inputSchema` ≤ 64 KiB serialized, all in
+- Per tool: `name` ≤ 128 bytes, `description` ≤ 64 KiB, `inputSchema` ≤ 64 KiB serialized, all in
   UTF-8 bytes. The three bounds live in `@opentag/shared` (`MCP_TOOL_NAME_MAX_BYTES`,
   `MCP_TOOL_DESCRIPTION_MAX_BYTES`, `MCP_TOOL_INPUT_SCHEMA_MAX_BYTES`) and `MCPToolSnapshotSchema`
   enforces all three on read — the schema by the byte length of its JSON serialization, refused
   rather than thrown on when it cannot be serialized — so the gateway's parse of a stored snapshot
   cannot admit an oversized tool from a row written under an older bound or damaged out of band.
-  They are sized for real hosted Servers: Linear and Notion ship tool descriptions of several KiB
-  and input schemas past 8 KiB.
+  They are sized for real hosted Servers, and the description and schema bounds are deliberately
+  equal: Linear and Notion ship tool descriptions of several KiB and input schemas past 8 KiB, and
+  Google's Docs MCP ships an `update_doc` description of ~35 KiB that a 16 KiB bound silently
+  dropped whole.
 - A tool that violates a per-tool bound — or has no name, or is not an object — is **skipped**, never
   stored trimmed. The probe logs one `warn` line per skipped tool (Account, URL, tool name, the
   bound it violated, the observed size), keeps every other tool on the page, keeps paginating, and

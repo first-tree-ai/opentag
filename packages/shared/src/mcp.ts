@@ -242,13 +242,14 @@ export const MCPServerUrlSchema = z
  * any of them and reports the snapshot as truncated; {@link MCPToolSnapshotSchema} refuses the same
  * tool on read, so a stored snapshot can never hold what a probe would not have stored.
  *
- * The description and schema bounds are sized for real hosted Servers: Linear and Notion ship tool
- * descriptions of several KiB and input schemas past 8 KiB, and a bound that fails them buys
- * nothing over one that fits them, because the list-level caps below still bound the whole
- * snapshot.
+ * The description and schema bounds are sized for real hosted Servers, and they are deliberately
+ * equal: Linear and Notion ship tool descriptions of several KiB and input schemas past 8 KiB, and
+ * Google's Docs MCP ships an `update_doc` description of ~35 KiB that a 16 KiB bound silently
+ * dropped. A bound that fails real Servers buys nothing over one that fits them, because the
+ * list-level caps below still bound the whole snapshot.
  */
 export const MCP_TOOL_NAME_MAX_BYTES = 128;
-export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 16 * 1024;
+export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 64 * 1024;
 export const MCP_TOOL_INPUT_SCHEMA_MAX_BYTES = 64 * 1024;
 
 /**

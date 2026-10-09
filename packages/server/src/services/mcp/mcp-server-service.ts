@@ -496,11 +496,15 @@ export class McpServerService {
         status: "revoked",
         ciphertext: null,
         keyId: null,
+        // The credential's audience is dropped with the credential, and the flow's resource with
+        // the flow `state` below.
+        oauthResource: null,
         accessTokenExpiresAt: null,
         state: null,
         stateExpiresAt: null,
         pkceCiphertext: null,
         loginSessionHash: null,
+        flowOauthResource: null,
       })
       .where(and(scope, eq(mcpServerAuthorizations.kind, "oauth")));
     await executor

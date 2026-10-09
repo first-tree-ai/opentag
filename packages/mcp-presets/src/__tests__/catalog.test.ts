@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES } from "../index.js";
 
@@ -39,5 +40,36 @@ describe("mcp preset catalog shape", () => {
     for (const entry of MCP_CATALOG_ENTRIES) {
       expect(entry.iconUrl).toMatch(/^data:image\/(?:svg\+xml|png);base64,/);
     }
+  });
+
+  it("carries the providers unblocked by the protected-resource identity work", () => {
+    const byId = new Map(MCP_CATALOG_ENTRIES.map((entry) => [entry.id, entry]));
+    // Atlassian's tool-selection query parameter is part of the published endpoint, not decoration.
+    expect(byId.get("atlassian")).toMatchObject({
+      url: "https://mcp.atlassian.com/v2/mcp?tools=all",
+      defaultAuthKind: "oauth",
+      category: "engineering",
+    });
+    expect(byId.get("airtable")).toMatchObject({
+      url: "https://mcp.airtable.com/mcp",
+      defaultAuthKind: "oauth",
+      category: "business-data",
+    });
+    expect(byId.get("amplitude")).toMatchObject({
+      url: "https://mcp.amplitude.com/mcp",
+      defaultAuthKind: "oauth",
+      category: "business-data",
+    });
+  });
+
+  it("records Amplitude's client-authentication limitation in the catalog source", async () => {
+    /*
+     * The preset is listed, but the catalog must not read as a claim of end-to-end support: the
+     * provider's token endpoint advertises client_secret_post and none, not the basic method the
+     * dynamic-registration path presents, so authorization stays unverified until the follow-up.
+     */
+    const source = await readFile(new URL("../../mcp-catalog.yaml", import.meta.url), "utf8");
+    expect(source).toContain("client_secret_post");
+    expect(source).toContain("Amplitude's authorization remains unverified");
   });
 });

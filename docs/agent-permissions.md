@@ -6,6 +6,8 @@ Local Codex Agents use `workspace-write` with `on-request` approvals and disable
 access. Local Claude Code Agents use `auto`: its native classifier reviews actions and its permission
 callback sends remaining requests to the task sender. Claude Code must support `auto` and
 `--permission-prompt-tool`. Claude's native gate does not provide an OS sandbox.
+Claude loads no user or project settings and disables hooks, including skill hooks. Agent Home skills
+remain available through a private skills-only plugin as `opentag:<skill-name>`; subscription login is preserved.
 Pi always runs without approvals and has no permission settings or permission extension.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation

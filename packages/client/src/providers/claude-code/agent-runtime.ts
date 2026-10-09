@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { getRuntimeConfigurationOptions } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
@@ -54,11 +54,10 @@ const CLAUDE_CODE_PROVIDER_ID = "claude-code";
  * settings the runtime never loads and report a false-positive `ready` while every turn fails
  * authentication.
  *
- * There is no flag for adding a skill directory, so `project` is what lets a Session see the
- * Context Tree skills in `<workspace>/.claude/skills`. It also admits that directory's settings,
- * hooks, agents, commands, and CLAUDE.md, all scoped to OpenTag's own private workspace.
+ * Agent Home is model-writable, so none of its settings may execute hooks, credential helpers,
+ * or environment overrides. Skills are loaded separately through an owned skills-only plugin.
  */
-const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", "project"] as const;
+const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", ""] as const;
 const logger = createLogger("provider-claude-code-runtime");
 
 export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
@@ -94,6 +93,7 @@ interface ClaudeCodeRuntimeOptions {
   readonly emptyNativeToolAllowList?: boolean;
   readonly eventSink: AgentRuntimeEventSink;
   readonly hostedTools?: AgentHostedTools;
+  readonly skillsDirectory: string;
   readonly resume: boolean;
   readonly startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly systemPrompt: string;
@@ -162,6 +162,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly #emptyNativeToolAllowList: boolean;
   readonly #hostedTools?: AgentHostedTools;
+  readonly #skillsDirectory: string;
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly #systemPrompt: string;
   readonly #textBlocks = new Map<string, TextBlockState>();
@@ -191,6 +192,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#createProcess = options.createProcess;
     this.#emptyNativeToolAllowList = options.emptyNativeToolAllowList === true;
     this.#hostedTools = options.hostedTools;
+    this.#skillsDirectory = options.skillsDirectory;
     this.#startHostedToolBridge = options.startHostedToolBridge;
     this.#systemPrompt = options.systemPrompt;
     this.#sessionExists = options.resume;
@@ -226,6 +228,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           this.#hostedTools,
           request.runId,
           context.signal,
+          this.#skillsDirectory,
           mcpGateway,
         );
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
@@ -319,8 +322,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "--verbose",
       "--include-partial-messages",
       "--no-chrome",
-      // Project MCP servers admitted by these sources stay excluded by `--strict-mcp-config` below.
       ...CLAUDE_CODE_SETTING_SOURCES,
+      "--plugin-dir",
+      hostedToolBridge.pluginPath,
       "--strict-mcp-config",
       "--mcp-config",
       hostedToolBridge.configPath,
@@ -330,16 +334,14 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
       this.#policy.approvals === "never" ? "bypassPermissions" : "auto",
-      ...(this.#policy.approvals === "never"
-        ? []
-        : [
-            "--permission-prompt-tool",
-            "stdio",
-            "--settings",
-            JSON.stringify({
-              permissions: claudePermissionRules(this.#policy.allowedCommands ?? []),
-            }),
-          ]),
+      ...(this.#policy.approvals === "never" ? [] : ["--permission-prompt-tool", "stdio"]),
+      "--settings",
+      JSON.stringify({
+        disableAllHooks: true,
+        ...(this.#policy.approvals === "never"
+          ? {}
+          : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? []) }),
+      }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
@@ -799,6 +801,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         emptyNativeToolAllowList: isEmptyNativeToolAllowList(request.policy),
         eventSink: request.eventSink,
         hostedTools: request.hostedTools,
+        skillsDirectory: join(request.workspace.cwd, ".claude", "skills"),
         resume: mode === "resume",
         startHostedToolBridge: this.#startHostedToolBridge,
         systemPrompt: request.systemPrompt,

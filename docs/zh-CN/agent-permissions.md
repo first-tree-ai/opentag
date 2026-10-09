@@ -5,6 +5,8 @@
 本地 Codex Agent 使用 `workspace-write`、`on-request` 审批，并禁用沙盒网络访问。
 本地 Claude Code Agent 使用 `auto`：原生分类器审查操作，剩余审批通过权限回调发送给任务发送者。
 Claude Code 必须支持 `auto` 和 `--permission-prompt-tool`。Claude 的原生权限机制不提供操作系统沙盒。
+Claude 不加载用户或项目设置，并禁用所有 hook，包括 skill hook。Agent Home 中的 skill
+通过私有的纯 skill 插件以 `opentag:<skill-name>` 提供，仍可使用订阅登录。
 Pi 始终无需审批，不提供权限设置，也不加载权限扩展。
 
 原生命令规则允许飞书和 Slack 消息读取、发送、编辑、表情操作、会话查询及原生附件命令。

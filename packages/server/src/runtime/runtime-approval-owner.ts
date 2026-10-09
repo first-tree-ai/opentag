@@ -121,6 +121,10 @@ export class RuntimeApprovalOwner {
       cardUpdatedAt: null,
     };
     if (!(await this.options.store.insert(row))) return;
+    if (!this.current(row)) {
+      await this.options.store.update(row.id, "pending", { status: "stale" });
+      return decline(request);
+    }
     try {
       const message = await this.options.messenger.post(row);
       const card = { messageId: message.messageId, messageChannelId: message.channelId };

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,7 @@ export interface ClaudeCodeMcpGatewayEndpoint {
 export interface ClaudeCodeHostedToolBridge {
   readonly allowedTools: readonly string[];
   readonly configPath: string;
+  readonly pluginPath: string;
   close(): Promise<void>;
 }
 
@@ -30,6 +31,7 @@ export async function startClaudeCodeHostedToolBridge(
   hostedTools: AgentHostedTools | undefined,
   runId: string,
   signal: AbortSignal,
+  skillsDirectory: string,
   mcpGateway?: ClaudeCodeMcpGatewayEndpoint,
 ): Promise<ClaudeCodeHostedToolBridge> {
   signal.throwIfAborted();
@@ -40,8 +42,12 @@ export async function startClaudeCodeHostedToolBridge(
 
   const directory = await mkdtemp(join(tmpdir(), "opentag-claude-mcp-"));
   const configPath = join(directory, "mcp.json");
+  const pluginPath = join(directory, "opentag");
   let server: Server | undefined;
   try {
+    // Expose only skills: writable Agent Home settings and plugin executables are never loaded.
+    await mkdir(pluginPath);
+    await symlink(skillsDirectory, join(pluginPath, "skills"), "junction");
     /*
      * The two entries are independent. The loopback bridge exists only when this run has hosted
      * tools; the remote gateway only when the execution holds a bearer. An MCP-only run must still
@@ -116,6 +122,7 @@ export async function startClaudeCodeHostedToolBridge(
       ...(mcpGateway ? [MCP_GATEWAY_ALLOWED_TOOL_RULE] : []),
     ],
     configPath,
+    pluginPath,
     close() {
       closePromise ??= Promise.allSettled([
         ...(server ? [closeServer(server)] : []),

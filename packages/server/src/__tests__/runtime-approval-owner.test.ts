@@ -265,6 +265,46 @@ describe("Runtime approvals", () => {
     expect(s.registry.send).not.toHaveBeenCalled();
   });
 
+  it.each(["authority", "insert"] as const)("does not post a card after reconnecting during %s", async (stage) => {
+    const s = setup();
+    const scope = await s.load();
+    let resume!: () => void;
+    let entering!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      entering = resolve;
+    });
+    if (stage === "authority") {
+      s.load.mockImplementationOnce(async () => {
+        entering();
+        await paused;
+        return scope;
+      });
+    } else {
+      const insert = s.options.store.insert;
+      vi.spyOn(s.options.store, "insert").mockImplementationOnce(async (row) => {
+        entering();
+        await paused;
+        return insert(row);
+      });
+    }
+    const request = s.owner.request(s.request, s.context);
+    await entered;
+    s.registry.currentConnectionId.mockReturnValue(randomUUID());
+    s.registry.isCurrentConnection.mockReturnValue(false);
+    await s.owner.onComputerRegistered(s.context);
+    resume();
+    expect(await request).toMatchObject({ decision: "decline", requestId: s.request.requestId });
+    expect(s.row().status).toBe("stale");
+    expect(s.row().messageId).toBeNull();
+    expect(s.messenger.post).not.toHaveBeenCalled();
+    expect(await s.owner.decide(s.action())).toBe("unavailable");
+    await s.owner.poll();
+    expect(s.registry.send).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("fences a replacement socket while authority is being checked (valid: %s)", async (valid) => {
     const s = setup();
     const registry = new ConnectionRegistry();

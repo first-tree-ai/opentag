@@ -28,7 +28,11 @@ describe("ClaudeCodeAgentRuntime", () => {
       await vi.waitFor(() => expect(events.some((event) => event.type === "interaction_requested")).toBe(true));
       expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("auto");
       expect(argumentAfter(processes[0]?.args ?? [], "--permission-prompt-tool")).toBe("stdio");
+      expect(argumentAfter(processes[0]?.args ?? [], "--setting-sources")).toBe("");
+      expect(argumentAfter(processes[0]?.args ?? [], "--plugin-dir")).toMatch(/opentag$/);
+      expect(processes[0]?.args).not.toContain("--bare");
       expect(JSON.parse(argumentAfter(processes[0]?.args ?? [], "--settings") as string)).toEqual({
+        disableAllHooks: true,
         permissions: {
           allow: expect.arrayContaining([
             "Bash(lark-cli im +messages-reply *)",
@@ -160,7 +164,9 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(mcpConfig).toContain("opentag-claude-mcp-");
     await expect(readFile(mcpConfig ?? "", "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(processes[0]?.args).not.toContain("--allowedTools");
-    expect(processes[0]?.args).not.toContain("--settings");
+    expect(JSON.parse(argumentAfter(processes[0]?.args ?? [], "--settings") as string)).toEqual({
+      disableAllHooks: true,
+    });
     await runtime.close();
   });
 

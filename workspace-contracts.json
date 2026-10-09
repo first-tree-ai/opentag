@@ -29,7 +29,7 @@
       "name": "@opentag/server",
       "requiresRootExport": true,
       "requiresFiles": true,
-      "allowedWorkspaceDependencies": ["@opentag/shared", "@opentag/skill-presets"]
+      "allowedWorkspaceDependencies": ["@opentag/mcp-presets", "@opentag/shared", "@opentag/skill-presets"]
     },
     "packages/skill-presets": {
       "name": "@opentag/skill-presets",

@@ -365,6 +365,8 @@ export {
   MCP_SERVERS_PATH,
   mcpServerPath,
   mcpServersPath,
+  PUBLIC_MCP_SERVERS_PATH,
+  PUBLIC_SKILLS_PATH,
   RUNTIME_AGENT_MCP_SERVER_TEMPLATE,
   RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
   RUNTIME_AGENT_MCP_SERVERS_PATH,
@@ -405,6 +407,7 @@ export * from "./im-message.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
 export * from "./mcp-outbound-url.js";
+export * from "./public-catalog.js";
 export * from "./runner-workspace.js";
 export {
   getRuntimeConfigurationOptions,

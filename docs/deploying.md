@@ -93,6 +93,7 @@ server container.
 | `OPENTAG_HOST` | `0.0.0.0` |
 | `OPENTAG_PORT` | `8000` |
 | `OPENTAG_PUBLIC_URL` | The App's HTTPS URL; hosted environments reject plain HTTP |
+| `OPENTAG_WEBSITE_ORIGINS` | Optional; comma-separated website origins added to the built-in official origins for the public catalog APIs; loopback HTTP is allowed for local website development |
 | `OPENTAG_DATABASE_URL` | `postgresql://…` for the Staging database |
 | `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging; signs every Account session |
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
@@ -169,6 +170,24 @@ or token. It checks the live browser session and active Account without extendin
 
 Deploy this Server support before the website's navigation indicator. If the check is unavailable, the website keeps
 the ordinary login entry; the application still verifies the session after navigation.
+
+## Official website catalog APIs
+
+`GET /api/v1/public/skills` and `GET /api/v1/public/mcp-servers` are anonymous, read-only, display-only
+projections of the built-in preset Skill catalog and the MCP marketplace catalog. Neither consults an Account, a
+session, or a credential, and neither exposes archive identity, per-Agent state, endpoint URLs, or authorization
+prefill fields.
+
+On `https://app.opentag.build` both endpoints register by themselves. On any other deployment they answer `404` until
+`OPENTAG_WEBSITE_ORIGINS` names at least one origin. Whenever they are enabled, `https://opentag.build` and
+`https://www.opentag.build` are always allowed, exactly like the session indicator, and configured origins are appended
+to them and can never remove them; a loopback HTTP origin such as `http://localhost:3000` is accepted so a local website
+dev server can call a deployed API, and every other origin must use HTTPS in a hosted environment. The value is
+validated before the server listens, so an invalid entry fails the rollout instead of serving a wider allowlist.
+Responses are public and cacheable for five minutes, set `Vary: Origin`, and never allow credentials.
+
+Deploy this Server support before the website starts reading the catalogs. If either endpoint is unavailable, the
+website keeps its ordinary catalog rendering.
 
 ## Manual deployment and rollback
 

@@ -266,6 +266,9 @@ importers:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.73.3
         version: 1.73.3
+      '@opentag/mcp-presets':
+        specifier: workspace:*
+        version: link:../mcp-presets
       '@opentag/shared':
         specifier: workspace:*
         version: link:../shared

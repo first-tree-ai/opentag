@@ -9,6 +9,7 @@ export const billingAccounts = billingSchema.table("accounts", {
   id: uuid("id")
     .primaryKey()
     .references(() => users.id, { onDelete: "restrict" }),
+  planId: text("plan_id").notNull().default("standard"),
   blocked: boolean("blocked").notNull().default(false),
 });
 export const billingGrants = billingSchema.table(

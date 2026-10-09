@@ -81,20 +81,6 @@ describe("RouterCloudModelCatalog", () => {
     expect(JSON.stringify(snapshot)).not.toContain("llm-router");
   });
 
-  it("offers only priced gateway models when billing is enabled", async () => {
-    const catalog = new RouterCloudModelCatalog({
-      upstreamBaseUrl: "https://gateway.example/v1",
-      masterKey: FIXTURE_MASTER_KEY,
-      pricedModels: () => ["router-model-b", "unavailable-model"],
-      fetchImpl: async () => Response.json(MODELS_PAYLOAD),
-    });
-    expect(await catalog.list()).toEqual({
-      available: true,
-      defaultModel: "router-model-b",
-      models: ["router-model-b"],
-    });
-    expect(await catalog.capabilitiesOf("router-model-a")).toBeUndefined();
-  });
   it("caps a large native output limit at the issued platform budget", async () => {
     expect(selectCloudModelExecutionProfile({ contextWindow: 258000, maxOutputTokens: 65536 })).toEqual({
       contextWindow: 258000,

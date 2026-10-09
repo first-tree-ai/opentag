@@ -6,7 +6,6 @@ export * from "./cloud-call-contracts.js";
 /** Installed only in the hosted image. Provider HTTP and response parsing belong to the public server. */
 export interface CloudBilling {
   readiness(): Promise<{ status: "ready"; revision: string | null }>;
-  pricedModels(gateway: string): string[];
   beginCall(context: CloudCallContext, model: CloudModelReference): Promise<string>;
   finishCall(callId: string, result: CloudCallResult): Promise<void>;
   writeOffCall(callId: string, reason: string): Promise<void>;

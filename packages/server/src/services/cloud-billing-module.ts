@@ -17,7 +17,6 @@ export async function loadCloudBilling(
     const methods = [
       "readiness",
       "summary",
-      "pricedModels",
       "beginCall",
       "finishCall",
       "writeOffCall",

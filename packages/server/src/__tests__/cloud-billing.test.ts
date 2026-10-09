@@ -36,7 +36,6 @@ function moduleFixture() {
       maximumTopUpCents: 100000,
     }),
     checkout: vi.fn<CloudBilling["checkout"]>().mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/test" }),
-    pricedModels: vi.fn<CloudBilling["pricedModels"]>().mockReturnValue(["model-a"]),
     beginCall: vi.fn<CloudBilling["beginCall"]>().mockResolvedValue("call"),
     finishCall: vi.fn<CloudBilling["finishCall"]>().mockResolvedValue(),
     writeOffCall: vi.fn<CloudBilling["writeOffCall"]>().mockResolvedValue(),

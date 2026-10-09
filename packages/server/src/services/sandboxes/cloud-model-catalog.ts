@@ -97,7 +97,6 @@ export interface RouterCloudModelCatalogOptions {
   timeoutMs?: number;
   maxResponseBytes?: number;
   maxModels?: number;
-  pricedModels?: () => string[];
 }
 
 /**
@@ -177,7 +176,6 @@ export class RouterCloudModelCatalog implements CloudModelCatalog {
   readonly #now: () => number;
   readonly #timeoutMs: number;
   readonly #upstreamBaseUrl: string;
-  readonly #pricedModels: (() => string[]) | undefined;
   #cached: { fetchedAtMs: number; snapshot: RouterCatalogSnapshot } | undefined;
   #inFlight: Promise<RouterCatalogSnapshot> | undefined;
 
@@ -190,7 +188,6 @@ export class RouterCloudModelCatalog implements CloudModelCatalog {
     this.#now = options.now ?? (() => Date.now());
     this.#timeoutMs = options.timeoutMs ?? CLOUD_MODEL_CATALOG_TIMEOUT_MS;
     this.#upstreamBaseUrl = options.upstreamBaseUrl;
-    this.#pricedModels = options.pricedModels;
   }
 
   /**
@@ -275,14 +272,6 @@ export class RouterCloudModelCatalog implements CloudModelCatalog {
       if (text === undefined) return undefined;
       const snapshot = parseRouterModelList(text, this.#maxModels);
       if (!snapshot) return undefined;
-      if (this.#pricedModels) {
-        const priced = new Set(this.#pricedModels());
-        const models = snapshot.options.models.filter((model) => priced.has(model));
-        return {
-          options: { available: models.length > 0, defaultModel: models[0] ?? null, models },
-          capabilities: new Map([...snapshot.capabilities].filter(([model]) => priced.has(model))),
-        };
-      }
       return snapshot;
     } catch {
       return undefined;

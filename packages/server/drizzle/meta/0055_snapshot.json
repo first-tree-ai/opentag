@@ -1169,6 +1169,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "plan_id": {
+          "name": "plan_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'standard'"
         }
       },
       "indexes": {},

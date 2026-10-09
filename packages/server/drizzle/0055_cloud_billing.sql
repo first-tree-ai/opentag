@@ -2,6 +2,7 @@ CREATE SCHEMA "billing";
 --> statement-breakpoint
 CREATE TABLE "billing"."accounts" (
 	"id" uuid PRIMARY KEY NOT NULL,
+	"plan_id" text DEFAULT 'standard' NOT NULL,
 	"blocked" boolean DEFAULT false NOT NULL
 );
 --> statement-breakpoint

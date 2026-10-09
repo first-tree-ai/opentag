@@ -8,15 +8,17 @@
 
 OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它使用模型调用的同一服务端 Router 租户凭证查询 `GET /v1/requests/usage?idempotency_key=<调用 UUID>`。Router 返回关联的请求 ID、模型及三种状态之一：包含全部四类 Token 计数的 `complete`、`no_charge` 或 `pending`。带 `request_not_found` 的 404 表示用量未知，不能当作免费调用。OpenTag 验证身份、模型及计数后才结算。
 
-规范化输入总数包含普通输入、缓存读取和缓存写入。缓存读取与写入是输入中互不重叠的子集。输出包含推理 Token。Router 统一规范化计数并处理 Provider 响应格式。可用模型需要经验证的输入和输出限制；开启客户计费时还需要客户价格。
+规范化输入总数包含普通输入、缓存读取和缓存写入。缓存读取与写入是输入中互不重叠的子集。输出包含推理 Token。Router 统一规范化计数并处理 Provider 响应格式。可用模型需要经验证的输入和输出限制；模型可用性与权限由网关管理。
 
-客户价格保存在私有计费仓库的 `src/prices.json`，按网关和 Router 的精确模型 ID 配置。默认网关 ID 是 `llm-router`。每个模型包含 `input`、`cachedInput`、`cacheWrite` 和 `output`，用最多六位小数的美元字符串表示每百万 Token 的价格。计费包在启动时验证文件，并精确转换为整数微美元。结算计算 `(input-cached-write)*input_rate + cached*cached_rate + write*write_rate + output*output_rate`，除以一百万，并用整数运算统一向上取整。价格快照保证改价只影响后续调用。客户价格独立于 Router 的 Provider 成本账本。更新价格时，提交私有价格文件，更新应用的 `cloud-billing.json` 固定版本，再部署应用。价格文件不进入公开源码，但会打包进生产镜像。
+客户费率保存在私有计费仓库的 `src/plans.json`，按套餐 ID 配置。每个套餐包含 `input`、`cachedInput` 和 `output`，用最多六位小数的美元字符串表示每百万 Token 的价格。缓存读取享受折扣；缓存写入按普通输入计费。每个计费账户拥有 `plan_id`，默认值为 `standard`。费率适用于所有网关和模型；调用记录仍保存网关与模型用于归属统计。操作员可添加费率套餐，并在构建后的私有 checkout 中执行 `node --env-file=/path/to/opentag/.env scripts/set-plan.mjs <account-id> <plan-id>` 来分配套餐。分配操作使用账户锁，保留现有额度。套餐不引入订阅、客户选择界面或模型访问规则。
+
+计费包在启动时验证所有套餐，要求存在 `standard`，并精确转换为整数微美元。账户被分配未知套餐时拒绝新调用。结算计算 `(input-cached)*input_rate + cached*cached_rate + output*output_rate`，除以一百万，并用整数运算统一向上取整。每次调用准入时保存账户费率，因此套餐与费率修改只影响后续调用。客户费率独立于 Router 的 Provider 成本账本；应结合所提供的模型审核费率，避免昂贵模型按低于成本的价格销售。更新费率时，提交私有套餐文件，更新应用的 `cloud-billing.json` 固定版本，再部署应用。套餐文件不进入公开源码，但会打包进生产镜像。
 
 账户和 Agent 云端统计读取同一调用记录的最终计数，包括关闭客户计费时的调用。本地报告与云端账本按发送时保存的执行来源合并；云端任务报告中的 Token 不重复计入。任务数量及结果仍来自任务报告。账户用量包含连通性测试，支持 1、7、30 和 90 天总量及每日图表。缺失计数视为不完整数据。
 
 ## 额度与结算
 
-在云端镜像中开启 `OPENTAG_CLOUD_BILLING_ENABLED=true`。准入在短事务中锁定账户，应用付款阻断，检查可用额度、未解决调用及并发数量，并在发送前插入带价格快照的调用。余额等于已授予额度减去最终扣款。每账户默认一次性赠送 1 美元，最多并发两次调用。关闭计费时，云端调用仍使用相同 Router 状态及统计路径，不扣额度。
+在云端镜像中开启 `OPENTAG_CLOUD_BILLING_ENABLED=true`。准入在短事务中锁定账户，选择套餐费率，应用付款阻断，检查可用额度、未解决调用及并发数量，并在发送前插入带价格快照的调用。余额等于已授予额度减去最终扣款。每账户默认一次性赠送 1 美元，最多并发两次调用。关闭计费时，云端调用仍使用相同 Router 状态及统计路径，不扣额度。
 
 结算锁定账户和调用，在同一事务内保存全部最终计数及额度扣款。重复结算不会再次扣款或修改已结束的计数。已准入调用可能超过剩余额度；扣款上限为可用余额，OpenTag 承担差额。执行授权将输出限制为最多 8,192 Token。请求体、响应、超时和并发限制控制风险；超时本身不能保证金额上限。接收真实付款前需验证所提供模型的风险。
 
@@ -28,7 +30,7 @@ OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它�
 
 账户页显示一个可用美元余额，包含起始额度和购买额度，支持以美分精度自定义充值 10 至 1,000 美元。Stripe 托管 Checkout 返回 `/account`；只有经验证的已付款会话增加额度。签名 Webhook 地址为 `/stripe/webhook`，需注册 `checkout.session.completed`、`checkout.session.async_payment_succeeded`、`charge.refunded` 和 `charge.dispute.created`。退款只移除一次购买额度；退款和争议阻止云端消费，等待操作员审核。入账前收到的事件持久化保存。Provider 可用性不影响入账或余额查询。
 
-在应用环境配置 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`，可选配置 `BILLING_FREE_CENTS` 和 `BILLING_MAX_CONCURRENT_PER_ACCOUNT`。价格来自打包的私有价格文件。验收使用 Stripe 测试模式。自动充值、订阅、请求预留及计费管理界面不在 MVP 范围内。
+在应用环境配置 `STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`，可选配置 `BILLING_FREE_CENTS` 和 `BILLING_MAX_CONCURRENT_PER_ACCOUNT`。费率来自打包的私有套餐文件。验收使用 Stripe 测试模式。自动充值、订阅、请求预留及计费管理界面不在 MVP 范围内。
 
 ## CapRover 部署
 
@@ -40,4 +42,4 @@ OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它�
 
 ## 验收测试
 
-使用独立 Router PostgreSQL/Redis、OpenTag 测试数据库及 Stripe 测试模式。验证普通和流式响应记录与 Router 完全一致的计数（包括缓存读写），并对应一次额度扣款。重复结算后计数和余额应不变。中断流式响应，检查待核对状态，在 Router 完成核对后确认 OpenTag 后台任务结算同一调用且没有再次执行模型。确认拒绝请求不扣款、租户键无法读取其他租户用量、异常或未知用量保持待核对，以及关闭计费时云端用量仍可见。最后完成一次测试 Checkout 并重放签名 Webhook，验证只授予一次额度。
+使用独立 Router PostgreSQL/Redis、OpenTag 测试数据库及 Stripe 测试模式。验证普通和流式响应记录与 Router 完全一致的计数（包括缓存读写），并对应一次额度扣款。重复结算后计数和余额应不变。中断流式响应，检查待核对状态，在 Router 完成核对后确认 OpenTag 后台任务结算同一调用且没有再次执行模型。确认拒绝请求不扣款、租户键无法读取其他租户用量、异常或未知用量保持待核对，以及关闭计费时云端用量仍可见。在调用尚未结束时分配第二个测试套餐：未完成调用保留原费率，新调用使用新套餐，其他账户仍使用默认套餐。确认不同模型使用同一套餐费率，未知套餐拒绝新调用但不影响结算。最后完成一次测试 Checkout 并重放签名 Webhook，验证只授予一次额度。

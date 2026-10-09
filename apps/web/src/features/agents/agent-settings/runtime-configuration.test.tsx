@@ -663,7 +663,7 @@ describe("RuntimeConfigurationForm", () => {
     fireEvent.change(instructions, { target: { value: "My own workflow." } });
     expect(screen.queryByText("Example")).toBeNull();
     expect(screen.queryByText("Unapplied changes")).toBeNull();
-    expect(screen.getByText(/Existing tasks won’t carry over earlier conversation context/)).toBeTruthy();
+    expect(screen.getByText("Changes take effect with the next response.")).toBeTruthy();
     fireEvent.change(instructions, { target: { value: "" } });
     expect(screen.getByText("Example")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();

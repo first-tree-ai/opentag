@@ -195,7 +195,7 @@
   "agent_settings_soul_example_workflow": "处理较长的写作任务时，先列提纲，再起草正文。",
   "agent_settings_soul_leave_description": "离开将丢失此次编辑。",
   "agent_settings_soul_leave_title": "放弃你的更改？",
-  "agent_settings_soul_next_turn_notice": "从下一轮开始生效。已有任务不会沿用之前的对话上下文。",
+  "agent_settings_soul_next_turn_notice": "更改从下一次回复开始生效。",
   "agent_settings_soul_updated": "更改已应用。",
   "agent_settings_status_active_description": "此 Agent 可以接收新请求。",
   "agent_settings_status_paused_description": "此 Agent 已暂停，无法接收新请求。",

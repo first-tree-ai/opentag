@@ -233,10 +233,10 @@ describe("MCP probe success path", () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it("bounds the description in bytes: a multi-byte text just under 16 KiB survives", async () => {
-    // "é" is two UTF-8 bytes, so 8191 of them are 16382 bytes — under the bound in bytes and far
+  it("bounds the description in bytes: a multi-byte text just under 64 KiB survives", async () => {
+    // "é" is two UTF-8 bytes, so 32767 of them are 65534 bytes — under the bound in bytes and far
     // under it in code units either way; the next case is the one that tells the two apart.
-    const description = "é".repeat(8191);
+    const description = "é".repeat(32_767);
     const { probe } = node(discover({}), () => toolsPage([{ name: "ok", description }]));
     const result = await probe.probe(request());
     expect(result.probeState).toBe("succeeded");
@@ -244,10 +244,10 @@ describe("MCP probe success path", () => {
     expect(result.toolsTruncated).toBe(false);
   });
 
-  it("bounds the description in bytes, not code units: multi-byte text just over 16 KiB is skipped", async () => {
-    // 8193 two-byte characters are 16386 bytes: over the 16384-byte bound while only 8193 code
-    // units long, which a `.max(16384)` in characters would have let through.
-    const description = "é".repeat(8193);
+  it("bounds the description in bytes, not code units: multi-byte text just over 64 KiB is skipped", async () => {
+    // 32769 two-byte characters are 65538 bytes: over the 65536-byte bound while only 32769 code
+    // units long, which a `.max(65536)` in characters would have let through.
+    const description = "é".repeat(32_769);
     const { probe, logger } = node(discover({}), () => toolsPage([{ name: "wide", description }, { name: "kept" }]));
     const result = await probe.probe(request());
     expect(result.probeState).toBe("succeeded");
@@ -258,8 +258,8 @@ describe("MCP probe success path", () => {
       expect.objectContaining({
         tool: "wide",
         bound: "MCP_TOOL_DESCRIPTION_MAX_BYTES",
-        limitBytes: 16 * 1024,
-        observedBytes: 16_386,
+        limitBytes: 64 * 1024,
+        observedBytes: 65_538,
       }),
       expect.any(String),
     );
@@ -303,7 +303,7 @@ describe("MCP probe success path", () => {
 
   it("still succeeds, with an empty partial snapshot, when every tool on the page is skipped", async () => {
     const { probe } = node(discover({}), () =>
-      toolsPage([{ name: "a".repeat(129) }, { name: "b", description: "d".repeat(16_385) }]),
+      toolsPage([{ name: "a".repeat(129) }, { name: "b", description: "d".repeat(65_537) }]),
     );
     const result = await probe.probe(request());
     expect(result.probeState).toBe("succeeded");

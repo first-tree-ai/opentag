@@ -299,9 +299,9 @@ describe("long tool names", () => {
   });
 
   /*
-   * The description's reader bound leads the writer's: a snapshot carrying the Google Docs
-   * `update_doc` size that a later probe may write stays readable here — which is what makes the
-   * writer raise safe to roll back — and only past the reader bound does the row degrade to an
+   * The description's reader bound is never narrower than the writer's: a snapshot carrying the
+   * Google Docs `update_doc` size the probe now writes stays readable here — which is what makes
+   * the writer raise safe to roll back — and only past the reader bound does the row degrade to an
    * empty catalogue as every other out-of-bound entry does.
    */
   it("reads a description up to the reader bound and drops the snapshot past it", async () => {

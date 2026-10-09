@@ -259,7 +259,7 @@ describe("MCP probe success path", () => {
         tool: "wide",
         bound: "MCP_TOOL_DESCRIPTION_MAX_BYTES",
         limitBytes: 16 * 1024,
-        observedBytes: 16386,
+        observedBytes: 16_386,
       }),
       expect.any(String),
     );

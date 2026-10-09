@@ -587,14 +587,24 @@ not allow it, but many serializers emit it for an unset optional field, and it c
 that could name a further page, so end-of-list is its only meaning.
 
 - At most 200 tools, and at most 256 KiB for the whole snapshot.
-- Per tool: `name` ≤ 128 bytes, `description` ≤ 16 KiB, `inputSchema` ≤ 64 KiB serialized, all in
-  UTF-8 bytes. The three bounds live in `@opentag/shared` (`MCP_TOOL_NAME_MAX_BYTES`,
-  `MCP_TOOL_DESCRIPTION_MAX_BYTES`, `MCP_TOOL_INPUT_SCHEMA_MAX_BYTES`) and `MCPToolSnapshotSchema`
-  enforces all three on read — the schema by the byte length of its JSON serialization, refused
-  rather than thrown on when it cannot be serialized — so the gateway's parse of a stored snapshot
-  cannot admit an oversized tool from a row written under an older bound or damaged out of band.
-  They are sized for real hosted Servers: Linear and Notion ship tool descriptions of several KiB
-  and input schemas past 8 KiB.
+- Per tool: `name` ≤ 128 bytes, `description` ≤ 16 KiB as the probe writes it and ≤ 64 KiB as a
+  stored snapshot is read back, `inputSchema` ≤ 64 KiB serialized, all in UTF-8 bytes. The bounds
+  live in `@opentag/shared` (`MCP_TOOL_NAME_MAX_BYTES`, `MCP_TOOL_DESCRIPTION_MAX_BYTES`,
+  `MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES`, `MCP_TOOL_INPUT_SCHEMA_MAX_BYTES`) and
+  `MCPToolSnapshotSchema` enforces them on read — the input schema by the byte length of its JSON
+  serialization, refused rather than thrown on when it cannot be serialized — so the gateway's parse
+  of a stored snapshot cannot admit an oversized tool from a row written under an older bound or
+  damaged out of band. They are sized for real hosted Servers: Linear and Notion ship tool
+  descriptions of several KiB and input schemas past 8 KiB, and Google's Docs MCP ships an
+  `update_doc` description of ~35 KiB.
+- The description's reader bound deliberately leads its writer bound, and the reader's is the wider
+  one. A stored snapshot is durable state, and a rollback restores the older Server image while the
+  rows it wrote stay behind ([deploying](./deploying.md)); if both bounds moved together, the first
+  re-probe after a release could write a description the previous reader rejects, and because the
+  gateway parses the whole per-Server array at once it would drop every tool for that Server, not
+  just the oversized one. The reader therefore accepts 64 KiB now while the probe still writes
+  16 KiB; a follow-up release raises the writer only after this wider reader has shipped. Keep the
+  reader bound ≥ the writer bound.
 - A tool that violates a per-tool bound — or has no name, or is not an object — is **skipped**, never
   stored trimmed. The probe logs one `warn` line per skipped tool (Account, URL, tool name, the
   bound it violated, the observed size), keeps every other tool on the page, keeps paginating, and

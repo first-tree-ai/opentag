@@ -49,3 +49,9 @@
     en: Automation
     zh: 自动化
   order: 70
+
+- id: business-data
+  label:
+    en: Business & Data
+    zh: 业务与数据
+  order: 80

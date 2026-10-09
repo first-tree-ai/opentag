@@ -263,6 +263,7 @@
   category: productivity
   website: https://www.microsoft.com
   icon: microsoft-365.svg
+  iconIsOfficial: true
   order: 10
 
 - id: asana
@@ -277,7 +278,8 @@
   defaultAuthKind: oauth
   category: productivity
   website: https://asana.com
-  icon: asana.svg
+  icon: asana.png
+  iconIsOfficial: true
   order: 20
 
 - id: monday
@@ -292,7 +294,8 @@
   defaultAuthKind: oauth
   category: productivity
   website: https://monday.com
-  icon: monday.svg
+  icon: monday.png
+  iconIsOfficial: true
   order: 30
 
 - id: hubspot
@@ -307,7 +310,8 @@
   defaultAuthKind: oauth
   category: productivity
   website: https://www.hubspot.com
-  icon: hubspot.svg
+  icon: hubspot.png
+  iconIsOfficial: true
   order: 40
 
 - id: figma
@@ -323,6 +327,7 @@
   category: design
   website: https://www.figma.com
   icon: figma.svg
+  iconIsOfficial: true
   order: 10
 
 - id: canva
@@ -337,7 +342,8 @@
   defaultAuthKind: oauth
   category: design
   website: https://www.canva.com
-  icon: canva.svg
+  icon: canva.png
+  iconIsOfficial: true
   order: 20
 
 - id: tavily
@@ -353,6 +359,7 @@
   category: search
   website: https://tavily.com
   icon: tavily.svg
+  iconIsOfficial: true
   order: 10
 
 - id: firecrawl
@@ -368,6 +375,7 @@
   category: search
   website: https://www.firecrawl.dev
   icon: firecrawl.svg
+  iconIsOfficial: true
   order: 20
 
 - id: zapier
@@ -382,5 +390,43 @@
   defaultAuthKind: oauth
   category: automation
   website: https://zapier.com
-  icon: zapier.svg
+  icon: zapier.png
+  iconIsOfficial: true
   order: 10
+
+# Official business and data endpoints; authenticated OpenTag compatibility is not yet verified.
+# Atlassian, Airtable, and Amplitude are withheld because their published resource identifiers fail
+# the current OAuth discovery check. Reconsider catalog registration after the assessment in #814.
+# Supabase and Stripe still need end-to-end authorization and tool-call verification.
+
+- id: supabase
+  name: supabase
+  title:
+    en: Supabase
+    zh: Supabase
+  description:
+    en: Projects, databases, and backend development.
+    zh: 项目、数据库与后端开发。
+  url: https://mcp.supabase.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://supabase.com
+  icon: supabase.svg
+  iconIsOfficial: true
+  order: 20
+
+- id: stripe
+  name: stripe
+  title:
+    en: Stripe
+    zh: Stripe
+  description:
+    en: Payments, customers, and subscriptions.
+    zh: 支付、客户与订阅。
+  url: https://mcp.stripe.com
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://stripe.com
+  icon: stripe.svg
+  iconIsOfficial: true
+  order: 40

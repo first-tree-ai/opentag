@@ -4,6 +4,3 @@ paths:
     ignore:
       # Ignore only actionlint's unknown-key diagnostic for this one supported key.
       - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
-  .github/workflows/prewarm-runner.yml:
-    ignore:
-      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

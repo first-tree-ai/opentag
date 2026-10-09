@@ -200,8 +200,34 @@ jobs:
             exit 1
           }
 
-      - name: Deploy the commit image to CapRover
+      # Preparation must succeed before either live coordinate changes. A warmup failure leaves
+      # both the deployed Server and its Runner target untouched.
+      - name: Prewarm the verified Runner image
         if: steps.gate.outputs.deploy == 'true'
+        uses: ./.github/actions/prewarm-runner
+        with:
+          release: ${{ runner.temp }}/runner-target.json
+
+      # Import can take a minute. Re-read main at the actual mutation boundary so an automatic
+      # rollout superseded while preparing cannot deploy an old Server afterwards.
+      - name: Recheck the revision after image preparation
+        id: prepared
+        if: steps.gate.outputs.deploy == 'true'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REVISION: ${{ steps.target.outputs.revision }}
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          MAIN_TIP=$(git rev-parse refs/remotes/origin/main)
+          if [ "$EVENT_NAME" = 'workflow_dispatch' ] || [ "$REVISION" = "$MAIN_TIP" ]; then
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'deploy=false' >> "$GITHUB_OUTPUT"
+            echo "Skipping: $REVISION was superseded during image preparation ($MAIN_TIP)"
+          fi
+
+      - name: Deploy the commit image to CapRover
+        if: steps.prepared.outputs.deploy == 'true'
         uses: caprover/deploy-from-github@058a3e0d8fb21bfc0ce207b79b1fc757d765a009 # v2.0.0
         with:
           server: ${{ secrets.CAPROVER_STAGING_SERVER }}
@@ -214,14 +240,14 @@ jobs:
       # The Server rollout may outlast the first federated credential. Obtain a fresh identity
       # immediately before reading the deployment secret; no service account key is involved.
       - name: Refresh deployment identity
-        if: steps.gate.outputs.deploy == 'true'
+        if: steps.prepared.outputs.deploy == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           project_id: ${{ vars.OPENTAG_PORTABLE_GCS_PROJECT }}
 
       - name: Activate the matching Runner for new Instances
-        if: steps.gate.outputs.deploy == 'true'
+        if: steps.prepared.outputs.deploy == 'true'
         env:
           SERVER_REVISION: ${{ steps.target.outputs.revision }}
         run: >-
@@ -233,7 +259,7 @@ jobs:
         if: always() && steps.target.outputs.revision != ''
         env:
           RESULT: ${{ job.status }}
-          DEPLOYED: ${{ steps.gate.outputs.deploy }}
+          DEPLOYED: ${{ steps.prepared.outputs.deploy }}
           DIGEST: ${{ steps.image.outputs.digest }}
           REVISION: ${{ steps.target.outputs.revision }}
           RUNNER_TARGET: ${{ steps.runner.outputs.image }}

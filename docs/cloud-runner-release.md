@@ -62,6 +62,51 @@ gitHead and registry identity. It deploys the matching Server first, then change
 `OPENTAG_CLOUD_RUNNER_VERSION` together. Superseded automatic revisions still skip. An incomplete Runner publication
 cannot silently leave an old Runner while reporting the new Cloud release complete.
 
+### Prepare image import before activation
+
+Image publication and Cloud Run image import are separate steps. Deployment preparation uses the verified release
+record's **digest**, never a moving tag or a Docker pull on a GitHub build host. The shared `prewarm-runner` action runs
+`scripts/runner/prewarm.mjs`; it reads the target app's existing project, region, service account and Direct VPC attachment
+through the deployment identity. There is no second set of CI placement variables.
+
+| Path | Preparation boundary |
+| --- | --- |
+| Automatic or manual **Deploy Staging** | After release verification and the initial current-main gate, before Server deployment; recheck main after preparation |
+| Production tag publication | Successful complete `npm Publish` triggers **Prewarm Runner** on default main, behind the `production` Environment reviewer gate |
+| Manual **Deploy Runner**, `mode=apply` | Prepare the exact selected digest before changing the target, including rollback |
+| Manual **Deploy Runner**, `mode=check` | Strictly read-only; creates no probe |
+| Manual **Prewarm Runner** | Prepare an exact published staging/prod version without deploying Server or changing the Runner target |
+
+Production preparation runs separately from the tag publication job because the production Environment permits main,
+not tags. It verifies the completed release artifact, npm gitHead, registry identity and main ancestry. It does not deploy
+Server or bypass production approval. Failed production preparation does not undo an already published npm release;
+`Deploy Runner apply` independently prepares again before activation. Keep the existing explicit production Server
+deployment procedure, and complete **Prewarm Runner** before starting it. Preparation has its own FIFO concurrency group,
+so it cannot displace a pending deployment.
+
+The probe is one temporary Cloud Run Instance per invocation, with a random ownership label, internal ingress, default
+URL disabled and the same digest and network placement. Its overridden command runs a minimal unprivileged HTTP listener
+that exits after two minutes. It receives no bootstrap token, Server URL, Session or model credentials. Preparation waits
+up to five minutes for `ContainerReady` **and** `Running`, then deletes only that probe after checking its ownership,
+image, service account, UID and etag. Cleanup failure fails preparation. An `always()` cleanup step and a non-secret
+ownership artifact also support interrupted-run recovery; a forcibly killed/unavailable GitHub runner still requires
+checking the recorded resource manually. Never delete business Instances during image preparation.
+
+Preparation uses the existing **deployment Environment federation**, not the image publisher service account. Before
+enabling these gates, grant each exact Environment subject `run.instances.create`, `run.instances.get` and
+`run.instances.delete` in its actual runtime project (a dedicated custom role can keep the scope to Instances), plus
+`roles/iam.serviceAccountUser` on **only** that environment's existing Instance service account. Keep existing per-image
+Artifact Registry Reader and per-secret access. The project's Cloud Run service agent must retain its existing Direct
+VPC permissions. Do not grant these permissions to `OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT`, change production branch
+policies, or remove reviewers. See [instance deployment permissions](https://docs.cloud.google.com/run/docs/instances/create-and-manage-instances)
+and [Direct VPC permissions](https://docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc#set_up_iam_permissions).
+
+Successful preparation proves this digest was imported and a disposable probe started in the selected region. It does
+**not** guarantee cache retention or future hits, native Runner readiness, sandbox restoration, or business completion.
+Keep those existing checks. The Cloud Run [service deployment retention contract](https://docs.cloud.google.com/run/docs/deploying)
+is for serving **service revisions**; do not assume it guarantees cache retention after deleting singleton Instances.
+Validate a new image with `prewarm → delete → fresh allocation` and record import and remaining startup times separately.
+
 An accepted npm publication can remain unavailable while npm processes it. Exact-version E404 responses receive a
 bounded wait; invalid metadata, authorization failures and source mismatches still fail immediately. Runner activation
 also waits for the initial CapRover build to finish before capturing the configuration snapshot. `check` and the final

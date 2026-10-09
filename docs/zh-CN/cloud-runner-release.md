@@ -1,7 +1,7 @@
 # Cloud Runner 发布
 
 [English](../cloud-runner-release.md)
-> Last synced with: 2026-09-21
+> Last synced with: 2026-10-09
 
 Runner 使用 CLI 的发布版本。现有 npm 发布流程先从同一份干净源码构建 linux/amd64 Runner、运行离线验收、
 发布到 Artifact Registry，再发布 npm 和 portable 产物。整次发布成功后，通过 GitHub Actions artifact 记录
@@ -56,6 +56,45 @@ production 启用使用 `CAPROVER_PROD_SERVER`、`CAPROVER_PROD_APP`；生产批
 staging 部署在 `npm Publish` 成功后启动，读取该次运行的准确发布记录，验证 npm gitHead 和镜像身份。
 先部署匹配的 Server，再一起更新 `OPENTAG_CLOUD_RUNNER_IMAGE` 和 `OPENTAG_CLOUD_RUNNER_VERSION`。
 已被 main 新提交替代的自动部署仍跳过；Runner 发布不完整时，不能悄悄保留旧 Runner 却宣称新 Cloud 版本发布完成。
+
+### 在启用前准备镜像导入
+
+镜像发布与 Cloud Run 导入是两个步骤。共享的 `prewarm-runner` action 调用 `scripts/runner/prewarm.mjs`，使用
+已验证发布记录中的 **digest**。它通过部署身份读取目标 App 已有的 project、region、服务账号和 Direct VPC
+配置，不维护另一套 CI 放置变量，也不把 GitHub 构建机器上的 `docker pull` 当作 Cloud Run 导入。
+
+| 入口 | 准备时机 |
+| --- | --- |
+| 自动或手动 **Deploy Staging** | 验证发布与首次 main 门禁后、Server 部署前；准备结束再次核对 main |
+| 正式 tag 发布 | 完整 `npm Publish` 成功后，在默认 main 触发 **Prewarm Runner**，保留 production Environment 审批 |
+| 手动 **Deploy Runner**，`mode=apply` | 启用准确 digest 前准备，回滚同样执行 |
+| 手动 **Deploy Runner**，`mode=check` | 保持只读，不创建探针 |
+| 手动 **Prewarm Runner** | 准备指定的已发布 staging/prod 版本，不部署 Server、不改变 Runner 目标 |
+
+生产准备作业与 tag 发布作业分开，因为 production Environment 允许 main，不允许 tag。它验证该次发布 artifact、
+npm gitHead、镜像身份和 main 祖先关系，不部署 Server，也不绕过审批。准备失败不撤销已经发布的 npm 版本；
+`Deploy Runner apply` 在启用前仍独立准备一次。继续保留现有的明确生产 Server 部署步骤，并在开始前确认
+**Prewarm Runner** 已完成。准备使用独立 FIFO 并发组，不会替换排队中的部署。
+
+每次调用创建一个临时 Cloud Run Instance，使用随机归属标签、内部 ingress、关闭默认 URL，以及准确镜像和现有
+网络放置。覆盖命令运行最小的非特权 HTTP 探针，两分钟后自行退出；不传 bootstrap token、Server URL、Session
+或模型凭证。最多等待五分钟，要求 `ContainerReady` 与 `Running` 均成功，再按归属、镜像、服务账号、UID 和
+etag 删除自己的探针。清理失败则准备失败。`always()` 清理步骤和不含 secret 的归属 artifact 支持中断恢复；
+GitHub runner 被强制结束或不可用时仍需检查记录中的资源。镜像准备不得删除业务 Instance。
+
+准备沿用已有**部署 Environment 联邦身份**，不使用镜像发布服务账号。启用前，为每个准确 Environment subject
+在其实际运行项目授予 `run.instances.create`、`run.instances.get`、`run.instances.delete`（可用专门的自定义
+角色限定为 Instance），以及**仅该环境已有 Instance 服务账号**上的 `roles/iam.serviceAccountUser`。保留原有
+镜像仓库 Reader、指定 secret 访问和 Cloud Run service agent 的 Direct VPC 权限。不向
+`OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT` 扩权，不改变生产分支规则或移除审批人。参考
+[Instance 部署权限](https://docs.cloud.google.com/run/docs/instances/create-and-manage-instances)与
+[Direct VPC 权限](https://docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc#set_up_iam_permissions)。
+
+成功仅证明该 digest 已在指定 region 导入，并启动过可丢弃探针；**不保证缓存保留或未来命中**，也不证明原生
+Runner ready、sandbox 恢复或业务完成，已有检查继续执行。
+[Cloud Run service 镜像保留规则](https://docs.cloud.google.com/run/docs/deploying)针对正在服务的 service revision，
+不能据此推断删除 singleton Instance 后的缓存保证。新镜像应按“预导入 → 删除 → 新建实例”验证，分别记录导入
+与剩余启动时间。
 
 npm 接受发布后，包仍可能处于处理阶段。准确版本查询返回 E404 时进行有时限的等待；元数据无效、认证失败或
 源码不匹配仍立即失败。Runner 启用还会先等待初始 CapRover 构建完成，再获取配置快照。`check` 与写入前的

@@ -92,6 +92,14 @@ jobs:
           git merge-base --is-ancestor "$SERVER_REVISION" origin/main
           git merge-base --is-ancestor "$RUNNER_REVISION" "$SERVER_REVISION"
 
+      # Read-only check creates nothing. Apply (including rollback) imports the exact digest
+      # before updating the target; a previous import is not a cache-retention guarantee.
+      - name: Prewarm the verified Runner image
+        if: inputs.mode == 'apply'
+        uses: ./.github/actions/prewarm-runner
+        with:
+          release: ${{ runner.temp }}/runner-target.json
+
       - name: Check or activate the Runner target
         run: >-
           node scripts/runner/deploy.mjs "$DEPLOY_MODE"

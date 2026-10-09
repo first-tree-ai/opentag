@@ -89,7 +89,7 @@ export function readDeployConfig(environment, { allowLoopbackHttp = false } = {}
 }
 
 /** The secret value is stdout: it is never an argument, never logged, never in an error. */
-async function readCaproverPassword({ secret, runCommand }) {
+export async function readCaproverPassword({ secret, runCommand }) {
   const result = await runCommand("gcloud", ["secrets", "versions", "access", secret], {
     timeoutMs: PASSWORD_TIMEOUT_MS,
   });

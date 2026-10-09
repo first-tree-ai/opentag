@@ -249,3 +249,138 @@
   website: https://developers.google.com/people
   icon: google-people.svg
   order: 80
+
+- id: microsoft-365
+  name: microsoft-365
+  title:
+    en: Microsoft 365
+    zh: Microsoft 365
+  description:
+    en: Microsoft 365 roadmap, Azure updates, and release communications.
+    zh: Microsoft 365 路线图、Azure 更新与发布信息。
+  url: https://www.microsoft.com/releasecommunications/mcp
+  defaultAuthKind: none
+  category: productivity
+  website: https://www.microsoft.com
+  icon: microsoft-365.svg
+  order: 10
+
+- id: asana
+  name: asana
+  title:
+    en: Asana
+    zh: Asana
+  description:
+    en: Tasks, projects, and workspaces.
+    zh: 任务、项目与工作区。
+  url: https://mcp.asana.com/v2/mcp
+  defaultAuthKind: oauth
+  category: productivity
+  website: https://asana.com
+  icon: asana.svg
+  order: 20
+
+- id: monday
+  name: monday
+  title:
+    en: monday.com
+    zh: monday.com
+  description:
+    en: Work management, boards, and automations.
+    zh: 工作管理、看板与自动化。
+  url: https://mcp.monday.com/mcp
+  defaultAuthKind: oauth
+  category: productivity
+  website: https://monday.com
+  icon: monday.svg
+  order: 30
+
+- id: hubspot
+  name: hubspot
+  title:
+    en: HubSpot
+    zh: HubSpot
+  description:
+    en: CRM, marketing, and customer data.
+    zh: CRM、营销与客户数据。
+  url: https://mcp.hubspot.com
+  defaultAuthKind: oauth
+  category: productivity
+  website: https://www.hubspot.com
+  icon: hubspot.svg
+  order: 40
+
+- id: figma
+  name: figma
+  title:
+    en: Figma
+    zh: Figma
+  description:
+    en: Files, designs, and Dev Mode context.
+    zh: 文件、设计与开发模式上下文。
+  url: https://mcp.figma.com/mcp
+  defaultAuthKind: oauth
+  category: design
+  website: https://www.figma.com
+  icon: figma.svg
+  order: 10
+
+- id: canva
+  name: canva
+  title:
+    en: Canva
+    zh: Canva
+  description:
+    en: Designs, assets, and exports.
+    zh: 设计、素材与导出。
+  url: https://mcp.canva.com/mcp
+  defaultAuthKind: oauth
+  category: design
+  website: https://www.canva.com
+  icon: canva.svg
+  order: 20
+
+- id: tavily
+  name: tavily
+  title:
+    en: Tavily
+    zh: Tavily
+  description:
+    en: Web search and research.
+    zh: 网页搜索与研究。
+  url: https://mcp.tavily.com/mcp
+  defaultAuthKind: none
+  category: search
+  website: https://tavily.com
+  icon: tavily.svg
+  order: 10
+
+- id: firecrawl
+  name: firecrawl
+  title:
+    en: Firecrawl
+    zh: Firecrawl
+  description:
+    en: Web scraping, crawling, and extraction.
+    zh: 网页抓取、爬取与提取。
+  url: https://mcp.firecrawl.dev/v2/mcp
+  defaultAuthKind: none
+  category: search
+  website: https://www.firecrawl.dev
+  icon: firecrawl.svg
+  order: 20
+
+- id: zapier
+  name: zapier
+  title:
+    en: Zapier
+    zh: Zapier
+  description:
+    en: Connect to 9,000+ apps and workflows.
+    zh: 连接 9,000+ 应用与自动化流程。
+  url: https://mcp.zapier.com/api/v1/connect
+  defaultAuthKind: oauth
+  category: automation
+  website: https://zapier.com
+  icon: zapier.svg
+  order: 10

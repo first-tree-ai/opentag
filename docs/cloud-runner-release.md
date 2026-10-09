@@ -62,6 +62,59 @@ gitHead and registry identity. It deploys the matching Server first, then change
 `OPENTAG_CLOUD_RUNNER_VERSION` together. Superseded automatic revisions still skip. An incomplete Runner publication
 cannot silently leave an old Runner while reporting the new Cloud release complete.
 
+### Background image preparation after Server startup
+
+The Server starts an independent image-preparation worker **after** listening and completing readiness. When Cloud Runner
+is enabled, staging/prod enable this worker by default; development defaults off. No additional required configuration
+or GitHub IAM grants are needed: it uses the Server's existing Instance management and runtime-service-account act-as
+permissions, Direct VPC placement and metadata token provider. Each API call obtains a valid cached/refreshed token,
+including cleanup after a long image import. It never reads credential files or shells out to `gcloud`.
+
+The first check runs immediately in the background. Subsequent checks run every 60 seconds by default, without overlapping
+work. Failures are reported as `RUNNER_IMAGE_PREWARM_FAILED` through the existing background supervisor and retried on the
+next check. Preparation does not delay `/readyz`, block releases, or gate message dispatch. A message arriving before
+preparation finishes can still encounter an uncached image import.
+
+Replicas coordinate through a nonblocking PostgreSQL session advisory lock using one dedicated connection for the leader.
+No database table, migration, long transaction or external scheduler is added. The lock key covers the environment,
+project, region, runtime identity, image repository and network placement; it is stable across digest changes. The leader
+retains the lock after success, and subsequent checks only verify that session still holds it. Healthy successful leaders
+do not repeatedly allocate probes. When a leader stops or loses its connection, another replica can prepare the image on
+its next check. During a rolling deployment, the old leader must release its lock before a replacement can prepare a new
+digest. Full Server restarts and leadership replacement may repeat a successful import.
+
+The worker creates one deterministic `ot-warm-*` Cloud Run Instance with separate purpose/target labels, internal ingress,
+default URL disabled, the exact configured image digest and Direct VPC attachment. Its overridden entrypoint runs a
+minimal unprivileged HTTP listener that exits after two minutes. It receives no bootstrap token, Server URL, Session,
+Turn or model credentials. Business allocation, readiness, queue consumption and idle reclamation remain independent.
+
+Preparation waits up to five minutes for **both** `ContainerReady` and `Running`. Cleanup has a separate two-minute budget
+and requires a final not-found response. It verifies purpose/target/environment labels, image repository, service account,
+command, arguments, absence of environment credentials, UID and etag before deleting. It checks leadership again before
+create/delete. A matching previous-digest probe is deleted before importing the new digest. Foreign or replaced resources
+are rejected rather than deleted; create responses of uncertain outcome are reconciled without blindly repeating POST.
+
+Graceful shutdown aborts preparation, drains bounded cleanup, then closes the dedicated lock connection. A forced kill
+can interrupt cleanup; the next leader recovers the same named, strictly owned probe. A change to project, identity,
+repository or VPC placement creates a different namespace: inspect old `ot-warm-*` probes explicitly after such a change.
+A failed cleanup is observable and never reported as successful preparation.
+
+Optional Server variables:
+
+| Variable | Default / meaning |
+| --- | --- |
+| `OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED` | `true` in staging/prod, `false` in dev; `false` disables this worker |
+| `OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS` | `60000`; retry/leadership check cadence, allowed range 1000–3600000 |
+
+Publication and activation workflows keep their existing release-record, source-ancestry and `/readyz` verification.
+`Deploy Runner check` remains read-only. There is no CI prewarm workflow or deployment prewarm gate.
+
+Successful preparation logs the image, resource name, UID, import/running timestamps and preparation duration **after**
+probe deletion. It proves this digest was imported and a disposable probe started in the selected region. It does not
+guarantee cache retention, future cache hits, native Runner readiness or business completion. Validate a new image with
+`prewarm → delete → fresh allocation` and measure import and remaining startup times separately. Existing cold-start and
+end-to-end acceptance checks still apply; this change alone does not establish the three-second target.
+
 An accepted npm publication can remain unavailable while npm processes it. Exact-version E404 responses receive a
 bounded wait; invalid metadata, authorization failures and source mismatches still fail immediately. Runner activation
 also waits for the initial CapRover build to finish before capturing the configuration snapshot. `check` and the final

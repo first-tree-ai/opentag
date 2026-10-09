@@ -337,6 +337,8 @@ identities-on/flag-`false` combination.
 | `OPENTAG_CLOUD_RUNNER_VPC_NETWORK`, `…_VPC_SUBNET` | Direct VPC attachment |
 | `OPENTAG_CLOUD_RUNNER_EXECUTION_TAG` | Tag selecting provisioned execution-only firewall rules |
 | `OPENTAG_CLOUD_RUNNER_API_TIMEOUT_MS` | Per-call deadline; default 30000 |
+| `OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED` | Background image preparation; defaults on in staging/prod, off in dev |
+| `OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS` | Retry/leadership check cadence; default 60000; successful leaders do not repeat probes |
 | `OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS` | Bounded create reconciliation; default 120000 |
 | `OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS` | Scoped token TTL; default 1800, renewed on current connections |
 | `OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS` | Fixture execution deadline; default 900000 |

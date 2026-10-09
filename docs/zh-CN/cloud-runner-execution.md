@@ -1,6 +1,6 @@
 # Cloud Runner 执行（E3–E8）
 
-> Synced: 2026-10-08
+> Synced: 2026-10-09
 
 [English](../cloud-runner-execution.md)
 
@@ -259,6 +259,8 @@ tokens，并关闭不支持的 OpenAI `store` 字段。应通过现有 CLI／Run
 | OPENTAG_CLOUD_RUNNER_VPC_NETWORK / VPC_SUBNET | Direct VPC 网络与子网 |
 | OPENTAG_CLOUD_RUNNER_EXECUTION_TAG | 对应预先部署的执行环境防火墙规则 |
 | OPENTAG_CLOUD_RUNNER_API_TIMEOUT_MS | 单次调用期限，默认 30000 |
+| OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED | staging/prod 默认开启后台镜像准备，dev 默认关闭 |
+| OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS | 准备失败重试／持锁检查周期，默认 60000；成功后不反复创建探针 |
 | OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS | 创建收敛期限，默认 120000 |
 | OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS | 默认 1800，通过当前连接续期 |
 | OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS | 验收期限，默认 900000 |

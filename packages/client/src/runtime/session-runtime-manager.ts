@@ -327,6 +327,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
+        environment: "local",
         sessionId: managed.binding.sessionId,
         sessionKind: managed.sessionKind,
         ...(managed.creatorSessionId ? { creatorSessionId: managed.creatorSessionId } : {}),

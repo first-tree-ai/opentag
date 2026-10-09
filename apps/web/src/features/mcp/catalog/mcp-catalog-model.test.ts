@@ -1,6 +1,6 @@
+import type { McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
-import type { McpCatalogEntry } from "./mcp-catalog.gen.js";
 import {
   catalogEntryState,
   comparableUrl,

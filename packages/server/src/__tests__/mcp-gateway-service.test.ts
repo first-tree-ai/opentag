@@ -297,4 +297,21 @@ describe("long tool names", () => {
     const { service } = build([mount({ name: "linear", tools: [{ name: "fine" }, { name: "z".repeat(129) }] })]);
     expect((await service.catalog(ACCOUNT, AGENT)).tools).toEqual([]);
   });
+
+  /*
+   * The description's reader bound is never narrower than the writer's: a snapshot carrying the
+   * Google Docs `update_doc` size the probe now writes stays readable here — which is what makes
+   * the writer raise safe to roll back — and only past the reader bound does the row degrade to an
+   * empty catalogue as every other out-of-bound entry does.
+   */
+  it("reads a description up to the reader bound and drops the snapshot past it", async () => {
+    const wide = "d".repeat(35_410);
+    const { service } = build([mount({ name: "linear", tools: [{ name: "update_doc", description: wide }] })]);
+    expect((await service.catalog(ACCOUNT, AGENT)).tools[0]?.description).toBe(wide);
+
+    const over = build([
+      mount({ name: "linear", tools: [{ name: "fine" }, { name: "update_doc", description: "d".repeat(65_537) }] }),
+    ]);
+    expect((await over.service.catalog(ACCOUNT, AGENT)).tools).toEqual([]);
+  });
 });

@@ -21,7 +21,7 @@ describe("ClaudeCodeProcess", () => {
     const writes: string[] = [];
     child.stdin.on("data", (line) => writes.push(line.toString()));
     const process = new ClaudeCodeProcess({
-      args: ["--permission-prompts", "stdio"],
+      args: ["--permission-prompt-tool", "stdio"],
       cwd: "/",
       env: {},
       spawnProcess: () => child,
@@ -59,7 +59,7 @@ describe("ClaudeCodeProcess", () => {
   it.each(["denied", "timeout", "write"])("fails closed for %s permission initialization", async (scenario) => {
     const child = fakeChild();
     const process = new ClaudeCodeProcess({
-      args: ["--permission-prompts", "stdio"],
+      args: ["--permission-prompt-tool", "stdio"],
       cwd: "/",
       env: {},
       spawnProcess: () => child,

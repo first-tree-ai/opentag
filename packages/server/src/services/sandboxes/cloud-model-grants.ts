@@ -184,7 +184,10 @@ export class CloudModelGrantService {
     this.#ttlSeconds = options.ttlSeconds;
   }
 
-  /** The deployment default (the first Router model); undefined while the catalog is unavailable. */
+  /**
+   * The deployment default (the catalog's preferred default model when offered, otherwise the
+   * first validated Router model); undefined while the catalog is unavailable.
+   */
   defaultModel(): Promise<string | undefined> {
     return this.#catalog.defaultModel();
   }

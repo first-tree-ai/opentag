@@ -33,7 +33,8 @@ repair, validate credentials, or infer login/subscription state.
 For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
 the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent
 calls the official `lark-cli` or `slack api` command directly; the managed launcher loads its credentials automatically.
-Only raw provider HTTP requests need to source the environment file. The file is removed when the Turn
+For raw Slack attachment HTTP requests, read only the nonsecret execution proxy URL and CA path from that file
+and pass them as literal `curl` arguments; do not source the file or add authorization headers. The file is removed when the Turn
 finishes, retried during Session or Client shutdown if removal fails, and recovered by the next Client startup after a
 crash. Internal Sessions never receive the file.
 
@@ -58,8 +59,9 @@ target Session's existing channel or thread scope in the same authorization oper
 Client and Agent cannot nominate an OpenTag outbox target. A callback to a thread Session keeps its provider-native thread
 scope. This context is a default delivery target, not a restriction on the broader Bot-token authority described below.
 
-For Feishu Turns, the managed Turn context instructs the Agent to pass rich or multiline `lark-cli` text through a
-non-interpolating POSIX heredoc or PowerShell here-string variable. It also requires a pre-send check that rejects an
+For Feishu Turns, the managed Turn context instructs the Agent to pass multiline `lark-cli` bodies as
+single shell-quoted literal `--text` or `--markdown` arguments with real newlines, or provider-native JSON via `--content`.
+Avoid shell variables, substitutions, redirects, and heredocs for ordinary messaging. It also requires a pre-send check that rejects an
 intended multiline body when shell quoting left multiple literal `\n` tokens but no real newline. The check deliberately
 does not rewrite every `\n`, because code and prose may intentionally discuss that token.
 

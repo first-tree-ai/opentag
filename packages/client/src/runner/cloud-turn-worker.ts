@@ -4,7 +4,7 @@ import { connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect as connectTls } from "node:tls";
-import type { EffectiveRuntimeSnapshot, RunnerCloudWorkerRequest } from "@opentag/shared";
+import type { RunnerCloudWorkerRequest } from "@opentag/shared";
 import type {
   AgentPromptRequest,
   AgentRunResult,
@@ -24,6 +24,11 @@ import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import type { PiRpcProcessSpawnOptions } from "../providers/pi/rpc-wire.js";
 import { completionForError, completionForResult, type TurnCompletion } from "../runtime/agent-turn-runner.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
+import {
+  type ManagedSessionContext,
+  managedAgentSlug,
+  renderManagedSystemPrompt,
+} from "../runtime/managed-instructions.js";
 import { providerRoutingEnvironment, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
 import { skillArgsOf } from "./acceptance.js";
 import {
@@ -31,7 +36,6 @@ import {
   type CloudContextTreePreparation,
   type CloudContextTreePreparationInput,
   type CloudContextTreeStatus,
-  cloudAgentSlug,
   prepareCloudContextTree,
 } from "./cloud-context-tree.js";
 import {
@@ -160,157 +164,6 @@ function terminateTrackedProcesses(pids: Set<number>, options: { immediate?: boo
   escalation.unref?.();
 }
 
-/**
- * Optional context for the Cloud system prompt: this Turn's Context Tree status and whether the
- * execution holds real Session-collaboration material (proof and server URL). Absent context
- * keeps the corresponding sections out of the prompt.
- */
-export interface CloudSystemPromptContext {
-  readonly contextTree?: CloudContextTreeStatus;
-  readonly sessionCollaboration?: boolean;
-}
-
-/**
- * Cloud-accurate managed system prompt. It never reuses the Local renderer's persistent Agent
- * Home / shared-workspace wording; the Context Tree and Session sections appear only with real
- * per-Turn state.
- */
-export function renderCloudSystemPrompt(
-  snapshot: EffectiveRuntimeSnapshot,
-  context?: CloudSystemPromptContext,
-): string {
-  return [
-    "# OpenTag managed instructions",
-    "",
-    "These trusted instructions are injected through the Agent Runtime Provider's native system prompt.",
-    "",
-    "## Cloud execution context",
-    "",
-    "- You run inside a Session-scoped Cloud Sandbox. The workspace is this Session's own; it is not shared with other Sessions.",
-    "- The workspace and Pi conversation for this Session recover from the last successful save when the environment is replaced. Unsaved changes can be lost; running processes and background services do not survive Turn cleanup or replacement.",
-    "- Saved workspaces are limited to 256 MiB of file content, 50,000 entries and a 128 MiB compressed archive. Hard links, sockets, FIFOs and links outside the workspace cannot be saved. Keep dependency caches, large installs and disposable build output outside the workspace (for example /tmp); recreate them on later Turns. Exceeding these limits blocks further execution and requires recovery or explicit discard of unsaved changes.",
-    "- Credentials are execution-scoped and short-lived; the managed IM/Git CLIs reach providers through the platform proxy. Never ask the user for tokens and never persist credential material.",
-    "",
-    ...renderCloudContextTree(snapshot, context?.contextTree),
-    ...(context?.sessionCollaboration
-      ? [
-          "## Session collaboration",
-          "",
-          "Use `opentag session create`, `opentag session send`, and `opentag session list` to coordinate authorized Sessions of this Agent. Use `--help` for command options.",
-          "Each Cloud Session has its own workspace and history. Send relevant information explicitly; another Session cannot read this workspace. Only published Context Tree knowledge is shared.",
-          "Your source Session identity is supplied by this execution. Do not copy or persist its temporary proof. A child Session reports through `opentag session send`; its final text is not automatically returned to its parent.",
-          "",
-        ]
-      : []),
-    "## Platform",
-    "",
-    snapshot.instructions.platform,
-    "",
-    "## Agent",
-    "",
-    snapshot.instructions.agent,
-    "",
-    ...(snapshot.instructions.session ? ["## Session", "", snapshot.instructions.session, ""] : []),
-  ].join("\n");
-}
-
-/**
- * The Context Tree section the Cloud Sandbox can truthfully offer. The Agent is told plainly when
- * durable memory is absent or stale, so it cannot mistake a failed connection for an empty tree or
- * a failed synchronization for the newest published state.
- */
-function renderCloudContextTree(
-  snapshot: EffectiveRuntimeSnapshot,
-  status: CloudContextTreeStatus | undefined,
-): readonly string[] {
-  if (!status) return [];
-  if (status.status === "configured") {
-    return [
-      "## Context Trees",
-      "Trees have no implied precedence. Use the upstream skills to select relevant trees, attribute disagreements to aliases, and choose an explicit write destination.",
-      ...status.connections.flatMap((entry) => [
-        `Alias ${entry.alias} — ${entry.repository}:`,
-        ...renderCloudTreeFacts(entry),
-      ]),
-      ...new Set(status.connections.flatMap((entry) => renderCloudTreeGuidance(snapshot, entry))),
-    ];
-  }
-  return ["## Context Tree", "", ...renderCloudTreeFacts(status), ...renderCloudTreeGuidance(snapshot, status)];
-}
-
-function renderCloudTreeFacts(status: Exclude<CloudContextTreeStatus, { status: "configured" }>): readonly string[] {
-  if (status.status === "ready")
-    return [
-      `Context Tree: ${status.treePath} — synchronized at the start of this Turn${
-        status.branch && status.sha ? ` (branch ${status.branch}, commit ${status.sha.slice(0, 12)})` : ""
-      }.`,
-    ];
-  if (status.status === "stale")
-    return [
-      `Context Tree: ${status.treePath} — ${
-        status.reason === "DIRTY_TREE"
-          ? "the preserved checkout has unpublished changes"
-          : `this Turn's synchronization failed (${status.reason})`
-      }.`,
-    ];
-  if (status.status === "unconfigured")
-    return [
-      "Context Tree: disabled for this Agent (no Context Tree repository is selected on the Agent's Context Tree page).",
-    ];
-  return [`Context Tree unavailable (${status.reason}).`];
-}
-
-function renderCloudTreeGuidance(
-  snapshot: EffectiveRuntimeSnapshot,
-  status: Exclude<CloudContextTreeStatus, { status: "configured" }>,
-): readonly string[] {
-  if (status.status === "ready") {
-    const slug = cloudAgentSlug(snapshot.instructions.platform);
-    const member = slug
-      ? `Your Agent slug is \`${slug}\` (also stated in the Platform section): \`members/${slug}/\` is your own private working memory in the tree. Do not write to another Agent's member directory.`
-      : "`members/<your Agent slug>/` is your own private working memory in the tree; the Agent slug is stated in the Platform section below. Do not write to another Agent's member directory.";
-    return [
-      "Ready Context Trees are connected on this Agent's Context Tree page. Each checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session.",
-      "Read the decisions that bear on a task before planning or changing code, and record durable decisions there. Use the context-tree-read and context-tree-write skills; the `context-tree` command is on PATH.",
-      member,
-      "",
-    ];
-  }
-  if (status.status === "stale") {
-    const dirty = status.reason === "DIRTY_TREE";
-    return [
-      ...(dirty
-        ? [
-            "For stale trees with unpublished changes: the changes were left untouched. Inspect them with the `context-tree` command (`context-tree read --tree-path <tree> …`, `context-tree verify --tree-path <tree>`) or with `git`, and continue any prepared write worktree. Synchronizing or publishing will keep failing until the changes are committed or otherwise resolved; do not reset or discard them silently.",
-          ]
-        : [
-            "For other stale trees, the on-disk copy may be outdated: it is not confirmed to be the newest published state. Unpublished drafts were left untouched. You may read the local copy as potentially stale context, and expect synchronizing or publishing to fail until a later Turn succeeds.",
-          ]),
-      "",
-    ];
-  }
-  if (status.status === "unconfigured") {
-    return [
-      "Durable memory is not active. Do not assume earlier decisions were recorded, and do not create or connect a tree yourself.",
-      "",
-    ];
-  }
-  return [
-    "Unavailable trees are not active for this Turn; other ready trees remain usable. Continue the task without those trees. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
-    ...(status.reason === "GITHUB_PERMISSION"
-      ? [
-          "The current execution does not grant this Session the selected repository, so the managed connection stays detached until the grant returns.",
-        ]
-      : []),
-    ...(status.reason === "DIRTY_TREE"
-      ? [
-          "The preserved checkout contains unpublished changes from an earlier Turn. They were left untouched; do not commit, reset, or discard them silently — report their presence.",
-        ]
-      : []),
-    "",
-  ];
-}
-
 /** The model grant becomes exactly one disposable Pi provider document set. */
 export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
   authJson: string;
@@ -377,6 +230,27 @@ function cloudPiConfiguration(request: RunnerCloudWorkerRequest) {
     ...(cloudWorkerRuntime(request).reasoningEffort
       ? { reasoningEffort: cloudWorkerRuntime(request).reasoningEffort }
       : {}),
+  };
+}
+
+/**
+ * The Cloud side of the one shared managed prompt context. A Cloud Turn is a visible Session; a
+ * Session message keeps the journaled target kind. The Session identity is the actual request
+ * identity (no creator is invented when the request carries none), and collaboration commands are
+ * advertised only when the execution holds real proof material.
+ */
+function cloudManagedSessionContext(
+  request: RunnerCloudWorkerRequest,
+  contextTree: CloudContextTreeStatus,
+): ManagedSessionContext {
+  return {
+    environment: "cloud",
+    sessionId: request.kind === "turn" ? request.delivery.sessionId : request.message.targetSessionId,
+    sessionKind: request.kind === "turn" ? "visible" : request.sessionKind,
+    cliCommand: "opentag",
+    sessionCliAvailable: request.sessionCollaboration !== undefined,
+    selfConfigurationEnabled: cloudWorkerRuntime(request).selfConfigurationEnabled === true,
+    contextTree,
   };
 }
 
@@ -469,7 +343,7 @@ function prepareTurnContextTree(
     Math.max(1, options.contextTreePreparationBudgetMs ?? CLOUD_CONTEXT_TREE_PREPARATION_BUDGET_MS),
   );
   return (options.prepareContextTree ?? prepareCloudContextTree)({
-    agentSlug: cloudAgentSlug(cloudWorkerRuntime(request).instructions.platform),
+    agentSlug: managedAgentSlug(cloudWorkerRuntime(request).instructions.platform),
     environment,
     path: `${request.executionDir}/bin:/usr/local/bin:/opt/opentag/tools/bin:/usr/bin:/bin`,
     contextTrees: cloudWorkerRuntime(request).contextTrees,
@@ -601,10 +475,10 @@ export async function runCloudTurnWorker(
         if (event.type === "binding_changed") await persistBinding(bindingFile, event.binding);
       },
       policy: TURN_POLICY,
-      systemPrompt: renderCloudSystemPrompt(cloudWorkerRuntime(request), {
-        contextTree: contextTree.status,
-        sessionCollaboration: request.sessionCollaboration !== undefined,
-      }),
+      systemPrompt: renderManagedSystemPrompt(
+        cloudWorkerRuntime(request),
+        cloudManagedSessionContext(request, contextTree.status),
+      ),
       workspace: { cwd: options.workspace, environment: runtimeEnvironment },
     };
     const persisted = await readPersistedBinding(bindingFile);

@@ -1,10 +1,10 @@
+import type { McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPAuthorizationSummary, MCPServer } from "@opentag/shared/browser";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../../api.js";
 import { McpPage } from "../mcp-page.js";
 import { AGENT_ID, entry, openAdd, stub, wrap } from "../mcp-test-fixtures.js";
-import type { McpCatalogEntry } from "./mcp-catalog.gen.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
 
 /**
@@ -28,10 +28,23 @@ const CATALOG = vi.hoisted(() => ({
       description: { en: "Docs and wikis.", zh: "文档与知识库。" },
       url: "https://mcp.alpha.test/mcp",
       defaultAuthKind: "oauth",
+      oauthScopes: ["alpha.read", "alpha.write"],
       category: "general",
       website: "https://alpha.test",
       iconUrl: "/alpha.svg",
       order: 10,
+    },
+    {
+      id: "delta",
+      name: "delta",
+      title: { en: "Delta", zh: "德尔塔" },
+      description: { en: "Notes and tasks.", zh: "笔记与任务。" },
+      url: "https://mcp.delta.test/mcp",
+      defaultAuthKind: "oauth",
+      category: "general",
+      website: "https://delta.test",
+      iconUrl: "/delta.svg",
+      order: 20,
     },
     {
       id: "beta",
@@ -60,7 +73,7 @@ const CATALOG = vi.hoisted(() => ({
   ],
 }));
 
-vi.mock("./mcp-catalog.gen.js", () => ({
+vi.mock("@opentag/mcp-presets", () => ({
   MCP_CATALOG_CATEGORIES: CATALOG.categories,
   MCP_CATALOG_ENTRIES: CATALOG.entries,
 }));
@@ -265,6 +278,28 @@ describe("Discover inside the add flow", () => {
     expect(attach).toHaveBeenCalledWith(AGENT_ID, { mcpServerId: ALPHA_ID, enabled: true });
     expect(screen.queryByLabelText("MCP URL")).toBeNull();
     expect(screen.queryByLabelText("Name")).toBeNull();
+  });
+
+  it("sends the entry's declared OAuth scopes with the start request", async () => {
+    stub([]);
+    stubCatalogWrites();
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDiscover();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
+    await waitFor(() => expect(oauth).toHaveBeenCalled());
+    expect(oauth).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, { scopes: ["alpha.read", "alpha.write"] });
+  });
+
+  it("sends no explicit scopes for an entry that declares none", async () => {
+    stub([]);
+    stubCatalogWrites();
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDiscover();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Delta" }));
+    await waitFor(() => expect(oauth).toHaveBeenCalled());
+    expect(oauth).toHaveBeenCalledWith(AGENT_ID, DELTA_ID, {});
   });
 
   it("reuses an existing Account definition with the same URL", async () => {

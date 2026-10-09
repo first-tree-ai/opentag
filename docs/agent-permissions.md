@@ -5,7 +5,7 @@
 Local Codex Agents use `workspace-write` with `on-request` approvals and disabled sandbox network
 access. Local Claude Code Agents use `auto`: its native classifier reviews actions and its permission
 callback sends remaining requests to the task sender. Claude Code must support `auto` and
-`--permission-prompts`. Claude's native gate does not provide an OS sandbox.
+`--permission-prompt-tool`. Claude's native gate does not provide an OS sandbox.
 Pi always runs without approvals and has no permission settings or permission extension.
 
 Native command rules allow Feishu and Slack message reads, sends, edits, reactions, conversation
@@ -43,7 +43,8 @@ enough to reach the server replica holding the runtime socket, and the card is r
 runtime acknowledges the answer. A failed card update is retried while the server is running. Duplicate clicks, wrong users, expired requests, changed bindings,
 changed permission settings, and replaced runtime connections cannot approve an action.
 
-Requests expire with the existing turn deadline. Disconnects and server restarts invalidate pending
-execution rather than replaying approvals. Completed request records are removed after seven days.
+Requests expire with the existing turn deadline. A replacement runtime connection invalidates requests
+tied to its old connection. Any server replica can expire orphaned requests and retry resolved card updates
+after a server restart; approvals are never replayed onto a new connection. Request records are removed after seven days.
 This first version supports one-action decisions, with no session-wide approval button or arbitrary
 provider question dialogs. Requests too large to display in full are denied.

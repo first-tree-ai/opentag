@@ -355,6 +355,38 @@ describe("ConnectionRegistry", () => {
     });
   });
 
+  it("rejects a send bound to a replaced connection on the same instance", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const oldConnectionId = randomUUID();
+    const connectionId = randomUUID();
+    const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
+    const runtimeSocket = () => ({ close: vi.fn(), readyState: WebSocket.OPEN, send }) as unknown as WebSocket;
+    const register = (connectionId: string) =>
+      registry.register(
+        {
+          computerId,
+          instanceId,
+          connectionId,
+          installationId: randomUUID(),
+          lastHeartbeatAt: 1,
+          protocolVersion: RUNTIME_PROTOCOL_V2,
+          socket: runtimeSocket(),
+        },
+        async () => undefined,
+      );
+    await register(oldConnectionId);
+    await register(connectionId);
+    const frame = { type: "approval:decision", decision: "accept" };
+    await expect(registry.send(computerId, instanceId, frame, oldConnectionId)).rejects.toMatchObject({
+      code: "instance_replaced",
+    });
+    expect(send).not.toHaveBeenCalled();
+    await registry.send(computerId, instanceId, frame, connectionId);
+    expect(JSON.parse(String(send.mock.calls[0]?.[0]))).toEqual({ ...frame, connectionId });
+  });
+
   it("returns only fresh readiness observations from the current Computer instance", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();

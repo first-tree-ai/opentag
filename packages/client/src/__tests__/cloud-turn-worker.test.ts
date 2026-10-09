@@ -25,7 +25,6 @@ import {
   type CloudTurnPiFactory,
   type CloudTurnPiRuntime,
   cloudTurnPiDocuments,
-  renderCloudSystemPrompt,
   runCloudTurnWorker,
 } from "../runner/cloud-turn-worker.js";
 import { generateExecutionCa } from "../runtime/runtime-proxy-loopback-adapter.js";
@@ -320,87 +319,6 @@ describe("cloud-turn-worker", () => {
     expect(settings.defaultModel).toBe("opentag/deepseek-v4.1-flash-expires-on-0910");
     // Native auto-compaction is explicitly enabled; Pi's pinned reserve/keep defaults stay untouched.
     expect(settings.compaction).toEqual({ enabled: true });
-  });
-
-  it("renders Cloud-true system instructions without Local Agent Home or Context Tree claims", () => {
-    const prompt = renderCloudSystemPrompt(cloudDeliveryFixture().runtime);
-    expect(prompt).toContain("Platform.");
-    expect(prompt).toContain("Agent.");
-    expect(prompt).toContain("Session-scoped Cloud Sandbox");
-    expect(prompt).toContain("256 MiB");
-    expect(prompt).toContain("50,000 entries");
-    expect(prompt).toContain("128 MiB");
-    expect(prompt).toContain("Hard links, sockets, FIFOs");
-    expect(prompt).not.toContain("Agent Home");
-    expect(prompt).not.toContain("Context Tree");
-    expect(prompt).not.toContain("shared across this Agent's Sessions");
-  });
-
-  it("renders the current Context Tree truthfully with the Agent slug and exact path", () => {
-    const snapshot = cloudDeliveryFixture().runtime;
-    const ready = renderCloudSystemPrompt(
-      { ...snapshot, instructions: { ...snapshot.instructions, platform: "OpenTag Agent slug: tree-agent" } },
-      { contextTree: { status: "ready", treePath: "/ws/tree", branch: "master", sha: "a".repeat(40) } },
-    );
-    expect(ready).toContain("Context Tree: /ws/tree");
-    expect(ready).toContain("tree-agent");
-    expect(ready).toContain("members/tree-agent/");
-    expect(ready).toContain("branch master, commit aaaaaaaaaaaa");
-
-    const dirty = renderCloudSystemPrompt(snapshot, {
-      contextTree: { status: "stale", treePath: "/ws/tree", reason: "DIRTY_TREE" },
-    });
-    expect(dirty).toContain("Context Tree: /ws/tree");
-    expect(dirty).toContain("unpublished changes");
-    expect(dirty).toContain("do not reset or discard");
-
-    const stale = renderCloudSystemPrompt(snapshot, {
-      contextTree: { status: "stale", treePath: "/ws/tree", reason: "TIMEOUT" },
-    });
-    expect(stale).toContain("may be outdated");
-    expect(stale).toContain("TIMEOUT");
-
-    const unconfigured = renderCloudSystemPrompt(snapshot, { contextTree: { status: "unconfigured" } });
-    expect(unconfigured).toContain("disabled for this Agent");
-
-    const denied = renderCloudSystemPrompt(snapshot, {
-      contextTree: { status: "unavailable", reason: "GITHUB_PERMISSION" },
-    });
-    expect(denied).toContain("Context Tree unavailable (GITHUB_PERMISSION)");
-    expect(denied).toContain("does not grant this Session the selected repository");
-  });
-
-  it("renders one Cloud tree section and shared guidance for multiple aliases", () => {
-    const prompt = renderCloudSystemPrompt(cloudDeliveryFixture().runtime, {
-      contextTree: {
-        status: "configured",
-        connections: [
-          {
-            alias: "team",
-            repository: "acme/team",
-            status: "ready",
-            treePath: "/trees/team",
-            branch: "main",
-            sha: "a".repeat(40),
-          },
-          { alias: "product", repository: "acme/product", status: "ready", treePath: "/trees/product" },
-          { alias: "stale", repository: "acme/stale", status: "stale", treePath: "/trees/stale", reason: "DIRTY_TREE" },
-          { alias: "denied", repository: "acme/denied", status: "unavailable", reason: "GITHUB_PERMISSION" },
-          { alias: "timeout", repository: "acme/timeout", status: "unavailable", reason: "TIMEOUT" },
-        ],
-      },
-    });
-    expect(prompt.match(/^## Context Trees$/gm)).toHaveLength(1);
-    expect(prompt).not.toMatch(/^## Context Tree$/m);
-    expect(prompt).toContain("Alias team — acme/team");
-    expect(prompt).toContain("Context Tree: /trees/product");
-    expect(prompt).toContain("branch main, commit aaaaaaaaaaaa");
-    expect(prompt).toContain("Context Tree: /trees/stale");
-    expect(prompt).toContain("do not reset or discard");
-    expect(prompt).toContain("GITHUB_PERMISSION");
-    expect(prompt.match(/Use the context-tree-read and context-tree-write skills/g)).toHaveLength(1);
-    expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
-    expect(prompt.match(/Continue the task without those trees/g)).toHaveLength(1);
   });
 
   it("resumes the SAME Pi binding/history across two Turns of one allocation", async () => {
@@ -1152,7 +1070,8 @@ describe("session-message worker integration", () => {
       };
     };
 
-    const completion = await runCloudTurnWorker(sessionRequest(executionDir), {
+    const request = sessionRequest(executionDir);
+    const completion = await runCloudTurnWorker(request, {
       createPiFactory,
       executionMount: join(root, "mount"),
       localProxyLoopbackSeam: true,
@@ -1161,7 +1080,21 @@ describe("session-message worker integration", () => {
     expect(completion.outcome).toBe("completed");
     // Internal children have no IM outbox and no provider env file to pretend otherwise.
     expect(environment.OPENTAG_PROVIDER_ENV_FILE).toBeUndefined();
-    expect(systemPrompt).not.toContain("## Session collaboration");
+    // The real create-time prompt is the shared managed one: internal behavior, the actual
+    // target Session identity, no user-acknowledgment policy, and no advertised collaboration
+    // commands while the execution carries no proof material.
+    expect(systemPrompt).toContain("## Cloud execution context");
+    expect(systemPrompt).toContain("You are an internal Session");
+    expect(systemPrompt).toContain("Session kind: internal");
+    expect(systemPrompt).toContain(`Current Session: ${request.message.targetSessionId}`);
+    expect(systemPrompt).toContain("do not publish directly to IM");
+    expect(systemPrompt).not.toContain("emoji");
+    expect(systemPrompt).not.toContain("lively, friendly tone");
+    expect(systemPrompt).not.toContain("Creator Session");
+    expect(systemPrompt).toContain(
+      "Session collaboration commands are unavailable because managed Session context is missing.",
+    );
+    expect(systemPrompt).not.toContain("## Agent Home");
     const text = input?.items.map((item) => item.text).join("\n") ?? "";
     expect(text).toContain('<opentag-session-message-context source="managed">');
     expect(text).toContain("Your final text is not returned automatically");
@@ -1182,12 +1115,19 @@ describe("session-message worker integration", () => {
       sessionKind: "thread",
       threadTs: "1700000000.1234",
     };
-    const observed: { inputText?: string; providerFile?: string; fileContent?: string; fileMode?: number } = {};
+    const observed: {
+      inputText?: string;
+      providerFile?: string;
+      fileContent?: string;
+      fileMode?: number;
+      systemPrompt?: string;
+    } = {};
     const createPiFactory = (factoryInput: { environment: Record<string, string> }): CloudTurnPiFactory => {
       observed.providerFile = factoryInput.environment.OPENTAG_PROVIDER_ENV_FILE;
       return {
-        create: async () =>
-          ({
+        create: async (request) => {
+          observed.systemPrompt = request.systemPrompt;
+          return {
             close: async () => undefined,
             prompt: async (prompt: AgentPromptRequest) => {
               observed.inputText = prompt.input.items.map((item) => item.text).join("\n");
@@ -1197,23 +1137,33 @@ describe("session-message worker integration", () => {
               }
               return { output: [{ text: "visible-done", type: "text" }], status: "completed" };
             },
-          }) as unknown as CloudTurnPiRuntime,
+          } as unknown as CloudTurnPiRuntime;
+        },
         resume: async () => {
           throw new Error("unexpected resume");
         },
       };
     };
 
-    const completion = await runCloudTurnWorker(
-      sessionRequest(executionDir, { outboxContext: outbox, sessionKind: "visible" }),
-      {
-        createPiFactory,
-        executionMount: join(root, "mount"),
-        localProxyLoopbackSeam: true,
-        workspace: join(root, "workspace"),
-      },
-    );
+    const request = sessionRequest(executionDir, { outboxContext: outbox, sessionKind: "visible" });
+    const completion = await runCloudTurnWorker(request, {
+      createPiFactory,
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+    });
     expect(completion.outcome).toBe("completed");
+    // The visible continuation runs the shared managed prompt as a visible Session: the friendly
+    // tone and mandatory pre-work acknowledgment policies apply, keyed to the actual target Session identity.
+    expect(observed.systemPrompt).toContain("You are a visible Session");
+    expect(observed.systemPrompt).toContain("Session kind: visible");
+    expect(observed.systemPrompt).toContain(`Current Session: ${request.message.targetSessionId}`);
+    expect(observed.systemPrompt).toContain("Lean toward a lively, friendly tone");
+    expect(observed.systemPrompt).toContain('add one emoji reaction meaning "received, working on it"');
+    expect(observed.systemPrompt).toContain("to the original user message via the provider CLI");
+    expect(observed.systemPrompt).toContain(
+      "Do not use approval or completion reactions such as thumbs-up or check marks",
+    );
     // The visible continuation keeps its real provider scope and the outbox instruction path.
     expect(observed.inputText).toContain('Default provider outbox context: {"channelId":"C0EXAMPLE"');
     expect(observed.inputText).toContain("1700000000.1234");
@@ -1242,14 +1192,20 @@ describe("session-message worker integration", () => {
     };
     const createPiFactory = (factoryInput: { environment: Record<string, string> }): CloudTurnPiFactory => ({
       create: async (request) => {
-        expect(request.systemPrompt).toContain("## Session collaboration");
+        // Real proof material advertises the shared collaboration commands on the create path.
+        expect(request.systemPrompt).toContain("Session collaboration is available through these commands:");
+        expect(request.systemPrompt).toContain("- opentag session send <target-session-id> --message <text>");
+        expect(request.systemPrompt).toContain("Do not copy or persist its temporary proof");
         return {
           close: async () => undefined,
           prompt: async () => capture(factoryInput.environment),
         } as unknown as CloudTurnPiRuntime;
       },
       resume: async (request) => {
-        expect(request.systemPrompt).toContain("## Session collaboration");
+        // ...and identically on the resume path, so neither entrypoint can drop the section.
+        expect(request.systemPrompt).toContain("Session collaboration is available through these commands:");
+        expect(request.systemPrompt).toContain("- opentag session send <target-session-id> --message <text>");
+        expect(request.systemPrompt).toContain("Do not copy or persist its temporary proof");
         return {
           close: async () => undefined,
           prompt: async () => capture(factoryInput.environment),
@@ -1390,6 +1346,23 @@ describe("session-message worker integration", () => {
     expect(opened[0]?.sessionId).toBeDefined();
     expect(opened[1]?.sessionId).toBe(opened[0]?.sessionId);
     expect(opened[0]?.sessionDirectory).toBe(opened[1]?.sessionDirectory);
+    // Both entrypoints ran the one shared managed prompt: the created Turn is a visible Session
+    // with the visible behavior policy, and the resumed internal Session message is not.
+    expect(opened[0]?.systemPrompt).toContain("## Cloud execution context");
+    expect(opened[0]?.systemPrompt).toContain("You are a visible Session");
+    expect(opened[0]?.systemPrompt).toContain("Session kind: visible");
+    expect(opened[0]?.systemPrompt).toContain(`Current Session: ${delivery.sessionId}`);
+    expect(opened[0]?.systemPrompt).toContain("Lean toward a lively, friendly tone");
+    expect(opened[0]?.systemPrompt).toContain('add one emoji reaction meaning "received, working on it"');
+    expect(opened[0]?.systemPrompt).toContain("to the original user message via the provider CLI");
+    expect(opened[0]?.systemPrompt).toContain(
+      "Do not use approval or completion reactions such as thumbs-up or check marks",
+    );
+    expect(opened[1]?.systemPrompt).toContain("## Cloud execution context");
+    expect(opened[1]?.systemPrompt).toContain("You are an internal Session");
+    expect(opened[1]?.systemPrompt).toContain("Session kind: internal");
+    expect(opened[1]?.systemPrompt).toContain(`Current Session: ${message.targetSessionId}`);
+    expect(opened[1]?.systemPrompt).not.toContain("emoji");
     // The Session message runs on the current snapshot, not the snapshot that created the binding.
     expect(opened[0]?.systemPrompt).toContain("Base agent instruction.");
     expect(opened[1]?.systemPrompt).toContain("Session child instruction.");

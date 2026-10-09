@@ -20,7 +20,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { pack as tarPack } from "tar-stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractSkillArchive, packSkillDirectory } from "../skills/skill-archive.js";
 
 const roots: string[] = [];
@@ -166,6 +166,41 @@ describe("packSkillDirectory", () => {
     const adoptedPacked = await packSkillDirectory(adopted);
     expect(adoptedPacked.sha256).toBe(cleanPacked.sha256);
     expect(adoptedPacked.archive).toEqual(cleanPacked.archive);
+  });
+
+  it("packs the same bytes every run, with a zeroed gzip timestamp", async () => {
+    const root = await temporaryRoot();
+    const skill = await writeSkill(root, { "notes.md": "same content\n" });
+
+    const first = await packSkillDirectory(skill);
+    const second = await packSkillDirectory(skill);
+    expect(first.archive).toEqual(second.archive);
+    // The packer's gzip defaults its MTIME to the current time, which would make every regeneration
+    // differ from the committed catalog module even when nothing changed.
+    expect(Buffer.from(first.archive.slice(4, 8))).toEqual(Buffer.alloc(4));
+  });
+
+  it("packs without the host zlib compressor, so one input has one encoding everywhere", async () => {
+    const root = await temporaryRoot();
+    const skill = await writeSkill(root, { "notes.md": "same content\n" });
+    const zlib = await vi.importActual<typeof import("node:zlib")>("node:zlib");
+    vi.doMock("node:zlib", () => ({
+      ...zlib,
+      createGzip: (): never => {
+        throw new Error("the host compressor must not pack a Skill archive");
+      },
+    }));
+    try {
+      vi.resetModules();
+      const fresh = await import("../skills/skill-archive.js");
+      const packed = await fresh.packSkillDirectory(skill);
+      // `node:zlib` output varies across the toolchains we support, so the packer must not use it;
+      // the result still has to be a gzip stream the host can read back.
+      expect(zlib.gunzipSync(packed.archive).includes(Buffer.from("SKILL.md"))).toBe(true);
+    } finally {
+      vi.doUnmock("node:zlib");
+      vi.resetModules();
+    }
   });
 
   it("refuses a missing, invalid, or reserved manifest before uploading", async () => {

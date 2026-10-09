@@ -27,7 +27,7 @@ describe("ClaudeCodeAgentRuntime", () => {
       const run = runtime.prompt({ runId: "local-run", input: input("work") });
       await vi.waitFor(() => expect(events.some((event) => event.type === "interaction_requested")).toBe(true));
       expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("auto");
-      expect(argumentAfter(processes[0]?.args ?? [], "--permission-prompts")).toBe("stdio");
+      expect(argumentAfter(processes[0]?.args ?? [], "--permission-prompt-tool")).toBe("stdio");
       expect(JSON.parse(argumentAfter(processes[0]?.args ?? [], "--settings") as string)).toEqual({
         permissions: {
           allow: expect.arrayContaining([

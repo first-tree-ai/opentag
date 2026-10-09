@@ -5,13 +5,21 @@ import {
   AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
   AGENT_SKILLS_INSTALL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
+  agentSkillPresetInstallPath,
+  agentSkillPresetsPath,
   COMPUTER_AGENT_SKILLS_TEMPLATE,
+  InstallSkillPresetResponseSchema,
   ListAgentSkillsResponseSchema,
+  ListSkillPresetsResponseSchema,
+  RUNTIME_SKILL_PRESETS_PATH,
+  runtimeSkillPresetInstallPath,
+  SESSION_CLI_PROOF_HEADER,
   SKILL_FORMAT_HEADER,
   SKILL_SHA256_HEADER,
   SKILL_UPLOAD_CONTENT_TYPE,
   SkillDetailSchema,
 } from "@opentag/shared";
+import { SKILL_PRESETS } from "@opentag/skill-presets";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
@@ -19,7 +27,8 @@ import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { AgentService } from "../../services/agents/index.js";
 import type { UserAuthService } from "../../services/auth/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
-import { SkillService } from "../../services/skills/index.js";
+import { SessionCliProofError, type SessionCliProofService } from "../../services/sessions/index.js";
+import { SkillPresetService, SkillService } from "../../services/skills/index.js";
 import { RemoteSkillService } from "../../services/skills/source/remote-skill-service.js";
 import { SkillSourceFetcher } from "../../services/skills/source/source-fetcher.js";
 import { FakeSkillObjectStore } from "../support/fake-skill-object-store.js";
@@ -101,10 +110,20 @@ async function boot(): Promise<Harness> {
   // The remote-install routes are exercised with a local stub: an integration test may not depend on
   // the public network, and the transport under test here is HTTP plus PostgreSQL, not git.
   const remote = new RemoteSkillService({ skills: service, fetcher: await remoteSkillFetcher() });
+  // The packaged catalog is used as-is, so the wire contract is exercised against the real bundles.
+  const preset = new SkillPresetService({ skills: service });
+  const proofs = {
+    authenticate: async (proof: string) => {
+      if (proof !== "integration-proof") {
+        throw new SessionCliProofError("invalid_proof", "The Session CLI proof is invalid or stale");
+      }
+      return { agentId: agent.id };
+    },
+  } as unknown as Pick<SessionCliProofService, "authenticate">;
   const app = createApp({
     authService,
     machineAuthService: machineAuth,
-    skills: { service, remote },
+    skills: { service, remote, preset, proofs },
   });
   openApps.push(app);
   return {
@@ -387,4 +406,119 @@ describe("Remote Skill installation over HTTP", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toMatchObject({ code: "SKILL_SOURCE_INVALID", category: "validation" });
   });
+});
+
+describe("preset Skill surfaces", () => {
+  const target = SKILL_PRESETS[0];
+  if (target === undefined) throw new Error("The repository ships at least one preset");
+
+  it("installs a repository preset and reports its state over HTTP", async () => {
+    const harness = await boot();
+    const catalogUrl = agentSkillPresetsPath(harness.agentId);
+    const installUrl = agentSkillPresetInstallPath(harness.agentId, target.name);
+
+    const before = await harness.app.inject({ method: "GET", url: catalogUrl, headers: AUTH });
+    expect(before.statusCode).toBe(200);
+    expect(before.headers["cache-control"]).toBe("no-store");
+    const catalog = ListSkillPresetsResponseSchema.parse(before.json());
+    expect(catalog.categories.length).toBeGreaterThan(0);
+    expect(catalog.presets.find((entry) => entry.name === target.name)).toMatchObject({ state: "not_installed" });
+
+    const installed = await harness.app.inject({ method: "POST", url: installUrl, headers: AUTH, payload: {} });
+    expect(installed.statusCode).toBe(200);
+    const result = InstallSkillPresetResponseSchema.parse(installed.json());
+    expect(result.action).toBe("installed");
+    expect(result.skill).toMatchObject({ name: target.name, source: "preset", enabled: true, revision: 1 });
+
+    const after = ListSkillPresetsResponseSchema.parse(
+      (await harness.app.inject({ method: "GET", url: catalogUrl, headers: AUTH })).json(),
+    );
+    // The served identity is the canonical stored sha, so a fresh install always reads as installed.
+    expect(after.presets.find((entry) => entry.name === target.name)).toMatchObject({
+      state: "installed",
+      archiveSha256: result.skill.archiveSha256,
+    });
+
+    const repeat = await harness.app.inject({ method: "POST", url: installUrl, headers: AUTH, payload: {} });
+    expect(InstallSkillPresetResponseSchema.parse(repeat.json()).action).toBe("unchanged");
+
+    const stored = await harness.sql<{ source: string }[]>`
+      select source from agent_skills where agent_id = ${harness.agentId}
+    `;
+    expect(stored.map((row) => row.source)).toEqual(["preset"]);
+  }, 60_000);
+
+  it("refuses to overwrite a same-named Skill from another source", async () => {
+    const harness = await boot();
+    const bytes = await tarGz([
+      { name: "SKILL.md", body: skillManifest(target.name) },
+      { name: "extra.md", body: "a local variant" },
+    ]);
+    const digest = sha256(bytes);
+    const uploaded = await harness.app.inject({
+      method: "POST",
+      url: AGENT_SKILLS_TEMPLATE.replace(":agentId", harness.agentId),
+      headers: {
+        ...AUTH,
+        "content-type": SKILL_UPLOAD_CONTENT_TYPE,
+        [SKILL_SHA256_HEADER]: digest,
+        [SKILL_FORMAT_HEADER]: "tar.gz",
+        "content-length": String(bytes.byteLength),
+      },
+      payload: Buffer.from(bytes),
+    });
+    expect(uploaded.statusCode).toBe(200);
+
+    const catalog = ListSkillPresetsResponseSchema.parse(
+      (await harness.app.inject({ method: "GET", url: agentSkillPresetsPath(harness.agentId), headers: AUTH })).json(),
+    );
+    expect(catalog.presets.find((entry) => entry.name === target.name)).toMatchObject({ state: "name_conflict" });
+
+    const conflict = await harness.app.inject({
+      method: "POST",
+      url: agentSkillPresetInstallPath(harness.agentId, target.name),
+      headers: AUTH,
+      payload: {},
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().error).toMatchObject({ code: "SKILL_NAME_CONFLICT" });
+  }, 60_000);
+
+  it("serves the runtime surface from the proof and accepts the preset enum value", async () => {
+    const harness = await boot();
+
+    const denied = await harness.app.inject({ method: "GET", url: RUNTIME_SKILL_PRESETS_PATH });
+    expect(denied.statusCode).toBe(401);
+    expect(denied.json().error).toMatchObject({ code: "SESSION_PROOF_INVALID" });
+
+    const listed = await harness.app.inject({
+      method: "GET",
+      url: `${RUNTIME_SKILL_PRESETS_PATH}?agentId=${randomUUID()}`,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "integration-proof" },
+    });
+    expect(listed.statusCode).toBe(200);
+    const catalog = ListSkillPresetsResponseSchema.parse(listed.json());
+    expect(catalog.presets.find((entry) => entry.name === target.name)).toMatchObject({ state: "not_installed" });
+
+    const installed = await harness.app.inject({
+      method: "POST",
+      url: runtimeSkillPresetInstallPath(target.name),
+      headers: { [SESSION_CLI_PROOF_HEADER]: "integration-proof" },
+      payload: {},
+    });
+    expect(installed.statusCode).toBe(200);
+    expect(InstallSkillPresetResponseSchema.parse(installed.json())).toMatchObject({
+      action: "installed",
+      skill: { source: "preset" },
+    });
+
+    await harness.sql`
+      insert into agent_skills (agent_id, name, description, source, object_key, archive_sha256, archive_bytes, file_count)
+      values (${harness.agentId}, 'seeded-preset', 'seeded', 'preset', ${`keys/${randomUUID()}`}, ${"d".repeat(64)}, 1, 1)
+    `;
+    const [row] = await harness.sql<{ source: string }[]>`
+      select source from agent_skills where name = 'seeded-preset'
+    `;
+    expect(row?.source).toBe("preset");
+  }, 60_000);
 });

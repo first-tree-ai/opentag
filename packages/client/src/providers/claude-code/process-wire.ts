@@ -78,7 +78,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   #initializeTimer?: ReturnType<typeof setTimeout>;
 
   constructor(options: ClaudeCodeSpawnOptions) {
-    this.#permissionControl = options.args.includes("--permission-prompts");
+    this.#permissionControl = options.args.includes("--permission-prompt-tool");
     this.#maxLineBytes = options.maxLineBytes ?? CLAUDE_CODE_MAX_LINE_BYTES;
     this.#maxStderrBytes = options.maxStderrBytes ?? CLAUDE_CODE_MAX_STDERR_BYTES;
     this.#logger = options.logger ?? createLogger("provider-claude-code");

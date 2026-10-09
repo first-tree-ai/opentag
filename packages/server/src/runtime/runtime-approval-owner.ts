@@ -25,7 +25,7 @@ export interface ApprovalAction {
 }
 interface Options {
   store: ApprovalStore;
-  registry: Pick<ConnectionRegistry, "isCurrentConnection" | "send">;
+  registry: Pick<ConnectionRegistry, "currentConnectionId" | "isCurrentConnection" | "send">;
   serverInstanceId: string;
   authority: (
     request: RuntimeApprovalRequest,
@@ -56,6 +56,11 @@ export class RuntimeApprovalOwner {
     clearInterval(this.#timer);
     this.#timer = undefined;
     this.#sent.clear();
+  }
+
+  async onComputerRegistered(input: { computerId: string; instanceId: string }): Promise<void> {
+    const connectionId = this.options.registry.currentConnectionId(input.computerId, input.instanceId);
+    if (connectionId) await this.options.store.invalidateConnections(input.computerId, connectionId);
   }
 
   businessOptions(): RuntimeBusinessOptions {
@@ -118,10 +123,12 @@ export class RuntimeApprovalOwner {
     if (!(await this.options.store.insert(row))) return;
     try {
       const message = await this.options.messenger.post(row);
-      await this.options.store.update(row.id, "pending", {
-        messageId: message.messageId,
-        messageChannelId: message.channelId,
-      });
+      const card = { messageId: message.messageId, messageChannelId: message.channelId };
+      if (!(await this.options.store.update(row.id, "pending", card))) {
+        // A reconnect or deadline can invalidate the request while the card is being posted.
+        await this.options.store.update(row.id, "stale", card);
+        return decline(request);
+      }
     } catch {
       await this.options.store.update(row.id, "pending", { status: "stale" });
       this.options.onError();
@@ -149,6 +156,7 @@ export class RuntimeApprovalOwner {
     this.#polling = true;
     try {
       for (const row of await this.options.store.list(this.options.serverInstanceId)) await this.pollApproval(row);
+      await this.options.store.invalidateExpired(new Date(this.#now()));
       if (this.#now() - this.#lastPurge > 3600_000) {
         await this.options.store.purge(new Date(this.#now() - 7 * 86400_000));
         this.#lastPurge = this.#now();
@@ -160,6 +168,7 @@ export class RuntimeApprovalOwner {
 
   private async pollApproval(row: PendingApproval): Promise<void> {
     if (isResolved(row.status)) {
+      this.#sent.delete(row.id);
       await this.finish(row);
       return;
     }
@@ -177,10 +186,12 @@ export class RuntimeApprovalOwner {
     // Fence before sending; an uncertain write never replays an approval.
     this.#sent.add(row.id);
     try {
-      await this.options.registry.send(row.computerId, row.instanceId, {
-        ...decline(row.request),
-        decision: row.status,
-      });
+      await this.options.registry.send(
+        row.computerId,
+        row.instanceId,
+        { ...decline(row.request), decision: row.status },
+        row.connectionId,
+      );
     } catch {
       await this.options.store.update(row.id, row.status, { status: "stale" });
       this.#sent.delete(row.id);
@@ -191,7 +202,8 @@ export class RuntimeApprovalOwner {
   private async invalidate(row: PendingApproval, current: boolean): Promise<void> {
     if (!(await this.options.store.update(row.id, row.status, { status: "stale" }))) return;
     this.#sent.delete(row.id);
-    if (current) await this.options.registry.send(row.computerId, row.instanceId, decline(row.request));
+    if (current)
+      await this.options.registry.send(row.computerId, row.instanceId, decline(row.request), row.connectionId);
   }
 
   private current(row: PendingApproval) {

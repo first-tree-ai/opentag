@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { RuntimeApprovalRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import type { ApprovalStore, PendingApproval } from "../runtime/approval-store.js";
+import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { type ApprovalAction, RuntimeApprovalOwner } from "../runtime/runtime-approval-owner.js";
 
 function setup(provider: "slack" | "feishu" = "slack") {
@@ -26,10 +28,27 @@ function setup(provider: "slack" | "feishu" = "slack") {
     list: async (id) =>
       [...rows.values()].filter(
         (row) =>
-          row.serverInstanceId === id &&
-          (["pending", "accept", "decline"].includes(row.status) ||
-            (["approved", "denied", "stale"].includes(row.status) && row.cardUpdatedAt === null)),
+          (row.serverInstanceId === id && ["pending", "accept", "decline"].includes(row.status)) ||
+          (["approved", "denied", "stale"].includes(row.status) &&
+            row.messageId !== null &&
+            row.cardUpdatedAt === null),
       ),
+    invalidateConnections: async (computerId, connectionId) => {
+      for (const row of rows.values()) {
+        if (
+          row.computerId === computerId &&
+          row.connectionId !== connectionId &&
+          ["pending", "accept", "decline"].includes(row.status)
+        )
+          rows.set(row.id, { ...row, status: "stale" });
+      }
+    },
+    invalidateExpired: async (date) => {
+      for (const row of rows.values()) {
+        if (row.expiresAt <= date && ["pending", "accept", "decline"].includes(row.status))
+          rows.set(row.id, { ...row, status: "stale" });
+      }
+    },
     purge: async () => undefined,
   };
   const context = {
@@ -52,8 +71,9 @@ function setup(provider: "slack" | "feishu" = "slack") {
   const scope = { imBindingId: randomUUID(), authority, deadlineAt: new Date(now + 60_000) };
   const load = vi.fn(async () => scope);
   const registry = {
+    currentConnectionId: vi.fn(() => context.connectionId),
     isCurrentConnection: vi.fn(() => true),
-    send: vi.fn(async (_computerId: string, _instanceId: string, _frame: unknown) => undefined),
+    send: vi.fn(async (_computerId: string, _instanceId: string, _frame: unknown, _connectionId?: string) => undefined),
   };
   const messenger = {
     post: vi.fn(async () => ({ messageId: "approval-message", channelId: "sender-dm" })),
@@ -131,6 +151,7 @@ describe("Runtime approvals", () => {
           requestId: s.request.requestId,
           decision: "accept",
         }),
+        s.context.connectionId,
       );
       expect(s.messenger.finish).not.toHaveBeenCalled();
       const { title: _title, description: _description, expiresAt: _expiresAt, ...identity } = s.request;
@@ -230,6 +251,7 @@ describe("Runtime approvals", () => {
       s.context.computerId,
       s.context.instanceId,
       expect.objectContaining({ decision: "decline" }),
+      s.context.connectionId,
     );
   });
 
@@ -240,6 +262,124 @@ describe("Runtime approvals", () => {
     s.registry.isCurrentConnection.mockReturnValue(false);
     await s.owner.poll();
     expect(s.row().status).toBe("stale");
+    expect(s.registry.send).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("fences a replacement socket while authority is being checked (valid: %s)", async (valid) => {
+    const s = setup();
+    const registry = new ConnectionRegistry();
+    const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
+    const socket = () => ({ readyState: WebSocket.OPEN, send, close: vi.fn() }) as unknown as WebSocket;
+    const register = (connectionId: string) =>
+      registry.register(
+        {
+          ...s.context,
+          connectionId,
+          socket: socket(),
+          lastHeartbeatAt: 1,
+        },
+        async () => undefined,
+      );
+    await register(s.context.connectionId);
+    const owner = new RuntimeApprovalOwner({ ...s.options, registry });
+    await owner.request(s.request, s.context);
+    await owner.decide(s.action());
+    let resume!: (value: Awaited<ReturnType<typeof s.load>>) => void;
+    let checking!: () => void;
+    const checked = new Promise<void>((resolve) => {
+      checking = resolve;
+    });
+    s.load.mockImplementationOnce(() => {
+      checking();
+      return new Promise((resolve) => {
+        resume = resolve;
+      });
+    });
+    const poll = owner.poll();
+    await checked;
+    await register(randomUUID());
+    resume(valid ? await s.load() : (undefined as never));
+    if (valid) await poll;
+    else await expect(poll).rejects.toMatchObject({ code: "instance_replaced" });
+    expect(send).not.toHaveBeenCalled();
+    expect(s.row().status).toBe("stale");
+  });
+
+  it.each(["pending", "accept", "decline"] as const)(
+    "invalidates an old server's %s request on reconnect",
+    async (status) => {
+      const s = setup();
+      await s.owner.request(s.request, s.context);
+      s.rows.set(s.row().id, { ...s.row(), status });
+      s.owner.close();
+      const replacement = new RuntimeApprovalOwner({ ...s.options, serverInstanceId: randomUUID() });
+      s.registry.currentConnectionId.mockReturnValue(randomUUID());
+      await replacement.onComputerRegistered(s.context);
+      expect(await replacement.decide(s.action())).toBe("unavailable");
+      await replacement.poll();
+      expect(s.registry.send).not.toHaveBeenCalled();
+      expect(s.row().status).toBe("stale");
+      expect(s.messenger.finish).toHaveBeenCalledWith(expect.objectContaining({ status: "stale" }));
+      expect(s.row().cardUpdatedAt).toBeInstanceOf(Date);
+    },
+  );
+
+  it("finishes a card posted while its runtime connection is being replaced", async () => {
+    const s = setup();
+    let resume!: (value: { messageId: string; channelId: string }) => void;
+    let posting!: () => void;
+    const posted = new Promise<void>((resolve) => {
+      posting = resolve;
+    });
+    s.messenger.post.mockImplementationOnce(() => {
+      posting();
+      return new Promise((resolve) => {
+        resume = resolve;
+      });
+    });
+    const request = s.owner.request(s.request, s.context);
+    await posted;
+    s.registry.currentConnectionId.mockReturnValue(randomUUID());
+    await s.owner.onComputerRegistered(s.context);
+    expect(s.row().status).toBe("stale");
+    resume({ messageId: "approval-message", channelId: "sender-dm" });
+    expect(await request).toMatchObject({ decision: "decline" });
+    await s.owner.poll();
+    expect(s.messenger.finish).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "stale", messageId: "approval-message" }),
+    );
+    expect(s.row().cardUpdatedAt).toBeInstanceOf(Date);
+    expect(s.registry.send).not.toHaveBeenCalled();
+  });
+
+  it("preserves current and other computers' live approvals on reconnect", async () => {
+    const s = setup();
+    await s.owner.request(s.request, s.context);
+    const other = { ...s.row(), id: randomUUID(), computerId: randomUUID(), serverInstanceId: randomUUID() };
+    s.rows.set(other.id, other);
+    const replacement = new RuntimeApprovalOwner({ ...s.options, serverInstanceId: randomUUID() });
+    await replacement.onComputerRegistered(s.context);
+    await replacement.poll();
+    expect(s.row().status).toBe("pending");
+    expect(s.rows.get(other.id)?.status).toBe("pending");
+    expect(s.messenger.finish).not.toHaveBeenCalled();
+  });
+
+  it("expires an old server's request even without a reconnect and retries its card", async () => {
+    const s = setup();
+    await s.owner.request(s.request, s.context);
+    s.owner.close();
+    const replacement = new RuntimeApprovalOwner({ ...s.options, serverInstanceId: randomUUID() });
+    await replacement.poll();
+    expect(s.row().status).toBe("pending");
+    s.advance();
+    await replacement.poll();
+    expect(s.row().status).toBe("stale");
+    s.messenger.finish.mockRejectedValueOnce(new Error("temporary failure"));
+    await replacement.poll();
+    expect(s.row().cardUpdatedAt).toBeNull();
+    await replacement.poll();
+    expect(s.row().cardUpdatedAt).toBeInstanceOf(Date);
     expect(s.registry.send).not.toHaveBeenCalled();
   });
 

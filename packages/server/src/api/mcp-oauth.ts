@@ -21,16 +21,24 @@ import type { McpOAuthFlowService } from "../services/mcp/index.js";
 import { McpServiceError } from "../services/mcp/index.js";
 import { parseRequest } from "./request-validation.js";
 
-const CallbackQuerySchema = z
-  .object({
-    code: z.string().min(1).max(8192).optional(),
-    state: z.string().min(1).max(512),
-    error: z.string().min(1).max(256).optional(),
-    // Accepted and discarded: a bounded value is never shown to the browser.
-    error_description: z.string().max(2048).optional(),
-    iss: z.string().min(1).max(2048).optional(),
-  })
-  .strict();
+/*
+ * Unknown query parameters are stripped, not refused.
+ *
+ * This response is written by the peer's authorization server, not by this client, and RFC 6749
+ * §4.1.2 requires the client to ignore response parameters it does not recognize. Real servers
+ * rely on that: Google's redirect carries `scope`, `authuser`, and `prompt` (and `hd` for a
+ * Workspace account), so an exact schema turned every Google authorization into
+ * MCP_OAUTH_FAILED before the flow could even be located. Only the fields below are read, and each
+ * stays bounded; anything else is dropped here and never reaches the flow.
+ */
+const CallbackQuerySchema = z.object({
+  code: z.string().min(1).max(8192).optional(),
+  state: z.string().min(1).max(512),
+  error: z.string().min(1).max(256).optional(),
+  // Accepted and discarded: a bounded value is never shown to the browser.
+  error_description: z.string().max(2048).optional(),
+  iss: z.string().min(1).max(2048).optional(),
+});
 
 export interface McpOAuthRoutesOptions {
   /**

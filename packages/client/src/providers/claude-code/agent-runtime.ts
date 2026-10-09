@@ -333,7 +333,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       ...(this.#policy.approvals === "never"
         ? []
         : [
-            "--permission-prompts",
+            "--permission-prompt-tool",
             "stdio",
             "--settings",
             JSON.stringify({
@@ -879,7 +879,7 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--strict-mcp-config") &&
     helpResult.stdout.includes("--allowedTools") &&
     /\bauto\b/.test(helpResult.stdout) &&
-    helpResult.stdout.includes("--permission-prompts") &&
+    helpResult.stdout.includes("--permission-prompt-tool") &&
     helpResult.stdout.includes("--append-system-prompt");
   const credential =
     hasCredentialEnvironment(environment) || (await probeClaudeCodeCredential(command, execution, signal));

@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { parseRequest } from "../api/request-validation.js";
 import {
   isHostedEnvironment,
+  MAX_WEBSITE_ORIGINS,
   parseCloudStorageBase,
   parseDatabaseConfig,
   parseServerConfig,
@@ -22,6 +23,7 @@ import {
 } from "../db/migrate.js";
 import { createComputerAuthPreHandler } from "../plugins/computer-auth.js";
 import { resolveAuthenticatedUserId } from "../plugins/user-auth.js";
+import { formatStartupError } from "../services/auth/security.js";
 
 vi.mock("postgres", () => ({ default: vi.fn() }));
 vi.mock("drizzle-orm/postgres-js", () => ({ drizzle: vi.fn(() => ({ kind: "database" })) }));
@@ -388,6 +390,73 @@ describe("parseServerConfig", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
   });
 
+  it("parses OPENTAG_WEBSITE_ORIGINS into a canonical, de-duplicated allowlist", () => {
+    expect(parseServerConfig({ ...required, OPENTAG_ENV: "dev" }).websiteOrigins).toEqual([]);
+    expect(
+      parseServerConfig({ ...required, OPENTAG_ENV: "dev", OPENTAG_WEBSITE_ORIGINS: "  ,  " }).websiteOrigins,
+    ).toEqual([]);
+
+    const staging = { ...required, OPENTAG_ENV: "staging", OPENTAG_PUBLIC_URL: "https://dev.opentag.build" };
+    expect(
+      parseServerConfig({
+        ...staging,
+        OPENTAG_WEBSITE_ORIGINS: " https://staging.opentag.build ,https://opentag.build,https://opentag.build ",
+      }).websiteOrigins,
+    ).toEqual(["https://staging.opentag.build", "https://opentag.build"]);
+
+    // A loopback HTTP origin is how a local website dev server reaches a deployed API.
+    expect(
+      parseServerConfig({ ...staging, OPENTAG_WEBSITE_ORIGINS: "http://localhost:3000,http://127.0.0.1:5173" })
+        .websiteOrigins,
+    ).toEqual(["http://localhost:3000", "http://127.0.0.1:5173"]);
+
+    // Plain HTTP widens only in dev, and never to a non-loopback host in a hosted environment.
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "dev",
+        OPENTAG_WEBSITE_ORIGINS: "http://192.0.2.10:3000",
+      }).websiteOrigins,
+    ).toEqual(["http://192.0.2.10:3000"]);
+
+    for (const invalid of [
+      "http://example.com",
+      "https://opentag.build/site",
+      "https://user:secret@opentag.build",
+      "https://opentag.build?next=1",
+      "ftp://opentag.build",
+      "not-a-url",
+    ]) {
+      expect(() => parseServerConfig({ ...staging, OPENTAG_WEBSITE_ORIGINS: invalid })).toThrow();
+    }
+
+    const tooMany = Array.from(
+      { length: MAX_WEBSITE_ORIGINS + 1 },
+      (_, index) => `https://site-${index}.example.com`,
+    ).join(",");
+    expect(() => parseServerConfig({ ...staging, OPENTAG_WEBSITE_ORIGINS: tooMany })).toThrow();
+  });
+
+  it("keeps an invalid origin value out of the startup error", () => {
+    const sentinel = "catalog-secret";
+    let thrown: unknown;
+    try {
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://dev.opentag.build",
+        OPENTAG_WEBSITE_ORIGINS: `https://user:${sentinel}@example.com?token=${sentinel}`,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const formatted = formatStartupError(thrown);
+    expect(formatted).toContain("OPENTAG_WEBSITE_ORIGINS entry 1");
+    expect(formatted).not.toContain(sentinel);
+    expect(formatted).not.toContain("user:");
+  });
+
   it("keeps the legacy encryption defaults and fully validates the v2 key ring opt-in", () => {
     const ringKey = Buffer.alloc(32, 23).toString("base64");
     const retiredKey = Buffer.alloc(32, 11).toString("base64");
@@ -647,6 +716,33 @@ describe("parseServerConfig", () => {
         environment,
         google: { clientId: "client", clientSecret: "secret" },
       });
+    }
+  });
+
+  it("requires the MCP Google client pair to be configured together", () => {
+    // Absent and empty both mean "no deployment Google client"; neither is an error.
+    expect(parseServerConfig(required).mcpGoogleOAuth).toBeUndefined();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_MCP_GOOGLE_CLIENT_ID: "",
+        OPENTAG_MCP_GOOGLE_CLIENT_SECRET: "   ",
+      }).mcpGoogleOAuth,
+    ).toBeUndefined();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_MCP_GOOGLE_CLIENT_ID: "mcp-client",
+        OPENTAG_MCP_GOOGLE_CLIENT_SECRET: "mcp-secret",
+      }),
+    ).toMatchObject({ mcpGoogleOAuth: { clientId: "mcp-client", clientSecret: "mcp-secret" } });
+    expect(() => parseServerConfig({ ...required, OPENTAG_MCP_GOOGLE_CLIENT_ID: "mcp-client" })).toThrow();
+    // The all-or-none error names the variables and never echoes configured material.
+    try {
+      parseServerConfig({ ...required, OPENTAG_MCP_GOOGLE_CLIENT_SECRET: "mcp-secret" });
+      expect.unreachable("partial MCP Google client configuration must fail");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain("mcp-secret");
     }
   });
 

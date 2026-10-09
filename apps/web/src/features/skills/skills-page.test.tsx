@@ -105,6 +105,35 @@ describe("SkillsPage", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it("offers the preset catalog and opens it without reading anything else", async () => {
+    stubList([]);
+    const presets = vi.spyOn(browserApi, "skillPresets").mockResolvedValue({
+      categories: [{ id: "getting-started", order: 10 }],
+      presets: [
+        {
+          name: "mcp-onboarding",
+          description: "Add MCP tools to this Agent",
+          category: "getting-started",
+          order: 10,
+          archiveSha256: "a".repeat(64),
+          archiveBytes: 2048,
+          fileCount: 2,
+          state: "not_installed",
+        },
+      ],
+    });
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+
+    await screen.findByText(/No Skills yet/);
+    // The header action and the empty-state call to action both read "Presets"; either opens it.
+    const buttons = screen.getAllByRole("button", { name: "Presets" }) as HTMLButtonElement[];
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons[0]?.disabled).toBe(false);
+    fireEvent.click(buttons[0] as HTMLButtonElement);
+    expect((await screen.findAllByText("Preset Skills")).length).toBeGreaterThan(0);
+    expect(presets).toHaveBeenCalledWith(AGENT_ID);
+  });
+
   it("disables remote installation when the deployment has no Skill storage", async () => {
     stubList([], "unavailable");
     wrap(<SkillsPage agentId={AGENT_ID} />);

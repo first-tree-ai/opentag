@@ -1,6 +1,6 @@
+import type { McpCatalogEntry, McpCatalogLocalizedText } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { getLocale, type Locale } from "../../../i18n/locale.js";
-import type { McpCatalogEntry, McpCatalogLocalizedText } from "./mcp-catalog.gen.js";
 
 /**
  * Reads and joins for the marketplace catalog.

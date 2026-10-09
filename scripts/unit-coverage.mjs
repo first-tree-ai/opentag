@@ -4,7 +4,7 @@
  * Measures unit-test line coverage one workspace at a time.
  *
  * Running every Vitest project in a single pass and letting the coverage provider merge the results
- * under-reports: the `include` list spans all five workspaces, so each project's `all: true` sweep
+ * under-reports: the `include` list spans every workspace, so each project's `all: true` sweep
  * emits a zero-coverage entry for every *other* workspace's files, and the merge does not reliably
  * keep the covered lines a different project already recorded. Files that are fully executed the
  * moment they are imported showed the damage most clearly -- the Drizzle table declarations in
@@ -50,6 +50,8 @@ export const COVERAGE_PROJECTS = [
   { name: "cli", root: "apps/cli", sources: "apps/cli/src" },
   { name: "web", root: "apps/web", sources: "apps/web/src" },
   { name: "shared", root: "packages/shared", sources: "packages/shared/src" },
+  { name: "skill-presets", root: "packages/skill-presets", sources: "packages/skill-presets/src" },
+  { name: "mcp-presets", root: "packages/mcp-presets", sources: "packages/mcp-presets/src" },
   { name: "client", root: "packages/client", sources: "packages/client/src" },
   { name: "server", root: "packages/server", sources: "packages/server/src" },
 ];
@@ -61,8 +63,8 @@ export const COVERAGE_PROJECTS = [
  * holding the config. Handing the `shared` project `packages/shared/src/**`, when its root is already
  * `packages/shared`, therefore makes it look under `packages/shared/packages/shared/src/**` and measure
  * nothing at all: the summary comes back as a lone `total` of `{ total: 0, pct: "Unknown" }`, every
- * `summaryMetric` reads `undefined`, and `assertCoverageFloors` then reports all four metrics of all five
- * workspaces as `-Infinity` below their floor in one go -- a wall of breaches whose actual cause is that
+ * `summaryMetric` reads `undefined`, and `assertCoverageFloors` then reports all four metrics of every
+ * workspace as `-Infinity` below their floor in one go -- a wall of breaches whose actual cause is that
  * no file was measured. This is what the Vitest 5 upgrade turned into a hard failure of `pnpm
  * test:coverage`, and it is why the fix belongs here rather than in the floors.
  *
@@ -83,6 +85,8 @@ const ROOT_COVERAGE_INCLUDE_PATTERNS = [
   "apps/cli/src/**/*.{ts,tsx}",
   "apps/web/src/**/*.{ts,tsx}",
   "packages/shared/src/**/*.{ts,tsx}",
+  "packages/skill-presets/src/**/*.{ts,tsx}",
+  "packages/mcp-presets/src/**/*.{ts,tsx}",
   "packages/client/src/**/*.{ts,tsx}",
   "packages/server/src/**/*.{ts,tsx}",
 ];

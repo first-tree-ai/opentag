@@ -15,7 +15,7 @@ import {
   users,
 } from "../../db/schema/index.js";
 import { loadApprovalAuthority } from "../../runtime/approval-authority.js";
-import { PostgresApprovalStore } from "../../runtime/approval-store.js";
+import { type PendingApproval, PostgresApprovalStore } from "../../runtime/approval-store.js";
 import { RuntimeApprovalOwner } from "../../runtime/runtime-approval-owner.js";
 import { AgentService } from "../../services/agents/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
@@ -189,6 +189,7 @@ describe("Agent persistence and authorization", () => {
         serverInstanceId,
         authority: (input, scope) => loadApprovalAuthority(value.database, input, scope),
         registry: {
+          currentConnectionId: () => context.connectionId,
           isCurrentConnection: () => true,
           send: async (_computer, _instance, frame) => {
             sent.push(frame);
@@ -245,6 +246,77 @@ describe("Agent persistence and authorization", () => {
       owner.close();
       await value.database.update(agents).set({ runtimeProvider: "pi" }).where(eq(agents.id, created.id));
       expect(await loadApprovalAuthority(value.database, request, context)).toBeUndefined();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("invalidates old approval connections and expires orphaned requests across replicas", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const otherComputer = await createComputer(value.database, value.bootstrap.userId);
+      const created = await value.service.createForAccount(value.bootstrap.userId, createInput(computer.id));
+      const [binding] = await value.database
+        .insert(imBindings)
+        .values({ agentId: created.id, provider: "feishu" })
+        .returning();
+      if (!binding) throw new Error("Binding fixture missing");
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 60_000);
+      const serverInstanceId = crypto.randomUUID();
+      const row: PendingApproval = {
+        id: crypto.randomUUID(),
+        computerId: computer.id,
+        instanceId: crypto.randomUUID(),
+        serverInstanceId,
+        connectionId: "old-socket",
+        imBindingId: binding.id,
+        status: "pending",
+        messageId: "card",
+        messageChannelId: "dm",
+        cardUpdatedAt: null,
+        expiresAt,
+        authority: {
+          provider: "feishu",
+          senderExternalId: "sender",
+          generation: 1,
+          channelId: "channel",
+          threadKey: null,
+          externalMessageId: "message",
+          configRevision: 1,
+        },
+        request: {
+          type: "approval:request",
+          requestId: crypto.randomUUID(),
+          sessionId: crypto.randomUUID(),
+          deliveryId: crypto.randomUUID(),
+          turnId: "turn",
+          placementGeneration: 1,
+          title: "Approve",
+          description: "git push",
+          expiresAt: expiresAt.toISOString(),
+        },
+      };
+      const current = { ...row, id: crypto.randomUUID(), connectionId: "new-socket", status: "accept" as const };
+      const other = { ...row, id: crypto.randomUUID(), computerId: otherComputer.id, status: "decline" as const };
+      const store = new PostgresApprovalStore(value.database);
+      for (const approval of [row, current, other]) await store.insert(approval);
+      const replacementServerId = crypto.randomUUID();
+      expect(await store.list(replacementServerId)).toEqual([]);
+      await store.invalidateConnections(computer.id, "new-socket");
+      expect((await store.find(row.id))?.status).toBe("stale");
+      expect((await store.find(current.id))?.status).toBe("accept");
+      expect((await store.find(other.id))?.status).toBe("decline");
+      expect((await store.list(replacementServerId)).map((item) => item.id)).toEqual([row.id]);
+      await store.update(row.id, "stale", { cardUpdatedAt: now });
+      expect(await store.list(replacementServerId)).toEqual([]);
+      await store.invalidateExpired(expiresAt);
+      expect((await store.list(replacementServerId)).map((item) => item.id).sort()).toEqual(
+        [current.id, other.id].sort(),
+      );
+      expect((await store.find(current.id))?.status).toBe("stale");
+      expect((await store.find(other.id))?.status).toBe("stale");
     } finally {
       await value.sql.end();
     }

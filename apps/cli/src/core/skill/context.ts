@@ -12,7 +12,7 @@ import type { SkillApiClient, SkillCommandDependencies } from "./shared.js";
  * decision, not the Agent's.
  */
 
-export type SkillOperation = "push" | "list" | "pull" | "remove" | "enable" | "disable";
+export type SkillOperation = "push" | "list" | "pull" | "remove" | "enable" | "disable" | "install";
 
 const ACCOUNT_ONLY_OPERATIONS: ReadonlySet<SkillOperation> = new Set(["remove", "enable", "disable"]);
 

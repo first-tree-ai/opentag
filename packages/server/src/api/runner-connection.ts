@@ -823,12 +823,9 @@ export class RunnerConnection {
       this.#closeWith(RUNNER_WS_CLOSE.staleScope, "this Runner connection was replaced");
       return;
     }
-    if (outcome === "deferred") {
-      // The service defers until the verified UID is tracked. With readiness now held by the hub,
-      // an already-tracked row promotes immediately; an in-flight create caller promotes the rest
-      // when its tracking completes.
-      await this.#options.service.promoteDeferredReadiness(current.sandboxId);
-    }
+    // Promote early readiness, or notify consumers of an already-ready reconnect, only AFTER
+    // this exact socket's readiness is accepted by the Hub. The create caller covers late UID tracking.
+    await this.#options.service.promoteDeferredReadiness(current.sandboxId);
   }
 
   async #handleResult(current: RunnerScope, frame: RunnerAcceptanceResultFrame): Promise<void> {

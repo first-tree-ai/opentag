@@ -6,11 +6,14 @@ import { Button, Icon, Input, SettingsRow, Switch } from "../../../ui/design-sys
 const SUGGESTED_COMMANDS = [
   "git status",
   "git diff",
-  "git log",
   "docker ps",
-  "docker images",
   "docker logs",
-  "docker compose ps",
+  "curl",
+  "gh pr view",
+  "gh issue view",
+  "npm test",
+  "pnpm test",
+  "pytest",
 ] as const;
 const COMMAND_CHIP_CLASS_NAME = "!h-7 px-2 !text-xs";
 

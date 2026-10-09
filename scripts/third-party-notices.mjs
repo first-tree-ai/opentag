@@ -26,6 +26,7 @@ const bundledPackages = [
   { name: "ws", consumerManifest: "apps/cli/package.json" },
   { name: "zod", consumerManifest: "packages/shared/package.json" },
   { name: "semver", consumerManifest: "packages/client/package.json" },
+  { name: "fflate", consumerManifest: "packages/client/package.json" },
   {
     name: "tar-stream",
     consumerManifest: "packages/client/package.json",

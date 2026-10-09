@@ -195,6 +195,7 @@ describe("AgentTurnRunner", () => {
     expect(input.items[0]?.text).toContain("including after an approval decision");
     expect(input.items[0]?.text).toContain("Your final text to OpenTag does not count as the reply");
     expect(input.items[0]?.text).toContain("If the human explicitly asked for silence");
+    expect(input.items[0]?.text).toContain("does not waive a pre-work reaction required by the managed instructions");
     expect(input.items[0]?.text).not.toContain("Your final text is not sent to the IM provider automatically");
     expect(input.items[0]?.text).toContain("OpenTag has no hosted message send, reply, or reaction tool");
     expect(input.items[0]?.text).toContain("query the provider before deciding whether to retry");
@@ -284,19 +285,48 @@ describe("AgentTurnRunner", () => {
     expect(context).toContain(JSON.stringify(request.content.providerRef));
     expect(context).toContain("overheard the message");
     expect(context).toContain("avoid meaningless, duplicate, intrusive");
-    expect(context).toContain("Choosing to take no provider action remains valid");
+    expect(context).toContain(
+      "Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
+    );
     expect(context).toContain("Attention does not change provider CLI or credential availability");
   });
 
-  it("compiles observer role independently from attention without removing Session credentials", () => {
-    const request = { ...delivery(), attention: "ambient" as const, replyRole: "observer" as const };
-    const context = buildAgentInput(request).items[0]?.text;
-    expect(context).toContain("Attention: ambient");
-    expect(context).toContain("Reply role: observer");
-    expect(context).toContain("A Thread Session owns the provider reply");
-    expect(context).toContain("do not reply, react, or perform any other provider mutation");
-    expect(context).toContain("The CLI and credentials remain available");
-    expect(context).toContain("does not change this Session's authority or credential availability");
+  it("compiles observer restrictions independently from attention and provider without removing Session credentials", () => {
+    const feishuRef = {
+      provider: "feishu" as const,
+      teamBrand: "feishu" as const,
+      appId: "app-1",
+      botOpenId: "bot-1",
+      chatId: "chat-1",
+      messageId: "message-1",
+    };
+    for (const attention of ["ambient", "direct"] as const) {
+      for (const ref of [providerRef("1710000000.000000"), feishuRef]) {
+        const request = { ...delivery(), attention, replyRole: "observer" as const };
+        request.content.providerRef = ref;
+        const input = buildAgentInput(request);
+        const context = input.items[0]?.text;
+        expect(context).toContain(`Attention: ${attention}`);
+        expect(context).toContain("Reply role: observer");
+        // The Thread Session owns the task execution as well as the provider reply.
+        expect(context).toContain("A Thread Session owns the provider reply and the task execution");
+        expect(context).toContain("do not reply, react, or perform any other provider mutation");
+        expect(context).toContain("do not investigate, execute or repeat, delegate, or create artifacts for that task");
+        expect(context).toContain("Finish this observer Turn without tool calls or task work");
+        // The observer copy is ambient channel context only, whatever the attention flag says; no
+        // generic owner guidance may tell the observer to handle the task or choose a reply.
+        expect(context).toContain("Treat it as ambient channel context only");
+        expect(context).not.toContain("Handle the message normally");
+        expect(context).not.toContain("choose whether to reply");
+        // Provider mutation prohibition and Session credential/CLI availability are preserved.
+        expect(context).toContain("Do not run a provider CLI mutation for this observer copy");
+        expect(context).toContain("The CLI and credentials remain available");
+        expect(context).toContain("Reply role constrains task execution and provider actions for this delivery");
+        expect(context).toContain("does not change this Session's authority or credential availability");
+        // The inbound message itself is not dropped.
+        expect(input.items[1]?.text).toBe("hello");
+      }
+    }
 
     const directObserverContext = buildAgentInput({ ...delivery(), replyRole: "observer" }).items[0]?.text;
     expect(directObserverContext).toContain("Do not run a provider CLI mutation for this observer copy");
@@ -305,6 +335,10 @@ describe("AgentTurnRunner", () => {
     const ownerContext = buildAgentInput(delivery()).items[0]?.text;
     expect(ownerContext).toContain("Reply role: owner");
     expect(ownerContext).toContain("For direct requests, deliver the result through the provider CLI");
+    expect(ownerContext).toContain("does not waive a pre-work reaction required by the managed instructions");
+    expect(ownerContext).not.toContain("take no provider action");
+    expect(ownerContext).not.toContain("must reply");
+    expect(ownerContext).not.toContain("observer Turn");
   });
 
   it("exposes provider-native thread facts without adding a provider reply policy", () => {

@@ -427,10 +427,13 @@ export class ConnectionRegistry {
     return current;
   }
 
-  async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
+  async send(computerId: string, instanceId: string, frame: unknown, expectedConnectionId?: string): Promise<void> {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
       throw new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current");
+    }
+    if (expectedConnectionId !== undefined && current.connectionId !== expectedConnectionId) {
+      throw new RuntimeRegistrySendError("instance_replaced", "The runtime connection was replaced");
     }
     if (current.active === false) {
       throw new RuntimeRegistrySendError("unavailable", "The Computer runtime registration is not active");

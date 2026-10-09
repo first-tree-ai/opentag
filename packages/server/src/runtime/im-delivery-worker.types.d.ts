@@ -3,7 +3,7 @@ import type { BackgroundFailureSupervisor } from "../observability/background-fa
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
-import type { IngressAllocationOutcome } from "../services/sandboxes/sandbox-runner-service.js";
+import type { IngressAllocationOutcome, ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
 
@@ -37,6 +37,8 @@ export type WorkerClaim =
 
 /** A narrowly injected Cloud sandbox allocation port so real Cloud API seams stay outside the worker. */
 export interface CloudSessionAllocationPort {
+  /** Current accepted connection and tracked allocation, for notification/retry races. */
+  readyAllocation?(sandboxId: string): Promise<ReadyRunnerAllocation | undefined>;
   /** Existing SandboxService.ensureForAccount: idempotent Session -> Sandbox ensure. */
   ensureSandbox(
     input: {

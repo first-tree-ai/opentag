@@ -955,7 +955,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const command = resolve(home, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts auto --append-system-prompt\\n"; exit 0; fi\nexit 1\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool auto --append-system-prompt\\n"; exit 0; fi\nexit 1\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -2581,7 +2581,7 @@ async function composeClaudeCodeRuntime(options: {
   const command = resolve(options.home, "claude-env-fixture");
   await writeFile(
     command,
-    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts auto --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
+    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool auto --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
     "utf8",
   );
   await chmod(command, 0o755);

@@ -28,6 +28,10 @@ export function skillNotFound(message = "The Skill was not found"): SkillService
   return new SkillServiceError(SKILL_ERROR_CODES.NOT_FOUND, message);
 }
 
+export function skillPresetNotFound(message = "The preset Skill was not found"): SkillServiceError {
+  return new SkillServiceError(SKILL_ERROR_CODES.PRESET_NOT_FOUND, message);
+}
+
 export function skillNameConflict(message = "A Skill with that name already exists"): SkillServiceError {
   return new SkillServiceError(SKILL_ERROR_CODES.NAME_CONFLICT, message);
 }

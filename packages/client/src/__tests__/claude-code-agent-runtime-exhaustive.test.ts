@@ -633,7 +633,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const command = join(directory, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts "auto" --append-system-prompt\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -679,11 +679,11 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     }
   });
 
-  it.each(["auto", "--permission-prompts"])("rejects a CLI without %s support", async (missing) => {
+  it.each(["auto", "--permission-prompt-tool"])("rejects a CLI without %s support", async (missing) => {
     const directory = await temporaryDirectory("opentag-claude-probe-");
     const command = join(directory, "claude-fixture");
     const help =
-      "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools auto --permission-prompts --append-system-prompt";
+      "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools auto --permission-prompt-tool --append-system-prompt";
     await writeFile(
       command,
       `#!/bin/sh
@@ -712,7 +712,7 @@ exit 1
           : "exit 1";
     await writeFile(
       missingCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts "auto" --append-system-prompt\\n"; exit 0; fi\n${authResponse}\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\n${authResponse}\n`,
       "utf8",
     );
     await chmod(missingCommand, 0o755);
@@ -736,7 +736,7 @@ exit 1
      */
     await writeFile(
       userCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts "auto" --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "project" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "project" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
       "utf8",
     );
     await chmod(userCredentialCommand, 0o755);
@@ -754,7 +754,7 @@ exit 1
     const projectCredentialCommand = join(directory, "claude-project-credential");
     await writeFile(
       projectCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts "auto" --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "project" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "project" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
       "utf8",
     );
     await chmod(projectCredentialCommand, 0o755);
@@ -769,7 +769,7 @@ exit 1
     const vanishingCommand = join(directory, "claude-vanishing");
     await writeFile(
       vanishingCommand,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompts "auto" --append-system-prompt\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
       "utf8",
     );
     await chmod(vanishingCommand, 0o755);

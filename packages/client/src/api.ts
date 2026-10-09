@@ -32,6 +32,8 @@ import {
   agentRuntimeTestPath,
   agentSkillBundlePath,
   agentSkillPath,
+  agentSkillPresetInstallPath,
+  agentSkillPresetsPath,
   agentSkillsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
@@ -63,6 +65,8 @@ import {
   ImBindingDiagnosticsSchema,
   type ImBindingSummary,
   ImBindingSummarySchema,
+  type InstallSkillPresetResponse,
+  InstallSkillPresetResponseSchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
   type ListAccountComputersResponse,
@@ -77,6 +81,8 @@ import {
   ListAvailableMCPServersResponseSchema,
   type ListMCPServersResponse,
   ListMCPServersResponseSchema,
+  type ListSkillPresetsResponse,
+  ListSkillPresetsResponseSchema,
   type MCPAgentServer,
   MCPAgentServerSchema,
   type MCPProbeResponse,
@@ -101,6 +107,7 @@ import {
   RUNTIME_AGENT_PATH,
   RUNTIME_AGENT_SCHEDULE_PREVIEW_PATH,
   RUNTIME_AGENT_SCHEDULES_PATH,
+  RUNTIME_SKILL_PRESETS_PATH,
   RUNTIME_SKILLS_PATH,
   type RuntimeDurableWorkKind,
   RuntimeDurableWorkListResponseSchema,
@@ -114,6 +121,7 @@ import {
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,
+  runtimeSkillPresetInstallPath,
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCommandResponse,
   SessionCliCommandResponseSchema,
@@ -1050,6 +1058,59 @@ export class OpenTagApi {
     return this.#openBinaryResponse(
       runtimeSkillBundlePath(name),
       { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  listSkillPresets(accessToken: string, agentId: string, options?: RequestOptions): Promise<ListSkillPresetsResponse> {
+    return this.#request(
+      agentSkillPresetsPath(agentId),
+      ListSkillPresetsResponseSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  installSkillPreset(
+    accessToken: string,
+    agentId: string,
+    presetName: string,
+    options?: RequestOptions,
+  ): Promise<InstallSkillPresetResponse> {
+    return this.#request(
+      agentSkillPresetInstallPath(agentId, presetName),
+      InstallSkillPresetResponseSchema,
+      {
+        method: "POST",
+        body: "{}",
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  listRuntimeSkillPresets(proof: string, options?: RequestOptions): Promise<ListSkillPresetsResponse> {
+    return this.#request(
+      RUNTIME_SKILL_PRESETS_PATH,
+      ListSkillPresetsResponseSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  installRuntimeSkillPreset(
+    proof: string,
+    presetName: string,
+    options?: RequestOptions,
+  ): Promise<InstallSkillPresetResponse> {
+    return this.#request(
+      runtimeSkillPresetInstallPath(presetName),
+      InstallSkillPresetResponseSchema,
+      {
+        method: "POST",
+        body: "{}",
+        headers: { [SESSION_CLI_PROOF_HEADER]: proof, "content-type": "application/json" },
+      },
       options,
     );
   }

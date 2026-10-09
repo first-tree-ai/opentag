@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import { runtimeApprovals } from "../db/schema/index.js";
 
@@ -12,6 +12,8 @@ export interface ApprovalStore {
     change: Partial<Pick<PendingApproval, "status" | "messageId" | "messageChannelId" | "cardUpdatedAt">>,
   ): Promise<boolean>;
   list(serverInstanceId: string): Promise<PendingApproval[]>;
+  invalidateConnections(computerId: string, connectionId: string): Promise<void>;
+  invalidateExpired(now: Date): Promise<void>;
   purge(before: Date): Promise<void>;
 }
 export class PostgresApprovalStore implements ApprovalStore {
@@ -50,15 +52,15 @@ export class PostgresApprovalStore implements ApprovalStore {
       .select()
       .from(runtimeApprovals)
       .where(
-        and(
-          eq(runtimeApprovals.serverInstanceId, serverInstanceId),
-          or(
+        or(
+          and(
+            eq(runtimeApprovals.serverInstanceId, serverInstanceId),
             inArray(runtimeApprovals.status, ["pending", "accept", "decline"]),
-            and(
-              inArray(runtimeApprovals.status, ["approved", "denied", "stale"]),
-              isNotNull(runtimeApprovals.messageId),
-              isNull(runtimeApprovals.cardUpdatedAt),
-            ),
+          ),
+          and(
+            inArray(runtimeApprovals.status, ["approved", "denied", "stale"]),
+            isNotNull(runtimeApprovals.messageId),
+            isNull(runtimeApprovals.cardUpdatedAt),
           ),
         ),
       )
@@ -68,6 +70,26 @@ export class PostgresApprovalStore implements ApprovalStore {
         runtimeApprovals.id,
       )
       .limit(1024);
+  }
+  async invalidateConnections(computerId: string, connectionId: string): Promise<void> {
+    await this.database
+      .update(runtimeApprovals)
+      .set({ status: "stale" })
+      .where(
+        and(
+          eq(runtimeApprovals.computerId, computerId),
+          ne(runtimeApprovals.connectionId, connectionId),
+          inArray(runtimeApprovals.status, ["pending", "accept", "decline"]),
+        ),
+      );
+  }
+  async invalidateExpired(now: Date): Promise<void> {
+    await this.database
+      .update(runtimeApprovals)
+      .set({ status: "stale" })
+      .where(
+        and(lte(runtimeApprovals.expiresAt, now), inArray(runtimeApprovals.status, ["pending", "accept", "decline"])),
+      );
   }
   async purge(before: Date) {
     await this.database.delete(runtimeApprovals).where(lt(runtimeApprovals.expiresAt, before));

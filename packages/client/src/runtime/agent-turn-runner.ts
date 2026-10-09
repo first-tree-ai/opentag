@@ -675,13 +675,35 @@ export function buildAgentInput(
   if (!runtime) throw new Error("A steer input requires the root runtime snapshot");
   const sessionInstructions = runtime.instructions.session?.trim() || "No additional Session instructions.";
   const provider = request.content.providerRef.provider;
-  const attentionMeaning =
-    request.attention === "direct"
-      ? "A human explicitly addressed this Agent/Session. If this Session is the reply owner, handle the request and report its result to that human through the provider CLI, including after an approval decision. If the task fails or is blocked, explain that through the provider CLI too. Only omit a message when the human explicitly requested silence or a different provider action instead."
-      : "This Agent overheard the message. Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.";
   const observer = request.replyRole === "observer";
+  /*
+   * Attention states what the inbound message means to this Session. The generic owner guidance
+   * ("handle the message", "choose whether to reply") would contradict an observer delivery, which
+   * never handles the task, so an observer gets only the fact plus a pointer to the reply role.
+   */
+  const attentionFact =
+    request.attention === "direct"
+      ? "A human explicitly addressed this Agent/Session."
+      : "This Agent overheard the message.";
+  const { attentionMeaning, actionInstruction } = observer
+    ? {
+        attentionMeaning: `${attentionFact} Treat it as ambient channel context only; the observer reply role below governs what this Session may do with it.`,
+        actionInstruction:
+          "Do not run a provider CLI mutation for this observer copy. The CLI and credentials remain available because they are Session capabilities, not reply-role authorization.",
+      }
+    : request.attention === "direct"
+      ? {
+          attentionMeaning: `${attentionFact} If this Session is the reply owner, handle the request and report its result to that human through the provider CLI, including after an approval decision. If the task fails or is blocked, explain that through the provider CLI too. Only omit a message when the human explicitly requested silence or a different provider action instead.`,
+          actionInstruction:
+            "Before ending this Turn, send a concise completion, failure, or blocker update to the IM participant with the provider CLI. Your final text to OpenTag does not count as the reply. If the human explicitly asked for silence or a different provider action instead, honor that request. This does not waive a pre-work reaction required by the managed instructions.",
+        }
+      : {
+          attentionMeaning: `${attentionFact} Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.`,
+          actionInstruction:
+            "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
+        };
   const replyRoleMeaning = observer
-    ? "A Thread Session owns the provider reply for this same message. Use this Channel delivery only for ambient channel context; do not reply, react, or perform any other provider mutation for this message."
+    ? "A Thread Session owns the provider reply and the task execution for this same message. Use this Channel delivery only for ambient channel context; do not reply, react, or perform any other provider mutation for this message, and do not investigate, execute or repeat, delegate, or create artifacts for that task. Finish this observer Turn without tool calls or task work."
     : "This Session is the reply owner for this message. For direct requests, deliver the result through the provider CLI before ending the Turn. For ambient messages, choose whether a provider action is useful.";
   // Rebind the provider's native user-facing output to OpenTag's runtime console. Merely saying that
   // final text is not auto-sent is too weak when the provider treats its final channel as the reply.
@@ -700,11 +722,7 @@ export function buildAgentInput(
      */
     `Processing time (UTC): ${processedAt.toISOString()} (sampled when this input was assembled for actual processing, after any queue wait)`,
     ...buildProviderOutboxInstructions({
-      actionInstruction: observer
-        ? "Do not run a provider CLI mutation for this observer copy. The CLI and credentials remain available because they are Session capabilities, not reply-role authorization."
-        : request.attention === "direct"
-          ? "Before ending this Turn, send a concise completion, failure, or blocker update to the IM participant with the provider CLI. Your final text to OpenTag does not count as the reply. If the human explicitly asked for silence or a different provider action instead, honor that request."
-          : "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
+      actionInstruction,
       provider,
       target: request.content.providerRef,
       targetLabel: "Current provider reference",
@@ -714,7 +732,7 @@ export function buildAgentInput(
     "Attention does not change provider CLI or credential availability for this Turn.",
     `Reply role: ${observer ? "observer" : "owner"}`,
     `Reply role meaning: ${replyRoleMeaning}`,
-    "Reply role constrains provider actions for this delivery; it does not change this Session's authority or credential availability.",
+    "Reply role constrains task execution and provider actions for this delivery; it does not change this Session's authority or credential availability.",
     "Session instructions:",
     sessionInstructions,
     "</opentag-im-context>",

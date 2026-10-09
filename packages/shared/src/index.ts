@@ -279,6 +279,8 @@ export {
   AGENT_SETUP_REFRESH_TEMPLATE,
   AGENT_SETUP_TEMPLATE,
   AGENT_SKILL_BUNDLE_TEMPLATE,
+  AGENT_SKILL_PRESET_INSTALL_TEMPLATE,
+  AGENT_SKILL_PRESETS_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
   AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
   AGENT_SKILLS_INSTALL_TEMPLATE,
@@ -324,6 +326,8 @@ export {
   agentSetupRefreshPath,
   agentSkillBundlePath,
   agentSkillPath,
+  agentSkillPresetInstallPath,
+  agentSkillPresetsPath,
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
@@ -363,6 +367,8 @@ export {
   MCP_SERVERS_PATH,
   mcpServerPath,
   mcpServersPath,
+  PUBLIC_MCP_SERVERS_PATH,
+  PUBLIC_SKILLS_PATH,
   RUNTIME_AGENT_MCP_SERVER_TEMPLATE,
   RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
   RUNTIME_AGENT_MCP_SERVERS_PATH,
@@ -375,6 +381,8 @@ export {
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   RUNTIME_SKILL_BUNDLE_TEMPLATE,
+  RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE,
+  RUNTIME_SKILL_PRESETS_PATH,
   RUNTIME_SKILLS_PATH,
   runtimeAgentMcpServerPath,
   runtimeAgentSchedulePath,
@@ -383,6 +391,7 @@ export {
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,
+  runtimeSkillPresetInstallPath,
   runtimeWebSocketUrl,
   SANDBOX_RUNNER_WEBSOCKET_PATH,
   SLACK_EVENTS_PATH,
@@ -401,6 +410,7 @@ export * from "./im-message.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
 export * from "./mcp-outbound-url.js";
+export * from "./public-catalog.js";
 export * from "./runner-workspace.js";
 export {
   getRuntimeConfigurationOptions,
@@ -670,6 +680,7 @@ export * from "./session-cli.js";
 export * from "./sign-in-destination.js";
 export * from "./skill.js";
 export * from "./skill-discovery.js";
+export * from "./skill-preset.js";
 export * from "./skill-source.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,

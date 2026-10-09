@@ -21,6 +21,20 @@ export default defineConfig({
       }),
       defineProject({
         test: {
+          name: "skill-presets",
+          root: "packages/skill-presets",
+          sequence: { groupOrder: 3 },
+        },
+      }),
+      defineProject({
+        test: {
+          name: "mcp-presets",
+          root: "packages/mcp-presets",
+          sequence: { groupOrder: 3 },
+        },
+      }),
+      defineProject({
+        test: {
           name: "client",
           root: "packages/client",
           sequence: { groupOrder: 4 },
@@ -39,7 +53,7 @@ export default defineConfig({
       enabled: true,
       exclude: [...coverageConfigDefaults.exclude, "**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"],
       // Resolved against each project's own `root`, not against this file's directory, so the pattern
-      // is workspace-relative and covers all five projects at once. A repository-relative pattern such
+      // is workspace-relative and covers every project at once. A repository-relative pattern such
       // as `packages/shared/src/**` would be looked up under `packages/shared/packages/shared/src/**`
       // and silently measure nothing. `scripts/unit-coverage.mjs` applies the same rule per project;
       // its own repository-relative list there is the source-tree ownership manifest, not this include.

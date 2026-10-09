@@ -278,8 +278,13 @@
     },
     {
       "idx": 55,
-      "tag": "0055_agent_permissions",
-      "sha256": "8a13b5f83f115b44b0b9ca70b8634910d2259074ed6ed6c532eb9b16296a8103"
+      "tag": "0055_first_angel",
+      "sha256": "0c0f54d374186d6f9dd7d81cde5bd917987362cb8024c406278325642c28f316"
+    },
+    {
+      "idx": 56,
+      "tag": "0056_agent_permissions",
+      "sha256": "9d31cc33cf25cdcc4b49a48f69ce3aff099a2f4d2e2cafa282f52789aad1cccb"
     }
   ]
 }

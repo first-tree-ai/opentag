@@ -11,7 +11,11 @@ import type { ComputerAuthVerifier, ComputerService } from "../services/computer
 import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-config/index.js";
 
 export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
-  approvalOwner?: { businessOptions(): RuntimeBusinessOptions; close(): void };
+  approvalOwner?: {
+    businessOptions(): RuntimeBusinessOptions;
+    onComputerRegistered(input: { computerId: string; instanceId: string }): Promise<void>;
+    close(): void;
+  };
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;
   contextTreeOperationOwner?: ContextTreeOperationOwner;
   domainOwner?: RuntimeDomainOwner;
@@ -94,6 +98,7 @@ export function registerRuntimeRoutes(
     logger,
     now: options.now,
     onRegistered: async (input) => {
+      await options.approvalOwner?.onComputerRegistered(input);
       await options.onRegistered?.(input);
       await providerCliReconcileOwner?.onComputerRegistered(input);
     },

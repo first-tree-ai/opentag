@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  GOOGLE_WORKSPACE_MCP_ORIGINS,
+  isGoogleWorkspaceMcpEndpoint,
   MCP_TOOL_DESCRIPTION_MAX_BYTES,
   MCP_TOOL_INPUT_SCHEMA_MAX_BYTES,
   MCP_TOOL_NAME_MAX_BYTES,
+  MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES,
   MCPToolSnapshotSchema,
   probedServerDescription,
 } from "../mcp.js";
@@ -46,7 +49,9 @@ describe("probedServerDescription", () => {
 
 /**
  * The stored tool snapshot is parsed back with this schema before it reaches a live catalogue, so
- * it must accept exactly what the probe stores — bounded in UTF-8 bytes, not in code units.
+ * it must accept at least what any release's probe may store — bounded in UTF-8 bytes, not in code
+ * units — and the description's reader bound may never be narrower than the writer's, so a rollback
+ * stays readable.
  */
 describe("MCPToolSnapshotSchema", () => {
   const tool = (overrides: Record<string, unknown>) => ({
@@ -56,22 +61,35 @@ describe("MCPToolSnapshotSchema", () => {
     ...overrides,
   });
 
-  it("accepts a description at the byte bound and refuses one byte over it", () => {
+  it("accepts a description at the reader bound and refuses one byte over it", () => {
     expect(
-      MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES) })).success,
+      MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES) }))
+        .success,
     ).toBe(true);
     expect(
-      MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES + 1) })).success,
+      MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES + 1) }))
+        .success,
     ).toBe(false);
   });
 
+  it("accepts Google's update_doc description under both the writer and reader bounds", () => {
+    // The reader shipped first and the writer followed; both now store the ~35 KiB description that
+    // motivated the raise, and the reader must never be the narrower of the two.
+    const googleUpdateDocBytes = 35_410;
+    expect(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES).toBeGreaterThanOrEqual(MCP_TOOL_DESCRIPTION_MAX_BYTES);
+    expect(googleUpdateDocBytes).toBeLessThanOrEqual(MCP_TOOL_DESCRIPTION_MAX_BYTES);
+    expect(googleUpdateDocBytes).toBeLessThanOrEqual(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES);
+    expect(MCPToolSnapshotSchema.safeParse(tool({ description: "d".repeat(googleUpdateDocBytes) })).success).toBe(true);
+  });
+
   it("counts multi-byte text in bytes, so a short string of wide characters can still be over", () => {
-    // Half the bound in code units, but two bytes each: 16386 bytes, over by two.
-    const wide = "é".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES / 2 + 1);
-    expect(wide.length).toBeLessThan(MCP_TOOL_DESCRIPTION_MAX_BYTES);
+    // Half the bound in code units, but two bytes each: 65538 bytes, over by two.
+    const wide = "é".repeat(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES / 2 + 1);
+    expect(wide.length).toBeLessThan(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES);
     expect(MCPToolSnapshotSchema.safeParse(tool({ description: wide })).success).toBe(false);
     expect(
-      MCPToolSnapshotSchema.safeParse(tool({ description: "é".repeat(MCP_TOOL_DESCRIPTION_MAX_BYTES / 2) })).success,
+      MCPToolSnapshotSchema.safeParse(tool({ description: "é".repeat(MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES / 2) }))
+        .success,
     ).toBe(true);
   });
 
@@ -107,5 +125,55 @@ describe("MCPToolSnapshotSchema", () => {
     expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: { max: 1n } })).success).toBe(false);
     // Null stays a valid "takes no arguments" schema.
     expect(MCPToolSnapshotSchema.safeParse(tool({ inputSchema: null })).success).toBe(true);
+  });
+});
+
+/**
+ * The deployment's Google client is offered only to these origins. The predicate is an allowlist
+ * against a hostile Server that advertises Google as its authorization server to harvest a Google
+ * token, so every near-miss host must be refused.
+ */
+describe("isGoogleWorkspaceMcpEndpoint", () => {
+  it("accepts every Google Workspace MCP endpoint at its documented URL", () => {
+    expect(GOOGLE_WORKSPACE_MCP_ORIGINS).toHaveLength(8);
+    expect(isGoogleWorkspaceMcpEndpoint("https://gmailmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://drivemcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://docsmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://sheetsmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://slidesmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://calendarmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://chatmcp.googleapis.com/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://people.googleapis.com/mcp/v1")).toBe(true);
+  });
+
+  it("is origin-based: any path on an allowed origin qualifies", () => {
+    expect(isGoogleWorkspaceMcpEndpoint("https://gmailmcp.googleapis.com/")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://gmailmcp.googleapis.com:443/mcp/v1")).toBe(true);
+    expect(isGoogleWorkspaceMcpEndpoint("https://GMAILMCP.GOOGLEAPIS.COM/mcp/v1")).toBe(true);
+  });
+
+  it("refuses a lookalike or suffixed host that is not one of the eight origins", () => {
+    for (const url of [
+      "https://gmailmcp.googleapis.com.evil.example/mcp/v1",
+      "https://evilgmailmcp.googleapis.com/mcp/v1",
+      "https://googleapis.com/mcp/v1",
+      "https://accounts.google.com/mcp/v1",
+      "https://mcp.example.com/mcp/v1",
+    ]) {
+      expect(isGoogleWorkspaceMcpEndpoint(url)).toBe(false);
+    }
+  });
+
+  it("refuses a non-HTTPS scheme, a non-default port, and any userinfo", () => {
+    expect(isGoogleWorkspaceMcpEndpoint("http://gmailmcp.googleapis.com/mcp/v1")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("https://gmailmcp.googleapis.com:8443/mcp/v1")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("https://user:secret@gmailmcp.googleapis.com/mcp/v1")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("https://user@gmailmcp.googleapis.com/mcp/v1")).toBe(false);
+  });
+
+  it("refuses a value that is not an absolute URL", () => {
+    expect(isGoogleWorkspaceMcpEndpoint("")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("/mcp/v1")).toBe(false);
+    expect(isGoogleWorkspaceMcpEndpoint("not a url")).toBe(false);
   });
 });

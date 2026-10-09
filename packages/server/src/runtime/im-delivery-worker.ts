@@ -36,6 +36,7 @@ import {
   EffectiveRuntimeSnapshotAssemblerError,
 } from "../services/runtime-config/index.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/index.js";
+import type { ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import { DISPATCH_CLAIM_PREFIX, dispatchClaimToken } from "./im-delivery-claim.js";
 import { CloudDeliveryCoordinator, readPersistedDeliveryRequest } from "./im-delivery-cloud.js";
@@ -61,6 +62,7 @@ import {
   runImDeliveryJanitor,
   runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
+import { ImDeliveryReadyWakeup, isCloudReadinessRetry, readySessionClaimGuard } from "./im-delivery-ready-wakeup.js";
 import type {
   CloudSessionAllocationPort,
   ImDeliveryWorkerInput,
@@ -143,6 +145,9 @@ function cloudPendingOrderingGuard(transaction: DatabaseTransaction) {
 }
 
 export class ImDeliveryWorker {
+  #closed = false;
+  readonly #readyWakeup: ImDeliveryReadyWakeup;
+  readonly #readyRetryClaims = new Set<string>();
   readonly #database: DatabaseClient;
   readonly #domain: RuntimeDomainOwner;
   readonly #assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
@@ -218,6 +223,14 @@ export class ImDeliveryWorker {
       withActiveAgentAdmission: (expected, operation, signal) =>
         this.#withActiveAgentAdmission(expected, operation, signal),
     });
+    this.#readyWakeup = new ImDeliveryReadyWakeup({
+      database: this.#database,
+      allocation: this.#cloudAllocation,
+      now: this.#clock,
+      runSession: (sessionId) => this.#runOnce(sessionId),
+      supervisor: this.#supervisor,
+      onDiagnostic: this.#onDiagnostic,
+    });
     const schedulers = createImDeliveryMaintenanceSchedulers({
       expiryRun: async () => {
         await runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock });
@@ -232,7 +245,7 @@ export class ImDeliveryWorker {
   }
 
   start(): void {
-    if (this.#timer) return;
+    if (this.#closed || this.#timer) return;
     this.#schedule();
     this.#timer = setInterval(() => this.#schedule(), this.#intervalMs);
     this.#timer.unref();
@@ -243,6 +256,7 @@ export class ImDeliveryWorker {
   }
 
   stop(): void {
+    this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     if (this.#janitorTimer) clearInterval(this.#janitorTimer);
@@ -250,6 +264,7 @@ export class ImDeliveryWorker {
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
     this.#scheduler.close();
+    this.#readyWakeup.stop();
   }
 
   async runJanitorOnce(): Promise<void> {
@@ -258,7 +273,12 @@ export class ImDeliveryWorker {
   }
 
   async runOnce(): Promise<void> {
-    const claimed = await this.#claim();
+    await this.#runOnce();
+  }
+
+  async #runOnce(sessionId?: string): Promise<void> {
+    if (this.#closed) return;
+    const claimed = await this.#claim(sessionId);
     if (!claimed) return;
     const queueAge = Math.max(0, this.#now() - claimed.queuedAt);
     this.#onMetric({ name: "queue_age_ms", value: queueAge, agentId: claimed.agentId });
@@ -278,6 +298,7 @@ export class ImDeliveryWorker {
       reject = fail;
     });
     const run = async () => {
+      if (sessionId && "claimToken" in claimed) this.#readyRetryClaims.add(claimed.claimToken);
       this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
       let failed = false;
       try {
@@ -309,6 +330,7 @@ export class ImDeliveryWorker {
         reject(error);
         throw error;
       } finally {
+        if ("claimToken" in claimed) this.#readyRetryClaims.delete(claimed.claimToken);
         this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
         if (!failed) resolve();
       }
@@ -336,6 +358,10 @@ export class ImDeliveryWorker {
     await complete;
   }
 
+  notifyCloudRunnerReady(allocation: ReadyRunnerAllocation): Promise<void> {
+    return this.#readyWakeup.notify(allocation);
+  }
+
   #schedule(): void {
     const operation = this.runOnce().catch((error: unknown) => {
       this.#onDiagnostic("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
@@ -354,7 +380,7 @@ export class ImDeliveryWorker {
     void operation.catch(() => undefined);
   }
 
-  async #claim(): Promise<WorkerClaim | undefined> {
+  async #claim(sessionId?: string): Promise<WorkerClaim | undefined> {
     const claim = await this.#database.transaction(async (transaction) => {
       const now = this.#clock();
       const [row] = await transaction
@@ -382,6 +408,7 @@ export class ImDeliveryWorker {
         .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
         .where(
           and(
+            readySessionClaimGuard(sessionId),
             isNull(sessions.endedAt),
             eq(imBindings.status, "active"),
             ne(agents.status, "deleted"),
@@ -1286,6 +1313,11 @@ export class ImDeliveryWorker {
     if (updated) {
       this.#onDiagnostic(bounded);
       this.#onMetric({ name: "retry", value: 1 });
+      if (isCloudReadinessRetry(bounded) && (!claimToken || !this.#readyRetryClaims.has(claimToken))) {
+        // A ready event may have seen this row's claim marker before the backoff was recorded.
+        // Recheck AFTER the write; a ready-triggered retry itself keeps normal bounded backoff.
+        this.#readyWakeup.recheck(deliveryId);
+      }
     }
   }
 

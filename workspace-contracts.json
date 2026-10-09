@@ -11,7 +11,7 @@
       "name": "@opentag/web",
       "requiresRootExport": false,
       "requiresFiles": false,
-      "allowedWorkspaceDependencies": ["@opentag/shared"]
+      "allowedWorkspaceDependencies": ["@opentag/mcp-presets", "@opentag/shared"]
     },
     "packages/client": {
       "name": "@opentag/client",
@@ -19,8 +19,20 @@
       "requiresFiles": true,
       "allowedWorkspaceDependencies": ["@opentag/shared"]
     },
+    "packages/mcp-presets": {
+      "name": "@opentag/mcp-presets",
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/shared"]
+    },
     "packages/server": {
       "name": "@opentag/server",
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/mcp-presets", "@opentag/shared", "@opentag/skill-presets"]
+    },
+    "packages/skill-presets": {
+      "name": "@opentag/skill-presets",
       "requiresRootExport": true,
       "requiresFiles": true,
       "allowedWorkspaceDependencies": ["@opentag/shared"]

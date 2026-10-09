@@ -225,13 +225,42 @@ describe("MCP OAuth callback", () => {
       { state: "" },
       { state: "state-1", error_description: "d".repeat(2049) },
       { state: "state-1", code: "c".repeat(8193) },
-      { state: "state-1", surprise: "1" },
     ] as Record<string, string>[]) {
       const { location, response } = await callback(app, query);
       expect(response.statusCode, JSON.stringify(query)).toBe(302);
       expect(location.searchParams.get("mcp_oauth_error")).toBe(MCP_ERROR_CODES.OAUTH_FAILED);
     }
     expect(flows.callback).not.toHaveBeenCalled();
+  });
+
+  it("ignores authorization response parameters it does not read", async () => {
+    /*
+     * The response is the peer's, and RFC 6749 §4.1.2 requires a client to ignore response
+     * parameters it does not recognize. Google's redirect carries `scope`, `authuser`, and
+     * `prompt`, and a Workspace account adds `hd`; none of them may stop the flow.
+     */
+    const { app, flows } = build();
+    const { location, response } = await callback(
+      app,
+      {
+        code: "code-1",
+        state: "state-1",
+        iss: "https://accounts.google.com",
+        scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose",
+        authuser: "0",
+        prompt: "consent",
+        hd: "example.com",
+      },
+      `${BROWSER_COOKIE_NAMES.mcpOAuthContext}=${FLOW_SECRET}`,
+    );
+    expect(response.statusCode).toBe(302);
+    expect(location.searchParams.get("mcp_oauth")).toBe("success");
+    // Only the fields this callback reads reach the flow; everything else is dropped at the boundary.
+    expect(flows.callback).toHaveBeenCalledWith(
+      { code: "code-1", state: "state-1", iss: "https://accounts.google.com" },
+      FLOW_SECRET,
+      expect.any(Function),
+    );
   });
 
   it("discards the authorization server's own error description", async () => {

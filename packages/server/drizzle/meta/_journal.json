@@ -390,8 +390,15 @@
     {
       "idx": 55,
       "version": "7",
-      "when": 1791267717132,
-      "tag": "0055_agent_permissions",
+      "when": 1791437693093,
+      "tag": "0055_first_angel",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1791522871773,
+      "tag": "0056_agent_permissions",
       "breakpoints": true
     }
   ]

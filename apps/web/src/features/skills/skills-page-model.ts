@@ -5,6 +5,9 @@ import {
   SKILL_ERROR_CODES,
   type SkillArchiveFormat,
   type SkillErrorCode,
+  type SkillPresetCategoryId,
+  type SkillPresetInstallAction,
+  type SkillPresetState,
   type SkillSource,
 } from "@opentag/shared/browser";
 import { formatNumber } from "../../i18n/format.js";
@@ -79,6 +82,7 @@ const SOURCE_MESSAGES: Record<SkillSource, () => string> = {
   cli_upload: m.skills_source_cli_upload,
   agent_upload: m.skills_source_agent_upload,
   url_install: m.skills_source_url_install,
+  preset: m.skills_source_preset,
 };
 
 /**
@@ -98,6 +102,7 @@ export function skillSourceLabel(source: string): string {
  */
 const ERROR_MESSAGES: Record<SkillErrorCode, () => string> = {
   [SKILL_ERROR_CODES.NOT_FOUND]: m.skills_error_not_found,
+  [SKILL_ERROR_CODES.PRESET_NOT_FOUND]: m.skills_error_preset_not_found,
   [SKILL_ERROR_CODES.NAME_CONFLICT]: m.skills_error_name_conflict,
   [SKILL_ERROR_CODES.REVISION_CONFLICT]: m.skills_error_revision_conflict,
   [SKILL_ERROR_CODES.LIMIT_REACHED]: m.skills_error_limit_reached,
@@ -145,6 +150,50 @@ export function skillErrorMessage(code: string | undefined): string {
 
 export function skillRejectionMessage(rejection: SkillArchiveRejection): string {
   return rejection === "too_large" ? m.skills_error_client_too_large() : m.skills_error_client_unsupported();
+}
+
+/*
+ * Preset catalog copy. Both maps are total over their union so a new state, category, or action in
+ * the contract breaks typecheck here until it is given copy, and the category map is what keeps the
+ * shared taxonomy and this build's messages in step.
+ */
+
+const PRESET_STATE_MESSAGES: Record<SkillPresetState, () => string> = {
+  not_installed: m.skills_preset_state_not_installed,
+  installed: m.skills_preset_state_installed,
+  update_available: m.skills_preset_state_update_available,
+  name_conflict: m.skills_preset_state_name_conflict,
+};
+
+export function skillPresetStateLabel(state: SkillPresetState): string {
+  return PRESET_STATE_MESSAGES[state]();
+}
+
+const PRESET_CATEGORY_MESSAGES: Record<SkillPresetCategoryId, () => string> = {
+  "getting-started": m.skills_preset_category_getting_started,
+  engineering: m.skills_preset_category_engineering,
+};
+
+export function skillPresetCategoryLabel(category: SkillPresetCategoryId): string {
+  return PRESET_CATEGORY_MESSAGES[category]();
+}
+
+/** Whether the card offers a write: an installed preset is a no-op and a conflict is refused. */
+export function isSkillPresetActionable(state: SkillPresetState): boolean {
+  return state === "not_installed" || state === "update_available";
+}
+
+export function skillPresetActionLabel(state: SkillPresetState): string {
+  if (state === "not_installed") return m.skills_preset_install();
+  if (state === "update_available") return m.skills_preset_update();
+  if (state === "installed") return m.skills_preset_state_installed();
+  return m.skills_preset_unavailable();
+}
+
+export function skillPresetActionMessage(action: SkillPresetInstallAction): string {
+  if (action === "installed") return m.skills_preset_action_installed();
+  if (action === "updated") return m.skills_preset_action_updated();
+  return m.skills_preset_action_unchanged();
 }
 
 export type { SkillArchiveFormat, SkillErrorCode };

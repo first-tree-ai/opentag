@@ -2,6 +2,8 @@
 
 [English](../slack-live-acceptance.md)
 
+<!-- Synced with the English document: 2026-10-10 -->
+
 这是一份无凭证清单，供以后对**另行注册的测试 Slack Team 与 Slack App** 做 live 验收。不要提交 token、signing secret、
 OAuth code、Team ID、channel ID、user ID 或 traces。结果记录在仓库之外。
 
@@ -101,8 +103,9 @@ OAuth code、Team ID、channel ID、user ID 或 traces。结果记录在仓库�
 - 用只包含一个 user ID 的 `conversations.open` 再 `chat.postMessage`，开始或继续一对一 DM。不得用它新建 MPIM；只有 bot 已
   有访问权时，才可读写已有 MPIM。
 
-始终使用 `slack api <method> --json '<json>'`，且只传一个 JSON 对象。不要传 token、app、team、workspace、config 或
-update 覆盖 flag。
+写入使用 `slack api <method> --json '<json>'`，且只传一个 JSON 对象。读取使用 URL 编码的 `--data`，例如
+`slack api conversations.history --data 'channel=C...&limit=10'` 或 `slack api files.info --data 'file=F...'`：
+Local 直连模式下，Slack 旧版读接口会忽略 JSON 参数。不要传 token、app、team、workspace、config 或 update 覆盖 flag。
 
 ## 表情回复
 
@@ -113,6 +116,13 @@ update 覆盖 flag。
 
 - 入站：给人类消息附加一张图片和一个非图片文件。确认持久化消息保存 resource 描述，且 Agent Turn 能用 `files:read` 拉取
   可用文件。
+- 分别重复空正文、图文混合、历史文件下载到新路径，以及运行中 Turn 追加文件。确认原件字节数与 SHA-256 和测试文件一致，
+  需要看图时图片进入原生图像查看，且回复在 Slack 中可见。运行中追加用例还必须核对到达时间位于命令执行区间内，
+  且附件被 steer 到同一个 Turn。
+- 分别运行默认 Local 凭据路径与显式代理模式。Local 下载只对 `files.info` 返回的 HTTPS `files.slack.com` URL 使用
+  `curl --disable --config '<path>'` 和私有 `OPENTAG_SLACK_DOWNLOAD_CONFIG`；不得打印配置或跟随重定向。
+  代理下载使用 [direct-provider-cli.md](./direct-provider-cli.md) 中的限定代理 URL、CA 和 handle 路径。
+  一个模式通过不能证明另一个模式通过。
 - 出站：只走 Slack 当前外部上传：`files.getUploadURLExternal` → 把字节 HTTP POST 到 `upload_url` →
   `files.completeUploadExternal`。不要调用已弃用的 `files.upload`。
 

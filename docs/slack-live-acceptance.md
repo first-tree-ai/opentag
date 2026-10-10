@@ -118,8 +118,10 @@ then let it discover B with `conversations.list` / `conversations.info` and read
 - `conversations.open` with exactly one user ID plus `chat.postMessage` to start or continue a one-to-one DM. Do not use
   it to create a new MPIM; an existing MPIM may be read or written only when the bot already has access.
 
-Keep using `slack api <method> --json '<json>'` with one JSON object. Do not pass token, app, team, workspace, config, or
-update override flags.
+Use `slack api <method> --json '<json>'` with one JSON object for writes. For reads, use URL-encoded `--data`, for
+example `slack api conversations.history --data 'channel=C...&limit=10'` or
+`slack api files.info --data 'file=F...'`: Slack legacy read methods ignore JSON parameters in direct Local mode.
+Do not pass token, app, team, workspace, config, or update override flags.
 
 ## Reactions
 
@@ -130,6 +132,14 @@ update override flags.
 
 - Inbound: attach an image and a non-image file to a human message. Confirm the persisted message stores resource
   descriptors and the Agent Turn can fetch available files with `files:read`.
+- Repeat with no caption, with image plus text, with a historical file downloaded to a fresh path, and with a file sent
+  during an active Turn. Confirm the original byte count and SHA-256 match the fixture, the image reaches native image
+  viewing when required, and the reply is visible in Slack. For the active Turn case, verify arrival falls inside the
+  running command interval and the attachment is steered into that same Turn.
+- Run the default Local credential path separately from explicit proxy mode. For Local downloads, use the private
+  `OPENTAG_SLACK_DOWNLOAD_CONFIG` with `curl --disable --config '<path>'` only for HTTPS `files.slack.com` URLs from
+  `files.info`; do not print the config or follow redirects. Proxy downloads use the scoped proxy URL, CA and handle
+  path described in [direct-provider-cli.md](./direct-provider-cli.md). One mode passing does not validate the other.
 - Outbound: use Slack's current external upload only: `files.getUploadURLExternal` → HTTP POST bytes to `upload_url` →
   `files.completeUploadExternal`. Do not use deprecated `files.upload`.
 

@@ -12,7 +12,7 @@
   "skills_details_failed": "无法加载此文件。",
   "skills_details_file_label": "Skill 文件",
   "skills_details_files": "文件",
-  "skills_details_frontmatter": "Frontmatter",
+  "skills_details_frontmatter": "元信息",
   "skills_details_image": "图片：{name}",
   "skills_details_image_unavailable": "无法预览图片",
   "skills_details_large": "文本预览支持最大 256 KiB 的文件。下载 Skill 后可阅读完整文件。",

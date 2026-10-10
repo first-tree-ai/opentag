@@ -28,14 +28,10 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: "Restore connection" }));
-    expect(await screen.findByRole("button", { name: "Get connection help" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Reviewer settings" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,
     );
-    expect(document.querySelector(".ots-command__body")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Assistant requested a repair?" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Repair connection" }));
     await waitFor(() => {
       const requests = vi
         .mocked(fetch)
@@ -50,9 +46,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, computerStatus: () => status });
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Get connection help" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Assistant requested a repair?" }));
-    expect(await screen.findByRole("button", { name: "Repair connection" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
     status = "online";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online")).toBeTruthy();

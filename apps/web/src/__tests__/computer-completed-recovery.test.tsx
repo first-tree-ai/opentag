@@ -1,5 +1,5 @@
 import type { AccountComputerSummary, ComputerConnectCodeStatus } from "@opentag/shared/browser";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ComputerManagement } from "../features/agents/computer-management.js";
 import { computerId } from "./support/app-fixtures.js";
@@ -20,52 +20,44 @@ const computer: AccountComputerSummary = {
 
 describe("completed Computer recovery", () => {
   it.each(["offline", "disconnected"] as const)(
-    "does not reuse an old success when the computer becomes %s",
+    "prepares a fresh task when an online Computer becomes %s again",
     async (connectionStatus) => {
       let finish!: (value: ComputerConnectCodeStatus) => void;
       const redemption = new Promise<ComputerConnectCodeStatus>((resolve) => {
         finish = resolve;
       });
-      const issued = {
-        connectCodeId: "code",
-        bootstrapCommand: "connect-command",
-        expiresIn: 900,
-        issuedAt: new Date().toISOString(),
-      };
       const adapter = {
-        issue: vi.fn().mockResolvedValue(issued),
+        issue: vi.fn().mockResolvedValue({
+          connectCodeId: "code",
+          bootstrapCommand: "connect-command",
+          expiresIn: 900,
+          issuedAt: new Date().toISOString(),
+        }),
         status: vi
           .fn()
           .mockReturnValueOnce(redemption)
           .mockResolvedValue({ connectCodeId: "code", state: "pending", computerId: null, redeemedAt: null }),
         computers: vi.fn().mockResolvedValue({ computers: [{ ...computer, connectionStatus: "online" }] }),
       };
-      const onConnected = vi.fn();
-      const props = { confirmed: true, adapter, onConnected, onDeleted: vi.fn() };
+      const onConnected = vi.fn(),
+        props = { confirmed: true, adapter, onConnected, onDeleted: vi.fn() };
       const view = await renderInRouter(<ComputerManagement {...props} computer={computer} />);
-      fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-      fireEvent.click(screen.getByRole("button", { name: "Assistant requested a repair?" }));
-      fireEvent.click(await screen.findByRole("button", { name: "Repair connection" }));
-      expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: "Close Reconnect" }));
+      expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
+      screen.getByRole("button", { name: "Show full instructions" }).focus();
+      const card = document.querySelector('[data-ui="computer-management"]');
       await act(async () => {
         finish({ connectCodeId: "code", state: "redeemed", computerId, redeemedAt: connectedAt });
       });
       await waitFor(() => expect(onConnected).toHaveBeenCalledOnce());
+      expect(document.activeElement).toBe(card);
+      view.rerender(<ComputerManagement {...props} computer={{ ...computer, connectionStatus: "online" }} />);
+      expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
+      adapter.computers.mockResolvedValue({ computers: [{ ...computer, connectionStatus }] });
       view.rerender(<ComputerManagement {...props} computer={{ ...computer, connectionStatus }} />);
-      fireEvent.click(
-        await screen.findByRole("button", {
-          name: connectionStatus === "disconnected" ? "Reconnect" : "Get connection help",
-        }),
-      );
-      expect(screen.queryByText("Workstation is connected")).toBeNull();
-      if (connectionStatus === "disconnected") {
-        expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
-        expect(adapter.issue).toHaveBeenCalledTimes(2);
-      } else {
-        expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
-        expect(adapter.issue).toHaveBeenCalledOnce();
-      }
+      expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
+      expect(screen.queryByText("Connected")).toBeNull();
+      expect(adapter.issue).toHaveBeenCalledTimes(2);
+      expect(onConnected).toHaveBeenCalledOnce();
     },
   );
 });

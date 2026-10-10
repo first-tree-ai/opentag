@@ -2,7 +2,7 @@ import type { SkillPreset, SkillPresetInstallAction } from "@opentag/shared/brow
 import { useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Dialog, Field, KumoInputControl, Loader, Text } from "../../ui/design-system.js";
+import { Banner, Button, Dialog, Field, KumoInputControl, Loader, Text, Tooltip } from "../../ui/design-system.js";
 import {
   isSkillPresetActionable,
   skillErrorMessage,
@@ -33,6 +33,8 @@ export function SkillPresetDialog({ agentId, onClose }: { agentId: string; onClo
   const [lastAction, setLastAction] = useState<{ name: string; action: SkillPresetInstallAction } | undefined>();
 
   const categories = catalog.data?.categories ?? [];
+  const showSearch = (catalog.data?.presets.length ?? 0) > 1;
+  const showCategories = categories.length > 1;
   const searching = query.trim().length > 0;
   const activeCategory = categoryId ?? categories[0]?.id;
   const visible = (catalog.data?.presets ?? []).filter((preset) =>
@@ -53,40 +55,44 @@ export function SkillPresetDialog({ agentId, onClose }: { agentId: string; onClo
   return (
     <Dialog
       busy={install.isPending}
-      className="w-[min(90vw,44rem)]"
+      className={showSearch ? "skill-preset-dialog" : "skill-preset-dialog skill-preset-dialog--single"}
       description={m.skills_preset_description()}
       onClose={onClose}
       title={m.skills_preset_title()}
     >
       <div className="grid gap-4" data-ui="skill-preset-dialog">
-        <Field htmlFor="skill-preset-search" label={m.skills_preset_search_label()}>
-          <KumoInputControl
-            id="skill-preset-search"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={m.skills_preset_search_placeholder()}
-            value={query}
-          />
-        </Field>
-        <fieldset className="flex flex-wrap gap-1 border-0 p-0">
-          <legend className="sr-only">{m.skills_preset_title()}</legend>
-          {categories.map((category) => {
-            const active = !searching && category.id === activeCategory;
-            return (
-              <Button
-                aria-pressed={active}
-                key={category.id}
-                onClick={() => {
-                  setQuery("");
-                  setCategoryId(category.id);
-                }}
-                size="compact"
-                variant={active ? "secondary" : "ghost"}
-              >
-                {skillPresetCategoryLabel(category.id)}
-              </Button>
-            );
-          })}
-        </fieldset>
+        {showSearch ? (
+          <Field htmlFor="skill-preset-search" label={m.skills_preset_search_label()}>
+            <KumoInputControl
+              id="skill-preset-search"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={m.skills_preset_search_placeholder()}
+              value={query}
+            />
+          </Field>
+        ) : null}
+        {showCategories ? (
+          <fieldset className="flex flex-wrap gap-1 border-0 p-0">
+            <legend className="sr-only">{m.skills_preset_title()}</legend>
+            {categories.map((category) => {
+              const active = !searching && category.id === activeCategory;
+              return (
+                <Button
+                  aria-pressed={active}
+                  key={category.id}
+                  onClick={() => {
+                    setQuery("");
+                    setCategoryId(category.id);
+                  }}
+                  size="compact"
+                  variant={active ? "secondary" : "ghost"}
+                >
+                  {skillPresetCategoryLabel(category.id)}
+                </Button>
+              );
+            })}
+          </fieldset>
+        ) : null}
         {error === undefined ? null : <Banner variant="error">{error}</Banner>}
         {lastAction === undefined ? null : (
           <Text as="p" role="status" size="sm" variant="secondary">
@@ -111,13 +117,15 @@ export function SkillPresetDialog({ agentId, onClose }: { agentId: string; onClo
           </Text>
         ) : null}
         {visible.length === 0 ? null : (
-          <ul
-            aria-label={m.skills_preset_list_aria()}
-            className="ui-surface max-h-[min(50vh,22rem)] divide-y divide-kumo-line overflow-y-auto bg-kumo-base"
-            data-ui="skill-preset-list"
-          >
+          <ul aria-label={m.skills_preset_list_aria()} className="skill-preset-grid" data-ui="skill-preset-list">
             {visible.map((preset) => (
-              <SkillPresetCard busy={install.isPending} key={preset.name} onInstall={installPreset} preset={preset} />
+              <SkillPresetCard
+                busy={install.isPending}
+                installing={install.isPending && install.variables?.presetName === preset.name}
+                key={preset.name}
+                onInstall={installPreset}
+                preset={preset}
+              />
             ))}
           </ul>
         )}
@@ -135,33 +143,42 @@ function matchesPreset(preset: SkillPreset, query: string): boolean {
 function SkillPresetCard({
   preset,
   busy,
+  installing,
   onInstall,
 }: {
   preset: SkillPreset;
   busy: boolean;
+  installing: boolean;
   onInstall: (preset: SkillPreset) => void;
 }) {
   const actionable = isSkillPresetActionable(preset.state);
   return (
-    <li className="flex items-start justify-between gap-3 p-3" data-ui="skill-preset-card">
-      <div className="grid min-w-0 gap-1">
-        <strong className="text-sm font-medium">{preset.name}</strong>
-        <Text as="p" size="sm" variant="secondary">
-          {preset.description}
-        </Text>
+    <li className="skill-preset-card ui-surface bg-kumo-base" data-ui="skill-preset-card">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <strong className="min-w-0 wrap-anywhere text-base font-semibold">{preset.name}</strong>
+        <Button
+          aria-label={`${skillPresetActionLabel(preset.state)}: ${preset.name}`}
+          disabled={busy || !actionable}
+          loading={installing}
+          onClick={() => onInstall(preset)}
+          size="compact"
+          variant={actionable ? "primary" : "secondary"}
+          className="shrink-0"
+        >
+          {skillPresetActionLabel(preset.state)}
+        </Button>
+      </div>
+      <Tooltip
+        content={preset.description}
+        render={<p className="skill-preset-summary ui-text text-kumo-subtle" data-text-size="sm" />}
+      >
+        {preset.description}
+      </Tooltip>
+      {preset.state === "name_conflict" || preset.state === "update_available" ? (
         <Text as="p" size="sm" variant="secondary">
           {skillPresetStateLabel(preset.state)}
         </Text>
-      </div>
-      <Button
-        aria-label={`${skillPresetActionLabel(preset.state)}: ${preset.name}`}
-        disabled={busy || !actionable}
-        onClick={() => onInstall(preset)}
-        size="compact"
-        variant={actionable ? "primary" : "secondary"}
-      >
-        {skillPresetActionLabel(preset.state)}
-      </Button>
+      ) : null}
     </li>
   );
 }

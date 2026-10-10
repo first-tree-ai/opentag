@@ -1,10 +1,10 @@
 import type { Skill } from "@opentag/shared/browser";
+import { DownloadSimple, Trash } from "@phosphor-icons/react";
 import { useState } from "react";
 import { ApiError } from "../../api.js";
-import { formatRelativeTime } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
-import { Badge, Banner, Button, buttonClassName, Switch, Text } from "../../ui/design-system.js";
-import { formatArchiveBytes, skillErrorMessage, skillSourceLabel } from "./skills-page-model.js";
+import { Banner, Button, DropdownMenu, Icon, Switch, Text, Tooltip } from "../../ui/design-system.js";
+import { skillErrorMessage } from "./skills-page-model.js";
 import { useUpdateSkill } from "./skills-queries.js";
 
 /**
@@ -41,13 +41,11 @@ export function SkillRow({
   };
 
   return (
-    <li className="grid gap-3 p-4" data-ui="skill-row">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2">
-        <div className="min-w-0 wrap-anywhere">
-          <Text as="h2" variant="heading">
-            {skill.name}
-          </Text>
-        </div>
+    <li className="skill-row min-w-0 p-4" data-ui="skill-row">
+      <Text as="h2" title={skill.name} variant="heading" DANGEROUS_className="min-w-0 truncate">
+        {skill.name}
+      </Text>
+      <div className="skill-row-controls flex shrink-0 items-center gap-3">
         <Switch
           aria-label={m.skills_toggle_label({ name: skill.name })}
           checked={skill.enabled}
@@ -55,45 +53,56 @@ export function SkillRow({
           onCheckedChange={(next) => void toggle(next)}
           transitioning={update.isPending}
         />
-        <div className="col-span-2 min-w-0 wrap-anywhere">
-          <Text as="p" variant="secondary">
-            {skill.description}
-          </Text>
-        </div>
-      </div>
-      <div className="grid gap-3 @min-[44rem]/content:grid-cols-[minmax(0,1fr)_auto] @min-[44rem]/content:items-center">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-          <Badge variant="outline">{skillSourceLabel(skill.source)}</Badge>
-          <Text as="p" size="sm" variant="secondary">
-            {`${formatArchiveBytes(skill.archiveBytes)} · ${m.skills_file_count({ count: skill.fileCount })} · ${m.skills_updated({ time: formatRelativeTime(skill.updatedAt) })}`}
-          </Text>
-        </div>
-        <div className="flex items-center gap-2" data-ui="skill-actions">
-          {storageAvailable ? (
-            /*
-             * The bundle is the canonical `tar.gz` the Server stores. Naming the file after the
-             * Skill alone produced an extensionless download that this page's own upload pre-check
-             * rejected (`unsupported_format`), so a downloaded bundle could never be re-uploaded.
-             */
-            <a
-              className={buttonClassName({ size: "compact", variant: "secondary" })}
-              download={`${skill.name}.tar.gz`}
-              href={downloadUrl}
-            >
-              {m.skills_download()}
-            </a>
-          ) : null}
-          <Button
-            disabled={update.isPending}
-            onClick={() => onDelete(skill)}
-            size="compact"
-            variant="secondary-destructive"
+        <DropdownMenu>
+          <DropdownMenu.Trigger
+            render={
+              <Button
+                aria-label={m.skills_more_actions({ name: skill.name })}
+                shape="square"
+                size="compact"
+                variant="ghost"
+              />
+            }
           >
-            {m.skills_delete()}
-          </Button>
-        </div>
+            <Icon name="more-vertical" />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end">
+            {storageAvailable ? (
+              <DropdownMenu.LinkItem
+                href={downloadUrl}
+                icon={DownloadSimple}
+                render={<a href={downloadUrl} download={`${skill.name}.tar.gz`} />}
+              >
+                {m.skills_download_action()}
+              </DropdownMenu.LinkItem>
+            ) : (
+              <DropdownMenu.Item disabled icon={DownloadSimple} title={m.skills_error_storage_unavailable()}>
+                {m.skills_download_action()}
+              </DropdownMenu.Item>
+            )}
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item
+              disabled={update.isPending}
+              icon={Trash}
+              onClick={() => onDelete(skill)}
+              variant="danger"
+            >
+              {m.skills_delete_action()}
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu>
       </div>
-      {error ? <Banner variant="error">{error}</Banner> : null}
+      <Tooltip
+        content={skill.description}
+        render={<p className="skill-row-description ui-text text-kumo-subtle" data-text-size="sm" />}
+      >
+        {skill.description}
+      </Tooltip>
+      {error ? (
+        <div className="col-span-2 mt-2">
+          <Banner variant="error">{error}</Banner>
+        </div>
+      ) : null}
     </li>
   );
 }

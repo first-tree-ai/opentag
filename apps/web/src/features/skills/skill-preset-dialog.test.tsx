@@ -93,7 +93,7 @@ describe("SkillPresetDialog", () => {
 
     expect(await screen.findByText("mcp-onboarding")).toBeTruthy();
     expect(screen.getByText("Add MCP tools to this Agent")).toBeTruthy();
-    expect(screen.getByText("Not installed")).toBeTruthy();
+    expect(screen.queryByText("Not installed")).toBeNull();
     // The engineering entry belongs to the other tab.
     expect(screen.queryByText("mcp-catalog-entry")).toBeNull();
 
@@ -171,5 +171,13 @@ describe("SkillPresetDialog", () => {
     renderDialog();
 
     expect(await screen.findByText("The presets could not be loaded.")).toBeTruthy();
+  });
+  it("omits redundant discovery controls for a single preset", async () => {
+    stubCatalog(catalog({ categories: [{ id: "getting-started", order: 10 }], presets: [preset()] }));
+    renderDialog();
+    await screen.findByText("mcp-onboarding");
+    expect(screen.queryByLabelText("Search presets")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Getting started" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Install: mcp-onboarding" })).toBeTruthy();
   });
 });

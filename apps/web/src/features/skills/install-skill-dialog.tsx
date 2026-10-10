@@ -1,306 +1,251 @@
 import type { RemoteSkillCandidate, RemoteSkillInstallResult } from "@opentag/shared/browser";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Checkbox, Dialog, Input, Text } from "../../ui/design-system.js";
+import { Banner, Button, Checkbox, Dialog, Input, Loader, Text } from "../../ui/design-system.js";
 import { skillErrorMessage, skillInstallResultMessage, skillUnavailableMessage } from "./skills-page-model.js";
-import { useInstallRemoteSkills, useResolveRemoteSkills } from "./skills-queries.js";
+import { useInstallRemoteSkills } from "./skills-queries.js";
+import { useSkillSourcePreview } from "./use-skill-source-preview.js";
 
-/**
- * Installs Skills published at an address the user pastes.
- *
- * The dialog has three moments — read the source, choose from what it holds, report what happened —
- * and it stays one dialog for all three, because the user's input is what the later moments are
- * about: a failed lookup keeps the address to correct, and a report keeps the names that were asked
- * for. Nothing is written until the user confirms, and a lookup never writes at all.
- *
- * Selection is by name, which is what the Server matches on, so the map from a candidate to its
- * checkbox is the candidate's name and nothing else. A candidate the Server already knows cannot be
- * packaged is shown, explained, and not selectable: the alternative is letting the user pick
- * something that can only fail.
- *
- * The body is assembled from `SourceForm`, `CandidateList`, `ResultList`, and `DialogActions` so that
- * each piece owns one question and the container owns the state.
- */
-export function InstallSkillDialog({ agentId, onClose }: { agentId: string; onClose: () => void }) {
-  const lookUp = useResolveRemoteSkills();
+/** Resolve pasted sources automatically; installation always requires an explicit confirmation. */
+export function InstallSkillDialog({
+  agentId,
+  onClose,
+  onInstalled,
+}: {
+  agentId: string;
+  onClose: () => void;
+  onInstalled?: (count: number) => void;
+}) {
+  const source = useSkillSourcePreview(agentId);
   const install = useInstallRemoteSkills();
-  const [source, setSource] = useState("");
-  /*
-   * The address the candidates came from, kept separately from the field. The field stays editable —
-   * a failed lookup has to be correctable — but the install must speak about the source that produced
-   * the list on screen, not about whatever the input says by the time the button is pressed.
-   */
-  const [previewedSource, setPreviewedSource] = useState<string | undefined>();
-  const [candidates, setCandidates] = useState<RemoteSkillCandidate[] | undefined>();
-  const [selected, setSelected] = useState<readonly string[]>([]);
-  const [results, setResults] = useState<RemoteSkillInstallResult[] | undefined>();
-  const [error, setError] = useState<string | undefined>();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const [selection, setSelection] = useState<{ source: string; names: readonly string[] }>();
+  const [results, setResults] = useState<RemoteSkillInstallResult[]>();
+  const [error, setError] = useState<string>();
+  const candidates = source.preview?.skills ?? [];
+  const selectable = candidates.filter(isSelectable);
+  const selected = selection?.source === source.preview?.source ? (selection?.names ?? []) : [];
+  const single = candidates.length === 1;
+  const only = single ? selectable[0] : undefined;
+  const names = only ? [only.name] : selected;
+  const busy = install.isPending;
 
-  const busy = lookUp.isPending || install.isPending;
-  const selectable = (candidates ?? []).filter((candidate) => candidate.unavailableReason === undefined);
-  const allSelected = selectable.length > 0 && selected.length === selectable.length;
-
-  const fetchCandidates = async () => {
-    if (busy || source.trim() === "") return;
-    const requested = source.trim();
-    setError(undefined);
+  const change = (value: string) => {
+    source.change(value);
+    setSelection(undefined);
     setResults(undefined);
-    setCandidates(undefined);
-    setPreviewedSource(undefined);
-    setSelected([]);
-    try {
-      const response = await lookUp.mutateAsync({ agentId, source: requested });
-      setPreviewedSource(requested);
-      setCandidates(response.skills);
-    } catch (cause) {
-      setError(describeFailure(cause));
-    }
-  };
-
-  /**
-   * Editing the address after a preview drops the preview.
-   *
-   * Keeping it would let a user preview source A, edit the field to source B, and install B's
-   * same-named Skill without ever having seen it; clearing the list makes the next step explicit.
-   */
-  const changeSource = (value: string) => {
-    setSource(value);
-    if (candidates === undefined && results === undefined && previewedSource === undefined) return;
-    setCandidates(undefined);
-    setSelected([]);
-    setPreviewedSource(undefined);
-  };
-
-  const toggle = (name: string, checked: boolean) => {
-    setSelected((current) => (checked ? [...current, name] : current.filter((entry) => entry !== name)));
-  };
-
-  const toggleAll = () => {
-    setSelected(allSelected ? [] : selectable.map((candidate) => candidate.name));
+    setError(undefined);
   };
 
   const confirm = async () => {
-    if (busy || selected.length === 0 || previewedSource === undefined) return;
+    if (busy || names.length === 0 || !source.preview) return;
     setError(undefined);
-    // Each selection carries the fingerprint the preview reported, so the Server can refuse an item
-    // whose source moved instead of installing bytes this user never saw.
-    const selections = (candidates ?? [])
-      .filter((candidate) => selected.includes(candidate.name))
-      .map((candidate) => ({ name: candidate.name, fingerprint: candidate.fingerprint }));
+    const selections = candidates
+      .filter((entry) => names.includes(entry.name) && isSelectable(entry))
+      .map((entry) => ({ name: entry.name, fingerprint: entry.fingerprint }));
     try {
-      const response = await install.mutateAsync({ agentId, source: previewedSource, selections });
-      setResults(response.results);
+      const response = await install.mutateAsync({ agentId, source: source.preview.source, selections });
+      if (!alive.current) return;
+      if (response.results.length > 0 && response.results.every((result) => result.status === "installed")) {
+        onInstalled?.(response.results.length);
+        onClose();
+      } else setResults(response.results);
     } catch (cause) {
-      setError(describeFailure(cause));
+      if (alive.current) setError(skillErrorMessage(cause instanceof ApiError ? cause.code : undefined));
     }
   };
 
-  const previewing = candidates !== undefined && candidates.length > 0 && results === undefined;
-
+  const toggle = (name: string, checked: boolean) => {
+    if (!source.preview) return;
+    setSelection({
+      source: source.preview.source,
+      names: checked ? [...selected, name] : selected.filter((entry) => entry !== name),
+    });
+  };
   return (
     <Dialog
       busy={busy}
-      className="w-[min(90vw,42rem)]"
-      description={m.skills_install_description()}
+      className="skill-install-dialog"
+      initialFocusRef={inputRef}
       onClose={onClose}
       title={m.skills_install_title()}
     >
-      <div className="grid gap-4" data-ui="install-skill-dialog">
-        <SourceForm
-          busy={busy}
-          fetching={lookUp.isPending}
-          locked={results !== undefined}
-          onChange={changeSource}
-          onFetch={() => void fetchCandidates()}
-          source={source}
+      <div className="grid gap-6" data-ui="install-skill-dialog">
+        <Input
+          autoCapitalize="none"
+          autoCorrect="off"
+          disabled={busy || results !== undefined}
+          inputMode="url"
+          label={m.skills_install_source_label()}
+          placeholder={m.skills_install_source_placeholder()}
+          ref={inputRef}
+          spellCheck={false}
+          type="text"
+          value={source.source}
+          onChange={(event) => change(event.target.value)}
+          onPaste={(event) => {
+            const text = event.clipboardData.getData("text");
+            if (!text.trim()) return;
+            event.preventDefault();
+            const input = event.currentTarget;
+            const value =
+              input.value.slice(0, input.selectionStart ?? 0) +
+              text +
+              input.value.slice(input.selectionEnd ?? input.value.length);
+            change(value);
+            void source.load(value);
+          }}
+          onBlur={(event) => {
+            if (event.relatedTarget instanceof HTMLElement && event.relatedTarget.closest("[data-skip-preview]"))
+              return;
+            if (!busy && results === undefined) void source.load();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            void source.load();
+          }}
         />
-        {error === undefined ? null : <Banner variant="error">{error}</Banner>}
-        {candidates !== undefined && candidates.length === 0 ? (
-          <Banner variant="alert">{m.skills_install_empty()}</Banner>
+        {source.loading ? (
+          <p className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+            <Loader size="sm" />
+            {m.skills_install_fetching()}
+          </p>
         ) : null}
-        {previewing ? (
-          <CandidateList
-            allSelected={allSelected}
-            candidates={candidates ?? []}
-            onToggle={toggle}
-            onToggleAll={toggleAll}
-            selected={selected}
+        {source.error ? (
+          <Banner
+            role="alert"
+            variant="error"
+            description={source.error}
+            action={
+              <Banner.Action onClick={() => void source.load(undefined, true)}>{m.common_try_again()}</Banner.Action>
+            }
           />
         ) : null}
+        {error ? (
+          <Banner role="alert" variant="error">
+            {error}
+          </Banner>
+        ) : null}
+        {source.preview && candidates.length === 0 ? <Banner variant="alert">{m.skills_install_empty()}</Banner> : null}
+        {candidates.length > 0 && results === undefined ? (
+          <CandidateList candidates={candidates} selected={names} busy={busy} onToggle={toggle} />
+        ) : null}
         {results === undefined ? null : <ResultList results={results} />}
-        <DialogActions
+        <InstallActions
           busy={busy}
-          installing={install.isPending}
+          loading={source.loading}
+          count={names.length}
+          done={results !== undefined}
           onClose={onClose}
           onConfirm={() => void confirm()}
-          selectedCount={selected.length}
-          showDone={results !== undefined}
         />
       </div>
     </Dialog>
   );
 }
 
-/** The one input the user types into, and the action that reads it. */
-function SourceForm({
+function InstallActions({
   busy,
-  fetching,
-  locked,
-  onChange,
-  onFetch,
-  source,
-}: {
-  busy: boolean;
-  fetching: boolean;
-  locked: boolean;
-  onChange: (value: string) => void;
-  onFetch: () => void;
-  source: string;
-}) {
-  return (
-    <div className="flex items-end gap-2">
-      <Input
-        className="min-h-11"
-        disabled={busy || locked}
-        label={m.skills_install_source_label()}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={m.skills_install_source_placeholder()}
-        type="text"
-        value={source}
-      />
-      <Button
-        aria-busy={fetching}
-        disabled={busy || source.trim() === "" || locked}
-        loading={fetching}
-        onClick={onFetch}
-        variant="secondary"
-      >
-        {fetching ? m.skills_install_fetching() : m.skills_install_fetch()}
-      </Button>
-    </div>
-  );
-}
-
-/**
- * The two endings: a report closes, and anything else confirms or cancels. Splitting this out keeps
- * the dialog body about the source and what it holds.
- */
-function DialogActions({
-  busy,
-  installing,
+  loading,
+  count,
+  done,
   onClose,
   onConfirm,
-  selectedCount,
-  showDone,
 }: {
   busy: boolean;
-  installing: boolean;
+  loading: boolean;
+  count: number;
+  done: boolean;
   onClose: () => void;
   onConfirm: () => void;
-  selectedCount: number;
-  showDone: boolean;
 }) {
-  if (showDone) {
-    return (
-      <div className="flex justify-end gap-2">
+  return (
+    <div className="flex justify-end gap-3 border-t border-kumo-line pt-4">
+      {done ? (
         <Button onClick={onClose} variant="primary">
           {m.common_done()}
         </Button>
-      </div>
-    );
-  }
-  return (
-    <div className="flex justify-end gap-2">
-      <Button disabled={busy} onClick={onClose} variant="ghost">
-        {m.common_cancel()}
-      </Button>
-      <Button
-        aria-busy={installing}
-        disabled={busy || selectedCount === 0}
-        loading={installing}
-        onClick={onConfirm}
-        variant="primary"
-      >
-        {installing ? m.skills_install_installing() : m.skills_install_confirm()}
-      </Button>
+      ) : (
+        <>
+          <Button data-skip-preview disabled={busy} onClick={onClose} variant="secondary">
+            {m.common_cancel()}
+          </Button>
+          <Button disabled={busy || loading || count === 0} loading={busy} onClick={onConfirm} variant="primary">
+            {busy ? m.skills_install_installing() : m.skills_install_count({ count: count || 1 })}
+          </Button>
+        </>
+      )}
     </div>
   );
 }
 
-/** The readable sentence for a failed request: the code is the contract, the sentence is the copy. */
-function describeFailure(cause: unknown): string {
-  return skillErrorMessage(cause instanceof ApiError ? cause.code : undefined);
+function isSelectable(candidate: RemoteSkillCandidate) {
+  return !candidate.alreadyInstalled && candidate.unavailableReason === undefined;
 }
 
-/** What the source holds: one row per candidate, with everything the choice needs on it. */
 function CandidateList({
-  allSelected,
   candidates,
-  onToggle,
-  onToggleAll,
   selected,
+  busy,
+  onToggle,
 }: {
-  allSelected: boolean;
   candidates: readonly RemoteSkillCandidate[];
-  onToggle: (name: string, checked: boolean) => void;
-  onToggleAll: () => void;
   selected: readonly string[];
+  busy: boolean;
+  onToggle: (name: string, checked: boolean) => void;
 }) {
+  const single = candidates.length === 1;
   return (
-    <div className="grid gap-2">
-      <div className="flex items-center justify-between gap-3">
-        <Text as="p" size="sm" variant="secondary">
-          {m.skills_install_found({ count: candidates.length })}
-        </Text>
-        <Button onClick={onToggleAll} size="compact" variant="ghost">
-          {allSelected ? m.skills_install_clear() : m.skills_install_select_all()}
-        </Button>
-      </div>
+    <section className="grid gap-2" aria-labelledby="skill-install-selection-title">
+      <Text as="h3" id="skill-install-selection-title" variant="heading">
+        {single ? m.skills_install_candidate_title() : m.skills_install_selection_title()}
+      </Text>
       <ul
         aria-label={m.skills_install_candidates_aria()}
-        className="ui-surface max-h-[min(50vh,22rem)] divide-y divide-kumo-line overflow-y-auto bg-kumo-base"
+        className="skill-install-candidates ui-surface divide-y divide-kumo-line bg-kumo-base"
         data-ui="install-skill-candidates"
       >
         {candidates.map((candidate) => (
-          <li className="grid gap-1 p-3" key={candidate.name}>
-            <Checkbox
-              checked={selected.includes(candidate.name)}
-              data-ui="install-skill-candidate"
-              disabled={candidate.unavailableReason !== undefined}
-              label={candidate.name}
-              onCheckedChange={(checked) => onToggle(candidate.name, checked === true)}
-            />
-            <Text as="p" size="sm" variant="secondary">
+          <li className="grid min-w-0 gap-2 p-4" key={candidate.name}>
+            {single ? (
+              <strong className="wrap-anywhere font-semibold">{candidate.name}</strong>
+            ) : (
+              <Checkbox
+                checked={selected.includes(candidate.name)}
+                disabled={busy || !isSelectable(candidate)}
+                label={candidate.name}
+                onCheckedChange={(checked) => onToggle(candidate.name, checked === true)}
+              />
+            )}
+            <Text as="p" size="sm" variant="secondary" DANGEROUS_className="wrap-anywhere">
               {candidate.description}
-            </Text>
-            <Text as="p" size="sm" variant="secondary">
-              {`${candidate.path}${candidate.fileCount === undefined ? "" : ` · ${m.skills_file_count({ count: candidate.fileCount })}`}`}
             </Text>
             {candidate.alreadyInstalled ? (
               <Text as="p" size="sm" variant="secondary">
                 {m.skills_install_already()}
               </Text>
             ) : null}
-            {candidate.unavailableReason === undefined ? null : (
+            {candidate.unavailableReason ? (
               <Text as="p" size="sm" variant="secondary">
                 {skillUnavailableMessage(candidate.unavailableReason)}
               </Text>
-            )}
+            ) : null}
           </li>
         ))}
       </ul>
-    </div>
+    </section>
   );
 }
 
-/**
- * What happened to each requested name.
- *
- * A request may name the same Skill twice — the second occurrence is skipped — so the key is the
- * name, the outcome, and how many times that pair has occurred. A list key that leaned on the array
- * index would be the one thing here that changes when results are reordered.
- */
 function ResultList({ results }: { results: readonly RemoteSkillInstallResult[] }) {
   const occurrences = new Map<string, number>();
   const rows = results.map((result) => {

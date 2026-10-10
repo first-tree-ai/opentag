@@ -414,6 +414,13 @@
       "when": 1791600303160,
       "tag": "0058_agent_permissions",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1791618609383,
+      "tag": "0059_bump_runtime_config_revision",
+      "breakpoints": true
     }
   ]
 }

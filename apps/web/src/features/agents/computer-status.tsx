@@ -55,10 +55,13 @@ export function ComputerIdentity({
             {lastOnline ? <> · {lastOnline}</> : null}
           </p>
         </div>
-        <div className="col-start-2 row-start-2 pt-1 sm:col-start-3 sm:row-start-1" aria-live="polite">
+        <div
+          className="col-start-2 row-start-2 flex items-center pt-1 sm:col-start-3 sm:row-start-1 sm:self-center sm:pt-0"
+          aria-live="polite"
+        >
           <StatusIndicator {...status} />
         </div>
-        <div className="col-start-3 row-start-1 sm:col-start-4">{actions}</div>
+        <div className="col-start-3 row-start-1 flex items-center sm:col-start-4 sm:self-center">{actions}</div>
       </div>
     );
   }

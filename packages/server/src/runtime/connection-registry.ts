@@ -312,7 +312,8 @@ export class ConnectionRegistry {
   }
 
   /**
-   * Accepts only the latest result for the exact live Computer instance. A quarantined fallback
+   * Accepts only the latest result for the exact live Computer instance. A runtime-only result
+   * updates that row but retains the fence until messaging results arrive. A quarantined fallback
    * keeps the fence identity so a matching result can still apply; heartbeats cannot release it.
    */
   completePreparation(
@@ -321,7 +322,7 @@ export class ConnectionRegistry {
     result: {
       requestId: string;
       runtime: RuntimeProviderReadinessCollection[number];
-      providers: RuntimeImCliReadinessCollection;
+      providers?: RuntimeImCliReadinessCollection;
     },
     now = Date.now(),
     options: { quarantine?: boolean } = {},
@@ -331,18 +332,28 @@ export class ConnectionRegistry {
       !current ||
       current.preparationRequestId !== result.requestId ||
       current.preparationRuntimeProvider !== result.runtime.provider ||
-      !sameProviders(
-        current.preparationProviders,
-        result.providers.map((observation) => observation.provider),
-      )
+      (result.providers !== undefined &&
+        !sameProviders(
+          current.preparationProviders,
+          result.providers.map((observation) => observation.provider),
+        ))
     ) {
       return false;
     }
-    current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, result.runtime);
+    const runtimeAlreadySettled =
+      options.quarantine &&
+      current.providerReadiness?.some(
+        (observation) => observation.provider === result.runtime.provider && observation.status !== "checking",
+      );
+    if (!runtimeAlreadySettled) {
+      current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, result.runtime);
+    }
     current.providerReadinessObservedAt = now;
-    current.imCliReadiness = result.providers.map((observation) => ({ ...observation }));
-    current.imCliReadinessObservedAt = now;
-    if (!options.quarantine) clearPreparationFence(current);
+    if (result.providers !== undefined) {
+      current.imCliReadiness = result.providers.map((observation) => ({ ...observation }));
+      current.imCliReadinessObservedAt = now;
+      if (!options.quarantine) clearPreparationFence(current);
+    }
     return true;
   }
 
@@ -416,10 +427,13 @@ export class ConnectionRegistry {
     return current;
   }
 
-  async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
+  async send(computerId: string, instanceId: string, frame: unknown, expectedConnectionId?: string): Promise<void> {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
       throw new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current");
+    }
+    if (expectedConnectionId !== undefined && current.connectionId !== expectedConnectionId) {
+      throw new RuntimeRegistrySendError("instance_replaced", "The runtime connection was replaced");
     }
     if (current.active === false) {
       throw new RuntimeRegistrySendError("unavailable", "The Computer runtime registration is not active");

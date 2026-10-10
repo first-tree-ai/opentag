@@ -7,6 +7,7 @@ import { MCP_GATEWAY_ALLOWED_TOOL_RULE, MCP_GATEWAY_SERVER_NAME } from "@opentag
 import type { AgentHostedTools, JsonValue } from "../../agent-runtime/types.js";
 import { assertJsonValue } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
+import { linkClaudeSkills } from "./skill-plugin.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MCP_PROTOCOL_VERSION = "2025-03-26";
@@ -23,6 +24,7 @@ export interface ClaudeCodeMcpGatewayEndpoint {
 export interface ClaudeCodeHostedToolBridge {
   readonly allowedTools: readonly string[];
   readonly configPath: string;
+  readonly pluginPath: string;
   close(): Promise<void>;
 }
 
@@ -30,6 +32,7 @@ export async function startClaudeCodeHostedToolBridge(
   hostedTools: AgentHostedTools | undefined,
   runId: string,
   signal: AbortSignal,
+  skillPaths: readonly string[],
   mcpGateway?: ClaudeCodeMcpGatewayEndpoint,
 ): Promise<ClaudeCodeHostedToolBridge> {
   signal.throwIfAborted();
@@ -40,8 +43,10 @@ export async function startClaudeCodeHostedToolBridge(
 
   const directory = await mkdtemp(join(tmpdir(), "opentag-claude-mcp-"));
   const configPath = join(directory, "mcp.json");
+  const pluginPath = join(directory, "opentag");
   let server: Server | undefined;
   try {
+    await linkClaudeSkills(pluginPath, skillPaths);
     /*
      * The two entries are independent. The loopback bridge exists only when this run has hosted
      * tools; the remote gateway only when the execution holds a bearer. An MCP-only run must still
@@ -116,6 +121,7 @@ export async function startClaudeCodeHostedToolBridge(
       ...(mcpGateway ? [MCP_GATEWAY_ALLOWED_TOOL_RULE] : []),
     ],
     configPath,
+    pluginPath,
     close() {
       closePromise ??= Promise.allSettled([
         ...(server ? [closeServer(server)] : []),

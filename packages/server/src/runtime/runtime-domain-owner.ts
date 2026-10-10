@@ -31,7 +31,10 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-s
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
-type DomainBusinessFrame = Exclude<ClientRuntimeBusinessFrame, { type: "context-tree:operation:result" }>;
+type DomainBusinessFrame = Exclude<
+  ClientRuntimeBusinessFrame,
+  { type: "context-tree:operation:result" | "approval:request" | "approval:result" }
+>;
 
 /**
  * The Session-message delivery request on the wire: the frozen v2 ordinary shape or the v3 shape
@@ -620,7 +623,12 @@ export class RuntimeDomainOwner {
     return {
       parse: (input) => {
         const parsed = ClientRuntimeBusinessFrameSchema.safeParse(input);
-        return parsed.success && parsed.data.type !== "context-tree:operation:result" ? parsed.data : undefined;
+        return parsed.success &&
+          parsed.data.type !== "context-tree:operation:result" &&
+          parsed.data.type !== "approval:request" &&
+          parsed.data.type !== "approval:result"
+          ? parsed.data
+          : undefined;
       },
       laneKey: (frame) => domainLaneKey(frame as ClientRuntimeBusinessFrame),
       handle: (frame, context) => this.handle(frame as DomainBusinessFrame, context),

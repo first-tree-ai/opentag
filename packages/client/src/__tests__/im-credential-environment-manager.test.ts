@@ -12,6 +12,7 @@ vi.setConfig({ testTimeout: 30_000 });
 import { completionForError } from "../runtime/agent-turn-runner.js";
 import { ImCredentialEnvironmentManager, serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
 import type { RuntimeBusinessFrame } from "../runtime/runtime-connection.js";
+import { makeTurnPlanHarness, writeExternalTurnSelection } from "./fixtures/provider-cli-turn-plan.js";
 
 const homes: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -22,6 +23,66 @@ afterEach(async () => {
 });
 
 describe("ImCredentialEnvironmentManager", () => {
+  it.each(["feishu", "slack"] as const)(
+    "loads %s credentials through the real Turn launcher without sourcing a file",
+    async (provider) => {
+      const harness = await makeTurnPlanHarness();
+      homes.push(harness.accountHome, harness.openTagHome);
+      const target = join(harness.accountHome, provider === "feishu" ? "lark-cli" : "slack");
+      const token = provider === "feishu" ? "$LARKSUITE_CLI_TENANT_ACCESS_TOKEN" : "$SLACK_BOT_TOKEN";
+      const unwanted = provider === "feishu" ? "$LARKSUITE_CLI_USER_ACCESS_TOKEN" : "$SLACK_USER_TOKEN$SLACK_APP_TOKEN";
+      await writeFile(
+        target,
+        `#!/bin/sh\n[ "${token}" = "fixture-token" ] && [ -z "${unwanted}" ] || exit 2\nprintf 'reply recorded\\n'\n`,
+        { mode: 0o700 },
+      );
+      await writeExternalTurnSelection(harness.layout, provider, await realpath(target));
+      const manager = new ImCredentialEnvironmentManager({
+        connection: grantConnection((request) => ({
+          type: "im:credential:result",
+          requestId: request.requestId,
+          status: "succeeded",
+          credentialGeneration: 1,
+          grant:
+            provider === "feishu"
+              ? { provider, appId: "fixture-app", appSecret: "fixture-secret", teamBrand: "feishu" }
+              : { provider, botAccessToken: "fixture-token" },
+        })),
+        home: harness.openTagHome,
+        exchangeFeishuToken: async () => "fixture-token",
+        platform: "linux",
+      });
+      try {
+        const credentials = await manager.prepare(delivery("direct"));
+        expect((await stat(credentials.environmentManifest)).mode & 0o777).toBe(0o600);
+        const plan = await harness.manager.prepare({
+          provider,
+          sessionId: "session-1",
+          runId: "run-1",
+          environmentManifest: credentials.environmentManifest,
+          ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
+        });
+        const argv =
+          provider === "feishu"
+            ? ["im", "+messages-reply", "--message-id", "om_fixture", "--text", "hello", "--as", "bot"]
+            : ["api", "chat.postMessage", "--json", '{"channel":"C1","text":"hello"}'];
+        const result = await execFileAsync(plan.launcherPath, argv, {
+          env: {
+            PATH: process.env.PATH,
+            LARKSUITE_CLI_USER_ACCESS_TOKEN: "ambient-user",
+            SLACK_USER_TOKEN: "ambient-user",
+            SLACK_APP_TOKEN: "ambient-app",
+          },
+        });
+        expect(result.stdout.trim()).toBe("reply recorded");
+        await manager.cleanup("session-1");
+        await expect(stat(credentials.environmentManifest)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await manager.close();
+      }
+    },
+  );
+
   it.each(["direct", "ambient"] as const)(
     "projects and removes the Slack Bot token for a %s Turn without attention-based authorization",
     async (attention) => {
@@ -263,6 +324,7 @@ describe("ImCredentialEnvironmentManager", () => {
     await mkdir(join(root, `${staleSession}-lark-config`), { recursive: true });
     await mkdir(join(root, `${staleSession}-slack-config`), { recursive: true });
     await writeFile(join(root, `${staleSession}.sh`), "secret", "utf8");
+    await writeFile(join(root, `${staleSession}.json`), "secret manifest", "utf8");
     await writeFile(join(root, staleTemporary), "temporary secret", "utf8");
     await writeFile(join(root, "keep-me.txt"), "not managed", "utf8");
     await writeFile(join(root, "keep-me.tmp"), "not managed", "utf8");
@@ -280,6 +342,7 @@ describe("ImCredentialEnvironmentManager", () => {
 
     await manager.prepare(delivery("direct"));
     await expect(stat(join(root, `${staleSession}.sh`))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(root, `${staleSession}.json`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, `${staleSession}-lark-config`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, `${staleSession}-slack-config`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, staleTemporary))).rejects.toMatchObject({ code: "ENOENT" });

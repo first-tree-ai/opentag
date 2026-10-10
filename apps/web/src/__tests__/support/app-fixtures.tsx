@@ -449,6 +449,7 @@ export function installApi(
     computerId,
     revision,
     runtimeConfig: {
+      permissions: { approvalPolicy: "on-request", allowCommands: [] },
       contextTrees: [],
       revision: 1,
       model: null,

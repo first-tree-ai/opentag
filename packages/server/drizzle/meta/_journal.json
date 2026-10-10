@@ -407,6 +407,13 @@
       "when": 1791543032109,
       "tag": "0057_wandering_silhouette",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1791600303160,
+      "tag": "0058_agent_permissions",
+      "breakpoints": true
     }
   ]
 }

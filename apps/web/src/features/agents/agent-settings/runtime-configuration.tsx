@@ -1,23 +1,27 @@
 import {
   type AgentAdminConfig,
   type AgentRuntimeOptions,
+  type AgentRuntimeProvider,
   getRuntimeConfigurationOptions,
   type RuntimeConfigurationOptions,
   type UpdateAgentRequest,
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import { liveResourceQueryOptions } from "../../../query/live.js";
-import { Banner, InputArea, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
+import { Banner, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
 import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
+import { PermissionsField } from "./permissions-field.js";
 import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./runtime-model-field.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
+import { SoulEditor } from "./soul-editor.js";
+import { SoulFooter } from "./soul-footer.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 const PROVIDER_DEFAULT_OPTION = "__provider_default__";
@@ -80,6 +84,8 @@ function RuntimeConfigurationEditor({
     initialConfig.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION,
   );
   const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
+  const [permissionsDraft, setPermissionsDraft] = useState(initialConfig.runtimeConfig.permissions);
+  const soulFooterRef = useRef<HTMLDivElement>(null);
   const [message, setMessage] = useState<{
     kind: "error" | "success";
     section: "runtime" | "instructions";
@@ -90,6 +96,7 @@ function RuntimeConfigurationEditor({
   const providerName = runtimeProviderName(config.runtimeProvider);
   const TroubleshootingHeading = section === "execution" ? "h2" : "h3";
   const cloud = computerKind === "cloud";
+  const permissionsAvailable = supportsPermissionSettings(computerKind, config.runtimeProvider);
   const localOptions = useLocalRuntimeOptions(
     initialConfig,
     modelDraft,
@@ -111,10 +118,14 @@ function RuntimeConfigurationEditor({
     reasoningSelection !== PROVIDER_DEFAULT_OPTION &&
     !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningSelection);
   const reasoningDraft = reasoningSelection === PROVIDER_DEFAULT_OPTION ? "" : reasoningSelection;
-  const runtimeDirty =
-    modelDraft !== (config.runtimeConfig.model ?? "") ||
-    reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
-  const reasoningInvalid = invalidNewReasoning(discovered, hasHistoricalReasoningDraft, runtimeDirty, cloud);
+  const { modelSettingsDirty, permissionsDirty, runtimeDirty } = runtimeDraftChanges(
+    config.runtimeConfig,
+    modelDraft,
+    reasoningDraft,
+    permissionsDraft,
+    permissionsAvailable,
+  );
+  const reasoningInvalid = invalidNewReasoning(discovered, hasHistoricalReasoningDraft, modelSettingsDirty, cloud);
   const instructionsDirty = instructionsDraft !== config.runtimeConfig.instructions;
 
   async function saveRuntime(event: FormEvent<HTMLFormElement>) {
@@ -124,12 +135,14 @@ function RuntimeConfigurationEditor({
     setMessage(undefined);
     try {
       const runtimeConfig: UpdateAgentRuntimeConfig = {
+        ...(permissionsDirty ? { permissions: permissionsDraft } : {}),
         model: nullableText(modelDraft),
         reasoningEffort: nullableText(reasoningDraft),
       };
       const updated = await save({ expectedRevision: config.revision, runtimeConfig });
       const updatedOptions = runtimeOptions;
       setConfig(updated);
+      setPermissionsDraft(updated.runtimeConfig.permissions);
       setModelDraft(updated.runtimeConfig.model ?? "");
       setModelSelection(modelSelectionFor(updated.runtimeConfig.model, updatedOptions.modelSuggestions));
       setReasoningSelection(updated.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
@@ -153,15 +166,16 @@ function RuntimeConfigurationEditor({
       });
       setConfig(updated);
       setInstructionsDraft(updated.runtimeConfig.instructions);
-      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_instructions_saved() });
+      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_soul_updated() });
     } catch {
-      setMessage({ kind: "error", section: "instructions", text: m.agent_settings_instructions_save_failed() });
+      setMessage({ kind: "error", section: "instructions", text: m.agent_settings_soul_apply_failed() });
     } finally {
       setSaving(undefined);
     }
   }
 
   function discardRuntimeChanges() {
+    setPermissionsDraft(config.runtimeConfig.permissions);
     setModelDraft(config.runtimeConfig.model ?? "");
     setModelSelection(modelSelectionFor(config.runtimeConfig.model, runtimeOptions.modelSuggestions));
     setReasoningSelection(config.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
@@ -170,7 +184,7 @@ function RuntimeConfigurationEditor({
 
   return (
     <div className="grid gap-6" data-ui={section === "all" ? "runtime-settings" : "settings-section"}>
-      <UnsavedChangesGuard when={runtimeDirty || instructionsDirty} />
+      <UnsavedChangesGuard soul={section === "instructions"} when={runtimeDirty || instructionsDirty} />
       {section !== "instructions" ? (
         <section aria-labelledby="execution-heading" className={section === "execution" ? "grid gap-6" : "grid gap-4"}>
           {section === "execution" ? (
@@ -238,6 +252,9 @@ function RuntimeConfigurationEditor({
                   </Select>
                 </div>
               </SettingsRow>
+              {permissionsAvailable ? (
+                <PermissionsField value={permissionsDraft} onChange={setPermissionsDraft} />
+              ) : null}
             </SettingsList>
             {!cloud ? (
               <LocalRuntimeOptionsFeedback
@@ -283,7 +300,7 @@ function RuntimeConfigurationEditor({
         >
           {section === "instructions" ? (
             <AgentSettingsPageHeader
-              description={m.agent_settings_instructions_description()}
+              description={m.agent_settings_instructions_description({ agentName: config.displayName })}
               id="agent-instructions-heading"
               title={m.agent_settings_instructions_title()}
             />
@@ -292,35 +309,34 @@ function RuntimeConfigurationEditor({
               <Text as="h3" id="agent-instructions-heading" variant="heading">
                 {m.agent_settings_instructions_title()}
               </Text>
-              <p className="text-sm text-kumo-subtle">{m.agent_settings_instructions_description()}</p>
+              <p className="text-sm text-kumo-subtle">
+                {m.agent_settings_instructions_description({ agentName: config.displayName })}
+              </p>
             </header>
           )}
           <form className="grid gap-4" onSubmit={saveInstructions}>
-            <InputArea
-              aria-label={m.agent_settings_instructions_title()}
-              autoResize
+            <SoulEditor
+              disabled={Boolean(saving)}
+              footerRef={soulFooterRef}
               id={fieldId("instructions")}
-              maxRows={16}
-              minRows={8}
-              name="instructions"
-              placeholder={m.agent_settings_instructions_placeholder()}
               value={instructionsDraft}
               onValueChange={(value) => {
                 setInstructionsDraft(value);
                 setMessage(undefined);
               }}
             />
-            {instructionsDirty ? (
-              <SettingsSaveActions
-                busy={Boolean(saving)}
-                onDiscard={() => {
-                  setInstructionsDraft(config.runtimeConfig.instructions);
-                  setMessage(undefined);
-                }}
-              />
-            ) : null}
+            <SoulFooter
+              busy={Boolean(saving)}
+              dirty={instructionsDirty}
+              empty={instructionsDraft === ""}
+              feedback={message?.section === "instructions" ? message : undefined}
+              footerRef={soulFooterRef}
+              onDiscard={() => {
+                setInstructionsDraft(config.runtimeConfig.instructions);
+                setMessage(undefined);
+              }}
+            />
           </form>
-          {message?.section === "instructions" ? <SaveMessage message={message} /> : null}
         </section>
       ) : null}
     </div>
@@ -408,6 +424,18 @@ function LocalRuntimeOptionsFeedback({
   );
 }
 
+function runtimeDraftChanges(
+  saved: AgentAdminConfig["runtimeConfig"],
+  model: string,
+  reasoning: string,
+  permissions: AgentAdminConfig["runtimeConfig"]["permissions"],
+  permissionsAvailable: boolean,
+) {
+  const modelSettingsDirty = model !== (saved.model ?? "") || reasoning !== (saved.reasoningEffort ?? "");
+  const permissionsDirty = permissionsAvailable && JSON.stringify(permissions) !== JSON.stringify(saved.permissions);
+  return { modelSettingsDirty, permissionsDirty, runtimeDirty: modelSettingsDirty || permissionsDirty };
+}
+
 function modelSelectionFor(model: string | null, suggestions: readonly string[]): string {
   if (model === null) return PROVIDER_DEFAULT_OPTION;
   return suggestions.includes(model) ? model : CUSTOM_MODEL_OPTION;
@@ -464,4 +492,8 @@ function runtimeTestDisabledReason(input: { runtimeDirty: boolean; computerOnlin
   if (input.runtimeDirty) return m.agent_settings_runtime_test_disabled_unsaved();
   if (!input.computerOnline) return m.agent_settings_runtime_test_disabled_computer();
   return undefined;
+}
+
+function supportsPermissionSettings(computerKind: "local" | "cloud", provider: AgentRuntimeProvider): boolean {
+  return computerKind === "local" && provider !== "pi";
 }

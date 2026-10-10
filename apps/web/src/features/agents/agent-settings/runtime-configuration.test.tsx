@@ -52,6 +52,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 7,
     model: null,
@@ -91,6 +92,126 @@ async function chooseOption(label: string, value: string): Promise<void> {
 describe("RuntimeConfigurationForm", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("omits approval controls and permission updates for local Pi", async () => {
+    const piConfig = { ...config, runtimeProvider: "pi" as const };
+    const save = vi.fn(async () => piConfig);
+    render(<RuntimeConfigurationForm initialConfig={piConfig} save={save} section="execution" />);
+    expect(screen.queryByRole("switch", { name: "Ask for approval" })).toBeNull();
+    expect(screen.queryByText("Additional allowed commands")).toBeNull();
+    await chooseOption("Model", "__custom_model__");
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom model ID" }), { target: { value: "pi-model" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { model: "pi-model", reasoningEffort: null },
+    });
+  });
+
+  it("saves permissions independently of an unsupported saved reasoning value", async () => {
+    vi.mocked(browserApi.agentRuntimeOptions).mockResolvedValue({
+      modelSuggestions: [],
+      reasoningEffortAllowedValues: ["high"],
+    });
+    const configured = { ...config, runtimeConfig: { ...config.runtimeConfig, reasoningEffort: "historical-effort" } };
+    const save = vi.fn(async () => configured);
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} section="execution" />);
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    expect(await optionLabels("Reasoning effort")).toEqual([
+      "Inherit local configuration",
+      "historical-effort (saved value)",
+      "High",
+    ]);
+    fireEvent.click(screen.getByRole("switch", { name: "Ask for approval" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: "historical-effort",
+        permissions: { approvalPolicy: "never", allowCommands: [] },
+      },
+    });
+  });
+
+  it("turns off approvals while preserving allowed commands", async () => {
+    const permissions = {
+      approvalPolicy: "on-request" as const,
+      allowCommands: ["docker ps"],
+    };
+    const configured = { ...config, runtimeConfig: { ...config.runtimeConfig, permissions } };
+    const save = vi.fn(async () => ({
+      ...configured,
+      revision: 5,
+      runtimeConfig: { ...configured.runtimeConfig, permissions: { ...permissions, approvalPolicy: "never" as const } },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} section="execution" />);
+
+    expect(
+      (screen.getByRole("switch", { name: "Ask for approval" }) as HTMLButtonElement).dataset.checked,
+    ).toBeDefined();
+    fireEvent.click(screen.getByRole("switch", { name: "Ask for approval" }));
+    expect(screen.queryByText("Additional allowed commands")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: null,
+        permissions: { ...permissions, approvalPolicy: "never" },
+      },
+    });
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+  });
+
+  it("adds and removes only additional commands, then saves the allowlist", async () => {
+    const permissions = { approvalPolicy: "on-request" as const, allowCommands: [] };
+    const save = vi.fn(async () => ({
+      ...config,
+      revision: 5,
+      runtimeConfig: {
+        ...config.runtimeConfig,
+        permissions: { ...permissions, allowCommands: ["docker ps"] },
+      },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
+
+    expect(screen.queryByRole("list", { name: "Additional allowed commands" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add git status" }));
+    expect(screen.getByRole("button", { name: "Remove git status" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove git status" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Command to allow" }), {
+      target: { value: "docker ps" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: null,
+        permissions: { ...permissions, allowCommands: ["docker ps"] },
+      },
+    });
+  });
+
+  it("rejects shell syntax and duplicate commands in the simple editor", () => {
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} section="execution" />);
+    const input = screen.getByRole("textbox", { name: "Command to allow" });
+    fireEvent.change(input, { target: { value: "git status && rm -rf /" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    expect(screen.getByRole("alert").textContent).toContain("without shell operators or wildcards");
+    fireEvent.click(screen.getByRole("button", { name: "Add git status" }));
+    fireEvent.change(input, { target: { value: "git status" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    expect(screen.getByRole("alert").textContent).toBe("This command is already added.");
   });
 
   it.each([
@@ -397,10 +518,8 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent?.trim()).toContain(
       "Inherit local configuration",
     );
-    expect(screen.getByRole("heading", { name: "Instructions" })).toBeTruthy();
-    expect(
-      screen.getByText("Tell this Agent how it should work. These instructions apply to every task."),
-    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Soul" })).toBeTruthy();
+    expect(screen.getByText("Tell Reviewer how you’d like it to respond and work.")).toBeTruthy();
     expect(screen.queryByText("Choose a common model or enter a custom model ID.")).toBeNull();
     expect(screen.queryByText("Provider default lets the runtime choose.")).toBeNull();
     expect(screen.queryByText(/^OpenTag omits model and effort overrides/)).toBeNull();
@@ -607,10 +726,10 @@ describe("RuntimeConfigurationForm", () => {
     }));
     render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Instructions" }), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Soul" }), {
       target: { value: "Updated instructions." },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save).toHaveBeenCalledWith({
@@ -619,19 +738,89 @@ describe("RuntimeConfigurationForm", () => {
     });
   });
 
-  it("uses one clear Instructions title and the standard empty-state placeholder", () => {
+  it("disables Soul controls while applying and clears feedback on the next edit", async () => {
+    let resolveSave!: (updated: AgentAdminConfig) => void;
+    const save = vi.fn(
+      () =>
+        new Promise<AgentAdminConfig>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    fireEvent.change(editor, { target: { value: "Be direct." } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(editor.disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Applying…" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Discard changes" })).toHaveProperty("disabled", true);
+    resolveSave({ ...config, revision: 5, runtimeConfig: { ...config.runtimeConfig, instructions: "Be direct." } });
+    expect(await screen.findByRole("status")).toHaveProperty("textContent", "Changes applied.");
+    expect(editor.disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+    fireEvent.change(editor, { target: { value: "Be direct and concise." } });
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Apply changes" })).toBeTruthy();
+  });
+
+  it("keeps the example on focus, hides it on input, and restores it on clear or discard", () => {
     const emptyConfig: AgentAdminConfig = {
       ...config,
       runtimeConfig: { ...config.runtimeConfig, instructions: "" },
     };
     render(<RuntimeConfigurationForm initialConfig={emptyConfig} save={vi.fn()} section="instructions" />);
 
-    expect(screen.getAllByText("Instructions")).toHaveLength(1);
-    const instructions = screen.getByRole("textbox", { name: "Instructions" }) as HTMLTextAreaElement;
-    expect(instructions.placeholder).toBe(
-      "For example: Keep responses concise, flag important risks, and explain your recommendations.",
-    );
-    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+    expect(screen.getAllByText("Soul")).toHaveLength(1);
+    const instructions = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    expect(instructions.value).toBe("");
+    expect(screen.getByText("Example")).toBeTruthy();
+    expect(screen.getByText("For longer writing tasks, start with an outline before drafting.")).toBeTruthy();
+    expect(instructions.getAttribute("aria-describedby")).toContain("-example");
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+
+    fireEvent.focus(instructions);
+    expect(screen.getByText("Example")).toBeTruthy();
+    fireEvent.change(instructions, { target: { value: "My own workflow." } });
+    expect(screen.queryByText("Example")).toBeNull();
+    expect(screen.queryByText("Unapplied changes")).toBeNull();
+    expect(screen.getByText("Changes take effect with the next response.")).toBeTruthy();
+    fireEvent.change(instructions, { target: { value: "" } });
+    expect(screen.getByText("Example")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
+
+    fireEvent.change(instructions, { target: { value: "Another draft." } });
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(instructions.value).toBe("");
+    expect(screen.getByText("Example")).toBeTruthy();
+  });
+
+  it("applies an empty Soul without saving the example and restores it after an error", async () => {
+    const save = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Network unavailable"))
+      .mockResolvedValueOnce({
+        ...config,
+        revision: 5,
+        runtimeConfig: { ...config.runtimeConfig, revision: 8, instructions: "" },
+      });
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="instructions" />);
+    const editor = screen.getByRole("textbox", { name: "Soul" }) as HTMLTextAreaElement;
+    expect(screen.queryByText("Example")).toBeNull();
+
+    fireEvent.change(editor, { target: { value: "" } });
+    expect(screen.getByText("Example")).toBeTruthy();
+    expect(screen.getByText("Apply to clear Soul.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn’t confirm the update. Try again.");
+    expect(editor.value).toBe("");
+    expect(screen.getByText("Example")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(await screen.findByText("Changes applied.")).toBeTruthy();
+    expect(screen.queryByText("Apply to clear Soul.")).toBeNull();
+    expect(save).toHaveBeenLastCalledWith({ expectedRevision: 4, runtimeConfig: { instructions: "" } });
+    expect(screen.queryByRole("button", { name: "Apply changes" })).toBeNull();
   });
 
   it("normalizes blank form values to provider defaults", () => {

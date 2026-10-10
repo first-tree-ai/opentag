@@ -38,6 +38,10 @@ describe("provider outbox instructions", () => {
     expect(guidance).toContain("files.getUploadURLExternal");
     expect(guidance).toContain("files.completeUploadExternal");
     expect(guidance).toContain("deprecated files.upload");
+    expect(guidance).toContain("curl https://slack.com --request-target");
+    expect(guidance).toContain("--data-binary @<file>");
+    expect(guidance).toContain("read only the nonsecret proxy URL and CA path");
+    expect(guidance).not.toContain("Load $OPENTAG_PROVIDER_ENV_FILE in the same shell");
     expect(guidance).toContain("response_metadata.next_cursor");
     expect(guidance).toContain("Retry-After");
     expect(guidance).not.toMatch(/xox[bpa]-/);
@@ -54,6 +58,24 @@ describe("provider outbox instructions", () => {
     expect(text).toContain("slack api chat.postMessage --json");
     expect(text).toContain("Pass exactly one JSON object");
     expect(text).toContain("never key=value pairs");
+    expect(text).toContain("The launcher loads this Turn's credentials automatically");
+    expect(text).toContain("do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands");
+    expect(text).toContain("Incoming attachments are references, not downloaded files");
+    expect(text).toContain("slack api files.info");
+    expect(text).not.toContain("Load $OPENTAG_PROVIDER_ENV_FILE in the same shell");
+    expect(text).not.toContain("OPENTAG_LARK_BODY");
+  });
+
+  it("uses literal native CLI arguments for multiline Feishu replies", () => {
+    const text = buildProviderOutboxInstructions({
+      actionInstruction: "Reply to the message.",
+      provider: "feishu",
+      target: { provider: "feishu", messageId: "om_xxx" },
+      targetLabel: "Current provider reference",
+    }).join("\n");
+    expect(text).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
+    expect(text).toContain("First line\n\nSecond line");
+    expect(text).toContain("--msg-type text --content");
     expect(text).not.toContain("OPENTAG_LARK_BODY");
   });
 });

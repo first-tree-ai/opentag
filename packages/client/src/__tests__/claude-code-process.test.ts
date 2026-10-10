@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeProcess, ClaudeCodeProcessError } from "../providers/claude-code/process-wire.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/claude-code-stream.mjs", import.meta.url));
@@ -16,6 +16,80 @@ afterEach(async () => {
 });
 
 describe("ClaudeCodeProcess", () => {
+  it("initializes permission control before sending the prompt and writes the response to the same process", async () => {
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = new ClaudeCodeProcess({
+      args: ["--permission-prompt-tool", "stdio"],
+      cwd: "/",
+      env: {},
+      spawnProcess: () => child,
+    });
+    const run = process.execute({ type: "user", text: "work" }, () => undefined, new AbortController().signal);
+    expect(writes.map((line) => JSON.parse(line))).toEqual([
+      { type: "control_request", request_id: "opentag_initialize", request: { subtype: "initialize", hooks: null } },
+    ]);
+    child.stdout.write(
+      `${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "opentag_initialize" } })}\n`,
+    );
+    expect(JSON.parse(writes[1] ?? "")).toEqual({ type: "user", text: "work" });
+    await process.send({ type: "control_response", response: { request_id: "approval-1" } });
+    expect(JSON.parse(writes[2] ?? "")).toMatchObject({ type: "control_response" });
+    await expect(process.send({ value: "x".repeat(8 * 1024 * 1024) })).rejects.toMatchObject({ code: "protocol" });
+    child.stdout.write('{"type":"result"}\n');
+    await expect(process.send({ type: "late" })).rejects.toMatchObject({ code: "exited" });
+    child.emit("exit", 0, null);
+    await run;
+    await process.close();
+  });
+
+  it("reports a native response write failure", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    child.stdin.write = ((_chunk: unknown, callback: (error?: Error | null) => void) => {
+      callback(new Error("write failed"));
+      return false;
+    }) as typeof child.stdin.write;
+    await expect(process.send({ type: "control_response" })).rejects.toMatchObject({ code: "write" });
+    child.emit("exit", 0, null);
+    await process.close();
+  });
+
+  it.each(["denied", "timeout", "write"])("fails closed for %s permission initialization", async (scenario) => {
+    const child = fakeChild();
+    const process = new ClaudeCodeProcess({
+      args: ["--permission-prompt-tool", "stdio"],
+      cwd: "/",
+      env: {},
+      spawnProcess: () => child,
+    });
+    if (scenario === "timeout") vi.useFakeTimers();
+    try {
+      const run = process.execute({ type: "user" }, () => undefined, new AbortController().signal);
+      const rejected = expect(run).rejects.toBeInstanceOf(ClaudeCodeProcessError);
+      if (scenario === "denied")
+        child.stdout.write(
+          '{"type":"control_response","response":{"request_id":"opentag_initialize","subtype":"error"}}\n',
+        );
+      if (scenario === "timeout") await vi.advanceTimersByTimeAsync(60_000);
+      if (scenario === "write") {
+        child.stdin.write = ((_chunk: unknown, callback: (error?: Error | null) => void) => {
+          callback(new Error("write failed"));
+          return false;
+        }) as typeof child.stdin.write;
+        child.stdout.write(
+          '{"type":"control_response","response":{"request_id":"opentag_initialize","subtype":"success"}}\n',
+        );
+      }
+      await rejected;
+      child.emit("exit", 1, null);
+      await process.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("exchanges bounded JSONL and closes after the terminal result", async () => {
     const process = await fixtureProcess("normal");
     const messages: Readonly<Record<string, unknown>>[] = [];

@@ -27,8 +27,10 @@ OpenTag-managed artifact，并在上报 ready 前用真实 binding 凭证验证�
 `opentag doctor` 与 portable installer 只报告 account-global 静态安装状态，不安装、不修复、不验证凭证，也不推断登录或订阅状态。
 
 每个可以写入 IM 的有效可见 Session Turn（包括 IM delivery 与 Internal Session 协作回调）开始前，Client 创建私有的
-`0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent source 该文件后直接调用官方
-`lark-cli` 或 `slack api`。Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的
+`0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent 直接调用官方
+`lark-cli` 或 `slack api`，受管 launcher 自动加载凭据。直接通过 HTTP 传输 Slack 附件时，只读取文件中非敏感的
+执行代理 URL 和 CA 路径，并将其作为字面量参数传给 `curl`；不要 source 文件或添加授权头。
+Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的
 文件由下次启动恢复清理。Internal Session 永远不会收到该文件。
 
 OpenTag Codex Runtime 的默认启动参数对所有使用该默认参数的 Session 禁用 Shell 快照。
@@ -49,8 +51,9 @@ IM delivery Turn 使用该事件携带的 provider 原生消息引用；可见 S
 派生该 context；Client 和 Agent 不能自报 OpenTag outbox target。回调目标为 thread Session 时会保持 provider 原生
 thread scope。这个 context 是默认交付目标，不会缩小下文所述 Bot token 的整体权限范围。
 
-对于 Feishu Turn，managed Turn context 会要求 Agent 使用不插值的 POSIX heredoc 或 PowerShell here-string 变量向
-`lark-cli` 传递富文本或多行正文。发送前还必须检查：如果预期为多行的正文没有真实换行，却包含多个字面量
+对于 Feishu Turn，managed Turn context 会要求 Agent 使用带真实换行的单个 Shell 引号字面量，
+通过 `lark-cli` 的 `--text` 或 `--markdown` 参数传递多行正文，或通过 `--content` 传递 provider 原生 JSON。
+普通消息命令应避免 Shell 变量、替换、重定向和 heredoc。发送前还必须检查：如果预期为多行的正文没有真实换行，却包含多个字面量
 `\n`，则拒绝发送。该检查不会一律改写所有 `\n`，因为代码和正文可能确实需要讨论这个 token。
 
 卡片、Blocks、文件、thread、贴纸和 Reaction 都保留 provider 原生格式。OpenTag 不转换它们，也不提供消息发送、回复、Reaction 或上传 API。直接执行 Provider CLI 仍是 Agent 唯一的出站路径，并保留该权限。

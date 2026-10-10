@@ -211,6 +211,7 @@ it("starts a post-write snapshot after binding an owned Computer while an old re
       computerId,
       revision: 1,
       runtimeConfig: {
+        permissions: { approvalPolicy: "on-request", allowCommands: [] },
         contextTrees: [],
         revision: 1,
         model: null,

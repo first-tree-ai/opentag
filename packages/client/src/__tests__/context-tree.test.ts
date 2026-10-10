@@ -98,6 +98,16 @@ async function fixture(
 }
 
 describe("named Context Tree preparation", () => {
+  it("selects only directories from the packaged skills root", async () => {
+    const f = await fixture();
+    await mkdir(join(f.home, "memory"));
+    await writeFile(join(f.home, "README.md"), "packaged metadata");
+    expect(await f.manager.skillPaths()).toEqual([join(f.home, "memory")]);
+    expect(await (await fixture({ packageMissing: true })).manager.skillPaths()).toEqual([]);
+    await rm(f.home, { recursive: true });
+    expect(await f.manager.skillPaths()).toEqual([]);
+  });
+
   it("connects each alias, caches the complete unordered set and installs skills once", async () => {
     const f = await fixture();
     expect(await f.manager.ensureAgent(f.cwd, "codex", trees)).toEqual({

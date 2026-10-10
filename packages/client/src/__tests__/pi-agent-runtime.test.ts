@@ -838,7 +838,7 @@ describe("PiAgentRuntime", () => {
   it("rejects policies Pi cannot enforce and incompatible bindings", async () => {
     const factory = piFactory(new ScriptedPiClient("complete"));
     for (const policy of [
-      { ...basePolicy(), approvals: "on-request" as const },
+      { ...basePolicy(), approvals: "unless-trusted" as const },
       { ...basePolicy(), fileSystem: "workspace-write" as const },
       {
         ...basePolicy(),

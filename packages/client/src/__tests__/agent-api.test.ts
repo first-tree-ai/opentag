@@ -19,6 +19,7 @@ const agent = {
   status: "active",
   revision: 1,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 1,
     model: null,

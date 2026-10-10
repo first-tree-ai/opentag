@@ -1,15 +1,19 @@
 import { randomUUID } from "node:crypto";
 import {
+  ClientRuntimeBusinessFrameSchema,
   type DirectImMessageDeliveryRequest,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
+  RuntimeApprovalRequestSchema,
+  RuntimeFrameEnvelopeSchema,
   type RuntimeImSteerRequest,
+  ServerRuntimeBusinessFrameSchema,
   type TurnActivityRequest,
   TurnActivityRequestSchema,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AgentProviderError } from "../agent-runtime/errors.js";
-import type { AgentRunResult, AgentRuntimeEventSink } from "../agent-runtime/types.js";
+import type { AgentRunResult, AgentRuntimeEventSink, JsonValue } from "../agent-runtime/types.js";
 import { AgentRuntimeProviderUnavailableError } from "../runtime/agent-runtime-provider-registry.js";
 import {
   AgentTurnRunner,
@@ -34,6 +38,129 @@ import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("AgentTurnRunner", () => {
+  it.each([
+    "accept",
+    "decline",
+    "oversized",
+    "question",
+    "response-failed",
+    "cancel-failed",
+    "no-details",
+    "codex-command",
+    "permissions",
+    "external-directory",
+    "file-edit",
+    "command-array",
+    "numeric-action",
+    "empty",
+  ] as const)("routes an approval (%s) to the same live provider run", async (scenario) => {
+    const options = approvalScenario(scenario);
+    const { decision, kind, automatic, responseFails } = options;
+    const h = outgoingHarness();
+    let observer: AgentRuntimeEventSink;
+    let resolveRun!: (result: AgentRunResult) => void;
+    const runResult = new Promise<AgentRunResult>((resolve) => {
+      resolveRun = resolve;
+    });
+    let runSignal: AbortSignal | undefined;
+    const respond = vi.fn(async () => undefined);
+    if (responseFails) respond.mockRejectedValue(new Error("cannot answer dialog"));
+    const prompt = vi.fn(async (request: { signal: AbortSignal }) => {
+      runSignal = request.signal;
+      await observer({ type: "run_started", runId: "turn-1" });
+      await observer({
+        type: "interaction_requested",
+        runId: "turn-1",
+        request: {
+          kind,
+          requestId: "number:0",
+          title: "Approve Bash",
+          message: options.message,
+          details: options.details,
+        },
+      });
+      return runResult;
+    });
+    const send = vi.fn(async (_frame: unknown) => undefined);
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send },
+      custody: { markReporting: h.markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      reportOwner: { create: h.create, submit: h.submit } as unknown as TurnReportOwner,
+      runtimeManager: {
+        sessionKind: () => "visible",
+        ensureRuntime: async () => ({ prompt, respond }),
+        cwd: () => "/workspace",
+        observe: (_id: string, listener: AgentRuntimeEventSink) => {
+          observer = listener;
+          return () => undefined;
+        },
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+      logger: recordingLogger([]),
+    });
+    runner.start(liveOwner(h.request));
+    if (automatic) {
+      await vi.waitFor(() => expect(respond).toHaveBeenCalled());
+      expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: "approval:request" }));
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind,
+          decision: options.automaticDecision,
+        }),
+      );
+      if (responseFails) await vi.waitFor(() => expect(runSignal?.aborted).toBe(true));
+      resolveRun({ runId: "turn-1", status: "completed", output: [] });
+      await runner.settled();
+      return;
+    }
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "approval:request",
+        turnId: "turn-1",
+        requestId: expect.any(String),
+        description: options.description,
+      }),
+    );
+    const approval = RuntimeApprovalRequestSchema.parse(
+      send.mock.calls.find(([frame]) => (frame as { type?: string }).type === "approval:request")?.[0],
+    );
+    expect(ClientRuntimeBusinessFrameSchema.parse(approval)).toEqual(approval);
+    expect(RuntimeFrameEnvelopeSchema.parse(approval).requestId).toBe(approval.requestId);
+    expect(approval.requestId).not.toBe("number:0");
+    const reply = {
+      type: "approval:decision" as const,
+      turnId: "turn-1",
+      requestId: approval.requestId,
+      sessionId: h.request.sessionId,
+      deliveryId: h.request.deliveryId,
+      placementGeneration: 1,
+      decision,
+    };
+    expect(RuntimeFrameEnvelopeSchema.parse(reply).requestId).toBe(reply.requestId);
+    expect(ServerRuntimeBusinessFrameSchema.parse(reply)).toEqual(reply);
+    expect(await runner.respondToApproval({ ...reply, sessionId: "wrong" })).toMatchObject({ status: "stale" });
+    expect(await runner.respondToApproval({ ...reply, requestId: randomUUID() })).toMatchObject({ status: "stale" });
+    expect(respond).not.toHaveBeenCalled();
+    expect(await runner.respondToApproval(reply)).toMatchObject({
+      status: responseFails ? "stale" : "applied",
+    });
+    expect(respond).toHaveBeenCalledWith({
+      expectedRunId: "turn-1",
+      requestId: "number:0",
+      kind: "approval",
+      decision,
+      scope: "run",
+    });
+    expect(await runner.respondToApproval(reply)).toMatchObject({ status: "stale" });
+    expect(respond).toHaveBeenCalledTimes(1);
+    resolveRun({ runId: "turn-1", status: "completed", output: [] });
+    await runner.settled();
+    expect(await runner.respondToApproval(reply)).toMatchObject({ status: "stale" });
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
   it.each([false, true])("reports actual execution and terminal liveness (failure=%s)", async (fail) => {
     const h = outgoingHarness();
     h.request.agentId = randomUUID();
@@ -96,11 +223,14 @@ describe("AgentTurnRunner", () => {
     expect(input.items[0]?.text).toContain("The IM participant is a separate audience");
     expect(input.items[0]?.text).toContain("The official slack api CLI is your outbox and the only path");
     expect(input.items[0]?.text).toContain("only records it in OpenTag; it does not deliver it");
-    expect(input.items[0]?.text).toContain("run the provider CLI command before ending this Turn");
-    expect(input.items[0]?.text).toContain("Choosing not to reply remains valid");
+    expect(input.items[0]?.text).toContain("Before ending this Turn, send a concise completion");
+    expect(input.items[0]?.text).toContain("send a concise completion, failure, or blocker update");
+    expect(input.items[0]?.text).toContain("including after an approval decision");
+    expect(input.items[0]?.text).toContain("Your final text to OpenTag does not count as the reply");
+    expect(input.items[0]?.text).toContain("If the human explicitly asked for silence");
     expect(input.items[0]?.text).toContain("does not waive a pre-work reaction required by the managed instructions");
     expect(input.items[0]?.text).not.toContain("Your final text is not sent to the IM provider automatically");
-    expect(input.items[0]?.text).toContain("OpenTag has no message send, reply, or reaction interface");
+    expect(input.items[0]?.text).toContain("OpenTag has no hosted message send, reply, or reaction tool");
     expect(input.items[0]?.text).toContain("query the provider before deciding whether to retry");
     expect(input.items[0]?.text).toContain("Attention: direct");
     expect(input.items[0]?.text).toContain(JSON.stringify(request.content.providerRef));
@@ -130,12 +260,8 @@ describe("AgentTurnRunner", () => {
     expect(feishuInput.items[0]?.text).toContain("lark-cli im --help");
     expect(feishuInput.items[0]?.text).toContain("never write literal `\\n` sequences for layout");
     expect(feishuInput.items[0]?.text).toContain("two or more literal `\\n` sequences");
-    expect(feishuInput.items[0]?.text).toContain(
-      "IFS= read -r -d '' OPENTAG_LARK_BODY <<'EOF' || true\nfirst line\n\nsecond line",
-    );
-    expect(feishuInput.items[0]?.text).toContain("$OpenTagLarkBody = @'\nfirst line\n\nsecond line");
-    expect(feishuInput.items[0]?.text).toContain('lark-cli ... --markdown "$OPENTAG_LARK_BODY"');
-    expect(input.items[0]?.text).not.toContain("OPENTAG_LARK_BODY");
+    expect(feishuInput.items[0]?.text).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
+    expect(input.items[0]?.text).not.toContain("lark-cli im +messages-reply");
     expect(input.items[0]?.text).toContain("slack api chat.postMessage --json");
     expect(input.items[0]?.text).toContain("never key=value pairs");
     expect(input.items[0]?.text).toContain(
@@ -192,6 +318,9 @@ describe("AgentTurnRunner", () => {
     expect(context).toContain(JSON.stringify(request.content.providerRef));
     expect(context).toContain("overheard the message");
     expect(context).toContain("avoid meaningless, duplicate, intrusive");
+    expect(context).toContain(
+      "Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
+    );
     expect(context).toContain("Attention does not change provider CLI or credential availability");
   });
 
@@ -232,11 +361,13 @@ describe("AgentTurnRunner", () => {
       }
     }
 
+    const directObserverContext = buildAgentInput({ ...delivery(), replyRole: "observer" }).items[0]?.text;
+    expect(directObserverContext).toContain("Do not run a provider CLI mutation for this observer copy");
+    expect(directObserverContext).not.toContain("Before ending this Turn, send a concise completion");
+
     const ownerContext = buildAgentInput(delivery()).items[0]?.text;
     expect(ownerContext).toContain("Reply role: owner");
-    expect(ownerContext).toContain("may reply, react, send another provider message, or choose not to reply");
-    // Owner context keeps not-replying valid without implying a required pre-work reaction is optional.
-    expect(ownerContext).toContain("Choosing not to reply remains valid");
+    expect(ownerContext).toContain("For direct requests, deliver the result through the provider CLI");
     expect(ownerContext).toContain("does not waive a pre-work reaction required by the managed instructions");
     expect(ownerContext).not.toContain("take no provider action");
     expect(ownerContext).not.toContain("must reply");
@@ -1049,6 +1180,9 @@ describe("AgentTurnRunner", () => {
     expect(credentials.cleanup).toHaveBeenCalledWith("session-1", "exec-1");
 
     const driftedEnsure = vi.fn();
+    const driftedPlanPrepare = vi.fn(async () => {
+      throw new ProviderCliTurnPlanError("artifact_drifted", "fingerprint changed");
+    });
     const drifted = new AgentTurnRunner({
       bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
       connection: { send: vi.fn(async () => undefined) },
@@ -1059,6 +1193,7 @@ describe("AgentTurnRunner", () => {
       reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
       runtimeManager: {
         ensureRuntime: driftedEnsure,
+        cwd: () => "/workspace",
         sessionKind: () => "visible",
       } as unknown as SessionRuntimeManager,
       credentialEnvironment: {
@@ -1066,14 +1201,16 @@ describe("AgentTurnRunner", () => {
         cleanup: vi.fn(async () => undefined),
       },
       turnPlan: {
-        prepare: async () => {
-          throw new ProviderCliTurnPlanError("artifact_drifted", "fingerprint changed");
-        },
+        prepare: driftedPlanPrepare,
         cleanup: vi.fn(async () => undefined),
       },
     });
     drifted.start(liveOwner({ ...delivery(), deliveryId: "delivery-drift" }));
     await drifted.settled();
+    expect(driftedPlanPrepare).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "feishu" }),
+      expect.any(AbortSignal),
+    );
     expect(driftedEnsure).not.toHaveBeenCalled();
     expect(create).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -1603,6 +1740,57 @@ function steerRequest(): RuntimeImSteerRequest {
     expectedTurnId: "turn-1",
     attention: "direct",
     content: { kind: "text", text: "updated direction", providerRef: providerRef("1710000000.000002") },
+  };
+}
+
+function approvalScenario(scenario: string) {
+  const reviewActions: Record<string, { details: JsonValue; description: string }> = {
+    permissions: {
+      details: { permissions: { network: true, fileSystem: { write: ["/external/report.txt"], read: null } } },
+      description: "network: true\nfile System: write: /external/report.txt\nread: null",
+    },
+    "external-directory": {
+      details: { grantRoot: "/external", threadId: "native-thread" },
+      description: "/external",
+    },
+    "file-edit": {
+      details: { file_path: "/external/file.txt", threadId: "native-thread", mode: 420, overwrite: false },
+      description: "file path: /external/file.txt\nmode: 420\noverwrite: false",
+    },
+    "command-array": { details: ["curl", "-I", "https://example.com"], description: "curl\n-I\nhttps://example.com" },
+    "numeric-action": { details: 1, description: "1" },
+  };
+  const reviewAction = reviewActions[scenario];
+  return {
+    decision: scenario === "accept" ? ("accept" as const) : ("decline" as const),
+    kind: ["question", "cancel-failed"].includes(scenario) ? ("question" as const) : ("approval" as const),
+    automatic: ["oversized", "question", "cancel-failed", "empty"].includes(scenario),
+    responseFails: ["response-failed", "cancel-failed"].includes(scenario),
+    message:
+      scenario === "empty" || reviewAction
+        ? undefined
+        : scenario === "oversized"
+          ? "x".repeat(6001)
+          : scenario === "codex-command"
+            ? "Publish changes?"
+            : "git push",
+    details: ((): JsonValue | undefined =>
+      reviewAction
+        ? reviewAction.details
+        : ["no-details", "empty"].includes(scenario)
+          ? undefined
+          : scenario === "codex-command"
+            ? {
+                command: "git push",
+                threadId: "native-thread",
+                itemId: "native-item",
+                availableDecisions: ["accept", "decline"],
+                proposedExecpolicyAmendment: ["git", "push"],
+              }
+            : { command: "git push" })(),
+    description:
+      reviewAction?.description ?? (scenario === "codex-command" ? "Publish changes?\n\ngit push" : "git push"),
+    automaticDecision: ["oversized", "empty"].includes(scenario) ? "decline" : "cancel",
   };
 }
 

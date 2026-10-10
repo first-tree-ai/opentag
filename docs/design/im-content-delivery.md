@@ -17,7 +17,8 @@ attachment bytes, temporary download URL, OCR, document extraction, transcriptio
 the Turn. Local and Cloud use the same text input and existing native CLI credentials/proxy.
 
 - Slack: `slack api files.info --json '{"file":"F..."}'` returns metadata. Download the returned private URL through the
-  configured proxy in the same shell after loading `$OPENTAG_PROVIDER_ENV_FILE`. Re-query once if the execution-scoped
+  configured proxy using literal arguments and the existing scoped `curl` command. The CLI launcher loads credentials
+  automatically; do not source the environment file. Re-query once if the execution-scoped
   download handle has expired. Public URLs use existing HTTP tools without adding Slack credentials.
 - Feishu/Lark: `lark-cli im +messages-resources-download --message-id <id> --file-key <key> --type image|file --as bot
   --output ./attachment.bin`. Use `image` for image keys and `file` for files, audio and video bodies.

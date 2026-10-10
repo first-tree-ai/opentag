@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { type AgentRuntimeProvider, AgentRuntimeProviderSchema, AgentRuntimeTestFailureCodeSchema } from "./agent.js";
+import { AgentPermissionsSchema } from "./agent-permissions.js";
 import {
   IM_CLI_PROVIDERS,
   ImCliProviderSchema,
@@ -152,8 +153,9 @@ export const EffectiveRuntimeSnapshotSchema = z
     instructions: RuntimeInstructionsSchema,
     execution: z
       .object({
-        approvalPolicy: z.literal("never"),
+        approvalPolicy: z.enum(["never", "on-request"]),
         networkAccess: z.boolean(),
+        allowCommands: AgentPermissionsSchema.shape.allowCommands.removeDefault().optional(),
       })
       .strict(),
     workspace: z
@@ -958,9 +960,8 @@ export const ProviderCliPrewarmFrameSchema = z
   .strict();
 
 /**
- * Terminal result for one Server-owned preparation operation. The request fence lets the Server
- * reject a result from an older click/rebind while heartbeats continue to report general daemon
- * health independently.
+ * A runtime result may arrive before the messaging CLI checks finish. The same fenced request
+ * sends a final result with providers once those checks settle.
  */
 export const ProviderCliPrewarmResultFrameSchema = z
   .object({
@@ -998,7 +999,8 @@ export const ProviderCliPrewarmResultFrameSchema = z
             });
           }
         }
-      }),
+      })
+      .optional(),
   })
   .strict();
 
@@ -1166,7 +1168,33 @@ export const ProviderCliValidationResultFrameSchema = z
     }
   });
 
+const RuntimeApprovalIdentitySchema = z.object({
+  requestId: RuntimeRequestIdSchema,
+  turnId: RuntimeOpaqueIdSchema,
+  sessionId: RuntimeOpaqueIdSchema,
+  deliveryId: RuntimeOpaqueIdSchema,
+  placementGeneration: z.number().int().positive(),
+});
+export const RuntimeApprovalRequestSchema = RuntimeApprovalIdentitySchema.extend({
+  type: z.literal("approval:request"),
+  title: z.string().min(1).max(256),
+  description: z.string().max(6000),
+  expiresAt: z.string().datetime(),
+}).strict();
+export const RuntimeApprovalDecisionSchema = RuntimeApprovalIdentitySchema.extend({
+  type: z.literal("approval:decision"),
+  decision: z.enum(["accept", "decline"]),
+}).strict();
+export const RuntimeApprovalResultSchema = RuntimeApprovalIdentitySchema.extend({
+  type: z.literal("approval:result"),
+  status: z.enum(["applied", "stale"]),
+}).strict();
+export type RuntimeApprovalRequest = z.infer<typeof RuntimeApprovalRequestSchema>;
+export type RuntimeApprovalDecision = z.infer<typeof RuntimeApprovalDecisionSchema>;
+export type RuntimeApprovalResult = z.infer<typeof RuntimeApprovalResultSchema>;
+
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
+  RuntimeApprovalDecisionSchema,
   ContextTreeOperationFrameSchema,
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
@@ -1193,6 +1221,8 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
+  RuntimeApprovalRequestSchema,
+  RuntimeApprovalResultSchema,
   ContextTreeOperationResultFrameSchema,
   SessionReconcileResultSchema,
   ImMessageDeliveryResultSchema,
@@ -1299,6 +1329,7 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
     snapshot.instructions.session ?? null,
     snapshot.execution.approvalPolicy,
     snapshot.execution.networkAccess,
+    snapshot.execution.allowCommands,
     snapshot.budget?.maxDurationMs ?? null,
   ]);
   return {

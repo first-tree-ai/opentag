@@ -156,6 +156,8 @@ describe("Kumo integration contract", () => {
       "setup/components.tsx -> ./setup.css",
       // MCP owns bounded dialog geometry and scrolling; controls and palette stay at the Kumo seam.
       "features/mcp/mcp-form.tsx -> ./mcp.css",
+      // Skill reader owns document typography and independent file/body scrolling.
+      "features/skills/skill-details-dialog.tsx -> ./skill-reader.css",
       "app.css -> @fontsource/manrope/400.css",
       "app.css -> @fontsource/manrope/500.css",
       "app.css -> @fontsource/manrope/600.css",

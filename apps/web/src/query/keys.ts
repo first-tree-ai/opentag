@@ -72,6 +72,8 @@ export const queryKeys = {
   skills: {
     agentSkills: (agentId: string) => ["skills", "agents", agentId] as const,
     skill: (agentId: string, skillId: string) => ["skills", "agents", agentId, "skill", skillId] as const,
+    file: (agentId: string, skillId: string, sha256: string, path: string) =>
+      ["skills", "agents", agentId, "skill", skillId, "file", sha256, path] as const,
     presetCatalog: (agentId: string) => ["skills", "agents", agentId, "presets"] as const,
   },
 } as const;

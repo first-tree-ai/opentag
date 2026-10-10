@@ -80,6 +80,50 @@ export const SkillDetailSchema = SkillSchema.extend({
 });
 export type SkillDetail = z.infer<typeof SkillDetailSchema>;
 
+/** Preview only; the canonical archive remains available for larger or binary files. */
+export const SKILL_FILE_PREVIEW_MAX_BYTES = 256 * 1024;
+export const SkillFilePathSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (path) =>
+      new TextEncoder().encode(path).byteLength <= SKILL_MAX_PATH_BYTES &&
+      !path.includes("\\") &&
+      !Array.from(path).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
+      !/^[A-Za-z]:/.test(path) &&
+      path.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+    "Expected a canonical root-relative Skill file path",
+  );
+export const ReadSkillFileQuerySchema = z
+  .object({
+    path: SkillFilePathSchema,
+    archiveSha256: SkillArchiveSha256Schema,
+  })
+  .strict();
+export type ReadSkillFileQuery = z.infer<typeof ReadSkillFileQuerySchema>;
+export const SkillFilePreviewSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("text"),
+      content: z
+        .string()
+        .refine((content) => new TextEncoder().encode(content).byteLength <= SKILL_FILE_PREVIEW_MAX_BYTES),
+    })
+    .strict(),
+  z.object({ status: z.literal("binary") }).strict(),
+  z.object({ status: z.literal("too_large") }).strict(),
+]);
+export type SkillFilePreview = z.infer<typeof SkillFilePreviewSchema>;
+export const ReadSkillFileResponseSchema = z
+  .object({
+    archiveSha256: SkillArchiveSha256Schema,
+    path: SkillFilePathSchema,
+    files: z.array(SkillFileEntrySchema).min(1).max(SKILL_MAX_ENTRIES),
+    preview: SkillFilePreviewSchema,
+  })
+  .strict();
+export type ReadSkillFileResponse = z.infer<typeof ReadSkillFileResponseSchema>;
+
 export const ListAgentSkillsResponseSchema = z
   .object({
     skills: z.array(SkillSchema),

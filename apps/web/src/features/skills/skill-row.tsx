@@ -17,11 +17,13 @@ import { useUpdateSkill } from "./skills-queries.js";
 export function SkillRow({
   downloadUrl,
   onDelete,
+  onViewDetails,
   skill,
   storageAvailable,
 }: {
   downloadUrl: string;
   onDelete: (skill: Skill) => void;
+  onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
   skill: Skill;
   storageAvailable: boolean;
 }) {
@@ -45,7 +47,14 @@ export function SkillRow({
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2">
         <div className="min-w-0 wrap-anywhere">
           <Text as="h2" variant="heading">
-            {skill.name}
+            <Button
+              aria-label={m.skills_details_open({ name: skill.name })}
+              className="max-w-full justify-start whitespace-normal text-left"
+              variant="inline"
+              onClick={(event) => onViewDetails(skill, event.currentTarget)}
+            >
+              {skill.name}
+            </Button>
           </Text>
         </div>
         <Switch

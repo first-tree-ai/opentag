@@ -3,6 +3,7 @@ import type {
   ListAgentSkillsResponse,
   ListSkillPresetsResponse,
   RemoteSkillSelection,
+  Skill,
   SkillArchiveFormat,
   SkillDetail,
 } from "@opentag/shared/browser";
@@ -40,6 +41,21 @@ export function useAgentSkill(agentId: string, skillId: string | undefined) {
     queryKey: queryKeys.skills.skill(agentId, skillId ?? ""),
     queryFn: (): Promise<SkillDetail> => browserApi.agentSkill(agentId, skillId as string),
     enabled: skillId !== undefined,
+  });
+}
+
+export function useSkillFile(skill: Skill | undefined, path: string, open: boolean) {
+  return useQuery({
+    queryKey: queryKeys.skills.file(skill?.agentId ?? "", skill?.id ?? "", skill?.archiveSha256 ?? "", path),
+    queryFn: ({ signal }) => {
+      if (!skill) throw new Error("A Skill is required to read a file");
+      return browserApi.agentSkillFile(skill.agentId, skill.id, path, skill.archiveSha256, signal);
+    },
+    enabled: open && skill !== undefined,
+    // A content-addressed file is immutable. Do not retain package text after the reader closes.
+    staleTime: Infinity,
+    gcTime: 0,
+    retry: false,
   });
 }
 

@@ -120,6 +120,7 @@ export {
 export {
   type ClientLogBindings,
   type ClientLogger,
+  type ClientLoggerServiceOptions,
   type CreateLoggerOptions,
   configureClientLoggerContext,
   configureClientLoggerForService,

@@ -1,11 +1,12 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "skills_delete": "删除",
+  "skills_add": "添加技能",
+  "skills_delete_action": "删除技能",
   "skills_delete_confirm": "删除技能",
   "skills_delete_description": "这将从此 Agent 移除该技能及其存储的归档文件。此操作无法撤销。",
   "skills_delete_in_progress": "正在删除…",
   "skills_delete_title": "删除 {name}？",
-  "skills_download": "下载",
+  "skills_download_action": "下载技能",
   "skills_empty": "还没有技能",
   "skills_empty_description": "添加技能，让此 Agent 获得可复用的工作方法。",
   "skills_error_archive_invalid": "无法读取该归档文件。请上传有效的 .zip、.skill、.tar.gz 或 .tgz 归档。",
@@ -27,48 +28,28 @@
   "skills_error_source_too_large": "该来源超出可读取的大小上限。",
   "skills_error_source_unreachable": "无法访问该来源。",
   "skills_error_storage_unavailable": "此部署未提供技能存储。",
-  "skills_file_count": [
-    {
-      "declarations": ["input count", "local countPlural = count: plural"],
-      "selectors": ["countPlural"],
-      "match": {
-        "countPlural=one": "{count} 个文件",
-        "countPlural=other": "{count} 个文件"
-      }
-    }
-  ],
   "skills_install": "从 URL 安装",
   "skills_install_already": "已安装",
+  "skills_install_candidate_title": "待安装的技能",
   "skills_install_candidates_aria": "该来源中的技能",
-  "skills_install_clear": "清除选择",
-  "skills_install_confirm": "安装所选",
-  "skills_install_description": "粘贴仓库地址或 skills.sh 链接。在你确认之前不会安装任何内容。",
+  "skills_install_count": "安装 {count} 个技能",
   "skills_install_empty": "该来源未提供任何技能。",
-  "skills_install_fetch": "获取列表",
   "skills_install_fetching": "正在加载技能…",
-  "skills_install_found": [
-    {
-      "declarations": ["input count", "local countPlural = count: plural"],
-      "selectors": ["countPlural"],
-      "match": {
-        "countPlural=one": "{count} 个技能",
-        "countPlural=other": "{count} 个技能"
-      }
-    }
-  ],
   "skills_install_installing": "正在安装…",
   "skills_install_result_installed": "已安装",
   "skills_install_result_skipped": "已跳过——已存在同名技能",
   "skills_install_results_aria": "安装结果",
-  "skills_install_select_all": "全选",
-  "skills_install_source_label": "URL",
+  "skills_install_selection_title": "选择要安装的技能",
+  "skills_install_source_label": "链接",
   "skills_install_source_placeholder": "仓库或技能链接",
+  "skills_install_success": "已安装 {count} 个技能",
   "skills_install_title": "从 URL 安装",
   "skills_install_unavailable_manifest_invalid": "其 SKILL.md 缺失或无效",
   "skills_install_unavailable_name_reserved": "其名称已被平台保留",
   "skills_install_unavailable_path_invalid": "它包含技能归档无法接受的路径",
   "skills_install_unavailable_too_large": "它超出技能归档的大小上限",
   "skills_list_aria": "此 Agent 的技能",
+  "skills_more_actions": "{name} 的更多操作",
   "skills_page_description": "为 Agent 添加可复用的技能。",
   "skills_page_title": "技能",
   "skills_preset_action_installed": "已安装",
@@ -103,16 +84,6 @@
   "skills_source_web_upload": "Web 上传",
   "skills_storage_unavailable": "此部署未配置技能存储，因此无法上传和下载。已有技能仍会列出。",
   "skills_toggle_label": "启用 {name}",
-  "skills_updated": "更新于 {time}",
   "skills_upload": "上传技能",
-  "skills_upload_in_progress": "正在上传 {name}…",
-  "skills_upload_requirements": ".zip、.skill、.tar.gz、.tgz · 最大 16 MiB",
-  "skills_add": "添加技能",
-  "skills_more_actions": "{name} 的更多操作",
-  "skills_download_action": "下载技能",
-  "skills_delete_action": "删除技能",
-  "skills_install_candidate_title": "待安装的技能",
-  "skills_install_selection_title": "选择要安装的技能",
-  "skills_install_count": "安装 {count} 个技能",
-  "skills_install_success": "已安装 {count} 个技能"
+  "skills_upload_in_progress": "正在上传 {name}…"
 }

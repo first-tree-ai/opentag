@@ -208,13 +208,15 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
         throw new RuntimeProxyError("body_invalid", "Unsupported Slack content type");
       }
       const bytes = await bufferProxyBody(request.body, maxBytes);
-      return decodeBufferedBody({
+      const prepared = decodeBufferedBody({
         bytes,
         operationBody: operation.body,
         path: request.path,
         provider: request.provider,
         slackKind,
       });
+      if (prepared.bytes.byteLength > maxBytes) throw new RuntimeProxyError("body_too_large");
+      return prepared;
     } catch (error) {
       if (error instanceof ProviderProxyBodyTooLargeError) throw new RuntimeProxyError("body_too_large");
       if (error instanceof SyntaxError) throw new RuntimeProxyError("body_invalid");
@@ -239,11 +241,17 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     material: RuntimeProviderMaterial,
   ): Promise<Response> {
     const url = `${material.origin}${request.path.startsWith("/") ? request.path : `/${request.path}`}`;
+    const upstreamRequestHeaders =
+      operation.provider === "slack" &&
+      operation.body === "form" &&
+      slackBufferedBodyKind(headers["content-type"]) === "json"
+        ? { ...headers, "content-type": "application/x-www-form-urlencoded" }
+        : headers;
     const init: RequestInit & { duplex?: "half" } = {
       method: operation.method,
       redirect: "error",
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]),
-      headers: upstreamHeaders(operation.body, headers, material.token),
+      headers: upstreamHeaders(operation.body, upstreamRequestHeaders, material.token),
     };
     if (operation.body === "stream") {
       init.body = Readable.from(request.body);

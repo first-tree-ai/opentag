@@ -1,4 +1,4 @@
-import { NativeContent, nativeHttpUrl, nativeObject, nativeString } from "../native-content.js";
+import { NativeContent, nativeHttpUrl, nativeInlineStyles, nativeObject, nativeString } from "../native-content.js";
 
 function mediaKind(mime: string): "image" | "audio" | "video" | "file" {
   if (mime.startsWith("image/")) return "image";
@@ -96,22 +96,23 @@ export function slackMessageContent(message: Record<string, unknown>, priorityMe
     const elements = () => renderArray(item.elements, depth, "");
     switch (item.type) {
       case "text":
+        return nativeInlineStyles(text, item.style);
       case "raw_text":
       case "plain_text":
       case "mrkdwn":
         return text;
       case "user":
-        return `<@${nativeString(item.user_id)}>`;
+        return nativeInlineStyles(`<@${nativeString(item.user_id)}>`, item.style);
       case "channel":
-        return `<#${nativeString(item.channel_id)}>`;
+        return nativeInlineStyles(`<#${nativeString(item.channel_id)}>`, item.style);
       case "usergroup":
-        return `<!subteam^${nativeString(item.usergroup_id)}>`;
+        return nativeInlineStyles(`<!subteam^${nativeString(item.usergroup_id)}>`, item.style);
       case "broadcast":
-        return `<!${nativeString(item.range)}>`;
+        return nativeInlineStyles(`<!${nativeString(item.range)}>`, item.style);
       case "emoji":
-        return `:${nativeString(item.name)}:`;
+        return nativeInlineStyles(`:${nativeString(item.name)}:`, item.style);
       case "link":
-        return `[${text || nativeString(item.url)}](${nativeString(item.url)})`;
+        return nativeInlineStyles(`[${text || nativeString(item.url)}](${nativeString(item.url)})`, item.style);
       case "rich_text_section":
         return elements();
       case "rich_text":

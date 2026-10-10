@@ -26,7 +26,7 @@
   "skills_download": "下载",
   "skills_download_action": "下载技能",
   "skills_empty": "还没有技能",
-  "skills_empty_description": "添加技能，让此 Agent 获得可复用的工作方法。",
+  "skills_empty_description": "从链接安装或上传文件，为此 Agent 导入技能。",
   "skills_error_archive_invalid": "无法读取该归档文件。请上传有效的 .zip、.skill、.tar.gz 或 .tgz 归档。",
   "skills_error_archive_too_large": "该归档文件大于 16 MiB。",
   "skills_error_client_too_large": "该归档文件大于 16 MiB。",

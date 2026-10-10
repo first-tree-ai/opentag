@@ -2,7 +2,7 @@
 
 [English](../observability.md)
 
-> Last synced with: 2026-09-22
+> Last synced with: 2026-10-10
 
 OpenTag Server 可选地通过 OTLP/HTTP 导出 OpenTelemetry traces。该能力默认关闭，覆盖 provider 连接、IM 入站、持久 delivery 与 Runtime 生命周期边界。
 
@@ -39,6 +39,8 @@ Client logger 遵循以下 `OPENTAG_LOG_LEVEL` 矩阵：
 | 未配置目标的一次性 client | 未设置 | `warn` |
 | 任意模式 | 合法的 `trace`、`debug`、`info`、`warn`、`error`、`fatal` 或 `silent` | 所选级别 |
 | 任意模式 | 非法值 | `info`，并输出一条安全告警 |
+
+daemon 服务从其 `config/daemon.env` 文件（即承载 daemon 其它环境变量的同一文件）解析 `OPENTAG_LOG_LEVEL`，因此无需改动 LaunchAgent 或 systemd unit 即可对服务进程生效。
 
 `imAttrs()` 与 `runtimeAttrs()` 是 OpenTelemetry helper，产出的是点分 span key，例如 `opentag.im.binding.id` 与 `opentag.runtime.connection.id`；**不要**把它们的返回值直接作为 Pino payload，应改为映射到上面固定的 camelCase Pino 词表。
 

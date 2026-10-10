@@ -381,6 +381,46 @@ describe("Client logger", () => {
     expect(content).not.toContain("credential-value");
   });
 
+  it("uses the level resolved from the configured service environment", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory, { environment: { OPENTAG_LOG_LEVEL: "debug" } });
+
+    createLogger("daemon").debug({}, "Visible service environment diagnostic");
+
+    await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain(
+      "Visible service environment diagnostic",
+    );
+  });
+
+  it("adopts the daemon environment when a later configuration supplies it", async () => {
+    const directory = await temporaryDirectory();
+    delete process.env.OPENTAG_LOG_LEVEL;
+    // The CLI configures the log directory first; the daemon service loads `config/daemon.env`
+    // later, after the root logger may already have been built at the pre-daemon level.
+    configureClientLoggerForService(directory);
+    createLogger("daemon").warn({}, "Hidden before the daemon environment");
+    expect(await pathExists(join(directory, "client.log"))).toBe(false);
+
+    configureClientLoggerForService(directory, { environment: { OPENTAG_LOG_LEVEL: "debug" } });
+    createLogger("daemon").debug({}, "Visible after the daemon environment");
+
+    await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain(
+      "Visible after the daemon environment",
+    );
+  });
+
+  it("falls back to info and warns for an invalid service environment level", async () => {
+    const directory = await temporaryDirectory();
+    delete process.env.OPENTAG_LOG_LEVEL;
+    configureClientLoggerForService(directory, { environment: { OPENTAG_LOG_LEVEL: "credential-value" } });
+    createLogger("daemon").info({}, "Daemon startup started");
+    const content = await readFile(join(directory, "client.log"), "utf8");
+    expect(content).toContain("Invalid OPENTAG_LOG_LEVEL; using info");
+    expect(content).toContain("Daemon startup started");
+    expect(content).not.toContain("credential-value");
+  });
+
   it("is silent in tests unless an explicit level is configured", async () => {
     delete process.env.OPENTAG_LOG_LEVEL;
     const silentDirectory = await temporaryDirectory();

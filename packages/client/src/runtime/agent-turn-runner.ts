@@ -227,13 +227,6 @@ export class AgentTurnRunner {
     }
 
     try {
-      if (
-        turn.phase !== "running" ||
-        runtime.state.phase !== "running" ||
-        runtime.state.activeRunId !== request.expectedTurnId
-      ) {
-        return steerResult(request, "deferred", "turn_not_running");
-      }
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.

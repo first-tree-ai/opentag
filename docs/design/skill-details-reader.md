@@ -10,10 +10,10 @@ The content area has a subtle hover fill and a visible keyboard focus outline, w
 Names use 16px semibold text and descriptions use 14px regular text. Controls align with the name; in narrow content
 containers the description spans the full width below the first row. The stretched trigger extends across that mobile
 content region, with the independent control group layered above it. Description tooltips are enabled only for actual
-horizontal overflow or two-line clamping, measured on text changes, element resizing and font loading. Explore skills remains
-a direct discovery entry, styled as a lighter ghost action beside the outlined Import skill menu. That menu contains
-Install from URL and Upload file. The catalog dialog is titled Skill catalog; discovery stays one click away from
-the management page, independently of import.
+horizontal overflow or two-line clamping, measured on text changes, element resizing and font loading. The header keeps a single
+outlined Import skill menu with Install from URL and Upload file. The empty state explains these two import methods
+without repeating the action. Explore skills is temporarily hidden in both the header and empty state while the discovery
+experience is being designed. The catalog component, translations and server APIs remain available for future integration.
 
 ## Reading experience
 

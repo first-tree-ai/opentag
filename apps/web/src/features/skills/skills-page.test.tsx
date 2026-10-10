@@ -109,33 +109,16 @@ describe("SkillsPage", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("offers the preset catalog and opens it without reading anything else", async () => {
-    stubList([]);
-    const presets = vi.spyOn(browserApi, "skillPresets").mockResolvedValue({
-      categories: [{ id: "getting-started", order: 10 }],
-      presets: [
-        {
-          name: "mcp-onboarding",
-          description: "Add MCP tools to this Agent",
-          category: "getting-started",
-          order: 10,
-          archiveSha256: "a".repeat(64),
-          archiveBytes: 2048,
-          fileCount: 2,
-          state: "not_installed",
-        },
-      ],
-    });
+  it.each([{ items: [] }, { items: [skill()] }])("keeps discovery hidden with skills $items", async ({ items }) => {
+    stubList(items);
+    const presets = vi.spyOn(browserApi, "skillPresets");
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
-    await screen.findByText(/No Skills yet/);
-    // The header and empty-state Explore skills actions both open the independent catalog.
-    const buttons = screen.getAllByRole("button", { name: "Explore skills" }) as HTMLButtonElement[];
-    expect(buttons.length).toBeGreaterThan(0);
-    expect(buttons[0]?.disabled).toBe(false);
-    fireEvent.click(buttons[0] as HTMLButtonElement);
-    expect((await screen.findAllByText("Skill catalog")).length).toBeGreaterThan(0);
-    expect(presets).toHaveBeenCalledWith(AGENT_ID);
+    await screen.findByText(items.length ? "Release notes writer" : "No Skills yet");
+    expect(screen.queryByRole("button", { name: "Explore skills" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Skill catalog" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Import skill" })).toHaveLength(1);
+    expect(presets).not.toHaveBeenCalled();
   });
 
   it("disables remote installation when the deployment has no Skill storage", async () => {
@@ -154,7 +137,7 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText(/No Skills yet/)).toBeTruthy();
-    expect(screen.getByText("Add skills to give this Agent reusable know-how.")).toBeTruthy();
+    expect(screen.getByText("Import a skill from a URL or upload a file to get started.")).toBeTruthy();
     const chooseFile = vi.spyOn(fileInput(), "click");
     fireEvent.click(screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Upload file" }));

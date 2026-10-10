@@ -16,6 +16,7 @@ export function buildProviderOutboxInstructions(options: ProviderOutboxInstructi
     options.actionInstruction,
     `To write to this ${options.provider} conversation, load the credentials from $OPENTAG_PROVIDER_ENV_FILE in your shell, then use the official ${providerCommand} CLI directly.`,
     ...providerBodyInstructions(options.provider),
+    ...providerAttachmentInstructions(options.provider),
     "OpenTag has no message send, reply, or reaction interface, and you do not report provider send results to OpenTag.",
     "Use the provider-native identifiers below. Do not substitute an OpenTag Session or message ID.",
     "If a provider result is unknown, query the provider before deciding whether to retry.",
@@ -73,3 +74,22 @@ function providerBodyInstructions(provider: ProviderOutboxProvider): readonly st
 /** Non-secret execution metadata is discovered without changing native CLI authentication. */
 export const GITHUB_NATIVE_CLI_INSTRUCTIONS =
   "GitHub integration, when enabled, preconfigures native git and gh. Read OPENTAG_GITHUB_REPOSITORIES for granted repositories, role, branch, publish mode and workBranchPrefix. Create task branches under the supplied workBranchPrefix; Context Tree direct mode targets its configured branch. Authentication and renewal are automatic; do not run interactive login or replace managed credentials.";
+
+/** The same on-demand reads serve Local and Cloud; no credentials or ephemeral URL enter input. */
+function providerAttachmentInstructions(provider: ProviderOutboxProvider): readonly string[] {
+  const common = [
+    "Incoming attachments are references, not downloaded files. Read them only when the task needs them. Load $OPENTAG_PROVIDER_ENV_FILE in the same shell before using the provider CLI or a returned private URL. Never print credentials or the environment file.",
+    "The source message and attachment IDs are provider-native. If the input is truncated or an older Server supplied only OpenTag resource ordinals, query the original provider message to discover its resources. A message readback can reflect later edits; do not present it as the frozen historical version.",
+    "A failed attachment read does not authorize replaying the Turn or repeating a send. Report deleted, inaccessible, unsupported, or unreadable content accurately; do not invent its contents.",
+  ];
+  if (provider === "slack")
+    return [
+      ...common,
+      'For a Slack file_id, run `slack api files.info --json \'{"file":"F..."}\'`. Check ok, then HTTP GET url_private_download (or url_private) through the configured proxy to a workspace file. files.info returns metadata, not file bytes. For a public attachment URL use existing HTTP tools without adding Slack credentials.',
+      "Private download handles expire. Re-query files.info once for a fresh handle if expired; retry only the read. Use conversations.history with channelId and messageTs for source messages, or conversations.replies with channelId and threadTs for a thread. Do not poll or bulk-fetch unrelated messages.",
+    ];
+  return [
+    ...common,
+    "For Feishu/Lark attachments, run `lark-cli im +messages-resources-download --message-id <messageId> --file-key <key> --type image|file --as bot --output ./attachment.bin`. Use image for image_key, file for files/audio/video file_key, and a workspace-relative output path. The video body and cover have different keys. Use `lark-cli im --help` for source-message reads in the installed version; retain the configured bot identity and do not log in interactively.",
+  ];
+}

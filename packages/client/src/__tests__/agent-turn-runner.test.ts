@@ -695,7 +695,11 @@ describe("AgentTurnRunner", () => {
         },
       } as unknown as SessionRuntimeManager,
       credentialEnvironment: credentialEnvironment(),
-      resourceFetcher: { fetchForTurn: vi.fn(async () => "resource") } as unknown as ImResourceFetcher,
+      resourceFetcher: {
+        fetchForTurn: vi.fn(() => {
+          throw new Error("Attachments must not be prefetched");
+        }),
+      } as unknown as ImResourceFetcher,
       onRuntimeEvent,
     });
     runner.start(liveOwner(delivery()));
@@ -1163,7 +1167,6 @@ describe("AgentTurnRunner", () => {
     let resolveReporting!: () => void;
     let observer: AgentRuntimeEventSink | undefined;
     let receipt: RecordedSteerInput | undefined;
-    let invalidateAfterFetch = false;
     const runtimeState = { phase: "running" as const, activeRunId: "turn-1", queuedRunCount: 0 };
     const capabilities = { steer: "supported" as "supported" | "unsupported", interactions: "unsupported" as const };
     const steer = vi.fn().mockRejectedValueOnce(new Error("steer failed")).mockResolvedValue(undefined);
@@ -1226,11 +1229,8 @@ describe("AgentTurnRunner", () => {
         },
       } as unknown as SessionRuntimeManager,
       resourceFetcher: {
-        fetchForTurn: vi.fn(async () => {
-          if (invalidateAfterFetch) {
-            invalidateAfterFetch = false;
-            runtimeState.activeRunId = "turn-other";
-          }
+        fetchForTurn: vi.fn(() => {
+          throw new Error("Attachments must not be prefetched");
         }),
       } as unknown as ImResourceFetcher,
       credentialEnvironment: credentialEnvironment(),
@@ -1252,11 +1252,6 @@ describe("AgentTurnRunner", () => {
     capabilities.steer = "supported";
     runtimeState.activeRunId = "turn-other";
     await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
-    runtimeState.activeRunId = "turn-1";
-    invalidateAfterFetch = true;
-    await expect(
-      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-3" }),
-    ).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
     runtimeState.activeRunId = "turn-1";
     await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
     await expect(

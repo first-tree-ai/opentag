@@ -1,4 +1,4 @@
-import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
+import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema, truncateImText } from "@opentag/shared";
 import { z } from "zod";
 import type { BotProfile } from "../bot-profile.js";
 import { contentBlocksWithMentions } from "../mention-content.js";
@@ -8,6 +8,7 @@ import type {
   ReadableResource,
   VerifiedBotIdentity,
 } from "../provider-adapter.js";
+import { slackMessageContent } from "./message-content.js";
 
 const SlackFileSchema = z
   .object({
@@ -109,9 +110,8 @@ function mentionsFromText(text: string, priorityId?: string): Array<{ externalId
 }
 
 function boundedText(value: string): { text: string; truncated: boolean } {
-  const encoded = new TextEncoder().encode(value);
-  if (encoded.byteLength <= 24 * 1024) return { text: value, truncated: false };
-  return { text: new TextDecoder().decode(encoded.subarray(0, 24 * 1024)), truncated: true };
+  const text = truncateImText(value, 24 * 1024);
+  return { text, truncated: text !== value };
 }
 
 type SlackNormalizationRejection = "malformed_supported_event" | "unsupported_event_type" | "unsupported_subtype";
@@ -141,7 +141,8 @@ export function normalizeSlackEnvelope(
   const nested = operation === "edited" ? event.message : operation === "deleted" ? event.previous_message : undefined;
   const canonical = nested ?? event;
   const messageId = nested?.ts ?? (operation === "deleted" ? event.deleted_ts : undefined) ?? event.ts;
-  const text = canonical.text ?? "";
+  const parsedContent = slackMessageContent(canonical);
+  const text = parsedContent.text;
   const bounded = boundedText(operation === "deleted" ? "[deleted]" : text);
   const mentions = mentionsFromText(text, envelope.botUserId);
   const isSelf =
@@ -153,13 +154,7 @@ export function normalizeSlackEnvelope(
     (canonical.bot_profile?.app_id === envelope.appId ? envelope.botUserId : undefined) ??
     canonical.bot_id ??
     "system";
-  const resources = (canonical.files ?? []).slice(0, 16).map((file) => ({
-    providerResourceKey: file.id,
-    kind: file.mimetype?.startsWith("image/") ? ("image" as const) : ("file" as const),
-    filename: file.name?.slice(0, 512) ?? null,
-    mediaType: file.mimetype?.slice(0, 255) ?? null,
-    sizeBytes: file.size ?? null,
-  }));
+  const resources = parsedContent.resources;
   return [
     NormalizedInboundImEventSchema.parse({
       providerEventId: envelope.eventId,
@@ -194,7 +189,7 @@ export function normalizeSlackEnvelope(
               label: `<@${externalId}>`,
             })),
           ),
-          truncated: bounded.truncated,
+          truncated: bounded.truncated || parsedContent.truncated,
         },
         resources,
       },

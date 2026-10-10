@@ -74,6 +74,7 @@ export interface AgentTurnRunnerOptions {
   readonly now?: () => number;
   readonly onRuntimeEvent?: (event: AgentRuntimeEvent) => Promise<void> | void;
   readonly reportOwner: TurnReportOwner;
+  /** @deprecated Attachments are read on demand through the provider CLI. Never called. */
   readonly resourceFetcher?: ImResourceFetcher;
   readonly runtimeManager: SessionRuntimeManager;
   readonly credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare">;
@@ -134,7 +135,6 @@ export class AgentTurnRunner {
   readonly #now: () => number;
   readonly #onRuntimeEvent?: AgentTurnRunnerOptions["onRuntimeEvent"];
   readonly #reportOwner: TurnReportOwner;
-  readonly #resourceFetcher?: ImResourceFetcher;
   readonly #runtimeManager: SessionRuntimeManager;
   readonly #credentialEnvironment: AgentTurnRunnerOptions["credentialEnvironment"];
   readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
@@ -157,7 +157,6 @@ export class AgentTurnRunner {
     this.#now = options.now ?? Date.now;
     this.#onRuntimeEvent = options.onRuntimeEvent;
     this.#reportOwner = options.reportOwner;
-    this.#resourceFetcher = options.resourceFetcher;
     this.#runtimeManager = options.runtimeManager;
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
@@ -228,8 +227,6 @@ export class AgentTurnRunner {
     }
 
     try {
-      const cwd = this.#runtimeManager.cwd(request.sessionId);
-      const supplementalContext = await this.#resourceFetcher?.fetchForTurn(request, cwd);
       if (
         turn.phase !== "running" ||
         runtime.state.phase !== "running" ||
@@ -240,7 +237,7 @@ export class AgentTurnRunner {
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
-        input: buildAgentInput(request, supplementalContext, owner.request.runtime, new Date(this.#now())),
+        input: buildAgentInput(request, undefined, owner.request.runtime, new Date(this.#now())),
       });
     } catch {
       return steerResult(request, "deferred", "steer_state_unknown");
@@ -300,8 +297,6 @@ export class AgentTurnRunner {
       runSignal.throwIfAborted();
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, runSignal);
       turn.runtime = runtime;
-      const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
-      const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
       releaseObserver = this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
         trace.record(event);
         if (event.type === "run_started" && event.runId === owner.turnId) {
@@ -329,10 +324,10 @@ export class AgentTurnRunner {
         runId: owner.turnId,
         /*
          * The processing clock is sampled at actual input construction — after credential
-         * preparation and resource fetching, at the last moment before the Run dispatch — never
+         * preparation, at the last moment before the Run dispatch — never
          * at delivery receipt. It is prompt input only and never enters a persistent hash.
          */
-        input: buildAgentInput(owner.request, supplementalContext, undefined, new Date(this.#now())),
+        input: buildAgentInput(owner.request, undefined, undefined, new Date(this.#now())),
         signal: runSignal,
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries

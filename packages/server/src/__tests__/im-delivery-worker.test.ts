@@ -23,6 +23,7 @@ import {
 } from "../db/schema/index.js";
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-delivery-content.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "../services/runtime-config/errors.js";
@@ -99,6 +100,143 @@ describe("ImDeliveryWorker database workflow", () => {
 
   beforeEach(async () => {
     await unit.reset();
+  });
+
+  it.each(["direct", "steer"])(
+    "delivers attachment-only %s input with stable IDs and no validation retry",
+    async (kind) => {
+      const fixture = kind === "steer" ? await steerFixture(unit) : await workerFixture(unit);
+      await unit.database
+        .update(imMessages)
+        .set({
+          content: {
+            version: 1,
+            fallbackText: "",
+            blocks: [],
+            truncated: false,
+            resources: [
+              {
+                providerResourceKey: "F_NATIVE",
+                kind: "image",
+                filename: "图😀.png",
+                mediaType: "image/png",
+                sizeBytes: 12,
+              },
+            ],
+          },
+        })
+        .where(eq(imMessages.id, fixture.messageId));
+      const diagnostic = vi.fn();
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        onDiagnostic: diagnostic,
+      });
+      await worker.runOnce();
+      const calls = kind === "steer" ? domain.requestSteer.mock.calls : domain.requestDelivery.mock.calls;
+      expect(calls).toHaveLength(1);
+      const request = calls[0]?.[2] as DirectImMessageDeliveryRequest | RuntimeImSteerRequest;
+      expect(request.content.text).toContain('"file_id":"F_NATIVE"');
+      expect(request.content.providerRef.provider).toBe("slack");
+      expect(request.content.resources?.[0]?.filename).toBe("图😀.png");
+      expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_RUNTIME_FAILED");
+      expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_STEER_FAILED");
+    },
+  );
+
+  it("terminally rejects unrecoverable empty content before reconcile and never retries that version", async () => {
+    const fixture = await workerFixture(unit);
+    await unit.database
+      .update(imMessages)
+      .set({ content: { version: 1, fallbackText: "", blocks: [], truncated: false, resources: [] } })
+      .where(eq(imMessages.id, fixture.messageId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+    const diagnostic = vi.fn();
+    const assembler = { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) };
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler,
+      registry: fixture.registry,
+      onDiagnostic: diagnostic,
+    });
+    await worker.runOnce();
+    await worker.runOnce();
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row).toMatchObject({
+      state: "terminal_rejected",
+      reason: "content_unrecoverable",
+      lastErrorCode: "IM_DELIVERY_CONTENT_INVALID",
+      attemptCount: 1,
+      dispatchRequestId: null,
+    });
+    expect(domain.requestReconcile).not.toHaveBeenCalled();
+    expect(domain.requestDelivery).not.toHaveBeenCalled();
+    expect(assembler.assembleForSession).not.toHaveBeenCalled();
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID");
+  });
+
+  it("rejects malformed stored resource metadata before external calls without leaking its contents", async () => {
+    const fixture = await workerFixture(unit);
+    await unit.database
+      .update(imMessages)
+      .set({
+        content: {
+          version: 1,
+          fallbackText: "secret body",
+          blocks: [],
+          truncated: false,
+          resources: [
+            {
+              providerResourceKey: "F_SECRET",
+              kind: "file",
+              filename: "secret filename",
+              mediaType: null,
+              sizeBytes: 1,
+              ordinal: 99,
+            },
+          ],
+        },
+      } as never)
+      .where(eq(imMessages.id, fixture.messageId));
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry: fixture.registry,
+      onDiagnostic: diagnostic,
+    });
+    await worker.runOnce();
+    await worker.runOnce();
+    expect(domain.requestReconcile).not.toHaveBeenCalled();
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_CONTENT_INVALID");
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("secret");
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row).toMatchObject({ state: "terminal_rejected", reason: "invalid_content", attemptCount: 1 });
+  });
+
+  it("classifies fresh request errors separately from mutable runtime configuration", async () => {
+    const fixture = await workerFixture(unit);
+    expect(() => validateFreshImRequest({ ...fixture.request, deadlineAt: "bad-date" })).toThrow(ImDeliveryInputError);
+    const mutableConfig = { ...fixture.request, runtime: { ...fixture.runtime, agentId: "other-agent" } };
+    try {
+      validateFreshImRequest(mutableConfig);
+      throw new Error("Expected invalid configuration");
+    } catch (error) {
+      expect(error).not.toBeInstanceOf(ImDeliveryInputError);
+      expect(error).toHaveProperty("issues");
+    }
   });
 
   it("claims, reconciles, builds, and delivers a pending message", async () => {
@@ -338,7 +476,11 @@ describe("ImDeliveryWorker database workflow", () => {
             };
           }),
         } as never,
-        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        assembler: {
+          assembleForSession: vi.fn(async (sessionId: string) =>
+            sessionId === secondFixture.sessionId ? secondFixture.runtime : fixture.runtime,
+          ),
+        },
         registry: fixture.registry,
         maxConcurrent: 1,
         operationTimeoutMs: 100,
@@ -434,7 +576,11 @@ describe("ImDeliveryWorker database workflow", () => {
           }),
           requestDelivery,
         } as never,
-        assembler: { assembleForSession: vi.fn().mockResolvedValue(firstFixture.runtime) },
+        assembler: {
+          assembleForSession: vi.fn(async (sessionId: string) =>
+            sessionId === secondFixture.sessionId ? secondFixture.runtime : firstFixture.runtime,
+          ),
+        },
         registry: firstFixture.registry,
         maxConcurrent: 1,
         operationTimeoutMs: 100,
@@ -582,7 +728,13 @@ describe("ImDeliveryWorker database workflow", () => {
     const worker = new ImDeliveryWorker({
       database: unit.database,
       domain: domain as never,
-      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixtures[0]?.runtime) },
+      assembler: {
+        assembleForSession: vi.fn(async (sessionId: string) => {
+          const fixture = fixtures.find((item) => item.sessionId === sessionId);
+          if (!fixture) throw new Error("Session fixture not found");
+          return fixture.runtime;
+        }),
+      },
       registry,
       maxConcurrent: 1,
       maxQueuedPerAgent: 1,
@@ -1298,8 +1450,9 @@ describe("ImDeliveryWorker database workflow", () => {
     });
     await worker.runOnce();
     expect(delivered?.content.text.length).toBeLessThan(20_000);
-    expect(delivered?.content.historyTruncated).toBe(true);
-    expect(delivered?.content.resources?.length ?? 900).toBeLessThan(900);
+    expect(delivered?.content.historyTruncated).toBe(false);
+    expect(delivered?.content.text).toContain("Content omitted");
+    expect(delivered?.content.resources).toHaveLength(16);
   });
 
   it("copies Slack human authorUserId onto current delivery and history without exposing bot or system IDs", async () => {
@@ -1321,7 +1474,18 @@ describe("ImDeliveryWorker database workflow", () => {
         direction: "inbound",
         authorKind: "human",
         authorExternalId: "U_HUMAN",
-        content: { fallbackText: "human history" },
+        content: {
+          fallbackText: "human history",
+          resources: [
+            {
+              providerResourceKey: "F_HISTORY",
+              kind: "file",
+              filename: "history.txt",
+              mediaType: "text/plain",
+              sizeBytes: 5,
+            },
+          ],
+        },
         providerContext: { provider: "slack", channelType: "channel" },
         occurredAt: new Date(Date.now() - 4_000),
       },
@@ -1386,6 +1550,7 @@ describe("ImDeliveryWorker database workflow", () => {
     });
     const historyById = new Map((delivered?.content.history ?? []).map((item) => [item.imMessageId, item]));
     expect(historyById.get(humanHistoryId)?.providerRef).toMatchObject({ authorUserId: "U_HUMAN" });
+    expect(historyById.get(humanHistoryId)?.text).toContain('"file_id":"F_HISTORY"');
     expect(historyById.get(botHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
     expect(historyById.get(systemHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
     expect(historyById.get(botAsHumanHistoryId)?.providerRef).not.toHaveProperty("authorUserId");

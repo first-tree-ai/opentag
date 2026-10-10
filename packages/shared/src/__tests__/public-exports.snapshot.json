@@ -1034,6 +1034,7 @@
   "redactDiagnostic",
   "redactForLog",
   "redactSensitive",
+  "renderImContentText",
   "renderPlatformInstructions",
   "requestsCloudIdentityV1",
   "requestsProviderCliReasonV2",
@@ -1062,6 +1063,7 @@
   "taskByIdPath",
   "taskCancelPath",
   "taskRepliesPath",
+  "truncateImText",
   "unsupportedClientVersionMessage",
   "webServiceScopeForOperation",
   "withComputerRuntimeProviderSupport"

@@ -1,3 +1,4 @@
+import type { ImContentV1 } from "@opentag/shared";
 import { ImContentV1Schema, type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -315,8 +316,7 @@ export class ImMessageInbox {
               resources: event.message.resources.map((resource, ordinal) => ({
                 ...resource,
                 ordinal,
-                availability:
-                  resource.sizeBytes != null && resource.sizeBytes > 25 * 1024 * 1024 ? "too_large" : "available",
+                availability: resourceAvailability(resource),
               })),
             });
             const [created] = await transaction
@@ -966,4 +966,9 @@ export class ImMessageInbox {
     }
     return undefined;
   }
+}
+
+function resourceAvailability(resource: NonNullable<ImContentV1["resources"]>[number]) {
+  if (resource.availability && resource.availability !== "available") return resource.availability;
+  return resource.sizeBytes != null && resource.sizeBytes > 25 * 1024 * 1024 ? "too_large" : "available";
 }

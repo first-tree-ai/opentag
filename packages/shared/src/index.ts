@@ -405,6 +405,7 @@ export {
   taskRepliesPath,
 } from "./http-paths.js";
 export * from "./im-binding.js";
+export { renderImContentText, truncateImText } from "./im-content-text.js";
 export * from "./im-message.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";

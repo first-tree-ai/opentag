@@ -120,7 +120,7 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "-c",
   'web_search="disabled"',
   "-c",
-  "tools.view_image=false",
+  "tools.view_image=true",
   "-c",
   "memories.use_memories=false",
   "-c",

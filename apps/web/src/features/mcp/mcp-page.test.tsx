@@ -28,8 +28,8 @@ describe("MCP daily use", () => {
     expect(screen.queryByText("Long server-provided description")).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
     await openDetails();
-    fireEvent.click(await screen.findByRole("button", { name: "Server information" }));
-    expect(await screen.findByText("Long server-provided description")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Server information" })).toBeNull();
+    expect(screen.queryByText("Long server-provided description")).toBeNull();
   });
   it("uses identity navigation without menus or a permanent tools action", async () => {
     stub([entry()]);
@@ -312,7 +312,7 @@ describe("MCP daily use", () => {
     fireEvent.scroll(list);
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reconnect" }));
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect((screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement).value).toBe("issue");
     expect(screen.getByRole("region", { name: "Tools discovered with this Agent’s credential" }).scrollTop).toBe(120);
   });
@@ -322,7 +322,7 @@ describe("MCP daily use", () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=success&server=${SERVER_ID}`);
     stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await screen.findByRole("dialog", { name: "linear tools" });
+    await screen.findByRole("dialog", { name: "Tools" });
     expect((screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement).value).toBe("issue");
     expect(screen.queryByText("linear authorized for Reviewer")).toBeNull();
     expect(window.location.search).toBe("");
@@ -332,9 +332,9 @@ describe("MCP daily use", () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(screen.getByText("Sign-in was not completed. Try again.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByRole("dialog", { name: "linear" });
     fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));
     expect(screen.queryByText("Sign-in was not completed. Try again.")).toBeNull();
@@ -367,14 +367,14 @@ describe("MCP tools OAuth error consumption", () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(screen.getByText("Sign-in was not completed. Try again.")).toBeTruthy();
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
-    fireEvent.click(screen.getByRole("button", { name: "Back to server details" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(screen.getByRole("button", { name: "Tools" }));
     expect((screen.getByLabelText("Search tools") as HTMLInputElement).value).toBe("issue");
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reconnect" }));
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(screen.queryByText("Sign-in was not completed. Try again.")).toBeNull();
   });
 });

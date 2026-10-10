@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog } from "../../ui/design-system.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
-import { McpAuthFields, McpFooter } from "./mcp-form.js";
+import { McpAuthFields } from "./mcp-form.js";
 import {
   type AuthDraft,
   actionError,
@@ -80,6 +80,7 @@ export function McpAuthorizeDialog({
   agentName,
   entry,
   onClose,
+  onBack,
   onAuthorized,
   onBeforeOAuth,
   initialError,
@@ -88,6 +89,7 @@ export function McpAuthorizeDialog({
   agentName: string;
   entry: MCPAgentServer;
   onClose: () => void;
+  onBack?: () => void;
   onAuthorized: () => void;
   onBeforeOAuth?: () => void;
   initialError?: string;
@@ -133,7 +135,8 @@ export function McpAuthorizeDialog({
         agentId={agentId}
         agentName={agentName}
         entry={entry}
-        onClose={() => {
+        onClose={onClose}
+        onBack={() => {
           returnFocus.current = true;
           setClearing(false);
         }}
@@ -148,12 +151,21 @@ export function McpAuthorizeDialog({
   return (
     <Dialog
       initialFocusRef={returnFocus.current ? clearTrigger : undefined}
-      className="mcp-form-dialog"
+      className="mcp-form-dialog mcp-auth-dialog"
       busy={busy}
-      title={<McpDialogTitle entry={entry} title={m.mcp_authentication_title({ server: entry.name })} />}
-      closeLabel={m.common_close_title({ title: m.mcp_authentication_title({ server: entry.name }) })}
-      description={m.mcp_auth_scope({ agent: agentName })}
+      title={
+        onBack ? (
+          m.mcp_auth_label()
+        ) : (
+          <McpDialogTitle entry={entry} title={m.mcp_authentication_title({ server: entry.name })} />
+        )
+      }
+      closeLabel={m.common_close_title({
+        title: onBack ? m.mcp_auth_label() : m.mcp_authentication_title({ server: entry.name }),
+      })}
+      description={m.mcp_settings_context({ server: entry.name, agent: agentName })}
       onClose={onClose}
+      onBack={onBack}
     >
       <form
         onSubmit={(event) => {
@@ -161,35 +173,39 @@ export function McpAuthorizeDialog({
           void submit();
         }}
       >
-        <fieldset disabled={busy} className="mcp-fields border-0 p-0">
-          <McpAuthFields
-            draft={draft}
-            onChange={(next) => {
-              chosen.current = true;
-              setDraft(next);
-            }}
-            existing
-            connectionSettings={false}
-          />
-        </fieldset>
-        {error ? (
-          <p role="alert" className="mt-3 text-sm text-kumo-danger">
-            {error}
-          </p>
-        ) : null}
-        {canRevoke(entry) && entry.authorization?.hasCredential ? (
-          <Button
-            ref={clearTrigger}
-            className="mt-4 px-0 text-kumo-danger"
-            size="compact"
-            variant="ghost"
-            disabled={busy}
-            onClick={() => setClearing(true)}
-          >
-            {m.mcp_clear_credentials()}
-          </Button>
-        ) : null}
-        <McpFooter onClose={onClose} busy={busy}>
+        <div className="mcp-settings-body">
+          <fieldset disabled={busy} className="mcp-fields border-0 p-0">
+            <McpAuthFields
+              label={m.mcp_settings_auth_method()}
+              variant="settings"
+              draft={draft}
+              onChange={(next) => {
+                chosen.current = true;
+                setDraft(next);
+              }}
+              existing
+              connectionSettings={false}
+            />
+          </fieldset>
+          {error ? (
+            <p role="alert" className="mt-3 text-sm text-kumo-danger">
+              {error}
+            </p>
+          ) : null}
+          {canRevoke(entry) && entry.authorization?.hasCredential ? (
+            <Button
+              ref={clearTrigger}
+              className="mt-4 px-0 text-kumo-danger"
+              size="compact"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => setClearing(true)}
+            >
+              {m.mcp_clear_credentials()}
+            </Button>
+          ) : null}
+        </div>
+        <footer className="mcp-settings-footer">
           <Button
             aria-label={authorizationLabel(draft.kind, entry)}
             type="submit"
@@ -198,7 +214,7 @@ export function McpAuthorizeDialog({
           >
             {authorizationLabel(draft.kind, entry)}
           </Button>
-        </McpFooter>
+        </footer>
       </form>
     </Dialog>
   );

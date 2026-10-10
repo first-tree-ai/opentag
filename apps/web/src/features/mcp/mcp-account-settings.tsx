@@ -43,7 +43,8 @@ export function McpAccountDialog({ onClose }: { onClose: () => void }) {
   const matches = servers.filter((server) =>
     `${server.name} ${server.url}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
-  if (selected) return <McpDefaultsDialog serverId={selected} onClose={() => setSelected(undefined)} />;
+  if (selected)
+    return <McpDefaultsDialog serverId={selected} onClose={onClose} onBack={() => setSelected(undefined)} />;
   return (
     <Dialog className="mcp-form-dialog" title={m.mcp_heading()} description={m.mcp_defaults_scope()} onClose={onClose}>
       {account.isPending ? (

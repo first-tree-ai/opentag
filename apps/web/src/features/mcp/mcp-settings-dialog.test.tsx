@@ -22,12 +22,12 @@ describe("MCP settings drafts and scope", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Use account default for MCP URL" }).hasAttribute("disabled")).toBe(
-        false,
-      ),
+      expect(
+        screen.getByRole("button", { name: "Use account default for Server address" }).hasAttribute("disabled"),
+      ).toBe(false),
     );
-    click("Use account default for MCP URL");
-    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(detail(1).server.url);
+    click("Use account default for Server address");
+    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe(detail(1).server.url);
     expect(update).not.toHaveBeenCalled();
     click("Cancel");
     expect(update).not.toHaveBeenCalled();
@@ -38,11 +38,11 @@ describe("MCP settings drafts and scope", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Use account default for MCP URL" }).hasAttribute("disabled")).toBe(
-        false,
-      ),
+      expect(
+        screen.getByRole("button", { name: "Use account default for Server address" }).hasAttribute("disabled"),
+      ).toBe(false),
     );
-    click("Use account default for MCP URL");
+    click("Use account default for Server address");
     click("Save changes");
     await waitFor(() => expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { clearUrl: true }));
   });
@@ -75,21 +75,21 @@ describe("MCP settings drafts and scope", () => {
     const authorize = vi.spyOn(browserApi, "setMcpAuthorization");
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails();
-    change("MCP URL", "https://draft.example.com/mcp");
+    change("Server address", "https://draft.example.com/mcp");
     click("Authentication");
     expect(screen.getByText("Save connection changes before authentication.")).toBeTruthy();
     click("Save and continue");
     await screen.findByText("Save unavailable");
-    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe("https://draft.example.com/mcp");
+    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe("https://draft.example.com/mcp");
     expect(authorize).not.toHaveBeenCalled();
     click("Save and continue");
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(update).toHaveBeenLastCalledWith(AGENT_ID, SERVER_ID, { url: "https://draft.example.com/mcp" });
     expect(authorize).not.toHaveBeenCalled();
-    expect(screen.queryByLabelText("MCP URL")).toBeNull();
-    click("Cancel");
+    expect(screen.queryByLabelText("Server address")).toBeNull();
+    click("Back");
     await screen.findByRole("dialog", { name: "linear" });
-    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(saved.effective.url);
+    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe(saved.effective.url);
     expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(true);
   });
   it("continues without a write if connection changes are withdrawn", async () => {
@@ -97,11 +97,11 @@ describe("MCP settings drafts and scope", () => {
     const update = vi.spyOn(browserApi, "updateAgentMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails();
-    change("MCP URL", "https://draft.example.com/mcp");
+    change("Server address", "https://draft.example.com/mcp");
     click("Authentication");
-    change("MCP URL", entry().effective.url);
+    change("Server address", entry().effective.url);
     click("Continue");
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(update).not.toHaveBeenCalled();
   });
   it("changes token settings using the stored credential without requesting another key", async () => {
@@ -205,7 +205,7 @@ describe("MCP tools authentication preserves connection drafts", () => {
     });
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails();
-    change("MCP URL", saved.effective.url);
+    change("Server address", saved.effective.url);
     click("Tools");
     change("Search tools", "issue");
     click("Reconnect");
@@ -213,19 +213,19 @@ describe("MCP tools authentication preserves connection drafts", () => {
     expect(screen.getByText("Save connection changes before authentication.")).toBeTruthy();
     expect(oauth).not.toHaveBeenCalled();
     click("Keep editing");
-    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(saved.effective.url);
+    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe(saved.effective.url);
     click("Tools");
     expect((screen.getByLabelText("Search tools") as HTMLInputElement).value).toBe("issue");
     click("Reconnect");
     click("Save and continue");
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { url: saved.effective.url });
     expect(oauth).not.toHaveBeenCalled();
-    click("Cancel");
-    await screen.findByRole("dialog", { name: "linear tools" });
+    click("Back");
+    await screen.findByRole("dialog", { name: "Tools" });
     expect((screen.getByLabelText("Search tools") as HTMLInputElement).value).toBe("issue");
-    click("Back to server details");
-    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(saved.effective.url);
+    click("Back");
+    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe(saved.effective.url);
     expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(true);
   });
 });

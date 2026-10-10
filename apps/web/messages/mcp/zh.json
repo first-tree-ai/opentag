@@ -234,7 +234,7 @@
   "mcp_source_import": "导入配置",
   "mcp_settings_scope": "更改仅适用于 Agent「{agent}」。",
   "mcp_settings_advanced": "高级设置",
-  "mcp_settings_advanced_help": "通常无需修改，请按服务提供的连接说明配置。",
+  "mcp_settings_advanced_help": "通常无需修改，请遵循服务提供方的配置说明。",
   "mcp_settings_token_help": "用于 API key 或令牌连接",
   "mcp_settings_information": "服务信息",
   "mcp_connected": "已连接",
@@ -264,5 +264,16 @@
   "mcp_remove_retry": "无法移除 {server}，请重试。",
   "mcp_removed": "已从 Agent 移除 {server}",
   "mcp_not_connected": "未连接",
-  "mcp_connection_failed": "连接失败"
+  "mcp_connection_failed": "连接失败",
+  "mcp_settings_address": "服务地址",
+  "mcp_settings_connected": "已连接",
+  "mcp_settings_remove": "从 Agent 移除",
+  "mcp_auth_connection_saved": "连接设置已保存，授权尚未完成。",
+  "mcp_settings_context": "{server} · Agent {agent}",
+  "mcp_settings_auth_method": "方式",
+  "mcp_tools_count_one": "1 个工具",
+  "mcp_settings_auth_browser": "浏览器登录（OAuth）",
+  "mcp_settings_auth_browser_help": "前往浏览器批准访问权限。",
+  "mcp_settings_auth_save_token": "保存 Token",
+  "mcp_settings_auth_update_token": "更新 Token"
 }

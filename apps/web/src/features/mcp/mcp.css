@@ -81,10 +81,12 @@
 .mcp-confirm-dialog,
 .mcp-tools-dialog {
   overflow-wrap: anywhere;
+  top: 50%;
+  translate: -50% -50%;
 }
 .mcp-form-dialog {
   width: calc(100vw - 2rem);
-  max-width: 34rem;
+  max-width: 38rem;
   max-height: calc(100dvh - 5rem);
 }
 .mcp-confirm-dialog {
@@ -116,10 +118,161 @@
   gap: 0.625rem;
 }
 .mcp-disclosure-trigger {
-  width: 100%;
+  width: calc(100% + 1rem);
+  margin-inline: -0.5rem;
   justify-content: space-between;
-  padding: 0.875rem 0;
+  padding: 0.75rem 0.5rem;
   height: auto;
+  border-radius: 0.5rem;
+  background: transparent;
+  transition: background-color 150ms ease;
+}
+.mcp-disclosure-trigger[data-panel-open] {
+  background: transparent;
+}
+.mcp-disclosure-trigger:hover {
+  background: var(--color-kumo-tint);
+}
+.mcp-disclosure-trigger:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 2px;
+}
+.mcp-settings-dialog > header {
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+:is(.mcp-settings-dialog, .mcp-auth-dialog, .mcp-tools-dialog) {
+  --mcp-form-top: max(1rem, calc((100dvh - 26rem) / 2));
+  display: flex;
+  flex-direction: column;
+  top: var(--mcp-form-top);
+  translate: -50% 0;
+  max-height: calc(100dvh - var(--mcp-form-top) - 1rem);
+  overflow: clip;
+}
+:is(.mcp-settings-dialog, .mcp-auth-dialog) > :not(form) {
+  flex-shrink: 0;
+}
+:is(.mcp-settings-dialog, .mcp-auth-dialog) > form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.mcp-settings-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  padding: 0.75rem;
+  margin: -0.75rem;
+}
+.mcp-auth-method-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 7.5rem;
+}
+.mcp-auth-method-details > p {
+  margin-top: 0;
+  min-height: 2.25rem;
+}
+.mcp-settings-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 1.25rem;
+  line-height: 1.4;
+}
+.mcp-settings-dialog label[for="mcp-edit-url"] {
+  margin-bottom: 0.375rem;
+}
+.mcp-settings-dialog .ui-control:not(:focus) {
+  --tw-ring-color: var(--color-kumo-line);
+}
+.mcp-settings-rows {
+  display: grid;
+  gap: 0.25rem;
+}
+.mcp-settings-row {
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-align: left;
+}
+:is(.mcp-settings-dialog, .mcp-auth-dialog) .mcp-disclosure {
+  border-top: 0;
+}
+:is(.mcp-settings-dialog, .mcp-auth-dialog) .mcp-fields {
+  gap: 0.75rem;
+}
+.mcp-settings-row,
+:is(.mcp-settings-dialog, .mcp-auth-dialog) .mcp-disclosure-trigger {
+  width: calc(100% + 1.5rem);
+  margin-inline: -0.75rem;
+  height: auto;
+  min-height: 3rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 0.375rem;
+  background: transparent;
+  transition: background-color 150ms ease;
+}
+.mcp-settings-dialog :is(.mcp-settings-row, .mcp-disclosure-trigger) {
+  min-height: 2.75rem;
+  padding-block: 0.5rem;
+}
+.mcp-settings-row:hover,
+:is(.mcp-settings-dialog, .mcp-auth-dialog) .mcp-disclosure-trigger:hover {
+  background: color-mix(in srgb, var(--color-kumo-tint) 60%, var(--color-kumo-base));
+}
+.mcp-settings-row:active,
+:is(.mcp-settings-dialog, .mcp-auth-dialog) .mcp-disclosure-trigger:active {
+  background: var(--color-kumo-tint);
+}
+.mcp-settings-row:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 2px;
+}
+.mcp-settings-row-value {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.625rem;
+  min-width: 0;
+  color: var(--text-color-kumo-subtle);
+  font-weight: 400;
+}
+.mcp-settings-row-value svg {
+  flex-shrink: 0;
+}
+.mcp-connected-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--color-kumo-success);
+}
+.mcp-settings-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-kumo-line);
+}
+:is(.mcp-settings-dialog, .mcp-auth-dialog) .mcp-settings-footer {
+  flex-shrink: 0;
+}
+.mcp-settings-dialog .mcp-settings-footer {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+}
+.mcp-settings-remove {
+  margin-right: auto;
+  padding-left: 0;
+  color: var(--opentag-button-danger-bg);
 }
 .mcp-token-fields {
   display: grid;
@@ -155,20 +308,15 @@
   flex: 1;
 }
 .mcp-tools-dialog {
-  width: calc(100vw - 2.5rem);
-  max-width: 48rem;
-  max-height: calc(100dvh - 5rem);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  width: calc(100vw - 2rem);
+  max-width: 38rem;
 }
 .mcp-tools-body {
-  height: min(38rem, calc(100dvh - 15rem));
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
-.mcp-tools-dialog header {
+.mcp-tools-dialog > :not(.mcp-tools-body) {
   flex-shrink: 0;
 }
 .mcp-help-trigger {
@@ -184,25 +332,11 @@
   .mcp-tools-dialog,
   .mcp-confirm-dialog {
     padding: 1.25rem;
-    max-height: calc(100dvh - 2rem);
-  }
-  .mcp-tools-dialog {
-    width: calc(100vw - 1.5rem);
+    max-height: calc(100dvh - var(--mcp-form-top, 1rem) - 1rem);
   }
   .mcp-token-fields {
     grid-template-columns: 1fr;
   }
-}
-
-.mcp-settings-navigation {
-  width: 100%;
-  height: auto;
-  padding: 0.875rem 0;
-  display: flex;
-  justify-content: space-between;
-  text-align: left;
-  gap: 1rem;
-  white-space: normal;
 }
 
 .mcp-server-identity {
@@ -227,22 +361,6 @@
   font-size: 1rem;
   font-weight: 600;
 }
-.mcp-settings-group {
-  display: grid;
-  min-width: 0;
-  gap: 0;
-}
-.mcp-settings-dialog .mcp-settings-navigation,
-.mcp-settings-dialog .mcp-disclosure-trigger {
-  min-height: 3rem;
-  font-weight: 400;
-}
-.mcp-settings-remove {
-  justify-self: start;
-  padding-inline: 0.25rem;
-  font-weight: 400;
-}
-
 @media (max-width: 47.999rem) {
   .mcp-server-identity {
     grid-template-columns: 2.75rem minmax(0, 1fr);

@@ -740,6 +740,43 @@ describe("McpOAuthFlowService.start", () => {
 const FAKE_SECOND_SECRET = "flow-secret-for-the-second-browser";
 
 describe("McpOAuthFlowService.callback", () => {
+  it.each([null, "https://old.example.com"])(
+    "stores the new credential issuer when replacing %s",
+    async (previousIssuer) => {
+      const ids = await seed();
+      const { cipher, flows } = build({
+        ...discoverableAs({ client_id_metadata_document_supported: true }),
+        [TOKEN_URL]: doc({ access_token: "new_access_token", refresh_token: "new_refresh_token" }),
+      });
+      const sealed = cipher.encryptAuthorizationCredential(
+        { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: previousIssuer },
+        { accessToken: "previous_token" },
+      );
+      await unit.database.insert(mcpServerAuthorizations).values({
+        agentId: ids.agentId,
+        mcpServerId: ids.mcpServerId,
+        kind: previousIssuer === null ? "bearer" : "oauth",
+        status: "active",
+        authorizationServer: previousIssuer,
+        ciphertext: sealed.ciphertext,
+        keyId: sealed.keyId,
+        probeState: "succeeded",
+      });
+      const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+      expect((await readAuthorization(ids))?.authorizationServer).toBe(previousIssuer);
+      await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+      const row = await readAuthorization(ids);
+      expect(row?.authorizationServer).toBe(ISSUER);
+      if (!row?.ciphertext || !row.keyId) throw new Error("Missing saved credential");
+      expect(
+        cipher.decryptAuthorizationCredential(
+          { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: row.authorizationServer },
+          { ciphertext: row.ciphertext, keyId: row.keyId },
+        ),
+      ).toMatchObject({ accessToken: "new_access_token", refreshToken: "new_refresh_token" });
+    },
+  );
+
   it("refuses a callback with no browser binding before it even looks for the state", async () => {
     const ids = await seed();
     const { flows } = build(discoverableAs());

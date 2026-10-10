@@ -223,15 +223,16 @@ describe("SkillsPage Agent changes", () => {
     const router = await renderSkillsRoute(`/agents/${AGENT_A}/skills`);
 
     await screen.findByText("Release notes writer");
-    fireEvent.click(screen.getByRole("button", { name: "Install from URL" }));
-    expect(await screen.findByText("Install Skills from a URL")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add skill" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Install from URL" }));
+    expect(await screen.findByText("Install from URL")).toBeTruthy();
 
     await navigateTo(router, AGENT_B);
     await flush();
 
     // The body is keyed by Agent, so the dialog and its un-submitted address are gone with it, and
     // the mutation carries the Agent it was opened for rather than "whichever Agent is mounted now".
-    expect(screen.queryByText("Install Skills from a URL")).toBeNull();
+    expect(screen.queryByText("Install from URL")).toBeNull();
     expect(resolve).not.toHaveBeenCalled();
     expect(install).not.toHaveBeenCalled();
   });
@@ -239,7 +240,8 @@ describe("SkillsPage Agent changes", () => {
   it("closes the delete dialog when the Agent changes, confirming nothing", async () => {
     stubApi({ [AGENT_A]: [skill(AGENT_A)] });
     const router = await renderSkillsRoute(`/agents/${AGENT_A}/skills`);
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Release notes writer" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete skill" }));
     expect(await screen.findByText("Delete Release notes writer?")).toBeTruthy();
 
     await navigateTo(router, AGENT_B);

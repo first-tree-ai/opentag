@@ -24,6 +24,7 @@ import {
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-delivery-content.js";
+import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "../services/runtime-config/errors.js";
@@ -237,6 +238,24 @@ describe("ImDeliveryWorker database workflow", () => {
       expect(error).not.toBeInstanceOf(ImDeliveryInputError);
       expect(error).toHaveProperty("issues");
     }
+  });
+
+  it("only terminally classifies frame overflow independent of mutable Runtime configuration", async () => {
+    const fixture = await workerFixture(unit);
+    const configOverflow = structuredClone(fixture.request);
+    configOverflow.runtime.instructions.agent = "\0".repeat(20 * 1024);
+    expect(() => validateFreshImRequest(configOverflow)).not.toThrow();
+    try {
+      fitDeliveryFrame(configOverflow);
+      throw new Error("Expected frame overflow");
+    } catch (error) {
+      expect(error).not.toBeInstanceOf(ImDeliveryInputError);
+      expect(error).toHaveProperty("message", "IM_DELIVERY_FRAME_TOO_LARGE");
+    }
+    const contentOverflow = structuredClone(fixture.request);
+    contentOverflow.content.text = "\0".repeat(16 * 1024);
+    expect(() => validateFreshImRequest(contentOverflow)).not.toThrow();
+    expect(() => fitDeliveryFrame(contentOverflow)).toThrow(ImDeliveryInputError);
   });
 
   it("claims, reconciles, builds, and delivers a pending message", async () => {

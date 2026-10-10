@@ -37,7 +37,9 @@ native identifiers and the original message reference allow targeted readback. T
 
 Unrecoverable empty content and deterministic fresh-request failures become terminal for that undispatched revision,
 with bounded diagnostic codes and field paths. They do not produce a two-second retry loop. Mutable Runtime configuration
-keeps its existing retry policy. Already frozen dispatch payloads, hashes, accepted Turns and report replay are unchanged.
+keeps its existing retry policy. Aggregate frame overflow is terminal only when the message envelope independently
+exceeds the limit without the mutable Runtime snapshot. Already frozen dispatch payloads, hashes, accepted Turns and
+report replay are unchanged.
 
 ## Validation
 

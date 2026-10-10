@@ -230,7 +230,14 @@ export function fitDeliveryFrame(request: DirectImMessageDeliveryRequest | Runti
   while (!fits() && request.content.resources && request.content.resources.length > 0) {
     request.content.resources.pop();
   }
-  if (!fits()) throw new ImDeliveryInputError("IM_DELIVERY_REQUEST_INVALID", "frame_too_large");
+  if (!fits()) {
+    // Runtime configuration is mutable; only an independently oversized message can be terminal.
+    const messageFrame = request.type === "im:deliver" ? { ...request, runtime: undefined } : request;
+    if (runtimeFrameByteLength(JSON.stringify(messageFrame)) > RUNTIME_MAX_FRAME_BYTES) {
+      throw new ImDeliveryInputError("IM_DELIVERY_REQUEST_INVALID", "frame_too_large", ["content"]);
+    }
+    throw new Error("IM_DELIVERY_FRAME_TOO_LARGE");
+  }
 }
 
 const newerHistoryRevisions = alias(imMessages, "newer_history_revisions");

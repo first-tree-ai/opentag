@@ -6,11 +6,16 @@ Captured on 2026-10-10 in headed Chrome through Playwright, using the production
 under React StrictMode. A temporary Vite entry outside the repository supplied synthetic in-memory API responses.
 These screenshots validate the real UI, not a static mockup. They do not claim a live PostgreSQL/storage end-to-end run.
 The server contract is separately covered with authenticated route/service tests and real tar.gz fixtures.
+The discovery/import screenshots below were captured in the Codex in-app browser with the same fixture entry. Earlier
+reader screenshots retain the previous action labels.
 
 ## Screenshots
 
 | View | Viewport | Evidence |
 | --- | --- | --- |
+| Discovery and import entries | 1280 × 720 | [Desktop entries](discovery-import-desktop.jpg) |
+| Discovery and import entries, narrow mobile | 320 × 844 | [English entries](discovery-import-320.jpg) |
+| Chinese import menu, narrow mobile | 320 × 844 | [Chinese entries](discovery-import-zh-320.jpg) |
 | Larger details entry, desktop hover | 1440 × 1000 | [Entry](content-area-desktop-hover.png) |
 | Larger details entry, mobile | 390 × 844 | [Mobile entry](content-area-390.png) |
 | Larger details entry, narrow mobile | 320 × 844 | [Narrow entry](content-area-320.png) |
@@ -32,7 +37,8 @@ The server contract is separately covered with authenticated route/service tests
   narrow desktop content container. Mobile descriptions span the full content width below the name and controls.
 - Description tooltips appear only when the actual text is clipped. A long description showed a tooltip at 320px;
   widening the viewport to 1440px removed it while hovered, and an untruncated description stayed quiet.
-  ResizeObserver and font-loading events keep the measurement current. Browse uses a ghost action beside Add.
+  ResizeObserver and font-loading events keep the measurement current. Explore skills uses a ghost action beside the outlined Import skill menu. The catalog opens directly and is titled
+  Skill catalog; the import menu offers Install from URL and Upload file.
 
 - At all four viewport widths, axe reported no violations; document width stayed within the viewport and the dialog
   bounds remained fully visible. Narrow viewports use the file selector rather than a cramped sidebar.

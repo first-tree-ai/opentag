@@ -102,13 +102,6 @@ function conversationKind(channelType: string | undefined): "channel" | "dm" | "
   return "channel";
 }
 
-function mentionsFromText(text: string, priorityId?: string): Array<{ externalId: string; displayName: null }> {
-  const ids = [...new Set([...text.matchAll(/<@([A-Z0-9]+)>/g)].flatMap((match) => (match[1] ? [match[1]] : [])))];
-  if (priorityId && ids.includes(priorityId)) ids.splice(ids.indexOf(priorityId), 1);
-  if (priorityId && text.includes(`<@${priorityId}>`)) ids.unshift(priorityId);
-  return ids.slice(0, 256).map((externalId) => ({ externalId, displayName: null }));
-}
-
 function boundedText(value: string): { text: string; truncated: boolean } {
   const text = truncateImText(value, 24 * 1024);
   return { text, truncated: text !== value };
@@ -141,10 +134,10 @@ export function normalizeSlackEnvelope(
   const nested = operation === "edited" ? event.message : operation === "deleted" ? event.previous_message : undefined;
   const canonical = nested ?? event;
   const messageId = nested?.ts ?? (operation === "deleted" ? event.deleted_ts : undefined) ?? event.ts;
-  const parsedContent = slackMessageContent(canonical);
+  const parsedContent = slackMessageContent(canonical, envelope.botUserId);
   const text = parsedContent.text;
   const bounded = boundedText(operation === "deleted" ? "[deleted]" : text);
-  const mentions = mentionsFromText(text, envelope.botUserId);
+  const mentions = parsedContent.mentionIds.map((externalId) => ({ externalId, displayName: null }));
   const isSelf =
     canonical.user === envelope.botUserId ||
     canonical.bot_id === envelope.botId ||

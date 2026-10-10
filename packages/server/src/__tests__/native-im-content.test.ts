@@ -4,6 +4,72 @@ import { normalizeSlackEnvelope } from "../services/im-bindings/slack/adapter.js
 import { slackMessageContent } from "../services/im-bindings/slack/message-content.js";
 
 describe("native IM format normalization", () => {
+  it.each([false, true])("keeps a documented Slack rich-text file_id, with metadata: %s", (withMetadata) => {
+    const parsed = slackMessageContent({
+      blocks: [
+        {
+          type: "rich_text",
+          elements: [{ type: "rich_text_section", elements: [{ type: "file", file_id: "F123ABC456" }] }],
+        },
+      ],
+      ...(withMetadata ? { files: [{ id: "F123ABC456", name: "report.pdf", mimetype: "application/pdf" }] } : {}),
+    });
+    expect(parsed.text).toContain("Attachment 1");
+    expect(parsed.resources).toEqual([
+      {
+        providerResourceKey: "F123ABC456",
+        kind: "file",
+        filename: withMetadata ? "report.pdf" : null,
+        mediaType: withMetadata ? "application/pdf" : null,
+        sizeBytes: null,
+      },
+    ]);
+  });
+
+  it.each(["structure", "mrkdwn", "fallback"])(
+    "routes a Slack bot mention beyond the text and mention budgets in %s",
+    (shape) => {
+      const prefix = `${Array.from({ length: 256 }, (_, i) => `<@U${i}>`).join(" ")}${"x".repeat(25 * 1024)}`;
+      const [event] = normalizeSlackEnvelope({
+        eventId: "Ev-long-mention",
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U123BOT",
+        botId: "B1",
+        event: {
+          type: "message",
+          channel: "C1",
+          ts: "1.0",
+          ...(shape === "fallback"
+            ? { text: `${prefix}<@U123BOT>` }
+            : {
+                blocks: [
+                  {
+                    type: "rich_text",
+                    elements: [
+                      {
+                        type: "rich_text_section",
+                        elements:
+                          shape === "structure"
+                            ? [
+                                { type: "text", text: prefix },
+                                { type: "user", user_id: "U123BOT" },
+                              ]
+                            : [{ type: "mrkdwn", text: `${prefix}<@U123BOT>` }],
+                      },
+                    ],
+                  },
+                ],
+              }),
+        },
+      });
+      expect(event?.message.content.truncated).toBe(true);
+      expect(Buffer.byteLength(event?.message.content.fallbackText ?? "")).toBeLessThanOrEqual(24 * 1024);
+      expect(event?.mentions).toHaveLength(256);
+      expect(event?.mentions[0]).toEqual({ externalId: "U123BOT", displayName: null });
+    },
+  );
+
   it("reads Slack rich text and structural mentions without requiring top-level text", () => {
     const [event] = normalizeSlackEnvelope({
       eventId: "Ev1",

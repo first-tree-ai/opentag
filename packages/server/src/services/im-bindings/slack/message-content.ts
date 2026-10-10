@@ -7,7 +7,16 @@ function mediaKind(mime: string): "image" | "audio" | "video" | "file" {
   return "file";
 }
 
-export function slackMessageContent(message: Record<string, unknown>) {
+function mentionIdsFromText(text: string, priorityId?: string): string[] {
+  const ids = [
+    ...new Set([...text.matchAll(/<@([A-Z0-9]{1,255})>/g)].flatMap((match) => (match[1] ? [match[1]] : []))),
+  ];
+  if (priorityId && ids.includes(priorityId)) ids.splice(ids.indexOf(priorityId), 1);
+  if (priorityId && text.includes(`<@${priorityId}>`)) ids.unshift(priorityId);
+  return ids.slice(0, 256);
+}
+
+export function slackMessageContent(message: Record<string, unknown>, priorityMentionId?: string) {
   const state = new NativeContent();
   const files = Array.isArray(message.files) ? message.files.map(nativeObject) : [];
   const filesById = new Map(files.map((item) => [nativeString(item.id), item]));
@@ -114,6 +123,7 @@ export function slackMessageContent(message: Record<string, unknown>) {
       case "image":
         return imageBlock(item, depth);
       case "file":
+        if (item.file_id) return file({ id: item.file_id });
         return item.slack_file ? file(item.slack_file) : "[Remote file; read the source message]";
       case "video":
         return [
@@ -161,5 +171,7 @@ export function slackMessageContent(message: Record<string, unknown>) {
   const body = blocks || nativeString(message.text);
   // Inline references define appearance order; append files without an inline occurrence afterwards.
   files.forEach(file);
-  return state.finish([body, attachments].filter(Boolean).join("\n"));
+  const text = [body, attachments].filter(Boolean).join("\n");
+  // Routing identity must survive the visible text budget, including a bot mention at the end.
+  return { ...state.finish(text), mentionIds: mentionIdsFromText(text, priorityMentionId) };
 }

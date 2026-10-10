@@ -5,6 +5,7 @@ import {
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeApprovalDecision,
   type RuntimeApprovalResult,
@@ -741,6 +742,7 @@ export function buildAgentInput(
     sessionInstructions,
     "</opentag-im-context>",
   ].join("\n");
+  const resourceContext = runtimeResourceContext(request);
   return {
     items: [
       { type: "text", text: context },
@@ -756,8 +758,25 @@ export function buildAgentInput(
           ]
         : []),
       ...(supplementalContext ? [{ type: "text" as const, text: supplementalContext }] : []),
+      ...(resourceContext ? [{ type: "text" as const, text: resourceContext }] : []),
     ],
   };
+}
+
+/** Older/frozen requests carry resource metadata only in the wire field, never in their text. */
+function runtimeResourceContext(request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest): string | undefined {
+  const resources = request.content.resources;
+  if (!resources?.length) return undefined;
+  const omitted = "\n[Additional attachment metadata omitted; read the source message using providerRef.]";
+  const budget = RUNTIME_DIRECT_TEXT_MAX_BYTES - Buffer.byteLength(omitted);
+  let text =
+    "Attachment metadata (OpenTag identifiers, not provider-native IDs). Use providerRef to read the source message for native resource IDs:\n";
+  for (const resource of resources) {
+    const line = `${JSON.stringify(resource)}\n`;
+    if (Buffer.byteLength(text + line) > budget) return `${text}${omitted}`;
+    text += line;
+  }
+  return text;
 }
 
 export function turnTimeoutMs(request: DirectImMessageDeliveryRequest, now: number): number {

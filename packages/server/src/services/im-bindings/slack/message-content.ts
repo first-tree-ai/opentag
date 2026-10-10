@@ -16,21 +16,35 @@ function mentionIdsFromText(text: string, priorityId?: string): string[] {
   return ids.slice(0, 256);
 }
 
+/** Resolve documented Slack-owned private/permalink URLs to stable IDs, never download URLs. */
+function slackFileIdFromUrl(value: unknown): string {
+  const normalized = nativeHttpUrl(value);
+  if (!normalized) return "";
+  const url = new URL(normalized);
+  if (url.protocol !== "https:") return "";
+  if (url.hostname === "files.slack.com") {
+    return /^\/files-pri\/T[A-Z0-9]+-(F[A-Z0-9]{1,254})(?:\/|$)/.exec(url.pathname)?.[1] ?? "";
+  }
+  return url.hostname.endsWith(".slack.com")
+    ? (/^\/files\/U[A-Z0-9]+\/(F[A-Z0-9]{1,254})(?:\/|$)/.exec(url.pathname)?.[1] ?? "")
+    : "";
+}
+
 export function slackMessageContent(message: Record<string, unknown>, priorityMentionId?: string) {
   const state = new NativeContent();
   const files = Array.isArray(message.files) ? message.files.map(nativeObject) : [];
   const filesById = new Map(files.map((item) => [nativeString(item.id), item]));
-  function file(value: unknown): string {
+  function file(value: unknown, image = false): string {
     const reference = nativeObject(value);
-    const item = { ...filesById.get(nativeString(reference.id)), ...reference };
-    const id = nativeString(item.id);
+    const id = nativeString(reference.id) || slackFileIdFromUrl(reference.url);
     if (!id) return "[Slack file reference unavailable; read the source message]";
+    const item = { ...filesById.get(id), ...reference };
     const existing = state.resources.findIndex((v) => v.providerResourceKey === id);
     if (existing >= 0) return `[Attachment ${existing + 1}]`;
     const mime = nativeString(item.mimetype);
     return state.resource({
       providerResourceKey: id,
-      kind: mediaKind(mime),
+      kind: mime ? mediaKind(mime) : image ? "image" : "file",
       filename: nativeString(item.name) || null,
       mediaType: mime || null,
       sizeBytes: typeof item.size === "number" && Number.isSafeInteger(item.size) && item.size >= 0 ? item.size : null,
@@ -46,7 +60,7 @@ export function slackMessageContent(message: Record<string, unknown>, priorityMe
       : "";
   }
   function image(item: Record<string, unknown>): string {
-    if (item.slack_file) return file(item.slack_file);
+    if (item.slack_file) return file(item.slack_file, true);
     const url = nativeHttpUrl(item.image_url);
     if (!url) return "[Image unavailable; read the source message]";
     return state.resource({
@@ -170,8 +184,11 @@ export function slackMessageContent(message: Record<string, unknown>, priorityMe
     : "";
   const body = blocks || nativeString(message.text);
   // Inline references define appearance order; append files without an inline occurrence afterwards.
-  files.forEach(file);
+  for (const item of files) file(item);
   const text = [body, attachments].filter(Boolean).join("\n");
   // Routing identity must survive the visible text budget, including a bot mention at the end.
-  return { ...state.finish(text), mentionIds: mentionIdsFromText(text, priorityMentionId) };
+  return {
+    ...state.finish(text),
+    mentionIds: mentionIdsFromText(`${nativeString(message.text)}\n${text}`, priorityMentionId),
+  };
 }

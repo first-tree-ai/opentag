@@ -4,6 +4,80 @@ import { normalizeSlackEnvelope } from "../services/im-bindings/slack/adapter.js
 import { slackMessageContent } from "../services/im-bindings/slack/message-content.js";
 
 describe("native IM format normalization", () => {
+  it.each(["message", "app_mention"])("keeps top-level Slack bot mentions when blocks supply the body: %s", (type) => {
+    const [event] = normalizeSlackEnvelope({
+      eventId: "Ev-block-mention",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U123BOT",
+      botId: "B1",
+      event: {
+        type,
+        channel: "C1",
+        ts: "1.0",
+        text: "<@U123BOT> inspect the image",
+        blocks: [{ type: "image", image_url: "https://example.com/qa.png", alt_text: "image" }],
+      },
+    });
+    expect(event?.mentions[0]?.externalId).toBe("U123BOT");
+    expect(event?.message.content.fallbackText).toContain("Attachment 1");
+    expect(event?.message.content.fallbackText).not.toContain("inspect the image");
+  });
+
+  it("retains Slack app_mention routing even without a rendered mention token", () => {
+    const [event] = normalizeSlackEnvelope({
+      eventId: "Ev-app-mention",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U123BOT",
+      botId: "B1",
+      event: { type: "app_mention", channel: "C1", ts: "1.0", text: "inspect this", blocks: [{ type: "divider" }] },
+    });
+    expect(event?.mentions).toEqual([{ externalId: "U123BOT", displayName: null }]);
+  });
+
+  it.each([
+    "https://files.slack.com/files-pri/T0123456-F0123456/xyz.png",
+    "https://first-tree.slack.com/files/U0123456/F0123456/xyz.png",
+  ])("preserves URL-only Slack image references with stable file identity: %s", (url) => {
+    const parsed = slackMessageContent({
+      blocks: [{ type: "image", slack_file: { url }, alt_text: "kitten" }],
+    });
+    expect(parsed.resources).toEqual([
+      { providerResourceKey: "F0123456", kind: "image", filename: null, mediaType: null, sizeBytes: null },
+    ]);
+    expect(parsed.text).not.toContain("reference unavailable");
+    expect(parsed.text).not.toContain(url);
+    expect(
+      slackMessageContent({
+        blocks: [
+          { type: "image", slack_file: { url } },
+          { type: "image", slack_file: { id: "F0123456" } },
+        ],
+        files: [{ id: "F0123456", name: "kitten.png", mimetype: "image/png" }],
+      }).resources,
+    ).toEqual([
+      {
+        providerResourceKey: "F0123456",
+        kind: "image",
+        filename: "kitten.png",
+        mediaType: "image/png",
+        sizeBytes: null,
+      },
+    ]);
+  });
+
+  it.each([
+    "https://files.slack.com.evil.example/files-pri/T0123456-F0123456/xyz.png",
+    "https://evil.example/files/U0123456/F0123456/xyz.png",
+    "https://user:password@files.slack.com/files-pri/T0123456-F0123456/xyz.png",
+    "https://files.slack.com/unknown/xyz.png",
+  ])("does not reinterpret unsupported URL references as Slack file IDs: %s", (url) => {
+    const parsed = slackMessageContent({ blocks: [{ type: "image", slack_file: { url }, alt_text: "image" }] });
+    expect(parsed.resources).toEqual([]);
+    expect(parsed.text).toContain("reference unavailable");
+  });
+
   it.each([false, true])("keeps a documented Slack rich-text file_id, with metadata: %s", (withMetadata) => {
     const parsed = slackMessageContent({
       blocks: [

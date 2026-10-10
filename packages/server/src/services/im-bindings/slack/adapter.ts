@@ -137,7 +137,11 @@ export function normalizeSlackEnvelope(
   const parsedContent = slackMessageContent(canonical, envelope.botUserId);
   const text = parsedContent.text;
   const bounded = boundedText(operation === "deleted" ? "[deleted]" : text);
-  const mentions = parsedContent.mentionIds.map((externalId) => ({ externalId, displayName: null }));
+  const mentionIds =
+    event.type === "app_mention"
+      ? [...new Set([envelope.botUserId, ...parsedContent.mentionIds])].slice(0, 256)
+      : parsedContent.mentionIds;
+  const mentions = mentionIds.map((externalId) => ({ externalId, displayName: null }));
   const isSelf =
     canonical.user === envelope.botUserId ||
     canonical.bot_id === envelope.botId ||

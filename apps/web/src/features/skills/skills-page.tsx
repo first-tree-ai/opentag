@@ -3,8 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Empty, Icon, Loader, Text } from "../../ui/design-system.js";
+import { Banner, Button, DropdownMenu, Empty, Icon, Loader } from "../../ui/design-system.js";
+import "./skills.css";
 import { InstallSkillDialog } from "./install-skill-dialog.js";
+import { SkillDetailsDialog } from "./skill-details-dialog.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
 import { SkillRow } from "./skill-row.js";
 import {
@@ -54,9 +56,12 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
       alive.current = false;
     };
   }, []);
+  const [installationNotice, setInstallationNotice] = useState<string | undefined>();
   const [actionError, setActionError] = useState<string | undefined>();
   const [uploadingName, setUploadingName] = useState<string | undefined>();
   const [pendingReplace, setPendingReplace] = useState<PendingReplace | undefined>();
+  const [detailsTarget, setDetailsTarget] = useState<Skill | undefined>();
+  const detailsTrigger = useRef<HTMLElement | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Skill | undefined>();
   /*
    * Remote installation lives in this body too, so a pending dialog cannot survive an Agent change:
@@ -75,11 +80,13 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const uploadBusy = uploadingName !== undefined || upload.isPending;
 
   const openFilePicker = () => {
+    setInstallationNotice(undefined);
     setActionError(undefined);
     fileInputRef.current?.click();
   };
 
   const openInstaller = () => {
+    setInstallationNotice(undefined);
     setActionError(undefined);
     setInstallOpen(true);
   };
@@ -166,25 +173,26 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
     }
   };
 
-  const installAction = (
-    <Button aria-label={m.skills_install()} disabled={!storageAvailable} onClick={openInstaller} variant="secondary">
-      <Icon name="plus" />
-      {m.skills_install()}
-    </Button>
-  );
-
-  const uploadAction = (
-    <Button
-      aria-label={m.skills_upload()}
-      aria-busy={uploadBusy}
-      disabled={!storageAvailable}
-      loading={uploadBusy}
-      onClick={openFilePicker}
-      variant="secondary"
-    >
-      {!uploadBusy ? <Icon name="upload" /> : null}
-      {m.skills_upload()}
-    </Button>
+  const addAction = (
+    <DropdownMenu>
+      <DropdownMenu.Trigger
+        render={
+          <Button
+            aria-label={m.skills_add()}
+            disabled={!storageAvailable || uploadBusy}
+            loading={uploadBusy}
+            variant="secondary"
+          />
+        }
+      >
+        {m.skills_add()}
+        <Icon name="chevron-down" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content align="end">
+        <DropdownMenu.Item onClick={openInstaller}>{m.skills_install()}</DropdownMenu.Item>
+        <DropdownMenu.Item onClick={openFilePicker}>{m.skills_upload()}</DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu>
   );
 
   return (
@@ -207,12 +215,16 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           }}
           ref={fileInputRef}
         />
-        {installAction}
-        {uploadAction}
+        {addAction}
       </PageHeader>
 
       {storage === "unavailable" ? <Banner variant="alert">{m.skills_storage_unavailable()}</Banner> : null}
       {actionError ? <Banner variant="error">{actionError}</Banner> : null}
+      {installationNotice ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          {installationNotice}
+        </p>
+      ) : null}
       {skills.isError ? (
         <Banner
           action={<Banner.Action onClick={() => void skills.refetch()}>{m.common_try_again()}</Banner.Action>}
@@ -230,6 +242,10 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
       <SkillList
         hasData={skills.data !== undefined}
         isPending={skills.isPending}
+        onViewDetails={(skill, trigger) => {
+          detailsTrigger.current = trigger;
+          setDetailsTarget(skill);
+        }}
         onDelete={setDeleteTarget}
         skills={skills.data?.skills ?? []}
         storageAvailable={storageAvailable}
@@ -243,8 +259,20 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           onConfirm={() => void confirmReplace()}
         />
       ) : null}
+      <SkillDetailsDialog
+        skill={detailsTarget}
+        onClose={() => setDetailsTarget(undefined)}
+        returnFocusRef={detailsTrigger}
+        storageAvailable={storageAvailable}
+      />
       {deleteTarget ? <RemoveSkillDialog onClose={() => setDeleteTarget(undefined)} skill={deleteTarget} /> : null}
-      {installOpen ? <InstallSkillDialog agentId={agentId} onClose={() => setInstallOpen(false)} /> : null}
+      {installOpen ? (
+        <InstallSkillDialog
+          agentId={agentId}
+          onClose={() => setInstallOpen(false)}
+          onInstalled={(count) => setInstallationNotice(m.skills_install_success({ count }))}
+        />
+      ) : null}
     </section>
   );
 }
@@ -260,12 +288,14 @@ function SkillList({
   hasData,
   isPending,
   onDelete,
+  onViewDetails,
   skills,
   storageAvailable,
 }: {
   hasData: boolean;
   isPending: boolean;
   onDelete: (skill: Skill) => void;
+  onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
   skills: Skill[];
   storageAvailable: boolean;
 }) {
@@ -285,11 +315,6 @@ function SkillList({
         className="ui-surface min-h-48 justify-center gap-3 bg-kumo-base px-4 py-6 text-sm"
         title={m.skills_empty()}
         description={m.skills_empty_description()}
-        contents={
-          <Text as="p" size="sm" variant="secondary">
-            {m.skills_upload_requirements()}
-          </Text>
-        }
       />
     );
   return (
@@ -303,6 +328,7 @@ function SkillList({
           downloadUrl={browserApi.agentSkillBundleUrl(skill.agentId, skill.id)}
           key={skill.id}
           onDelete={onDelete}
+          onViewDetails={onViewDetails}
           skill={skill}
           storageAvailable={storageAvailable}
         />

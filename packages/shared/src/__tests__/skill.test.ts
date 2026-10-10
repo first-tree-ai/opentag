@@ -103,7 +103,7 @@ describe("skill resource schemas", () => {
   });
 
   it("accepts every documented source and rejects an unknown one", () => {
-    for (const source of ["web_upload", "cli_upload", "agent_upload", "url_install"]) {
+    for (const source of ["web_upload", "cli_upload", "agent_upload", "url_install", "preset"]) {
       expect(SkillSchema.parse(validSkill({ source })).source).toBe(source);
     }
     expect(SkillSchema.safeParse(validSkill({ source: "elsewhere" })).success).toBe(false);

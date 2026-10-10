@@ -278,7 +278,32 @@
     },
     {
       "idx": 55,
-      "tag": "0055_cloud_billing",
+      "tag": "0055_first_angel",
+      "sha256": "0c0f54d374186d6f9dd7d81cde5bd917987362cb8024c406278325642c28f316"
+    },
+    {
+      "idx": 56,
+      "tag": "0056_thick_aqueduct",
+      "sha256": "711430137bbc3ac66451e940b8e75f8ca251287b43c845c22ebb59c618043ed5"
+    },
+    {
+      "idx": 57,
+      "tag": "0057_wandering_silhouette",
+      "sha256": "4f0ca66de2bee0d6a438ce4bffaa9c2d14f8c0c37405dfc83b082d2b151a0c0b"
+    },
+    {
+      "idx": 58,
+      "tag": "0058_agent_permissions",
+      "sha256": "215931ead3ac2c5edb5a54675b0ba8ad30da0fed138444acf6214b0eca2843b7"
+    },
+    {
+      "idx": 59,
+      "tag": "0059_bump_runtime_config_revision",
+      "sha256": "4bef59bc615c23592c25e853eaf1f187736d23687a9840669db2acbbc0bbeed0"
+    },
+    {
+      "idx": 60,
+      "tag": "0060_cloud_billing",
       "sha256": "018448538305599eca1e725843a6cfacffba2597defd63549b4733ca9ce4d032"
     }
   ]

@@ -6,7 +6,7 @@ import type {
   SessionReconcileRequest,
   SessionReconcileResult,
 } from "@opentag/shared";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -26,6 +26,7 @@ import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../
 import { AgentService } from "../../services/agents/index.js";
 import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
+import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -33,7 +34,7 @@ let container: StartedPostgreSqlContainer;
 let databaseUrl: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer("postgres:17-alpine").start();
+  container = await startPostgresTestContainer();
   databaseUrl = container.getConnectionUri();
 }, 120_000);
 

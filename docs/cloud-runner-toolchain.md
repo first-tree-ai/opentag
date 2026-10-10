@@ -121,6 +121,13 @@ offline pass asserts the privilege boundary: a normal command reports uid 10000,
 The real acceptance command has a separate 30-minute timeout. It asserts a confirmed cancellation of a live Bash fixture child
 (shared tracked Pi PID set), and removes the container afterwards with daemon-confirmed removal.
 
+This offline pass is the release-time tool validation: it executes every pinned tool — including
+a full Pi CLI startup with an exact version comparison against the image identity — before a Runner
+image is published. The runtime native Sandbox readiness probe (E3) deliberately does not repeat
+that Pi CLI launch on every launch/reset; it reads the locked Pi package metadata from the
+immutable rootfs and validates it against the image identity, keeping per-launch readiness fast
+without weakening this release-time gate.
+
 Timing fields are distinct: `startupMs` measures a fresh container plus Runner CLI startup
 (`identity`); probe/skills/accept durations are reported separately (`durations`, `acceptanceMs`).
 `memory.peak` is read inside the container before it exits, never after removal. The Runner CLI

@@ -3,6 +3,7 @@ import {
   AGENT_SKILL_BUNDLE_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
+  agentSkillFilePath,
   COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE,
   COMPUTER_AGENT_SKILLS_TEMPLATE,
   ErrorEnvelopeSchema,
@@ -223,6 +224,47 @@ describe("Skill routes", () => {
     const runtime = await app.inject({ method: "GET", url: HTTP_PATHS.runtimeSkills });
     expect(runtime.statusCode).toBe(401);
     expect(runtime.json().error).toMatchObject({ code: "SESSION_PROOF_INVALID" });
+    await app.close();
+  });
+
+  it("authenticates file reads, validates canonical paths, and returns non-cacheable JSON", async () => {
+    const readFile = vi.fn(async () => ({
+      archiveSha256: SHA,
+      path: "SKILL.md",
+      files: detail.files,
+      preview: { status: "text", content: "# Complete instructions" },
+    }));
+    const app = createApp({});
+    registerSkillRoutes(app, fakeService({ readFile }), userAuth(), {});
+    const url = agentSkillFilePath(AGENT, SKILL);
+    const query = new URLSearchParams({ path: "SKILL.md", archiveSha256: SHA });
+    expect((await app.inject({ method: "GET", url: `${url}?${query}` })).statusCode).toBe(401);
+    const response = await app.inject({
+      method: "GET",
+      url: `${url}?${query}`,
+      headers: { authorization: "Bearer good-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json().preview.content).toBe("# Complete instructions");
+    expect(readFile).toHaveBeenCalledWith(ACCOUNT, AGENT, SKILL, { path: "SKILL.md", archiveSha256: SHA });
+    for (const path of [
+      "../secret",
+      "/etc/passwd",
+      "a/../SKILL.md",
+      "a\\b",
+      "C:secret",
+      "a//b",
+      "./SKILL.md",
+      "a\u0000b",
+    ]) {
+      const invalid = new URLSearchParams({ path, archiveSha256: SHA });
+      expect(
+        (await app.inject({ method: "GET", url: `${url}?${invalid}`, headers: { authorization: "Bearer good-token" } }))
+          .statusCode,
+      ).toBe(400);
+    }
+    expect(readFile).toHaveBeenCalledTimes(1);
     await app.close();
   });
 

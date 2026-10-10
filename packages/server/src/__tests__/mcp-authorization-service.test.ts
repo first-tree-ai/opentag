@@ -191,6 +191,12 @@ describe("McpAuthorizationService.setBearerOrNone", () => {
         clientRegistrationId: null,
         scopes: ["mcp.read"],
         accessTokenExpiresAt: new Date(),
+        oauthResource: "https://mcp.example.test/mcp",
+        state: "unit-flow",
+        stateExpiresAt: new Date(Date.now() + 60_000),
+        pkceCiphertext: "unit-pkce",
+        loginSessionHash: "unit-login",
+        flowOauthResource: "https://mcp.example.test",
         refreshClaimId: randomUUID(),
         refreshClaimedAt: new Date(),
       })
@@ -210,6 +216,8 @@ describe("McpAuthorizationService.setBearerOrNone", () => {
       stateExpiresAt: null,
       pkceCiphertext: null,
       loginSessionHash: null,
+      oauthResource: null,
+      flowOauthResource: null,
       refreshClaimId: null,
       refreshClaimedAt: null,
       failureCode: null,
@@ -268,6 +276,36 @@ describe("McpAuthorizationService.revoke", () => {
     // The mount survives, so the Agent is simply unauthorized again and needs no re-mount.
     expect(await unit.database.select().from(agentMcpServers)).toHaveLength(1);
     expect(await authorization.resolveActiveCredential(ids.accountId, ids.agentId, ids.mcpServerId)).toBeUndefined();
+  });
+
+  it("clears the credential's audience and the flow's resource with the credential", async () => {
+    const ids = await seed();
+    const { authorization } = build();
+    await unit.database.insert(mcpServerAuthorizations).values({
+      agentId: ids.agentId,
+      mcpServerId: ids.mcpServerId,
+      kind: "oauth",
+      status: "active",
+      authorizationServer: "https://auth.example.test",
+      ciphertext: "unit-sealed-oauth",
+      keyId: "unit-key",
+      oauthResource: "https://mcp.example.test/mcp",
+      state: "unit-flow",
+      stateExpiresAt: new Date(Date.now() + 60_000),
+      pkceCiphertext: "unit-pkce",
+      loginSessionHash: "unit-login",
+      flowOauthResource: "https://mcp.example.test",
+      probeState: "pending",
+    });
+
+    await authorization.revoke(ids.accountId, ids.agentId, ids.mcpServerId);
+    expect(await readRow(ids)).toMatchObject({
+      status: "revoked",
+      ciphertext: null,
+      state: null,
+      oauthResource: null,
+      flowOauthResource: null,
+    });
   });
 
   it("refuses to revoke for an Agent that does not mount the Server", async () => {

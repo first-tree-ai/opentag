@@ -13,7 +13,7 @@ import { z } from "zod";
  * authenticated `GET {upstreamBaseUrl}/models` (OpenAI `{object:"list",data:[{id,...}]}`) is the
  * source of availability and native limits: it applies tenant permissions, so the Server keeps
  * no static allowlist of its own. The same fixed upstream base URL and platform master key the
- * chat-completions proxy uses authorize the read. Billing additionally requires a configured customer price.
+ * chat-completions proxy uses authorize the read. Customer token rates are set by account pricing plans independently of this catalog.
  *
  * The catalog is lazy and bounded: the first read after construction or cache expiry performs one
  * fetch, concurrent readers share the single in-flight fetch, and a successful list is reused for
@@ -32,6 +32,29 @@ const CLOUD_MODEL_CATALOG_CACHE_TTL_MS = 60_000;
 const CLOUD_MODEL_CATALOG_TIMEOUT_MS = 5_000;
 /** A model list is tiny; anything larger is not a model list. */
 const CLOUD_MODEL_CATALOG_MAX_RESPONSE_BYTES = 256 * 1024;
+
+/**
+ * The deployment's preferred Cloud default model. When the validated Router list offers it, an
+ * Agent without an explicit model executes with it; otherwise the first validated Router model
+ * remains the default (a restricted catalog never fabricates it). This is a default-selection
+ * preference only — never an allowlist entry: every choice still comes from the validated Router
+ * list, and explicit per-Agent model selections are unaffected.
+ */
+const CLOUD_MODEL_PREFERRED_DEFAULT_MODEL = "gemini-3.8-flash";
+
+/**
+ * Put the preferred model first while retaining the relative order of every other model. The
+ * default stays the first published entry, preserving compatibility with existing clients.
+ */
+function prioritizeCloudDefaultModel(models: readonly string[]): string[] {
+  const ordered = [...models];
+  const preferredIndex = ordered.indexOf(CLOUD_MODEL_PREFERRED_DEFAULT_MODEL);
+  if (preferredIndex > 0) {
+    ordered.splice(preferredIndex, 1);
+    ordered.unshift(CLOUD_MODEL_PREFERRED_DEFAULT_MODEL);
+  }
+  return ordered;
+}
 
 export interface CloudModelCapabilities {
   /** Router-verified native context window in tokens (a positive integer, never estimated). */
@@ -76,7 +99,10 @@ export interface CloudModelCatalog {
   list(): Promise<CloudModelOptions>;
   /** True only when the current Router list offers this exact model. */
   isModelAllowed(model: string): Promise<boolean>;
-  /** The deployment default — the first Router model — or undefined while unavailable. */
+  /**
+   * The deployment default — the preferred default model when the validated Router list offers
+   * it, otherwise the first validated Router model — or undefined while unavailable.
+   */
   defaultModel(): Promise<string | undefined>;
   /**
    * The Router-verified capabilities of one listed model; undefined when the model is not listed
@@ -304,8 +330,8 @@ function parseRouterModelList(text: string, maxModels: number): RouterCatalogSna
     .object({ object: z.literal("list"), data: z.array(RouterModelEntrySchema).max(maxModels) })
     .safeParse(raw);
   if (!parsed.success) return undefined;
-  // Defensive dedupe keeps the published list canonical; order (and therefore the default) is
-  // the Router's. The first occurrence of a duplicated id wins, exactly like the published list.
+  // Defensive dedupe keeps the list canonical; the first occurrence of a duplicated id wins.
+  // Default preference is applied only after capability validation.
   const models: string[] = [];
   const seen = new Set<string>();
   const capabilities = new Map<string, CloudModelCapabilities>();
@@ -317,8 +343,9 @@ function parseRouterModelList(text: string, maxModels: number): RouterCatalogSna
     models.push(entry.id);
     capabilities.set(entry.id, verified);
   }
+  const orderedModels = prioritizeCloudDefaultModel(models);
   return {
-    options: { available: true, defaultModel: models[0] ?? null, models },
+    options: { available: true, defaultModel: orderedModels[0] ?? null, models: orderedModels },
     capabilities,
   };
 }
@@ -334,10 +361,11 @@ export function createStaticCloudModelCatalog(
   models: readonly string[],
   capabilities?: CloudModelCapabilities | Record<string, CloudModelCapabilities | undefined>,
 ): CloudModelCatalog {
+  const orderedModels = prioritizeCloudDefaultModel(models);
   const snapshot: CloudModelOptions =
-    models.length === 0
+    orderedModels.length === 0
       ? CLOUD_MODELS_UNAVAILABLE
-      : { available: true, defaultModel: models[0] as string, models: [...models] };
+      : { available: true, defaultModel: orderedModels[0] as string, models: orderedModels };
   const verified = new Map<string, CloudModelCapabilities>();
   // The override is either one capability pair applied to every listed model or a per-model
   // record (`undefined` marks a deliberately unverified model).

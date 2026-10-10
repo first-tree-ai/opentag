@@ -76,6 +76,13 @@ interface Harness {
   servers: McpServerService;
 }
 
+interface HarnessOptions {
+  /** Replace the outbound fetcher, so a test can route otherwise unreachable hostnames at the fixture. */
+  fetcher?: McpOutboundFetcher;
+  /** The deployment's pre-registered Google client, for the Google Workspace flow. */
+  googleMcpClient?: { clientId: string; clientSecret: string };
+}
+
 /** The fixture's loopback plain HTTP is the local-development case, so the policy opts in. */
 function buildHarness(
   database: DatabaseClient,
@@ -83,9 +90,10 @@ function buildHarness(
   agentA: string,
   agentB: string,
   accountSnapshotMaxBytes?: number,
+  options: HarnessOptions = {},
 ): Harness {
   const cipher = new McpCredentialCipher(new ApplicationCipher(randomBytes(32)));
-  const fetcher = new McpOutboundFetcher({ allowLoopback: true });
+  const fetcher = options.fetcher ?? new McpOutboundFetcher({ allowLoopback: true });
   const servers = new McpServerService({ database });
   const probe = new McpProbe({ fetcher });
   const oauth = new McpOAuthClient({ fetcher, publicUrl: "https://opentag.test" });
@@ -96,12 +104,22 @@ function buildHarness(
     servers,
     ...(accountSnapshotMaxBytes === undefined ? {} : { accountSnapshotMaxBytes }),
   });
-  const flows = new McpOAuthFlowService({ database, cipher, oauth, servers });
+  const flows = new McpOAuthFlowService({
+    database,
+    cipher,
+    oauth,
+    servers,
+    ...(options.googleMcpClient ? { googleMcpClient: options.googleMcpClient } : {}),
+  });
   const refresh = new McpRefreshWorker({ authorization, database, flows, servers });
   return { accountId, agentA, agentB, authorization, cipher, database, flows, probe, refresh, servers };
 }
 
-async function seed(agentNames = { a: "agent-a", b: "agent-b" }, accountSnapshotMaxBytes?: number) {
+async function seed(
+  agentNames = { a: "agent-a", b: "agent-b" },
+  accountSnapshotMaxBytes?: number,
+  options: HarnessOptions = {},
+) {
   const client = createDatabaseClient(databaseUrl);
   openPools.push(client.sql);
   const machineAuth = new MachineAuthService(client.database);
@@ -133,9 +151,36 @@ async function seed(agentNames = { a: "agent-a", b: "agent-b" }, accountSnapshot
     runtimeProvider: "codex",
   });
   return {
-    ...buildHarness(client.database, accountId, agentA.id, agentB.id, accountSnapshotMaxBytes),
+    ...buildHarness(client.database, accountId, agentA.id, agentB.id, accountSnapshotMaxBytes, options),
     agentService,
     client,
+  };
+}
+
+/**
+ * An outbound fetcher that routes the two Google hostnames at the loopback fixture.
+ *
+ * The deployment Google client is bound to the real Google origins, which an offline suite cannot
+ * dial. The URLs are rewritten to the fixture while the policy still resolves the public hostnames,
+ * so the origin binding, the issuer canonicalization, the scope fallback, and the token exchange all
+ * run through the real flow.
+ */
+function googleRoutedFetch(fixture: McpFixtureServer) {
+  const origin = new URL(fixture.endpoint).origin;
+  const routedFetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+    if (url.hostname === "gmailmcp.googleapis.com" || url.hostname === "accounts.google.com") {
+      return await fetch(new URL(`${url.pathname}${url.search}`, origin), init);
+    }
+    return await fetch(input, init);
+  };
+  return {
+    fetcher: new McpOutboundFetcher({
+      allowLoopback: true,
+      fetch: routedFetch,
+      resolveAddresses: async () => ["93.184.216.34"],
+    }),
+    routedFetch,
   };
 }
 
@@ -344,6 +389,82 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
       expect(probe.toolsCount).toBe(2);
       expect(probe.protocolEra).toBe("modern");
       expect(probe.protocolVersion).toBe("2026-07-28");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("uses the deployment Google client for a Google Workspace endpoint with no registration", async () => {
+    /*
+     * Google's real shape, as observed against its live endpoints: the Protected Resource Metadata
+     * advertises the slash-suffixed issuer, the metadata document declares the slash-free one, and
+     * neither dynamic registration nor a client metadata document exists — so the configured client
+     * is the only way through, and this is the end-to-end proof it is.
+     */
+    const fixture = await McpFixtureServer.start({
+      issuerParameter: "https://accounts.google.com",
+      protectedResourceMetadata: () => ({
+        resource: "https://gmailmcp.googleapis.com/mcp/v1",
+        authorization_servers: ["https://accounts.google.com/"],
+        scopes_supported: ["https://www.googleapis.com/auth/gmail.readonly"],
+      }),
+      authorizationServerMetadata: () => ({
+        issuer: "https://accounts.google.com",
+        authorization_endpoint: "https://accounts.google.com/authorize",
+        token_endpoint: "https://accounts.google.com/token",
+        authorization_response_iss_parameter_supported: true,
+      }),
+    });
+    const routed = googleRoutedFetch(fixture);
+    const harness = await seed(undefined, undefined, {
+      fetcher: routed.fetcher,
+      googleMcpClient: { clientId: "google-client", clientSecret: "google-secret" },
+    });
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "gmail",
+        url: "https://gmailmcp.googleapis.com/mcp/v1",
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorizationUrl = new URL(started.authorizationUrl);
+      expect(authorizationUrl.searchParams.get("client_id")).toBe("google-client");
+      // Google's refresh-token parameters belong to the configured client alone.
+      expect(authorizationUrl.searchParams.get("access_type")).toBe("offline");
+      expect(authorizationUrl.searchParams.get("prompt")).toBe("consent");
+      // The protected resource's scopes are the fallback, so the request is never scope-less.
+      expect(authorizationUrl.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/gmail.readonly");
+      // The client is resolved from configuration: nothing was stored and nothing was registered.
+      expect(await harness.database.select().from(mcpClientRegistrations)).toEqual([]);
+      expect(fixture.registrations).toBe(0);
+
+      const authorize = await routed.routedFetch(authorizationUrl.toString(), { redirect: "manual" });
+      expect(authorize.status).toBe(302);
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.mcpServerId, server.id));
+      expect(row?.status).toBe("active");
+      const basic = `Basic ${Buffer.from("google-client:google-secret").toString("base64")}`;
+      expect(fixture.requests.find((request) => request.url === "/token")?.headers.authorization).toBe(basic);
+
+      // A refresh presents the same client and still needs no registration.
+      await harness.flows.refreshAuthorization(row?.id as string);
+      const tokenRequests = fixture.requests.filter((request) => request.url === "/token");
+      expect(tokenRequests).toHaveLength(2);
+      expect(tokenRequests[1]?.headers.authorization).toBe(basic);
+      expect(fixture.registrations).toBe(0);
+      expect(await harness.database.select().from(mcpClientRegistrations)).toEqual([]);
     } finally {
       await fixture.stop();
     }
@@ -1700,6 +1821,116 @@ describe("Agent-level overrides", () => {
     }
   }, 30_000);
 
+  it("accepts a provider-shaped resource identity and repeats it on exchange and refresh", async () => {
+    /*
+     * Airtable/Amplitude shape: the well-known document advertises the origin while the transport
+     * endpoint answers on /mcp. Discovery accepts the encoded identity, and the exact accepted string
+     * must travel on the token exchange and every refresh.
+     */
+    const fixture = await McpFixtureServer.start({
+      protectedResourceMetadata: (self) => ({
+        resource: self,
+        authorization_servers: [self],
+        scopes_supported: ["mcp.read", "mcp.write"],
+      }),
+    });
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      const origin = new URL(fixture.endpoint).origin;
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      expect(new URL(started.authorizationUrl).searchParams.get("resource")).toBe(origin);
+
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.mcpServerId, server.id));
+      expect(row).toMatchObject({ status: "active", oauthResource: origin, flowOauthResource: null });
+      expect(String(fixture.requests.find((request) => request.url === "/token")?.body)).toContain(
+        `resource=${encodeURIComponent(origin)}`,
+      );
+
+      await harness.flows.refreshAuthorization(row?.id as string);
+      const tokenRequests = fixture.requests.filter((request) => request.url === "/token");
+      const refresh = tokenRequests[tokenRequests.length - 1];
+      expect(String(refresh?.body)).toContain("grant_type=refresh_token");
+      expect(String(refresh?.body)).toContain(`resource=${encodeURIComponent(origin)}`);
+      const [after] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.id, row?.id as string));
+      expect(after).toMatchObject({ status: "active", oauthResource: origin, refreshGeneration: 1 });
+    } finally {
+      await fixture.stop();
+    }
+  }, 30_000);
+
+  it("refreshes a pre-change row with the endpoint-derived resource", async () => {
+    /*
+     * A row written before the column existed has no recorded audience; it keeps the derivation it was
+     * started under, so an upgrade does not invalidate existing authorizations.
+     */
+    const fixture = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.mcpServerId, server.id));
+      expect(row?.oauthResource).toBe(fixture.endpoint);
+      await harness.database
+        .update(mcpServerAuthorizations)
+        .set({ oauthResource: null })
+        .where(eq(mcpServerAuthorizations.id, row?.id as string));
+
+      await harness.flows.refreshAuthorization(row?.id as string);
+      const tokenRequests = fixture.requests.filter((request) => request.url === "/token");
+      const refresh = tokenRequests[tokenRequests.length - 1];
+      expect(String(refresh?.body)).toContain(`resource=${encodeURIComponent(fixture.endpoint)}`);
+      const [after] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.id, row?.id as string));
+      expect(after).toMatchObject({ status: "active", oauthResource: null });
+    } finally {
+      await fixture.stop();
+    }
+  }, 30_000);
+
   it("revokes an OAuth credential when the endpoint moves to a new origin", async () => {
     /*
      * S2. An access token is issued for one resource, and the AS's `resource` binding is what stops it
@@ -1743,6 +1974,8 @@ describe("Agent-level overrides", () => {
         return row;
       };
       expect((await stateOf(harness.agentA))?.status).toBe("active");
+      // The strict path stored the endpoint itself as the credential's audience.
+      expect((await stateOf(harness.agentA))?.oauthResource).toBe(first.endpoint);
 
       // A different origin: the token was issued for the old resource and must not follow.
       const definition = (await harness.servers.listServers(harness.accountId))[0];
@@ -1754,6 +1987,9 @@ describe("Agent-level overrides", () => {
       const moved = await stateOf(harness.agentA);
       expect(moved?.status).toBe("revoked");
       expect(moved?.ciphertext).toBeNull();
+      // The audience is dropped with the credential, and the in-flight flow's resource with its flow.
+      expect(moved?.oauthResource).toBeNull();
+      expect(moved?.flowOauthResource).toBeNull();
       // The Bearer key is untouched: it is not bound to an origin, and dropping it would be a surprise.
       const bearer = await stateOf(harness.agentB);
       expect(bearer?.status).toBe("active");

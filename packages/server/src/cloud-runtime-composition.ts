@@ -74,6 +74,7 @@ export function createSandboxRunnerRuntime(
     workspaceStoreFactory?: (input: { tokenProvider: AccessTokenProvider }) => WorkspaceObjectStore;
     sessionWorkBusy?: SandboxRunnerServiceOptions["sessionWorkBusy"];
     sessionWorkBarrier?: SandboxRunnerServiceOptions["sessionWorkBarrier"];
+    readinessNotifications?: SandboxRunnerServiceOptions["readinessNotifications"];
   } = {},
 ): SandboxRunnerRuntime | undefined {
   const cloudRunner = config.cloudRunner;
@@ -114,6 +115,7 @@ export function createSandboxRunnerRuntime(
     // E9 admission ceilings from the deployment configuration (defaults 3/20).
     capacity: { accountLimit: cloudRunner.maxInstancesPerAccount, platformLimit: cloudRunner.maxInstances },
     workspace: { store },
+    ...(options.readinessNotifications ? { readinessNotifications: options.readinessNotifications } : {}),
     ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
     ...(options.sessionWorkBarrier ? { sessionWorkBarrier: options.sessionWorkBarrier } : {}),
   });
@@ -149,6 +151,7 @@ export function createCloudDeliveryComposition(input: {
    */
   cloudModelCatalog?: CloudModelCatalog;
   sessionProofs?: CloudDeliveryOwnerOptions["sessionProofs"];
+  onTurnActivity?: CloudDeliveryOwnerOptions["onTurnActivity"];
   sessionCollaboration?: Pick<
     CloudSessionCollaborationOwnerOptions,
     "assembler" | "work" | "proofs" | "sessions" | "durableWork" | "allocation"
@@ -186,6 +189,7 @@ export function createCloudDeliveryComposition(input: {
   const cloudDeliveryOwner = new CloudDeliveryOwner({
     ...common,
     custody: input.custody,
+    ...(input.onTurnActivity ? { onTurnActivity: input.onTurnActivity } : {}),
     credentials: { owner: input.credentialOwner },
     ...(input.sessionProofs ? { sessionProofs: input.sessionProofs } : {}),
     ...(input.allocationStatus ? { allocationStatus: input.allocationStatus } : {}),
@@ -210,7 +214,7 @@ export function createCloudDeliveryComposition(input: {
  */
 export function createCloudIngressAllocationPort(input: {
   sandboxService: Pick<SandboxService, "ensureForAccount">;
-  sandboxRunnerService: Pick<SandboxRunnerService, "ensureIngressAllocation">;
+  sandboxRunnerService: Pick<SandboxRunnerService, "ensureIngressAllocation" | "readyAllocation">;
 }): CloudSessionAllocationPort {
   return {
     ensureSandbox: async (sessionInput) => {
@@ -234,6 +238,7 @@ export function createCloudIngressAllocationPort(input: {
     },
     ensureEnvironmentAllocated: (environmentInput) =>
       input.sandboxRunnerService.ensureIngressAllocation(environmentInput.accountId, environmentInput.sandboxId),
+    readyAllocation: (sandboxId) => input.sandboxRunnerService.readyAllocation(sandboxId),
   };
 }
 

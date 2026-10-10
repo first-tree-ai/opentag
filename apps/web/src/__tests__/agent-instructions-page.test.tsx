@@ -4,7 +4,7 @@ import { browserApi } from "../api.js";
 import { App } from "../app.js";
 import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
 
-describe("Agent Instructions page", () => {
+describe("Agent Soul page", () => {
   beforeEach(resetWebAppState);
   afterEach(() => vi.restoreAllMocks());
 
@@ -23,20 +23,25 @@ describe("Agent Instructions page", () => {
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
     const navigation = await screen.findByRole("navigation", { name: "Agent" });
-    fireEvent.click(within(navigation).getByRole("link", { name: "Instructions" }));
+    fireEvent.click(within(navigation).getByRole("link", { name: "Soul" }));
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Instructions" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Soul" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/instructions`);
-    expect(within(navigation).getByRole("link", { name: "Instructions" }).getAttribute("aria-current")).toBe("page");
+    expect(within(navigation).getByRole("link", { name: "Soul" }).getAttribute("aria-current")).toBe("page");
     expect(screen.queryByRole("heading", { name: "Model" })).toBeNull();
-    const editor = screen.getByRole("textbox", { name: "Instructions" });
+    const editor = screen.getByRole("textbox", { name: "Soul" });
     fireEvent.change(editor, { target: { value: "Be concise." } });
     fireEvent.click(within(navigation).getByRole("link", { name: "Overview" }));
-    expect(await screen.findByRole("dialog", { name: "Discard unsaved changes?" })).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Discard your changes?" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
     expect((editor as HTMLTextAreaElement).value).toBe("Be concise.");
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    expect(await screen.findByText("Instructions saved.")).toBeTruthy();
+    fireEvent.click(within(navigation).getByRole("link", { name: "Overview" }));
+    const dialog = await screen.findByRole("dialog", { name: "Discard your changes?" });
+    expect(within(dialog).getByText("Your edits will be lost if you leave.")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Discard and leave" })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(await screen.findByText("Changes applied.")).toBeTruthy();
     expect(save).toHaveBeenCalledWith(agentId, {
       expectedRevision: config.revision,
       runtimeConfig: { instructions: "Be concise." },
@@ -49,7 +54,7 @@ describe("Agent Instructions page", () => {
     installApi({ bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/instructions`);
     render(<App />);
-    expect(await screen.findByRole("heading", { level: 1, name: "Instructions" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Soul" })).toBeTruthy();
     await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/instructions`));
     expect(screen.queryByRole("link", { name: "Back to Agent settings" })).toBeNull();
   });

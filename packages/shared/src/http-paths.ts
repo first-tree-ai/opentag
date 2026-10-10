@@ -3,6 +3,7 @@ export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_SETUP_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/setup`;
 export const AGENT_SETUP_REFRESH_TEMPLATE = `${AGENT_SETUP_TEMPLATE}/refresh`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
+export const AGENT_RUNTIME_OPTIONS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-options`;
 export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_CLOUD_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/cloud`;
@@ -34,6 +35,8 @@ export const AGENT_SLACK_EVENTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/s
 export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindingId`;
 export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
+export const SLACK_INTERACTIONS_PATH = `${API_V1_PREFIX}/im-bindings/slack/interactions`;
+export const AGENT_SLACK_INTERACTIONS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/interactions`;
 export const SLACK_OAUTH_CALLBACK_PATH = `${API_V1_PREFIX}/im-bindings/slack/oauth/callback`;
 /*
  * Account-scoped GitHub integration management. One deployment-level GitHub App, one current
@@ -108,6 +111,7 @@ export const MCP_CLIENT_METADATA_PATH = "/oauth/client-metadata.json";
  */
 export const AGENT_SKILLS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/skills`;
 export const AGENT_SKILL_TEMPLATE = `${AGENT_SKILLS_TEMPLATE}/:skillId`;
+export const AGENT_SKILL_FILE_TEMPLATE = `${AGENT_SKILL_TEMPLATE}/file`;
 export const AGENT_SKILL_BUNDLE_TEMPLATE = `${AGENT_SKILL_TEMPLATE}/bundle`;
 /*
  * Remote Skill installation. `resolve` only reads: it normalizes the source, fetches it, and returns
@@ -120,6 +124,22 @@ export const COMPUTER_AGENT_SKILLS_TEMPLATE = `${API_V1_PREFIX}/computer/agents/
 export const COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE = `${COMPUTER_AGENT_SKILLS_TEMPLATE}/:skillId/bundle`;
 export const RUNTIME_SKILLS_PATH = `${API_V1_PREFIX}/runtime/skills`;
 export const RUNTIME_SKILL_BUNDLE_TEMPLATE = `${RUNTIME_SKILLS_PATH}/:name/bundle`;
+/*
+ * Preset Skill catalog. The catalog content is global, but its install state is per Agent, so the
+ * Account path is addressed under an Agent and the runtime path is session-proof authenticated.
+ * Install is a named subresource: a preset is installed by name and the Server records the action.
+ */
+export const AGENT_SKILL_PRESETS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/skill-presets`;
+export const AGENT_SKILL_PRESET_INSTALL_TEMPLATE = `${AGENT_SKILL_PRESETS_TEMPLATE}/:presetName/install`;
+export const RUNTIME_SKILL_PRESETS_PATH = `${API_V1_PREFIX}/runtime/skill-presets`;
+export const RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE = `${RUNTIME_SKILL_PRESETS_PATH}/:presetName/install`;
+/*
+ * Public catalog reads for the official website. Anonymous, display-only projections of the
+ * repo-shipped Skill preset and MCP marketplace catalogs; a deployment exposes them on the official
+ * public origin or when `OPENTAG_WEBSITE_ORIGINS` adds website origins.
+ */
+export const PUBLIC_SKILLS_PATH = `${API_V1_PREFIX}/public/skills`;
+export const PUBLIC_MCP_SERVERS_PATH = `${API_V1_PREFIX}/public/mcp-servers`;
 /*
  * Agent self-configuration. Session-proof authenticated and never addressed by Agent id: the Agent
  * is always the one the proof resolves to, so a request cannot reach a different Agent.
@@ -165,6 +185,8 @@ export const HTTP_PATHS = {
   mcpServers: MCP_SERVERS_PATH,
   mcpOAuthCallback: MCP_OAUTH_CALLBACK_PATH,
   mcpClientMetadata: MCP_CLIENT_METADATA_PATH,
+  publicSkills: PUBLIC_SKILLS_PATH,
+  publicMcpServers: PUBLIC_MCP_SERVERS_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
@@ -187,6 +209,7 @@ export const HTTP_PATHS = {
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
   runtimeSkills: RUNTIME_SKILLS_PATH,
+  runtimeSkillPresets: RUNTIME_SKILL_PRESETS_PATH,
   runtimeDurableWork: RUNTIME_DURABLE_WORK_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
@@ -293,6 +316,10 @@ export function agentSetupRefreshPath(agentId: string): string {
 
 export function agentConfigPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/config`;
+}
+
+export function agentRuntimeOptionsPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/runtime-options`;
 }
 
 export function agentRuntimeTestPath(agentId: string): string {
@@ -459,6 +486,10 @@ export function agentSkillsInstallResolvePath(agentId: string): string {
   return `${agentSkillsInstallPath(agentId)}/resolve`;
 }
 
+export function agentSkillFilePath(agentId: string, skillId: string): string {
+  return `${agentSkillPath(agentId, skillId)}/file`;
+}
+
 export function agentSkillBundlePath(agentId: string, skillId: string): string {
   return `${agentSkillPath(agentId, skillId)}/bundle`;
 }
@@ -477,4 +508,16 @@ export function runtimeAgentMcpServerPath(mcpServerId: string): string {
 
 export function runtimeSkillBundlePath(name: string): string {
   return `${RUNTIME_SKILLS_PATH}/${encodeURIComponent(name)}/bundle`;
+}
+
+export function agentSkillPresetsPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/skill-presets`;
+}
+
+export function agentSkillPresetInstallPath(agentId: string, presetName: string): string {
+  return `${agentSkillPresetsPath(agentId)}/${encodeURIComponent(presetName)}/install`;
+}
+
+export function runtimeSkillPresetInstallPath(presetName: string): string {
+  return `${RUNTIME_SKILL_PRESETS_PATH}/${encodeURIComponent(presetName)}/install`;
 }

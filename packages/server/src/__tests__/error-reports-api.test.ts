@@ -235,21 +235,22 @@ describe("POST /api/v1/error-reports", () => {
   });
 
   it("keys the budget on the forwarded client only when the proxy is trusted", async () => {
-    const viaProxy = (app: ReturnType<typeof createApp>, client: string) =>
+    const viaProxy = (app: ReturnType<typeof createApp>, forwardedFor: string) =>
       app.inject({
         method: "POST",
         url: HTTP_PATHS.errorReports,
         remoteAddress: "10.0.1.5",
-        headers: { "content-type": "application/json", "x-forwarded-for": client },
+        headers: { "content-type": "application/json", "x-forwarded-for": forwardedFor },
         payload: JSON.stringify(validReport),
       });
     const limiter = () => new RouteRateLimiter(1, ERROR_REPORT_RATE_LIMIT_WINDOW_MS);
     const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
 
+    // A forged prefix must not change the appended client's rate-limit key.
     const trusted = createRelayApp({ reporter, rateLimiter: limiter(), trustProxy: ["uniquelocal"] }).app;
-    expect((await viaProxy(trusted, "203.0.113.7")).statusCode).toBe(202);
-    expect((await viaProxy(trusted, "198.51.100.2")).statusCode).toBe(202);
-    expect((await viaProxy(trusted, "203.0.113.7")).statusCode).toBe(429);
+    expect((await viaProxy(trusted, "192.0.2.1, 203.0.113.7")).statusCode).toBe(202);
+    expect((await viaProxy(trusted, "192.0.2.2, 203.0.113.7")).statusCode).toBe(429);
+    expect((await viaProxy(trusted, "192.0.2.1, 198.51.100.2")).statusCode).toBe(202);
 
     const untrusted = createRelayApp({ reporter, rateLimiter: limiter() }).app;
     expect((await viaProxy(untrusted, "203.0.113.7")).statusCode).toBe(202);

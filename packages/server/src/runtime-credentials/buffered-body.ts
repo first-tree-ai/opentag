@@ -113,10 +113,23 @@ export function decodeBufferedBody(input: {
         delete (parsed as Record<string, unknown>).token;
       }
       assertSlackQueryResourceIntegrity(parsed, requestQuery(path));
+      if (operationBody === "form") return { bytes: encodeSlackJsonForm(parsed), parsed };
     }
     return { bytes: new TextEncoder().encode(JSON.stringify(parsed)), parsed };
   }
   const form = new URLSearchParams(new TextDecoder().decode(bytes));
   form.delete("token");
   return { bytes: new TextEncoder().encode(form.toString()), parsed: Object.fromEntries(form.entries()) };
+}
+
+/** Preserve JSON value semantics for Slack endpoints that require form parameters. */
+function encodeSlackJsonForm(parsed: unknown): Uint8Array {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new RuntimeProxyError("body_invalid", "Slack parameters must be an object");
+  }
+  const form = new URLSearchParams();
+  for (const [key, value] of Object.entries(parsed)) {
+    form.set(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  return new TextEncoder().encode(form.toString());
 }

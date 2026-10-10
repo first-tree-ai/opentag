@@ -6,7 +6,6 @@ import {
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
-  RUNTIME_DIRECT_TEXT_MAX_BYTES,
   type RuntimeImDeliveryContent,
   type RuntimeImSteerRequest,
   RuntimeImSteerRequestSchema,
@@ -36,9 +35,17 @@ import {
   EffectiveRuntimeSnapshotAssemblerError,
 } from "../services/runtime-config/index.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/index.js";
+import type { ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import { DISPATCH_CLAIM_PREFIX, dispatchClaimToken } from "./im-delivery-claim.js";
 import { CloudDeliveryCoordinator, readPersistedDeliveryRequest } from "./im-delivery-cloud.js";
+import {
+  deliveryMessageContent,
+  ImDeliveryInputError,
+  rejectInvalidImDelivery,
+  validateFreshImRequest,
+  validateUndispatchedContent,
+} from "./im-delivery-content.js";
 import {
   type ClaimLease,
   deliveryOccupancyScope,
@@ -49,7 +56,6 @@ import {
   messageOrderBefore,
   occupancyConflict,
   occupancyScopeKey,
-  truncateUtf8,
   uncertainAgentCustody,
 } from "./im-delivery-custody.js";
 import { withOperationDeadline } from "./im-delivery-deadline.js";
@@ -61,6 +67,7 @@ import {
   runImDeliveryJanitor,
   runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
+import { ImDeliveryReadyWakeup, isCloudReadinessRetry, readySessionClaimGuard } from "./im-delivery-ready-wakeup.js";
 import type {
   CloudSessionAllocationPort,
   ImDeliveryWorkerInput,
@@ -69,7 +76,6 @@ import type {
 } from "./im-delivery-worker.types.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
-import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
 
 const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
@@ -143,6 +149,9 @@ function cloudPendingOrderingGuard(transaction: DatabaseTransaction) {
 }
 
 export class ImDeliveryWorker {
+  #closed = false;
+  readonly #readyWakeup: ImDeliveryReadyWakeup;
+  readonly #readyRetryClaims = new Set<string>();
   readonly #database: DatabaseClient;
   readonly #domain: RuntimeDomainOwner;
   readonly #assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
@@ -218,6 +227,14 @@ export class ImDeliveryWorker {
       withActiveAgentAdmission: (expected, operation, signal) =>
         this.#withActiveAgentAdmission(expected, operation, signal),
     });
+    this.#readyWakeup = new ImDeliveryReadyWakeup({
+      database: this.#database,
+      allocation: this.#cloudAllocation,
+      now: this.#clock,
+      runSession: (sessionId) => this.#runOnce(sessionId),
+      supervisor: this.#supervisor,
+      onDiagnostic: this.#onDiagnostic,
+    });
     const schedulers = createImDeliveryMaintenanceSchedulers({
       expiryRun: async () => {
         await runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock });
@@ -232,7 +249,7 @@ export class ImDeliveryWorker {
   }
 
   start(): void {
-    if (this.#timer) return;
+    if (this.#closed || this.#timer) return;
     this.#schedule();
     this.#timer = setInterval(() => this.#schedule(), this.#intervalMs);
     this.#timer.unref();
@@ -243,6 +260,7 @@ export class ImDeliveryWorker {
   }
 
   stop(): void {
+    this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     if (this.#janitorTimer) clearInterval(this.#janitorTimer);
@@ -250,6 +268,7 @@ export class ImDeliveryWorker {
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
     this.#scheduler.close();
+    this.#readyWakeup.stop();
   }
 
   async runJanitorOnce(): Promise<void> {
@@ -258,7 +277,12 @@ export class ImDeliveryWorker {
   }
 
   async runOnce(): Promise<void> {
-    const claimed = await this.#claim();
+    await this.#runOnce();
+  }
+
+  async #runOnce(sessionId?: string): Promise<void> {
+    if (this.#closed) return;
+    const claimed = await this.#claim(sessionId);
     if (!claimed) return;
     const queueAge = Math.max(0, this.#now() - claimed.queuedAt);
     this.#onMetric({ name: "queue_age_ms", value: queueAge, agentId: claimed.agentId });
@@ -278,6 +302,7 @@ export class ImDeliveryWorker {
       reject = fail;
     });
     const run = async () => {
+      if (sessionId && "claimToken" in claimed) this.#readyRetryClaims.add(claimed.claimToken);
       this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
       let failed = false;
       try {
@@ -309,6 +334,7 @@ export class ImDeliveryWorker {
         reject(error);
         throw error;
       } finally {
+        if ("claimToken" in claimed) this.#readyRetryClaims.delete(claimed.claimToken);
         this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
         if (!failed) resolve();
       }
@@ -336,6 +362,10 @@ export class ImDeliveryWorker {
     await complete;
   }
 
+  notifyCloudRunnerReady(allocation: ReadyRunnerAllocation): Promise<void> {
+    return this.#readyWakeup.notify(allocation);
+  }
+
   #schedule(): void {
     const operation = this.runOnce().catch((error: unknown) => {
       this.#onDiagnostic("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
@@ -354,7 +384,7 @@ export class ImDeliveryWorker {
     void operation.catch(() => undefined);
   }
 
-  async #claim(): Promise<WorkerClaim | undefined> {
+  async #claim(sessionId?: string): Promise<WorkerClaim | undefined> {
     const claim = await this.#database.transaction(async (transaction) => {
       const now = this.#clock();
       const [row] = await transaction
@@ -382,6 +412,7 @@ export class ImDeliveryWorker {
         .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
         .where(
           and(
+            readySessionClaimGuard(sessionId),
             isNull(sessions.endedAt),
             eq(imBindings.status, "active"),
             ne(agents.status, "deleted"),
@@ -646,6 +677,9 @@ export class ImDeliveryWorker {
     const lease = this.#maintainClaimLease(deliveryId, claimToken);
     try {
       await this.#deliverClaimed(deliveryId, claimToken, lease, signal);
+    } catch (error) {
+      if (!(error instanceof ImDeliveryInputError)) throw error;
+      await this.#rejectInvalidInput(deliveryId, error, claimToken);
     } finally {
       await lease.stop();
     }
@@ -765,6 +799,7 @@ export class ImDeliveryWorker {
         deadlineAt: row.delivery.expiresAt.toISOString(),
       };
       fitDeliveryFrame(request);
+      validateFreshImRequest(request);
       if (!(await lease.assertOwned())) return;
       await this.#database
         .update(imMessageDeliveries)
@@ -795,8 +830,8 @@ export class ImDeliveryWorker {
           claim.claimToken,
         );
       }
-    } catch {
-      await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_FAILED", claim.claimToken);
+    } catch (error) {
+      await this.#handleDeliveryFailure(claim.id, claim.claimToken, "IM_DELIVERY_STEER_FAILED", error);
     } finally {
       await lease.stop();
     }
@@ -866,20 +901,12 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE", claimToken);
       return;
     }
+    validateUndispatchedContent(row);
     /*
-     * E4 Cloud branch: a Cloud Computer is a logical identity with one Sandbox Runner per Agent
-     * Session, so deliveries route through the per-Sandbox Cloud dispatch owner, never the Local
-     * runtime registry (`computer.currentInstanceId`/`registry.currentInstanceId` are Local-only
-     * facts). Cloud pending-deadline discipline, deliberately reusing Local bounds:
-     * - the claim lease (claimLeaseMs) and operation deadline (operationTimeoutMs) are unchanged:
-     *   Cloud dispatch is a short custody write + control-frame send, never a wait for cold start;
-     * - an unready environment/Runner is a TRANSIENT failure retried on RETRY_DELAY_MS, so long
-     *   allocations are absorbed by repeated short attempts instead of one long in-operation wait;
-     * - no Local admission/queue-age TTL applies (maxQueueAgeMs is unset in production wiring);
-     *   the delivery's own expiresAt — set at ingress and protected by the Cloud-aware
-     *   inbox/janitor retention — is the bounded deadline for the UNDISPATCHED pending input;
-     *   once a dispatch window is frozen, its runtime-budget deadline (separate from the short
-     *   operationTimeoutMs and ingress TTL) bounds it; accepted-unreported custody is never expired.
+     * Cloud dispatch uses the per-Sandbox owner and short claim/operation deadlines, not the
+     * Local runtime registry or queue-age TTL. Unready Runners retry in short attempts; ingress
+     * expiresAt bounds undispatched input, the runtime budget bounds frozen dispatches, and
+     * accepted-unreported custody never expires.
      */
     await this.#database
       .update(imMessageDeliveries)
@@ -1031,6 +1058,7 @@ export class ImDeliveryWorker {
         deadlineAt: row.delivery.expiresAt.toISOString(),
       };
       fitDeliveryFrame(request);
+      validateFreshImRequest(request);
       if (!(await lease.assertOwned())) return;
       await this.#beforeDeliveryAdmission?.(signal);
       const admittedDelivery = await this.#withActiveAgentAdmission(
@@ -1052,8 +1080,8 @@ export class ImDeliveryWorker {
       } else if (result.status === "rejected") {
         await this.#releaseDispatch(deliveryId, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED", claimToken);
       }
-    } catch {
-      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_FAILED", claimToken);
+    } catch (error) {
+      await this.#handleDeliveryFailure(deliveryId, claimToken, "IM_DELIVERY_RUNTIME_FAILED", error);
     }
   }
 
@@ -1303,6 +1331,11 @@ export class ImDeliveryWorker {
     if (updated) {
       this.#onDiagnostic(bounded);
       this.#onMetric({ name: "retry", value: 1 });
+      if (isCloudReadinessRetry(bounded) && (!claimToken || !this.#readyRetryClaims.has(claimToken))) {
+        // A ready event may have seen this row's claim marker before the backoff was recorded.
+        // Recheck AFTER the write; a ready-triggered retry itself keeps normal bounded backoff.
+        this.#readyWakeup.recheck(deliveryId);
+      }
     }
   }
 
@@ -1332,6 +1365,21 @@ export class ImDeliveryWorker {
       this.#onDiagnostic(bounded);
       this.#onMetric({ name: "retry", value: 1 });
     }
+  }
+
+  async #handleDeliveryFailure(deliveryId: string, claimToken: string, code: string, error: unknown): Promise<void> {
+    if (error instanceof ImDeliveryInputError) await this.#rejectInvalidInput(deliveryId, error, claimToken);
+    else await this.#recordFailure(deliveryId, code, claimToken);
+  }
+
+  async #rejectInvalidInput(deliveryId: string, error: ImDeliveryInputError, claimToken: string): Promise<void> {
+    setActiveSpanAttributes({
+      "im.validation.code": error.code,
+      "im.validation.paths": error.paths.join(","),
+      "im.delivery.id": deliveryId,
+    });
+    const rejected = await rejectInvalidImDelivery(this.#database, deliveryId, error, claimToken);
+    if (rejected) this.#onDiagnostic(error.code);
   }
 
   async #reject(deliveryId: string, reason: string, claimToken?: string): Promise<void> {
@@ -1420,7 +1468,7 @@ export class ImDeliveryWorker {
     imBinding: typeof imBindings.$inferSelect;
     receiveMode: (typeof agents.$inferSelect)["receiveMode"];
   }): Promise<RuntimeImDeliveryContent> {
-    const resources = input.message.content.resources ?? [];
+    const content = deliveryMessageContent(input.message, input.imBinding);
     const history =
       input.delivery.attention === "direct" && (input.receiveMode === "mention_only" || input.session.kind === "thread")
         ? await loadDirectHistory(this.#database, {
@@ -1433,26 +1481,8 @@ export class ImDeliveryWorker {
           })
         : { items: [], truncated: false };
     return {
-      kind: "text",
-      text: truncateUtf8(
-        input.message.operation === "deleted" ? "[deleted]" : input.message.content.fallbackText,
-        RUNTIME_DIRECT_TEXT_MAX_BYTES,
-      ),
-      providerRef: runtimeProviderMessageRef(input.message, input.imBinding),
+      ...content,
       ...(history.items.length > 0 ? { history: history.items, historyTruncated: history.truncated } : {}),
-      ...(resources.length > 0
-        ? {
-            resources: resources.map((resource, index) => ({
-              imMessageId: input.message.id,
-              ordinal: resource.ordinal ?? index,
-              kind: resource.kind,
-              ...(resource.filename ? { filename: resource.filename } : {}),
-              ...(resource.mediaType ? { mediaType: resource.mediaType } : {}),
-              ...(resource.sizeBytes !== null ? { sizeBytes: resource.sizeBytes } : {}),
-              availability: resource.availability ?? "available",
-            })),
-          }
-        : {}),
     };
   }
 

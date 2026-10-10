@@ -68,6 +68,64 @@ const PublicUrlSchema = z
     return url.origin;
   });
 
+/**
+ * Additional website origins allowed to read the public catalog APIs, as a comma-separated list.
+ *
+ * Each entry is normalized to a canonical origin; surrounding whitespace and blank entries are
+ * ignored and duplicates collapse. Unset or empty means "no extra origins", not "no catalog": the
+ * official deployment always serves the built-in official origins. Whether plain HTTP is allowed
+ * depends on `OPENTAG_ENV` and is enforced in the schema refinement, where both values are visible.
+ */
+export const MAX_WEBSITE_ORIGINS = 16;
+const WebsiteOriginsSchema = z
+  .string()
+  .optional()
+  .transform((value, context) => {
+    const origins: string[] = [];
+    const entries = (value ?? "").split(",");
+    for (const [index, entry] of entries.entries()) {
+      const candidate = entry.trim();
+      if (!candidate) continue;
+      let url: URL;
+      try {
+        url = new URL(candidate);
+      } catch {
+        /*
+         * The value never appears in the message: a failed rollout must not copy a mistyped
+         * credential from a URL's userinfo into the startup log. The position is enough to find it.
+         */
+        context.addIssue({
+          code: "custom",
+          message: `OPENTAG_WEBSITE_ORIGINS entry ${index + 1} must be a URL`,
+        });
+        continue;
+      }
+      if (
+        !["http:", "https:"].includes(url.protocol) ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash ||
+        url.pathname !== "/"
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: `OPENTAG_WEBSITE_ORIGINS entry ${index + 1} must be an HTTP(S) origin without credentials, path, query, or fragment`,
+        });
+        continue;
+      }
+      if (!origins.includes(url.origin)) origins.push(url.origin);
+    }
+    if (origins.length > MAX_WEBSITE_ORIGINS) {
+      context.addIssue({
+        code: "custom",
+        message: `OPENTAG_WEBSITE_ORIGINS accepts at most ${MAX_WEBSITE_ORIGINS} entries`,
+      });
+      return origins.slice(0, MAX_WEBSITE_ORIGINS);
+    }
+    return origins;
+  });
+
 const DownloadBaseUrlSchema = z
   .string()
   .trim()
@@ -210,6 +268,42 @@ function normalizeGitHubAppPrivateKey(value: string): string | undefined {
  * optional callback URL that stays on this server's origin (HTTPS there when hosted). Extracted from
  * the schema's refinement so the App rule reads as one unit.
  */
+/**
+ * The MCP Google client is a separate pair from the sign-in one: it has its own redirect URI and
+ * consent scopes, so a half-configured pair must fail startup rather than silently disable Google
+ * Workspace authorizations.
+ */
+function validateMcpGoogleClientPair(
+  value: {
+    OPENTAG_MCP_GOOGLE_CLIENT_ID?: string | undefined;
+    OPENTAG_MCP_GOOGLE_CLIENT_SECRET?: string | undefined;
+  },
+  context: z.RefinementCtx,
+): void {
+  if (Boolean(value.OPENTAG_MCP_GOOGLE_CLIENT_ID) === Boolean(value.OPENTAG_MCP_GOOGLE_CLIENT_SECRET)) return;
+  context.addIssue({
+    code: "custom",
+    message: "OPENTAG_MCP_GOOGLE_CLIENT_ID and OPENTAG_MCP_GOOGLE_CLIENT_SECRET must be configured together",
+  });
+}
+
+/**
+ * The resolved MCP Google client, spread into the config: absent unless both variables are set, in
+ * which case the flow offers it to the Google Workspace endpoints whose discovery resolves Google.
+ */
+function resolveMcpGoogleOAuth(parsed: {
+  OPENTAG_MCP_GOOGLE_CLIENT_ID?: string | undefined;
+  OPENTAG_MCP_GOOGLE_CLIENT_SECRET?: string | undefined;
+}): { mcpGoogleOAuth?: { clientId: string; clientSecret: string } } {
+  if (!parsed.OPENTAG_MCP_GOOGLE_CLIENT_ID || !parsed.OPENTAG_MCP_GOOGLE_CLIENT_SECRET) return {};
+  return {
+    mcpGoogleOAuth: {
+      clientId: parsed.OPENTAG_MCP_GOOGLE_CLIENT_ID,
+      clientSecret: parsed.OPENTAG_MCP_GOOGLE_CLIENT_SECRET,
+    },
+  };
+}
+
 function validateGitHubAppConfiguration(
   value: {
     OPENTAG_GITHUB_APP_ID?: string | undefined;
@@ -298,6 +392,8 @@ const ServerEnvironmentSchema = z
      * port scanner.
      */
     OPENTAG_MCP_ALLOW_LOOPBACK: booleanString("false"),
+    OPENTAG_MCP_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+    OPENTAG_MCP_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_CLIENT_ID: z.string().min(1).optional(),
@@ -330,6 +426,7 @@ const ServerEnvironmentSchema = z
     OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(300_000),
     OPENTAG_PORT: z.coerce.number().int().min(1).max(65_535).default(8000),
     OPENTAG_PUBLIC_URL: PublicUrlSchema,
+    OPENTAG_WEBSITE_ORIGINS: WebsiteOriginsSchema,
     OPENTAG_OTEL_ENDPOINT: OtlpEndpointSchema,
     OPENTAG_OTEL_ENVIRONMENT: z.string().trim().min(1).optional(),
     OPENTAG_OTEL_HEADERS: z.string().default(""),
@@ -425,6 +522,7 @@ const ServerEnvironmentSchema = z
     if (Boolean(value.OPENTAG_GOOGLE_CLIENT_ID) !== Boolean(value.OPENTAG_GOOGLE_CLIENT_SECRET)) {
       context.addIssue({ code: "custom", message: "Google client id and secret must be configured together" });
     }
+    validateMcpGoogleClientPair(value, context);
     const slackOAuthValues = [
       value.OPENTAG_SLACK_CLIENT_ID,
       value.OPENTAG_SLACK_CLIENT_SECRET,
@@ -622,6 +720,18 @@ const ServerEnvironmentSchema = z
         message: "OPENTAG_SKILL_STORAGE_ENDPOINT must be an HTTP(S) URL without credentials, query, or fragment",
       });
     }
+  })
+  .superRefine((value, context) => {
+    if (!isHostedEnvironment(value.OPENTAG_ENV)) return;
+    value.OPENTAG_WEBSITE_ORIGINS.forEach((origin, index) => {
+      const url = new URL(origin);
+      if (url.protocol !== "https:" && !isLoopbackHostname(url.hostname)) {
+        context.addIssue({
+          code: "custom",
+          message: `OPENTAG_WEBSITE_ORIGINS entry ${index + 1} must use HTTPS in a hosted environment unless it is loopback`,
+        });
+      }
+    });
   });
 
 function isLoopbackHostname(value: string): boolean {
@@ -729,10 +839,23 @@ export interface ServerConfig {
    * development environment, regardless of the configured value.
    */
   mcpAllowLoopback: boolean;
+  /**
+   * The deployment's pre-registered Google Workspace MCP OAuth client, present only when both
+   * variables are configured together. The flow offers it only to the Google-hosted MCP endpoints
+   * that resolve Google's authorization server, never to another Server that merely names Google.
+   * The secret stays inside the flow service; it is never logged or returned.
+   */
+  mcpGoogleOAuth?: { clientId: string; clientSecret: string };
   port: number;
   /** Peers trusted to set `X-Forwarded-*`; `false` keys `request.ip` on the socket peer. */
   trustProxy: TrustProxyConfig;
   publicUrl: string;
+  /**
+   * Additional website origins (`OPENTAG_WEBSITE_ORIGINS`) that may read the public catalog APIs,
+   * canonical and de-duplicated. Empty when unset; the built-in official origins are implied on the
+   * official deployment and never listed here.
+   */
+  websiteOrigins: readonly string[];
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
   /**
@@ -860,6 +983,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: environment.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED,
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_MCP_ALLOW_LOOPBACK: environment.OPENTAG_MCP_ALLOW_LOOPBACK,
+    OPENTAG_MCP_GOOGLE_CLIENT_ID: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_ID),
+    OPENTAG_MCP_GOOGLE_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_MCP_GOOGLE_CLIENT_SECRET),
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
     OPENTAG_SLACK_CLIENT_ID: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_ID),
@@ -878,6 +1003,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: environment.OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS,
     OPENTAG_PORT: environment.OPENTAG_PORT,
     OPENTAG_PUBLIC_URL: environment.OPENTAG_PUBLIC_URL,
+    OPENTAG_WEBSITE_ORIGINS: environment.OPENTAG_WEBSITE_ORIGINS,
     OPENTAG_OTEL_ENDPOINT: environment.OPENTAG_OTEL_ENDPOINT,
     OPENTAG_OTEL_ENVIRONMENT: environment.OPENTAG_OTEL_ENVIRONMENT,
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
@@ -975,6 +1101,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
     logLevel: parsed.OPENTAG_LOG_LEVEL,
     mcpAllowLoopback: !isHostedEnvironment(parsed.OPENTAG_ENV) && parsed.OPENTAG_MCP_ALLOW_LOOPBACK,
+    ...resolveMcpGoogleOAuth(parsed),
     observability: {
       tracing: {
         endpoint: parsed.OPENTAG_OTEL_ENDPOINT,
@@ -990,6 +1117,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     trustProxy: parsed.OPENTAG_TRUST_PROXY,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
+    websiteOrigins: parsed.OPENTAG_WEBSITE_ORIGINS,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
     internalTools: offersInternalTools(parsed.OPENTAG_ENV, parsed.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED),
     cloudIdentities: resolveCloudIdentitiesConfig(

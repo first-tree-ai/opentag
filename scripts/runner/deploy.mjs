@@ -106,9 +106,9 @@ async function readCaproverPassword({ secret, runCommand }) {
 }
 
 /**
- * One bounded /readyz probe. `ok` requires HTTP 200, the exact Server revision header, and — when
- * `requireRunner` — the exact Runner target hash. Unreachable is a soft failure the bounded wait
- * can retry, never a success.
+ * Prove application readiness and, when pinned, billing readiness at the same Server revision.
+ * Every probe is bounded and requires HTTP 200 and — when `requireRunner` — the exact Runner
+ * target hash. Unreachable is a soft failure the bounded wait can retry, never a success.
  */
 export async function probeReady({
   publicUrl,
@@ -119,31 +119,34 @@ export async function probeReady({
   fetchImpl = fetch,
   timeoutMs = READYZ_TIMEOUT_MS,
 }) {
-  let response;
   try {
-    response = await fetchImpl(`${publicUrl}/${billingRevision ? "cloud-readyz" : "readyz"}`, {
-      method: "GET",
-      headers: { accept: "application/json" },
-      redirect: "manual",
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (billingRevision) {
-      const body = await response.json();
-      if (body.status !== "ready" || body.billing?.revision !== billingRevision)
-        return { ok: false, status: response.status, revision: null, runner: null };
+    const signal = AbortSignal.timeout(timeoutMs);
+    let result;
+    for (const path of billingRevision ? ["readyz", "cloud-readyz"] : ["readyz"]) {
+      const response = await fetchImpl(`${publicUrl}/${path}`, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        redirect: "manual",
+        signal,
+      });
+      const revision = response.headers.get("x-opentag-revision");
+      const runner = response.headers.get("x-opentag-runner-target");
+      result = {
+        ok: response.status === 200 && revision === serverRevision && (!requireRunner || runner === runnerHash),
+        status: response.status,
+        revision,
+        runner,
+      };
+      if (!result.ok) return result;
+      if (path === "cloud-readyz") {
+        const body = await response.json();
+        if (body.status !== "ready" || body.billing?.revision !== billingRevision) return { ...result, ok: false };
+      }
     }
+    return result;
   } catch {
     return { ok: false, status: 0, revision: null, runner: null };
   }
-  const revision = response.headers.get("x-opentag-revision");
-  const runner = response.headers.get("x-opentag-runner-target");
-  const runnerOk = !requireRunner || runner === runnerHash;
-  return {
-    ok: response.status === 200 && revision === serverRevision && runnerOk,
-    status: response.status,
-    revision,
-    runner,
-  };
 }
 
 /**
@@ -203,13 +206,16 @@ async function readState({ server, token, appName, fetchImpl, deadline = null, n
 
 /** Every read-only gate a release must pass before a mutation is even considered. */
 function validateState({ state, release, serverRevision, billingRevision, publicUrl }) {
-  if (state.isBuilding) {
-    throw new Error("CapRover reports an ongoing app build; wait for it to finish before changing the Runner target");
-  }
+  assertAppIdle(state);
   assertRunnerEnvironment({ envVars: state.envVars, channel: release.channel, publicUrl });
   assertBillingEnvironment({ definition: state.definition, envVars: state.envVars, billingRevision });
   assertServerImage({ deployedImageName: deployedImageOf(state.definition), serverRevision });
   return { image: state.envVars.get(RUNNER_IMAGE_KEY) ?? null, version: state.envVars.get(RUNNER_VERSION_KEY) ?? null };
+}
+
+function assertAppIdle(state) {
+  if (state.isBuilding)
+    throw new Error("CapRover reports an ongoing app build; wait before deploying or changing the Runner target");
 }
 
 function assertReadyGate(probe, serverRevision) {
@@ -384,8 +390,8 @@ export async function waitForAppIdle({
 }
 
 /**
- * Runs the deployment gate (`check`) or the gated Runner switch (`apply`). Returns the non-secret
- * summary that is also what the CLI prints.
+ * Checks rollout safety before image deployment (`preflight`), verifies a deployed image (`check`),
+ * or switches the Runner (`apply`). Returns the non-secret summary that the CLI prints.
  */
 export async function runDeploy({
   mode,
@@ -423,6 +429,10 @@ export async function runDeploy({
     envVars: initial.envVars,
     billingRevision,
   });
+  if (mode === "preflight") {
+    assertAppIdle(initial);
+    return buildSummary({ mode, app: config.app, release, serverRevision, runnerHash });
+  }
   // Stop-first replacement may drain a full cloud request before the next process becomes ready.
   const rolloutDeadlineMs = deadlineMs ?? Math.max(300_000, cloudTimeout + 60_000);
   if (mode === "apply" && initial.isBuilding) {
@@ -516,8 +526,8 @@ export async function runDeploy({
 
 export function parseDeployArgv(argv) {
   const mode = argv[0];
-  if (mode !== "check" && mode !== "apply") {
-    throw new Error("usage: deploy.mjs <check|apply> --release <verified JSON> --server-revision <40hex>");
+  if (mode !== "preflight" && mode !== "check" && mode !== "apply") {
+    throw new Error("usage: deploy.mjs <preflight|check|apply> --release <verified JSON> --server-revision <40hex>");
   }
   const options = {};
   for (let index = 1; index < argv.length; index += 1) {

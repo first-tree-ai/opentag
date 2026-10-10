@@ -1,3 +1,4 @@
+import { RuntimeModelSchema, RuntimeReasoningEffortSchema } from "@opentag/shared";
 import { AgentRuntimeError } from "./errors.js";
 import {
   AGENT_RUNTIME_BINDING_MAX_BYTES,
@@ -7,10 +8,22 @@ import {
   type AgentHostedTools,
   type AgentInput,
   type AgentPromptRequest,
+  type AgentRunConfiguration,
   type AgentRuntimeBinding,
   type AgentRuntimeManifest,
   type AgentRuntimePolicy,
 } from "./types.js";
+
+export function assertConfigurationStrings(configuration: AgentRunConfiguration): void {
+  for (const [value, schema, field] of [
+    [configuration.model, RuntimeModelSchema, "model"],
+    [configuration.reasoningEffort, RuntimeReasoningEffortSchema, "reasoning effort"],
+  ] as const) {
+    if (value !== undefined && (!schema.safeParse(value).success || !value.trim())) {
+      throw new AgentRuntimeError("configuration_invalid", `${field} must be a non-empty bounded string`);
+    }
+  }
+}
 
 export function assertIdentifier(value: string, field: string): void {
   if (

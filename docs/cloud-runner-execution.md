@@ -44,7 +44,14 @@ permission before admitting work/results.
 
 Cloud provider readiness alone does not make a Sandbox ready. The authenticated Runner must
 prove native execution, tool versions, image Runner version, and filesystem/credential isolation.
-A replaced socket cannot publish readiness or finish another connection's command.
+Every launch and every post-cleanup reset re-runs that probe in full: real native Node execution,
+a bounded read of the image identity plus the locked Pi package metadata from the immutable
+rootfs (shape-checked and required to match the identity's Pi package/version, with the fixed Pi
+shim and its declared CLI entry verified accessible), and fresh filesystem/credential/
+lower-rootfs isolation canaries. The runtime probe never launches the Pi CLI: the release-time
+offline suite already executed it and compared its exact version, and a metadata read is never
+treated as proof of full Pi/provider execution. A replaced socket cannot publish readiness or
+finish another connection's command.
 
 The current account API exposes `GET /api/v1/sandboxes/:sandboxId/runner` and POST suffixes
 `/runner/start`, `/runner/stop`, `/runner/acceptance`. Acceptance is a bounded offline or DeepSeek
@@ -135,6 +142,16 @@ replacement allocation is permitted but cannot execute before verified restorati
 environment rejects input explicitly. Transient model/Runner unavailability remains retryable within the input
 deadline, with exponential delays from two seconds to a thirty-second cap using the existing
 attempt counter. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
+
+Once the current Runner connection and its verified allocation are both ready, the allocation
+service publishes a composition-injected notification. The IM worker wakes already-due initial inputs
+and advances undispatched pending inputs waiting on environment/Runner readiness for that exact
+Session and allocation, then claims that Session immediately through the existing ordering, custody
+and lane fences. A readiness
+recheck after recording failure closes the ready-before-backoff-write race. Notifications coalesce;
+a ready-triggered attempt that still fails retains bounded backoff. Model/capacity failures, frozen
+dispatches and claimed or accepted work are not reset. Missed notifications retain the regular scan
+and retry fallback; repeated readiness reports on one connection do not repeatedly wake the queue.
 
 Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
@@ -255,11 +272,14 @@ For E4, the Server additionally requires these model settings when enabling exec
 Cloud model choices come from the Router's authenticated `GET /models` response using that same
 base URL and credential. The Router applies tenant permissions and model availability. The
 Server uses one bounded, short-lived catalog for model selection, configuration validation,
-dispatch and model grants. An Agent without an explicit model uses the first returned model;
-an explicit model must be in the current catalog. Failed refreshes and empty lists are unavailable,
-never a fallback to the Local Pi model suggestions. Router publishes native limits through
-`context_window` and `max_output_tokens`; entries without valid limits are unavailable. With
-billing enabled, the catalog also requires a configured customer rate.
+dispatch and model grants. An Agent without an explicit model uses the catalog default:
+`gemini-3.8-flash` when the validated catalog offers it, otherwise the first validated Router
+model. The Server publishes the selected default first and preserves the relative order of the
+other models for client compatibility; an explicit model must be in the current
+catalog. Failed refreshes and empty lists are unavailable,
+never a fallback to the Local Pi model suggestions.
+Router publishes native limits through `context_window` and `max_output_tokens`; entries without
+valid limits are unavailable. Customer token rates come from the account’s pricing plan, regardless of model.
 
 The model settings page tests hosted model connectivity with one short Server-to-Router request.
 This consumes a small model request but creates no Session, Sandbox or Instance, and does not add
@@ -315,6 +335,8 @@ identities-on/flag-`false` combination.
 | `OPENTAG_CLOUD_RUNNER_VPC_NETWORK`, `…_VPC_SUBNET` | Direct VPC attachment |
 | `OPENTAG_CLOUD_RUNNER_EXECUTION_TAG` | Tag selecting provisioned execution-only firewall rules |
 | `OPENTAG_CLOUD_RUNNER_API_TIMEOUT_MS` | Per-call deadline; default 30000 |
+| `OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED` | Background image preparation; defaults on in staging/prod, off in dev |
+| `OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS` | Retry/leadership check cadence; default 60000; successful leaders do not repeat probes |
 | `OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS` | Bounded create reconciliation; default 120000 |
 | `OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS` | Scoped token TTL; default 1800, renewed on current connections |
 | `OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS` | Fixture execution deadline; default 900000 |

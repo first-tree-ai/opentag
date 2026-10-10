@@ -2,7 +2,8 @@ import { type ChildProcessWithoutNullStreams, execFile } from "node:child_proces
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
-import { getRuntimeConfigurationOptions } from "@opentag/shared";
+import { AgentRuntimeOptionsSchema, RuntimeModelSchema, RuntimeReasoningEffortSchema } from "@opentag/shared";
+import { z } from "zod";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -11,11 +12,13 @@ import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
   type AgentHostedTools,
+  type AgentInteractionResponse,
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
+  type AgentRuntimeConfigurationOptionsRequest,
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,
   type AgentRuntimeManifest,
@@ -28,12 +31,14 @@ import {
 } from "../../agent-runtime/types.js";
 import {
   assertBinding,
+  assertConfigurationStrings,
   assertHostedTools,
   assertJsonValue,
   assertSystemPrompt,
   runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
+import { claudePermissionRules } from "../native-permissions.js";
 import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
 import {
   ClaudeCodeProcess,
@@ -52,11 +57,10 @@ const CLAUDE_CODE_PROVIDER_ID = "claude-code";
  * settings the runtime never loads and report a false-positive `ready` while every turn fails
  * authentication.
  *
- * There is no flag for adding a skill directory, so `project` is what lets a Session see the
- * Context Tree skills in `<workspace>/.claude/skills`. It also admits that directory's settings,
- * hooks, agents, commands, and CLAUDE.md, all scoped to OpenTag's own private workspace.
+ * Agent Home is model-writable, so none of its settings may execute hooks, credential helpers,
+ * or environment overrides. Skills are loaded separately through an owned skills-only plugin.
  */
-const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", "project"] as const;
+const CLAUDE_CODE_SETTING_SOURCES = ["--setting-sources", ""] as const;
 const logger = createLogger("provider-claude-code-runtime");
 
 export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
@@ -85,12 +89,14 @@ interface ClaudeCodeProviderConfiguration {
 }
 
 interface ClaudeCodeRuntimeOptions {
+  readonly policy: AgentRuntimePolicy;
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
   readonly createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly emptyNativeToolAllowList?: boolean;
   readonly eventSink: AgentRuntimeEventSink;
   readonly hostedTools?: AgentHostedTools;
+  readonly skillPaths: readonly string[];
   readonly resume: boolean;
   readonly startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly systemPrompt: string;
@@ -152,11 +158,14 @@ interface ToolState {
 }
 
 export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
+  readonly #policy: AgentRuntimePolicy;
+  readonly #permissions = new Map<string, Readonly<Record<string, unknown>>>();
   readonly #sessionId: string;
   readonly #configuration?: AgentRunConfiguration;
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly #emptyNativeToolAllowList: boolean;
   readonly #hostedTools?: AgentHostedTools;
+  readonly #skillPaths: readonly string[];
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly #systemPrompt: string;
   readonly #textBlocks = new Map<string, TextBlockState>();
@@ -176,15 +185,17 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   constructor(options: ClaudeCodeRuntimeOptions) {
     super({
       manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
-      capabilities: { steer: "unsupported", interactions: "unsupported" },
+      capabilities: { steer: "unsupported", interactions: "supported" },
       eventSink: options.eventSink,
       binding: options.binding,
     });
     this.#sessionId = parseClaudeCodeBinding(options.binding);
+    this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#createProcess = options.createProcess;
     this.#emptyNativeToolAllowList = options.emptyNativeToolAllowList === true;
     this.#hostedTools = options.hostedTools;
+    this.#skillPaths = options.skillPaths;
     this.#startHostedToolBridge = options.startHostedToolBridge;
     this.#systemPrompt = options.systemPrompt;
     this.#sessionExists = options.resume;
@@ -220,6 +231,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           this.#hostedTools,
           request.runId,
           context.signal,
+          this.#skillPaths,
           mcpGateway,
         );
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
@@ -270,6 +282,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       this.#textBlocks.clear();
       this.#tools.clear();
       this.#toolBlocks.clear();
+      this.#permissions.clear();
     }
   }
 
@@ -280,6 +293,24 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
 
   protected async closeProvider(): Promise<void> {
     await this.#process?.close();
+  }
+
+  protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {
+    const input = this.#permissions.get(response.requestId);
+    if (!input || !this.#process?.send || response.kind !== "approval")
+      throw new AgentRuntimeError("interaction_not_found", "Claude Code approval is no longer pending");
+    await this.#process.send({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: response.requestId,
+        response:
+          response.decision === "accept"
+            ? { behavior: "allow", updatedInput: input }
+            : { behavior: "deny", message: "The user declined this action." },
+      },
+    });
+    this.#permissions.delete(response.requestId);
   }
 
   #arguments(request: AgentPromptRequest, hostedToolBridge: ClaudeCodeHostedToolBridge): readonly string[] {
@@ -294,15 +325,27 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "--verbose",
       "--include-partial-messages",
       "--no-chrome",
-      // Project MCP servers admitted by these sources stay excluded by `--strict-mcp-config` below.
       ...CLAUDE_CODE_SETTING_SOURCES,
+      "--plugin-dir",
+      hostedToolBridge.pluginPath,
       "--strict-mcp-config",
       "--mcp-config",
       hostedToolBridge.configPath,
-      ...(hostedToolBridge.allowedTools.length > 0 ? ["--allowedTools", ...hostedToolBridge.allowedTools] : []),
+      ...(this.#policy.approvals === "never" && hostedToolBridge.allowedTools.length > 0
+        ? ["--allowedTools", ...hostedToolBridge.allowedTools]
+        : []),
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
-      "bypassPermissions",
+      this.#policy.approvals === "never" ? "bypassPermissions" : "auto",
+      ...(this.#policy.approvals === "never" ? [] : ["--permission-prompt-tool", "stdio"]),
+      "--settings",
+      JSON.stringify({
+        disableAllHooks: true,
+        disableSkillShellExecution: true,
+        ...(this.#policy.approvals === "never"
+          ? {}
+          : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? []) }),
+      }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
@@ -318,7 +361,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#claimTerminalAtIngress(message);
     const next = this.#eventTail.then(async () => {
       if (!this.#context || this.#providerFailure) return;
-      await this.#handleMessage(message);
+      if (message.type === "control_request" || message.type === "control_cancel_request")
+        await this.#handleControlMessage(message);
+      else await this.#handleMessage(message);
     });
     this.#eventTail = next.catch((error: unknown) => {
       logger.debug({ code: "event_processing_failed", error: String(error) }, "Claude Code event processing failed");
@@ -339,6 +384,28 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       );
       // The serial event queue preserves the authoritative fail-closed error path.
     }
+  }
+
+  async #handleControlMessage(message: Readonly<Record<string, unknown>>): Promise<void> {
+    const type = message.type;
+    if (type === "control_request") {
+      const id = requireString(message.request_id, "Claude Code control request has no id");
+      const request = requireRecord(message.request, "Claude Code control request is invalid");
+      if (request.subtype !== "can_use_tool" || !this.#process?.send)
+        throw protocolError("Unsupported Claude Code control request");
+      const input = requireRecord(request.input, "Claude Code permission input is invalid");
+      this.#permissions.set(id, input);
+      await this.#requireContext().requestInteraction({
+        requestId: id,
+        kind: "approval",
+        title: `Approve ${requireString(request.tool_name, "Claude Code permission tool is invalid")}`,
+        details: toJsonValue(input),
+      });
+      return;
+    }
+    const id = requireString(message.request_id, "Claude Code cancelled request has no id");
+    this.#permissions.delete(id);
+    await this.#requireContext().resolveInteraction(id, "cancel");
   }
 
   async #handleMessage(message: Readonly<Record<string, unknown>>): Promise<void> {
@@ -684,7 +751,10 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       const result = await runWithAbortSignal(this.#probeRunner, request.signal);
       version = result.version;
       if (!result.streamJson) {
-        issues.push({ code: "version_incompatible", message: "Claude Code stream-json mode is unavailable" });
+        issues.push({
+          code: "version_incompatible",
+          message: "Claude Code requires stream-json, auto mode, and stdio permission prompts",
+        });
       }
       if (!result.credential) {
         issues.push({ code: "credential_missing", message: "Claude Code credentials were not found" });
@@ -697,6 +767,76 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       issues.push(issue);
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
+  }
+
+  async getConfigurationOptions(request: AgentRuntimeConfigurationOptionsRequest) {
+    assertConfigurationStrings({ model: request.model });
+    const signal = request.signal
+      ? AbortSignal.any([request.signal, AbortSignal.timeout(15_000)])
+      : AbortSignal.timeout(15_000);
+    signal.throwIfAborted();
+    const process = this.#createProcess(request.cwd, [
+      "--print",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--no-session-persistence",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+      "--settings",
+      '{"disableAllHooks":true}',
+      ...CLAUDE_CODE_SETTING_SOURCES,
+    ]);
+    const requestId = randomUUID();
+    let execution: Promise<unknown> | undefined;
+    try {
+      const response = await runWithAbortSignal(
+        () =>
+          new Promise<unknown>((resolve, reject) => {
+            execution = process.execute(
+              { type: "control_request", request_id: requestId, request: { subtype: "initialize", hooks: {} } },
+              (message) => {
+                if (message.type !== "control_response") return;
+                const envelope = record(message.response);
+                if (envelope?.request_id !== requestId) return;
+                if (envelope.subtype !== "success") reject(protocolError("Claude Code initialization failed"));
+                else resolve(envelope.response);
+              },
+              signal,
+            );
+            // execute waits for process exit; initialization itself has no model turn/result.
+            void execution.then(() => reject(protocolError("Claude Code exited before initialization")), reject);
+          }),
+        signal,
+      );
+      const models = z
+        .object({
+          models: z.array(
+            z.object({
+              value: RuntimeModelSchema,
+              supportsEffort: z.boolean().optional(),
+              supportedEffortLevels: z.array(RuntimeReasoningEffortSchema).optional(),
+            }),
+          ),
+        })
+        .parse(response).models;
+      const selected = models.find((entry) => entry.value === (request.model ?? "default"));
+      return AgentRuntimeOptionsSchema.parse({
+        modelSuggestions: [...new Set(models.filter((entry) => entry.value !== "default").map((entry) => entry.value))],
+        reasoningEffortAllowedValues:
+          request.model && selected?.supportsEffort === false
+            ? []
+            : request.model
+              ? (selected?.supportedEffortLevels ?? null)
+              : null,
+      });
+    } finally {
+      await process.close();
+      await execution?.catch(() => undefined);
+    }
   }
 
   create(request: CreateAgentRuntimeRequest): Promise<ClaudeCodeAgentRuntime> {
@@ -722,6 +862,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new ClaudeCodeAgentRuntime({
+        policy: request.policy,
         binding,
         configuration: request.configuration,
         createProcess: (args) =>
@@ -734,6 +875,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         emptyNativeToolAllowList: isEmptyNativeToolAllowList(request.policy),
         eventSink: request.eventSink,
         hostedTools: request.hostedTools,
+        skillPaths: request.skillPaths ?? [],
         resume: mode === "resume",
         startHostedToolBridge: this.#startHostedToolBridge,
         systemPrompt: request.systemPrompt,
@@ -813,6 +955,8 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--mcp-config") &&
     helpResult.stdout.includes("--strict-mcp-config") &&
     helpResult.stdout.includes("--allowedTools") &&
+    /\bauto\b/.test(helpResult.stdout) &&
+    helpResult.stdout.includes("--permission-prompt-tool") &&
     helpResult.stdout.includes("--append-system-prompt");
   const credential =
     hasCredentialEnvironment(environment) || (await probeClaudeCodeCredential(command, execution, signal));
@@ -886,11 +1030,8 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   for (const root of request.workspace.writableRoots ?? []) {
     if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
   }
-  if (request.policy.approvals !== "never") {
-    throw new AgentRuntimeError(
-      "configuration_invalid",
-      "Claude Code requires approvals=never because interactive control is unsupported",
-    );
+  if (!["never", "on-request"].includes(request.policy.approvals)) {
+    throw new AgentRuntimeError("configuration_invalid", "Claude Code supports approvals=never or on-request");
   }
   if (request.policy.fileSystem !== "unrestricted") {
     throw new AgentRuntimeError(
@@ -930,15 +1071,7 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
 
 function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
   if (!configuration) return;
-  if (configuration.model !== undefined && configuration.model.trim().length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "model must be non-empty");
-  }
-  if (
-    configuration.reasoningEffort &&
-    !getRuntimeConfigurationOptions("claude-code").reasoningEffortAllowedValues.includes(configuration.reasoningEffort)
-  ) {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code reasoning effort is unsupported");
-  }
+  assertConfigurationStrings(configuration);
   parseProviderConfiguration(configuration.provider);
 }
 

@@ -21,6 +21,15 @@ export interface CreateLoggerOptions {
   destination?: "configured" | "stderr" | "file" | "dual";
 }
 
+/**
+ * The resolved environment of the service that owns the log directory. The daemon service supplies
+ * its `config/daemon.env` result here, so the logger reads the same environment the rest of the
+ * daemon runs with instead of the raw process environment.
+ */
+export interface ClientLoggerServiceOptions {
+  environment?: Readonly<Record<string, string | undefined>>;
+}
+
 const LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
 const SENSITIVE_KEYS = [
   "password",
@@ -44,18 +53,30 @@ const REDACT_PATHS = [
 ];
 
 let serviceDirectory: string | undefined;
+let serviceEnvironment: Readonly<Record<string, string | undefined>> | undefined;
 let serviceStream: RotatingFileStream | undefined;
 let serviceDestination: DestinationStream | undefined;
 let rootLogger: PinoLogger | undefined;
 let clientLoggerContext: ClientLogBindings = {};
 
-export function configureClientLoggerForService(logDirectory: string): void {
+export function configureClientLoggerForService(logDirectory: string, options: ClientLoggerServiceOptions = {}): void {
   const canonicalDirectory = resolve(logDirectory);
   if (serviceDirectory && serviceDirectory !== canonicalDirectory) {
     throw new Error("The Client logger is already configured for a different log directory");
   }
-  if (serviceDirectory) return;
+  if (serviceDirectory) {
+    // The CLI configures the log directory before any command runs, while the daemon service loads
+    // `config/daemon.env` only inside `daemon service-run`. A later call may therefore supply the
+    // resolved service environment; applying it rebuilds the root logger so the next record is
+    // written at the configured level.
+    if (options.environment && options.environment !== serviceEnvironment) {
+      serviceEnvironment = options.environment;
+      rootLogger = undefined;
+    }
+    return;
+  }
   serviceDirectory = canonicalDirectory;
+  serviceEnvironment = options.environment;
   serviceStream = undefined;
   serviceDestination = undefined;
   rootLogger = undefined;
@@ -76,6 +97,7 @@ export function createLogger(module: string, options: CreateLoggerOptions = {}):
 export function resetClientLoggerForTests(): void {
   serviceStream?.close();
   serviceDirectory = undefined;
+  serviceEnvironment = undefined;
   serviceStream = undefined;
   serviceDestination = undefined;
   rootLogger = undefined;
@@ -89,7 +111,8 @@ function root(): PinoLogger {
 }
 
 function buildRoot(destination: DestinationStream, serviceMode: boolean): PinoLogger {
-  const configured = process.env.OPENTAG_LOG_LEVEL;
+  const environment = serviceEnvironment ?? process.env;
+  const configured = environment.OPENTAG_LOG_LEVEL;
   const validConfigured = configured && LOG_LEVELS.has(configured) ? configured : undefined;
   const level =
     validConfigured ??

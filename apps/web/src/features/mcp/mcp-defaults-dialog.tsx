@@ -44,18 +44,20 @@ function defaultsPatch(base: MCPServer, draft: DefaultsDraft): UpdateMCPServerRe
 export function McpDefaultsDialog({
   serverId,
   onClose,
+  onBack,
   onSaved,
   onDeleted,
 }: {
   serverId: string;
   onClose: () => void;
+  onBack?: () => void;
   onSaved?: (server: MCPServer) => void;
   onDeleted?: () => void;
 }) {
   const detail = useMcpServerDetail(serverId);
   if (!detail.data)
     return (
-      <Dialog className="mcp-form-dialog" title={m.mcp_defaults_action()} onClose={onClose}>
+      <Dialog className="mcp-form-dialog" title={m.mcp_defaults_action()} onClose={onClose} onBack={onBack}>
         {detail.isError ? (
           <div className="grid gap-3">
             <Banner variant="error">{actionError(detail.error, m.common_request_failed())}</Banner>
@@ -77,6 +79,8 @@ export function McpDefaultsDialog({
         return result.data;
       }}
       onClose={onClose}
+      onBack={onBack}
+      onFinished={onBack ?? onClose}
       onSaved={onSaved}
       onDeleted={onDeleted}
     />
@@ -87,6 +91,8 @@ function DefaultsEditor({
   readFailed,
   reload,
   onClose,
+  onBack,
+  onFinished,
   onSaved,
   onDeleted,
 }: {
@@ -94,6 +100,8 @@ function DefaultsEditor({
   readFailed: boolean;
   reload: () => Promise<MCPServerDetail>;
   onClose: () => void;
+  onBack?: () => void;
+  onFinished: () => void;
   onSaved?: (server: MCPServer) => void;
   onDeleted?: () => void;
 }) {
@@ -121,9 +129,9 @@ function DefaultsEditor({
     try {
       const saved = await update.mutateAsync({ mcpServerId: base.id, ...patch });
       onSaved?.(saved);
-      onClose();
+      onFinished();
     } catch (cause) {
-      if (cause instanceof ApiError && cause.code === "MCP_SERVER_REVISION_CONFLICT") setConflict(true);
+      setConflict(cause instanceof ApiError && cause.code === "MCP_SERVER_REVISION_CONFLICT");
       setError(actionError(cause, m.mcp_edit_failed()));
     } finally {
       inFlight.current = false;
@@ -161,7 +169,7 @@ function DefaultsEditor({
     try {
       await remove.mutateAsync(base.id);
       onDeleted?.();
-      onClose();
+      onFinished();
     } catch (cause) {
       setError(actionError(cause, m.mcp_remove_failed()));
       try {
@@ -182,7 +190,8 @@ function DefaultsEditor({
         readFailed={readFailed}
         detail={detail}
         name={base.name}
-        onClose={() => {
+        onClose={onClose}
+        onBack={() => {
           setDeleting(false);
           setError(undefined);
         }}
@@ -196,6 +205,7 @@ function DefaultsEditor({
       title={m.mcp_defaults_title({ server: base.name })}
       description={m.mcp_defaults_scope()}
       onClose={onClose}
+      onBack={onBack}
     >
       <UsedBy detail={detail} />
       <form
@@ -252,7 +262,7 @@ function DefaultsEditor({
             </div>
           </McpDisclosure>
         </fieldset>
-        <McpFooter onClose={onClose} busy={busy}>
+        <McpFooter onClose={onFinished} busy={busy}>
           <Button type="submit" disabled={busy || !dirty || !valid || conflict || readFailed} loading={busy}>
             {m.mcp_defaults_save()}
           </Button>
@@ -305,6 +315,7 @@ function DeleteConfirmation({
   detail,
   name,
   onClose,
+  onBack,
   onDelete,
 }: {
   busy: boolean;
@@ -313,6 +324,7 @@ function DeleteConfirmation({
   detail: MCPServerDetail;
   name: string;
   onClose: () => void;
+  onBack: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -323,10 +335,11 @@ function DeleteConfirmation({
       title={m.mcp_delete_title({ server: name })}
       description={m.mcp_delete_description()}
       onClose={onClose}
+      onBack={onBack}
     >
       {error ? <Banner variant="error">{error}</Banner> : null}
       {detail.server.boundAgentCount > 0 ? <p className="mt-3 text-sm">{m.mcp_delete_blocked()}</p> : null}
-      <McpFooter onClose={onClose} busy={busy}>
+      <McpFooter onClose={onBack} busy={busy}>
         <Button
           variant="danger"
           disabled={busy || readFailed || detail.server.boundAgentCount > 0}

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Compile the MCP marketplace catalog from its committed YAML sources into a committed TypeScript
- * module.
+ * Compile the MCP marketplace catalog from its committed YAML sources and icons in
+ * `packages/mcp-presets` into a committed TypeScript module in the same package.
  *
  * The sources are edited by an operator; this script is what turns that edit into a validated
  * artifact. It mirrors `generate-web-theme.mjs`: run it to write the module, run it with `--check` to
@@ -9,19 +9,22 @@
  *
  * Every catalog invariant is enforced here rather than at a user's click: an endpoint the outbound
  * policy would refuse, a name the Server would reject, an undeclared or unreferenced category, a
- * duplicate id, a missing locale, or a missing icon all fail the build.
+ * duplicate id, a missing locale, or a missing icon all fail the build. Icon bytes are embedded as
+ * data URLs so the generated module carries no asset imports and builds with plain `tsdown`.
  *
  * It runs under `tsx` because it reads the shared runtime schemas from source: `pnpm check` runs
  * before `pnpm build`, so `packages/shared/dist` does not exist yet.
  */
-import { access, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { CreateMCPServerRequestSchema, MCPServerUrlSchema } from "../packages/shared/src/mcp.ts";
 import { checkOutboundUrl } from "../packages/shared/src/mcp-outbound-url.ts";
 
 const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
-const ICON_PATTERN = /^[a-z0-9][a-z0-9-]*\.svg$/;
+const ICON_PATTERN = /^[a-z0-9][a-z0-9-]*\.(?:svg|png)$/;
+/** `biome.json` `formatter.lineWidth`; the emitted module must already be in biome's format. */
+const PRINT_WIDTH = 120;
 
 /** `--root` points the generator at a fixture tree; a script test sets it so it never touches the repo. */
 function flag(name) {
@@ -31,11 +34,11 @@ function flag(name) {
 
 const overrideRoot = flag("--root");
 const root = overrideRoot ? `${overrideRoot.replace(/[/\\]+$/, "")}/` : fileURLToPath(new URL("..", import.meta.url));
-const catalogDirectory = `${root}apps/web/src/features/mcp/catalog`;
-const iconDirectory = `${root}apps/web/src/assets/mcp`;
+const catalogDirectory = `${root}packages/mcp-presets`;
+const iconDirectory = `${catalogDirectory}/icons`;
 const categoriesPath = `${catalogDirectory}/mcp-categories.yaml`;
 const entriesPath = `${catalogDirectory}/mcp-catalog.yaml`;
-const targetPath = `${catalogDirectory}/mcp-catalog.gen.ts`;
+const targetPath = `${catalogDirectory}/src/mcp-catalog.gen.ts`;
 const localeSettingsPath = `${root}apps/web/project.inlang/settings.json`;
 
 function isRecord(value) {
@@ -102,6 +105,39 @@ function readOrder(value, at, violations) {
     return undefined;
   }
   return value;
+}
+
+/** The bounds `StartMCPOAuthRequestSchema` enforces on the start request's `scopes`. */
+const MAX_OAUTH_SCOPES = 64;
+const MAX_OAUTH_SCOPE_LENGTH = 255;
+
+/**
+ * The optional `oauthScopes` a card's OAuth start requests, validated against the same bounds the
+ * Server's start request enforces so a compiled catalog can never fail a click.
+ */
+function readOAuthScopes(row, at, violations) {
+  if (row.oauthScopes === undefined) return undefined;
+  if (!Array.isArray(row.oauthScopes) || row.oauthScopes.length === 0) {
+    violations.push(`${at}.oauthScopes: must be a non-empty list of scope strings`);
+    return undefined;
+  }
+  if (row.oauthScopes.length > MAX_OAUTH_SCOPES) {
+    violations.push(`${at}.oauthScopes: at most ${MAX_OAUTH_SCOPES} scopes are allowed`);
+    return undefined;
+  }
+  const scopes = [];
+  for (const [index, scope] of row.oauthScopes.entries()) {
+    if (typeof scope !== "string" || scope.trim().length === 0) {
+      violations.push(`${at}.oauthScopes[${index}]: must be a non-empty scope string`);
+      return undefined;
+    }
+    if (scope.length > MAX_OAUTH_SCOPE_LENGTH) {
+      violations.push(`${at}.oauthScopes[${index}]: must be at most ${MAX_OAUTH_SCOPE_LENGTH} characters`);
+      return undefined;
+    }
+    scopes.push(scope);
+  }
+  return scopes;
 }
 
 function collectCategories(rows, locales, violations) {
@@ -186,8 +222,11 @@ function validateCatalogMembership(row, at, categoryIds, violations) {
   if (typeof row.website !== "string" || !isHttpUrl(row.website)) {
     violations.push(`${at}.website: must be an absolute http(s) URL`);
   }
+  if (row.iconIsOfficial !== undefined && typeof row.iconIsOfficial !== "boolean") {
+    violations.push(`${at}.iconIsOfficial: must be a boolean when supplied`);
+  }
   if (typeof row.icon !== "string" || !ICON_PATTERN.test(row.icon)) {
-    violations.push(`${at}.icon: must be a lowercase SVG file name`);
+    violations.push(`${at}.icon: must be a lowercase SVG or PNG file name`);
   }
 }
 
@@ -206,14 +245,15 @@ function collectEntries(rows, categoryIds, locales, violations) {
     const title = readLocalized(row.title, `${at}.title`, locales, violations);
     const description = readLocalized(row.description, `${at}.description`, locales, violations);
     const order = readOrder(row.order, `${at}.order`, violations);
+    const oauthScopes = readOAuthScopes(row, at, violations);
     if (!title || !description || order === undefined) return;
-    entries.push(catalogEntryFrom(row, id, title, description, order));
+    entries.push(catalogEntryFrom(row, id, title, description, order, oauthScopes));
   });
   return entries;
 }
 
 /** The validated fields, read into the shape the generated module carries. */
-function catalogEntryFrom(row, id, title, description, order) {
+function catalogEntryFrom(row, id, title, description, order, oauthScopes) {
   return {
     id,
     name: typeof row.name === "string" ? row.name : "",
@@ -224,28 +264,44 @@ function catalogEntryFrom(row, id, title, description, order) {
     category: row.category,
     website: typeof row.website === "string" ? row.website : "",
     icon: typeof row.icon === "string" ? row.icon : "",
+    iconIsOfficial: row.iconIsOfficial === true,
     authHeader: typeof row.authHeader === "string" ? row.authHeader : undefined,
     authScheme: typeof row.authScheme === "string" ? row.authScheme : undefined,
     extraHeaders: isRecord(row.extraHeaders) ? row.extraHeaders : undefined,
+    oauthScopes,
     order,
   };
 }
 
-/** Verify every referenced icon exists, and reserve one import identifier per distinct file. */
+/** Verify every referenced icon exists, and read its bytes into the data URL the module embeds. */
 async function resolveIcons(entries, violations) {
-  const identifiers = new Map();
+  const urls = new Map();
   const files = [...new Set(entries.map((entry) => entry.icon))].sort();
   for (const file of files) {
     try {
-      await access(`${iconDirectory}/${file}`);
+      const bytes = await readFile(`${iconDirectory}/${file}`);
+      const mime = file.endsWith(".png") ? "image/png" : "image/svg+xml";
+      urls.set(file, `data:${mime};base64,${bytes.toString("base64")}`);
     } catch {
-      violations.push(`${entriesPath}: icon "${file}" does not exist under apps/web/src/assets/mcp/`);
-      continue;
+      violations.push(`${entriesPath}: icon "${file}" does not exist under packages/mcp-presets/icons/`);
     }
-    const base = file.replace(/\.svg$/, "").replace(/-([a-z0-9])/g, (_match, character) => character.toUpperCase());
-    identifiers.set(file, `${/^[a-z]/.test(base) ? base : `icon${base}`}IconUrl`);
   }
-  return identifiers;
+  return urls;
+}
+
+/**
+ * The `oauthScopes` lines for one entry, wrapped the way the formatter would wrap them.
+ *
+ * Inline while the array fits the line width, one scope per line past it. A fixed inline emission
+ * let `biome check` reformat the generated module, which the drift check then reported as an
+ * out-of-date catalog.
+ */
+function oauthScopeLines(entry) {
+  if (entry.oauthScopes === undefined) return [];
+  const items = entry.oauthScopes.map((scope) => JSON.stringify(scope)).join(", ");
+  const inline = `    oauthScopes: [${items}],`;
+  if (inline.length <= PRINT_WIDTH) return [inline];
+  return ["    oauthScopes: [", ...entry.oauthScopes.map((scope) => `      ${JSON.stringify(scope)},`), "    ],"];
 }
 
 function localizedLines(prefix, value, locales, indent) {
@@ -266,19 +322,31 @@ function emitModule(categories, entries, locales, icons) {
   );
 
   const iconFiles = [...new Set(orderedEntries.map((entry) => entry.icon))].filter((file) => icons.has(file)).sort();
-  const iconImports = iconFiles.map((file) => `import ${icons.get(file)} from "../../../assets/mcp/${file}";`);
+  const iconLines = iconFiles.map((file) => {
+    const key = JSON.stringify(file);
+    const value = JSON.stringify(icons.get(file));
+    const single = `  ${key}: ${value},`;
+    return single.length <= PRINT_WIDTH ? single : `  ${key}:\n    ${value},`;
+  });
+  const localeUnion = locales.map((locale) => JSON.stringify(locale)).join(" | ");
 
   const lines = [
     "/**",
-    " * Generated by scripts/generate-mcp-catalog.mjs from mcp-categories.yaml and mcp-catalog.yaml.",
+    " * Generated by scripts/generate-mcp-catalog.mjs from mcp-categories.yaml, mcp-catalog.yaml, and icons/*.",
     " * Do not edit by hand. Run `pnpm catalog:generate`.",
     " */",
     'import type { MCPAuthKind } from "@opentag/shared/browser";',
-    ...iconImports,
-    'import type { Locale } from "../../../i18n/locale.js";',
+    "",
+    "/** The locales the Web App supports, taken from its i18n project settings. */",
+    `export type McpCatalogLocale = ${localeUnion};`,
     "",
     "/** Card and tab copy. Every supported locale is required, so a card never falls back silently. */",
-    "export type McpCatalogLocalizedText = Record<Locale, string>;",
+    "export type McpCatalogLocalizedText = Record<McpCatalogLocale, string>;",
+    "",
+    "/** The card marks, embedded as data URLs: one declaration per distinct icon file. */",
+    "export const MCP_CATALOG_ICON_URLS = {",
+    ...iconLines,
+    "} as const;",
     "",
     "export type McpCatalogCategory = {",
     "  id: string;",
@@ -296,9 +364,11 @@ function emitModule(categories, entries, locales, icons) {
     "  authHeader?: string;",
     "  authScheme?: string;",
     "  extraHeaders?: Record<string, string>;",
+    "  oauthScopes?: string[];",
     "  category: string;",
     "  website: string;",
     "  iconUrl: string;",
+    "  iconIsOfficial?: boolean;",
     "  order: number;",
     "};",
     "",
@@ -330,10 +400,12 @@ function emitModule(categories, entries, locales, icons) {
       const sorted = Object.fromEntries(Object.entries(entry.extraHeaders).sort(([a], [b]) => a.localeCompare(b)));
       lines.push(`    extraHeaders: ${JSON.stringify(sorted)},`);
     }
+    lines.push(...oauthScopeLines(entry));
     lines.push(
       `    category: ${JSON.stringify(entry.category)},`,
       `    website: ${JSON.stringify(entry.website)},`,
-      `    iconUrl: ${icons.get(entry.icon)},`,
+      `    iconUrl: MCP_CATALOG_ICON_URLS[${JSON.stringify(entry.icon)}],`,
+      ...(entry.iconIsOfficial ? ["    iconIsOfficial: true,"] : []),
       `    order: ${entry.order},`,
       "  },",
     );

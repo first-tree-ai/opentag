@@ -166,6 +166,7 @@ function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
     reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
     maxDurationMs: row.maxDurationMs,
+    permissions: row.permissions,
   });
 }
 
@@ -282,6 +283,16 @@ function addUsageTokenCounts(
   }
 }
 
+function assertLocalPermissions(kind: "local" | "cloud" | undefined, provider: string, permissions: unknown) {
+  if ((kind === "cloud" || provider === "pi") && permissions !== undefined)
+    throw new AgentServiceError(
+      "VALIDATION_ERROR",
+      "deterministic",
+      "Cloud agents and Pi always run with full permissions",
+      400,
+    );
+}
+
 function runtimeConfigsEqual(
   left: AgentRuntimeConfigRow,
   right: ReturnType<typeof resolveAgentRuntimeConfig>,
@@ -292,7 +303,9 @@ function runtimeConfigsEqual(
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.instructions === right.instructions &&
-    left.maxDurationMs === right.maxDurationMs
+    left.maxDurationMs === right.maxDurationMs &&
+    JSON.stringify(left.permissions.allowCommands) === JSON.stringify(right.permissions.allowCommands) &&
+    left.permissions.approvalPolicy === right.permissions.approvalPolicy
   );
 }
 
@@ -305,6 +318,7 @@ function creationIntentFingerprint(input: CreateAgentRequest): string {
           maxDurationMs: runtimeConfig.maxDurationMs,
           model: runtimeConfig.model,
           reasoningEffort: runtimeConfig.reasoningEffort,
+          permissions: runtimeConfig.permissions,
         }
       : undefined;
   return createHash("sha256")
@@ -454,6 +468,7 @@ export class AgentService {
           ? await this.#lockOwnedComputer(transaction, callerUserId, input.computerId)
           : undefined;
         assertCloudAgentBinding(this.#cloudIdentitiesEnabled, input.runtimeProvider, computer?.kind);
+        assertLocalPermissions(computer?.kind, input.runtimeProvider, input.runtimeConfig?.permissions);
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${callerUserId}:${input.name}`}, 0))`,
         );
@@ -860,7 +875,8 @@ export class AgentService {
       const tokenCounts =
         row.executionOrigin === "cloud"
           ? {
-              measured: row.inputTokens !== null && row.outputTokens !== null,
+              // The ledger measures model calls, not tasks; Runner reports cannot prove cloud coverage.
+              measured: false,
               inputTokens: 0,
               cachedInputTokens: 0,
               outputTokens: 0,
@@ -947,6 +963,11 @@ export class AgentService {
     // Validate an explicit Cloud model choice BEFORE the mutation transaction: no Agent row lock is
     // held across the catalog's network read, and a rejected choice leaves no revision writes.
     await this.#assertExplicitCloudModelChoiceForAgent(callerUserId, agentId, input.runtimeConfig?.model);
+    if (input.runtimeConfig?.permissions) {
+      const scope = await this.#resolveAgentScope(this.#database, callerUserId, agentId);
+      const kind = scope.computerId ? await this.#computerKind(this.#database, scope.computerId) : "local";
+      assertLocalPermissions(kind, scope.agent.runtimeProvider, input.runtimeConfig.permissions);
+    }
     const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
@@ -1304,6 +1325,7 @@ export class AgentService {
     const projection = toRuntimeConfig(current);
     const next = resolveAgentRuntimeConfig({
       contextTrees: projection.contextTrees,
+      permissions: input?.permissions ?? projection.permissions,
       model: input?.model !== undefined ? input.model : projection.model,
       reasoningEffort: input?.reasoningEffort !== undefined ? input.reasoningEffort : projection.reasoningEffort,
       instructions: input?.instructions ?? projection.instructions,

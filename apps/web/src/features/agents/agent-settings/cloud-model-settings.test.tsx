@@ -18,6 +18,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 7,
     model: null,
@@ -75,10 +76,14 @@ describe("Cloud model settings", () => {
       revision: 5,
       runtimeConfig: { ...config.runtimeConfig, instructions: "Be concise.", revision: 8 },
     });
-    render(<RuntimeConfigurationForm computerKind="cloud" initialConfig={config} save={save} section="instructions" />);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <RuntimeConfigurationForm computerKind="cloud" initialConfig={config} save={save} section="instructions" />
+      </QueryClientProvider>,
+    );
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Be concise." } });
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    expect(await screen.findByText("Instructions saved.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(await screen.findByText("Changes applied.")).toBeTruthy();
     expect(read).not.toHaveBeenCalled();
     expect(save).toHaveBeenCalledWith({ expectedRevision: 4, runtimeConfig: { instructions: "Be concise." } });
   });
@@ -92,6 +97,9 @@ describe("Cloud model settings", () => {
     });
     mount(config, save);
     await screen.findByText("Platform default (router-model-a)");
+    expect(screen.queryByLabelText("Approval user ID")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Ask for approval" })).toBeNull();
+    expect(screen.queryByText("Additional allowed commands")).toBeNull();
     fireEvent.click(screen.getByRole("combobox", { name: "Model" }));
     expect((await screen.findAllByRole("option")).map((option) => option.textContent?.trim())).toEqual([
       "Platform default (router-model-a)",

@@ -1,0 +1,5 @@
+ALTER TABLE "mcp_server_authorizations" ADD COLUMN "oauth_resource" text;--> statement-breakpoint
+ALTER TABLE "mcp_server_authorizations" ADD COLUMN "flow_oauth_resource" text;--> statement-breakpoint
+ALTER TABLE "mcp_server_authorizations" ADD CONSTRAINT "mcp_server_authorizations_oauth_resource_bounds" CHECK ("mcp_server_authorizations"."oauth_resource" is null or char_length("mcp_server_authorizations"."oauth_resource") between 1 and 2048);--> statement-breakpoint
+ALTER TABLE "mcp_server_authorizations" ADD CONSTRAINT "mcp_server_authorizations_flow_oauth_resource_bounds" CHECK ("mcp_server_authorizations"."flow_oauth_resource" is null or char_length("mcp_server_authorizations"."flow_oauth_resource") between 1 and 2048);--> statement-breakpoint
+ALTER TABLE "mcp_server_authorizations" ADD CONSTRAINT "mcp_server_authorizations_flow_oauth_resource_requires_flow" CHECK ("mcp_server_authorizations"."flow_oauth_resource" is null or "mcp_server_authorizations"."state" is not null);

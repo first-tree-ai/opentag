@@ -78,11 +78,11 @@ test("coverage aggregation transports disjoint reports and keeps every hit and t
       assert.equal(detailed[path].s[0], 1);
     }
     const summary = JSON.parse(readFileSync(join(directory, "coverage-summary.json")));
-    assert.equal(summary.total.lines.covered, 5);
+    assert.equal(summary.total.lines.covered, COVERAGE_PROJECTS.length);
     assert.equal(summary["/consumer/checkout/apps/cli/src/fixture.ts"].lines.covered, 1);
     assert.equal(summary.total.lines.pct, 100);
     const run = JSON.parse(readFileSync(join(directory, "coverage-run.json")));
-    assert.equal(run.packages.length, 5);
+    assert.equal(run.packages.length, COVERAGE_PROJECTS.length);
     assert.equal(run.packages[0].durationMs, 3);
   }));
 

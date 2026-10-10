@@ -235,10 +235,14 @@ describe("Computer runtime WebSocket", () => {
     };
     socket.send(JSON.stringify(register));
     expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
-    expect(computers.register).toHaveBeenCalledWith(machineContext, {
-      ...register,
-      capabilities: { imCredentialGrant: 0 },
-    });
+    expect(computers.register).toHaveBeenCalledWith(
+      machineContext,
+      {
+        ...register,
+        capabilities: { imCredentialGrant: 0 },
+      },
+      runtimeFence(socket).connectionId,
+    );
     expect(registry.providerReadiness(machineContext.computerId)).toMatchObject([
       {
         observation: { provider: "codex", status: "install" },
@@ -260,6 +264,7 @@ describe("Computer runtime WebSocket", () => {
       requestId: heartbeat.requestId,
       ok: true,
     });
+    expect(computers.heartbeat).toHaveBeenCalledWith(machineContext, register.instanceId, heartbeat.connectionId);
     expect(registry.providerReadiness(machineContext.computerId)).toMatchObject([
       {
         observation: { provider: "codex", status: "sign-in" },
@@ -268,7 +273,11 @@ describe("Computer runtime WebSocket", () => {
     socket.close();
     await new Promise((resolve) => socket.once("close", resolve));
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, register.instanceId),
+      expect(computers.disconnect).toHaveBeenCalledWith(
+        machineContext.computerId,
+        register.instanceId,
+        heartbeat.connectionId,
+      ),
     );
   });
 
@@ -863,7 +872,11 @@ describe("Computer runtime WebSocket", () => {
     await expect(closed).resolves.toBe(4400);
     releaseRegister?.();
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, frame.instanceId),
+      expect(computers.disconnect).toHaveBeenCalledWith(
+        machineContext.computerId,
+        frame.instanceId,
+        computers.register.mock.calls[0]?.[2],
+      ),
     );
     expect(computers.register).toHaveBeenCalledTimes(1);
     expect(registry.currentInstanceId(machineContext.computerId)).toBeUndefined();
@@ -916,7 +929,11 @@ describe("Computer runtime WebSocket", () => {
 
     await expect(oldClosed).resolves.toBe(4001);
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, replacementInstanceId),
+      expect(computers.disconnect).toHaveBeenCalledWith(
+        machineContext.computerId,
+        replacementInstanceId,
+        computers.register.mock.calls[1]?.[2],
+      ),
     );
     expect(persistedInstanceId).toBeUndefined();
     expect(registry.currentInstanceId(machineContext.computerId)).toBeUndefined();

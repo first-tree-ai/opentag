@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -7,6 +7,7 @@ import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type ContextTreeOperationFrame,
+  computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
@@ -19,6 +20,7 @@ import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.j
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
+import { codexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
@@ -286,6 +288,151 @@ describe("createClientRuntime production composition", () => {
       await runtime.run();
     }
   });
+
+  it("queries the existing Agent workspace, uses an ephemeral cwd for a new Agent, and fails closed on workspace errors", async () => {
+    const home = await temporaryDirectory("opentag-runtime-options-composition-");
+    const connection = runtimeConnection();
+    const listeners: Array<Parameters<RuntimeConnection["subscribeBusinessFrames"]>[0]> = [];
+    const subscribe = connection.subscribeBusinessFrames.bind(connection);
+    const businessFrames = vi.spyOn(connection, "subscribeBusinessFrames").mockImplementation((listener) => {
+      listeners.push(listener);
+      return subscribe(listener);
+    });
+    const sent: Array<Record<string, unknown>> = [];
+    const send = vi.spyOn(connection, "send").mockImplementation(async (frame) => {
+      sent.push(frame as Record<string, unknown>);
+    });
+    const getConfigurationOptions = vi
+      .fn<NonNullable<AgentRuntimeFactory["getConfigurationOptions"]>>()
+      .mockResolvedValue({ modelSuggestions: ["private"], reasoningEffortAllowedValues: null });
+    const factory = { ...readyFactory(), getConfigurationOptions };
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory,
+      home,
+    });
+    let running: Promise<void> | undefined;
+    const agentId = randomUUID();
+    const frame = {
+      type: "agent-runtime:options",
+      requestId: randomUUID(),
+      agentId,
+      computerId: randomUUID(),
+      provider: "codex",
+      model: "private",
+    };
+    const dispatch = async (value = frame) => {
+      for (const listener of listeners) await listener(value);
+    };
+    try {
+      running = runtime.run().catch(() => undefined);
+      await vi.waitFor(() => expect(listeners.length).toBeGreaterThan(0));
+      await dispatch();
+      const ephemeral = getConfigurationOptions.mock.calls[0]?.[0].cwd;
+      expect(ephemeral).toContain("opentag-runtime-options-");
+      await expect(access(ephemeral as string)).rejects.toMatchObject({ code: "ENOENT" });
+      const current = { ...snapshot(), agentId };
+      await runtime.workspace.prepareAgent(current, computeRuntimeSnapshotHashes(current));
+      await dispatch();
+      expect(getConfigurationOptions.mock.calls[1]?.[0].cwd).toBe(runtime.workspace.paths(agentId).workspaceRoot);
+      await dispatch({ ...frame, provider: "pi" });
+      expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+      const state = runtime.workspace.paths(agentId).workspaceState;
+      await writeFile(state, "invalid");
+      await dispatch();
+      expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+      await rm(state);
+      const paths = runtime.workspace.paths(agentId);
+      await writeFile(resolve(home, "not-directory"), "file");
+      const badPaths = vi
+        .spyOn(runtime.workspace, "paths")
+        .mockReturnValue({ ...paths, workspaceState: resolve(home, "not-directory", "state.json") });
+      await dispatch();
+      expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+      badPaths.mockRestore();
+      getConfigurationOptions.mockRejectedValueOnce(new Error("native query failed"));
+      await dispatch();
+      expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+    } finally {
+      runtime.stop();
+      await running;
+      send.mockRestore();
+      businessFrames.mockRestore();
+    }
+  });
+
+  it.each(["codex", "claude-code", "pi"] as const)(
+    "rejects %s directory requests before readiness and after readiness is lost, then recovers",
+    async (provider) => {
+      const home = await temporaryDirectory("opentag-options-readiness-");
+      const connection = runtimeConnection();
+      const listeners: Array<Parameters<RuntimeConnection["subscribeBusinessFrames"]>[0]> = [];
+      const subscribe = connection.subscribeBusinessFrames.bind(connection);
+      const businessFrames = vi.spyOn(connection, "subscribeBusinessFrames").mockImplementation((listener) => {
+        listeners.push(listener);
+        return subscribe(listener);
+      });
+      const sent: Array<Record<string, unknown>> = [];
+      const send = vi.spyOn(connection, "send").mockImplementation(async (frame) => {
+        sent.push(frame as Record<string, unknown>);
+      });
+      const readiness = vi.spyOn(connection, "setProviderReadiness");
+      let ready = false;
+      const probe = vi.fn<AgentRuntimeFactory["probe"]>(async () =>
+        ready
+          ? { ready: true, issues: [] }
+          : { ready: false, issues: [{ code: "temporarily_unavailable", message: "not ready" }] },
+      );
+      const metadata = { modelSuggestions: ["native/ready"], reasoningEffortAllowedValues: ["high"] };
+      const getConfigurationOptions = vi.fn().mockResolvedValue(metadata);
+      const runtime = await createClientRuntime(connection, {
+        clientVersion: "test",
+        capabilityRefreshIntervalMs: 20,
+        environment: { HOME: home, PATH: process.env.PATH },
+        factory: { ...readyFactory(provider, probe), getConfigurationOptions },
+        home,
+      });
+      const frame = {
+        type: "agent-runtime:options",
+        requestId: randomUUID(),
+        agentId: randomUUID(),
+        computerId: randomUUID(),
+        provider,
+      };
+      const dispatch = async () => {
+        for (const listener of listeners) await listener({ ...frame, requestId: randomUUID() });
+      };
+      const running = runtime.run().catch(() => undefined);
+      try {
+        await vi.waitFor(() => expect(listeners.length).toBeGreaterThan(0));
+        await dispatch();
+        expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+        expect(getConfigurationOptions).not.toHaveBeenCalled();
+        for (const available of [true, false, true]) {
+          ready = available;
+          await vi.waitFor(() =>
+            expect(readiness).toHaveBeenLastCalledWith({ provider, status: available ? "ready" : "unavailable" }),
+          );
+          const calls = getConfigurationOptions.mock.calls.length;
+          await dispatch();
+          if (available) {
+            expect(sent.at(-1)).toMatchObject({ result: { status: "completed", options: metadata } });
+            expect(getConfigurationOptions).toHaveBeenCalledTimes(calls + 1);
+          } else {
+            expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+            expect(getConfigurationOptions).toHaveBeenCalledTimes(calls);
+          }
+        }
+      } finally {
+        runtime.stop();
+        await running;
+        send.mockRestore();
+        businessFrames.mockRestore();
+        readiness.mockRestore();
+      }
+    },
+  );
 
   it("dispatches the caller-supplied managed environment to Context Tree settings operations", async () => {
     const home = await temporaryDirectory("opentag-context-tree-management-environment-");
@@ -722,9 +869,20 @@ describe("createClientRuntime production composition", () => {
     expect(launches).toContain("--version");
     expect(launches).toContain("app-server --help");
     expect(launches).toContain("login status");
-    expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(3);
+    const baseSessionArgs = [
+      ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      'approvals_reviewer="user"',
+      "-c",
+      `projects.${JSON.stringify(process.cwd())}.trust_level="trusted"`,
+    ];
+    expect(launches.filter((line) => line === baseSessionArgs.join(" "))).toHaveLength(3);
     const managedSessionArgs = [
       ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      'approvals_reviewer="user"',
+      "-c",
+      `projects.${JSON.stringify(await runtime.runtimeManager.cwd("session-1"))}.trust_level="trusted"`,
       "-c",
       `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`,
     ];
@@ -943,7 +1101,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const command = resolve(home, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nexit 1\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool auto --append-system-prompt\\n"; exit 0; fi\nexit 1\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -977,10 +1135,27 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       provider: "claude-code",
       execution: { approvalPolicy: "never", networkAccess: true },
     };
+    expect(
+      codexRuntimePolicy({
+        ...claudeSnapshot,
+        provider: "codex",
+        execution: {
+          approvalPolicy: "on-request",
+          networkAccess: false,
+          allowCommands: ["git status"],
+        },
+      }),
+    ).toMatchObject({
+      fileSystem: "workspace-write",
+      network: "disabled",
+      approvals: "on-request",
+      allowedCommands: ["git status"],
+    });
     expect(claudeCodeRuntimePolicy(claudeSnapshot)).toEqual({
       fileSystem: "unrestricted",
       network: "enabled",
       approvals: "never",
+      allowedCommands: [],
       tools: { mode: "provider-default" },
     });
     expect(validateClaudeCodeRuntimePolicy(claudeSnapshot)).toBeUndefined();
@@ -989,7 +1164,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         ...claudeSnapshot,
         execution: { approvalPolicy: "on-request", networkAccess: true },
       } as unknown as EffectiveRuntimeSnapshot),
-    ).toBe("configuration_unsupported");
+    ).toBeUndefined();
     expect(
       validateClaudeCodeRuntimePolicy({
         ...claudeSnapshot,
@@ -1279,8 +1454,9 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const server = await runtimeServer();
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
     const observed: number[] = [];
-    let ready = true;
+    const ready = false;
     const factory = {
       manifest: {
         providerId: "codex",
@@ -1324,10 +1500,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory,
       home,
     });
+    readinessUpdates.mockClear();
     const running = runtime.run();
     await vi.waitFor(() => expect(observed[0]).toBe(1));
-    ready = false;
     await vi.waitFor(() => expect(observed.filter((value) => value === 1).length).toBeGreaterThan(1));
+    await vi.waitFor(() => expect(readinessUpdates).toHaveBeenCalledWith({ provider: "codex", status: "install" }));
+    expect(readinessUpdates.mock.calls.map(([observation]) => observation.status)).not.toContain("checking");
     runtime.stop();
     await running;
   });
@@ -2549,7 +2727,7 @@ async function composeClaudeCodeRuntime(options: {
   const command = resolve(options.home, "claude-env-fixture");
   await writeFile(
     command,
-    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
+    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool auto --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
     "utf8",
   );
   await chmod(command, 0o755);

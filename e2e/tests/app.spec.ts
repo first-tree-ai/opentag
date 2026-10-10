@@ -169,7 +169,7 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await expect(fineTune).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("button", { name: "Take computer offline" }).click();
   await expect(page.getByText("1 changed", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Reconnect computer" }).click();
+  await page.getByRole("button", { name: "Connect computer" }).click();
   await expect(page.getByText("1 changed", { exact: true })).toHaveCount(0);
 
   await expectWithinViewport(closeLab);
@@ -474,7 +474,7 @@ test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", as
    */
   await expect(page.getByText(/No Skills yet/)).toBeVisible();
   await expect(page.getByText(/Skill storage is not configured/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Upload skill" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Import skill", exact: true })).toBeDisabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
     await page.evaluate(() => document.documentElement.clientWidth),
   );

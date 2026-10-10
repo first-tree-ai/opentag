@@ -1,3 +1,4 @@
+import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
 import {
   CreateMCPServerRequestSchema,
   type MCPAgentServer,
@@ -9,7 +10,6 @@ import {
 import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, Icon, KumoInputControl, Loader } from "../../ui/design-system.js";
-import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "./catalog/mcp-catalog.gen.js";
 import { comparableUrl, findAccountServer } from "./catalog/mcp-catalog-model.js";
 import { McpDiscoverSource } from "./catalog/mcp-discover-source.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorize-dialog.js";
@@ -358,7 +358,9 @@ function useAddServer({ agentId, initialSource, onAdded }: AddProps) {
     setBusy(true);
     try {
       const binding = await ensureBinding(await resolveCatalogServer(entry));
-      await authorize(binding, catalogDraft(entry, entry.defaultAuthKind));
+      // The card's declared scopes travel with its own authorization: they are what its provider's
+      // consent screen is configured for, and an entry that declares none defers to discovery.
+      await authorize(binding, catalogDraft(entry, entry.defaultAuthKind), entry.oauthScopes);
       if (entry.defaultAuthKind !== "oauth") onAdded(binding);
     } catch (cause) {
       setError(actionError(cause, failureMessage()));

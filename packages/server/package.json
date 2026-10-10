@@ -34,7 +34,9 @@
     "@first-tree-ai/context-tree": "0.1.16",
     "@google-cloud/error-reporting": "^4.0.1",
     "@larksuiteoapi/node-sdk": "^1.73.3",
+    "@opentag/mcp-presets": "workspace:*",
     "@opentag/shared": "workspace:*",
+    "@opentag/skill-presets": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/context-async-hooks": "^2.11.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
@@ -63,6 +65,7 @@
     "@types/tar-stream": "^3.1.4",
     "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.31.10",
+    "testcontainers": "^12.1.0",
     "vitest": "^5.0.1"
   }
 }

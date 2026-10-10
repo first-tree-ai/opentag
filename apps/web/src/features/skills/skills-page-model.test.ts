@@ -3,7 +3,10 @@ import {
   type RemoteSkillUnavailableReason,
   SKILL_ARCHIVE_MAX_BYTES,
   SKILL_ERROR_CODES,
+  SKILL_PRESET_CATEGORY_IDS,
   type SkillErrorCode,
+  type SkillPresetCategoryId,
+  type SkillPresetState,
   type SkillSource,
 } from "@opentag/shared/browser";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -12,9 +15,14 @@ import {
   archiveFormatForFile,
   checkSkillArchiveFile,
   formatArchiveBytes,
+  isSkillPresetActionable,
   sha256Hex,
   skillErrorMessage,
   skillInstallResultMessage,
+  skillPresetActionLabel,
+  skillPresetActionMessage,
+  skillPresetCategoryLabel,
+  skillPresetStateLabel,
   skillRejectionMessage,
   skillSourceLabel,
   skillUnavailableMessage,
@@ -109,13 +117,42 @@ describe("formatArchiveBytes", () => {
 
 describe("skillSourceLabel", () => {
   it("has a sentence for every source", () => {
-    const sources: SkillSource[] = ["web_upload", "cli_upload", "agent_upload", "url_install"];
+    const sources: SkillSource[] = ["web_upload", "cli_upload", "agent_upload", "url_install", "preset"];
     expect(new Set(sources.map(skillSourceLabel)).size).toBe(sources.length);
   });
 
   it("falls back to the raw value for a source this build does not know", () => {
     // A Skill written by a newer Server and read after a rollback must not break the page.
     expect(skillSourceLabel("from_the_future")).toBe("from_the_future");
+  });
+});
+
+describe("preset copy helpers", () => {
+  it("labels every state, category, and action", () => {
+    const states: SkillPresetState[] = ["not_installed", "installed", "update_available", "name_conflict"];
+    const stateLabels = states.map(skillPresetStateLabel);
+    expect(stateLabels.every((label) => label.length > 0)).toBe(true);
+    expect(new Set(stateLabels).size).toBe(states.length);
+
+    const categories: SkillPresetCategoryId[] = [...SKILL_PRESET_CATEGORY_IDS];
+    const categoryLabels = categories.map(skillPresetCategoryLabel);
+    expect(categoryLabels.every((label) => label.length > 0)).toBe(true);
+    expect(new Set(categoryLabels).size).toBe(categories.length);
+
+    expect(skillPresetActionMessage("installed")).toBe(m.skills_preset_action_installed());
+    expect(skillPresetActionMessage("updated")).toBe(m.skills_preset_action_updated());
+    expect(skillPresetActionMessage("unchanged")).toBe(m.skills_preset_action_unchanged());
+  });
+
+  it("offers a write only for a missing or outdated preset", () => {
+    expect(isSkillPresetActionable("not_installed")).toBe(true);
+    expect(isSkillPresetActionable("update_available")).toBe(true);
+    expect(isSkillPresetActionable("installed")).toBe(false);
+    expect(isSkillPresetActionable("name_conflict")).toBe(false);
+    expect(skillPresetActionLabel("not_installed")).toBe(m.skills_preset_install());
+    expect(skillPresetActionLabel("update_available")).toBe(m.skills_preset_update());
+    expect(skillPresetActionLabel("installed")).toBe(m.skills_preset_state_installed());
+    expect(skillPresetActionLabel("name_conflict")).toBe(m.skills_preset_unavailable());
   });
 });
 

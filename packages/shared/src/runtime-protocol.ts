@@ -46,6 +46,7 @@ export const RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION = 3 as const;
 
 export const RUNTIME_CAPABILITY = {
   contextTreeSettings: "runtime.contextTreeSettings",
+  agentRuntimeOptions: "runtime.agentRuntimeOptions",
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
   channelTarget: "runtime.channelTarget",
@@ -59,12 +60,14 @@ export const RUNTIME_CAPABILITY = {
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
+  turnActivity: "runtime.turnActivity",
   webTools: "runtime.webTools",
   mcpGateway: "runtime.mcpGateway",
 } as const;
 
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.contextTreeSettings]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.agentRuntimeOptions]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },
@@ -81,6 +84,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.turnActivity]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.mcpGateway]: { min: 1, max: 1 },
 } as const;

@@ -24,6 +24,7 @@
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2",
     "@opentag/shared": "workspace:*",
+    "fflate": "^0.8.3",
     "pi-mcp-adapter": "2.36.0",
     "pino": "^10.3.1",
     "semver": "^7.8.5",

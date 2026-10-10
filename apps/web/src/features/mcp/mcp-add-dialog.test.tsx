@@ -6,9 +6,9 @@ import {
   AGENT_ID,
   detail,
   entry,
-  menuAction,
   newAddress,
   openAdd,
+  openDetails,
   SERVER_ID,
   stub,
   wrap,
@@ -156,6 +156,8 @@ describe("MCP unified add journey", () => {
     expect(await screen.findByText(/was added. Authorization is not complete/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Authorize in browser" }));
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
+    // A manual flow has no catalog entry to consult, so it requests no explicit scopes.
+    expect(oauth).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, {});
     expect(create).toHaveBeenCalledTimes(1);
     expect(attach).toHaveBeenCalledTimes(1);
   });
@@ -183,16 +185,28 @@ describe("MCP unified add journey", () => {
     expect(create).not.toHaveBeenCalled();
   });
   it("saves OAuth extra headers before starting discovery", async () => {
-    stub([entry({ authorization: null })]);
-    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
+    const original = entry({ authorization: null });
+    stub([original]);
+    const saved = entry({
+      authorization: null,
+      effective: { ...original.effective, extraHeaders: { "x-team": "design" } },
+      overridden: { ...original.overridden, extraHeaders: true },
+    });
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation(async () => {
+      vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [saved] });
+      return saved;
+    });
     const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    await menuAction("Authentication");
-    fireEvent.click(screen.getByRole("button", { name: "Advanced connection settings" }));
+    await openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
     fireEvent.click(await screen.findByRole("radio", { name: "Custom headers" }));
     fireEvent.change(screen.getByLabelText("Header name"), { target: { value: "x-team" } });
     fireEvent.change(screen.getByLabelText("Header value"), { target: { value: "design" } });
-    fireEvent.click(screen.getByRole("button", { name: "Authorize in browser" }));
+    fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+    await screen.findByRole("dialog", { name: "Authentication" });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(oauth).toHaveBeenCalled());
     expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { extraHeaders: { "x-team": "design" } });
     expect(update.mock.invocationCallOrder[0]).toBeLessThan(oauth.mock.invocationCallOrder[0] as number);
@@ -202,7 +216,8 @@ describe("MCP unified add journey", () => {
     const revoke = vi.spyOn(browserApi, "revokeMcpAuthorization");
     vi.spyOn(browserApi, "setMcpAuthorization").mockRejectedValue(new ApiError(503, "Credential update failed"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    await menuAction("Authentication");
+    await openDetails();
+    fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));
     fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
       target: { value: "new-key" },
     });
@@ -217,11 +232,12 @@ describe("MCP unified add journey", () => {
       server: { ...detail(1).server, defaultAuthKind: "bearer" },
     });
     wrap(<McpPage agentId={AGENT_ID} />);
-    await menuAction("Authentication");
+    await openDetails();
+    fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));
     await waitFor(() =>
       expect(screen.getByRole("radio", { name: "API key or token" }).getAttribute("aria-checked")).toBe("true"),
     );
-    chooseAuth("No authentication");
+    fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
     expect(screen.getByRole("radio", { name: "No authentication" }).getAttribute("aria-checked")).toBe("true");
   });
 });

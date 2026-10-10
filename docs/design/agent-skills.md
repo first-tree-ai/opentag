@@ -183,7 +183,9 @@ Every builder percent-encodes its arguments.
 
 The Computer surface repeats the Agent id because a Computer may be bound to several Agents and must
 name which one it is syncing. The Agent CLI surface deliberately takes no Agent id: the agent is
-always the one the session proof resolves to, and a request can never name a different Agent.
+always the one the session proof resolves to, and a request can never name a different Agent. The
+preset catalog below adds resources to the Account and Agent CLI planes rather than a fourth plane,
+the same way remote installation does.
 
 ## Deployment configuration
 
@@ -280,6 +282,79 @@ Two Account-scoped routes carry it, both outside the upload transport's octet-st
 surfaces" above still holds — those are the three authentication planes — and this adds resources to
 the Account one rather than a fourth plane.
 
+## The preset Skill catalog
+
+An Agent with no Skills has no way in unless its user already has an archive or knows a public
+source. The preset catalog closes that gap the way the MCP marketplace catalog does: a curated set of
+Skills the platform's own team ships, which a user can browse and install in one action.
+
+**The catalog is committed repository data in `packages/skill-presets` (`@opentag/skill-presets`),
+not a service.** The package holds `skills/<name>/` bundles and `presets.yaml` (category ids from the
+shared taxonomy, display order). `scripts/generate-skill-presets.mjs` packs every bundle with the same
+`packSkillDirectory` the upload uses, validates manifest/directory agreement, category integrity, the
+per-archive ceilings and the total catalog budget, and writes the committed
+`packages/skill-presets/src/presets.gen.ts` with metadata and base64 archives. `pnpm
+presets:generate` writes it; `pnpm check` runs the same script with `--check` and fails on drift, so a
+bundle the Server would refuse fails the pull request that wrote it.
+
+**Packing is byte-stable across platforms, because the committed module is drift-checked.** A checked-in
+artifact whose bytes depend on the host cannot be verified: `node:zlib` output differs between the
+toolchains the repository supports (a macOS and a Linux checkout disagree on the same tar at the same
+level), so a clean macOS checkout would fail the drift check and regenerating there would move the
+drift to Linux. `packSkillDirectory` therefore compresses with `fflate` (pure JavaScript, one input has
+one encoding everywhere) and pins the gzip MTIME to zero, which otherwise defaults to `Date.now()` and
+would make every pack differ from the last. The tar layer is already canonical: fixed entry order,
+zeroed mtimes, normalized modes. `packages/client/src/__tests__/skill-archive.test.ts` asserts both
+properties — repeated packs are byte-identical with a zeroed MTIME, and packing fails the test if it
+ever reaches for the host compressor.
+
+**The Server serves canonical archive identity.** The generator packs with the Client packer, whose
+bytes differ from the Server's canonical repack (compression level, directory entries), so
+`SkillPresetService` normalizes each packaged archive once through `normalizeSkillArchive` before it
+is served or compared. The catalog's `archiveSha256`, `archiveBytes`, and `fileCount` are therefore
+the values an installed row will carry, and a fresh install reads back as `installed` rather than as
+a permanent false update.
+
+Two Account-scoped and two session-proof routes expose it:
+
+| Surface | Templates | Meaning |
+| --- | --- | --- |
+| Account | `GET /api/v1/agents/:agentId/skill-presets`, `POST /api/v1/agents/:agentId/skill-presets/:presetName/install` | Web and the human CLI; ownership is resolved exactly as for Skills |
+| Agent CLI | `GET /api/v1/runtime/skill-presets`, `POST /api/v1/runtime/skill-presets/:presetName/install` | The proof resolves the Agent; no request field can select another |
+
+A catalog response lists the categories and, per preset, its name, description, category, order,
+canonical archive identity, and the target Agent's state:
+
+| State | Meaning |
+| --- | --- |
+| `not_installed` | No same-named Skill exists |
+| `installed` | The same-named Skill's `archive_sha256` matches |
+| `update_available` | The same-named Skill differs and its `source` is `preset` |
+| `name_conflict` | The same-named Skill differs and came from any other source |
+
+**Install is a named write, not an upload.** The Server maps the state to `SkillService.upload`
+(`source: "preset"`): `not_installed` inserts, `update_available` replaces and bumps the revision,
+`installed` returns the existing row as `unchanged`, and `name_conflict` fails with
+`SKILL_NAME_CONFLICT` without touching the row. Because `update_available` requires
+`source === "preset"`, the catalog can never overwrite content a user uploaded: replacing a
+preset-installed Skill through an upload writes that source, and the preset reads back as a conflict.
+
+**A preset replaces exactly the row it read.** `update_available` is decided from a catalog read, so the
+write carries that row as its expectation (`SkillUploadInput.expectedRow`: id, revision, provenance) and
+the guard runs inside the write path against the same read the conditional update uses. Without it, a
+user upload landing between the two — a Web or CLI replace of the same name — would still satisfy a bare
+`replace: true`, and the preset would overwrite the user's content and stamp `source: "preset"` over it.
+With it, that write loses as `SKILL_REVISION_CONFLICT`, the re-read classifies the row by its new
+provenance, and the install reports `SKILL_NAME_CONFLICT`. Two racing installs converge — the loser of
+the insert or revision race re-reads once and reports `unchanged` or re-runs the update it meant to.
+Renaming or removing a preset orphans the installed copy, which stops appearing in the catalog and is
+removed by hand; the Server never auto-prunes it.
+
+Web surfaces the catalog as a Presets dialog on the Agent's Skills page, and
+`opentag skill preset list [--agent <id>]` / `opentag skill preset install <name> [--agent <id>]`
+surface it to the human CLI; inside a managed Session the same commands act on the session's Agent
+and refuse `--agent`, exactly like the rest of `opentag skill`.
+
 ## Cloud sandboxes
 
 **v1 covers Local Computers only.** Cloud sandboxes run Pi through a separate runner composition and
@@ -314,6 +389,7 @@ the Client package.
 | Key | Code | Category | HTTP status |
 | --- | --- | --- | --- |
 | `NOT_FOUND` | `SKILL_NOT_FOUND` | deterministic | 404 |
+| `PRESET_NOT_FOUND` | `SKILL_PRESET_NOT_FOUND` | deterministic | 404 |
 | `NAME_CONFLICT` | `SKILL_NAME_CONFLICT` | deterministic | 409 |
 | `REVISION_CONFLICT` | `SKILL_REVISION_CONFLICT` | deterministic | 409 |
 | `LIMIT_REACHED` | `SKILL_LIMIT_REACHED` | deterministic | 409 |
@@ -329,24 +405,39 @@ The categories carry the retry meaning the rest of the platform uses: `validatio
 
 ## First-party Skill bundles in this repository
 
-A Skill the platform's own team owns lives under `skills/<name>/`, with a root `SKILL.md` and any
-supporting files — the same shape an operator authors. Two live there. `mcp-onboarding` tells an
-Agent how to find, mount, and verify an MCP Server for itself, and which of those steps only a human
-may take. `mcp-catalog-entry` is the operator's procedure for recording a remote Server in the
-marketplace catalog: the facts to collect from the provider, the entry and icon rules, and the gates
-to run.
+A Skill the platform's own team owns is authored as a bundle under one of two homes, both with a root
+`SKILL.md` and supporting files — the same shape an operator authors.
 
-Nothing here ships a Skill automatically. An operator uploads one with
+`packages/skill-presets/skills/<name>/` is the **preset catalog**: these bundles ship with the
+product and are discoverable and installable through the routes above. One lives there today:
+`mcp-onboarding` tells an Agent how to find, mount, and verify an MCP Server for itself, and which of
+those steps only a human may take.
+
+Root `skills/<name>/` is the home for a first-party bundle that is not part of the discoverable
+catalog. `mcp-catalog-entry` lives there today: the operator's procedure for recording a remote
+Server in the marketplace catalog — the facts to collect from the provider, the entry and icon rules,
+and the gates to run. Nothing under root `skills/` ships automatically: an operator uploads one with
 `opentag skill push skills/<name>`, which stores it as that Agent's Skill like any other upload; the
 repository is where the content is reviewed and versioned, not a delivery channel.
+`skills/skill-preset-entry/` is one such root bundle: the procedure for recording a bundle into the
+preset catalog. It carries the manifest, identity, category, and order rules, the `presets.yaml` row
+shape, the generator's refusal list, and the gates, so a contributor enters a Skill correctly on the
+first pass.
 
-`pnpm check` runs `scripts/check-skill-bundles.mjs` over every bundle, so a bundle the Server would
-refuse fails in the pull request that wrote it rather than at an operator's upload. The checker packs
-each bundle with the same `packSkillDirectory` the upload uses instead of restating its rules: a
-missing or unreadable manifest, a reserved name, a symlinked bundle root or member, an unsupported
-entry, the path, entry, unpacked and packed byte ceilings, and a name that disagrees with its
-directory are all decided here. It reads `@opentag/shared` from source through
-`scripts/tsconfig.scripts.json`, because `pnpm check` runs before `pnpm build`.
+`pnpm check` runs the preset generator over `packages/skill-presets` and
+`scripts/check-skill-bundles.mjs` over every root bundle, so a bundle the Server would refuse fails in
+the pull request that wrote it rather than at an operator's upload. The checker packs each bundle with
+the same `packSkillDirectory` the upload uses instead of restating its rules: a missing or unreadable
+manifest, a reserved name, a symlinked bundle root or member, an unsupported entry, the path, entry,
+unpacked and packed byte ceilings, and a name that disagrees with its directory are all decided here.
+It reads `@opentag/shared` from source through `scripts/tsconfig.scripts.json`, because `pnpm check`
+runs before `pnpm build`.
+
+`pnpm presets:check-candidate <candidate-directory>` pre-flights a bundle that is not in the
+repository yet. It packs the candidate with the same `packSkillDirectory` and applies the catalog
+rules the packer cannot know: a name already declared in `presets.yaml`, a category that file does
+not declare, an order the shared contract rejects, and a directory name that disagrees with the
+manifest. It is read-only, and `pnpm presets:generate` with `pnpm check` remain the gate.
 
 ## Verification
 
@@ -374,6 +465,7 @@ The Server and Web lanes add the coverage those layers owe:
 | `packages/server/src/__tests__/s3-skill-object-store.test.ts` | Signing, path-/virtual-hosted URLs, status mapping, secret redaction, and the `list` request shape, XML parsing (including an escaped key), continuation, and malformed/invalid responses |
 | `packages/server/src/__tests__/skill-object-gc.test.ts` | Deleting an old orphan, keeping a young or referenced object, keeping a key that becomes referenced between listing and deletion, ignoring non-Skill keys, the exact-prefix binding (a live object under a nested prefix and an adjacent sibling are never collected, across two databases), collecting an orphan under a slash-spelled prefix, pagination, the per-run cap, a failed delete continuing the run, and the replace→collect round trip |
 | `packages/server/src/__tests__/skill-object-prefix.test.ts` | The bound key matcher (exact match, extra namespace segment, different prefix with a valid tail, a string-prefix of the first segment, malformed tail) and the normalizer (leading/trailing/repeated slashes, empty and all-slash rejected, traversal rejected) |
+| `packages/server/src/__tests__/skill-preset-service.test.ts` | Per-Agent preset state, install/update semantics and provenance on both install surfaces over a real `SkillService`, and that a user upload landing between the catalog read and the preset write survives — the preset replaces only the row it read |
 | `packages/server/src/__tests__/integration/skills-api.test.ts` | The account lifecycle and Computer manifest over real HTTP and PostgreSQL, with the bundle headers |
 | `apps/web/src/features/skills/*.test.ts(x)` | The error-code map is exhaustive over the contract, an upload/toggle revision conflict reports the new sentence without opening the Replace dialog, and every other page rule |
 

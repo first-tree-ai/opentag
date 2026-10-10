@@ -58,7 +58,31 @@ describe("daemon service runtime", () => {
     await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("not connected");
 
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledOnce();
-    expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
+    expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(
+      join(home, "logs"),
+      expect.objectContaining({
+        environment: expect.objectContaining({ OPENTAG_SERVICE_MODE: "1" }),
+      }),
+    );
+  });
+
+  it("resolves OPENTAG_LOG_LEVEL from daemon.env into the service logger configuration", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-log-level-"));
+    directories.push(home);
+    process.env.OPENTAG_SERVICE_MODE = "1";
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonEnvironment, "OPENTAG_LOG_LEVEL=debug\n", { mode: 0o600 });
+    clientMocks.readMachineCredentials.mockResolvedValue(undefined);
+
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("not connected");
+
+    expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(
+      join(home, "logs"),
+      expect.objectContaining({
+        environment: expect.objectContaining({ OPENTAG_LOG_LEVEL: "debug" }),
+      }),
+    );
   });
 
   it("logs malformed daemon environment lines without exposing their values", async () => {
@@ -104,7 +128,12 @@ describe("daemon service runtime", () => {
       await owner.release();
     }
 
-    expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
+    expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(
+      join(home, "logs"),
+      expect.objectContaining({
+        environment: expect.objectContaining({ OPENTAG_SERVICE_MODE: "1" }),
+      }),
+    );
     expect(entries).toContainEqual(
       expect.objectContaining({
         fields: expect.objectContaining({

@@ -205,6 +205,11 @@ export class RunnerHub {
     return true;
   }
 
+  /** Opaque attach identity; a credential re-handshake may reuse the same socket object. */
+  currentConnectionIdentity(sandboxId: string): object | undefined {
+    return this.#entries.get(sandboxId);
+  }
+
   noteActivity(sandboxId: string, socket: RunnerControlSocket): boolean {
     const entry = this.#entries.get(sandboxId);
     if (!entry || entry.socket !== socket) return false;

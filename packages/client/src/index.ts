@@ -34,6 +34,7 @@ export {
   type AgentRuntime,
   type AgentRuntimeBinding,
   type AgentRuntimeCapabilities,
+  type AgentRuntimeConfigurationOptionsRequest,
   type AgentRuntimeEvent,
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,
@@ -119,6 +120,7 @@ export {
 export {
   type ClientLogBindings,
   type ClientLogger,
+  type ClientLoggerServiceOptions,
   type CreateLoggerOptions,
   configureClientLoggerContext,
   configureClientLoggerForService,
@@ -291,7 +293,12 @@ export {
   type LocalComputerConfigurationInspection,
   type LocalConfigurationStatus,
 } from "./runtime/local-computer-configuration.js";
-export { type ManagedSessionContext, renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
+export {
+  type ManagedContextTreeStatus,
+  type ManagedEnvironment,
+  type ManagedSessionContext,
+  renderManagedSystemPrompt,
+} from "./runtime/managed-instructions.js";
 export {
   ProviderCliAccountError,
   type ProviderCliAccountLayout,

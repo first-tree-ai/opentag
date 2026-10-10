@@ -37,7 +37,7 @@ export const SKILL_MARKER_FILE = ".opentag-skill.json";
 /* --------------------------------- resources ------------------------------- */
 
 const SkillIdSchema = z.string().uuid();
-export const SkillSourceSchema = z.enum(["web_upload", "cli_upload", "agent_upload", "url_install"]);
+export const SkillSourceSchema = z.enum(["web_upload", "cli_upload", "agent_upload", "url_install", "preset"]);
 export type SkillSource = z.infer<typeof SkillSourceSchema>;
 export const SkillArchiveFormatSchema = z.enum(["tar.gz", "zip"]);
 export type SkillArchiveFormat = z.infer<typeof SkillArchiveFormatSchema>;
@@ -79,6 +79,50 @@ export const SkillDetailSchema = SkillSchema.extend({
   filesTruncated: z.boolean(),
 });
 export type SkillDetail = z.infer<typeof SkillDetailSchema>;
+
+/** Preview only; the canonical archive remains available for larger or binary files. */
+export const SKILL_FILE_PREVIEW_MAX_BYTES = 256 * 1024;
+export const SkillFilePathSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (path) =>
+      new TextEncoder().encode(path).byteLength <= SKILL_MAX_PATH_BYTES &&
+      !path.includes("\\") &&
+      !Array.from(path).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
+      !/^[A-Za-z]:/.test(path) &&
+      path.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+    "Expected a canonical root-relative Skill file path",
+  );
+export const ReadSkillFileQuerySchema = z
+  .object({
+    path: SkillFilePathSchema,
+    archiveSha256: SkillArchiveSha256Schema,
+  })
+  .strict();
+export type ReadSkillFileQuery = z.infer<typeof ReadSkillFileQuerySchema>;
+export const SkillFilePreviewSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("text"),
+      content: z
+        .string()
+        .refine((content) => new TextEncoder().encode(content).byteLength <= SKILL_FILE_PREVIEW_MAX_BYTES),
+    })
+    .strict(),
+  z.object({ status: z.literal("binary") }).strict(),
+  z.object({ status: z.literal("too_large") }).strict(),
+]);
+export type SkillFilePreview = z.infer<typeof SkillFilePreviewSchema>;
+export const ReadSkillFileResponseSchema = z
+  .object({
+    archiveSha256: SkillArchiveSha256Schema,
+    path: SkillFilePathSchema,
+    files: z.array(SkillFileEntrySchema).min(1).max(SKILL_MAX_ENTRIES),
+    preview: SkillFilePreviewSchema,
+  })
+  .strict();
+export type ReadSkillFileResponse = z.infer<typeof ReadSkillFileResponseSchema>;
 
 export const ListAgentSkillsResponseSchema = z
   .object({
@@ -133,6 +177,7 @@ export const SKILL_UPLOAD_CONTENT_TYPE = "application/octet-stream";
 
 export const SKILL_ERROR_CODES = {
   NOT_FOUND: "SKILL_NOT_FOUND",
+  PRESET_NOT_FOUND: "SKILL_PRESET_NOT_FOUND",
   NAME_CONFLICT: "SKILL_NAME_CONFLICT",
   REVISION_CONFLICT: "SKILL_REVISION_CONFLICT",
   LIMIT_REACHED: "SKILL_LIMIT_REACHED",
@@ -163,6 +208,7 @@ export const SKILL_ERROR_CODE_METADATA: Readonly<
   Record<SkillErrorCode, { category: SkillErrorCategory; statusCode: number }>
 > = {
   [SKILL_ERROR_CODES.NOT_FOUND]: { category: "deterministic", statusCode: 404 },
+  [SKILL_ERROR_CODES.PRESET_NOT_FOUND]: { category: "deterministic", statusCode: 404 },
   [SKILL_ERROR_CODES.NAME_CONFLICT]: { category: "deterministic", statusCode: 409 },
   [SKILL_ERROR_CODES.REVISION_CONFLICT]: { category: "deterministic", statusCode: 409 },
   [SKILL_ERROR_CODES.LIMIT_REACHED]: { category: "deterministic", statusCode: 409 },

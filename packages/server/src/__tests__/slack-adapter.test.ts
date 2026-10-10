@@ -258,6 +258,7 @@ describe("Slack installed-binding adapter", () => {
           access_token: "xoxb-distributed",
           app_id: "A_OPENTAG",
           bot_user_id: "U_BOT",
+          authed_user: { id: "U_INSTALLER" },
           team: { id: "T_TEAM", name: "Workspace" },
           enterprise: null,
         }),

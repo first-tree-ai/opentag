@@ -1,6 +1,9 @@
 import type {
+  InstallSkillPresetResponse,
   ListAgentSkillsResponse,
+  ListSkillPresetsResponse,
   RemoteSkillSelection,
+  Skill,
   SkillArchiveFormat,
   SkillDetail,
 } from "@opentag/shared/browser";
@@ -38,6 +41,21 @@ export function useAgentSkill(agentId: string, skillId: string | undefined) {
     queryKey: queryKeys.skills.skill(agentId, skillId ?? ""),
     queryFn: (): Promise<SkillDetail> => browserApi.agentSkill(agentId, skillId as string),
     enabled: skillId !== undefined,
+  });
+}
+
+export function useSkillFile(skill: Skill | undefined, path: string, open: boolean) {
+  return useQuery({
+    queryKey: queryKeys.skills.file(skill?.agentId ?? "", skill?.id ?? "", skill?.archiveSha256 ?? "", path),
+    queryFn: ({ signal }) => {
+      if (!skill) throw new Error("A Skill is required to read a file");
+      return browserApi.agentSkillFile(skill.agentId, skill.id, path, skill.archiveSha256, signal);
+    },
+    enabled: open && skill !== undefined,
+    // A content-addressed file is immutable. Do not retain package text after the reader closes.
+    staleTime: Infinity,
+    gcTime: 0,
+    retry: false,
   });
 }
 
@@ -151,6 +169,35 @@ export function useRemoveSkill() {
     onSuccess: async (_result, input) => {
       cache.reconcileList(input.agentId, (list) => removeSkillFromList(list, input.skillId));
       cache.removeDetail(input.agentId, input.skillId);
+      await cache.invalidate(input.agentId);
+    },
+  });
+}
+
+/**
+ * The preset catalog for one Agent. Serving state per entry is the Server's job, so the page does not
+ * join this against the Skills list; the Agent-scoped key means an install's invalidation refreshes
+ * both this and the list.
+ */
+export function useSkillPresets(agentId: string) {
+  return useQuery({
+    ...liveResourceQueryOptions,
+    queryKey: queryKeys.skills.presetCatalog(agentId),
+    queryFn: (): Promise<ListSkillPresetsResponse> => browserApi.skillPresets(agentId),
+  });
+}
+
+/**
+ * Installing or updating one preset. The confirmed write carries the resulting Skill, so it is
+ * reconciled into the list before the invalidation refetch, exactly like an upload.
+ */
+export function useInstallSkillPreset() {
+  const cache = useSkillCache();
+  return useMutation({
+    mutationFn: (input: { agentId: string; presetName: string }): Promise<InstallSkillPresetResponse> =>
+      browserApi.installSkillPreset(input.agentId, input.presetName),
+    onSuccess: async (result, input) => {
+      cache.reconcileList(input.agentId, (list) => upsertSkill(list, result.skill));
       await cache.invalidate(input.agentId);
     },
   });

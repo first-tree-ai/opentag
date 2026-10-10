@@ -19,6 +19,7 @@ function config(id = "agent-a", repository: string | null = null): AgentAdminCon
     status: "suspended",
     revision: 2,
     runtimeConfig: {
+      permissions: { approvalPolicy: "on-request", allowCommands: [] },
       revision: 3,
       contextTrees: repository ? [{ alias: "memory", repository }] : [],
       model: null,

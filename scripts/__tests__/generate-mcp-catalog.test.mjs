@@ -45,9 +45,9 @@ function entry(overrides = {}) {
 function fixtureDirectory(t, { categories = [category()], entries = [entry()], icons = ["notion.svg"] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "opentag-mcp-catalog-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const catalogDirectory = join(root, "apps/web/src/features/mcp/catalog");
-  const iconDirectory = join(root, "apps/web/src/assets/mcp");
-  mkdirSync(catalogDirectory, { recursive: true });
+  const catalogDirectory = join(root, "packages/mcp-presets");
+  const iconDirectory = join(catalogDirectory, "icons");
+  mkdirSync(join(catalogDirectory, "src"), { recursive: true });
   mkdirSync(iconDirectory, { recursive: true });
   mkdirSync(join(root, "apps/web/project.inlang"), { recursive: true });
   writeFileSync(
@@ -60,7 +60,7 @@ function fixtureDirectory(t, { categories = [category()], entries = [entry()], i
   return {
     root,
     catalogDirectory,
-    target: join(catalogDirectory, "mcp-catalog.gen.ts"),
+    target: join(catalogDirectory, "src/mcp-catalog.gen.ts"),
     entriesPath: join(catalogDirectory, "mcp-catalog.yaml"),
   };
 }
@@ -94,6 +94,9 @@ test("writes a module carrying every entry", (t) => {
   assert.match(generated, /export const MCP_CATALOG_ENTRIES/);
   assert.match(generated, /id: "notion"/);
   assert.match(generated, /id: "linear"/);
+  assert.match(generated, /export type McpCatalogLocale = "en" \| "zh";/);
+  assert.match(generated, /iconUrl: MCP_CATALOG_ICON_URLS\["notion\.svg"\]/);
+  assert.doesNotMatch(generated, /import .*\.svg/);
 });
 
 test("rejects an endpoint the outbound policy refuses", (t) => {
@@ -135,11 +138,56 @@ test("rejects an unknown locale", (t) => {
 });
 
 test("rejects a missing icon file", (t) => {
-  assertRejected(t, /does not exist under apps\/web\/src\/assets\/mcp\//, { icons: [] });
+  assertRejected(t, /does not exist under packages\/mcp-presets\/icons\//, { icons: [] });
 });
 
 test("rejects an unknown default authorization kind", (t) => {
   assertRejected(t, /defaultAuthKind/, { entries: [entry({ defaultAuthKind: "api-key" })] });
+});
+
+test("carries an entry's OAuth scopes into the generated module", (t) => {
+  const fixture = fixtureDirectory(t, {
+    entries: [
+      entry({
+        oauthScopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose",
+        ],
+      }),
+    ],
+  });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  const generated = readFileSync(fixture.target, "utf8");
+  assert.match(generated, /oauthScopes\?: string\[\];/);
+  assert.match(generated, /"https:\/\/www\.googleapis\.com\/auth\/gmail\.readonly"/);
+  assert.match(generated, /"https:\/\/www\.googleapis\.com\/auth\/gmail\.compose"/);
+});
+
+test("omits oauthScopes for an entry that declares none", (t) => {
+  const fixture = fixtureDirectory(t);
+  assert.equal(runGenerator(fixture.root).status, 0);
+  assert.doesNotMatch(readFileSync(fixture.target, "utf8"), /oauthScopes:/);
+});
+
+test("rejects an empty scope string", (t) => {
+  assertRejected(t, /oauthScopes\[1\]: must be a non-empty scope string/, {
+    entries: [entry({ oauthScopes: ["mcp.read", "  "] })],
+  });
+});
+
+test("rejects an empty scope list", (t) => {
+  assertRejected(t, /oauthScopes: must be a non-empty list/, { entries: [entry({ oauthScopes: [] })] });
+});
+
+test("rejects more scopes than a start request accepts", (t) => {
+  assertRejected(t, /at most 64 scopes/, {
+    entries: [entry({ oauthScopes: Array.from({ length: 65 }, (_, index) => `scope-${index}`) })],
+  });
+});
+
+test("rejects a scope longer than a start request accepts", (t) => {
+  assertRejected(t, /must be at most 255 characters/, { entries: [entry({ oauthScopes: ["x".repeat(256)] })] });
 });
 
 test("rejects drift between the sources and the generated module", (t) => {
@@ -150,4 +198,23 @@ test("rejects drift between the sources and the generated module", (t) => {
   const drifted = runGenerator(fixture.root, "--check");
   assert.notEqual(drifted.status, 0);
   assert.match(drifted.stderr, /out of date/);
+});
+
+test("embeds a PNG provider asset with its correct media type", (t) => {
+  const fixture = fixtureDirectory(t, {
+    entries: [entry({ icon: "notion.png", iconIsOfficial: true })],
+    icons: ["notion.png"],
+  });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  const generated = readFileSync(fixture.target, "utf8");
+  assert.match(generated, /data:image\/png;base64,/);
+  assert.match(generated, /iconIsOfficial: true/);
+});
+
+test("keeps unverified assets unmarked and rejects invalid official-mark metadata", (t) => {
+  const fixture = fixtureDirectory(t);
+  assert.equal(runGenerator(fixture.root).status, 0);
+  assert.doesNotMatch(readFileSync(fixture.target, "utf8"), /iconIsOfficial: true/);
+  assertRejected(t, /iconIsOfficial: must be a boolean/, { entries: [entry({ iconIsOfficial: "yes" })] });
 });

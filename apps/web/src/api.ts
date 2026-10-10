@@ -11,6 +11,8 @@ import {
   AgentCloudOverviewSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentRuntimeOptions,
+  AgentRuntimeOptionsSchema,
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
   AgentRuntimeTestResponseSchema,
@@ -45,6 +47,7 @@ import {
   agentMcpServerPath,
   agentMcpServersPath,
   agentReactivatePath,
+  agentRuntimeOptionsPath,
   agentRuntimeTestPath,
   agentSchedulePath,
   agentSchedulePausePath,
@@ -53,7 +56,10 @@ import {
   agentSetupPath,
   agentSetupRefreshPath,
   agentSkillBundlePath,
+  agentSkillFilePath,
   agentSkillPath,
+  agentSkillPresetInstallPath,
+  agentSkillPresetsPath,
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
@@ -115,6 +121,8 @@ import {
   type ImBindingUnbindRequiredDetail,
   type InstallRemoteSkillsResponse,
   InstallRemoteSkillsResponseSchema,
+  type InstallSkillPresetResponse,
+  InstallSkillPresetResponseSchema,
   type InternalNavigationVisibility,
   InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
@@ -131,6 +139,8 @@ import {
   ListAvailableMCPServersResponseSchema,
   type ListMCPServersResponse,
   ListMCPServersResponseSchema,
+  type ListSkillPresetsResponse,
+  ListSkillPresetsResponseSchema,
   type ListTaskRepliesResponse,
   ListTaskRepliesResponseSchema,
   type ListTasksResponse,
@@ -150,6 +160,8 @@ import {
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
+  type ReadSkillFileResponse,
+  ReadSkillFileResponseSchema,
   type RebindAgentComputerRequest,
   type RemoteSkillSelection,
   type ResolveRemoteSkillsResponse,
@@ -453,6 +465,15 @@ export class BrowserApi {
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
+  }
+
+  agentRuntimeOptions(agentId: string, model?: string, signal?: AbortSignal): Promise<AgentRuntimeOptions> {
+    const query = new URLSearchParams(model ? { model } : {});
+    return this.request(
+      `${agentRuntimeOptionsPath(agentId)}${query.size ? `?${query}` : ""}`,
+      AgentRuntimeOptionsSchema,
+      { ...(signal ? { signal } : {}) },
+    );
   }
 
   testAgentRuntime(
@@ -831,6 +852,19 @@ export class BrowserApi {
     return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema);
   }
 
+  agentSkillFile(
+    agentId: string,
+    skillId: string,
+    path: string,
+    archiveSha256: string,
+    signal?: AbortSignal,
+  ): Promise<ReadSkillFileResponse> {
+    const query = new URLSearchParams({ path, archiveSha256 });
+    return this.request(`${agentSkillFilePath(agentId, skillId)}?${query}`, ReadSkillFileResponseSchema, {
+      ...(signal ? { signal } : {}),
+    });
+  }
+
   /**
    * Uploads one archive. The Server re-packs and re-hashes what it stores, so the sha256 header is
    * an integrity check on the transfer rather than a value copied into the row; the format header
@@ -894,6 +928,23 @@ export class BrowserApi {
     return this.request(agentSkillsInstallPath(agentId), InstallRemoteSkillsResponseSchema, {
       method: "POST",
       body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  /*
+   * The preset catalog. The catalog content is global, but the state each entry reports is this
+   * Agent's, so both calls are addressed under it; install performs the write the Server records as
+   * `preset` provenance.
+   */
+  skillPresets(agentId: string): Promise<ListSkillPresetsResponse> {
+    return this.request(agentSkillPresetsPath(agentId), ListSkillPresetsResponseSchema);
+  }
+
+  installSkillPreset(agentId: string, presetName: string): Promise<InstallSkillPresetResponse> {
+    return this.request(agentSkillPresetInstallPath(agentId, presetName), InstallSkillPresetResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({}),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }

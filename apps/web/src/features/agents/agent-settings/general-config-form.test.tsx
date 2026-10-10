@@ -17,6 +17,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 7,
     model: null,
@@ -33,30 +34,36 @@ describe("GeneralConfigForm", () => {
     vi.restoreAllMocks();
   });
 
-  it("saves and discards a changed display name", async () => {
-    const updated = { ...config, displayName: "Reviewer Bot", revision: 5 };
-    const updateAgent = vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
-    const onAgentChanged = vi.fn();
-    render(<GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />);
+  it.each([false, true])(
+    "saves and discards a name without changing self-configuration=%s",
+    async (selfConfigurationEnabled) => {
+      const initialConfig = { ...config, selfConfigurationEnabled };
+      const updated = { ...initialConfig, displayName: "Reviewer Bot", revision: 5 };
+      const updateAgent = vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
+      const onAgentChanged = vi.fn();
+      render(<GeneralConfigForm initialConfig={initialConfig} onAgentChanged={onAgentChanged} />);
 
-    expect(screen.getByRole("heading", { name: "Name" }).closest("form")).toBeNull();
-    const displayName = screen.getByLabelText("Display name");
-    expect(displayName.parentElement?.className).toContain("[&>input]:w-full");
-    const form = displayName.closest("form") as HTMLFormElement;
-    fireEvent.submit(form);
-    expect(updateAgent).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
-    expect(screen.getByText("Unsaved changes")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Reviewer");
+      expect(screen.queryByRole("switch")).toBeNull();
+      expect(screen.queryByText("Self-configuration")).toBeNull();
+      expect(screen.getByRole("heading", { name: "Name" }).closest("form")).toBeNull();
+      const displayName = screen.getByLabelText("Display name");
+      expect(displayName.parentElement?.className).toContain("[&>input]:w-full");
+      const form = displayName.closest("form") as HTMLFormElement;
+      fireEvent.submit(form);
+      expect(updateAgent).not.toHaveBeenCalled();
+      fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
+      expect(screen.getByText("Unsaved changes")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+      expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Reviewer");
 
-    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    await waitFor(() => expect(updateAgent).toHaveBeenCalledOnce());
-    expect(updateAgent).toHaveBeenCalledWith(config.id, { expectedRevision: 4, displayName: "Reviewer Bot" });
-    expect((await screen.findByRole("status")).textContent).toBe("Name saved.");
-    expect(onAgentChanged).toHaveBeenCalledOnce();
-  });
+      fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() => expect(updateAgent).toHaveBeenCalledOnce());
+      expect(updateAgent).toHaveBeenCalledWith(config.id, { expectedRevision: 4, displayName: "Reviewer Bot" });
+      expect((await screen.findByRole("status")).textContent).toBe("Name saved.");
+      expect(onAgentChanged).toHaveBeenCalledOnce();
+    },
+  );
 
   it("shows a provider error and fallback for failed saves", async () => {
     const updateAgent = vi
@@ -73,57 +80,7 @@ describe("GeneralConfigForm", () => {
     expect(updateAgent).toHaveBeenCalledTimes(2);
   });
 
-  it("lets the owner toggle Agent self-configuration", async () => {
-    const updated = { ...config, selfConfigurationEnabled: true, revision: 5 };
-    const updateAgent = vi
-      .spyOn(browserApi, "updateAgent")
-      .mockResolvedValueOnce(updated)
-      .mockResolvedValueOnce({ ...updated, selfConfigurationEnabled: false, revision: 6 });
-    const onAgentChanged = vi.fn();
-    render(<GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />);
-
-    const toggle = screen.getByRole("switch", { name: "Self-configuration" });
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
-    fireEvent.click(toggle);
-
-    await waitFor(() => expect(updateAgent).toHaveBeenCalledOnce());
-    expect(updateAgent).toHaveBeenCalledWith(config.id, {
-      expectedRevision: config.revision,
-      selfConfigurationEnabled: true,
-    });
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
-    expect((await screen.findByRole("status")).textContent).toBe("Self-configuration setting saved.");
-    expect(onAgentChanged).toHaveBeenCalledOnce();
-
-    fireEvent.click(toggle);
-    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
-    expect(updateAgent).toHaveBeenLastCalledWith(config.id, {
-      expectedRevision: updated.revision,
-      selfConfigurationEnabled: false,
-    });
-    expect(onAgentChanged).toHaveBeenCalledTimes(2);
-  });
-
-  it.each([new Error("revision conflict"), "unknown failure"])(
-    "preserves the disabled setting when saving fails with %s",
-    async (cause) => {
-      vi.spyOn(browserApi, "updateAgent").mockRejectedValue(cause);
-      const onAgentChanged = vi.fn();
-      render(<GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />);
-      const toggle = screen.getByRole("switch", { name: "Self-configuration" });
-
-      fireEvent.click(toggle);
-
-      expect((await screen.findByRole("status")).textContent).toBe(
-        cause instanceof Error ? cause.message : "Unable to save self-configuration setting",
-      );
-      expect(toggle.getAttribute("aria-checked")).toBe("false");
-      expect((toggle as HTMLButtonElement).disabled).toBe(false);
-      expect(onAgentChanged).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(["name", "self-configuration"])("blocks concurrent updates while saving %s", async (field) => {
+  it("blocks duplicate name updates while saving", async () => {
     let release: ((value: AgentAdminConfig) => void) | undefined;
     const pending = new Promise<AgentAdminConfig>((resolve) => {
       release = resolve;
@@ -132,29 +89,26 @@ describe("GeneralConfigForm", () => {
     render(<GeneralConfigForm initialConfig={config} onAgentChanged={vi.fn()} />);
     const displayName = screen.getByLabelText("Display name");
     const form = displayName.closest("form") as HTMLFormElement;
-    const toggle = screen.getByRole("switch", { name: "Self-configuration" });
     fireEvent.change(displayName, { target: { value: "Draft name" } });
+    fireEvent.submit(form);
 
-    if (field === "name") fireEvent.submit(form);
-    else fireEvent.click(toggle);
-
-    expect((toggle as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(toggle);
     fireEvent.submit(form);
     expect(updateAgent).toHaveBeenCalledOnce();
 
-    release?.({ ...config, displayName: "Draft name", selfConfigurationEnabled: field !== "name", revision: 5 });
-    await waitFor(() => expect((toggle as HTMLButtonElement).disabled).toBe(false));
+    release?.({ ...config, displayName: "Draft name", revision: 5 });
+    expect((await screen.findByRole("status")).textContent).toBe("Name saved.");
   });
 
-  it("shows the disabled owner switch with Chinese copy", () => {
+  it("shows the name settings without self-configuration in Chinese", () => {
     withLocale("zh", () => {
       render(<GeneralConfigForm initialConfig={config} onAgentChanged={vi.fn()} />);
-      expect(screen.getByRole("switch", { name: "自助配置" }).getAttribute("aria-checked")).toBe("false");
+      expect(screen.getByRole("textbox")).toBeTruthy();
+      expect(screen.queryByRole("switch")).toBeNull();
+      expect(screen.queryByText("自助配置")).toBeNull();
       expect(
-        screen.getByText("允许此 Agent 通过 Session CLI 修改自己的指令、模型、推理强度和 MCP 挂载。"),
-      ).toBeTruthy();
+        screen.queryByText("允许此 Agent 通过 Session CLI 修改自己的指令、模型、推理强度和 MCP 挂载。"),
+      ).toBeNull();
     });
   });
 });

@@ -10,6 +10,7 @@ import {
   type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
+  type TurnActivityRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -29,6 +30,42 @@ import {
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 
 describe("RuntimeDomainOwner", () => {
+  it.each([undefined, 1, 2])("gates Turn activity on the exact negotiated version %s", async (version) => {
+    const onTurnActivity = vi.fn(async (frame: TurnActivityRequest) => ({
+      type: "turn:activity:result" as const,
+      requestId: frame.requestId,
+      turnId: frame.turnId,
+      sequence: frame.sequence,
+      status: "recorded" as const,
+    }));
+    const h = await ownerFixture(1_000, { onTurnActivity });
+    const frame: TurnActivityRequest = {
+      type: "turn:activity",
+      requestId: randomUUID(),
+      deliveryId: randomUUID(),
+      sessionId: randomUUID(),
+      agentId: randomUUID(),
+      turnId: randomUUID(),
+      placementGeneration: 1,
+      sequence: 1,
+      phase: "running",
+    };
+    try {
+      const context: RuntimeBusinessContext = {
+        ...h.context,
+        negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.turnActivity]: version } : {},
+      };
+      expect(await h.owner.handle(frame, context)).toMatchObject({
+        status: version === 1 ? "recorded" : "unsupported_capability",
+      });
+      expect(onTurnActivity).toHaveBeenCalledTimes(version === 1 ? 1 : 0);
+      await h.owner.handle(frame, { ...context, instanceId: randomUUID() });
+      expect(onTurnActivity).toHaveBeenCalledTimes(version === 1 ? 1 : 0);
+    } finally {
+      h.owner.close();
+    }
+  });
+
   it.each([undefined, 1])(
     "rejects v2 report content nonfatally on capability %s and accepts a later cap2 report",
     async (version) => {

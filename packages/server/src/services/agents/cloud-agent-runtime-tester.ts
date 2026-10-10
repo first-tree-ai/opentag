@@ -10,7 +10,8 @@ import { type CloudModelCatalog, readBoundedResponseText } from "../sandboxes/cl
 /**
  * The Cloud branch of the Agent runtime test: one bounded Server-to-model connectivity probe
  * against the deployment Router, using the Agent's saved model or the current Router default (the
- * first Router model). This answers "can the hosted model path run this model right now" — it is
+ * catalog's preferred default model when offered, otherwise the first validated Router model).
+ * This answers "can the hosted model path run this model right now" — it is
  * deliberately NOT a Sandbox, Pi, IM, or workspace check, and it creates no Session, Sandbox, or
  * Instance and writes no product history.
  *

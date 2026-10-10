@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "yaml";
 import {
   assertBillingEnvironment,
   assertRunnerEnvironment,
@@ -1025,6 +1027,71 @@ test("cloud check mode requires billing readiness and remains read-only", async 
   const bad = cloudFake({ status: 503 });
   await assert.rejects(runDeploy(deployDeps(bad, { billingRevision: BILLING_SHA })), /gate failed/);
   assert.equal(bad.updates().length, 0);
+});
+
+test("healthy billing cannot mask failed application readiness or a different Server revision", async () => {
+  for (const response of [
+    { status: 503, headers: headerMap({ "x-opentag-revision": SERVER_SHA }) },
+    { status: 200, headers: headerMap({ "x-opentag-revision": RELEASE_SHA }) },
+  ]) {
+    const fake = cloudFake();
+    await assert.rejects(
+      runDeploy(
+        deployDeps(fake, {
+          billingRevision: BILLING_SHA,
+          fetchImpl: (url, options) => (url.endsWith("/readyz") ? response : fake.fetchImpl(url, options)),
+        }),
+      ),
+      /gate failed/,
+    );
+    assert.equal(fake.probes(), 0);
+    assert.equal(fake.updates().length, 0);
+  }
+});
+
+test("preflight checks rollout safety without requiring the new image or probing readiness", async () => {
+  const definition = billingDefinition();
+  definition.versions[0].deployedImageName = `ghcr.io/first-tree-ai/opentag:${RELEASE_SHA}`;
+  const fake = caproverFake({ definition });
+  const result = await runDeploy(
+    deployDeps(fake, {
+      mode: "preflight",
+      billingRevision: BILLING_SHA,
+      fetchImpl: (url, options) => {
+        assert.ok(!url.endsWith("/readyz") && !url.endsWith("/cloud-readyz"));
+        return fake.fetchImpl(url, options);
+      },
+    }),
+  );
+  assert.equal(result.mode, "preflight");
+  assert.equal(fake.updates().length, 0);
+  assert.equal(
+    parseDeployArgv(["preflight", "--release", "r.json", "--server-revision", SERVER_SHA]).mode,
+    "preflight",
+  );
+});
+
+test("preflight rejects unsafe billing configuration and an ongoing image build", async () => {
+  for (const [settings, message] of [
+    [{ definition: billingDefinition({ instanceCount: 2 }) }, /one replica/],
+    [{ definition: billingDefinition({ serviceUpdateOverride: "{}" }) }, /stop-first/],
+    [{ definition: billingDefinition(), isBuilding: true }, /ongoing app build/],
+  ]) {
+    const fake = caproverFake(settings);
+    await assert.rejects(runDeploy(deployDeps(fake, { mode: "preflight", billingRevision: BILLING_SHA })), message);
+    assert.equal(fake.updates().length, 0);
+  }
+});
+
+test("staging gates image deployment on the read-only safety preflight", () => {
+  const workflow = parse(readFileSync(new URL("../../.github/workflows/deploy-staging.yml", import.meta.url), "utf8"));
+  const steps = workflow.jobs.staging.steps;
+  const preflight = steps.findIndex((step) => step.run?.includes("scripts/runner/deploy.mjs preflight"));
+  const deploy = steps.findIndex((step) => step.uses?.startsWith("caprover/deploy-from-github@"));
+  const apply = steps.findIndex((step) => step.run?.includes("scripts/runner/deploy.mjs apply"));
+  assert.ok(preflight >= 0 && preflight < deploy && deploy < apply);
+  assert.equal(steps[preflight].if, steps[deploy].if);
+  assert.equal(steps[preflight]["continue-on-error"], undefined);
 });
 
 test("cloud rollout waits beyond five minutes so a full request can drain", async () => {

@@ -3,10 +3,11 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import postgres, { type Sql } from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { migrateDatabase } from "../../db/migrate.js";
+import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 /*
  * Migration and database-constraint contract for Agent Schedules:
@@ -23,7 +24,7 @@ let container: StartedPostgreSqlContainer;
 let databaseUrl: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer("postgres:17-alpine").start();
+  container = await startPostgresTestContainer();
   databaseUrl = container.getConnectionUri();
 }, 120_000);
 

@@ -1,5 +1,6 @@
 export * from "./account.js";
 export * from "./agent.js";
+export * from "./agent-permissions.js";
 export * from "./agent-setup.js";
 export * from "./auth.js";
 export * from "./cloud-billing.js";
@@ -21,6 +22,7 @@ export * from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
+export * from "./public-catalog.js";
 export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runtime-config.js";
 export * from "./runtime-configuration-options.js";
 export type { TurnFailureReason } from "./runtime-domain.js";
@@ -30,6 +32,7 @@ export * from "./schedules.js";
 export * from "./sign-in-destination.js";
 export * from "./skill.js";
 export * from "./skill-discovery.js";
+export * from "./skill-preset.js";
 export * from "./skill-source.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,

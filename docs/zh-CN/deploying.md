@@ -1,7 +1,7 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-09-22
+> Last synced with: 2026-10-10
 
 OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI、完成 CLI/Runner 发布的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
@@ -87,6 +87,7 @@ service，不会配置 CapRover 的 server container。
 | `OPENTAG_HOST` | `0.0.0.0` |
 | `OPENTAG_PORT` | `8000` |
 | `OPENTAG_PUBLIC_URL` | App 的 HTTPS URL；hosted environment 拒绝纯 HTTP |
+| `OPENTAG_WEBSITE_ORIGINS` | 可选；逗号分隔的官网来源，追加到公开目录 API 的内置官方来源；本地官网开发允许 loopback HTTP |
 | `OPENTAG_DATABASE_URL` | Staging 数据库的 `postgresql://…` |
 | `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用；签发全部 Account session |
 | `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `BETTER_AUTH_SECRET` 不同；仅用于签名 Slack OAuth state |
@@ -155,6 +156,20 @@ bundle 始终以调用方自己的凭据（Account session、Computer machine to
 
 应先部署 Server 的支持，再部署官网的导航状态提示。检查不可用时，官网保留普通登录入口，进入应用后仍会校验 session。
 
+## 官网目录 API
+
+`GET /api/v1/public/skills` 与 `GET /api/v1/public/mcp-servers` 是内置预置 Skill 目录与 MCP 市场目录的匿名、
+只读、仅展示投影。两者都不校验 Account、session 或任何凭据，也不暴露归档标识、按 Agent 的状态、端点 URL 或
+授权预填字段。
+
+在 `https://app.opentag.build` 上，两个端点默认注册。其他部署在未设置 `OPENTAG_WEBSITE_ORIGINS` 时返回 `404`。
+只要接口被启用，`https://opentag.build` 和 `https://www.opentag.build` 就始终被允许（与登录状态提示一致），
+配置的来源追加在其后，永远不能移除它们；`http://localhost:3000` 这类 loopback HTTP 来源可用于本机官网开发
+调用已部署的 API，其他来源在 hosted environment 中必须使用 HTTPS。配置会在服务器监听前完成校验，非法条目
+会让本次发布失败，而不是以更宽的名单启动。响应为公开缓存（5 分钟），始终带 `Vary: Origin`，且不允许携带凭据。
+
+应先部署 Server 的支持，再让官网读取目录。任一接口不可用时，官网保留原有的目录渲染方式。
+
 ## 手动部署与回滚
 
 现在必须已有匹配的 CLI/Runner 发布产物。只回滚 Runner 时，使用 **Deploy Runner** 并指定当前兼容 Server 的 SHA，
@@ -186,7 +201,3 @@ Job summary 会记录部署的 revision、镜像 tag 和镜像 digest。之后�
 - App 的 Deployment 页显示新的镜像引用和成功的构建日志。
 - `https://<app>/healthz` 返回成功。
 - App 日志中出现预期 revision 的 migration 与监听日志。
-
-## 私有云端部署管理
-
-云端应用及 Runner 的协调发布参见[云端计费](./cloud-billing.md#协调-caprover-部署)。将公共仓库 Actions 变量 `OPENTAG_DEPLOYMENT_AUTHORITY` 设为 `private` 后，本仓库部署任务停用，制品发布继续运行。

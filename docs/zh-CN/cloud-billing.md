@@ -14,7 +14,7 @@ OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它�
 
 计费包在启动时验证所有套餐，要求存在 `standard`，并精确转换为整数微美元。账户被分配未知套餐时拒绝新调用。结算计算 `(input-cached)*input_rate + cached*cached_rate + output*output_rate`，除以一百万，并用整数运算统一向上取整。每次调用准入时保存账户费率，因此套餐与费率修改只影响后续调用。客户费率独立于 Router 的 Provider 成本账本；应结合所提供的模型审核费率，避免昂贵模型按低于成本的价格销售。更新费率时，提交私有套餐文件，更新应用的 `cloud-billing.json` 固定版本，再部署应用。套餐文件不进入公开源码，但会打包进生产镜像。
 
-账户和 Agent 云端统计读取同一调用记录的最终计数，包括关闭客户计费时的调用。本地报告与云端账本按发送时保存的执行来源合并；云端任务报告中的 Token 不重复计入。任务数量及结果仍来自任务报告。账户用量包含连通性测试，支持 1、7、30 和 90 天总量及每日图表。缺失计数视为不完整数据。
+账户和 Agent 云端统计读取同一调用记录的最终计数，包括关闭客户计费时的调用。本地报告与云端账本按发送时保存的执行来源合并；云端任务报告中的 Token 不重复计入。任务数量及结果仍来自任务报告。调用账本无法证明每个任务的用量完整性，因此保守地不将云端任务计入已测量任务数。账户用量包含连通性测试，支持 1、7、30 和 90 天总量及每日图表。缺失计数视为不完整数据。
 
 ## 额度与结算
 
@@ -36,7 +36,7 @@ OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它�
 
 公开仓库的 `Docker`、`Deploy Staging` 和 `Deploy Runner` 工作流一起发布应用和计费包。`cloud-billing.json` 固定私有包提交。配置仅可读 `first-tree-ai/opentag-billing` Contents 的 `OPENTAG_BILLING_READ_TOKEN`；可信 main 镜像构建检出该提交，针对应用运行检查及测试，再打包进 `ghcr.io/first-tree-ai/opentag:<应用 SHA>`。镜像记录两个源代码版本。PR 和默认本地镜像不需要私有访问权限。生产镜像可能公开，包含私有包代码；运行时凭证保存在 CapRover。
 
-先部署 Router 用量端点，并使用 OpenTag 租户键验证（`llm` scope）。`OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` 指向其 `/v1` 地址，`OPENTAG_CLOUD_MODEL_MASTER_KEY` 使用该租户键。验证每个模型的最终、待核对、缺失及拒绝状态，再开启云端身份、云端模型、计费及 `OPENTAG_AUTO_MIGRATE=true`。启动先运行公开迁移再创建服务。Staging 工作流发布应用和 CLI/Runner，部署应用后启用匹配的 Runner。`/cloud-readyz` 验证应用和计费版本；`/readyz` 独立于计费可用性。
+先部署 Router 用量端点，并使用 OpenTag 租户键验证（`llm` scope）。`OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` 指向其 `/v1` 地址，`OPENTAG_CLOUD_MODEL_MASTER_KEY` 使用该租户键。验证每个模型的最终、待核对、缺失及拒绝状态，再开启云端身份、云端模型、计费及 `OPENTAG_AUTO_MIGRATE=true`。启动先运行公开迁移再创建服务。Staging 工作流发布应用和 CLI/Runner，部署应用前检查 CapRover 计费安全配置，再启用匹配的 Runner。部署同时要求 `/readyz` 应用就绪和 `/cloud-readyz` 计费就绪，并验证预期镜像版本。
 
 使用单应用副本，无 predeploy function，更新和回滚均先停止旧实例。`UpdateConfig` 为 `{"Order":"stop-first","Parallelism":1,"FailureAction":"pause"}`，`RollbackConfig` 为 `{"Order":"stop-first","Parallelism":1}`，`TaskTemplate.ContainerSpec.StopGracePeriod` 至少为 `(OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS + 30000) * 1000000` 纳秒。默认 600 秒超时需要 `630000000000`，避免启动恢复误将其他活动进程调用视为遗留调用。让镜像提供 `OPENTAG_BUILD_REVISION` 和 `OPENTAG_BILLING_REVISION`。备份共享数据库；已运行的迁移需要兼容镜像，优先向前修复。
 

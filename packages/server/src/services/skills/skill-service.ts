@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   type ListAgentSkillsResponse,
+  type ReadSkillFileQuery,
+  type ReadSkillFileResponse,
   type RuntimeSkillManifest,
   SKILL_MAX_PER_AGENT,
   type Skill,
@@ -23,6 +25,7 @@ import {
 } from "./errors.js";
 import { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-archive.js";
 import type { SkillReadLimits } from "./skill-archive-reader.js";
+import { readSkillFile } from "./skill-file-reader.js";
 import {
   bestEffortDeleteSkillObject,
   discardUnreferencedObject,
@@ -62,6 +65,25 @@ export interface SkillUploadInput {
   declaredSha256: string;
   replace: boolean;
   source: SkillSource;
+  /**
+   * The row a `replace` was decided against, for callers that decided from an earlier read.
+   *
+   * `replace: true` alone means "whatever currently holds this name may be overwritten", which is
+   * correct for a user acting on what they see but wrong for a caller replaying an older decision:
+   * the row can move on between that read and this write, and a plain `replace` would then overwrite
+   * the newer content and stamp its own provenance over it. Passing the read row turns the write into
+   * "replace exactly this row": a row that is gone, was replaced, or changed provenance loses the
+   * race as `SKILL_REVISION_CONFLICT` instead. The check runs inside the write path against the same
+   * read its conditional update uses, so no caller-side re-check can leave a window open.
+   */
+  expectedRow?: SkillRowExpectation;
+}
+
+/** Identity of the row an upload planned its replace against: what a write must still be looking at. */
+export interface SkillRowExpectation {
+  id: string;
+  revision: number;
+  source: SkillSource;
 }
 
 export interface SkillBundle {
@@ -93,6 +115,17 @@ function toSkill(row: SkillRow): Skill {
 
 function toSkillDetail(row: SkillRow): SkillDetail {
   return { ...toSkill(row), files: row.files, filesTruncated: row.filesTruncated };
+}
+
+/**
+ * Whether the row an upload planned against is still the row it read. Any interleaved write path
+ * bumps `revision`, and provenance is compared as well so a future writer that changes `source`
+ * without touching content still invalidates the plan.
+ */
+function matchesExpectedRow(row: SkillRow | undefined, expected: SkillRowExpectation): boolean {
+  return (
+    row !== undefined && row.id === expected.id && row.revision === expected.revision && row.source === expected.source
+  );
 }
 
 export class SkillService {
@@ -174,6 +207,18 @@ export class SkillService {
     return this.#openBundle(await this.#requireSkill(agentId, skillId));
   }
 
+  async readFile(
+    callerUserId: string,
+    agentId: string,
+    skillId: string,
+    query: ReadSkillFileQuery,
+  ): Promise<ReadSkillFileResponse> {
+    await this.#requireAgent(callerUserId, agentId);
+    const row = await this.#requireSkill(agentId, skillId);
+    if (query.archiveSha256 !== row.archiveSha256) throw skillRevisionConflict();
+    return readSkillFile(await this.#openBundle(row), query.path, this.#readLimits);
+  }
+
   // ----------------------------------------------------------------- computer
 
   async manifestForComputer(computerId: string, agentId: string): Promise<RuntimeSkillManifest> {
@@ -208,9 +253,13 @@ export class SkillService {
     return this.#listSkills(agentId);
   }
 
-  async uploadForAgent(agentId: string, input: Omit<SkillUploadInput, "source">): Promise<SkillDetail> {
+  async uploadForAgent(
+    agentId: string,
+    input: Omit<SkillUploadInput, "source">,
+    source: SkillSource = "agent_upload",
+  ): Promise<SkillDetail> {
     const agent = await this.#requireActiveAgent(agentId);
-    return this.#upload(agent.accountId, agentId, { ...input, source: "agent_upload" });
+    return this.#upload(agent.accountId, agentId, { ...input, source });
   }
 
   async openBundleForAgent(agentId: string, name: string): Promise<SkillBundle> {
@@ -241,6 +290,9 @@ export class SkillService {
     );
     const existing = await this.#findByName(agentId, normalized.manifest.name);
     if (existing && !input.replace) throw skillNameConflict();
+    if (input.expectedRow !== undefined && !matchesExpectedRow(existing, input.expectedRow)) {
+      throw skillRevisionConflict("The Skill changed concurrently; retry the upload");
+    }
     return existing
       ? this.#replaceSkill(accountId, existing, input, normalized)
       : this.#insertSkill(accountId, agentId, input, normalized);

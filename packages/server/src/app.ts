@@ -39,6 +39,7 @@ import { type McpGatewayRoutesOptions, registerMcpGatewayRoutes } from "./api/mc
 import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
 import { registerMcpServerRoutes } from "./api/mcp-servers.js";
 import { registerMeRoutes } from "./api/me.js";
+import { registerPublicCatalogRoutes } from "./api/public-catalog.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { registerRunnerWorkspaceRoutes } from "./api/runner-workspace.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
@@ -58,6 +59,7 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { CloudBilling } from "./cloud-billing.js";
 import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
+import type { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
   type AgentRuntimeTestService,
@@ -92,7 +94,7 @@ import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-s
 import { ScheduleServiceError } from "./services/schedules/index.js";
 import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
-import { type SkillService, SkillServiceError } from "./services/skills/index.js";
+import { type SkillPresetService, type SkillService, SkillServiceError } from "./services/skills/index.js";
 import type { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
@@ -108,6 +110,7 @@ export interface CreateAppOptions {
   /** Whether this deployment can start the first-party Slack OAuth flow. */
   slackOAuthAvailable?: boolean;
   agentSetupService?: AgentSetupService;
+  agentRuntimeOptionsService?: AgentRuntimeOptionsService;
   agentRuntimeTestService?: AgentRuntimeTestService;
   contextTreeOperationService?: ContextTreeOperationService;
   computerService?: ComputerService;
@@ -147,6 +150,11 @@ export interface CreateAppOptions {
     publicUrl: string;
   };
   browserAuth?: BrowserAuthRoutesOptions;
+  /**
+   * Additional website origins (`OPENTAG_WEBSITE_ORIGINS`) that may read the public catalog APIs.
+   * The official origins apply by themselves on the official deployment; this list extends them.
+   */
+  publicCatalog?: { origins: readonly string[] };
   /** Relay for Web App and CLI failures. Always registered; without a reporter the relay only logs. */
   errorReporting?: ErrorReportRoutesOptions;
   imBindingService?: ImBindingService;
@@ -182,6 +190,8 @@ export interface CreateAppOptions {
     service: SkillService;
     /** Remote installation; absent when a caller wires only the upload/management surface. */
     remote?: RemoteSkillService;
+    /** Preset catalog discovery and installation; absent when a caller wires only the base surface. */
+    preset?: SkillPresetService;
     proofs?: Pick<SessionCliProofService, "authenticate">;
   };
   slackOAuth?: SlackOAuthRouteOptions;
@@ -506,6 +516,18 @@ function registerSessionProofRoutes(
   if (options.runtimeAgentSchedules) registerRuntimeAgentScheduleRoutes(app, options.runtimeAgentSchedules);
 }
 
+/**
+ * Anonymous catalog reads for the official website, registered independently of the auth surface —
+ * no session, proof, or credential is ever consulted — and the module itself decides whether this
+ * deployment exposes them.
+ */
+function registerPublicCatalog(app: FastifyInstance, options: CreateAppOptions): void {
+  registerPublicCatalogRoutes(app, {
+    publicOrigin: options.browserAuth?.publicOrigin,
+    origins: options.publicCatalog?.origins ?? [],
+  });
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
     /*
@@ -527,6 +549,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const databaseReadinessProbe = createDatabaseReadinessProbe(healthDatabase);
 
   registerSessionProofRoutes(app, options);
+  registerPublicCatalog(app, options);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
   if (options.runtimeWeb) registerRuntimeWebRoutes(app, options.runtimeWeb);
   if (options.mcpGateway) registerMcpGatewayRoutes(app, options.mcpGateway);
@@ -662,6 +685,7 @@ export function createApp(options: CreateAppOptions = {}) {
             : undefined),
         options.slackOAuthAvailable,
         options.imResourceService,
+        options.agentRuntimeOptionsService,
       );
     }
     registerAvailableAccountRoutes(app, authService, options, authOptions);
@@ -689,12 +713,19 @@ export function createApp(options: CreateAppOptions = {}) {
       });
     }
     if (options.skills) {
-      registerSkillRoutes(app, options.skills.service, authService, authOptions, options.skills.remote);
+      registerSkillRoutes(
+        app,
+        options.skills.service,
+        authService,
+        authOptions,
+        options.skills.remote,
+        options.skills.preset,
+      );
       if (options.machineAuthService) {
         registerComputerSkillRoutes(app, options.machineAuthService, options.skills.service);
       }
       if (options.skills.proofs) {
-        registerRuntimeSkillRoutes(app, options.skills.service, options.skills.proofs);
+        registerRuntimeSkillRoutes(app, options.skills.service, options.skills.proofs, options.skills.preset);
       }
     }
     if (options.imResourceService && options.machineAuthService) {

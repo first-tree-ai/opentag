@@ -18,7 +18,9 @@ import { CloudModelTransportLimitsSchema } from "./cloud-model-request.js";
  *
  * Model choices are NOT configured here: the single authority is the deployment Router's
  * authenticated `GET {upstreamBaseUrl}/models` (tenant permissions and the priced registry
- * applied), consumed through the Server-owned CloudModelCatalog.
+ * applied), consumed through the Server-owned CloudModelCatalog. The catalog prefers its
+ * configured default when the validated Router list offers it, otherwise the first validated
+ * Router model. There is no default-model override.
  */
 
 const UPSTREAM_BASE_PATTERN = /^https:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._~/-]*)?$/;

@@ -40,6 +40,10 @@ The client logger follows this `OPENTAG_LOG_LEVEL` matrix:
 | Any mode | valid `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent` | The selected level |
 | Any mode | invalid value | `info`, plus one safe warning |
 
+The daemon service resolves `OPENTAG_LOG_LEVEL` from its `config/daemon.env` file, the same file that
+carries the daemon's other environment variables, so the level applies to the service process without
+editing the LaunchAgent or systemd unit.
+
 `imAttrs()` and `runtimeAttrs()` are OpenTelemetry helpers. They emit dotted span keys such as
 `opentag.im.binding.id` and `opentag.runtime.connection.id`; do **not** pass their result as a Pino payload. Map values to
 the fixed camelCase Pino vocabulary instead.

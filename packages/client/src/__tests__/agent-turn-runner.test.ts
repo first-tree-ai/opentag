@@ -1,13 +1,20 @@
 import { randomUUID } from "node:crypto";
 import {
+  ClientRuntimeBusinessFrameSchema,
   type DirectImMessageDeliveryRequest,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
+  RuntimeApprovalRequestSchema,
+  RuntimeFrameEnvelopeSchema,
   type RuntimeImSteerRequest,
+  ServerRuntimeBusinessFrameSchema,
+  type TurnActivityRequest,
+  TurnActivityRequestSchema,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AgentProviderError } from "../agent-runtime/errors.js";
-import type { AgentRunResult, AgentRuntimeEventSink } from "../agent-runtime/types.js";
+import type { AgentRunResult, AgentRuntimeEventSink, JsonValue } from "../agent-runtime/types.js";
 import { AgentRuntimeProviderUnavailableError } from "../runtime/agent-runtime-provider-registry.js";
 import {
   AgentTurnRunner,
@@ -32,6 +39,205 @@ import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("AgentTurnRunner", () => {
+  it.each(["direct", "steer"])("keeps legacy attachment metadata in %s input without downloading", (kind) => {
+    const root = delivery();
+    const request = kind === "direct" ? root : steerRequest();
+    request.content.resources = [
+      {
+        imMessageId: request.imMessageId,
+        ordinal: 0,
+        kind: "file",
+        filename: "budget-review-819.csv",
+        mediaType: "text/csv",
+        sizeBytes: 42,
+        availability: "unavailable",
+      },
+    ];
+    const frozenRequest = JSON.stringify(request);
+    const input = buildAgentInput(request, undefined, root.runtime);
+    const metadata = input.items.find((item) => item.text?.includes("budget-review-819.csv"))?.text;
+    expect(metadata).toContain(request.imMessageId);
+    expect(metadata).toContain('"ordinal":0');
+    expect(metadata).toContain('"availability":"unavailable"');
+    expect(metadata).toContain("providerRef");
+    expect(request.content.text).toBe(kind === "direct" ? "hello" : "updated direction");
+    expect(JSON.stringify(request)).toBe(frozenRequest);
+  });
+
+  it("bounds legacy attachment metadata without splitting resource records", () => {
+    const request = delivery();
+    request.content.resources = Array.from({ length: 16 }, (_, ordinal) => ({
+      imMessageId: request.imMessageId,
+      ordinal,
+      kind: "file" as const,
+      filename: "\u0000".repeat(512),
+      availability: "available" as const,
+    }));
+    const metadata =
+      buildAgentInput(request).items.find((item) => item.text?.includes("Attachment metadata"))?.text ?? "";
+    expect(metadata).toContain("metadata omitted");
+    expect(Buffer.byteLength(metadata)).toBeLessThanOrEqual(RUNTIME_DIRECT_TEXT_MAX_BYTES);
+    for (const line of metadata.split("\n").filter((value) => value.startsWith("{"))) {
+      expect(() => JSON.parse(line)).not.toThrow();
+    }
+    request.content.resources = [];
+    expect(buildAgentInput(request).items).toHaveLength(2);
+  });
+
+  it.each([
+    "accept",
+    "decline",
+    "oversized",
+    "question",
+    "response-failed",
+    "cancel-failed",
+    "no-details",
+    "codex-command",
+    "permissions",
+    "external-directory",
+    "file-edit",
+    "command-array",
+    "numeric-action",
+    "empty",
+  ] as const)("routes an approval (%s) to the same live provider run", async (scenario) => {
+    const options = approvalScenario(scenario);
+    const { decision, kind, automatic, responseFails } = options;
+    const h = outgoingHarness();
+    let observer: AgentRuntimeEventSink;
+    let resolveRun!: (result: AgentRunResult) => void;
+    const runResult = new Promise<AgentRunResult>((resolve) => {
+      resolveRun = resolve;
+    });
+    let runSignal: AbortSignal | undefined;
+    const respond = vi.fn(async () => undefined);
+    if (responseFails) respond.mockRejectedValue(new Error("cannot answer dialog"));
+    const prompt = vi.fn(async (request: { signal: AbortSignal }) => {
+      runSignal = request.signal;
+      await observer({ type: "run_started", runId: "turn-1" });
+      await observer({
+        type: "interaction_requested",
+        runId: "turn-1",
+        request: {
+          kind,
+          requestId: "number:0",
+          title: "Approve Bash",
+          message: options.message,
+          details: options.details,
+        },
+      });
+      return runResult;
+    });
+    const send = vi.fn(async (_frame: unknown) => undefined);
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send },
+      custody: { markReporting: h.markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      reportOwner: { create: h.create, submit: h.submit } as unknown as TurnReportOwner,
+      runtimeManager: {
+        sessionKind: () => "visible",
+        ensureRuntime: async () => ({ prompt, respond }),
+        cwd: () => "/workspace",
+        observe: (_id: string, listener: AgentRuntimeEventSink) => {
+          observer = listener;
+          return () => undefined;
+        },
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+      logger: recordingLogger([]),
+    });
+    runner.start(liveOwner(h.request));
+    if (automatic) {
+      await vi.waitFor(() => expect(respond).toHaveBeenCalled());
+      expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: "approval:request" }));
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind,
+          decision: options.automaticDecision,
+        }),
+      );
+      if (responseFails) await vi.waitFor(() => expect(runSignal?.aborted).toBe(true));
+      resolveRun({ runId: "turn-1", status: "completed", output: [] });
+      await runner.settled();
+      return;
+    }
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "approval:request",
+        turnId: "turn-1",
+        requestId: expect.any(String),
+        description: options.description,
+      }),
+    );
+    const approval = RuntimeApprovalRequestSchema.parse(
+      send.mock.calls.find(([frame]) => (frame as { type?: string }).type === "approval:request")?.[0],
+    );
+    expect(ClientRuntimeBusinessFrameSchema.parse(approval)).toEqual(approval);
+    expect(RuntimeFrameEnvelopeSchema.parse(approval).requestId).toBe(approval.requestId);
+    expect(approval.requestId).not.toBe("number:0");
+    const reply = {
+      type: "approval:decision" as const,
+      turnId: "turn-1",
+      requestId: approval.requestId,
+      sessionId: h.request.sessionId,
+      deliveryId: h.request.deliveryId,
+      placementGeneration: 1,
+      decision,
+    };
+    expect(RuntimeFrameEnvelopeSchema.parse(reply).requestId).toBe(reply.requestId);
+    expect(ServerRuntimeBusinessFrameSchema.parse(reply)).toEqual(reply);
+    expect(await runner.respondToApproval({ ...reply, sessionId: "wrong" })).toMatchObject({ status: "stale" });
+    expect(await runner.respondToApproval({ ...reply, requestId: randomUUID() })).toMatchObject({ status: "stale" });
+    expect(respond).not.toHaveBeenCalled();
+    expect(await runner.respondToApproval(reply)).toMatchObject({
+      status: responseFails ? "stale" : "applied",
+    });
+    expect(respond).toHaveBeenCalledWith({
+      expectedRunId: "turn-1",
+      requestId: "number:0",
+      kind: "approval",
+      decision,
+      scope: "run",
+    });
+    expect(await runner.respondToApproval(reply)).toMatchObject({ status: "stale" });
+    expect(respond).toHaveBeenCalledTimes(1);
+    resolveRun({ runId: "turn-1", status: "completed", output: [] });
+    await runner.settled();
+    expect(await runner.respondToApproval(reply)).toMatchObject({ status: "stale" });
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("reports actual execution and terminal liveness (failure=%s)", async (fail) => {
+    const h = outgoingHarness();
+    h.request.agentId = randomUUID();
+    h.request.runtime.agentId = h.request.agentId;
+    h.request.sessionId = randomUUID();
+    h.request.deliveryId = randomUUID();
+    h.request.content.providerRef = providerRef("1.1");
+    h.capabilityVersion.mockImplementation((capability?: string) => (capability === "runtime.turnActivity" ? 1 : 2));
+    h.prompt.mockImplementationOnce(async () => {
+      await h.emit({ type: "run_started", runId: "turn-1" });
+      await h.emit({
+        type: "run_completed",
+        runId: "unrelated",
+        result: { runId: "unrelated", status: "completed", output: [] },
+      });
+      expect(h.send.mock.calls.map(([frame]) => frame).filter((frame) => frame.type === "turn:activity")).toMatchObject(
+        [{ phase: "running" }],
+      );
+      if (fail) throw new Error("worker failed");
+      return { runId: "turn-1", status: "completed", output: [] };
+    });
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    const frames = h.send.mock.calls.map(([frame]) => frame).filter((frame) => frame.type === "turn:activity");
+    for (const frame of frames) expect(TurnActivityRequestSchema.safeParse(frame).success).toBe(true);
+    expect(frames.map((frame) => frame.phase)).toEqual(["running", "terminal"]);
+    const terminal = frames.at(-1) as TurnActivityRequest;
+    h.runner.handleActivityResult({ ...terminal, type: "turn:activity:result", status: "recorded" });
+    h.runner.stop();
+  });
+
   it("compiles only dynamic Session, message, history, and resource context into AgentInput", () => {
     const request = delivery();
     request.runtime.instructions.session = "session instructions";
@@ -63,10 +269,14 @@ describe("AgentTurnRunner", () => {
     expect(input.items[0]?.text).toContain("The IM participant is a separate audience");
     expect(input.items[0]?.text).toContain("The official slack api CLI is your outbox and the only path");
     expect(input.items[0]?.text).toContain("only records it in OpenTag; it does not deliver it");
-    expect(input.items[0]?.text).toContain("run the provider CLI command before ending this Turn");
-    expect(input.items[0]?.text).toContain("Choosing to take no provider action remains valid");
+    expect(input.items[0]?.text).toContain("Before ending this Turn, send a concise completion");
+    expect(input.items[0]?.text).toContain("send a concise completion, failure, or blocker update");
+    expect(input.items[0]?.text).toContain("including after an approval decision");
+    expect(input.items[0]?.text).toContain("Your final text to OpenTag does not count as the reply");
+    expect(input.items[0]?.text).toContain("If the human explicitly asked for silence");
+    expect(input.items[0]?.text).toContain("does not waive a pre-work reaction required by the managed instructions");
     expect(input.items[0]?.text).not.toContain("Your final text is not sent to the IM provider automatically");
-    expect(input.items[0]?.text).toContain("OpenTag has no message send, reply, or reaction interface");
+    expect(input.items[0]?.text).toContain("OpenTag has no hosted message send, reply, or reaction tool");
     expect(input.items[0]?.text).toContain("query the provider before deciding whether to retry");
     expect(input.items[0]?.text).toContain("Attention: direct");
     expect(input.items[0]?.text).toContain(JSON.stringify(request.content.providerRef));
@@ -96,12 +306,8 @@ describe("AgentTurnRunner", () => {
     expect(feishuInput.items[0]?.text).toContain("lark-cli im --help");
     expect(feishuInput.items[0]?.text).toContain("never write literal `\\n` sequences for layout");
     expect(feishuInput.items[0]?.text).toContain("two or more literal `\\n` sequences");
-    expect(feishuInput.items[0]?.text).toContain(
-      "IFS= read -r -d '' OPENTAG_LARK_BODY <<'EOF' || true\nfirst line\n\nsecond line",
-    );
-    expect(feishuInput.items[0]?.text).toContain("$OpenTagLarkBody = @'\nfirst line\n\nsecond line");
-    expect(feishuInput.items[0]?.text).toContain('lark-cli ... --markdown "$OPENTAG_LARK_BODY"');
-    expect(input.items[0]?.text).not.toContain("OPENTAG_LARK_BODY");
+    expect(feishuInput.items[0]?.text).toContain("lark-cli im +messages-reply --message-id om_xxx --markdown");
+    expect(input.items[0]?.text).not.toContain("lark-cli im +messages-reply");
     expect(input.items[0]?.text).toContain("slack api chat.postMessage --json");
     expect(input.items[0]?.text).toContain("never key=value pairs");
     expect(input.items[0]?.text).toContain(
@@ -158,23 +364,60 @@ describe("AgentTurnRunner", () => {
     expect(context).toContain(JSON.stringify(request.content.providerRef));
     expect(context).toContain("overheard the message");
     expect(context).toContain("avoid meaningless, duplicate, intrusive");
+    expect(context).toContain(
+      "Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
+    );
     expect(context).toContain("Attention does not change provider CLI or credential availability");
   });
 
-  it("compiles observer role independently from attention without removing Session credentials", () => {
-    const request = { ...delivery(), attention: "ambient" as const, replyRole: "observer" as const };
-    const context = buildAgentInput(request).items[0]?.text;
-    expect(context).toContain("Attention: ambient");
-    expect(context).toContain("Reply role: observer");
-    expect(context).toContain("A Thread Session owns the provider reply");
-    expect(context).toContain("do not reply, react, or perform any other provider mutation");
-    expect(context).toContain("The CLI and credentials remain available");
-    expect(context).toContain("does not change this Session's authority or credential availability");
+  it("compiles observer restrictions independently from attention and provider without removing Session credentials", () => {
+    const feishuRef = {
+      provider: "feishu" as const,
+      teamBrand: "feishu" as const,
+      appId: "app-1",
+      botOpenId: "bot-1",
+      chatId: "chat-1",
+      messageId: "message-1",
+    };
+    for (const attention of ["ambient", "direct"] as const) {
+      for (const ref of [providerRef("1710000000.000000"), feishuRef]) {
+        const request = { ...delivery(), attention, replyRole: "observer" as const };
+        request.content.providerRef = ref;
+        const input = buildAgentInput(request);
+        const context = input.items[0]?.text;
+        expect(context).toContain(`Attention: ${attention}`);
+        expect(context).toContain("Reply role: observer");
+        // The Thread Session owns the task execution as well as the provider reply.
+        expect(context).toContain("A Thread Session owns the provider reply and the task execution");
+        expect(context).toContain("do not reply, react, or perform any other provider mutation");
+        expect(context).toContain("do not investigate, execute or repeat, delegate, or create artifacts for that task");
+        expect(context).toContain("Finish this observer Turn without tool calls or task work");
+        // The observer copy is ambient channel context only, whatever the attention flag says; no
+        // generic owner guidance may tell the observer to handle the task or choose a reply.
+        expect(context).toContain("Treat it as ambient channel context only");
+        expect(context).not.toContain("Handle the message normally");
+        expect(context).not.toContain("choose whether to reply");
+        // Provider mutation prohibition and Session credential/CLI availability are preserved.
+        expect(context).toContain("Do not run a provider CLI mutation for this observer copy");
+        expect(context).toContain("The CLI and credentials remain available");
+        expect(context).toContain("Reply role constrains task execution and provider actions for this delivery");
+        expect(context).toContain("does not change this Session's authority or credential availability");
+        // The inbound message itself is not dropped.
+        expect(input.items[1]?.text).toBe("hello");
+      }
+    }
+
+    const directObserverContext = buildAgentInput({ ...delivery(), replyRole: "observer" }).items[0]?.text;
+    expect(directObserverContext).toContain("Do not run a provider CLI mutation for this observer copy");
+    expect(directObserverContext).not.toContain("Before ending this Turn, send a concise completion");
 
     const ownerContext = buildAgentInput(delivery()).items[0]?.text;
     expect(ownerContext).toContain("Reply role: owner");
-    expect(ownerContext).toContain("may reply, react, send another provider message, or take no provider action");
+    expect(ownerContext).toContain("For direct requests, deliver the result through the provider CLI");
+    expect(ownerContext).toContain("does not waive a pre-work reaction required by the managed instructions");
+    expect(ownerContext).not.toContain("take no provider action");
     expect(ownerContext).not.toContain("must reply");
+    expect(ownerContext).not.toContain("observer Turn");
   });
 
   it("exposes provider-native thread facts without adding a provider reply policy", () => {
@@ -629,7 +872,11 @@ describe("AgentTurnRunner", () => {
         },
       } as unknown as SessionRuntimeManager,
       credentialEnvironment: credentialEnvironment(),
-      resourceFetcher: { fetchForTurn: vi.fn(async () => "resource") } as unknown as ImResourceFetcher,
+      resourceFetcher: {
+        fetchForTurn: vi.fn(() => {
+          throw new Error("Attachments must not be prefetched");
+        }),
+      } as unknown as ImResourceFetcher,
       onRuntimeEvent,
     });
     runner.start(liveOwner(delivery()));
@@ -979,6 +1226,9 @@ describe("AgentTurnRunner", () => {
     expect(credentials.cleanup).toHaveBeenCalledWith("session-1", "exec-1");
 
     const driftedEnsure = vi.fn();
+    const driftedPlanPrepare = vi.fn(async () => {
+      throw new ProviderCliTurnPlanError("artifact_drifted", "fingerprint changed");
+    });
     const drifted = new AgentTurnRunner({
       bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
       connection: { send: vi.fn(async () => undefined) },
@@ -989,6 +1239,7 @@ describe("AgentTurnRunner", () => {
       reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
       runtimeManager: {
         ensureRuntime: driftedEnsure,
+        cwd: () => "/workspace",
         sessionKind: () => "visible",
       } as unknown as SessionRuntimeManager,
       credentialEnvironment: {
@@ -996,14 +1247,16 @@ describe("AgentTurnRunner", () => {
         cleanup: vi.fn(async () => undefined),
       },
       turnPlan: {
-        prepare: async () => {
-          throw new ProviderCliTurnPlanError("artifact_drifted", "fingerprint changed");
-        },
+        prepare: driftedPlanPrepare,
         cleanup: vi.fn(async () => undefined),
       },
     });
     drifted.start(liveOwner({ ...delivery(), deliveryId: "delivery-drift" }));
     await drifted.settled();
+    expect(driftedPlanPrepare).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "feishu" }),
+      expect.any(AbortSignal),
+    );
     expect(driftedEnsure).not.toHaveBeenCalled();
     expect(create).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -1097,7 +1350,6 @@ describe("AgentTurnRunner", () => {
     let resolveReporting!: () => void;
     let observer: AgentRuntimeEventSink | undefined;
     let receipt: RecordedSteerInput | undefined;
-    let invalidateAfterFetch = false;
     const runtimeState = { phase: "running" as const, activeRunId: "turn-1", queuedRunCount: 0 };
     const capabilities = { steer: "supported" as "supported" | "unsupported", interactions: "unsupported" as const };
     const steer = vi.fn().mockRejectedValueOnce(new Error("steer failed")).mockResolvedValue(undefined);
@@ -1160,11 +1412,8 @@ describe("AgentTurnRunner", () => {
         },
       } as unknown as SessionRuntimeManager,
       resourceFetcher: {
-        fetchForTurn: vi.fn(async () => {
-          if (invalidateAfterFetch) {
-            invalidateAfterFetch = false;
-            runtimeState.activeRunId = "turn-other";
-          }
+        fetchForTurn: vi.fn(() => {
+          throw new Error("Attachments must not be prefetched");
         }),
       } as unknown as ImResourceFetcher,
       credentialEnvironment: credentialEnvironment(),
@@ -1186,11 +1435,6 @@ describe("AgentTurnRunner", () => {
     capabilities.steer = "supported";
     runtimeState.activeRunId = "turn-other";
     await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
-    runtimeState.activeRunId = "turn-1";
-    invalidateAfterFetch = true;
-    await expect(
-      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-3" }),
-    ).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
     runtimeState.activeRunId = "turn-1";
     await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
     await expect(
@@ -1435,20 +1679,28 @@ function outgoingHarness() {
     requestId: randomUUID(),
     resultHash: "c".repeat(64),
   }));
-  const capabilityVersion = vi.fn((): number | undefined => 2);
+  const capabilityVersion = vi.fn((_capability?: string): number | undefined => 2);
   const prepare = vi.fn(async (_input: ProviderCliTurnPlanPrepareInput, _signal?: AbortSignal) => undefined);
   const prompt = vi.fn(async (): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }));
   const logs: RecordedLog[] = [];
+  let observer: AgentRuntimeEventSink | undefined;
+  const send = vi.fn(async (_frame: { type: string; phase?: string }) => undefined);
   const runner = new AgentTurnRunner({
+    now: Date.now,
     bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
-    connection: { send: vi.fn(async () => undefined), capabilityVersion },
+    connection: { send, capabilityVersion },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
     reportOwner: { create, submit } as unknown as TurnReportOwner,
     runtimeManager: {
       sessionKind: () => "visible",
       ensureRuntime: async () => ({ prompt }),
       cwd: () => "/workspace",
-      observe: () => () => undefined,
+      observe: (_sessionId: string, sink: AgentRuntimeEventSink) => {
+        observer = sink;
+        return () => {
+          observer = undefined;
+        };
+      },
     } as unknown as SessionRuntimeManager,
     credentialEnvironment: {
       prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
@@ -1458,7 +1710,21 @@ function outgoingHarness() {
     outgoingReplies: { collect, cleanup },
     logger: recordingLogger(logs),
   });
-  return { runner, request, collect, cleanup, markReporting, submit, create, capabilityVersion, prepare, prompt, logs };
+  return {
+    send,
+    emit: (event: Parameters<AgentRuntimeEventSink>[0]) => observer?.(event),
+    runner,
+    request,
+    collect,
+    cleanup,
+    markReporting,
+    submit,
+    create,
+    capabilityVersion,
+    prepare,
+    prompt,
+    logs,
+  };
 }
 
 function liveOwner(request: DirectImMessageDeliveryRequest): LiveTurnOwner {
@@ -1520,6 +1786,57 @@ function steerRequest(): RuntimeImSteerRequest {
     expectedTurnId: "turn-1",
     attention: "direct",
     content: { kind: "text", text: "updated direction", providerRef: providerRef("1710000000.000002") },
+  };
+}
+
+function approvalScenario(scenario: string) {
+  const reviewActions: Record<string, { details: JsonValue; description: string }> = {
+    permissions: {
+      details: { permissions: { network: true, fileSystem: { write: ["/external/report.txt"], read: null } } },
+      description: "network: true\nfile System: write: /external/report.txt\nread: null",
+    },
+    "external-directory": {
+      details: { grantRoot: "/external", threadId: "native-thread" },
+      description: "/external",
+    },
+    "file-edit": {
+      details: { file_path: "/external/file.txt", threadId: "native-thread", mode: 420, overwrite: false },
+      description: "file path: /external/file.txt\nmode: 420\noverwrite: false",
+    },
+    "command-array": { details: ["curl", "-I", "https://example.com"], description: "curl\n-I\nhttps://example.com" },
+    "numeric-action": { details: 1, description: "1" },
+  };
+  const reviewAction = reviewActions[scenario];
+  return {
+    decision: scenario === "accept" ? ("accept" as const) : ("decline" as const),
+    kind: ["question", "cancel-failed"].includes(scenario) ? ("question" as const) : ("approval" as const),
+    automatic: ["oversized", "question", "cancel-failed", "empty"].includes(scenario),
+    responseFails: ["response-failed", "cancel-failed"].includes(scenario),
+    message:
+      scenario === "empty" || reviewAction
+        ? undefined
+        : scenario === "oversized"
+          ? "x".repeat(6001)
+          : scenario === "codex-command"
+            ? "Publish changes?"
+            : "git push",
+    details: ((): JsonValue | undefined =>
+      reviewAction
+        ? reviewAction.details
+        : ["no-details", "empty"].includes(scenario)
+          ? undefined
+          : scenario === "codex-command"
+            ? {
+                command: "git push",
+                threadId: "native-thread",
+                itemId: "native-item",
+                availableDecisions: ["accept", "decline"],
+                proposedExecpolicyAmendment: ["git", "push"],
+              }
+            : { command: "git push" })(),
+    description:
+      reviewAction?.description ?? (scenario === "codex-command" ? "Publish changes?\n\ngit push" : "git push"),
+    automaticDecision: ["oversized", "empty"].includes(scenario) ? "decline" : "cancel",
   };
 }
 

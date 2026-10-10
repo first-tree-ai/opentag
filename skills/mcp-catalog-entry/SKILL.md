@@ -1,22 +1,23 @@
 ---
 name: mcp-catalog-entry
-description: Record a remote MCP Server in this repository's marketplace catalog. Use when a task adds, verifies, or corrects an entry under apps/web/src/features/mcp/catalog, when a provider's MCP endpoint must appear in the Agent add flow's Discover surface, or when someone asks to 录入 MCP, 上架 MCP, add an MCP server to the marketplace, or check whether a listed endpoint is still right.
+description: Record a remote MCP Server in this repository's marketplace catalog. Use when a task adds, verifies, or corrects an entry under packages/mcp-presets, when a provider's MCP endpoint must appear in the Agent add flow's Discover surface, or when someone asks to 录入 MCP, 上架 MCP, add an MCP server to the marketplace, or check whether a listed endpoint is still right.
 ---
 
 # MCP catalog entry
 
 The marketplace catalog is committed repository data, not a service. Recording a Server means
-editing two YAML sources, compiling them, and letting the repository gates reject anything a user
-would otherwise meet as a broken card.
+editing two YAML sources in the `@opentag/mcp-presets` workspace, compiling them, and letting the
+repository gates reject anything a user would otherwise meet as a broken card.
 
 | Source | Holds |
 | --- | --- |
-| `apps/web/src/features/mcp/catalog/mcp-categories.yaml` | the category set, each with a localized label and a tab order |
-| `apps/web/src/features/mcp/catalog/mcp-catalog.yaml` | one entry per Server |
+| `packages/mcp-presets/mcp-categories.yaml` | the category set, each with a localized label and a tab order |
+| `packages/mcp-presets/mcp-catalog.yaml` | one entry per Server |
 
-`apps/web/src/features/mcp/catalog/mcp-catalog.gen.ts` is generated. Never edit it by hand:
-`pnpm catalog:generate` writes it, and `pnpm check` runs the same script with `--check` to reject
-drift.
+Icons live in `packages/mcp-presets/icons/`, one SVG or PNG per referenced entry. The generated module
+`packages/mcp-presets/src/mcp-catalog.gen.ts` embeds those icon bytes as data URLs and is what the Web
+App reads through the package's public export. Never edit it by hand: `pnpm catalog:generate` writes
+it, and `pnpm check` runs the same script with `--check` to reject drift.
 
 ## Step 1 — Collect the facts from the provider
 
@@ -27,6 +28,7 @@ blog post, a client configuration in another project, or from memory.
 | --- | --- |
 | endpoint | the provider's primary remote Streamable HTTP URL |
 | authorization | the same page: anonymous, an interactive OAuth flow, or a key the user supplies |
+| OAuth scopes | for a provider whose consent screen is configured with a fixed subset (Google Workspace, for example), the documented scope list per product; record it as `oauthScopes` |
 | display name and description | the provider's product name and one short sentence, in every supported locale |
 | website | the provider's main site |
 | documentation URL | keep it for the report — the catalog has no field for it |
@@ -77,6 +79,8 @@ curl -sS -i -X POST <endpoint> \
     zh: <一句话说明。>
   url: https://<host>/mcp
   defaultAuthKind: oauth
+  oauthScopes:
+    - <documented-scope>
   category: general
   website: https://<provider-site>
   icon: <slug>.svg
@@ -93,20 +97,29 @@ curl -sS -i -X POST <endpoint> \
 - `authHeader`, `authScheme`, and `extraHeaders` exist for a `bearer` Server whose header is not
   `Authorization: Bearer`, or whose endpoint documents static headers. They are configuration and
   never a credential, and an extra header may not collide with the auth header.
+- `oauthScopes` is optional and only for a provider whose consent screen is configured with a fixed
+  scope subset: a card starts OAuth requesting exactly that list. It is bounded to at most 64 scopes
+  of at most 255 characters, and the empty list or a blank scope is refused. Omit it when the
+  provider hands out whatever scopes its discovery advertises; the flow falls back to the protected
+  resource metadata's `scopes_supported`.
 - A card's `description` is presentation only: the create contract has no description field, so the
   definition starts without one until a probe succeeds.
 
 ## Step 4 — Add the icon
 
-Create `apps/web/src/assets/mcp/<slug>.svg`: a 24×24 monochrome mark that paints with `currentColor`,
-in the shape of the ones already in that directory. The generator fails when the file is missing. A
-remote favicon is not an option — the card must not reach the provider before the user picks it.
+Download a product mark from an official brand resource into `packages/mcp-presets/icons/<slug>.svg`
+or `<slug>.png`. Preserve the official colors and proportions, record the source in the icons README,
+and set `iconIsOfficial: true` on the catalog entry only after verifying its origin. Unverified assets
+remain unmarked and the UI renders its neutral connection icon instead.
+
+The generator requires every referenced file and embeds its bytes in the generated module. A remote
+favicon is not an option: rendering the card must not contact the provider.
 
 ## Step 5 — Compile and gate
 
 ```sh
 pnpm catalog:generate
-npx biome check apps packages scripts e2e
+pnpm --filter @opentag/mcp-presets test
 pnpm --filter @opentag/web test src/features/mcp
 ```
 
@@ -115,12 +128,14 @@ and the repository policy scripts. It can be red before your change for unrelate
 when it is, name the failing step and prove yours is green on its own, rather than reporting the gate
 as passing. On this workstation biome is the step that is red before any change, because it reaches
 the agent-scratch paths (`.opencode/`, `.omo/`) that only the global gitignore excludes; the scoped
-form above is the same gate for the paths this repository owns. There is nothing for biome to lint
-inside a Skill bundle: a bundle is markdown and `pnpm check` validates it with
-`scripts/check-skill-bundles.mjs` instead.
+form `npx biome check apps packages scripts e2e` is the same gate for the paths this repository owns.
+There is nothing for biome to lint inside a Skill bundle: a bundle is markdown and `pnpm check`
+validates it with `scripts/check-skill-bundles.mjs` instead.
 
-The web command is the smallest test set that covers the catalog model and the Discover surface. Run
-the whole web suite when you changed the generator, the entry type, or the add flow.
+The package test checks the generated catalog's shape — category and entry ordering, uniqueness, and
+the embedded icons. The web command is the smallest test set that covers the catalog model and the
+Discover surface. Run the whole web suite when you changed the generator, the entry type, or the add
+flow.
 
 ## What the generator refuses
 
@@ -130,6 +145,8 @@ the whole web suite when you changed the generator, the entry type, or the add f
 - an entry that names a category the category source does not declare;
 - a declared category that no entry references;
 - a duplicate entry or category id;
+- an `oauthScopes` list that is empty, carries a blank or oversized scope, or exceeds the start
+  request's bounds;
 - a localized field that omits a supported locale or adds an unknown one;
 - an entry whose referenced icon file does not exist;
 - a compiled module that does not match its sources.

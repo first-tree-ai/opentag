@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
+import { access, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import {
   type AgentRuntimeProvider,
@@ -11,6 +11,7 @@ import {
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import type {
+  AgentRuntimeConfigurationOptionsRequest,
   AgentRuntimeFactory,
   AgentRuntimeProbeRequest,
   AgentRuntimeProbeResult,
@@ -65,7 +66,6 @@ import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
 import { ContextTreeSettings } from "./context-tree-settings.js";
-import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
 import { ProviderCliManager } from "./provider-cli/manager.js";
@@ -158,6 +158,7 @@ interface SharedProviderRefreshContext {
   readonly readinessSignal: AbortSignal;
   readonly providerProbeDeadlineMs: number;
   readonly sharedProviderRefreshes: Map<string, SharedProviderRefresh>;
+  readonly publishChecking: boolean;
 }
 
 async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
@@ -218,7 +219,11 @@ async function runSharedProviderRefresh(
     if (context.providers.isReady(providerId)) {
       releaseReadiness = context.connection.leaseProviderReadiness({ provider, status: "ready" });
     }
-    if (!releaseReadiness) context.connection.setProviderReadiness({ provider, status: "checking" });
+    // A background recheck must not replace a settled install/sign-in diagnosis with a spinner.
+    // Explicit preparation and first discovery still publish checking.
+    if (!releaseReadiness && (context.publishChecking || !context.providers.probeResult(providerId))) {
+      context.connection.setProviderReadiness({ provider, status: "checking" });
+    }
     const ownerSignal = AbortSignal.any([context.readinessSignal, owner.controller.signal]);
     let settled: { available: boolean } | { error: unknown };
     try {
@@ -644,13 +649,17 @@ export async function createClientRuntime(
     if (!owner || owner.settled || owner.controller.signal.aborted) return undefined;
     return owner;
   };
-  const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
+  const refreshProviderReadiness = async (
+    providerId: string,
+    signal?: AbortSignal,
+    publishChecking = true,
+  ): Promise<boolean> => {
     signal?.throwIfAborted();
     readinessSignal.throwIfAborted();
     const owner =
       liveSharedProviderRefresh(providerId) ??
       startSharedProviderRefresh(
-        { connection, providers, readinessSignal, providerProbeDeadlineMs, sharedProviderRefreshes },
+        { connection, providers, readinessSignal, providerProbeDeadlineMs, sharedProviderRefreshes, publishChecking },
         providerId,
       );
     owner.waiters += 1;
@@ -667,7 +676,7 @@ export async function createClientRuntime(
   };
   const refreshCapability = async (): Promise<void> => {
     const results = await Promise.allSettled([
-      ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)),
+      ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId, undefined, false)),
     ]);
     readinessSignal.throwIfAborted();
     const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
@@ -800,11 +809,6 @@ export async function createClientRuntime(
     turnPlan: providerCliTurnPlans,
   });
   await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);
-  const resourceFetcher = new ImResourceFetcher({
-    instanceId: connection.instanceId,
-    api: options.api,
-    machineToken: options.machineToken,
-  });
   const mvpReportRecovery = new MvpTurnReportRecovery({
     bindingStore,
     logger: moduleLogger("report-recovery"),
@@ -834,7 +838,6 @@ export async function createClientRuntime(
     custody,
     logger: moduleLogger("turn"),
     reportOwner,
-    resourceFetcher,
     runtimeManager,
     credentialEnvironment,
     turnPlan: providerCliTurnPlans,
@@ -858,8 +861,31 @@ export async function createClientRuntime(
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
+    handleApproval: runner.respondToApproval.bind(runner),
     availabilityTester,
+    async getRuntimeOptions(frame, signal) {
+      const factory = factories.find((factory) => factory.manifest.providerId === frame.provider);
+      if (!providers.isReady(frame.provider) || !factory?.getConfigurationOptions) {
+        throw new Error("Provider configuration options are unavailable");
+      }
+      const hasWorkspaceState = await access(workspace.paths(frame.agentId).workspaceState).then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+          throw error;
+        },
+      );
+      // An Agent that has never run has no workspace yet. Do not create or migrate one for a query.
+      const temporary = hasWorkspaceState ? undefined : await mkdtemp(join(tmpdir(), "opentag-runtime-options-"));
+      const cwd = temporary ?? (await workspace.cwd(frame.agentId));
+      try {
+        return await factory.getConfigurationOptions({ cwd, model: frame.model, signal });
+      } finally {
+        if (temporary) await rm(temporary, { recursive: true, force: true });
+      }
+    },
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
+    handleTurnActivityResult: runner.handleActivityResult.bind(runner),
   });
   return new ComposedClientRuntime(runtime, {
     admission,
@@ -1091,6 +1117,15 @@ async function nextExecutableCandidate(
   }
 }
 
+async function resolvedFactoryConfigurationOptions(
+  request: AgentRuntimeConfigurationOptionsRequest,
+  readyFactory: AgentRuntimeFactory | undefined,
+) {
+  request.signal?.throwIfAborted();
+  if (!readyFactory?.getConfigurationOptions) throw new Error("Provider configuration options are unavailable");
+  return readyFactory.getConfigurationOptions(request);
+}
+
 export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
   let readyFactory: CodexAgentRuntimeFactory | undefined;
   const createCandidate =
@@ -1115,6 +1150,7 @@ export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): Agen
           readyFactory = factory;
         },
       }),
+    getConfigurationOptions: (request) => resolvedFactoryConfigurationOptions(request, readyFactory),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyCodexFactory(readyFactory).create(request);
     },
@@ -1161,6 +1197,7 @@ export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOpti
           readyFactory = factory;
         },
       }),
+    getConfigurationOptions: (request) => resolvedFactoryConfigurationOptions(request, readyFactory),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyClaudeCodeFactory(readyFactory).create(request);
     },
@@ -1217,6 +1254,7 @@ export function resolvedPiFactory(options: ResolvedPiFactoryOptions): AgentRunti
           readyFactory = factory;
         },
       }),
+    getConfigurationOptions: (request) => resolvedFactoryConfigurationOptions(request, readyFactory),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyPiFactory(readyFactory).create(request);
     },

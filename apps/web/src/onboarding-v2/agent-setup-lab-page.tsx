@@ -260,7 +260,7 @@ export function AgentSetupLabPage() {
       return;
     }
     runPendingLabEvent(memory);
-    if (pending === "reconnect-computer") {
+    if (pending === "reconnect-computer" || pending === "connect-computer") {
       setCustomizations((current) => updateCustomizations(current, "computer", false));
     }
   }, [memory, pending, phase]);

@@ -58,6 +58,43 @@ describe("SkillService", () => {
     expect(store.keys()).toHaveLength(1);
   });
 
+  it("reads disabled Skill files with the complete archive index and enforces Account/Agent scope", async () => {
+    const account = await h.createUser();
+    const foreign = await h.createUser();
+    const agent = await h.createAgent(account);
+    const otherAgent = await h.createAgent(account);
+    const store = new FakeSkillObjectStore();
+    const service = h.serviceWith(store);
+    const files = Object.fromEntries(
+      Array.from({ length: 501 }, (_, index) => [`references/${index}.txt`, `Full text ${index}`]),
+    );
+    const skill = await h.upload(service, account, agent, "reader", { files });
+    expect(skill.filesTruncated).toBe(true);
+    await service.setEnabled(account, agent, skill.id, false);
+    const query = { path: "references/500.txt", archiveSha256: skill.archiveSha256 };
+    const response = await service.readFile(account, agent, skill.id, query);
+    expect(response.files).toHaveLength(502);
+    expect(response.preview).toEqual({ status: "text", content: "Full text 500" });
+    const reads = store.gets;
+    await expect(service.readFile(foreign, agent, skill.id, query)).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.NOT_FOUND,
+    });
+    await expect(service.readFile(account, otherAgent, skill.id, query)).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.NOT_FOUND,
+    });
+    await expect(
+      service.readFile(account, agent, skill.id, { ...query, archiveSha256: "0".repeat(64) }),
+    ).rejects.toMatchObject({ code: SKILL_ERROR_CODES.REVISION_CONFLICT });
+    expect(store.gets).toBe(reads);
+    await expect(service.readFile(account, agent, skill.id, { ...query, path: "missing.txt" })).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.NOT_FOUND,
+    });
+    await unit.database.update(agents).set({ status: "deleted" }).where(eq(agents.id, agent));
+    await expect(service.readFile(account, agent, skill.id, query)).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.NOT_FOUND,
+    });
+  });
+
   it("rejects a declared sha256 that does not match the received bytes", async () => {
     const accountId = await h.createUser();
     const agentId = await h.createAgent(accountId);

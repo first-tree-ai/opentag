@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { WebClient, type WebClientOptions } from "@slack/web-api";
 import { z } from "zod";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
+import { SlackThreadStatusError } from "../../im/slack-thread-status-error.js";
 import { type BotProfile, httpsAvatar } from "../bot-profile.js";
 import type { ProviderResourceInput, ReadableResource } from "../provider-adapter.js";
 import type { SlackApiClient, SlackInstallationInspection, SlackOAuthAccessResult } from "./adapter.js";
@@ -44,6 +45,49 @@ export class DefaultSlackApiClient implements SlackApiClient {
         allowedHosts: ["slack.com", "files.slack.com"],
         transport: (input, init) => this.#fetch(input, init),
       });
+  }
+
+  async setThreadStatus(input: {
+    token: string;
+    channelId: string;
+    threadTs: string;
+    status: "is working" | "";
+  }): Promise<void> {
+    const url = this.#policy.admitUrl("https://slack.com/api/assistant.threads.setStatus");
+    // The deadline must cover the response body as well as receipt of the headers.
+    const { response, payload } = await this.#policy.run(
+      "slack.assistant.threads.setStatus",
+      async (signal) => {
+        const response = await this.#fetch(url.toString(), {
+          method: "POST",
+          redirect: "error",
+          headers: { authorization: `Bearer ${input.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ channel_id: input.channelId, thread_ts: input.threadTs, status: input.status }),
+          signal,
+        });
+        if (response.status >= 500) throw new SlackThreadStatusError("upstream_unavailable");
+        return { response, payload: response.ok ? await response.json() : undefined };
+      },
+      { circuitKey: "slack:assistant.threads.setStatus", maxAttempts: 1, timeoutMs: 3_000 },
+    );
+    // Installation-specific Slack failures must not trip the shared transport circuit.
+    if (response.status === 429) {
+      const seconds = Number(response.headers.get("retry-after"));
+      throw new SlackThreadStatusError(
+        "ratelimited",
+        Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds * 1_000) : 30_000,
+      );
+    }
+    if (!response.ok) throw new SlackThreadStatusError("upstream_unavailable");
+    const result = z.object({ ok: z.boolean(), error: z.string().optional() }).parse(payload);
+    if (!result.ok) {
+      const code = ["missing_scope", "invalid_auth", "token_revoked", "channel_not_found", "not_in_channel"].includes(
+        result.error ?? "",
+      )
+        ? (result.error ?? "upstream_unavailable")
+        : "upstream_unavailable";
+      throw new SlackThreadStatusError(code);
+    }
   }
 
   async botProfile(token: string, botUserId: string): Promise<BotProfile> {

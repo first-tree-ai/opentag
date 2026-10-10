@@ -222,6 +222,22 @@ async function createDelivery(
 }
 
 describe("AgentService", () => {
+  it("rejects permission configuration when creating or updating local Pi", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const input = { computerId: computer.id, name: "pi-agent", displayName: "Pi", runtimeProvider: "pi" as const };
+    const permissions = { approvalPolicy: "on-request" as const, allowCommands: [] };
+    await expect(
+      service.createForAccount(bootstrap.userId, { ...input, runtimeConfig: { permissions } }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    const agent = await service.createForAccount(bootstrap.userId, input);
+    await expect(
+      service.updateById(bootstrap.userId, agent.id, {
+        expectedRevision: agent.revision,
+        runtimeConfig: { permissions },
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
   it("lists Agents by creation time and ID, preserving order through edits and appending new Agents", async () => {
     const { bootstrap, computer, service } = await fixture();
     const oldest = {
@@ -468,6 +484,15 @@ describe("AgentService", () => {
       null,
     );
     await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [id, NOW.toISOString()]);
+    const service = new AgentService(unitDatabase.database, {
+      now: () => NOW,
+      cloudUsage: new CloudUsageService(calls.db),
+    });
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).resolves.toMatchObject({
+      tasks: 2,
+      measuredTasks: 1,
+      tokens: 35,
+    });
     await calls.finalize(
       id,
       {
@@ -476,10 +501,14 @@ describe("AgentService", () => {
       },
       { resolution: "unbilled", pricedMicros: 0, debitedMicros: 0 },
     );
-    const service = new AgentService(unitDatabase.database, {
-      now: () => NOW,
-      cloudUsage: new CloudUsageService(calls.db),
-    });
+    // A second model call has not yet supplied authoritative usage. The Runner's report cannot
+    // prove task coverage, even when another call in the same session has been settled.
+    const pendingId = await calls.create(
+      { accountId: bootstrap.userId, agentId: created.id, sessionId: session.id, source: "execution" },
+      { gateway: "litellm", model: "model-a" },
+      null,
+    );
+    await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [pendingId, NOW.toISOString()]);
     expect((await service.listForAccount(bootstrap.userId)).agents[0]?.usage).toEqual({
       windowDays: 30,
       tasks: 2,
@@ -487,7 +516,15 @@ describe("AgentService", () => {
       tokens: 165,
     });
     const usage = await service.getUsageById(bootstrap.userId, created.id, 30);
-    expect(usage).toMatchObject({ tasks: 2, inputTokens: 150, cachedInputTokens: 60, outputTokens: 15, tokens: 165 });
+    expect(usage).toMatchObject({
+      tasks: 2,
+      measuredTasks: 1,
+      inputTokens: 150,
+      cachedInputTokens: 60,
+      outputTokens: 15,
+      tokens: 165,
+    });
+    expect(usage.daily.reduce((total, point) => total + point.measuredTasks, 0)).toBe(1);
     expect(usage.daily.reduce((total, point) => total + point.tokens, 0)).toBe(165);
   });
   it("projects an orphaned accepted delivery older than the recovery window as unknown", async () => {

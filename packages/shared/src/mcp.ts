@@ -239,16 +239,27 @@ export const MCPServerUrlSchema = z
 
 /**
  * Per-tool bounds on one `tools/list` entry, in UTF-8 bytes. The probe skips a tool that violates
- * any of them and reports the snapshot as truncated; {@link MCPToolSnapshotSchema} refuses the same
- * tool on read, so a stored snapshot can never hold what a probe would not have stored.
+ * a writer bound and reports the snapshot as truncated; {@link MCPToolSnapshotSchema} refuses a
+ * stored tool that violates a reader bound.
  *
- * The description and schema bounds are sized for real hosted Servers: Linear and Notion ship tool
- * descriptions of several KiB and input schemas past 8 KiB, and a bound that fails them buys
- * nothing over one that fits them, because the list-level caps below still bound the whole
- * snapshot.
+ * The description keeps a writer bound and a reader bound, and the reader's must never be the
+ * narrower one. A stored snapshot is durable state: a rollback restores the older Server image while
+ * the rows it wrote stay behind (`docs/deploying.md`). If both bounds moved together, the first
+ * re-probe after a release could write a description the previous reader rejects — and because it
+ * parses the whole snapshot array at once, that reader would drop every tool for the Server, not
+ * just the oversized one. The reader therefore moves first, accepting descriptions no current writer
+ * produces; the writer moves only once the wider reader has shipped. The two are equal at 64 KiB
+ * today, after that sequence, and the ordering rule remains for any future raise.
+ *
+ * The bounds are sized for real hosted Servers: Linear and Notion ship tool descriptions of several
+ * KiB and input schemas past 8 KiB, and Google's Docs MCP ships an `update_doc` description of
+ * ~35 KiB, which the writer now stores and the reader accepts.
  */
 export const MCP_TOOL_NAME_MAX_BYTES = 128;
-export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 16 * 1024;
+/** The largest description a probe may store, in UTF-8 bytes. */
+export const MCP_TOOL_DESCRIPTION_MAX_BYTES = 64 * 1024;
+/** The largest description a stored snapshot may carry, in UTF-8 bytes. Deliberately ≥ the writer. */
+export const MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES = 64 * 1024;
 export const MCP_TOOL_INPUT_SCHEMA_MAX_BYTES = 64 * 1024;
 
 /**
@@ -290,14 +301,15 @@ const MCPToolInputSchemaSchema = z.unknown().refine(
 );
 
 /**
- * One `tools/list` entry snapshot. Bounded exactly as the probe bounds it, on every field: this
- * schema is what the gateway parses a stored snapshot back through, so a row written by an older
- * bound, or damaged out of band, cannot put an oversized tool into a live catalogue.
+ * One `tools/list` entry snapshot. The name and input schema are bounded exactly as the probe
+ * bounds them; the description is bounded by the reader bound, which must never be narrower than the
+ * writer's. The two are equal today, after the wider reader shipped ahead of the writer raise, so a
+ * snapshot this release writes stays readable by the release a rollback brings back.
  */
 export const MCPToolSnapshotSchema = z
   .object({
     name: utf8Bounded(z.string().min(1), MCP_TOOL_NAME_MAX_BYTES, "tool name"),
-    description: utf8Bounded(z.string(), MCP_TOOL_DESCRIPTION_MAX_BYTES, "tool description").nullable(),
+    description: utf8Bounded(z.string(), MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES, "tool description").nullable(),
     inputSchema: MCPToolInputSchemaSchema.nullable(),
   })
   .strict();
@@ -753,3 +765,43 @@ export const MCP_ERROR_CODE_METADATA: Readonly<
 export const MCP_MODERN_PROTOCOL_VERSION = "2026-07-28";
 export const MCP_LEGACY_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] as const;
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = [MCP_MODERN_PROTOCOL_VERSION, ...MCP_LEGACY_PROTOCOL_VERSIONS] as const;
+
+/**
+ * The Google Workspace remote MCP origins whose OAuth flows may use this deployment's
+ * pre-registered Google client.
+ *
+ * The list is an allowlist, not a hint: a Server that merely claims Google as its authorization
+ * server would otherwise be handed a genuine Google credential to send to its own endpoint. The
+ * predicate below therefore matches the exact origin — HTTPS, default port, no userinfo, and no
+ * subdomain or suffix tolerance — so only the endpoints Google itself hosts qualify.
+ */
+/** Google's authorization server, the one every Google Workspace MCP endpoint names in its metadata. */
+export const GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER = "https://accounts.google.com";
+
+export const GOOGLE_WORKSPACE_MCP_ORIGINS = [
+  "https://gmailmcp.googleapis.com",
+  "https://drivemcp.googleapis.com",
+  "https://docsmcp.googleapis.com",
+  "https://sheetsmcp.googleapis.com",
+  "https://slidesmcp.googleapis.com",
+  "https://calendarmcp.googleapis.com",
+  "https://chatmcp.googleapis.com",
+  "https://people.googleapis.com",
+] as const;
+
+/** Whether an MCP endpoint URL is one of the Google Workspace origins above. */
+export function isGoogleWorkspaceMcpEndpoint(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  // Userinfo must be refused explicitly: it is not part of `origin`, so the comparison below would
+  // otherwise accept a URL that carries a username and password ahead of the allowed host.
+  if (parsed.username.length > 0 || parsed.password.length > 0) return false;
+  // `new URL` elides a default port, so this refuses only a genuinely non-default one.
+  if (parsed.port.length > 0) return false;
+  return (GOOGLE_WORKSPACE_MCP_ORIGINS as readonly string[]).includes(parsed.origin);
+}

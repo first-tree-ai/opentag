@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { TurnActivityRequest, TurnActivityResult } from "@opentag/shared";
 import {
   computeDirectInputHash,
   computeTurnResultHash,
@@ -79,7 +80,10 @@ export class CloudDeliveryDispatchError extends Error {
  * reaching into its internals; revocation always goes through the injected dependency.
  */
 export interface CloudModelGrantPort {
-  /** The deployment default (first Router model); undefined while the model catalog is unavailable. */
+  /**
+   * The deployment default (preferred default model when offered, otherwise the first validated
+   * Router model); undefined while the model catalog is unavailable.
+   */
   defaultModel(): Promise<string | undefined>;
   /** True only when the current Router model catalog offers this exact model. */
   isModelAllowed(model: string): Promise<boolean>;
@@ -101,6 +105,7 @@ export interface CloudDeliveryOwnerCredentialDeps {
 }
 
 export interface CloudDeliveryOwnerOptions {
+  onTurnActivity?(frame: TurnActivityRequest, context: RuntimeBusinessContext): Promise<TurnActivityResult>;
   custody: RuntimeCustodyStore;
   database: DatabaseClient;
   fence: CloudRuntimeFence;
@@ -181,7 +186,10 @@ export class CloudDeliveryOwner {
     }
   >();
 
+  readonly #onTurnActivity: CloudDeliveryOwnerOptions["onTurnActivity"];
+
   constructor(options: CloudDeliveryOwnerOptions) {
+    this.#onTurnActivity = options.onTurnActivity;
     this.#credentials = options.credentials;
     this.#custody = options.custody;
     this.#database = options.database;
@@ -202,7 +210,8 @@ export class CloudDeliveryOwner {
   /**
    * Resolve the runtime snapshot against the Router model catalog BEFORE any dispatch payload
    * (and therefore any input hash) is frozen. An Agent without an explicit model uses the
-   * deployment default (the first Router model); a model the Router does not currently offer —
+   * deployment default (the catalog's preferred default model when offered, otherwise the first
+   * validated Router model); a model the Router does not currently offer —
    * or a catalog that cannot be refreshed — never reaches a Sandbox.
    */
   async resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
@@ -675,6 +684,15 @@ export class CloudDeliveryOwner {
    * Turn Report -> durable record -> ack
    * ---------------------------------------------------------------------------------------- */
 
+  async handleTurnActivity(connection: CloudConnectionRecord, frame: TurnActivityRequest): Promise<void> {
+    if (!this.#isExactConnection(connection) || connection.turnActivityVersion !== 1 || !connection.executionEligible)
+      return;
+    const allocation = await this.#loadCurrentAllocation(connection);
+    if (!allocation || !this.#isExactConnection(connection)) return;
+    const result = await this.#onTurnActivity?.(frame, this.#context(connection));
+    if (result) this.#sendToConnection(connection, result);
+  }
+
   async handleDeliveryReport(
     connection: CloudConnectionRecord,
     frame: { requestId: string; report: TurnReportRequest },
@@ -1027,6 +1045,7 @@ export class CloudDeliveryOwner {
     socket?: RunnerControlSocket;
     /** False for a report-only reconnect: settle/report only, never mint execution permission. */
     executionEligible?: boolean;
+    turnActivityVersion?: 1;
     /** E8: only when the Runner negotiated the collaboration capability at the same handshake. */
     sessionCollaborationEligible?: boolean;
     /** Exact E8 collaboration version; required to authorize a scheduled-origin frame. */

@@ -25,6 +25,8 @@ export const queryKeys = {
     listRoot: () => ["agents", "list"] as const,
     list: (accountId: string) => ["agents", "list", accountId] as const,
     detail: (agentId: string) => ["agents", agentId, "detail"] as const,
+    runtimeOptions: (agentId: string, computerId: string | null, provider: string, model: string) =>
+      ["agents", agentId, "runtime-options", computerId, provider, model] as const,
     config: (agentId: string) => ["agents", agentId, "config"] as const,
     imBinding: (agentId: string) => ["agents", agentId, "imBinding"] as const,
     feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,
@@ -64,10 +66,14 @@ export const queryKeys = {
   /**
    * Agent Skills. A Skill belongs to exactly one Agent, so the Agent-scoped list is the root and each
    * Skill detail hangs off it; invalidating the list therefore also retires every detail for that
-   * Agent, which is what a write needs.
+   * Agent, which is what a write needs. The preset catalog sits under the same root for the same
+   * reason: an install moves both the Skills list and every preset's state.
    */
   skills: {
     agentSkills: (agentId: string) => ["skills", "agents", agentId] as const,
     skill: (agentId: string, skillId: string) => ["skills", "agents", agentId, "skill", skillId] as const,
+    file: (agentId: string, skillId: string, sha256: string, path: string) =>
+      ["skills", "agents", agentId, "skill", skillId, "file", sha256, path] as const,
+    presetCatalog: (agentId: string) => ["skills", "agents", agentId, "presets"] as const,
   },
 } as const;

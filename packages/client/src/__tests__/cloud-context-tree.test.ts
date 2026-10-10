@@ -5,10 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CLOUD_CONTEXT_TREE_SUBDIRECTORY,
   type CloudContextTreePreparationInput,
-  cloudAgentSlug,
   prepareCloudContextTree as prepareCloudContextTrees,
 } from "../runner/cloud-context-tree.js";
 import type { ContextTreeExecFile } from "../runtime/context-tree.js";
+import { managedAgentSlug } from "../runtime/managed-instructions.js";
 
 async function prepareCloudContextTree(...args: Parameters<typeof prepareCloudContextTrees>) {
   const result = await prepareCloudContextTrees(...args);
@@ -489,7 +489,7 @@ function processAlive(pid: number): boolean {
   }
 }
 
-describe("cloudAgentSlug", () => {
+describe("managedAgentSlug", () => {
   it.each([
     ["You run inside OpenTag.\n\nOpenTag Agent slug: tree-agent", "tree-agent"],
     ["OpenTag Agent slug: a1\nTrailing line.", "a1"],
@@ -498,7 +498,7 @@ describe("cloudAgentSlug", () => {
     ["no slug here", undefined],
     ["", undefined],
   ])("extracts from %j", (platform, expected) => {
-    expect(cloudAgentSlug(platform)).toBe(expected);
+    expect(managedAgentSlug(platform)).toBe(expected);
   });
 });
 

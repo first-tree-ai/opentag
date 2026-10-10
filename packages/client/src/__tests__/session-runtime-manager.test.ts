@@ -442,6 +442,7 @@ describe("SessionRuntimeManager", () => {
       const treePath = resolve(home, "shared-context-tree");
       const secondTreePath = resolve(home, "second-context-tree");
       const contextTree = {
+        skillPaths: vi.fn(async () => []),
         ensureAgent: vi.fn(async () => ({
           status: "configured" as const,
           connections: [
@@ -474,6 +475,7 @@ describe("SessionRuntimeManager", () => {
 
       const created = factory.created[0];
       const cwd = await workspace.cwd(request.agentId);
+      expect(manager.cwd(request.sessionId)).toBe(cwd);
       expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", []);
       // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
       expect(created?.workspace.writableRoots).toEqual([
@@ -496,6 +498,7 @@ describe("SessionRuntimeManager", () => {
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const factory = new FakeFactory();
     const contextTree = {
+      skillPaths: vi.fn(async () => []),
       ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath: resolve(home, "tree") })),
     };
     const environment = { GITHUB_TOKEN: undefined, HTTPS_PROXY: "http://127.0.0.1:43123" };
@@ -555,6 +558,45 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created[0]?.skillPaths).toEqual([skillPath]);
     await manager.close();
   });
+
+  it.each([false, true])(
+    "adds packaged Context Tree skills to Claude's explicit selection (synced=%s)",
+    async (synced) => {
+      const home = await mkdtemp(resolve(tmpdir(), "opentag-claude-skill-selection-"));
+      homes.push(home);
+      const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+      const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+      const factory = new FakeFactory();
+      factory.manifest.providerId = "claude-code";
+      const packaged = resolve(home, "packaged", "context-tree");
+      const selected = resolve(home, "synced", "example");
+      const contextTree = {
+        ensureAgent: vi.fn(async () => ({ status: "unconfigured" as const })),
+        skillPaths: vi.fn(async () => [packaged]),
+      };
+      const manager = new SessionRuntimeManager({
+        bindingStore: store,
+        home,
+        workspace,
+        contextTree,
+        providers: await providerRegistry(factory),
+        providerEnvironmentPath: () => "/tmp/provider-env.sh",
+        skills: { ensureAgent: async () => ({ skillPaths: synced ? [selected] : [], status: "synced" as const }) },
+      });
+      const computerId = randomUUID();
+      const reconciler = new SessionReconciler({
+        installationId: computerId,
+        preparation: manager,
+        localPolicy: manager,
+      });
+      const request = reconcile(computerId, { ...snapshot(1), provider: "claude-code" });
+      await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+      await manager.ensureRuntime(request.sessionId);
+      expect(factory.created[0]?.skillPaths).toEqual(synced ? [selected, packaged] : [packaged]);
+      expect(contextTree.skillPaths).toHaveBeenCalledOnce();
+      await manager.close();
+    },
+  );
 
   it("resolves an empty Skill result without a request field", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-skill-empty-runtime-"));
@@ -618,7 +660,10 @@ describe("SessionRuntimeManager", () => {
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const factory = new FakeFactory();
     const treePath = resolve(process.env.HOME as string, ".context-tree", "trees", "team");
-    const contextTree = { ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath })) };
+    const contextTree = {
+      skillPaths: vi.fn(async () => []),
+      ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath })),
+    };
     const manager = new SessionRuntimeManager({
       bindingStore: store,
       contextTree,
@@ -654,6 +699,7 @@ describe("SessionRuntimeManager", () => {
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const factory = new FakeFactory();
     const contextTree = {
+      skillPaths: vi.fn(async () => []),
       ensureAgent: vi.fn(async () => ({ status: "unavailable" as const, reason: "DIRTY_TREE" })),
     };
     const manager = new SessionRuntimeManager({
@@ -692,6 +738,7 @@ describe("SessionRuntimeManager", () => {
     const manager = new SessionRuntimeManager({
       bindingStore: store,
       contextTree: {
+        skillPaths: vi.fn(async () => []),
         ensureAgent: vi.fn(async () => ({ status: "unavailable" as const, reason: "PREPARING" })),
       },
       home,
@@ -1507,7 +1554,10 @@ class FakeFactory implements AgentRuntimeFactory {
 
   async create(request: CreateAgentRuntimeRequest): Promise<AgentRuntime> {
     this.created.push(request);
-    return this.#open(request, binding(`thread-${this.runtimes.length + 1}`, request.hostedTools !== undefined));
+    return this.#open(request, {
+      ...binding(`thread-${this.runtimes.length + 1}`, request.hostedTools !== undefined),
+      providerId: this.manifest.providerId,
+    });
   }
 
   async resume(request: ResumeAgentRuntimeRequest): Promise<AgentRuntime> {

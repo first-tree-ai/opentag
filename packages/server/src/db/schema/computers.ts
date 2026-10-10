@@ -27,6 +27,7 @@ export const computers = pgTable(
     arch: text("arch").notNull(),
     clientVersion: text("client_version").notNull(),
     currentInstanceId: uuid("current_instance_id"),
+    currentConnectionId: text("current_connection_id"),
     connectedAt: timestamp("connected_at", { withTimezone: true }),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     /** Explicit access revocation; retained in capable Account inventory until repaired or reset. */

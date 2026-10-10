@@ -1,5 +1,7 @@
 # Cloud Runner 执行（E3–E8）
 
+> Synced: 2026-10-10
+
 [English](../cloud-runner-execution.md)
 
 E3 将现有 Agent Session 的 Sandbox 身份连接到真实 Cloud Run Instance 和原生 Sandbox。
@@ -30,7 +32,11 @@ Server 回复心跳，通过当前已认证连接续期令牌。重连使用父�
 校验当前归属、placement 与执行权限。
 
 云实例就绪不等于 Sandbox 就绪。Runner 必须报告真实原生执行、工具版本、Runner 版本及文件系统／
-凭证隔离检查。旧连接不能替代当前连接报告就绪或完成任务。
+凭证隔离检查。每次启动及每次清理后重置都完整重跑该探测：真实的原生 Node 执行、从不可变
+rootfs 有界读取镜像身份与锁定的 Pi 包元数据（校验形状，并要求与身份中的 Pi 包名／版本一致，
+同时确认固定的 Pi shim 及其声明的 CLI 入口可访问），以及全新的文件系统／凭证／下层 rootfs
+隔离金丝雀。运行时探测绝不启动 Pi CLI：发布期 offline 套件已真实执行过它并比对精确版本，
+元数据读取也绝不被当作完整 Pi/provider 执行的证明。旧连接不能替代当前连接报告就绪或完成任务。
 
 Account 接口为 GET /api/v1/sandboxes/:sandboxId/runner，以及 POST 后缀 /runner/start、
 /runner/stop、/runner/acceptance。继续使用 Cookie、CSRF 和归属检查。acceptance 只执行有期限的
@@ -99,6 +105,14 @@ journal 会 fail closed（scope_mismatch）且不发送任何陈旧帧；同 id�
 配置 E5 后允许重新分配，但必须恢复并校验成功后才能执行。已停止的环境明确拒绝输入。
 暂时的模型或 Runner 不可用仍可在输入 deadline 内重试，复用现有尝试次数，按
 2 秒起步、最多 30 秒的指数间隔退避。Cloud 后续消息等待当前 Turn 结束，不进入 Local steering 路径。
+
+当前 Runner 连接及其经过校验的分配均已就绪后，分配服务通过 composition 注入的回调发布通知。
+IM worker 唤醒已经到期的初始输入，并提前消费该 Session 和精确分配中因环境／Runner 未就绪而等待
+的 pending、尚未 dispatch 输入，立即通过已有顺序、custody 与执行 lane 约束 claim 该 Session。
+写入失败记录后重新检查就绪状态，覆盖 ready 通知早于退避写入的竞态。通知合并处理；由 ready
+触发的尝试若仍失败，保留
+有界退避。模型／容量失败、冻结的 dispatch、已 claim 或 accepted 的工作不会被重置。通知丢失时
+仍有常规扫描及重试兜底，同一连接反复报告 readiness 不会反复唤醒队列。
 
 凭证与模型边界：#633 runtime-credential Relay 始终在可信父进程；Sandbox 只拿到只读 public
 材料（CA 证书、不透明 handle、CLI 配置），绝不包含平台
@@ -189,9 +203,13 @@ provider 收发验收仍待完成；当前证据只有本地组合与外部本�
 
 Cloud 模型选项来自 Router 的认证 `GET /models` 响应，复用上述地址和凭证。Router 负责租户权限
 和模型可用性筛选；Server 使用同一个有界、短期缓存的目录完成选项展示、配置校验、任务派发和
-模型凭证签发。Agent 未指定模型时使用返回的第一项；显式模型必须属于当前目录。刷新失败或列表
-为空时显示不可用，不回退到 Local Pi 的建议模型。Router 通过 `context_window` 和
-`max_output_tokens` 提供原生上限；缺少有效上限的模型不可用。启用计费后，目录还要求模型具有客户费率。
+模型凭证签发。Agent 未指定模型时使用目录默认模型：通过能力校验的目录提供 `gemini-3.8-flash`
+时优先以其为默认，否则使用首个通过校验的 Router 模型。为兼容已有客户端，Server 将默认模型
+发布在列表首位，其余模型保持原有相对顺序；
+显式模型必须属于当前目录。刷新失败或列表
+为空时显示不可用，不回退到 Local Pi 的建议模型。
+Router 通过 `context_window` 和 `max_output_tokens` 提供原生上限；缺少有效上限的模型不可用。
+客户 token 费率由账户的计费方案决定，与所选模型无关。
 
 模型设置页通过一次简短的 Server → Router 请求测试托管模型连接。这会消耗少量模型配额，但不
 创建 Session、Sandbox 或 Instance，也不写入任务用量历史。成功仅证明模型访问可用；Pi 执行、
@@ -240,6 +258,8 @@ Cloud 连接探测与任务执行使用同一个模型网关和调用账本，�
 | OPENTAG_CLOUD_RUNNER_VPC_NETWORK / VPC_SUBNET | Direct VPC 网络与子网 |
 | OPENTAG_CLOUD_RUNNER_EXECUTION_TAG | 对应预先部署的执行环境防火墙规则 |
 | OPENTAG_CLOUD_RUNNER_API_TIMEOUT_MS | 单次调用期限，默认 30000 |
+| OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED | staging/prod 默认开启后台镜像准备，dev 默认关闭 |
+| OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS | 准备失败重试／持锁检查周期，默认 60000；成功后不反复创建探针 |
 | OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS | 创建收敛期限，默认 120000 |
 | OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS | 默认 1800，通过当前连接续期 |
 | OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS | 验收期限，默认 900000 |

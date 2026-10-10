@@ -8,15 +8,21 @@ export interface ProviderOutboxInstructionOptions {
 }
 
 export function buildProviderOutboxInstructions(options: ProviderOutboxInstructionOptions): readonly string[] {
-  const providerCommand = options.provider === "feishu" ? "lark-cli" : "slack api";
   return [
     'Who reads your output: inside OpenTag, the "user" your underlying agent addresses — the reader of everything you produce apart from running a provider CLI command, including the text that closes this Turn — is the OpenTag runtime. This is your runtime console; ordinary output is not delivered to the IM participant.',
-    `The IM participant is a separate audience. The official ${providerCommand} CLI is your outbox and the only path from this Turn to that audience.`,
+    options.provider === "feishu"
+      ? "The IM participant is a separate audience. The official lark-cli CLI is your outbox and the only path from this Turn to that audience."
+      : "The IM participant is a separate audience. The official slack api CLI is your outbox and the only path from this Turn to that audience.",
     "The console addresses OpenTag; running the provider CLI performs the provider action. Describing a reply, reaction, or proactive message in your output only records it in OpenTag; it does not deliver it.",
     options.actionInstruction,
-    `To write to this ${options.provider} conversation, load the credentials from $OPENTAG_PROVIDER_ENV_FILE in your shell, then use the official ${providerCommand} CLI directly.`,
+    options.provider === "feishu"
+      ? "To write to this Feishu conversation, run lark-cli directly. The launcher loads this Turn's credentials automatically; do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands."
+      : "To write to this Slack conversation, run the official slack api CLI directly. The launcher loads this Turn's credentials automatically; do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands.",
     ...providerBodyInstructions(options.provider),
-    "OpenTag has no message send, reply, or reaction interface, and you do not report provider send results to OpenTag.",
+    ...providerAttachmentInstructions(options.provider),
+    "Pass message bodies as quoted literal arguments or JSON. Plain CLI commands may be chained or piped to head, tail, cat, echo, printf, jq, wc, or stat, with sleep for rate limits; each command retains its own native permission check. Avoid shell variables, command substitutions, redirects, and heredocs for ordinary messaging commands.",
+    "OpenTag has no hosted message send, reply, or reaction tool, and you do not report provider send results to OpenTag.",
+
     "Use the provider-native identifiers below. Do not substitute an OpenTag Session or message ID.",
     "If a provider result is unknown, query the provider before deciding whether to retry.",
     `${options.targetLabel}: ${JSON.stringify(options.target)}`,
@@ -28,7 +34,7 @@ export function buildProviderOutboxInstructions(options: ProviderOutboxInstructi
 export const SLACK_NATIVE_CLI_GUIDANCE_MAX_BYTES = 4 * 1024;
 
 export const SLACK_NATIVE_CLI_GUIDANCE = [
-  "Use the native CLI as `slack api chat.postMessage --json '<json>'`. Other methods use the same form: `slack api <method> --json '<json>'`. Pass exactly one JSON object; never key=value pairs, which form-encode the token into the request body.",
+  "Write with `slack api chat.postMessage --json '<json>'`. Pass exactly one JSON object. For reads (files.info, users.info/list, conversations read methods, reactions.get/list, team.info, chat.scheduledMessages.list), use `slack api <method> --data '<urlencoded parameters>'`; Slack legacy reads ignore JSON. Never supply token parameters; never key=value pairs as positional arguments.",
   "Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update, or other token, app, team, workspace, config, or update override flags. The launcher and environment already bind this Turn.",
   "Set channel to the supplied channelId. Thread placement is a Session policy decision: when the current context includes threadTs, that value is this Session's Slack thread_ts; otherwise messageTs identifies the source message you may thread from.",
   "You may discover, read, or write another public channel, private channel, DM, or existing MPIM with its provider-native ID when that conversation is relevant to the current task, even if the user did not name it. Otherwise stay in this Session's conversation. Do not roam through, bulk-join, or inspect task-unrelated conversations.",
@@ -38,7 +44,7 @@ export const SLACK_NATIVE_CLI_GUIDANCE = [
   "Open or resume a 1:1 DM with conversations.open `{users}` containing exactly one user ID. Do not use it to create an MPIM; read or write an existing MPIM only when the bot already has access.",
   "For not_in_channel, first confirm with conversations.info or conversations.list that the target is a public channel and relevant to the current task. Then call conversations.join `{channel}` once and retry the original action once. Joining enrolls future messages in normal OpenTag ingress: they are persisted, then mention_only or all_message controls delivery. Do not join merely to explore. For private channels, MPIMs, channel_not_found, or an unknown type, ask the user to invite the bot; do not guess or retry.",
   "Add, read, or remove emoji with reactions.add, reactions.get, and reactions.remove using channel, timestamp, and name.",
-  "Upload files with Slack's current external flow only: files.getUploadURLExternal `{filename,length}` → HTTP POST the raw bytes to upload_url (not via slack api) → files.completeUploadExternal `{files:[{id,title}],channel_id,thread_ts?}`. Do not call the deprecated files.upload method. Load $OPENTAG_PROVIDER_ENV_FILE in the same shell before any raw upload_url, url_private, or url_private_download request: only the provider proxy scope in that file can route and trust those URLs.",
+  "Upload files with Slack's current external flow only: files.getUploadURLExternal `{filename,length}` → HTTP POST the raw bytes to upload_url (not via slack api) → files.completeUploadExternal `{files:[{id,title}],channel_id,thread_ts?}`. Do not call the deprecated files.upload method.",
   "Never print credentials, tokens, or the environment file. CLI argv and command output are visible on the OpenTag runtime console.",
 ] as const;
 
@@ -47,29 +53,37 @@ function providerBodyInstructions(provider: ProviderOutboxProvider): readonly st
   return [
     "For lark-cli text and Markdown bodies, intended line breaks must reach the CLI as real newline characters; never write literal `\\n` sequences for layout.",
     "Before sending, inspect the body: if it has no real newline and contains two or more literal `\\n` sequences, treat it as malformed and rebuild it instead of sending. Do not blindly replace `\\n`, because code or prose may intentionally discuss that token.",
-    "Keep rich or multiline bodies out of ordinary inline shell quoting. Populate a task-specific variable with shell-native, non-interpolating multiline syntax, then pass the variable as one quoted `--text` or `--markdown` argument.",
-    "POSIX shell pattern:",
+    "Use --text or --markdown with a single shell-quoted literal body, including real newlines. Protect apostrophes by ending the single quote, adding a double-quoted apostrophe, and reopening the single quote. Do not use ANSI-C quoting or shell substitutions to build the body.",
+    "Example:",
     "```bash",
-    "IFS= read -r -d '' OPENTAG_LARK_BODY <<'EOF' || true",
-    "first line",
-    "",
-    'second line with `code`, $variables, "quotes", and apostrophes',
-    "EOF",
-    'lark-cli ... --markdown "$OPENTAG_LARK_BODY"',
+    "lark-cli im +messages-reply --message-id om_xxx --markdown 'First line\n\nSecond line'",
     "```",
-    "PowerShell pattern:",
-    "```powershell",
-    "$OpenTagLarkBody = @'",
-    "first line",
-    "",
-    'second line with `code`, $variables, "quotes", and apostrophes',
-    "'@",
-    "lark-cli ... --markdown $OpenTagLarkBody",
-    "```",
-    "Replace `...` with the version-specific lark-cli subcommand and provider-native target options before running it.",
+    'Alternatively use --msg-type text --content \'{"text":"First line\\nSecond line"}\'. In JSON bodies, newline escapes are decoded by the provider; in --text and --markdown they are literal text. For a rich post, pass provider-native post JSON with --msg-type post --content. Split long replies into multiple messages instead of constructing a shell script.',
   ];
 }
 
 /** Non-secret execution metadata is discovered without changing native CLI authentication. */
 export const GITHUB_NATIVE_CLI_INSTRUCTIONS =
   "GitHub integration, when enabled, preconfigures native git and gh. Read OPENTAG_GITHUB_REPOSITORIES for granted repositories, role, branch, publish mode and workBranchPrefix. Create task branches under the supplied workBranchPrefix; Context Tree direct mode targets its configured branch. Authentication and renewal are automatic; do not run interactive login or replace managed credentials.";
+
+/** On-demand reads support both default Local credentials and the Cloud credential proxy. */
+function providerAttachmentInstructions(provider: ProviderOutboxProvider): readonly string[] {
+  const common = [
+    "Incoming attachments are references, not downloaded files. Read them only when the task needs them. Run the provider CLI directly; the launcher loads this Turn's credentials automatically. Never print credentials or the environment file.",
+    "The source message and attachment IDs are provider-native. If the input is truncated or an older Server supplied only OpenTag resource ordinals, query the original provider message to discover its resources. A message readback can reflect later edits; do not present it as the frozen historical version.",
+    "A failed attachment read does not authorize replaying the Turn or repeating a send. Report deleted, inaccessible, unsupported, or unreadable content accurately; do not invent its contents.",
+  ];
+  if (provider === "slack")
+    return [
+      ...common,
+      "For a Slack file_id, run `slack api files.info --data 'file=F...'`. Check ok, then download url_private_download (or url_private) to a workspace file using the matching credential path below. files.info returns metadata, not file bytes. URL-encode parameter values, including spaces, &, and Unicode. Use conversations.history with channelId and messageTs for source messages, or conversations.replies with channelId and threadTs for a thread.",
+      "For raw attachment requests, run `printenv OPENTAG_PROVIDER_ENV_FILE`, then `rg '^export OPENTAG_(PROVIDER_(PROXY_URL|CA_PATH)|SLACK_DOWNLOAD_CONFIG)=' '<returned path>'` to read only nonsecret routing/config paths. Do not read the download config, source the environment, add authorization headers, or use shell substitutions.",
+      "When proxy URL and CA are present, use literal values in `curl https://slack.com --request-target '/__opentag__/handles/<id>' --proxy '<proxy URL>' --cacert '<CA path>' --noproxy '' --fail --silent --show-error`. Copy the handle path from upload_url, url_private, or url_private_download. Upload with --request POST --data-binary @<file>; download with --output <file>.",
+      "Otherwise, for Local credentials, use `curl --disable --config '<OPENTAG_SLACK_DOWNLOAD_CONFIG path>' --fail --silent --show-error '<url_private_download>' --output <file>` only for HTTPS files.slack.com URLs returned by files.info. The private Turn config supplies authentication; never print it or use verbose/trace/header output or redirect flags. Public URLs and native upload_url requests use existing HTTP tools without this config or Slack credentials.",
+      "Private download handles and Turn configs expire. Re-query files.info once if expired; retry only the read. Do not poll or bulk-fetch unrelated messages.",
+    ];
+  return [
+    ...common,
+    "For Feishu/Lark attachments, run `lark-cli im +messages-resources-download --message-id <messageId> --file-key <key> --type image|file --as bot --output ./attachment.bin`. Use image for image_key, file for files/audio/video file_key, and a workspace-relative output path. The video body and cover have different keys. Use `lark-cli im --help` for source-message reads in the installed version; retain the configured bot identity and do not log in interactively.",
+  ];
+}

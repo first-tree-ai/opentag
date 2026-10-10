@@ -45,14 +45,14 @@ describe("CodexAgentRuntime", () => {
     expect(client.call("thread/start")?.params).toMatchObject({
       cwd: "/workspace",
       developerInstructions: "OpenTag managed system prompt",
-      approvalPolicy: "onRequest",
+      approvalPolicy: "on-request",
       sandbox: "workspace-write",
       model: "gpt-test",
     });
     expect(client.call("turn/start")?.params).toMatchObject({
       threadId: "thread-1",
       input: [{ type: "text", text: "hello" }],
-      approvalPolicy: "onRequest",
+      approvalPolicy: "on-request",
       sandboxPolicy: {
         type: "workspaceWrite",
         writableRoots: ["/workspace"],
@@ -75,6 +75,7 @@ describe("CodexAgentRuntime", () => {
     expect(client.call("thread/resume")?.params).toMatchObject({
       threadId: "thread-exact",
       developerInstructions: "OpenTag managed system prompt",
+      approvalPolicy: "on-request",
     });
     expect(client.call("thread/start")).toBeUndefined();
     expect(runtime.binding?.payload).toEqual({ threadId: "thread-exact" });

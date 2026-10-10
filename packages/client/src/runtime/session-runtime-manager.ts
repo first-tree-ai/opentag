@@ -65,7 +65,7 @@ export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
   readonly cliCommand?: string;
   readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
-  readonly contextTree?: Pick<ContextTreeManager, "ensureAgent">;
+  readonly contextTree?: Pick<ContextTreeManager, "ensureAgent" | "skillPaths">;
   /**
    * Optional. Materializes the Agent's enabled Skills before the provider starts; a failure only
    * changes what is on disk and never stops the runtime.
@@ -323,10 +323,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       cwd: managed.cwd,
       provider: managed.snapshot.provider,
     });
+    await addPackagedClaudeSkills(skills, managed.snapshot.provider, this.#contextTree);
     const replyRoots = await visibleReplyWritableRoots(managed, this.#providerCliReplyWritableRoot);
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
+        environment: "local",
         sessionId: managed.binding.sessionId,
         sessionKind: managed.sessionKind,
         ...(managed.creatorSessionId ? { creatorSessionId: managed.creatorSessionId } : {}),
@@ -550,6 +552,16 @@ async function prepareContextTree(
           ? [status.treePath]
           : [],
   };
+}
+
+async function addPackagedClaudeSkills(
+  skills: { skillPaths?: readonly string[] },
+  provider: AgentRuntimeProvider,
+  contextTree: SessionRuntimeManagerOptions["contextTree"],
+): Promise<void> {
+  if (provider === "claude-code" && contextTree) {
+    skills.skillPaths = [...(skills.skillPaths ?? []), ...(await contextTree.skillPaths())];
+  }
 }
 
 /**

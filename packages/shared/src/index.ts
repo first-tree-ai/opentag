@@ -72,6 +72,7 @@ export {
   type UpdateAgentRuntimeConfig,
   UpdateAgentRuntimeConfigSchema,
 } from "./agent.js";
+export * from "./agent-permissions.js";
 export * from "./agent-self.js";
 export * from "./agent-setup.js";
 export {
@@ -271,6 +272,7 @@ export {
   AGENT_MCP_SERVER_TEMPLATE,
   AGENT_MCP_SERVERS_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
+  AGENT_RUNTIME_OPTIONS_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SCHEDULE_PAUSE_TEMPLATE,
   AGENT_SCHEDULE_RESUME_TEMPLATE,
@@ -279,11 +281,15 @@ export {
   AGENT_SETUP_REFRESH_TEMPLATE,
   AGENT_SETUP_TEMPLATE,
   AGENT_SKILL_BUNDLE_TEMPLATE,
+  AGENT_SKILL_FILE_TEMPLATE,
+  AGENT_SKILL_PRESET_INSTALL_TEMPLATE,
+  AGENT_SKILL_PRESETS_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
   AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
   AGENT_SKILLS_INSTALL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
+  AGENT_SLACK_INTERACTIONS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
@@ -314,6 +320,7 @@ export {
   agentMcpServerPath,
   agentMcpServersPath,
   agentReactivatePath,
+  agentRuntimeOptionsPath,
   agentRuntimeTestPath,
   agentSchedulePath,
   agentSchedulePausePath,
@@ -322,7 +329,10 @@ export {
   agentSetupPath,
   agentSetupRefreshPath,
   agentSkillBundlePath,
+  agentSkillFilePath,
   agentSkillPath,
+  agentSkillPresetInstallPath,
+  agentSkillPresetsPath,
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
@@ -362,6 +372,8 @@ export {
   MCP_SERVERS_PATH,
   mcpServerPath,
   mcpServersPath,
+  PUBLIC_MCP_SERVERS_PATH,
+  PUBLIC_SKILLS_PATH,
   RUNTIME_AGENT_MCP_SERVER_TEMPLATE,
   RUNTIME_AGENT_MCP_SERVERS_AVAILABLE_PATH,
   RUNTIME_AGENT_MCP_SERVERS_PATH,
@@ -374,6 +386,8 @@ export {
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   RUNTIME_SKILL_BUNDLE_TEMPLATE,
+  RUNTIME_SKILL_PRESET_INSTALL_TEMPLATE,
+  RUNTIME_SKILL_PRESETS_PATH,
   RUNTIME_SKILLS_PATH,
   runtimeAgentMcpServerPath,
   runtimeAgentSchedulePath,
@@ -382,9 +396,11 @@ export {
   runtimeDurableWorkPath,
   runtimeImResourcePath,
   runtimeSkillBundlePath,
+  runtimeSkillPresetInstallPath,
   runtimeWebSocketUrl,
   SANDBOX_RUNNER_WEBSOCKET_PATH,
   SLACK_EVENTS_PATH,
+  SLACK_INTERACTIONS_PATH,
   SLACK_OAUTH_CALLBACK_PATH,
   sandboxRunnerWebSocketUrl,
   TASK_BY_ID_TEMPLATE,
@@ -395,18 +411,29 @@ export {
   taskRepliesPath,
 } from "./http-paths.js";
 export * from "./im-binding.js";
+export { renderImContentText, truncateImText } from "./im-content-text.js";
 export * from "./im-message.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
 export * from "./mcp-outbound-url.js";
+export * from "./public-catalog.js";
 export * from "./runner-workspace.js";
 export {
+  type AgentRuntimeOptions,
+  AgentRuntimeOptionsQuerySchema,
+  AgentRuntimeOptionsSchema,
   getRuntimeConfigurationOptions,
   type RuntimeConfigurationOptions,
 } from "./runtime-configuration-options.js";
 export * from "./runtime-credentials.js";
 export {
   AGENT_SLUG_MAX_LENGTH,
+  type AgentRuntimeOptionsCancelFrame,
+  AgentRuntimeOptionsCancelFrameSchema,
+  type AgentRuntimeOptionsRequestFrame,
+  AgentRuntimeOptionsRequestFrameSchema,
+  type AgentRuntimeOptionsResultFrame,
+  AgentRuntimeOptionsResultFrameSchema,
   type AgentRuntimeTestCancelFrame,
   AgentRuntimeTestCancelFrameSchema,
   type AgentRuntimeTestRequestFrame,
@@ -472,6 +499,12 @@ export {
   RUNTIME_OUTGOING_REPLY_TEXT_MAX_BYTES,
   RUNTIME_TRACE_BATCH_MAX_EVENTS,
   RUNTIME_TRACE_EVENT_MAX_BYTES,
+  type RuntimeApprovalDecision,
+  RuntimeApprovalDecisionSchema,
+  type RuntimeApprovalRequest,
+  RuntimeApprovalRequestSchema,
+  type RuntimeApprovalResult,
+  RuntimeApprovalResultSchema,
   type RuntimeDurableFailure,
   RuntimeDurableFailureSchema,
   type RuntimeDurableWorkKind,
@@ -662,6 +695,7 @@ export * from "./session-cli.js";
 export * from "./sign-in-destination.js";
 export * from "./skill.js";
 export * from "./skill-discovery.js";
+export * from "./skill-preset.js";
 export * from "./skill-source.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
@@ -695,4 +729,10 @@ export {
   serializeDiagnostic,
 } from "./structured-errors.js";
 export * from "./task.js";
+export {
+  type TurnActivityRequest,
+  TurnActivityRequestSchema,
+  type TurnActivityResult,
+  TurnActivityResultSchema,
+} from "./turn-activity.js";
 export * from "./web-tools.js";

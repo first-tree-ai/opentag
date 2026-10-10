@@ -103,6 +103,36 @@ export function settingsDraft(entry: MCPAgentServer): SettingsDraft {
     cleared: [],
   };
 }
+/** Follow confirmed writes without losing fields the user is still editing in Settings. */
+export function rebaseSettingsDraft(
+  previous: MCPAgentServer,
+  draft: SettingsDraft,
+  next: MCPAgentServer,
+): SettingsDraft {
+  const previousHeaders = Object.entries(previous.effective.extraHeaders);
+  const headersEdited =
+    draft.headerMode !== connectionHeaderMode(previous) ||
+    draft.headers.length !== previousHeaders.length ||
+    draft.headers.some(
+      (row, index) => row.name !== previousHeaders[index]?.[0] || row.value !== previousHeaders[index]?.[1],
+    );
+  const fresh = settingsDraft(next);
+  return {
+    ...fresh,
+    url: draft.cleared.includes("url") || draft.url !== previous.effective.url ? draft.url : fresh.url,
+    authHeader:
+      draft.cleared.includes("authHeader") || draft.authHeader !== previous.effective.authHeader
+        ? draft.authHeader
+        : fresh.authHeader,
+    authScheme:
+      draft.cleared.includes("authScheme") || draft.authScheme !== previous.effective.authScheme
+        ? draft.authScheme
+        : fresh.authScheme,
+    headers: headersEdited ? draft.headers : fresh.headers,
+    headerMode: headersEdited ? draft.headerMode : fresh.headerMode,
+    cleared: draft.cleared,
+  };
+}
 export function bindingPatch(entry: MCPAgentServer, draft: SettingsDraft): UpdateMCPBindingRequest {
   const patch = extraHeadersPatch(entry, draft);
   const clearKeys = { url: "clearUrl", authHeader: "clearAuthHeader", authScheme: "clearAuthScheme" } as const;

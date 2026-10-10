@@ -1,11 +1,12 @@
+import type { McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
-import type { McpCatalogEntry } from "./mcp-catalog.gen.js";
 import {
   catalogEntryState,
   comparableUrl,
   entriesInCategory,
   findAccountServer,
+  findCatalogEntryByUrl,
   localizedText,
   matchesCatalogEntry,
 } from "./mcp-catalog-model.js";
@@ -169,5 +170,23 @@ describe("category grouping", () => {
       catalogEntry({ id: "c", order: 20 }),
     ];
     expect(entriesInCategory(entries, "general").map((entry) => entry.id)).toEqual(["a", "c"]);
+  });
+});
+
+describe("catalog service identity", () => {
+  it("recognizes an official endpoint with normalized spelling and connection parameters", () => {
+    const entry = catalogEntry();
+    expect(findCatalogEntryByUrl(" https://MCP.Notion.com:443/mcp/?workspace=demo#tools ", [entry])).toBe(entry);
+  });
+
+  it.each([
+    "https://mcp.notion.com.example.com/mcp",
+    "https://custom.example.com/mcp",
+    "https://mcp.notion.com/other",
+    "http://mcp.notion.com/mcp",
+    "https://notion:mypass@mcp.notion.com/mcp",
+    "not a url",
+  ])("does not assign a product logo to %s", (url) => {
+    expect(findCatalogEntryByUrl(url, [catalogEntry()])).toBeUndefined();
   });
 });

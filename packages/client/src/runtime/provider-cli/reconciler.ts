@@ -315,16 +315,21 @@ export class ProviderCliReconciler {
       await providerPreparation;
       return;
     }
-    // Runtime and Provider CLI checks are independent. Always return one complete, fenced result
-    // so the Server can stop suppressing stale generic heartbeat observations.
+    // Report the runtime probe as soon as it settles; messaging CLI repair can take much longer.
     const runtimeProvider = frame.runtimeProvider;
-    const [providers, runtime] = await Promise.all([
-      providerPreparation,
-      this.#refreshRuntimeProvider?.(runtimeProvider).catch(() => ({
-        provider: runtimeProvider,
-        status: "unavailable" as const,
-      })) ?? Promise.resolve({ provider: runtimeProvider, status: "unavailable" as const }),
-    ]);
+    const runtime = await (this.#refreshRuntimeProvider?.(runtimeProvider).catch(() => ({
+      provider: runtimeProvider,
+      status: "unavailable" as const,
+    })) ?? Promise.resolve({ provider: runtimeProvider, status: "unavailable" as const }));
+    await this.#connection.send(
+      ProviderCliPrewarmResultFrameSchema.parse({
+        type: "provider-cli:prewarm:result",
+        requestId: frame.requestId,
+        runtime,
+      }),
+      { priority: "result", signal: this.#signal },
+    );
+    const providers = await providerPreparation;
     const result: ProviderCliPrewarmResultFrame = ProviderCliPrewarmResultFrameSchema.parse({
       type: "provider-cli:prewarm:result",
       requestId: frame.requestId,

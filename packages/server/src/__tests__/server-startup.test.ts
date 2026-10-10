@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
   events: [] as string[],
+  prewarmEnabled: false,
   config: {} as Record<string, unknown>,
   app: undefined as unknown,
   appOptions: undefined as unknown,
@@ -48,6 +49,17 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../app.js", () => ({ createApp: state.createApp }));
+vi.mock("../services/cloud-run/runner-image-prewarm-worker.js", () => ({
+  createRunnerImagePrewarmWorker: () =>
+    state.prewarmEnabled
+      ? {
+          start: () => state.events.push("prewarm:start"),
+          stop: async () => {
+            state.events.push("prewarm:stop");
+          },
+        }
+      : undefined,
+}));
 vi.mock("../platform-runtime.js", () => ({
   createPlatformRuntime: async (options: unknown) => {
     state.platformRuntimeOptions = options;
@@ -368,6 +380,7 @@ function defaultConfig() {
 beforeEach(() => {
   vi.clearAllMocks();
   state.events.length = 0;
+  state.prewarmEnabled = false;
   state.config = defaultConfig();
   state.appOptions = undefined;
   state.onClose = undefined;
@@ -451,6 +464,14 @@ afterEach(() => {
 });
 
 describe("Server startup", () => {
+  it("starts image preparation after listen readiness and stops it before closing database resources", async () => {
+    state.prewarmEnabled = true;
+    await startServer();
+    expect(state.events.indexOf("prewarm:start")).toBeGreaterThan(state.events.indexOf("ready:listen"));
+    await state.onClose?.();
+    expect(state.events.indexOf("prewarm:stop")).toBeLessThan(state.events.indexOf("sql:end"));
+  });
+
   it("migrates before listen, wires runtime/auth/provider services, and cleans up in reverse ownership order", async () => {
     await startServer();
 
@@ -700,6 +721,7 @@ describe("Server startup", () => {
       close: ReturnType<typeof vi.fn>;
       log: { error: ReturnType<typeof vi.fn> };
     };
+    state.prewarmEnabled = true;
     app.listen.mockRejectedValue(
       new Error(
         "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret encryption-key-ring-secret slack-client-secret slack-signing-secret cloud-runner-static-token",
@@ -711,8 +733,10 @@ describe("Server startup", () => {
     expect(process.exitCode).toBe(1);
     expect(app.close).toHaveBeenCalledTimes(1);
     expect(state.events).not.toContain("ready:listen");
-    expect(state.events.slice(-7)).toEqual([
+    expect(state.events).not.toContain("prewarm:start");
+    expect(state.events.slice(-8)).toEqual([
       "app:close",
+      "prewarm:stop",
       "scheduler:stop",
       "worker:stop",
       "platform:close",

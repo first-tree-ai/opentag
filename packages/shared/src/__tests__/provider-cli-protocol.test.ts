@@ -151,6 +151,9 @@ describe("provider CLI reconcile protocol", () => {
     };
     expect(ProviderCliPrewarmResultFrameSchema.parse(result)).toEqual(result);
     expect(ClientRuntimeBusinessFrameSchema.parse(result)).toEqual(result);
+    const runtimeOnly = { type: result.type, requestId, runtime: result.runtime };
+    expect(ProviderCliPrewarmResultFrameSchema.parse(runtimeOnly)).toEqual(runtimeOnly);
+    expect(ClientRuntimeBusinessFrameSchema.parse(runtimeOnly)).toEqual(runtimeOnly);
     expect(() =>
       ProviderCliPrewarmResultFrameSchema.parse({ ...result, runtime: { provider: "codex", status: "checking" } }),
     ).toThrow();

@@ -140,9 +140,20 @@ export function wrap(children: ReactNode): RenderResult {
   );
 }
 
-export async function menuAction(name: string) {
-  fireEvent.click(await screen.findByRole("button", { name: "More actions for linear" }));
-  fireEvent.click(await screen.findByRole("menuitem", { name }));
+export async function openDetails() {
+  if (screen.queryByRole("dialog", { name: "linear" })) return;
+  fireEvent.click(await screen.findByRole("button", { name: "linear" }, { timeout: 10000 }));
+  await screen.findByRole("dialog", { name: "linear" });
+}
+export async function openTools() {
+  await openDetails();
+  fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+  await screen.findByRole("dialog", { name: "Tools" });
+}
+export async function openRemove() {
+  await openDetails();
+  fireEvent.click(screen.getByRole("button", { name: "Remove from agent" }));
+  await screen.findByRole("alertdialog");
 }
 export async function openAdd() {
   const buttons = await screen.findAllByRole("button", { name: "Add server" });

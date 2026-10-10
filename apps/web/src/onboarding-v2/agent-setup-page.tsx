@@ -767,7 +767,7 @@ function AgentSetupPageContent({
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
       <header className="flex items-center justify-between p-6">
-        <OpenTagLogo label={m.onboarding_v2_brand_name()} variant="wordmark" />
+        <OpenTagLogo label={m.onboarding_v2_brand_name()} />
         {onOpenAgent && !ready ? (
           <Button onClick={onOpenAgent} variant="ghost">
             {m.onboarding_v2_back_to_agent()}
@@ -1912,23 +1912,25 @@ function UnbindMessagingDialog({
       title={m.im_disconnect_title({ providerName })}
       onClose={onClose}
     >
-      {error ? <Banner variant="error" role="alert" description={error} /> : null}
-      <div className="flex flex-wrap justify-end gap-3">
-        <Button disabled={busy} onClick={onClose} variant="ghost">
-          {m.im_disconnect_cancel()}
-        </Button>
-        <Button
-          disabled={busy}
-          loading={busy}
-          onClick={() =>
-            void onAct(action).then((ok) => {
-              if (ok) onClose();
-            })
-          }
-          variant="danger"
-        >
-          {m.im_disconnect({ providerName })}
-        </Button>
+      <div className="grid gap-5">
+        {error ? <Banner variant="error" role="alert" description={error} /> : null}
+        <div className="flex flex-wrap justify-end gap-3">
+          <Button disabled={busy} onClick={onClose} variant="ghost">
+            {m.im_disconnect_cancel()}
+          </Button>
+          <Button
+            disabled={busy}
+            loading={busy}
+            onClick={() =>
+              void onAct(action).then((ok) => {
+                if (ok) onClose();
+              })
+            }
+            variant="danger"
+          >
+            {m.im_disconnect({ providerName })}
+          </Button>
+        </div>
       </div>
     </Dialog>
   );

@@ -35,16 +35,23 @@ import {
   shutdownTelemetry,
 } from "./observability/index.js";
 import { createPlatformRuntime } from "./platform-runtime.js";
+import { AgentRuntimeOptionsOwner } from "./runtime/agent-runtime-options-owner.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { type AgentSessionStopDependencies, stopAgentSessions } from "./runtime/agent-session-stopper.js";
+import { loadApprovalAuthority } from "./runtime/approval-authority.js";
+import { ApprovalMessenger } from "./runtime/approval-messenger.js";
+import { PostgresApprovalStore } from "./runtime/approval-store.js";
 import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ContextTreeOperationOwner } from "./runtime/context-tree-operation-owner.js";
+import { handleFeishuApprovalAction } from "./runtime/feishu-approval-action.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
 import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owner.js";
+import { RuntimeApprovalOwner } from "./runtime/runtime-approval-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
@@ -68,6 +75,7 @@ import { loadCloudBilling } from "./services/cloud-billing-module.js";
 import { CloudCallStore } from "./services/cloud-call-store.js";
 import { createCloudExecutionContext } from "./services/cloud-model-context.js";
 import { CloudModelService } from "./services/cloud-model-service.js";
+import { createRunnerImagePrewarmWorker } from "./services/cloud-run/runner-image-prewarm-worker.js";
 import { CloudUsageService } from "./services/cloud-usage.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
@@ -75,6 +83,8 @@ import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
+import { SlackWorkingStore } from "./services/im/slack-working-store.js";
+import { SlackWorkingWorker, slackWorkingCredentialResolver } from "./services/im/slack-working-worker.js";
 import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
 import {
   DefaultFeishuRegistrationGateway,
@@ -121,7 +131,7 @@ import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandb
 import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
-import { S3SkillObjectStore, SkillObjectGc, SkillService } from "./services/skills/index.js";
+import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
 import { TaskService } from "./services/tasks/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
@@ -412,11 +422,15 @@ function createSkillRuntime(
   config: ServerConfig,
   database: DatabaseClient,
   logger: ServiceLogger,
-): { service: SkillService; remote: RemoteSkillService; gc?: SkillObjectGc } {
+): { service: SkillService; remote: RemoteSkillService; preset: SkillPresetService; gc?: SkillObjectGc } {
   const storage = config.skillStorage;
   if (!storage.enabled) {
     const service = new SkillService({ database, keyPrefix: "skills", logger });
-    return { service, remote: new RemoteSkillService({ skills: service, logger }) };
+    return {
+      service,
+      remote: new RemoteSkillService({ skills: service, logger }),
+      preset: new SkillPresetService({ skills: service, logger }),
+    };
   }
   const store = new S3SkillObjectStore({
     config: {
@@ -431,7 +445,8 @@ function createSkillRuntime(
   });
   const service = new SkillService({ database, store, keyPrefix: storage.prefix, logger });
   const remote = new RemoteSkillService({ skills: service, logger });
-  if (storage.gcIntervalSeconds <= 0) return { service, remote };
+  const preset = new SkillPresetService({ skills: service, logger });
+  if (storage.gcIntervalSeconds <= 0) return { service, remote, preset };
   const gc = new SkillObjectGc({
     database,
     store,
@@ -441,7 +456,7 @@ function createSkillRuntime(
     logger,
     onError: (error) => logger.error({ error }, "Skill object GC pass failed"),
   });
-  return { service, remote, gc };
+  return { service, remote, preset, gc };
 }
 
 /** Every configured value startup errors must never echo, including the raw key ring JSON. */
@@ -562,10 +577,24 @@ export async function startServer(): Promise<void> {
       : undefined;
     const custody = new PostgresRuntimeCustodyStore(database);
     let cloudSessionOwner: CloudSessionCollaborationOwner | undefined;
+    let imDeliveryWorker: ImDeliveryWorker | undefined;
     const cloudSessionWork = new CloudSessionWorkTracker();
     const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config, {
       sessionWorkBusy: (allocation) => cloudSessionWork.isBusy(allocation),
       sessionWorkBarrier: (input) => cloudSessionOwner?.hasUnsettledSessionWork(input) ?? Promise.resolve(false),
+      readinessNotifications: {
+        onReady: async (allocation) => {
+          await imDeliveryWorker?.notifyCloudRunnerReady(allocation);
+        },
+        supervisor: backgroundFailureSupervisor,
+      },
+    });
+    const runnerImagePrewarmWorker = createRunnerImagePrewarmWorker({
+      environment: config.environment,
+      config: config.cloudRunner,
+      databaseUrl: config.databaseUrl,
+      logger: serviceLogger("runner-image-prewarm"),
+      supervisor: backgroundFailureSupervisor,
     });
     /*
      * E7 idle reclamation runs on the existing Server lifecycle: one fixed 15s cadence, one idle
@@ -623,6 +652,7 @@ export async function startServer(): Promise<void> {
      */
     const mcpServers = new McpServerService({ database });
     const platformRuntime = await createPlatformRuntime({
+      slackWorkingStatus: true,
       config,
       database,
       cipher: applicationCipher,
@@ -740,11 +770,21 @@ export async function startServer(): Promise<void> {
       sessionAuthority.proof,
     );
     const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
+    const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
+      onTurnActivity: (frame, context) => slackWorkingStore.record(frame, context),
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
+    });
+    const approvalOwner = new RuntimeApprovalOwner({
+      store: new PostgresApprovalStore(database),
+      registry,
+      serverInstanceId: instanceId,
+      authority: (request, context) => loadApprovalAuthority(database, request, context),
+      messenger: new ApprovalMessenger(imBindingService, imCallPolicy),
+      onError: () => reportDiagnostic("RUNTIME_APPROVAL_FAILED"),
     });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
     providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
@@ -756,6 +796,7 @@ export async function startServer(): Promise<void> {
         computerService.hasActiveAgentWithoutMessagingSetup(computerId),
     });
     const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
+    const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const agentService = new AgentService(database, {
       ...optionalCloudUsage(config, cloudUsage),
@@ -783,6 +824,18 @@ export async function startServer(): Promise<void> {
       agentService,
       contextTreeOperationOwner,
     );
+    const agentRuntimeOptionsService = new AgentRuntimeOptionsService(
+      agentService,
+      agentRuntimeOptionsOwner,
+      async (computerId) => {
+        const [row] = await database
+          .select({ kind: computers.kind })
+          .from(computers)
+          .where(eq(computers.id, computerId))
+          .limit(1);
+        return row?.kind;
+      },
+    );
     const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner, {
       // The branch key is the server-derived bound Computer kind; ownership was already enforced.
       computerKind: async (computerId) => {
@@ -796,6 +849,8 @@ export async function startServer(): Promise<void> {
       ...optionalCloudModelTester(cloudModelRuntime),
     });
     const feishuConnections = new FeishuConnectionManager({
+      onCardAction: (event, bindingId, generation) =>
+        handleFeishuApprovalAction(approvalOwner, event, bindingId, generation),
       database,
       inbox: imMessageInbox,
       instanceId,
@@ -827,6 +882,12 @@ export async function startServer(): Promise<void> {
       cloudAvailability: (now) => cloudAvailability(config, now),
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
+    const slackWorkingWorker = new SlackWorkingWorker({
+      store: slackWorkingStore,
+      api: slackApi,
+      token: slackWorkingCredentialResolver(database, applicationCipher),
+      logger: serviceLogger("slack-working-status"),
+    });
     const slackConfigurationService = new SlackConfigurationService({
       onDiagnostic: reportDiagnostic,
       api: slackApi,
@@ -855,6 +916,7 @@ export async function startServer(): Promise<void> {
      * factory and grant instance feed the owner and the createApp model route below.
      */
     const cloudDelivery = createCloudDeliveryComposition({
+      onTurnActivity: (frame, context) => slackWorkingStore.record(frame, context),
       cloudModel: config.cloudModel,
       jwtSecret: config.jwtSecret,
       publicUrl: config.publicUrl,
@@ -934,7 +996,19 @@ export async function startServer(): Promise<void> {
       authorizations: mcpAuthorization,
       upstream: new McpUpstreamCaller({ fetcher: mcpRuntimeFetcher }),
     });
-    const mcpFlows = new McpOAuthFlowService({ database, cipher: mcpCipher, oauth: mcpOAuth, servers: mcpServers });
+    const mcpFlows = new McpOAuthFlowService({
+      database,
+      cipher: mcpCipher,
+      oauth: mcpOAuth,
+      servers: mcpServers,
+      /*
+       * The deployment's pre-registered Google Workspace client, present only when the
+       * OPENTAG_MCP_GOOGLE_CLIENT_* pair is configured. The flow itself re-checks the Server's
+       * origin and the resolved issuer before it uses this client, so wiring it here grants it no
+       * reach beyond the Google-hosted endpoints.
+       */
+      googleMcpClient: config.mcpGoogleOAuth,
+    });
     const mcpRefreshWorker = new McpRefreshWorker({
       authorization: mcpAuthorization,
       database,
@@ -942,7 +1016,7 @@ export async function startServer(): Promise<void> {
       servers: mcpServers,
       onError: (error) => app?.log.error({ error }, "MCP refresh pass failed"),
     });
-    const imDeliveryWorker = new ImDeliveryWorker({
+    imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
       domain: domainOwner,
@@ -999,6 +1073,7 @@ export async function startServer(): Promise<void> {
       slackOAuthAvailable: config.slackOAuth !== undefined,
       agentSetupService,
       agentRuntimeTestService,
+      agentRuntimeOptionsService,
       contextTreeOperationService,
       authService,
       browserAuth: {
@@ -1009,6 +1084,7 @@ export async function startServer(): Promise<void> {
         secureCookies: isHostedEnvironment(config.environment),
         sessionTtlSeconds: config.sessionTtlSeconds,
       },
+      publicCatalog: { origins: config.websiteOrigins },
       connectCode: {
         environment: config.environment,
         issuer: connectCodeService,
@@ -1075,10 +1151,12 @@ export async function startServer(): Promise<void> {
           }
         : {}),
       runtime: {
+        approvalOwner,
         runtimeCredentialOwner: platformRuntime.credentials.owner,
         registry,
         domainOwner,
         agentRuntimeTestOwner,
+        agentRuntimeOptionsOwner,
         contextTreeOperationOwner,
         providerCliReconcileOwner,
         channelTarget: () => channelTargetPoller.get(),
@@ -1100,8 +1178,14 @@ export async function startServer(): Promise<void> {
         proofs: sessionCliProofService,
         sessions: sessionService,
       },
-      skills: { service: skillRuntime.service, remote: skillRuntime.remote, proofs: sessionCliProofService },
+      skills: {
+        service: skillRuntime.service,
+        remote: skillRuntime.remote,
+        preset: skillRuntime.preset,
+        proofs: sessionCliProofService,
+      },
       slackEvents: {
+        approvalOwner,
         imBindings: imBindingService,
         inbox: imMessageInbox,
         receipts: slackWebhookReceipts,
@@ -1129,7 +1213,9 @@ export async function startServer(): Promise<void> {
     });
     feishuSetupService.start();
     feishuConnections.start();
+    approvalOwner.start();
     imDeliveryWorker.start();
+    slackWorkingWorker.start();
     scheduleScheduler.start();
     sandboxIdleReclaimer?.start();
     github?.worker.start();
@@ -1147,10 +1233,12 @@ export async function startServer(): Promise<void> {
     app.addHook("onClose", async () => {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
+      const imagePrewarmStopped = runnerImagePrewarmWorker?.stop();
       await scheduleScheduler.stop();
       channelTargetPoller.stop();
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
+      await slackWorkingWorker.stop();
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();
@@ -1158,6 +1246,7 @@ export async function startServer(): Promise<void> {
       await platformRuntime.close();
       await feishuSetupService.stop();
       await feishuConnections.stop();
+      await imagePrewarmStopped;
       await sql.end();
       await shutdownTelemetry();
     });
@@ -1165,6 +1254,7 @@ export async function startServer(): Promise<void> {
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");
+    runnerImagePrewarmWorker?.start();
   } catch (error) {
     if (app) {
       app.log.error({ detail: formatStartupError(error, knownSecrets) }, "Failed to start OpenTag server");

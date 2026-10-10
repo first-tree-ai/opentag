@@ -1,6 +1,6 @@
+import type { McpCatalogEntry, McpCatalogLocalizedText } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { getLocale, type Locale } from "../../../i18n/locale.js";
-import type { McpCatalogEntry, McpCatalogLocalizedText } from "./mcp-catalog.gen.js";
 
 /**
  * Reads and joins for the marketplace catalog.
@@ -22,6 +22,23 @@ export function comparableUrl(value: string): string {
     return new URL(value.trim()).href;
   } catch {
     return value.trim();
+  }
+}
+
+/** Match a known endpoint, allowing connection-specific query parameters and a trailing slash. */
+export function findCatalogEntryByUrl(value: string, entries: readonly McpCatalogEntry[]): McpCatalogEntry | undefined {
+  const target = catalogEndpoint(value);
+  if (!target) return undefined;
+  return entries.find((entry) => catalogEndpoint(entry.url) === target);
+}
+
+function catalogEndpoint(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.username || url.password) return undefined;
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return undefined;
   }
 }
 

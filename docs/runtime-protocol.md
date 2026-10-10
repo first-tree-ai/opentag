@@ -74,6 +74,46 @@ provider awaiting a fresh observation remains `checking`. Thus a new Web/CLI cal
 can see that Pi is unavailable on a v1-only daemon instead of waiting indefinitely.
 Replacing the connection replaces this support boundary as well.
 
+## Local model options and cache ownership
+
+The optional `runtime.agentRuntimeOptions` capability (version 1) serves
+`GET /api/v1/agents/:agentId/runtime-options?model=...`. The Server checks Account
+ownership, resolves the Agent's bound Local Computer and provider, then sends an
+`agent-runtime:options` request to that Computer's current daemon. The Client queries
+the native provider CLI and returns model IDs and reasoning efforts for the selected
+model. The Server rechecks Agent placement before returning the response.
+
+| Data | Location and identity | Lifetime |
+| --- | --- | --- |
+| Web query result | Browser memory, keyed by `agentId`, `computerId`, provider, and model | Fresh for 30 seconds; a visible model page polls every 30 seconds; focus and reconnect request again; signing out clears the cache |
+| Server request | In-memory pending map, keyed by a random `requestId` and fenced by `computerId` and `instanceId` | Removed on completion, cancellation, or timeout; no model catalog is persisted |
+| Native provider catalog | Owned by the CLI and its local provider configuration | Provider-specific; OpenTag does not clear or persist this cache |
+| Saved model and effort | PostgreSQL `agent_runtime_configs`, keyed by `agent_id` | Written only when configuration is saved, with an expected-revision check |
+
+The HTTP response uses `Cache-Control: no-store`. The model page updates automatically
+while mounted and visible, and stops polling when hidden, unmounted, or its Computer
+is offline. Background updates preserve unsaved selections and do not show a loading
+message over confirmed options. Each update is a new native query, not a background
+catalog upload or a provider-cache purge. Computers do not overwrite
+a shared Server catalog. A response from another Computer or an old daemon instance
+cannot complete the pending request.
+
+The Web model selector uses successful native results without adding preset suggestions,
+including when the native catalog is empty. Presets are used only while no confirmed
+native result is available, with the existing loading or unavailable feedback. Saved
+IDs and custom input remain available. Suggestions are not proof of account access.
+Reasoning efforts use the selected model's native metadata; an empty list stays empty,
+while unknown metadata keeps suggested values explicitly unconfirmed.
+
+Directory queries require the provider to be ready and reuse the same selected CLI
+factory as task creation and resume, including its executable path and provider
+environment. A query never discovers a separate CLI or initiates readiness repair.
+This does not migrate already-running processes when a CLI installation changes.
+
+Refreshing options does not save Agent configuration or modify the local CLI's
+defaults. Saving `null` model or effort values means inheriting local configuration;
+these are per-Agent overrides, not per-Computer model catalogs.
+
 ## Parsing and fencing
 
 - The base v1 handshake and control schemas remain strict and byte-compatible. A Client offers the optional, separately versioned Provider-readiness extension through its WebSocket headers; only an acknowledging Server may add its welcome field and accept readiness on register or heartbeat frames.

@@ -17,6 +17,7 @@ import {
 } from "./runtime-domain.js";
 import { SandboxLifecycleSchema } from "./sandbox.js";
 import { SessionCliProofGrantSchema } from "./session-cli.js";
+import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-activity.js";
 
 /**
  * E3 Cloud Runner contract: the Session-owned Sandbox is materialized as exactly one Cloud Run
@@ -351,6 +352,7 @@ export const RunnerAuthFrameSchema = z
      * pinned E4 Runner image (handoff contract). Legacy E3 Runners never set it.
      */
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
+    turnActivityVersion: z.literal(1).optional(),
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /**
      * E8: opt in to Cloud Session collaboration at a specific version. Only sent by a Runner
@@ -914,6 +916,7 @@ export const RunnerClientFrameSchema = z.discriminatedUnion("type", [
   RunnerAcceptanceResultFrameSchema,
   RunnerCloudDeliveryReceivedFrameSchema,
   RunnerCloudDeliveryReportFrameSchema,
+  TurnActivityRequestSchema,
   RunnerCloudDeliveryQueryResultFrameSchema,
   RunnerCloudSessionMessageReceivedFrameSchema,
   RunnerCloudSessionMessageSettledFrameSchema,
@@ -936,6 +939,7 @@ export const RunnerWelcomeFrameSchema = z
      * Cloud journal reconciliation or Cloud frame handlers without it.
      */
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
+    turnActivityVersion: z.literal(1).optional(),
     /**
      * E4: verified Cloud UID of the CURRENT allocation, echoed by the Runner inside credential
      * execution-open sandbox facts. Required when `cloudDeliveryVersion` is present; a
@@ -1008,6 +1012,7 @@ export const RunnerServerCredentialFrameSchema = z
 
 export const RunnerServerFrameSchema = z.discriminatedUnion("type", [
   RunnerWelcomeFrameSchema,
+  TurnActivityResultSchema,
   RunnerAuthResultFrameSchema,
   // This is not authentication success: reconnect with the fresh token before any other frame.
   z

@@ -32,7 +32,20 @@ repair, validate credentials, or infer login/subscription state.
 
 For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
 the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent
-sources that file and calls the official `lark-cli` or `slack api` command directly. The file is removed when the Turn
+calls the official `lark-cli` or `slack api` command directly; the managed launcher loads its credentials automatically.
+Slack read methods use native URL-encoded `--data` parameters (for example `slack api files.info --data 'file=F...'`),
+because legacy Slack endpoints ignore JSON parameters when the Local CLI talks to Slack directly. Message writes keep
+`--json`. In proxy mode the Server also accepts JSON reads and normalizes their upstream encoding.
+
+For raw Slack attachment HTTP requests, read only the nonsecret routing/config paths from that file.
+Proxy executions use `OPENTAG_PROVIDER_PROXY_URL` and `OPENTAG_PROVIDER_CA_PATH` with literal `curl` arguments and
+execution-scoped handle URLs. Default Local executions instead publish `OPENTAG_SLACK_DOWNLOAD_CONFIG`, a path to a
+private `0600` curl config inside the existing Session Slack config directory. Use `curl --disable --config '<path>'`
+only for HTTPS `files.slack.com` URLs returned by `files.info`; this keeps the Bot token out of command arguments and
+disables ambient curl configuration. Do not print the config, source the environment file, add authorization headers,
+enable verbose/trace/header output, or follow redirects. Public URLs and native upload URLs use ordinary HTTP tools
+without this private config. The config is replaced on credential rotation and removed with the Turn's Slack directory.
+The environment file is removed when the Turn
 finishes, retried during Session or Client shutdown if removal fails, and recovered by the next Client startup after a
 crash. Internal Sessions never receive the file.
 
@@ -57,8 +70,9 @@ target Session's existing channel or thread scope in the same authorization oper
 Client and Agent cannot nominate an OpenTag outbox target. A callback to a thread Session keeps its provider-native thread
 scope. This context is a default delivery target, not a restriction on the broader Bot-token authority described below.
 
-For Feishu Turns, the managed Turn context instructs the Agent to pass rich or multiline `lark-cli` text through a
-non-interpolating POSIX heredoc or PowerShell here-string variable. It also requires a pre-send check that rejects an
+For Feishu Turns, the managed Turn context instructs the Agent to pass multiline `lark-cli` bodies as
+single shell-quoted literal `--text` or `--markdown` arguments with real newlines, or provider-native JSON via `--content`.
+Avoid shell variables, substitutions, redirects, and heredocs for ordinary messaging. It also requires a pre-send check that rejects an
 intended multiline body when shell quoting left multiple literal `\n` tokens but no real newline. The check deliberately
 does not rewrite every `\n`, because code and prose may intentionally discuss that token.
 

@@ -325,7 +325,7 @@ function AgentCreatePage({
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-create">
       <header className="flex items-center justify-between p-6">
-        <OpenTagLogo label={m.onboarding_v2_brand_name()} variant="wordmark" />
+        <OpenTagLogo label={m.onboarding_v2_brand_name()} />
         {/*
           The only way out, and only for an Account that has somewhere to go. An Account with no
           Agent has nothing behind this page: leaving would land on a list that sends it straight

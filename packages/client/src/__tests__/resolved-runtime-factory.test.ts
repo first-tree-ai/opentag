@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.setConfig({ testTimeout: 30_000 });
 
 import type {
+  AgentRuntime,
+  AgentRuntimeFactory,
   AgentRuntimeProbeResult,
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
@@ -47,6 +49,179 @@ function issues(result: AgentRuntimeProbeResult): string[] {
 }
 
 describe("resolved provider factories candidate fallback", () => {
+  it("rejects directory queries before readiness and reuses each ready Factory without probing again", async () => {
+    const root = await temporaryRoot();
+    const command = await executable(root, "provider");
+    const options = {
+      command,
+      environment: {},
+      sourceEnvironment: {},
+      discovery: { includeLoginShell: false, pathDelimiter: delimiter },
+    };
+    const metadata = { modelSuggestions: ["custom"], reasoningEffortAllowedValues: ["future"] };
+    const codex = new CodexAgentRuntimeFactory({
+      clientVersion: "test",
+      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
+    });
+    const claude = new ClaudeCodeAgentRuntimeFactory({
+      probeRunner: async () => ({ streamJson: true, credential: true, version: "test" }),
+    });
+    const pi = new PiAgentRuntimeFactory({
+      probeRunner: async () => ({ rpc: true, credential: true, version: "test" }),
+    });
+    const query = vi.fn().mockResolvedValue(metadata);
+    vi.spyOn(codex, "getConfigurationOptions").mockImplementation(query);
+    vi.spyOn(claude, "getConfigurationOptions").mockImplementation(query);
+    vi.spyOn(pi, "getConfigurationOptions").mockImplementation(query);
+    const factories = [
+      resolvedCodexFactory({ ...options, codexHome: root, clientVersion: "test", createCandidateFactory: () => codex }),
+      resolvedClaudeCodeFactory({ ...options, claudeCodeHome: root, createCandidateFactory: () => claude }),
+      resolvedPiFactory({ ...options, piHome: root, sessionDirectory: root, createCandidateFactory: () => pi }),
+    ];
+    for (const factory of factories) {
+      const calls = query.mock.calls.length;
+      await expect(factory.getConfigurationOptions?.({ cwd: root })).rejects.toThrow(
+        "configuration options are unavailable",
+      );
+      expect(query).toHaveBeenCalledTimes(calls);
+      await factory.probe({});
+      expect(await factory.getConfigurationOptions?.({ cwd: root, signal: new AbortController().signal })).toEqual(
+        metadata,
+      );
+      await expect(factory.getConfigurationOptions?.({ cwd: root, signal: AbortSignal.abort() })).rejects.toThrow();
+      expect(query).toHaveBeenCalledTimes(calls + 1);
+    }
+    const legacy = resolvedCodexFactory({
+      ...options,
+      discovery: undefined,
+      clientVersion: "test",
+      codexHome: root,
+      createCandidateFactory: () =>
+        ({
+          manifest: codex.manifest,
+          probe: async () => ({ ready: true, issues: [] }),
+        }) as unknown as CodexAgentRuntimeFactory,
+    });
+    await legacy.probe({});
+    await expect(legacy.getConfigurationOptions?.({ cwd: root })).rejects.toThrow(
+      "configuration options are unavailable",
+    );
+  });
+
+  it.each(
+    (["codex", "claude-code", "pi"] as const).flatMap((provider) =>
+      [false, true].map((fallback) => ({ provider, fallback })),
+    ),
+  )(
+    "pins $provider directory queries, create and resume to the selected CLI with fallback=$fallback",
+    async ({ provider, fallback }) => {
+      const root = await temporaryRoot();
+      const caller = join(root, "caller");
+      const secondary = join(root, "desktop-or-second-install");
+      const name = provider === "claude-code" ? "claude" : provider;
+      const first = await realpath(await executable(caller, name));
+      const second = await realpath(await executable(secondary, name));
+      const sourceEnvironment = { PATH: caller };
+      const environment = {
+        PATH: caller,
+        HOME: root,
+        CODEX_HOME: root,
+        CLAUDE_CONFIG_DIR: root,
+        PI_CODING_AGENT_DIR: root,
+      };
+      const constructed: string[] = [];
+      const invoked: Array<{ operation: string; command: string; environment: NodeJS.ProcessEnv }> = [];
+      const metadata = { modelSuggestions: ["native/selected"], reasoningEffortAllowedValues: ["high"] };
+      const runtime = {} as AgentRuntime;
+      const createCandidate = (command: string, candidateEnvironment: NodeJS.ProcessEnv) => {
+        constructed.push(command);
+        const candidate =
+          provider === "codex"
+            ? new CodexAgentRuntimeFactory({ clientVersion: "test", process: { command, env: candidateEnvironment } })
+            : provider === "claude-code"
+              ? new ClaudeCodeAgentRuntimeFactory({ process: { command, env: candidateEnvironment } })
+              : new PiAgentRuntimeFactory({ process: { command, env: candidateEnvironment, sessionDirectory: root } });
+        vi.spyOn(candidate, "probe").mockResolvedValue(
+          fallback && command === first
+            ? { ready: false, issues: [{ code: "version_incompatible", message: "old protocol" }] }
+            : { ready: true, version: command === first ? "older-compatible" : "newer", issues: [] },
+        );
+        vi.spyOn(candidate, "getConfigurationOptions").mockImplementation(async () => {
+          invoked.push({ operation: "query", command, environment: candidateEnvironment });
+          return metadata;
+        });
+        const runtimeFactory: AgentRuntimeFactory = candidate;
+        vi.spyOn(runtimeFactory, "create").mockImplementation(async () => {
+          invoked.push({ operation: "create", command, environment: candidateEnvironment });
+          return runtime;
+        });
+        vi.spyOn(runtimeFactory, "resume").mockImplementation(async () => {
+          invoked.push({ operation: "resume", command, environment: candidateEnvironment });
+          return runtime;
+        });
+        return candidate;
+      };
+      const common = {
+        command: name,
+        environment,
+        sourceEnvironment,
+        discovery: {
+          candidateAllowed: () => true,
+          desktopAppDirs: () => [secondary],
+          home: root,
+          includeLoginShell: false,
+          platform: "darwin" as const,
+          wellKnownDirs: () => (provider === "codex" ? [] : [secondary]),
+        },
+      };
+      const factory =
+        provider === "codex"
+          ? resolvedCodexFactory({
+              ...common,
+              clientVersion: "test",
+              codexHome: root,
+              createCandidateFactory: (command, env) => createCandidate(command, env) as CodexAgentRuntimeFactory,
+            })
+          : provider === "claude-code"
+            ? resolvedClaudeCodeFactory({
+                ...common,
+                claudeCodeHome: root,
+                createCandidateFactory: (command, env) =>
+                  createCandidate(command, env) as ClaudeCodeAgentRuntimeFactory,
+              })
+            : resolvedPiFactory({
+                ...common,
+                piHome: root,
+                sessionDirectory: root,
+                createCandidateFactory: (command, env) => createCandidate(command, env) as PiAgentRuntimeFactory,
+              });
+      await expect(factory.getConfigurationOptions?.({ cwd: root })).rejects.toThrow(
+        "configuration options are unavailable",
+      );
+      expect(constructed).toEqual([]);
+      await expect(factory.probe({})).resolves.toMatchObject({ ready: true });
+      sourceEnvironment.PATH = secondary;
+      await expect(factory.getConfigurationOptions?.({ cwd: root })).resolves.toEqual(metadata);
+      await expect(factory.create({} as CreateAgentRuntimeRequest)).resolves.toBe(runtime);
+      await expect(factory.resume({} as ResumeAgentRuntimeRequest)).resolves.toBe(runtime);
+      const selected = fallback ? second : first;
+      expect(constructed).toEqual(fallback ? [first, second] : [first]);
+      expect(invoked.map(({ operation, command }) => [operation, command])).toEqual([
+        ["query", selected],
+        ["create", selected],
+        ["resume", selected],
+      ]);
+      expect(invoked[0]?.environment).toMatchObject({
+        HOME: root,
+        CODEX_HOME: root,
+        CLAUDE_CONFIG_DIR: root,
+        PI_CODING_AGENT_DIR: root,
+      });
+      expect(invoked[1]?.environment).toBe(invoked[0]?.environment);
+      expect(invoked[2]?.environment).toBe(invoked[0]?.environment);
+    },
+  );
+
   it("advances to the next same-Provider candidate on version_incompatible and does not spawn login-shell", async () => {
     const root = await temporaryRoot();
     const caller = join(root, "caller");

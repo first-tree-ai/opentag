@@ -1,8 +1,11 @@
 import {
   AGENT_SKILL_BUNDLE_TEMPLATE,
+  AGENT_SKILL_FILE_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   ListAgentSkillsResponseSchema,
+  ReadSkillFileQuerySchema,
+  ReadSkillFileResponseSchema,
   SkillDetailSchema,
   type SkillSource,
   UpdateSkillRequestSchema,
@@ -11,11 +14,12 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
-import type { SkillService } from "../services/skills/index.js";
+import type { SkillPresetService, SkillService } from "../services/skills/index.js";
 import type { RemoteSkillService } from "../services/skills/source/remote-skill-service.js";
 import { parseRequest } from "./request-validation.js";
 import { sendSkillBundle } from "./skill-bundle.js";
 import { registerRemoteSkillRoutes } from "./skill-install.js";
+import { registerSkillPresetRoutes } from "./skill-presets.js";
 import { registerSkillUploadRoute } from "./skill-upload.js";
 
 /**
@@ -46,14 +50,17 @@ export function registerSkillRoutes(
   authService: UserAuthService,
   authOptions: UserAuthPreHandlerOptions = {},
   remoteSkillService?: RemoteSkillService,
+  presetService?: SkillPresetService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions);
   /*
-   * Remote installation is part of the Account Skill surface, so it is registered from here rather
-   * than from a separate condition in `createApp`: an absent service means a caller wired only the
-   * upload/management surface, which is exactly the optionality the other route groups have.
+   * Remote installation and the preset catalog are part of the Account Skill surface, so they are
+   * registered from here rather than from a separate condition in `createApp`: an absent service
+   * means a caller wired only the upload/management surface, which is exactly the optionality the
+   * other route groups have.
    */
   if (remoteSkillService) registerRemoteSkillRoutes(app, remoteSkillService, authService, authOptions);
+  if (presetService) registerSkillPresetRoutes(app, presetService, authService, authOptions);
 
   app.get(AGENT_SKILLS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
@@ -66,6 +73,15 @@ export function registerSkillRoutes(
   app.get(AGENT_SKILL_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId, skillId } = parseRequest(AgentSkillParamsSchema, request.params);
     const response = SkillDetailSchema.parse(await skillService.get(authenticatedUserId(request), agentId, skillId));
+    return reply.header("cache-control", "no-store").code(200).send(response);
+  });
+
+  app.get(AGENT_SKILL_FILE_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId, skillId } = parseRequest(AgentSkillParamsSchema, request.params);
+    const query = parseRequest(ReadSkillFileQuerySchema, request.query);
+    const response = ReadSkillFileResponseSchema.parse(
+      await skillService.readFile(authenticatedUserId(request), agentId, skillId, query),
+    );
     return reply.header("cache-control", "no-store").code(200).send(response);
   });
 

@@ -47,7 +47,7 @@ function wrap(children: ReactNode, client = new QueryClient({ defaultOptions: { 
 }
 
 function uploadButton(): HTMLButtonElement {
-  return screen.getAllByRole("button", { name: "Upload skill" })[0] as HTMLButtonElement;
+  return screen.getAllByRole("button", { name: "Import skill" })[0] as HTMLButtonElement;
 }
 
 function fileInput(): HTMLInputElement {
@@ -73,18 +73,21 @@ function deferred<T>() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("SkillsPage", () => {
-  it("renders the Agent's Skills with their source, size, file count and download link", async () => {
+  it("shows names and descriptions, with archive download available through More", async () => {
     stubList([skill()]);
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText("Release notes writer")).toBeTruthy();
     expect(screen.getByText("Turns merged changes into clear release notes")).toBeTruthy();
-    expect(screen.getByText("Web upload")).toBeTruthy();
-    expect(screen.getByText(/2 KB · 3 files · Updated/)).toBeTruthy();
-    const download = screen.getByRole("link", { name: "Download" });
+    expect(screen.queryByText("Web upload")).toBeNull();
+    expect(screen.queryByText(/2 KB · 3 files · Updated/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Release notes writer" }));
+    const download = await screen.findByRole("menuitem", { name: "Download skill" });
     expect(download.getAttribute("href")).toBe(`/api/v1/agents/${AGENT_ID}/skills/${SKILL_ID}/bundle`);
     // W2: the saved filename is the canonical archive this page's own upload pre-check accepts.
     expect(download.getAttribute("download")).toBe("Release notes writer.tar.gz");
+    fireEvent.click(download);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });
 
   it("offers remote installation and opens the dialog", async () => {
@@ -97,12 +100,25 @@ describe("SkillsPage", () => {
     // The button exists before the list arrives, when storage is still unknown and it is disabled;
     // storage is only a fact once a successful list has said so.
     await screen.findByText(/No Skills yet/);
-    const install = screen.getByRole("button", { name: "Install from URL" }) as HTMLButtonElement;
+    const install = screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement;
     expect(install.disabled).toBe(false);
     fireEvent.click(install);
-    expect(await screen.findByText("Install Skills from a URL")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Install from URL" }));
+    expect(await screen.findByText("Install from URL")).toBeTruthy();
     // Opening the dialog only opens it: no source has been read yet.
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it.each([{ items: [] }, { items: [skill()] }])("keeps discovery hidden with skills $items", async ({ items }) => {
+    stubList(items);
+    const presets = vi.spyOn(browserApi, "skillPresets");
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+
+    await screen.findByText(items.length ? "Release notes writer" : "No Skills yet");
+    expect(screen.queryByRole("button", { name: "Explore skills" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Skill catalog" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Import skill" })).toHaveLength(1);
+    expect(presets).not.toHaveBeenCalled();
   });
 
   it("disables remote installation when the deployment has no Skill storage", async () => {
@@ -110,10 +126,10 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText(/Skill storage is not configured/)).toBeTruthy();
-    const install = screen.getByRole("button", { name: "Install from URL" }) as HTMLButtonElement;
+    const install = screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement;
     expect(install.disabled).toBe(true);
     fireEvent.click(install);
-    expect(screen.queryByText("Install Skills from a URL")).toBeNull();
+    expect(screen.queryByText("Install from URL")).toBeNull();
   });
 
   it("shows the empty state when the Agent has no Skills", async () => {
@@ -121,9 +137,10 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText(/No Skills yet/)).toBeTruthy();
-    expect(screen.getByText(".zip, .skill, .tar.gz, .tgz · Up to 16 MiB")).toBeTruthy();
+    expect(screen.getByText("Import a skill from a URL or upload a file to get started.")).toBeTruthy();
     const chooseFile = vi.spyOn(fileInput(), "click");
-    fireEvent.click(screen.getByRole("button", { name: "Upload skill" }) as HTMLButtonElement);
+    fireEvent.click(screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Upload file" }));
     expect(chooseFile).toHaveBeenCalledOnce();
   });
 
@@ -141,7 +158,7 @@ describe("SkillsPage", () => {
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
     expect(screen.getByText("Uploading notes.zip…").getAttribute("role")).toBe("status");
-    for (const button of screen.getAllByRole("button", { name: "Upload skill" })) {
+    for (const button of screen.getAllByRole("button", { name: "Import skill" })) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     }
     expect(upload).not.toHaveBeenCalled();
@@ -286,7 +303,8 @@ describe("SkillsPage", () => {
     const remove = vi.spyOn(browserApi, "removeAgentSkill").mockResolvedValue(undefined);
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Release notes writer" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete skill" }));
     expect(await screen.findByText("Delete Release notes writer?")).toBeTruthy();
     expect(remove).not.toHaveBeenCalled();
 
@@ -299,7 +317,8 @@ describe("SkillsPage", () => {
     const deletion = deferred<void>();
     const remove = vi.spyOn(browserApi, "removeAgentSkill").mockReturnValue(deletion.promise);
     wrap(<SkillsPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Release notes writer" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete skill" }));
     fireEvent.click(await screen.findByRole("button", { name: "Delete Skill" }));
 
     expect(await screen.findByRole("button", { name: "Deleting…" })).toBeTruthy();
@@ -453,7 +472,8 @@ describe("SkillsPage", () => {
     vi.spyOn(browserApi, "removeAgentSkill").mockResolvedValue(undefined);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     wrap(<SkillsPage agentId={AGENT_ID} />, client);
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Release notes writer" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete skill" }));
     await screen.findByText("Delete Release notes writer?");
 
     list.mockRejectedValue(new ApiError(503, "Skill storage unavailable"));
@@ -471,10 +491,12 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText(/Skill storage is not configured/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Upload skill" }) as HTMLButtonElement).disabled).toBe(true);
-    // The Skill is still listed; only its download is withheld.
+    expect((screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement).disabled).toBe(true);
+    // The Skill is still listed, with download disabled in its More menu.
     expect(screen.getByText("Release notes writer")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Download" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Release notes writer" }));
+    const download = await screen.findByRole("menuitem", { name: "Download skill" });
+    expect(download.getAttribute("aria-disabled")).toBe("true");
 
     expect(list).toHaveBeenCalledTimes(1);
     expect(detail).not.toHaveBeenCalled();

@@ -451,6 +451,7 @@ export function installApi(
     computerId,
     revision,
     runtimeConfig: {
+      permissions: { approvalPolicy: "on-request", allowCommands: [] },
       contextTrees: [],
       revision: 1,
       model: null,
@@ -701,7 +702,7 @@ export function installApi(
           connectCodeId,
           bootstrapCommand: "opentag computer connect --server https://opentag.example.com -- example",
           expiresIn: 900,
-          issuedAt: "2026-08-20T00:00:00.000Z",
+          issuedAt: new Date().toISOString(),
         },
         201,
       );

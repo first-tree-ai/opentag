@@ -204,7 +204,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   );
 
   const presetAction = (
-    <Button disabled={!storageAvailable} onClick={openPresetCatalog} variant="secondary">
+    <Button disabled={!storageAvailable} onClick={openPresetCatalog} variant="ghost">
       {m.skills_preset_button()}
     </Button>
   );

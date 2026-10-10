@@ -5,8 +5,13 @@
 A Skill's summary cannot replace its instructions. Click the installed Skill's content area—name, description or
 surrounding whitespace—to read the complete `SKILL.md` and switch to supporting files without leaving the management
 page. The reader integrates with the Skills management layout merged in PR #820. A stretched native name button owns
-this larger hit area; the switch and More menu sit outside it and retain their independent management actions.
+this larger hit area; the switch and More menu remain separate siblings and retain their independent management actions.
 The content area has a subtle hover fill and a visible keyboard focus outline, without an extra details action.
+Names use 16px semibold text and descriptions use 14px regular text. Controls align with the name; in narrow content
+containers the description spans the full width below the first row. The stretched trigger extends across that mobile
+content region, with the independent control group layered above it. Description tooltips are enabled only for actual
+horizontal overflow or two-line clamping, measured on text changes, element resizing and font loading. Browse remains
+available as a lighter ghost action beside Add.
 
 ## Reading experience
 

@@ -14,6 +14,7 @@ The server contract is separately covered with authenticated route/service tests
 | Larger details entry, desktop hover | 1440 × 1000 | [Entry](content-area-desktop-hover.png) |
 | Larger details entry, mobile | 390 × 844 | [Mobile entry](content-area-390.png) |
 | Larger details entry, narrow mobile | 320 × 844 | [Narrow entry](content-area-320.png) |
+| Clipped description, mobile tooltip | 320 × 844 | [Tooltip](content-area-clipped-tooltip.png) |
 | Desktop Markdown and file navigation | 1440 × 1000 | [Desktop](reader-1440.png) |
 | Tablet | 768 × 1000 | [Tablet](reader-768.png) |
 | Mobile file selector | 390 × 844 | [Mobile](reader-390.png) |
@@ -27,6 +28,11 @@ The server contract is separately covered with authenticated route/service tests
 - The name, description and content whitespace open details through one native button. Real coordinate clicks on the
   description and the far corner of the content area passed; the switch and More menu operated without opening details.
   Enter and Space opened the reader, Escape restored trigger focus, and 320px/390px entries remained within the viewport.
+- Names render at 16px/600, descriptions at 14px. Controls align with the name at 1440px/768px/390px/320px and in a
+  narrow desktop content container. Mobile descriptions span the full content width below the name and controls.
+- Description tooltips appear only when the actual text is clipped. A long description showed a tooltip at 320px;
+  widening the viewport to 1440px removed it while hovered, and an untruncated description stayed quiet.
+  ResizeObserver and font-loading events keep the measurement current. Browse uses a ghost action beside Add.
 
 - At all four viewport widths, axe reported no violations; document width stayed within the viewport and the dialog
   bounds remained fully visible. Narrow viewports use the file selector rather than a cramped sidebar.

@@ -104,23 +104,34 @@ function CopyableCommandBlock({
 /** The same setup surface for a task given to an assistant, without shell quoting or token markup. */
 export function InstructionBlock({
   instructions,
+  preview,
   expansion,
   ...props
 }: CommandBlockSharedProps & {
   readonly instructions: string;
+  /** A readable summary; copying always includes the complete inspectable instructions. */
+  readonly preview?: string;
   readonly label: string;
   readonly expansion?: { readonly show: string; readonly hide: string };
 }) {
   const [expanded, setExpanded] = useState(false);
   const id = useId();
-  const paragraphEnd = instructions.indexOf("\n\n");
-  const split = paragraphEnd === -1 ? instructions.length : paragraphEnd;
+  const visible = expansion && !expanded && preview ? preview : instructions;
+  const paragraphEnd = visible.indexOf("\n\n");
+  const split = paragraphEnd === -1 ? visible.length : paragraphEnd;
   return (
     <div className="grid min-w-0 gap-2">
       <div id={id}>
-        <CopyableTextBlock {...props} payload={instructions} plainText expanded={expanded}>
-          <span className="ots-command__comment">{instructions.slice(0, split)}</span>
-          {instructions.slice(split)}
+        <CopyableTextBlock
+          {...props}
+          payload={instructions}
+          plainText
+          expanded={expanded}
+          flowing={Boolean(preview && expansion)}
+          onCopyFailed={preview && expansion ? () => setExpanded(true) : undefined}
+        >
+          <span className="ots-command__comment">{visible.slice(0, split)}</span>
+          {visible.slice(split)}
         </CopyableTextBlock>
       </div>
       {expansion ? (
@@ -150,6 +161,8 @@ function CopyableTextBlock({
   inert = false,
   plainText = false,
   expanded = false,
+  flowing = false,
+  onCopyFailed,
 }: CommandBlockSharedProps & {
   readonly label: string;
   readonly payload: string;
@@ -158,12 +171,15 @@ function CopyableTextBlock({
   readonly inert?: boolean;
   readonly plainText?: boolean;
   readonly expanded?: boolean;
+  readonly flowing?: boolean;
+  readonly onCopyFailed?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [hint, setHint] = useState<string>();
   const codeRef = useRef<HTMLElement>(null);
   const resetTimer = useRef(0);
   const mounted = useRef(true);
+  const selectAfterRender = useRef(false);
   const setCopyTarget = (node: HTMLElement | null) => {
     codeRef.current = node;
   };
@@ -175,6 +191,13 @@ function CopyableTextBlock({
       window.clearTimeout(resetTimer.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (selectAfterRender.current) {
+      selectContents(codeRef.current);
+      selectAfterRender.current = false;
+    }
+  });
 
   async function copy() {
     try {
@@ -189,6 +212,8 @@ function CopyableTextBlock({
     } catch {
       if (!mounted.current) return;
       setCopied(false);
+      onCopyFailed?.();
+      selectAfterRender.current = true;
       selectContents(codeRef.current);
       setHint(fallbackHint);
     }
@@ -200,6 +225,7 @@ function CopyableTextBlock({
     <div
       className="ots-command flex flex-col gap-1"
       data-expanded={expanded || undefined}
+      data-flowing={flowing || undefined}
       data-expired={expiredNotice ? "true" : undefined}
     >
       <div className="ots-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">

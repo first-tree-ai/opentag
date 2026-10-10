@@ -523,16 +523,9 @@ describe("AgentSetupPage with the Lab Computer adapters", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
     await settle();
-    expect(screen.getByText("Turn on or wake this computer and check its internet connection.")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Assistant requested a repair?" }));
-    await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Repair connection" }));
-    await settle();
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
     expect(memory.inspect().computerConnectState).toBe("pending");
-    expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
+    expect(screen.queryByText("Waiting for Review Mac to reconnect…")).toBeNull();
 
     act(() => memory.controls.completeComputerConnection());
     await advance(1_600);

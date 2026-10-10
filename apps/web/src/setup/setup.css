@@ -70,6 +70,19 @@
   color: var(--fg-2);
 }
 
+/* Assistant recovery instructions grow with the page instead of nesting a scrollable reader. */
+.ots-command[data-flowing="true"] .ots-command__body {
+  height: auto;
+  min-height: 132px;
+}
+
+.ots-command[data-flowing="true"] .ots-command__code {
+  max-height: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+}
+
 .ots-command__code:focus-visible {
   outline: 2px solid var(--color-kumo-focus);
   outline-offset: 2px;

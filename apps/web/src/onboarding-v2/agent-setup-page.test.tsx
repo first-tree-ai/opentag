@@ -234,6 +234,7 @@ describe("AgentSetupPage stages", () => {
   });
 
   it("says an offline Computer is offline and keeps watching it", async () => {
+    mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
     renderSetup(memory.adapter);
@@ -247,9 +248,8 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(reads).toHaveBeenCalledTimes(1);
 
-    // Ordinary offline guidance does not assume OpenTag was uninstalled.
-    expect(screen.getByText("Turn on or wake this computer and check its internet connection.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Get connection help" })).toBeTruthy();
+    expect(screen.getByText("Preparing recovery instructions…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
     expect(screen.getByText("You can continue when this computer is ready.")).toBeTruthy();
     expect(screen.queryByText("Complete the action above, then check again.")).toBeNull();
@@ -260,9 +260,9 @@ describe("AgentSetupPage stages", () => {
     expect(reads.mock.calls.length).toBeGreaterThan(readsBeforePoll);
   });
 
-  it("issues a targeted repair only after opening connection help and requesting repair", async () => {
+  it("automatically prepares a complete repair task for the bound Computer and Agent", async () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
-      bootstrapCommand: "opentag computer connect --server https://opentag.example.com -- repair-code",
+      bootstrapCommand: "opentag connect --server https://opentag.example.com -- repair-code",
       connectCodeId: "repair-code",
       expiresIn: 900,
       issuedAt: new Date().toISOString(),
@@ -273,31 +273,18 @@ describe("AgentSetupPage stages", () => {
       redeemedAt: null,
       state: "pending",
     });
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-
-    expect(issue).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    await settle();
-    expect(issue).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Assistant requested a repair?" }));
-    await settle();
-    const repairAction = screen.getByRole("button", { name: "Repair connection" });
-    expect(repairAction.closest(".ots-command__body")).toBeNull();
-    expect(screen.queryByText("Need to reinstall?")).toBeNull();
-    fireEvent.click(repairAction);
-    await settle();
-
-    const repairSurface = document.querySelector('[data-ui="computer-connect"]');
-    expect(repairSurface?.querySelector(".ots-command__body")).not.toBeNull();
-    expect(screen.getByText("Paste this command into your coding assistant on Review Mac.")).toBeTruthy();
-    expect(screen.getByText("Expires in 15:00")).toBeTruthy();
-    expect(screen.getByText("Waiting for Review Mac to reconnect…").closest('[role="status"]')).toBeTruthy();
-    expect(issue).toHaveBeenCalledWith({
+    expect(screen.queryByText(/Waiting for|Expires in/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("repair-code");
+    expect(issue).toHaveBeenCalledExactlyOnceWith({
       mode: "repair",
       targetAgentId: SETUP_AGENT_ID,
       targetComputerId: SETUP_COMPUTER_ID,

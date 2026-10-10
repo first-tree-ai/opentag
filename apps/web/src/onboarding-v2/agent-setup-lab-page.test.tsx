@@ -260,8 +260,8 @@ describe("agent setup lab page", () => {
     expect(screen.getByText("1 changed")).toBeTruthy();
     expect(await screen.findByText("Offline")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect computer" }));
-    expect(screen.queryByText("1 changed")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
+    await waitFor(() => expect(screen.queryByText("1 changed")).toBeNull(), { timeout: 3_000 });
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
   });
 

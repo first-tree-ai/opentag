@@ -72,6 +72,28 @@ import { assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js
 
 /** Pi custom provider name for the Server-mediated model path. */
 export const CLOUD_MODEL_PI_PROVIDER = "opentag";
+/**
+ * Verified image inputs for exact Cloud model IDs; see docs/cloud-pi-image-input.md.
+ * This describes an already-issued model, never admits a model or guesses from its name.
+ * Unknown IDs keep Pi's text-only behavior until their capabilities are verified.
+ */
+const CLOUD_PI_IMAGE_INPUT_MODELS = new Set([
+  "gemini-3.8-flash",
+  "gemini-3.1-flash-lite",
+  "glm-5.3-flash",
+  "gpt-6-astra",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "claude-fable-5.1",
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "kimi-k3",
+  "deepseek-v4.1-flash",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "claude-opus-5.5",
+]);
 /** The locked adapter lives with the Cloud image's Pi installation. */
 const CLOUD_PI_MCP_ADAPTER_ENTRY = "/opt/opentag/pi/node_modules/pi-mcp-adapter/index.ts";
 
@@ -186,6 +208,7 @@ export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
             {
               id: model.model,
               name: model.model,
+              input: CLOUD_PI_IMAGE_INPUT_MODELS.has(model.model) ? ["text", "image"] : ["text"],
               contextWindow: model.contextWindow,
               maxTokens: model.maxTokens,
               compat: { supportsStore: false },

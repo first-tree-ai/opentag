@@ -3,6 +3,7 @@ import {
   ClientRuntimeBusinessFrameSchema,
   type DirectImMessageDeliveryRequest,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   RuntimeApprovalRequestSchema,
   RuntimeFrameEnvelopeSchema,
@@ -38,6 +39,51 @@ import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("AgentTurnRunner", () => {
+  it.each(["direct", "steer"])("keeps legacy attachment metadata in %s input without downloading", (kind) => {
+    const root = delivery();
+    const request = kind === "direct" ? root : steerRequest();
+    request.content.resources = [
+      {
+        imMessageId: request.imMessageId,
+        ordinal: 0,
+        kind: "file",
+        filename: "budget-review-819.csv",
+        mediaType: "text/csv",
+        sizeBytes: 42,
+        availability: "unavailable",
+      },
+    ];
+    const frozenRequest = JSON.stringify(request);
+    const input = buildAgentInput(request, undefined, root.runtime);
+    const metadata = input.items.find((item) => item.text?.includes("budget-review-819.csv"))?.text;
+    expect(metadata).toContain(request.imMessageId);
+    expect(metadata).toContain('"ordinal":0');
+    expect(metadata).toContain('"availability":"unavailable"');
+    expect(metadata).toContain("providerRef");
+    expect(request.content.text).toBe(kind === "direct" ? "hello" : "updated direction");
+    expect(JSON.stringify(request)).toBe(frozenRequest);
+  });
+
+  it("bounds legacy attachment metadata without splitting resource records", () => {
+    const request = delivery();
+    request.content.resources = Array.from({ length: 16 }, (_, ordinal) => ({
+      imMessageId: request.imMessageId,
+      ordinal,
+      kind: "file" as const,
+      filename: "\u0000".repeat(512),
+      availability: "available" as const,
+    }));
+    const metadata =
+      buildAgentInput(request).items.find((item) => item.text?.includes("Attachment metadata"))?.text ?? "";
+    expect(metadata).toContain("metadata omitted");
+    expect(Buffer.byteLength(metadata)).toBeLessThanOrEqual(RUNTIME_DIRECT_TEXT_MAX_BYTES);
+    for (const line of metadata.split("\n").filter((value) => value.startsWith("{"))) {
+      expect(() => JSON.parse(line)).not.toThrow();
+    }
+    request.content.resources = [];
+    expect(buildAgentInput(request).items).toHaveLength(2);
+  });
+
   it.each([
     "accept",
     "decline",
@@ -826,7 +872,11 @@ describe("AgentTurnRunner", () => {
         },
       } as unknown as SessionRuntimeManager,
       credentialEnvironment: credentialEnvironment(),
-      resourceFetcher: { fetchForTurn: vi.fn(async () => "resource") } as unknown as ImResourceFetcher,
+      resourceFetcher: {
+        fetchForTurn: vi.fn(() => {
+          throw new Error("Attachments must not be prefetched");
+        }),
+      } as unknown as ImResourceFetcher,
       onRuntimeEvent,
     });
     runner.start(liveOwner(delivery()));
@@ -1300,7 +1350,6 @@ describe("AgentTurnRunner", () => {
     let resolveReporting!: () => void;
     let observer: AgentRuntimeEventSink | undefined;
     let receipt: RecordedSteerInput | undefined;
-    let invalidateAfterFetch = false;
     const runtimeState = { phase: "running" as const, activeRunId: "turn-1", queuedRunCount: 0 };
     const capabilities = { steer: "supported" as "supported" | "unsupported", interactions: "unsupported" as const };
     const steer = vi.fn().mockRejectedValueOnce(new Error("steer failed")).mockResolvedValue(undefined);
@@ -1363,11 +1412,8 @@ describe("AgentTurnRunner", () => {
         },
       } as unknown as SessionRuntimeManager,
       resourceFetcher: {
-        fetchForTurn: vi.fn(async () => {
-          if (invalidateAfterFetch) {
-            invalidateAfterFetch = false;
-            runtimeState.activeRunId = "turn-other";
-          }
+        fetchForTurn: vi.fn(() => {
+          throw new Error("Attachments must not be prefetched");
         }),
       } as unknown as ImResourceFetcher,
       credentialEnvironment: credentialEnvironment(),
@@ -1389,11 +1435,6 @@ describe("AgentTurnRunner", () => {
     capabilities.steer = "supported";
     runtimeState.activeRunId = "turn-other";
     await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
-    runtimeState.activeRunId = "turn-1";
-    invalidateAfterFetch = true;
-    await expect(
-      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-3" }),
-    ).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
     runtimeState.activeRunId = "turn-1";
     await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
     await expect(

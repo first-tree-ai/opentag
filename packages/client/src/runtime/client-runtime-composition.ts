@@ -66,7 +66,6 @@ import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
 import { ContextTreeSettings } from "./context-tree-settings.js";
-import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
 import { ProviderCliManager } from "./provider-cli/manager.js";
@@ -810,11 +809,6 @@ export async function createClientRuntime(
     turnPlan: providerCliTurnPlans,
   });
   await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);
-  const resourceFetcher = new ImResourceFetcher({
-    instanceId: connection.instanceId,
-    api: options.api,
-    machineToken: options.machineToken,
-  });
   const mvpReportRecovery = new MvpTurnReportRecovery({
     bindingStore,
     logger: moduleLogger("report-recovery"),
@@ -844,7 +838,6 @@ export async function createClientRuntime(
     custody,
     logger: moduleLogger("turn"),
     reportOwner,
-    resourceFetcher,
     runtimeManager,
     credentialEnvironment,
     turnPlan: providerCliTurnPlans,

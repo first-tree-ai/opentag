@@ -1,12 +1,12 @@
 import {
   type DirectImMessageDeliveryRequest,
   type ProviderInboundContext,
-  RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_MAX_FRAME_BYTES,
   type RuntimeImSteerRequest,
   type RuntimeProviderMessageRef,
   runtimeFrameByteLength,
+  truncateImText,
 } from "@opentag/shared";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notExists, or, type SQL, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
@@ -23,6 +23,7 @@ import {
 } from "../db/schema/index.js";
 import { threadRootExternalId } from "../services/im/provider-thread-context.js";
 import { DISPATCH_CLAIM_PREFIX } from "./im-delivery-claim.js";
+import { deliveryMessageText, ImDeliveryInputError } from "./im-delivery-content.js";
 import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
 
 /**
@@ -217,8 +218,7 @@ export function messageAfter(occurredAt: Date, providerRevisionKey: string, mess
 }
 
 export function truncateUtf8(value: string, maxBytes: number): string {
-  const encoded = Buffer.from(value, "utf8");
-  return encoded.byteLength <= maxBytes ? value : encoded.subarray(0, maxBytes).toString("utf8");
+  return truncateImText(value, maxBytes);
 }
 
 export function fitDeliveryFrame(request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest): void {
@@ -230,7 +230,14 @@ export function fitDeliveryFrame(request: DirectImMessageDeliveryRequest | Runti
   while (!fits() && request.content.resources && request.content.resources.length > 0) {
     request.content.resources.pop();
   }
-  if (!fits()) throw new Error("IM_DELIVERY_FRAME_TOO_LARGE");
+  if (!fits()) {
+    // Runtime configuration is mutable; only an independently oversized message can be terminal.
+    const messageFrame = request.type === "im:deliver" ? { ...request, runtime: undefined } : request;
+    if (runtimeFrameByteLength(JSON.stringify(messageFrame)) > RUNTIME_MAX_FRAME_BYTES) {
+      throw new ImDeliveryInputError("IM_DELIVERY_REQUEST_INVALID", "frame_too_large", ["content"]);
+    }
+    throw new Error("IM_DELIVERY_FRAME_TOO_LARGE");
+  }
 }
 
 const newerHistoryRevisions = alias(imMessages, "newer_history_revisions");
@@ -443,7 +450,7 @@ function historyItem(row: DirectHistoryRow): DirectHistory["items"][number] {
     imMessageId: row.id,
     occurredAt: row.occurredAt.toISOString(),
     text:
-      row.operation === "deleted" ? "[deleted]" : truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
+      deliveryMessageText(row, row.imBinding.provider) || "[Historical content unavailable; read the source message]",
     providerRef: runtimeProviderMessageRef(row, row.imBinding),
   };
 }

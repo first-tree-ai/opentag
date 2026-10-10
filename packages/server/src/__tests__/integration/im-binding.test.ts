@@ -3120,6 +3120,110 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("delivers attachment-only input with native identifiers through real database custody", async () => {
+    const value = await fixture();
+    let domain: RuntimeDomainOwner | undefined;
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        installationId: value.computer.currentInstallationId,
+      });
+      domain = runtime.domain;
+      const event = inbound("attachment-only-custody");
+      event.message.content = { version: 1, fallbackText: "", blocks: [], truncated: false };
+      event.message.resources = [
+        {
+          providerResourceKey: "F_ATTACHMENT",
+          kind: "image",
+          filename: "diagram.png",
+          mediaType: "image/png",
+          sizeBytes: 42,
+        },
+      ];
+      const ingested = await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, event);
+      await imDeliveryWorker({ database: value.database, registry: runtime.registry, domain }).runOnce();
+      const request = runtime.frames.find((frame) => (frame as { type?: string }).type === "im:deliver") as
+        | DirectImMessageDeliveryRequest
+        | undefined;
+      expect(request?.content.text).toContain('"file_id":"F_ATTACHMENT"');
+      expect(request?.content.resources).toEqual([
+        expect.objectContaining({ ordinal: 0, kind: "image", availability: "available" }),
+      ]);
+      const [delivery] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, ingested.deliveryIds[0] as string));
+      expect(request).toBeDefined();
+      expect(delivery).toMatchObject({
+        state: "accepted",
+        dispatchInputHash: request && computeDirectInputHash(request),
+      });
+      if (!request || !delivery?.turnId) throw new Error("Attachment delivery was not accepted");
+      await expect(
+        domain.handle(
+          turnReportFor({
+            agentId: request.agentId,
+            deliveryId: request.deliveryId,
+            placementGeneration: request.placementGeneration,
+            sessionId: request.sessionId,
+            turnId: delivery.turnId,
+          }),
+          runtime.context,
+        ),
+      ).resolves.toMatchObject({ status: "recorded" });
+      const [reported] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, request.deliveryId));
+      expect(reported?.reportedAt).toBeInstanceOf(Date);
+      expect(reported?.dispatchInputHash).toBe(delivery.dispatchInputHash);
+    } finally {
+      domain?.close();
+      await value.sql.end();
+    }
+  });
+
+  it("terminally rejects empty input before runtime dispatch and does not reclaim it", async () => {
+    const value = await fixture();
+    const registry = new ConnectionRegistry();
+    const domain = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(value.database));
+    try {
+      const event = inbound("empty-input-custody");
+      event.message.content = { version: 1, fallbackText: "", blocks: [], truncated: false };
+      event.message.resources = [];
+      const ingested = await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, event);
+      const worker = imDeliveryWorker({ database: value.database, registry, domain });
+      await worker.runOnce();
+      const readDelivery = async () =>
+        (
+          await value.database
+            .select()
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, ingested.deliveryIds[0] as string))
+        )[0];
+      const rejected = await readDelivery();
+      expect(rejected).toMatchObject({
+        state: "terminal_rejected",
+        reason: "content_unrecoverable",
+        lastErrorCode: "IM_DELIVERY_CONTENT_INVALID",
+        dispatchRequestId: null,
+        attemptCount: 1,
+      });
+      await worker.runOnce();
+      expect(await readDelivery()).toEqual(rejected);
+    } finally {
+      domain.close();
+      await value.sql.end();
+    }
+  });
+
   it("reserves the verified root beyond the rolling Thread history item cap", async () => {
     const value = await fixture();
     try {

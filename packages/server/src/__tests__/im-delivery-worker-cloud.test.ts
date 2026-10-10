@@ -419,6 +419,38 @@ async function connectReady(fixture: Awaited<ReturnType<typeof cloudScope>>, sta
 }
 
 describe("ImDeliveryWorker accepted Runner readiness wakeup", () => {
+  it("dispatches attachment-only Cloud input with native Feishu identifiers", async () => {
+    const fixture = await cloudScope();
+    const stack = makeStack();
+    const ready = await connectReady(fixture, stack);
+    const pending = await pendingDelivery(fixture.scope.sessionId);
+    await unit.database
+      .update(imMessages)
+      .set({
+        content: {
+          version: 1,
+          fallbackText: "",
+          blocks: [],
+          truncated: false,
+          resources: [
+            {
+              providerResourceKey: "file_cloud",
+              kind: "video",
+              filename: "clip.mp4",
+              mediaType: "video/mp4",
+              sizeBytes: 20,
+            },
+          ],
+        },
+      })
+      .where(eq(imMessages.id, pending.messageId));
+    await makeWorker(stack.owner).runOnce();
+    const run = ready.sent.find((frame) => frame.type === "delivery:run");
+    expect(run?.type).toBe("delivery:run");
+    if (run?.type !== "delivery:run") throw new Error("Cloud dispatch missing");
+    expect(run.delivery.content.text).toContain('"file_key":"file_cloud"');
+    expect(run.delivery.content.providerRef).toMatchObject({ provider: "feishu", messageId: expect.any(String) });
+  });
   it("consumes an already-due initial input before its first scanner claim", async () => {
     const fixture = await cloudScope();
     const stack = makeStack();
@@ -1750,7 +1782,17 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
     const worker = new ImDeliveryWorker({
       database: unit.database,
       domain: {} as never,
-      assembler: { assembleForSession: vi.fn().mockResolvedValue({} as never) },
+      assembler: {
+        assembleForSession: vi.fn(async (sessionId: string) => ({
+          contextTrees: [],
+          agentId: scope.agentId,
+          provider: "pi" as const,
+          revision: { agent: { id: scope.agentId, sequence: 1 }, session: { id: sessionId, sequence: 1 } },
+          instructions: { platform: "", agent: "" },
+          execution: { approvalPolicy: "never" as const, networkAccess: false },
+          workspace: { workspaceId: scope.agentId, mode: "empty_on_create" as const, sharing: "agent" as const },
+        })),
+      },
       registry: scope.registry,
     });
     await worker.runOnce();
@@ -1803,7 +1845,17 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
         }),
         requestDelivery,
       } as never,
-      assembler: { assembleForSession: vi.fn().mockResolvedValue({} as never) },
+      assembler: {
+        assembleForSession: vi.fn(async (sessionId: string) => ({
+          contextTrees: [],
+          agentId: scope.agentId,
+          provider: "pi" as const,
+          revision: { agent: { id: scope.agentId, sequence: 1 }, session: { id: sessionId, sequence: 1 } },
+          instructions: { platform: "", agent: "" },
+          execution: { approvalPolicy: "never" as const, networkAccess: false },
+          workspace: { workspaceId: scope.agentId, mode: "empty_on_create" as const, sharing: "agent" as const },
+        })),
+      },
       registry: scope.registry,
     });
     await worker.runOnce();

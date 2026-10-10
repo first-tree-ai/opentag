@@ -496,15 +496,12 @@ async function runtimeFixture(
     connection,
     custody,
     reportOwner,
-    resourceFetcher: {
-      fetchForTurn: async () => {
-        await startingGate;
-        return undefined;
-      },
-    } as never,
     runtimeManager,
     credentialEnvironment: {
-      prepare: async () => ({ path: "/tmp/provider-env.sh", provider: "slack", ...(mcp ? { mcp } : {}) }),
+      prepare: async () => {
+        await startingGate;
+        return { path: "/tmp/provider-env.sh", provider: "slack", ...(mcp ? { mcp } : {}) };
+      },
       cleanup: async () => undefined,
     },
     logger: recordingLogger(logs, { computerId, instanceId: "instance-1" }),

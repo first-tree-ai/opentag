@@ -6,7 +6,6 @@ import {
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
-  RUNTIME_DIRECT_TEXT_MAX_BYTES,
   type RuntimeImDeliveryContent,
   type RuntimeImSteerRequest,
   RuntimeImSteerRequestSchema,
@@ -41,6 +40,13 @@ import type { ConnectionRegistry } from "./connection-registry.js";
 import { DISPATCH_CLAIM_PREFIX, dispatchClaimToken } from "./im-delivery-claim.js";
 import { CloudDeliveryCoordinator, readPersistedDeliveryRequest } from "./im-delivery-cloud.js";
 import {
+  deliveryMessageContent,
+  ImDeliveryInputError,
+  rejectInvalidImDelivery,
+  validateFreshImRequest,
+  validateUndispatchedContent,
+} from "./im-delivery-content.js";
+import {
   type ClaimLease,
   deliveryOccupancyScope,
   findOtherCustody,
@@ -50,7 +56,6 @@ import {
   messageOrderBefore,
   occupancyConflict,
   occupancyScopeKey,
-  truncateUtf8,
   uncertainAgentCustody,
 } from "./im-delivery-custody.js";
 import { withOperationDeadline } from "./im-delivery-deadline.js";
@@ -71,7 +76,6 @@ import type {
 } from "./im-delivery-worker.types.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
-import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
 
 const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
@@ -670,6 +674,9 @@ export class ImDeliveryWorker {
     const lease = this.#maintainClaimLease(deliveryId, claimToken);
     try {
       await this.#deliverClaimed(deliveryId, claimToken, lease, signal);
+    } catch (error) {
+      if (!(error instanceof ImDeliveryInputError)) throw error;
+      await this.#rejectInvalidInput(deliveryId, error, claimToken);
     } finally {
       await lease.stop();
     }
@@ -789,6 +796,7 @@ export class ImDeliveryWorker {
         deadlineAt: row.delivery.expiresAt.toISOString(),
       };
       fitDeliveryFrame(request);
+      validateFreshImRequest(request);
       if (!(await lease.assertOwned())) return;
       const admitted = await this.#withActiveAgentAdmission(
         {
@@ -815,8 +823,8 @@ export class ImDeliveryWorker {
           claim.claimToken,
         );
       }
-    } catch {
-      await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_FAILED", claim.claimToken);
+    } catch (error) {
+      await this.#handleDeliveryFailure(claim.id, claim.claimToken, "IM_DELIVERY_STEER_FAILED", error);
     } finally {
       await lease.stop();
     }
@@ -886,6 +894,7 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE", claimToken);
       return;
     }
+    validateUndispatchedContent(row);
     /*
      * E4 Cloud branch: a Cloud Computer is a logical identity with one Sandbox Runner per Agent
      * Session, so deliveries route through the per-Sandbox Cloud dispatch owner, never the Local
@@ -1041,6 +1050,7 @@ export class ImDeliveryWorker {
         deadlineAt: row.delivery.expiresAt.toISOString(),
       };
       fitDeliveryFrame(request);
+      validateFreshImRequest(request);
       if (!(await lease.assertOwned())) return;
       await this.#beforeDeliveryAdmission?.(signal);
       const admittedDelivery = await this.#withActiveAgentAdmission(
@@ -1062,8 +1072,8 @@ export class ImDeliveryWorker {
       } else if (result.status === "rejected") {
         await this.#releaseDispatch(deliveryId, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED", claimToken);
       }
-    } catch {
-      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_FAILED", claimToken);
+    } catch (error) {
+      await this.#handleDeliveryFailure(deliveryId, claimToken, "IM_DELIVERY_RUNTIME_FAILED", error);
     }
   }
 
@@ -1348,6 +1358,21 @@ export class ImDeliveryWorker {
     }
   }
 
+  async #handleDeliveryFailure(deliveryId: string, claimToken: string, code: string, error: unknown): Promise<void> {
+    if (error instanceof ImDeliveryInputError) await this.#rejectInvalidInput(deliveryId, error, claimToken);
+    else await this.#recordFailure(deliveryId, code, claimToken);
+  }
+
+  async #rejectInvalidInput(deliveryId: string, error: ImDeliveryInputError, claimToken: string): Promise<void> {
+    setActiveSpanAttributes({
+      "im.validation.code": error.code,
+      "im.validation.paths": error.paths.join(","),
+      "im.delivery.id": deliveryId,
+    });
+    const rejected = await rejectInvalidImDelivery(this.#database, deliveryId, error, claimToken);
+    if (rejected) this.#onDiagnostic(error.code);
+  }
+
   async #reject(deliveryId: string, reason: string, claimToken?: string): Promise<void> {
     setActiveSpanAttributes(outcomeAttrs("terminal_rejected", reason));
     await this.#database
@@ -1433,7 +1458,7 @@ export class ImDeliveryWorker {
     imBinding: typeof imBindings.$inferSelect;
     receiveMode: (typeof agents.$inferSelect)["receiveMode"];
   }): Promise<RuntimeImDeliveryContent> {
-    const resources = input.message.content.resources ?? [];
+    const content = deliveryMessageContent(input.message, input.imBinding);
     const history =
       input.delivery.attention === "direct" && (input.receiveMode === "mention_only" || input.session.kind === "thread")
         ? await loadDirectHistory(this.#database, {
@@ -1446,26 +1471,8 @@ export class ImDeliveryWorker {
           })
         : { items: [], truncated: false };
     return {
-      kind: "text",
-      text: truncateUtf8(
-        input.message.operation === "deleted" ? "[deleted]" : input.message.content.fallbackText,
-        RUNTIME_DIRECT_TEXT_MAX_BYTES,
-      ),
-      providerRef: runtimeProviderMessageRef(input.message, input.imBinding),
+      ...content,
       ...(history.items.length > 0 ? { history: history.items, historyTruncated: history.truncated } : {}),
-      ...(resources.length > 0
-        ? {
-            resources: resources.map((resource, index) => ({
-              imMessageId: input.message.id,
-              ordinal: resource.ordinal ?? index,
-              kind: resource.kind,
-              ...(resource.filename ? { filename: resource.filename } : {}),
-              ...(resource.mediaType ? { mediaType: resource.mediaType } : {}),
-              ...(resource.sizeBytes !== null ? { sizeBytes: resource.sizeBytes } : {}),
-              availability: resource.availability ?? "available",
-            })),
-          }
-        : {}),
     };
   }
 

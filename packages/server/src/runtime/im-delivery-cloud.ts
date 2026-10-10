@@ -27,6 +27,7 @@ import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-ow
 import { CloudDeliveryDispatchError } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbox.js";
+import { ImDeliveryInputError, validateFreshImRequest } from "./im-delivery-content.js";
 import type { DeliveryOccupancySubject } from "./im-delivery-custody.js";
 import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
 
@@ -264,6 +265,7 @@ export class CloudDeliveryCoordinator {
       deadlineAt: cloudDispatchDeadline(this.#options.now(), runtime),
     };
     fitDeliveryFrame(fresh);
+    validateFreshImRequest(fresh);
     return fresh;
   }
 
@@ -309,6 +311,7 @@ export class CloudDeliveryCoordinator {
     error: unknown,
     claimToken: string,
   ): Promise<void> {
+    if (error instanceof ImDeliveryInputError) throw error;
     if (error instanceof CloudDeliveryDispatchError) {
       const code = cloudDispatchFailureCode(error);
       setActiveSpanAttributes(outcomeAttrs("failed", error.code));

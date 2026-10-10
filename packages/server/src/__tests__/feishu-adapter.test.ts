@@ -275,7 +275,9 @@ describe("Feishu adapter", () => {
       { key: "@_user_1", id: { open_id: "ou_bot" }, name: "Atlas", mentioned_type: "app" },
     ];
     await dispatcher.invoke(post, { needCheck: false });
-    expect(received.map((message) => message.content)).toEqual(["@_user_1 please fix the docs\nbefore 5pm"]);
+    expect(received.map((message) => message.content)).toEqual([
+      "@_user_1 please fix[ the docs](https://example.com/docs)\n[Attachment 1]\nbefore 5pm",
+    ]);
   });
 
   it("writes an @ element without a usable id by name rather than matching a mention without one", async () => {
@@ -312,7 +314,8 @@ describe("Feishu adapter", () => {
       content_v2: [[{ tag: "md", text: "**检查** 状态" }]],
     });
     await dispatcher.invoke(post, { needCheck: false });
-    expect(received.map((message) => message.content)).toEqual(["**检查** 状态"]);
+    expect(received.map((message) => message.content)).toEqual(["**检查** 状态\n[Attachment 1]"]);
+    expect(received[0]?.resources).toEqual([{ type: "image", fileKey: "img_1" }]);
   });
 
   it("deduplicates a repeated group/thread representation by provider event identity", async () => {

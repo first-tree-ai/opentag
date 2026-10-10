@@ -12,7 +12,7 @@ import {
   type NormalizedMessage,
   WSClient,
 } from "@larksuiteoapi/node-sdk";
-import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
+import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema, truncateImText } from "@opentag/shared";
 import { emitRootSpan, imAttrs, outcomeAttrs } from "../../../observability/index.js";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { type BotProfile, httpsAvatar } from "../bot-profile.js";
@@ -23,6 +23,7 @@ import type {
   ReadableResource,
   VerifiedBotIdentity,
 } from "../provider-adapter.js";
+import { feishuMessageContent } from "./message-content.js";
 
 interface FeishuRawEnvelope {
   header?: { event_id?: string; tenant_key?: string };
@@ -32,6 +33,7 @@ interface FeishuRawEnvelope {
   opentagOperation?: "created" | "edited" | "deleted";
   opentagConversationKind?: "unknown";
   opentagSenderOpenId?: string;
+  opentagContentTruncated?: boolean;
 }
 
 interface RawFeishuMessageEvent {
@@ -235,109 +237,12 @@ export function feishuDomainForWorkspaceBrand(teamBrand?: "feishu" | "lark" | nu
 }
 
 function boundedText(value: string): { text: string; truncated: boolean } {
-  const encoded = new TextEncoder().encode(value);
-  if (encoded.byteLength <= 24 * 1024) return { text: value, truncated: false };
-  return { text: new TextDecoder().decode(encoded.subarray(0, 24 * 1024)), truncated: true };
-}
-
-function parseRawContent(message: RawFeishuMessageEvent["message"]): {
-  text: string;
-  resources: NormalizedMessage["resources"];
-} {
-  let content: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(message.content) as unknown;
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
-      content = parsed as Record<string, unknown>;
-  } catch {
-    return { text: `[unsupported:${message.message_type}]`, resources: [] };
-  }
-  if (message.message_type === "text") {
-    return { text: typeof content.text === "string" ? content.text : "", resources: [] };
-  }
-  const resourceKey =
-    typeof content.image_key === "string"
-      ? content.image_key
-      : typeof content.file_key === "string"
-        ? content.file_key
-        : undefined;
-  if (resourceKey) {
-    const type = message.message_type === "image" ? "image" : message.message_type === "audio" ? "audio" : "file";
-    return {
-      text: `[${message.message_type}]`,
-      resources: [
-        {
-          type,
-          fileKey: resourceKey,
-          fileName: typeof content.file_name === "string" ? content.file_name : undefined,
-        },
-      ],
-    };
-  }
-  if (message.message_type === "post") return { text: postText(content, message.mentions), resources: [] };
-  return { text: `[unsupported:${message.message_type}]`, resources: [] };
-}
-
-type RawFeishuMention = NonNullable<RawFeishuMessageEvent["message"]["mentions"]>[number];
-
-/**
- * The plain text of a rich-text message, read from its documented shape: an optional title, then
- * paragraphs of tagged elements under `content`, at the top level or under a locale key. Feishu
- * also sends the same paragraphs as markdown under `content_v2`; that copy is read only when the
- * tagged form has no text, so a message is never repeated. Runs of one paragraph stay on one line,
- * and an `@` element becomes its mention key, the same placeholder a plain-text message carries.
- */
-function postText(content: Record<string, unknown>, mentions: readonly RawFeishuMention[] = []): string {
-  const title = postField(content, "title");
-  const tagged = paragraphsText(postField(content, "content"), mentions);
-  const body = tagged || paragraphsText(postField(content, "content_v2"), mentions);
-  return [typeof title === "string" ? title.trim() : "", body].filter(Boolean).join("\n");
-}
-
-/** A field of the post at the top level, or under the locale key the older shape wraps it in. */
-function postField(content: Record<string, unknown>, key: "title" | "content" | "content_v2"): unknown {
-  if (content[key] !== undefined) return content[key];
-  for (const value of Object.values(content)) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
-    const nested = (value as Record<string, unknown>)[key];
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
-}
-
-/**
- * Paragraphs joined by line breaks. A paragraph whose elements render nothing, such as an image
- * on its own line, is left out rather than shown as a blank line; an authored empty paragraph stays.
- */
-function paragraphsText(paragraphs: unknown, mentions: readonly RawFeishuMention[]): string {
-  if (!Array.isArray(paragraphs)) return "";
-  return paragraphs
-    .map((paragraph) => (Array.isArray(paragraph) ? paragraph : [paragraph]))
-    .map((paragraph) => ({ authored: paragraph.length === 0, text: elementsText(paragraph, mentions) }))
-    .filter(({ authored, text }) => authored || text !== "")
-    .map(({ text }) => text)
-    .join("\n")
-    .trim();
-}
-
-function elementsText(elements: readonly unknown[], mentions: readonly RawFeishuMention[]): string {
-  return elements.map((element) => elementText(element, mentions)).join("");
-}
-
-function elementText(element: unknown, mentions: readonly RawFeishuMention[]): string {
-  if (typeof element !== "object" || element === null) return "";
-  const { tag, text, user_id, user_name } = element as Record<string, unknown>;
-  if (tag !== "at") return typeof text === "string" ? text : "";
-  const id = typeof user_id === "string" && user_id ? user_id : undefined;
-  const mention = id
-    ? mentions.find((candidate) => candidate.id.open_id === id || candidate.id.user_id === id)
-    : undefined;
-  if (mention) return mention.key;
-  return typeof user_name === "string" && user_name ? `@${user_name}` : "";
+  const text = truncateImText(value, 24 * 1024);
+  return { text, truncated: text !== value };
 }
 
 function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
-  const parsed = parseRawContent(raw.message);
+  const parsed = feishuMessageContent(raw.message.message_type, raw.message.content, raw.message.mentions);
   const senderId = raw.sender.sender_id?.open_id ?? raw.sender.sender_id?.user_id ?? "system";
   const eventId = raw.header?.event_id ?? raw.event_id;
   const tenantKey = raw.header?.tenant_key ?? raw.tenant_key ?? raw.sender.tenant_key;
@@ -368,6 +273,7 @@ function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
       event: { sender: { sender_type: raw.sender.sender_type, tenant_key: raw.sender.tenant_key } },
       opentagOperation: "created",
       opentagSenderOpenId: raw.sender.sender_id?.open_id,
+      opentagContentTruncated: parsed.truncated,
     } satisfies FeishuRawEnvelope,
   };
 }
@@ -395,6 +301,11 @@ function rawRecallToNormalized(raw: RawFeishuRecallEvent): NormalizedMessage | u
   };
 }
 
+function contentWasTruncated(message: NormalizedMessage): boolean {
+  const raw = message.raw as FeishuRawEnvelope | undefined;
+  return raw?.opentagContentTruncated === true || message.resources.length > 16;
+}
+
 export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {
   const raw = input.message.raw as FeishuRawEnvelope | undefined;
   const operation = raw?.opentagOperation ?? "created";
@@ -410,15 +321,7 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
     return externalId ? [{ externalId, displayName: mention.name ?? null }] : [];
   });
   const content = boundedText(input.message.content);
-  const contentBlocks = contentBlocksWithMentions(
-    content.text,
-    input.message.mentions.slice(0, 256).flatMap((mention) => {
-      const externalId = mention.openId ?? mention.userId;
-      return externalId
-        ? [{ token: mention.key, externalId, label: mention.name ? `@${mention.name}` : mention.key }]
-        : [];
-    }),
-  );
+  const contentBlocks = feishuContentBlocks(input.message, content.text);
   return [
     NormalizedInboundImEventSchema.parse({
       providerEventId:
@@ -453,8 +356,8 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
         content: {
           version: 1,
           fallbackText: content.text,
-          blocks: content.text ? contentBlocks : [{ type: "unsupported", providerType: input.message.rawContentType }],
-          truncated: content.truncated,
+          blocks: contentBlocks,
+          truncated: content.truncated || contentWasTruncated(input.message),
         },
         resources,
       },
@@ -869,4 +772,16 @@ export function createFeishuHttpCapability(
     },
     resolveSenderName,
   };
+}
+
+function feishuContentBlocks(message: NormalizedMessage, text: string) {
+  return contentBlocksWithMentions(
+    text,
+    message.mentions.slice(0, 256).flatMap((mention) => {
+      const externalId = mention.openId ?? mention.userId;
+      return externalId
+        ? [{ token: mention.key, externalId, label: mention.name ? `@${mention.name}` : mention.key }]
+        : [];
+    }),
+  );
 }

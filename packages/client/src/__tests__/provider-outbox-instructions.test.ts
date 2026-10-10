@@ -60,6 +60,9 @@ describe("provider outbox instructions", () => {
     expect(text).toContain("never key=value pairs");
     expect(text).toContain("The launcher loads this Turn's credentials automatically");
     expect(text).toContain("do not source $OPENTAG_PROVIDER_ENV_FILE before ordinary CLI commands");
+    expect(text).toContain("Incoming attachments are references, not downloaded files");
+    expect(text).toContain("slack api files.info");
+    expect(text).not.toContain("Load $OPENTAG_PROVIDER_ENV_FILE in the same shell");
     expect(text).not.toContain("OPENTAG_LARK_BODY");
   });
 

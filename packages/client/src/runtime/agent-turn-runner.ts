@@ -5,6 +5,7 @@ import {
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeApprovalDecision,
   type RuntimeApprovalResult,
@@ -78,6 +79,7 @@ export interface AgentTurnRunnerOptions {
   readonly now?: () => number;
   readonly onRuntimeEvent?: (event: AgentRuntimeEvent) => Promise<void> | void;
   readonly reportOwner: TurnReportOwner;
+  /** @deprecated Attachments are read on demand through the provider CLI. Never called. */
   readonly resourceFetcher?: ImResourceFetcher;
   readonly runtimeManager: SessionRuntimeManager;
   readonly credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare">;
@@ -140,7 +142,6 @@ export class AgentTurnRunner {
   readonly #now: () => number;
   readonly #onRuntimeEvent?: AgentTurnRunnerOptions["onRuntimeEvent"];
   readonly #reportOwner: TurnReportOwner;
-  readonly #resourceFetcher?: ImResourceFetcher;
   readonly #runtimeManager: SessionRuntimeManager;
   readonly #credentialEnvironment: AgentTurnRunnerOptions["credentialEnvironment"];
   readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
@@ -163,7 +164,6 @@ export class AgentTurnRunner {
     this.#now = options.now ?? Date.now;
     this.#onRuntimeEvent = options.onRuntimeEvent;
     this.#reportOwner = options.reportOwner;
-    this.#resourceFetcher = options.resourceFetcher;
     this.#runtimeManager = options.runtimeManager;
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
@@ -235,19 +235,10 @@ export class AgentTurnRunner {
     }
 
     try {
-      const cwd = this.#runtimeManager.cwd(request.sessionId);
-      const supplementalContext = await this.#resourceFetcher?.fetchForTurn(request, cwd);
-      if (
-        turn.phase !== "running" ||
-        runtime.state.phase !== "running" ||
-        runtime.state.activeRunId !== request.expectedTurnId
-      ) {
-        return steerResult(request, "deferred", "turn_not_running");
-      }
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
-        input: buildAgentInput(request, supplementalContext, owner.request.runtime, new Date(this.#now())),
+        input: buildAgentInput(request, undefined, owner.request.runtime, new Date(this.#now())),
       });
     } catch {
       return steerResult(request, "deferred", "steer_state_unknown");
@@ -412,8 +403,6 @@ export class AgentTurnRunner {
       runSignal.throwIfAborted();
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, runSignal);
       turn.runtime = runtime;
-      const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
-      const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
       releaseObserver = this.#observeTurn(turn, runtime, trace, () => {
         terminalObserved = true;
       });
@@ -421,10 +410,10 @@ export class AgentTurnRunner {
         runId: owner.turnId,
         /*
          * The processing clock is sampled at actual input construction — after credential
-         * preparation and resource fetching, at the last moment before the Run dispatch — never
+         * preparation, at the last moment before the Run dispatch — never
          * at delivery receipt. It is prompt input only and never enters a persistent hash.
          */
-        input: buildAgentInput(owner.request, supplementalContext, undefined, new Date(this.#now())),
+        input: buildAgentInput(owner.request, undefined, undefined, new Date(this.#now())),
         signal: runSignal,
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries
@@ -753,6 +742,7 @@ export function buildAgentInput(
     sessionInstructions,
     "</opentag-im-context>",
   ].join("\n");
+  const resourceContext = runtimeResourceContext(request);
   return {
     items: [
       { type: "text", text: context },
@@ -768,8 +758,25 @@ export function buildAgentInput(
           ]
         : []),
       ...(supplementalContext ? [{ type: "text" as const, text: supplementalContext }] : []),
+      ...(resourceContext ? [{ type: "text" as const, text: resourceContext }] : []),
     ],
   };
+}
+
+/** Older/frozen requests carry resource metadata only in the wire field, never in their text. */
+function runtimeResourceContext(request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest): string | undefined {
+  const resources = request.content.resources;
+  if (!resources?.length) return undefined;
+  const omitted = "\n[Additional attachment metadata omitted; read the source message using providerRef.]";
+  const budget = RUNTIME_DIRECT_TEXT_MAX_BYTES - Buffer.byteLength(omitted);
+  let text =
+    "Attachment metadata (OpenTag identifiers, not provider-native IDs). Use providerRef to read the source message for native resource IDs:\n";
+  for (const resource of resources) {
+    const line = `${JSON.stringify(resource)}\n`;
+    if (Buffer.byteLength(text + line) > budget) return `${text}${omitted}`;
+    text += line;
+  }
+  return text;
 }
 
 export function turnTimeoutMs(request: DirectImMessageDeliveryRequest, now: number): number {

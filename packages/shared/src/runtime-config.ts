@@ -28,7 +28,9 @@ export function renderPlatformInstructions(input: { agentSlug: string }): string
 export function runtimeByteString(maxBytes: number, message: string, minimumBytes = 0) {
   return z.string().superRefine((value, context) => {
     const bytes = runtimeUtf8Length(value);
-    if (bytes < minimumBytes || bytes > maxBytes) {
+    if (bytes < minimumBytes) {
+      context.addIssue({ code: "custom", message: `Value must contain at least ${minimumBytes} UTF-8 byte(s)` });
+    } else if (bytes > maxBytes) {
       context.addIssue({ code: "custom", message });
     }
   });

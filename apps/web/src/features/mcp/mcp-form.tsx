@@ -1,6 +1,14 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import * as m from "../../paraglide/messages.js";
-import { Button, Collapsible, Field, Icon, KumoInputControl, Radio } from "../../ui/design-system.js";
+import {
+  Button,
+  Collapsible,
+  Field,
+  Icon,
+  KumoInputControl,
+  KumoSelectControl,
+  Radio,
+} from "../../ui/design-system.js";
 import { type AuthDraft, type HeaderMode, type HeaderRow, newHeader, validHeaders } from "./mcp-form-model.js";
 import "./mcp.css";
 
@@ -23,9 +31,25 @@ export function McpFooter({
     </footer>
   );
 }
-export function McpDisclosure({ label, children }: { label: string; children: ReactNode }) {
+export function McpDisclosure({
+  label,
+  children,
+  bordered = true,
+  open,
+  onOpenChange,
+}: {
+  label: string;
+  children: ReactNode;
+  bordered?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
   return (
-    <Collapsible.Root className="mcp-disclosure min-w-0 border-t border-kumo-line">
+    <Collapsible.Root
+      open={open}
+      onOpenChange={onOpenChange}
+      className={`mcp-disclosure min-w-0 ${bordered ? "border-t border-kumo-line" : ""}`}
+    >
       <Collapsible.Trigger render={<Button className="mcp-disclosure-trigger" variant="ghost" />}>
         {label}
         <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
@@ -113,10 +137,12 @@ export function McpAuthFields({
   draft,
   onChange,
   existing = false,
+  connectionSettings = true,
 }: {
   draft: AuthDraft;
   onChange: (draft: AuthDraft) => void;
   existing?: boolean;
+  connectionSettings?: boolean;
 }) {
   const help =
     draft.kind === "oauth"
@@ -127,56 +153,37 @@ export function McpAuthFields({
   return (
     <>
       <div>
-        <fieldset className="mcp-radio">
-          <legend>{m.mcp_auth_label()}</legend>
-          <p className="mb-3 text-xs leading-relaxed text-kumo-subtle">{m.mcp_auth_help()}</p>
-          <Radio.Group
-            value={draft.kind}
-            onValueChange={(kind) => onChange({ ...draft, kind: kind as AuthDraft["kind"] })}
-          >
-            <Radio.Item value="oauth" label={m.mcp_auth_oauth()} />
-            <Radio.Item value="bearer" label={m.mcp_auth_token()} />
-            <Radio.Item value="none" label={m.mcp_auth_none()} />
-          </Radio.Group>
-        </fieldset>
+        <McpAuthMethod draft={draft} onChange={onChange} compact={!connectionSettings} />
         <p className="mt-3 text-xs leading-relaxed text-kumo-subtle">{help}</p>
       </div>
-      {draft.kind === "bearer" ? (
-        <Field htmlFor="mcp-bearer-key" label={m.mcp_authorize_bearer_label()}>
-          <KumoInputControl
-            id="mcp-bearer-key"
-            type="password"
-            autoComplete="off"
-            value={draft.token}
-            onChange={(event) => onChange({ ...draft, token: event.target.value })}
-          />
-        </Field>
+      {draft.kind === "bearer" ? <McpKeyField draft={draft} onChange={onChange} /> : null}
+      {connectionSettings ? (
+        <McpDisclosure label={m.mcp_advanced()}>
+          <div className="grid gap-4">
+            {draft.kind === "bearer" ? (
+              <McpTokenSettings
+                header={draft.authHeader}
+                prefix={draft.authScheme}
+                onHeader={(authHeader) => onChange({ ...draft, authHeader })}
+                onPrefix={(authScheme) => onChange({ ...draft, authScheme })}
+              />
+            ) : null}
+            {existing ? (
+              <McpHeaderMode value={draft.headerMode} onChange={(headerMode) => onChange({ ...draft, headerMode })} />
+            ) : (
+              <span className="text-sm font-medium">{m.mcp_edit_advanced()}</span>
+            )}
+            {!existing || draft.headerMode === "custom" ? (
+              <>
+                <McpHeaders rows={draft.headers} onChange={(headers) => onChange({ ...draft, headers })} />
+                {!validHeaders(draft.headers, draft.authHeader) ? (
+                  <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        </McpDisclosure>
       ) : null}
-      <McpDisclosure label={m.mcp_advanced()}>
-        <div className="grid gap-4">
-          {draft.kind === "bearer" ? (
-            <McpTokenSettings
-              header={draft.authHeader}
-              prefix={draft.authScheme}
-              onHeader={(authHeader) => onChange({ ...draft, authHeader })}
-              onPrefix={(authScheme) => onChange({ ...draft, authScheme })}
-            />
-          ) : null}
-          {existing ? (
-            <McpHeaderMode value={draft.headerMode} onChange={(headerMode) => onChange({ ...draft, headerMode })} />
-          ) : (
-            <span className="text-sm font-medium">{m.mcp_edit_advanced()}</span>
-          )}
-          {!existing || draft.headerMode === "custom" ? (
-            <>
-              <McpHeaders rows={draft.headers} onChange={(headers) => onChange({ ...draft, headers })} />
-              {!validHeaders(draft.headers, draft.authHeader) ? (
-                <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      </McpDisclosure>
     </>
   );
 }
@@ -198,5 +205,77 @@ export function McpHelp({
       </Collapsible.Trigger>
       <Collapsible.Panel className="mt-2 max-w-prose leading-relaxed">{children}</Collapsible.Panel>
     </Collapsible.Root>
+  );
+}
+
+function McpAuthMethod({
+  draft,
+  onChange,
+  compact,
+}: {
+  draft: AuthDraft;
+  onChange: (draft: AuthDraft) => void;
+  compact: boolean;
+}) {
+  return (
+    <>
+      {compact ? (
+        <Field label={m.mcp_authorize_kind_label()} htmlFor="mcp-auth-method">
+          <KumoSelectControl
+            className="w-full"
+            id="mcp-auth-method"
+            aria-label={m.mcp_authorize_kind_label()}
+            value={draft.kind}
+            onValueChange={(kind) => onChange({ ...draft, kind: kind as AuthDraft["kind"] })}
+          >
+            <option value="oauth">{m.mcp_browser_sign_in()}</option>
+            <option value="bearer">{m.mcp_auth_token()}</option>
+            <option value="none">{m.mcp_auth_none()}</option>
+          </KumoSelectControl>
+        </Field>
+      ) : (
+        <fieldset className="mcp-radio">
+          <legend>{m.mcp_auth_label()}</legend>
+          <p className="mb-3 text-xs leading-relaxed text-kumo-subtle">{m.mcp_auth_help()}</p>
+          <Radio.Group
+            value={draft.kind}
+            onValueChange={(kind) => onChange({ ...draft, kind: kind as AuthDraft["kind"] })}
+          >
+            <Radio.Item value="oauth" label={m.mcp_auth_oauth()} />
+            <Radio.Item value="bearer" label={m.mcp_auth_token()} />
+            <Radio.Item value="none" label={m.mcp_auth_none()} />
+          </Radio.Group>
+        </fieldset>
+      )}
+    </>
+  );
+}
+function McpKeyField({ draft, onChange }: { draft: AuthDraft; onChange: (draft: AuthDraft) => void }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <Field htmlFor="mcp-bearer-key" label={m.mcp_authorize_bearer_label()}>
+      <div className="relative">
+        <KumoInputControl
+          className="w-full pr-10"
+          aria-label={m.mcp_authorize_bearer_label()}
+          id="mcp-bearer-key"
+          type={visible ? "text" : "password"}
+          autoComplete="off"
+          value={draft.token}
+          onChange={(event) => onChange({ ...draft, token: event.target.value })}
+        />
+        <Button
+          aria-label={visible ? m.mcp_hide_key() : m.mcp_show_key()}
+          aria-pressed={visible}
+          className="absolute right-1 top-1"
+          shape="square"
+          size="compact"
+          variant="ghost"
+          onClick={() => setVisible(!visible)}
+        >
+          <Icon name={visible ? "eye-slash" : "eye"} />
+        </Button>
+      </div>
+    </Field>
   );
 }

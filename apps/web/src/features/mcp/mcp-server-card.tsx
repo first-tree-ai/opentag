@@ -2,12 +2,11 @@ import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
 import type { MCPAgentServer } from "@opentag/shared/browser";
 import { useId } from "react";
 import * as m from "../../paraglide/messages.js";
-import { Button, DropdownMenu, Icon, Info, Loader, Popover, Switch, Text, Tooltip } from "../../ui/design-system.js";
+import { Button, Icon, Info, Loader, Popover, Switch, Tooltip } from "../../ui/design-system.js";
 import { findCatalogEntryByUrl } from "./catalog/mcp-catalog-model.js";
-import { canRevoke } from "./mcp-page-model.js";
 import { McpServiceIcon } from "./mcp-service-icon.js";
 
-export type ServerAction = "authorize" | "edit" | "remove" | "revoke" | "tools" | "details";
+export type ServerAction = "authorize" | "edit";
 export function McpServerCard({
   entry,
   agentName,
@@ -32,8 +31,6 @@ export function McpServerCard({
   const catalogEntry = findCatalogEntryByUrl(entry.effective.url, MCP_CATALOG_ENTRIES);
   const authorized = entry.authorization?.status === "active";
   const pending = probing || entry.authorization?.probeState === "pending";
-  const saved = entry.snapshot !== null;
-  const count = entry.snapshot?.tools?.length ?? 0;
   return (
     <li
       id={`mcp-server-${entry.mcpServerId}`}
@@ -41,12 +38,29 @@ export function McpServerCard({
       className={`mcp-server-row min-w-0 p-4 outline-offset-[-2px] ${highlighted ? "outline-2 outline-kumo-ring" : ""}`}
       data-ui="mcp-server-row"
     >
-      <div className="mcp-server-identity flex min-w-0 items-center gap-3">
-        <McpServiceIcon src={catalogEntry?.iconIsOfficial ? catalogEntry.iconUrl : undefined} />
+      <div className="mcp-server-identity">
+        <Button
+          className="mcp-server-logo"
+          tabIndex={-1}
+          variant="ghost"
+          aria-label={m.mcp_open_details({ server: entry.name })}
+          onClick={() => onAction("edit")}
+        >
+          <McpServiceIcon src={catalogEntry?.iconIsOfficial ? catalogEntry.iconUrl : undefined} />
+        </Button>
         <div className="grid min-w-0 gap-1">
-          <Text as="h2" title={entry.name} variant="heading">
-            {entry.name}
-          </Text>
+          <h2 className="min-w-0">
+            <Button
+              id={`mcp-server-${entry.mcpServerId}-details`}
+              className="mcp-server-name"
+              variant="ghost"
+              title={entry.name}
+              onClick={() => onAction("edit")}
+            >
+              <span className="truncate">{entry.name}</span>
+              <Icon name="chevron-right" className="size-3.5 shrink-0 text-kumo-subtle" />
+            </Button>
+          </h2>
           <Tooltip content={entry.effective.url} render={<p className="truncate text-sm text-kumo-subtle" />}>
             {entry.effective.url}
           </Tooltip>
@@ -68,31 +82,29 @@ export function McpServerCard({
               </span>
             }
           />
-          <ServerMenu entry={entry} pending={pending} onAction={onAction} onProbe={onProbe} />
         </div>
         <div className="mcp-server-actions flex min-w-0 items-center justify-end gap-3" aria-live="polite">
           <ToolStatus entry={entry} agentName={agentName} pending={pending} error={error} />
           {entry.enabled && !authorized ? (
-            <Button size="compact" variant="secondary" onClick={() => onAction("authorize")}>
-              {m.mcp_authorize_action()}
+            <Button
+              size="compact"
+              className="px-1 text-kumo-link"
+              variant="ghost"
+              onClick={() => onAction("authorize")}
+            >
+              {entry.authorization ? m.mcp_reconnect() : m.mcp_connect()}
             </Button>
           ) : null}
           {entry.enabled && authorized && entry.authorization?.probeState === "failed" ? (
             <Button
-              className={saved ? "px-1" : undefined}
+              className="px-1 text-kumo-link"
               aria-label={m.mcp_retry()}
               disabled={pending}
               size="compact"
-              variant={saved ? "ghost" : "secondary"}
+              variant="ghost"
               onClick={onProbe}
             >
               {m.mcp_retry()}
-            </Button>
-          ) : null}
-          {saved ? (
-            <Button className="px-1" variant="ghost" size="compact" onClick={() => onAction("tools")}>
-              {m.mcp_tools_action({ count })}
-              <Icon name="chevron-right" />
             </Button>
           ) : null}
         </div>
@@ -126,7 +138,7 @@ function ToolStatus({
     return (
       <span className="mcp-server-auth-status mcp-server-status flex items-center gap-2 text-sm text-kumo-subtle">
         <Info aria-hidden className="size-4 shrink-0 text-kumo-warning" />
-        {m.mcp_authorization_required()}
+        {m.mcp_not_connected()}
       </span>
     );
   if (pending)
@@ -137,7 +149,7 @@ function ToolStatus({
       </span>
     );
   if (entry.authorization.probeState === "failed") {
-    const label = entry.snapshot === null ? m.mcp_row_load_failed() : m.mcp_row_refresh_failed();
+    const label = m.mcp_connection_failed();
     return entry.authorization.probeError ? (
       <McpRowError label={label} error={entry.authorization.probeError} />
     ) : (
@@ -148,48 +160,13 @@ function ToolStatus({
     );
   }
   if (entry.snapshot === null) return <span className="text-sm text-kumo-subtle">{m.mcp_probe_state_not_run()}</span>;
-  return null;
-}
-function ServerMenu({
-  entry,
-  pending,
-  onAction,
-  onProbe,
-}: {
-  entry: MCPAgentServer;
-  pending: boolean;
-  onAction: (action: ServerAction) => void;
-  onProbe: () => void;
-}) {
+  if (entry.authorization.probeState !== "succeeded")
+    return <span className="text-sm text-kumo-subtle">{m.mcp_probe_state_not_run()}</span>;
   return (
-    <DropdownMenu>
-      <DropdownMenu.Trigger
-        render={
-          <Button aria-label={m.mcp_more_actions({ name: entry.name })} shape="square" size="compact" variant="ghost" />
-        }
-      >
-        <Icon name="more-vertical" />
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Content align="end">
-        <DropdownMenu.Item onClick={() => onAction("edit")}>{m.mcp_edit_action()}</DropdownMenu.Item>
-        <DropdownMenu.Item onClick={() => onAction("authorize")}>{m.mcp_auth_menu()}</DropdownMenu.Item>
-        {entry.enabled && entry.authorization?.status === "active" ? (
-          <DropdownMenu.Item disabled={pending} onClick={onProbe}>
-            {m.mcp_probe_action()}
-          </DropdownMenu.Item>
-        ) : null}
-        <DropdownMenu.Item onClick={() => onAction("details")}>{m.mcp_details_action()}</DropdownMenu.Item>
-        <DropdownMenu.Separator />
-        {canRevoke(entry) ? (
-          <DropdownMenu.Item variant="danger" onClick={() => onAction("revoke")}>
-            {m.mcp_revoke_action()}
-          </DropdownMenu.Item>
-        ) : null}
-        <DropdownMenu.Item variant="danger" onClick={() => onAction("remove")}>
-          {m.mcp_detach_action()}
-        </DropdownMenu.Item>
-      </DropdownMenu.Content>
-    </DropdownMenu>
+    <span className="mcp-server-status flex items-center gap-2 text-sm text-kumo-subtle">
+      <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-kumo-success" />
+      {m.mcp_connected()}
+    </span>
   );
 }
 function McpRowError({ label, error, defaultOpen = false }: { label: string; error: string; defaultOpen?: boolean }) {

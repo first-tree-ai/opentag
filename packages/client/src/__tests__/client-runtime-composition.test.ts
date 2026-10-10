@@ -362,6 +362,78 @@ describe("createClientRuntime production composition", () => {
     }
   });
 
+  it.each(["codex", "claude-code", "pi"] as const)(
+    "rejects %s directory requests before readiness and after readiness is lost, then recovers",
+    async (provider) => {
+      const home = await temporaryDirectory("opentag-options-readiness-");
+      const connection = runtimeConnection();
+      const listeners: Array<Parameters<RuntimeConnection["subscribeBusinessFrames"]>[0]> = [];
+      const subscribe = connection.subscribeBusinessFrames.bind(connection);
+      const businessFrames = vi.spyOn(connection, "subscribeBusinessFrames").mockImplementation((listener) => {
+        listeners.push(listener);
+        return subscribe(listener);
+      });
+      const sent: Array<Record<string, unknown>> = [];
+      const send = vi.spyOn(connection, "send").mockImplementation(async (frame) => {
+        sent.push(frame as Record<string, unknown>);
+      });
+      const readiness = vi.spyOn(connection, "setProviderReadiness");
+      let ready = false;
+      const probe = vi.fn<AgentRuntimeFactory["probe"]>(async () =>
+        ready
+          ? { ready: true, issues: [] }
+          : { ready: false, issues: [{ code: "temporarily_unavailable", message: "not ready" }] },
+      );
+      const metadata = { modelSuggestions: ["native/ready"], reasoningEffortAllowedValues: ["high"] };
+      const getConfigurationOptions = vi.fn().mockResolvedValue(metadata);
+      const runtime = await createClientRuntime(connection, {
+        clientVersion: "test",
+        capabilityRefreshIntervalMs: 20,
+        environment: { HOME: home, PATH: process.env.PATH },
+        factory: { ...readyFactory(provider, probe), getConfigurationOptions },
+        home,
+      });
+      const frame = {
+        type: "agent-runtime:options",
+        requestId: randomUUID(),
+        agentId: randomUUID(),
+        computerId: randomUUID(),
+        provider,
+      };
+      const dispatch = async () => {
+        for (const listener of listeners) await listener({ ...frame, requestId: randomUUID() });
+      };
+      const running = runtime.run().catch(() => undefined);
+      try {
+        await vi.waitFor(() => expect(listeners.length).toBeGreaterThan(0));
+        await dispatch();
+        expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+        expect(getConfigurationOptions).not.toHaveBeenCalled();
+        for (const available of [true, false, true]) {
+          ready = available;
+          await vi.waitFor(() =>
+            expect(readiness).toHaveBeenLastCalledWith({ provider, status: available ? "ready" : "unavailable" }),
+          );
+          const calls = getConfigurationOptions.mock.calls.length;
+          await dispatch();
+          if (available) {
+            expect(sent.at(-1)).toMatchObject({ result: { status: "completed", options: metadata } });
+            expect(getConfigurationOptions).toHaveBeenCalledTimes(calls + 1);
+          } else {
+            expect(sent.at(-1)).toMatchObject({ result: { status: "failed", code: "provider_failed" } });
+            expect(getConfigurationOptions).toHaveBeenCalledTimes(calls);
+          }
+        }
+      } finally {
+        runtime.stop();
+        await running;
+        send.mockRestore();
+        businessFrames.mockRestore();
+        readiness.mockRestore();
+      }
+    },
+  );
+
   it("dispatches the caller-supplied managed environment to Context Tree settings operations", async () => {
     const home = await temporaryDirectory("opentag-context-tree-management-environment-");
     const connection = runtimeConnection();

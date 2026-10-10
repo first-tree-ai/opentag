@@ -364,7 +364,7 @@ function formRuntimeOptions(
 ): RuntimeConfigurationOptions {
   const fallback = getRuntimeConfigurationOptions(provider);
   return {
-    modelSuggestions: [...new Set([...(discovered?.modelSuggestions ?? []), ...fallback.modelSuggestions])],
+    modelSuggestions: discovered?.modelSuggestions ?? fallback.modelSuggestions,
     reasoningEffortAllowedValues: discovered?.reasoningEffortAllowedValues ?? fallback.reasoningEffortAllowedValues,
   };
 }

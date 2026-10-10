@@ -148,7 +148,7 @@ export async function openDetails() {
 export async function openTools() {
   await openDetails();
   fireEvent.click(screen.getByRole("button", { name: "Tools" }));
-  await screen.findByRole("dialog", { name: "linear tools" });
+  await screen.findByRole("dialog", { name: "Tools" });
 }
 export async function openRemove() {
   await openDetails();

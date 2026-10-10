@@ -264,5 +264,16 @@
   "mcp_remove_retry": "Couldn't remove {server}. Try again.",
   "mcp_removed": "{server} removed from agent",
   "mcp_not_connected": "Not connected",
-  "mcp_connection_failed": "Connection failed"
+  "mcp_connection_failed": "Connection failed",
+  "mcp_settings_address": "Server address",
+  "mcp_settings_connected": "Connected",
+  "mcp_settings_remove": "Remove from agent",
+  "mcp_auth_connection_saved": "Connection settings were saved. Authorization is incomplete.",
+  "mcp_settings_context": "{server} · Agent {agent}",
+  "mcp_settings_auth_method": "Method",
+  "mcp_tools_count_one": "1 tool",
+  "mcp_settings_auth_browser": "Browser sign-in (OAuth)",
+  "mcp_settings_auth_browser_help": "Continue in your browser to authorize access.",
+  "mcp_settings_auth_save_token": "Save token",
+  "mcp_settings_auth_update_token": "Update token"
 }

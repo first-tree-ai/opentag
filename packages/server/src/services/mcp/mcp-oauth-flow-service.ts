@@ -677,6 +677,7 @@ export class McpOAuthFlowService {
       .update(mcpServerAuthorizations)
       .set({
         status: "active",
+        authorizationServer: metadata.issuer,
         ciphertext: sealed.ciphertext,
         keyId: sealed.keyId,
         // The credential and the audience it was issued for are written together; the flow's own

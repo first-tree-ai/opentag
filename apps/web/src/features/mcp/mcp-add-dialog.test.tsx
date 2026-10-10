@@ -205,7 +205,7 @@ describe("MCP unified add journey", () => {
     fireEvent.change(screen.getByLabelText("Header value"), { target: { value: "design" } });
     fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(oauth).toHaveBeenCalled());
     expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { extraHeaders: { "x-team": "design" } });
@@ -235,14 +235,9 @@ describe("MCP unified add journey", () => {
     await openDetails();
     fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));
     await waitFor(() =>
-      expect(screen.getByRole("combobox", { name: "Authorization method" }).textContent).toContain("API key or token"),
+      expect(screen.getByRole("radio", { name: "API key or token" }).getAttribute("aria-checked")).toBe("true"),
     );
-    fireEvent.click(screen.getByRole("combobox", { name: "Authorization method" }));
-    const option = await screen.findByRole("option", { name: "No authentication" });
-    fireEvent.pointerMove(option, { pointerType: "mouse" });
-    fireEvent.pointerDown(option, { pointerType: "mouse" });
-    fireEvent.pointerUp(option, { pointerType: "mouse" });
-    fireEvent.click(option);
-    expect(screen.getByRole("combobox", { name: "Authorization method" }).textContent).toContain("No authentication");
+    fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
+    expect(screen.getByRole("radio", { name: "No authentication" }).getAttribute("aria-checked")).toBe("true");
   });
 });

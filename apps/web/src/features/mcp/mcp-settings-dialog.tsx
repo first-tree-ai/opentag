@@ -1,21 +1,23 @@
-import { type MCPAgentServer, MCPServerUrlSchema } from "@opentag/shared/browser";
-import { type ReactNode, type RefObject, useCallback, useId, useRef, useState } from "react";
+import { type MCPAgentServer, type MCPServer, MCPServerUrlSchema } from "@opentag/shared/browser";
+import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog, Field, Icon, KumoInputControl } from "../../ui/design-system.js";
 import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
+import { McpDefaultsDialog } from "./mcp-defaults-dialog.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
 import { McpDisclosure, McpHeaderMode, McpHeaders } from "./mcp-form.js";
 import {
   actionError,
   bindingPatch,
   type ConnectionField,
+  rebaseSettingsDraft,
   settingsDraft,
   validHeaders,
   validTokenSettings,
 } from "./mcp-form-model.js";
 import { useMcpServerDetail, useUpdateMcpBinding } from "./mcp-queries.js";
 import { rememberMcpReturn } from "./mcp-return-context.js";
-import { McpConfirmDialog, McpServerInformation } from "./mcp-server-dialogs.js";
+import { McpConfirmDialog } from "./mcp-server-dialogs.js";
 import { McpToolsDialog } from "./mcp-tools-dialog.js";
 
 export function McpSettingsDialog({
@@ -25,7 +27,7 @@ export function McpSettingsDialog({
   onClose,
   initialAuthentication = false,
   authenticationError,
-  onRemoved,
+  onRemoved = onClose,
   initialTools = false,
   initialQuery,
   initialScrollTop,
@@ -36,15 +38,25 @@ export function McpSettingsDialog({
   onClose: () => void;
   initialAuthentication?: boolean;
   authenticationError?: string;
-  onRemoved: () => void;
+  onRemoved?: () => void;
   initialTools?: boolean;
   initialQuery?: string;
   initialScrollTop?: number;
 }) {
   const detail = useMcpServerDetail(entry.mcpServerId);
   const update = useUpdateMcpBinding(agentId);
-  const [baseline, setBaseline] = useState(entry);
-  const [draft, setDraft] = useState(() => settingsDraft(entry));
+  const [configuration, setConfiguration] = useState(() => ({ baseline: entry, draft: settingsDraft(entry) }));
+  const { baseline, draft } = configuration;
+  const setDraft = (draft: typeof configuration.draft) => setConfiguration((current) => ({ ...current, draft }));
+  useEffect(() => {
+    setConfiguration((current) => ({
+      baseline: entry,
+      draft: rebaseSettingsDraft(current.baseline, current.draft, entry),
+    }));
+  }, [entry]);
+  const [defaultsOpen, setDefaultsOpen] = useState(false);
+  const [defaults, setDefaults] = useState<MCPServer>();
+  const base = defaults ?? detail.data?.server;
   const [authentication, setAuthentication] = useState(initialAuthentication && !initialTools);
   const [authError, setAuthError] = useState(authenticationError);
   const [continueToAuth, setContinueToAuth] = useState(false);
@@ -58,34 +70,23 @@ export function McpSettingsDialog({
   const [toolsContext, setToolsContext] = useState({ query: initialQuery, scrollTop: initialScrollTop });
   const [removing, setRemoving] = useState(false);
   const [advanced, setAdvanced] = useState(false);
-  const [information, setInformation] = useState(false);
   const toolsTrigger = useRef<HTMLButtonElement>(null);
   const removeTrigger = useRef<HTMLButtonElement>(null);
-  const focusTarget = useRef<HTMLButtonElement | null>(null);
   const focusKind = useRef<"auth" | "tools" | "remove">("auth");
+  const focusRefs = { auth: authenticationTrigger, tools: toolsTrigger, remove: removeTrigger };
   const scrollTop = useRef(0);
-  const form = useRef<HTMLFormElement>(null);
-  const attachForm = useCallback((node: HTMLFormElement | null) => {
-    form.current = node;
-    const dialog = node?.closest('[role="dialog"]');
-    if (dialog) dialog.scrollTop = scrollTop.current;
-    focusTarget.current =
-      focusKind.current === "auth"
-        ? authenticationTrigger.current
-        : focusKind.current === "tools"
-          ? toolsTrigger.current
-          : removeTrigger.current;
+  const body = useRef<HTMLDivElement>(null);
+  const attachBody = useCallback((node: HTMLDivElement | null) => {
+    body.current = node;
+    if (node) node.scrollTop = scrollTop.current;
   }, []);
   const rememberScroll = () => {
-    scrollTop.current = form.current?.closest('[role="dialog"]')?.scrollTop ?? 0;
+    scrollTop.current = body.current?.scrollTop ?? 0;
   };
   const patch = bindingPatch(baseline, draft);
   const dirty = Object.keys(patch).length > 0;
   const validUrl = MCPServerUrlSchema.safeParse(draft.url).success;
-  const valid =
-    validUrl &&
-    validTokenSettings(draft) &&
-    (draft.headerMode !== "custom" || validHeaders(draft.headers, draft.authHeader));
+  const valid = validSettingsDraft(draft);
   const continueAuthentication = () => {
     setContinueToAuth(false);
     if (authDestination === "tools") {
@@ -105,8 +106,7 @@ export function McpSettingsDialog({
     setError(undefined);
     try {
       const saved = await update.mutateAsync({ mcpServerId: entry.mcpServerId, ...patch });
-      setBaseline(saved);
-      setDraft(settingsDraft(saved));
+      setConfiguration({ baseline: saved, draft: settingsDraft(saved) });
       if (continueToAuth) {
         continueAuthentication();
       } else onClose();
@@ -117,8 +117,7 @@ export function McpSettingsDialog({
     }
   };
   const restore = (field: ConnectionField) => {
-    if (detail.data)
-      setDraft({ ...draft, [field]: detail.data.server[field], cleared: [...new Set([...draft.cleared, field])] });
+    if (base) setDraft({ ...draft, [field]: base[field], cleared: [...new Set([...draft.cleared, field])] });
   };
   const field = (key: ConnectionField, label: string, hint?: string) => (
     <div>
@@ -134,14 +133,14 @@ export function McpSettingsDialog({
         />
       </Field>
       {key === "url" && !validUrl ? (
-        <p id="mcp-url-error" className="mt-1 text-xs text-kumo-danger">
+        <p id="mcp-url-error" role="alert" className="mt-1 text-xs text-kumo-danger">
           {m.mcp_url_invalid()}
         </p>
       ) : null}
       {!draft.cleared.includes(key) && (baseline.overridden[key] || draft[key] !== baseline.effective[key]) ? (
         <Button
           aria-label={m.mcp_edit_restore_field({ field: label })}
-          disabled={!detail.data || detail.isError}
+          disabled={!base || detail.isError}
           className="mt-1 px-0"
           variant="ghost"
           size="compact"
@@ -159,6 +158,15 @@ export function McpSettingsDialog({
     setAuthError(undefined);
     setAuthentication(false);
   };
+  if (defaultsOpen)
+    return (
+      <McpDefaultsDialog
+        serverId={entry.mcpServerId}
+        onClose={onClose}
+        onBack={() => setDefaultsOpen(false)}
+        onSaved={setDefaults}
+      />
+    );
   if (removing)
     return (
       <McpConfirmDialog
@@ -166,7 +174,8 @@ export function McpSettingsDialog({
         agentId={agentId}
         agentName={agentName}
         entry={entry}
-        onClose={() => {
+        onClose={onClose}
+        onBack={() => {
           returnFocus.current = true;
           focusKind.current = "remove";
           setRemoving(false);
@@ -212,7 +221,8 @@ export function McpSettingsDialog({
         agentId={agentId}
         agentName={agentName}
         entry={entry}
-        onClose={back}
+        onClose={onClose}
+        onBack={back}
         onAuthorized={back}
         initialError={authError}
         onBeforeOAuth={() => rememberMcpReturn({ agentId, serverId: entry.mcpServerId, source: "edit" })}
@@ -222,98 +232,95 @@ export function McpSettingsDialog({
     <Dialog
       busy={update.isPending}
       className="mcp-form-dialog mcp-settings-dialog"
-      title={<McpDialogTitle entry={entry} title={entry.name} />}
+      title={
+        <span className="mcp-settings-title">
+          <McpDialogTitle entry={entry} title={entry.name} />
+        </span>
+      }
       closeLabel={m.common_close_title({ title: entry.name })}
-      description={m.mcp_settings_scope({ agent: agentName })}
       onClose={onClose}
-      initialFocusRef={returnFocus.current ? focusTarget : undefined}
+      initialFocusRef={returnFocus.current ? focusRefs[focusKind.current] : undefined}
     >
       <form
-        ref={attachForm}
-        onScrollCapture={rememberScroll}
         onSubmit={(event) => {
           event.preventDefault();
           void save();
         }}
       >
-        <fieldset disabled={update.isPending} className="mcp-fields border-0 p-0">
-          {field("url", m.mcp_edit_url_label())}
-          <SettingsUrlWarning entry={baseline} url={draft.url} />
-          <div className="mcp-settings-group">
-            <SettingsAuthentication
-              entry={entry}
-              trigger={authenticationTrigger}
-              onClick={() => {
-                rememberScroll();
-                setAuthDestination("settings");
-                if (dirty) setContinueToAuth(true);
-                else {
-                  setContinueToAuth(false);
-                  setAuthentication(true);
-                }
-              }}
-            />
-            <SettingsTools
-              entry={entry}
-              trigger={toolsTrigger}
-              onClick={() => {
-                rememberScroll();
-                setTools(true);
-              }}
-            />
-          </div>
-          <div className="mcp-settings-group">
-            <SettingsAdvanced
-              draft={draft}
-              setDraft={setDraft}
-              field={field}
-              open={advanced}
-              onOpenChange={setAdvanced}
-            />
-            <McpDisclosure
-              label={m.mcp_settings_information()}
-              bordered={false}
-              open={information}
-              onOpenChange={setInformation}
-            >
-              <McpServerInformation entry={entry} />
-            </McpDisclosure>
-          </div>
+        <div className="mcp-settings-body" ref={attachBody} onScroll={rememberScroll}>
+          <fieldset disabled={update.isPending} className="mcp-fields border-0 p-0">
+            {field("url", m.mcp_settings_address())}
+            <SettingsUrlWarning entry={baseline} url={draft.url} />
+            <div className="mcp-settings-rows">
+              <SettingsAuthentication
+                entry={entry}
+                trigger={authenticationTrigger}
+                onClick={() => {
+                  rememberScroll();
+                  setAuthDestination("settings");
+                  if (dirty) setContinueToAuth(true);
+                  else {
+                    setContinueToAuth(false);
+                    setAuthentication(true);
+                  }
+                }}
+              />
+              <SettingsTools
+                entry={entry}
+                trigger={toolsTrigger}
+                onClick={() => {
+                  rememberScroll();
+                  setTools(true);
+                }}
+              />
+              <SettingsAdvanced
+                draft={draft}
+                setDraft={setDraft}
+                field={field}
+                open={advanced}
+                onOpenChange={setAdvanced}
+                onDefaults={() => {
+                  rememberScroll();
+                  setDefaultsOpen(true);
+                }}
+              />
+            </div>
+          </fieldset>
+          {detail.isError ? (
+            <div className="mt-3">
+              <p className="text-xs text-kumo-danger">{actionError(detail.error, m.common_request_failed())}</p>
+              <Button size="compact" variant="ghost" onClick={() => void detail.refetch()}>
+                {m.mcp_retry()}
+              </Button>
+            </div>
+          ) : null}
+          {continueToAuth ? (
+            <p className="mt-4 text-sm text-kumo-subtle" role="status">
+              {m.mcp_settings_save_first()}
+            </p>
+          ) : null}
+          {error ? (
+            <p className="mt-4 text-sm text-kumo-danger" role="alert">
+              {error}
+            </p>
+          ) : null}
+        </div>
+        <footer className="mcp-settings-footer">
           <Button
             ref={removeTrigger}
-            className="mcp-settings-remove text-kumo-danger"
+            className="mcp-settings-remove"
+            disabled={update.isPending}
             variant="ghost"
-            size="compact"
             onClick={() => {
               rememberScroll();
               setRemoving(true);
             }}
           >
-            {m.mcp_detach_action()}
+            {m.mcp_settings_remove()}
           </Button>
-        </fieldset>
-        {detail.isError ? (
-          <div className="mt-3">
-            <p className="text-xs text-kumo-danger">{actionError(detail.error, m.common_request_failed())}</p>
-            <Button size="compact" variant="ghost" onClick={() => void detail.refetch()}>
-              {m.mcp_retry()}
-            </Button>
-          </div>
-        ) : null}
-        {continueToAuth ? (
-          <p className="mt-4 text-sm text-kumo-subtle" role="status">
-            {m.mcp_settings_save_first()}
-          </p>
-        ) : null}
-        {error ? (
-          <p className="mt-4 text-sm text-kumo-danger" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <footer className="mt-5 flex flex-wrap justify-end gap-2 border-t border-kumo-line pt-4">
           <Button
             disabled={update.isPending}
-            variant="ghost"
+            variant="secondary"
             onClick={continueToAuth ? () => setContinueToAuth(false) : onClose}
           >
             {continueToAuth ? m.mcp_settings_keep_editing() : m.common_cancel()}
@@ -337,12 +344,14 @@ function SettingsAdvanced({
   field,
   open,
   onOpenChange,
+  onDefaults,
 }: {
   draft: ReturnType<typeof settingsDraft>;
   setDraft: (draft: ReturnType<typeof settingsDraft>) => void;
   field: (key: ConnectionField, label: string, hint?: string) => ReactNode;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onDefaults: () => void;
 }) {
   return (
     <McpDisclosure label={m.mcp_settings_advanced()} bordered={false} open={open} onOpenChange={onOpenChange}>
@@ -363,6 +372,10 @@ function SettingsAdvanced({
             ) : null}
           </>
         ) : null}
+        <Button className="justify-self-start" variant="ghost" size="compact" onClick={onDefaults}>
+          {m.mcp_defaults_action()}
+          <Icon name="arrow-right" />
+        </Button>
       </div>
     </McpDisclosure>
   );
@@ -384,12 +397,12 @@ function SettingsAuthentication({
       ref={trigger}
       aria-label={m.mcp_auth_label()}
       aria-describedby={statusId}
-      className="mcp-settings-navigation"
+      className="mcp-settings-row"
       variant="ghost"
       onClick={onClick}
     >
       <span>{m.mcp_auth_label()}</span>
-      <span id={statusId} className="flex min-w-0 items-center gap-2 text-sm font-normal text-kumo-subtle">
+      <span id={statusId} className="mcp-settings-row-value">
         {connected ? <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-kumo-success" /> : null}
         {connected
           ? m.mcp_connected()
@@ -420,15 +433,19 @@ function SettingsTools({
   return (
     <Button
       ref={trigger}
-      className="mcp-settings-navigation"
+      className="mcp-settings-row"
       variant="ghost"
       aria-label={m.mcp_settings_tools()}
       aria-describedby={statusId}
       onClick={onClick}
     >
       <span>{m.mcp_settings_tools()}</span>
-      <span id={statusId} className="flex items-center gap-2 text-sm font-normal text-kumo-subtle">
-        {entry.snapshot ? m.mcp_tools_count({ count: entry.snapshot.tools?.length ?? 0 }) : m.mcp_tools_none_loaded()}
+      <span id={statusId} className="mcp-settings-row-value">
+        {entry.snapshot
+          ? entry.snapshot.tools?.length === 1
+            ? m.mcp_tools_count_one()
+            : m.mcp_tools_count({ count: entry.snapshot.tools?.length ?? 0 })
+          : m.mcp_tools_none_loaded()}
         <Icon name="chevron-right" className="size-4 shrink-0" />
       </span>
     </Button>
@@ -442,4 +459,12 @@ function SettingsUrlWarning({ entry, url }: { entry: MCPAgentServer; url: string
   return urlRequiresAuthentication(entry, url) ? (
     <p className="text-xs text-kumo-subtle">{m.mcp_settings_url_auth_warning()}</p>
   ) : null;
+}
+
+function validSettingsDraft(draft: ReturnType<typeof settingsDraft>): boolean {
+  return (
+    MCPServerUrlSchema.safeParse(draft.url).success &&
+    validTokenSettings(draft) &&
+    (draft.headerMode !== "custom" || validHeaders(draft.headers, draft.authHeader))
+  );
 }

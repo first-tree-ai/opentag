@@ -676,6 +676,7 @@ export function Dialog({
   description,
   eyebrow,
   initialFocusRef,
+  onBack,
   onClose,
   open = true,
   returnFocusRef,
@@ -690,6 +691,7 @@ export function Dialog({
   description?: ReactNode;
   eyebrow?: ReactNode;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  onBack?: () => void;
   onClose: () => void;
   open?: boolean;
   returnFocusRef?: RefObject<HTMLElement | null>;
@@ -721,9 +723,23 @@ export function Dialog({
         <header className="mb-4 flex items-start justify-between gap-4">
           <div className="grid gap-1 outline-none" data-ui="dialog-heading" ref={headingRef} tabIndex={-1}>
             {eyebrow ? <span className="text-xs font-medium text-kumo-subtle">{eyebrow}</span> : null}
-            <KumoDialog.Title id={`${id}-title`} className="text-lg font-semibold text-kumo-strong">
-              {title}
-            </KumoDialog.Title>
+            <div className="flex items-center gap-3">
+              {onBack ? (
+                <Button
+                  aria-label={m.common_back()}
+                  disabled={busy}
+                  shape="square"
+                  size="compact"
+                  variant="ghost"
+                  onClick={onBack}
+                >
+                  <Icon name="arrow-left" />
+                </Button>
+              ) : null}
+              <KumoDialog.Title id={`${id}-title`} className="text-lg font-semibold text-kumo-strong">
+                {title}
+              </KumoDialog.Title>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {headerActions}

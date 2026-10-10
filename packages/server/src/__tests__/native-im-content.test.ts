@@ -4,6 +4,131 @@ import { normalizeSlackEnvelope } from "../services/im-bindings/slack/adapter.js
 import { slackMessageContent } from "../services/im-bindings/slack/message-content.js";
 
 describe("native IM format normalization", () => {
+  it.each([
+    [{ bold: true }, "**cedar**"],
+    [{ italic: true }, "*cedar*"],
+    [{ strike: true }, "~~cedar~~"],
+    [{ code: true }, "`cedar`"],
+    [{ bold: true, italic: true, strike: true }, "~~***cedar***~~"],
+    [{ bold: "true", italic: false }, "cedar"],
+    [{ underline: true, lineThrough: true }, "cedar"],
+  ])("preserves Slack inline styles %j", (style, expected) => {
+    expect(
+      slackMessageContent({
+        blocks: [
+          {
+            type: "rich_text",
+            elements: [{ type: "rich_text_section", elements: [{ type: "text", text: "cedar", style }] }],
+          },
+        ],
+      }).text,
+    ).toBe(expected);
+  });
+
+  it("keeps backticks in Slack inline code and styles on links and mentions", () => {
+    const parsed = slackMessageContent({
+      blocks: [
+        {
+          type: "rich_text",
+          elements: [
+            {
+              type: "rich_text_section",
+              elements: [
+                { type: "text", text: "a`b", style: { code: true } },
+                { type: "link", text: "docs", url: "https://example.com", style: { bold: true } },
+                { type: "user", user_id: "U123", style: { italic: true } },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(parsed.text).toBe("``a`b``**[docs](https://example.com)***<@U123>*");
+    expect(parsed.mentionIds).toEqual(["U123"]);
+  });
+
+  it.each([
+    ["`cedar`", "`` `cedar` ``"],
+    [" cedar ", "`  cedar  `"],
+    ["  ", "`  `"],
+  ])("preserves code delimiters and spaces in %j", (text, expected) => {
+    expect(
+      slackMessageContent({
+        blocks: [
+          {
+            type: "rich_text",
+            elements: [{ type: "rich_text_section", elements: [{ type: "text", text, style: { code: true } }] }],
+          },
+        ],
+      }).text,
+    ).toBe(expected);
+  });
+
+  it.each([
+    [["bold"], "**cedar**"],
+    [["italic"], "*cedar*"],
+    [["lineThrough"], "~~cedar~~"],
+    [["underline"], "<u>cedar</u>"],
+    [["bold", "underline"], "<u>**cedar**</u>"],
+    [["unknown"], "cedar"],
+    [["code", "strike"], "cedar"],
+  ])("preserves Feishu structured styles %j", (style, expected) => {
+    expect(
+      feishuMessageContent("post", JSON.stringify({ content: [[{ tag: "text", text: "cedar", style }]] })).text,
+    ).toBe(expected);
+  });
+
+  it("preserves Feishu link and mention styles with their native identity", () => {
+    const parsed = feishuMessageContent(
+      "post",
+      JSON.stringify({
+        content: [
+          [
+            { tag: "at", user_id: "ou_1", style: ["lineThrough"] },
+            { tag: "a", text: "docs", href: "https://example.com", style: ["bold"] },
+          ],
+        ],
+      }),
+      [{ key: "@_user_1", id: { open_id: "ou_1" }, name: "User" }],
+    );
+    expect(parsed.text).toBe("~~@_user_1~~**[docs](https://example.com)**");
+  });
+
+  it("prefers original Feishu content_v2 Markdown over its downgraded text copy", () => {
+    const markdown = "| Name | Count |\n| --- | --- |\n| cedar | 2 |";
+    const parsed = feishuMessageContent(
+      "post",
+      JSON.stringify({
+        content: [
+          [
+            { tag: "text", text: "downgraded table" },
+            { tag: "img", image_key: "img_1" },
+          ],
+        ],
+        content_v2: [[{ tag: "md", text: markdown }]],
+      }),
+    );
+    expect(parsed.text).toBe(`${markdown}\n[Attachment 1]`);
+    expect(parsed.resources).toEqual([{ type: "image", fileKey: "img_1" }]);
+  });
+
+  it("keeps attachment markers once when both Feishu representations contain resources", () => {
+    const parsed = feishuMessageContent(
+      "post",
+      JSON.stringify({
+        content: [[{ tag: "img", image_key: "img_1" }]],
+        content_v2: [
+          [
+            { tag: "md", text: "**cedar**" },
+            { tag: "img", image_key: "img_1" },
+          ],
+        ],
+      }),
+    );
+    expect(parsed.text).toBe("**cedar**[Attachment 1]");
+    expect(parsed.resources).toEqual([{ type: "image", fileKey: "img_1" }]);
+  });
+
   it.each(["message", "app_mention"])("keeps top-level Slack bot mentions when blocks supply the body: %s", (type) => {
     const [event] = normalizeSlackEnvelope({
       eventId: "Ev-block-mention",
@@ -290,13 +415,16 @@ describe("native IM format normalization", () => {
             { tag: "img", image_key: "img_1" },
           ],
         ],
-        content_v2: [[{ tag: "md", text: "duplicate" }]],
+        content_v2: [
+          [{ tag: "md", text: "@_user_1 [docs](https://example.com/docs)\n```py\nprint(1)\n```\n![photo](img_1)" }],
+        ],
       }),
       [{ key: "@_user_1", id: { open_id: "ou_1" }, name: "User" }],
     );
-    for (const value of ["@_user_1", "https://example.com/docs", "```py", "Attachment 1"])
+    for (const value of ["@_user_1", "https://example.com/docs", "```py", "![photo](img_1)"])
       expect(parsed.text).toContain(value);
-    expect(parsed.text).not.toContain("duplicate");
+    expect(parsed.text.match(/print\(1\)/g)).toHaveLength(1);
+    expect(parsed.resources).toEqual([{ type: "image", fileKey: "img_1" }]);
     const fallback = feishuMessageContent(
       "post",
       JSON.stringify({

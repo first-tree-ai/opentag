@@ -276,7 +276,7 @@ describe("Feishu adapter", () => {
     ];
     await dispatcher.invoke(post, { needCheck: false });
     expect(received.map((message) => message.content)).toEqual([
-      "@_user_1 please fix[ the docs](https://example.com/docs)\n[Attachment 1]\nbefore 5pm",
+      "@_user_1 please **fix**[ the docs](https://example.com/docs)\n[Attachment 1]\nbefore 5pm",
     ]);
   });
 
@@ -301,7 +301,7 @@ describe("Feishu adapter", () => {
     expect(received.map((message) => message.content)).toEqual(["@Someone hi"]);
   });
 
-  it("falls back to a rich-text message's markdown copy when the tagged paragraphs carry no text", async () => {
+  it("keeps tagged attachments alongside a rich-text message's original markdown", async () => {
     const received: NormalizedMessage[] = [];
     const dispatcher = createReliableFeishuDispatcher((message) => {
       received.push(message);

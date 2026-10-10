@@ -1,5 +1,5 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { NativeContent, nativeObject, nativeString } from "../native-content.js";
+import { NativeContent, nativeInlineStyles, nativeObject, nativeString } from "../native-content.js";
 
 type Mention = { key: string; id: { open_id?: string; user_id?: string }; name: string };
 
@@ -44,15 +44,16 @@ export function feishuMessageContent(type: string, raw: string, mentions: readon
     const text = nativeString(item.text) || nativeString(item.content);
     switch (item.tag) {
       case "text":
+        return nativeInlineStyles(text, item.style);
       case "md":
       case "markdown":
       case "plain_text":
       case "lark_md":
         return text;
       case "at":
-        return mention(item);
+        return nativeInlineStyles(mention(item), item.style);
       case "a":
-        return `[${text || nativeString(item.href)}](${nativeString(item.href)})`;
+        return nativeInlineStyles(`[${text || nativeString(item.href)}](${nativeString(item.href)})`, item.style);
       case "img":
         return resource(item.image_key ?? item.img_key, "image");
       case "media":
@@ -87,11 +88,14 @@ export function feishuMessageContent(type: string, raw: string, mentions: readon
   }
   function post(): string {
     const tagged = paragraphs(postField(content, "content"));
-    // Resource markers must not suppress the markdown copy when the tagged form has no prose.
-    const hasProse = tagged.replace(/\[Attachment \d+(?::[^\]]*)?\]/g, "").trim().length > 0;
-    const markdown = hasProse ? "" : paragraphs(postField(content, "content_v2"));
+    // content_v2 preserves original Markdown; content is its downgraded compatibility copy.
+    // Walk both for native resources, but render the prose only once.
+    const markdown = paragraphs(postField(content, "content_v2"));
     const title = nativeString(postField(content, "title")).trim();
-    return [title, markdown ? [markdown, tagged].filter(Boolean).join("\n") : tagged].filter(Boolean).join("\n");
+    const attachments = markdown
+      ? state.resources.map((item) => state.resource(item)).filter((marker) => !markdown.includes(marker))
+      : [];
+    return [title, markdown || tagged, ...attachments].filter(Boolean).join("\n");
   }
   function media(kind: "file" | "audio" | "video"): string {
     resource(content.file_key, kind, content.file_name);

@@ -32,6 +32,7 @@ function moduleFixture() {
       currency: "USD",
       availableMicros: 1000000,
       blocked: false,
+      usagePaused: false,
       minimumTopUpCents: 1000,
       maximumTopUpCents: 100000,
     }),

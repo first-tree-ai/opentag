@@ -12,6 +12,7 @@
   "account_billing_refresh": "刷新余额",
   "account_billing_title": "云端额度",
   "account_billing_top_up": "充值",
+  "account_billing_usage_paused": "云端用量正在结算，新的云端请求暂时暂停。如果问题持续，请联系支持。",
   "account_billing_view_usage": "查看用量",
   "account_discard": "放弃更改",
   "account_display_name": "显示名称",

@@ -25,6 +25,7 @@ describe("OpenTag Web App Shell", () => {
           currency: "USD",
           availableMicros: 1_000_000,
           blocked: false,
+          usagePaused: false,
           minimumTopUpCents: 1000,
           maximumTopUpCents: 100_000,
         });

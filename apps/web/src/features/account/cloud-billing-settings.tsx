@@ -24,7 +24,7 @@ export function CloudBillingSettings() {
   const query = useQuery({
     queryKey: ["cloud-billing"],
     queryFn: () => browserApi.cloudBilling(),
-    refetchInterval: 30_000,
+    refetchInterval: (query) => (query.state.data?.enabled && query.state.data.usagePaused ? 5_000 : 30_000),
   });
   const summary = query.data;
   if (summary?.enabled === false) return null;
@@ -141,6 +141,11 @@ function CloudCreditForm({ summary }: { summary: Extract<CloudBillingSummary, { 
       {summary.blocked ? (
         <p className="text-sm text-kumo-subtle" role="status">
           {m.account_billing_blocked()}
+        </p>
+      ) : null}
+      {summary.usagePaused && !summary.blocked ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          {m.account_billing_usage_paused()}
         </p>
       ) : null}
       {error ? (

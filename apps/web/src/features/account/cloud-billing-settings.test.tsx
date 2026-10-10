@@ -10,6 +10,7 @@ const summary: CloudBillingSummary = {
   currency: "USD",
   availableMicros: 1_000_000,
   blocked: false,
+  usagePaused: false,
   minimumTopUpCents: 1000,
   maximumTopUpCents: 100_000,
 };
@@ -119,6 +120,15 @@ describe("cloud credit settings", () => {
     if (!form) throw new Error("Missing form");
     fireEvent.submit(form);
     expect(checkout).not.toHaveBeenCalled();
+  });
+  it("shows unsettled usage separately from payment restrictions and keeps top-ups available", async () => {
+    vi.spyOn(browserApi, "cloudBilling").mockResolvedValue({ ...summary, usagePaused: true });
+    const checkout = checkoutFailure();
+    mount();
+    expect(await screen.findByText(/New cloud requests are temporarily paused/)).toBeTruthy();
+    expect(screen.getByText("$1.00")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add credits" }));
+    await waitFor(() => expect(checkout).toHaveBeenCalledTimes(1));
   });
   it("allows retrying a failed balance load", async () => {
     vi.spyOn(browserApi, "cloudBilling").mockRejectedValueOnce(new Error("offline")).mockResolvedValue(summary);

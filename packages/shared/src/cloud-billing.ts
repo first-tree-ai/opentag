@@ -26,6 +26,7 @@ export const CloudBillingSummarySchema = z.discriminatedUnion("enabled", [
       currency: z.literal("USD"),
       availableMicros: money,
       blocked: z.boolean(),
+      usagePaused: z.boolean(),
       minimumTopUpCents: z.number().int().min(1000).max(100_000),
       maximumTopUpCents: z.number().int().min(1000).max(100_000),
     })

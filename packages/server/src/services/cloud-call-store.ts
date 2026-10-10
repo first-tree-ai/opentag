@@ -13,6 +13,8 @@ export interface CloudQueryConnection {
   query(statement: string, parameters?: unknown[]): Promise<{ rows: unknown[] }>;
 }
 const integer = z.coerce.number().int().safe().nonnegative();
+// Covers the router's default 120-second disconnect drain without backing off during it.
+export const CLOUD_USAGE_FAST_RETRY_SECONDS = 150;
 export const CloudCallSchema = z.object({
   id: z.string(),
   account: z.string(),
@@ -23,6 +25,8 @@ export const CloudCallSchema = z.object({
   model: z.string(),
   rates: CloudTokenRatesSchema.nullable(),
   state: z.enum(["in_flight", "pending_usage", "finalized"]),
+  finished_at: z.coerce.date().nullable(),
+  reconcile_failures: integer,
   input_tokens: integer.nullable(),
   cached_input_tokens: integer.nullable(),
   cache_write_input_tokens: integer.nullable(),
@@ -94,8 +98,8 @@ export class CloudCallStore {
   }
   async defer(id: string): Promise<void> {
     await this.db.query(
-      "UPDATE billing.attempts SET reconcile_after=now()+interval '30 seconds' * least(power(2,reconcile_failures),120),reconcile_failures=least(reconcile_failures+1,7) WHERE id=$1 AND state='pending_usage'",
-      [id],
+      `UPDATE billing.attempts SET reconcile_after=now()+CASE WHEN finished_at>now()-$2*interval '1 second' THEN interval '5 seconds' ELSE interval '30 seconds' * least(power(2,reconcile_failures),120) END,reconcile_failures=CASE WHEN finished_at>now()-$2*interval '1 second' THEN reconcile_failures ELSE least(reconcile_failures+1,7) END WHERE id=$1 AND state='pending_usage'`,
+      [id, CLOUD_USAGE_FAST_RETRY_SECONDS],
     );
   }
   async expire(before: Date): Promise<void> {

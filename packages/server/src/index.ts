@@ -74,7 +74,7 @@ import { createChannelTargetPoller } from "./services/channel-target/index.js";
 import { loadCloudBilling } from "./services/cloud-billing-module.js";
 import { CloudCallStore } from "./services/cloud-call-store.js";
 import { createCloudExecutionContext } from "./services/cloud-model-context.js";
-import { CloudModelService } from "./services/cloud-model-service.js";
+import { CloudModelService, type CloudModelServiceOptions } from "./services/cloud-model-service.js";
 import { createRunnerImagePrewarmWorker } from "./services/cloud-run/runner-image-prewarm-worker.js";
 import { CloudUsageService } from "./services/cloud-usage.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
@@ -236,7 +236,7 @@ async function createCloudModelRuntime(
   billing: CloudBilling | undefined,
   calls: CloudCallStore,
   database: DatabaseClient,
-  onError: (event: string) => void,
+  onError: NonNullable<CloudModelServiceOptions["onError"]>,
 ) {
   const model = config.cloudModel;
   if (!runner || !model.enabled) return undefined;
@@ -636,7 +636,7 @@ export async function startServer(): Promise<void> {
       cloudBilling,
       cloudCalls,
       database,
-      (event) => app?.log.error({ event }),
+      (event, details) => app?.log.error({ event, ...details }),
     );
     cloudModelService = cloudModelRuntime?.service;
     const modelCatalogOptions = optionalCloudModelCatalog(cloudModelRuntime);

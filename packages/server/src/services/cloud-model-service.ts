@@ -6,14 +6,14 @@ import {
   CloudModelRequestSchema,
   type CloudModelTransportLimits,
 } from "../cloud-model-request.js";
-import type { CloudCallStore } from "./cloud-call-store.js";
+import { CLOUD_USAGE_FAST_RETRY_SECONDS, type CloudCall, type CloudCallStore } from "./cloud-call-store.js";
 import { RouterClient } from "./router-client.js";
 
 export interface CloudModelServiceOptions {
   billing?: CloudBilling;
   calls: CloudCallStore;
   fetchImpl?: typeof fetch;
-  onError?: (event: string) => void;
+  onError?: (event: string, details?: { callId: string; accountId: string; pendingSeconds: number }) => void;
 }
 /** One gateway request lifecycle, shared by execution routes and connectivity probes. */
 export class CloudModelService {
@@ -35,7 +35,7 @@ export class CloudModelService {
   async initialize(): Promise<void> {
     await this.options.calls.abandon();
     this.startRecovery();
-    this.timer = setInterval(() => this.startRecovery(), 30_000);
+    this.timer = setInterval(() => this.startRecovery(), 5_000);
     this.timer.unref();
   }
   startRecovery(): void {
@@ -205,22 +205,30 @@ export class CloudModelService {
     if (this.stopped) return;
     await calls.expire(new Date(Date.now() - this.config.requestTimeoutMs - 60_000));
     for (const call of await calls.pending()) {
-      try {
-        if (call.gateway !== this.gateway) throw new Error("Pending call belongs to another gateway");
-        const result = await this.router.usage(call.id, this.workerAbort.signal);
-        if (result && result.status !== "pending") {
-          if (result.model !== call.model) throw new Error("Router usage model mismatch");
-          await this.applyResult(
-            call.id,
-            result.status === "complete" ? { status: "complete", usage: result.usage } : { status: "no_charge" },
-            call.rates !== null,
-          );
-        }
-      } catch {
-        this.report("cloud_usage_recovery_pending");
-      }
-      await calls.defer(call.id);
+      await this.reconcileCall(call);
     }
+  }
+  private async reconcileCall(call: CloudCall): Promise<void> {
+    try {
+      if (call.gateway !== this.gateway) throw new Error("Pending call belongs to another gateway");
+      const result = await this.router.usage(call.id, this.workerAbort.signal);
+      if (result && result.status !== "pending") {
+        if (result.model !== call.model) throw new Error("Router usage model mismatch");
+        await this.applyResult(
+          call.id,
+          result.status === "complete" ? { status: "complete", usage: result.usage } : { status: "no_charge" },
+          call.rates !== null,
+        );
+        return;
+      }
+    } catch {
+      this.report("cloud_usage_recovery_pending");
+    }
+    const pendingSeconds = Math.floor((Date.now() - (call.finished_at?.getTime() ?? Date.now())) / 1000);
+    if (call.reconcile_failures === 0 && pendingSeconds >= CLOUD_USAGE_FAST_RETRY_SECONDS) {
+      this.options.onError?.("cloud_usage_unresolved", { callId: call.id, accountId: call.account, pendingSeconds });
+    }
+    await this.options.calls.defer(call.id);
   }
   async close(): Promise<void> {
     this.stopped = true;

@@ -78,6 +78,7 @@ function fixture(billed = false) {
   const service = new CloudModelService(config, {
     calls,
     fetchImpl,
+    onError: vi.fn(),
     ...(billed ? { billing: billing as unknown as CloudBilling } : {}),
   });
   services.push(service);
@@ -87,7 +88,9 @@ function fixture(billed = false) {
     return calls.get(record.id);
   };
   const run = async () => (await service.request(body, new AbortController().signal, config, context)).text();
-  return { calls, billing, fetchImpl, service, status, completion, row, run };
+  const pending = () =>
+    status.mockImplementation(() => ({ status: "pending", requestId, idempotencyKey: key, model: body.model }));
+  return { calls, billing, fetchImpl, service, status, completion, row, run, pending };
 }
 describe("router-authoritative cloud usage", () => {
   it.each([false, true])("records final router counts with customer billing enabled=%s", async (billed) => {
@@ -200,6 +203,95 @@ describe("router-authoritative cloud usage", () => {
     expect((await f.row()).state).toBe("finalized");
     expect(f.completion).toHaveBeenCalledTimes(1);
     expect(f.billing.finishCall).toHaveBeenCalledTimes(1);
+  });
+  it("settles a cancelled stream on the next five-second recovery tick without holding cancellation", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const f = fixture(true);
+    try {
+      await f.service.initialize();
+      await f.service.job;
+      const complete = f.status.getMockImplementation();
+      f.pending();
+      f.completion.mockImplementation(
+        () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("data: hello\n\n"));
+              },
+            }),
+          ),
+      );
+      const controller = new AbortController();
+      const response = await f.service.request({ ...body, stream: true }, controller.signal, config, context);
+      const reader = response.body?.getReader();
+      await reader?.read();
+      const active = [...f.service.active.values()];
+      controller.abort();
+      await Promise.all(active);
+      expect((await f.row()).state).toBe("pending_usage");
+      await vi.advanceTimersByTimeAsync(5_000);
+      await f.service.job;
+      const call = await f.row();
+      expect(call.reconcile_failures).toBe(0);
+      if (!complete) throw new Error("Missing router fixture");
+      f.status.mockImplementation(complete);
+      // PostgreSQL uses its own clock; make the persisted retry due for the next simulated tick.
+      await f.calls.db.query("UPDATE billing.attempts SET reconcile_after=now() WHERE id=$1", [call.id]);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await f.service.job;
+      expect((await f.row()).state).toBe("finalized");
+      await expect(f.service.begin(context, body.model)).resolves.toEqual(expect.any(String));
+      expect(f.completion).toHaveBeenCalledTimes(1);
+      expect(f.billing.finishCall).toHaveBeenCalledTimes(1);
+    } finally {
+      await f.service.close();
+      vi.useRealTimers();
+    }
+  });
+  it("retries recent pending calls quickly, then resumes exponential backoff", async () => {
+    const f = fixture();
+    f.pending();
+    await f.run();
+    const call = await f.row();
+    const delay = async () =>
+      (
+        await f.calls.db.query(
+          "SELECT extract(epoch FROM reconcile_after-now())::float AS seconds FROM billing.attempts WHERE id=$1",
+          [call.id],
+        )
+      ).rows[0] as { seconds: number };
+    await f.calls.defer(call.id);
+    expect((await delay()).seconds).toBeGreaterThan(4);
+    expect((await delay()).seconds).toBeLessThanOrEqual(5);
+    expect((await f.row()).reconcile_failures).toBe(0);
+    await f.calls.db.query("UPDATE billing.attempts SET finished_at=now()-interval '151 seconds' WHERE id=$1", [
+      call.id,
+    ]);
+    await f.calls.defer(call.id);
+    expect((await delay()).seconds).toBeGreaterThan(29);
+    expect((await f.row()).reconcile_failures).toBe(1);
+    await f.calls.defer(call.id);
+    expect((await delay()).seconds).toBeGreaterThan(59);
+  });
+  it("reports a persistently pending router result once with operator lookup identifiers", async () => {
+    const f = fixture(true);
+    f.pending();
+    await f.run();
+    const call = await f.row();
+    await f.calls.db.query("UPDATE billing.attempts SET finished_at=now()-interval '151 seconds' WHERE id=$1", [
+      call.id,
+    ]);
+    await f.service.reconcile();
+    expect(f.service.options.onError).toHaveBeenCalledWith("cloud_usage_unresolved", {
+      callId: call.id,
+      accountId: context.accountId,
+      pendingSeconds: expect.any(Number),
+    });
+    await f.calls.db.query("UPDATE billing.attempts SET reconcile_after=now() WHERE id=$1", [call.id]);
+    await f.service.reconcile();
+    expect(f.service.options.onError).toHaveBeenCalledTimes(1);
+    expect(f.billing.finishCall).not.toHaveBeenCalled();
   });
   it("retries a failed local settlement using the same complete router result", async () => {
     const f = fixture(true);

@@ -2,7 +2,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -24,6 +24,7 @@ import {
   ConnectCodeService,
   hashSecret,
 } from "../../services/auth/index.js";
+import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const betterAuthSecret = "im-binding-test-secret-at-least-32-characters";
@@ -42,7 +43,7 @@ let container: StartedPostgreSqlContainer;
 let databaseUrl: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer("postgres:17-alpine").start();
+  container = await startPostgresTestContainer();
   databaseUrl = container.getConnectionUri();
 }, 120_000);
 

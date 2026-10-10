@@ -304,6 +304,32 @@ describe("CloudTurnRunner", () => {
     };
   }
 
+  it("publishes liveness only after verification starts the Slack worker", async () => {
+    const delivery = cloudDeliveryFixture();
+    delivery.content.providerRef = {
+      provider: "slack",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      channelId: "C1",
+      messageTs: "1.1",
+    };
+    const gate = deferred<ExecResult>();
+    const h = harness({ delivery, worker: () => gate.promise, runnerOptions: { turnActivityEnabled: () => true } });
+    await h.runner.handleDeliveryRun(runFrame(delivery));
+    expect(h.sent.filter((frame) => frame.type === "turn:activity")).toEqual([]);
+    await h.runner.handleVerified(verifiedFrame(delivery.requestId));
+    await waitFor(() => h.workerInputs.length === 1, "worker start");
+    expect(h.sent.filter((frame) => frame.type === "turn:activity")).toMatchObject([{ phase: "running" }]);
+    gate.resolve(completedExec());
+    await h.runner.waitForActive();
+    const frames = h.sent.filter((frame) => frame.type === "turn:activity");
+    expect(frames.map((frame) => frame.phase)).toEqual(["running", "terminal"]);
+    const terminal = frames.at(-1);
+    if (terminal) h.runner.handleActivityResult({ ...terminal, type: "turn:activity:result", status: "recorded" });
+    await h.runner.close();
+  });
+
   it("passes the actual execution proof to an IM worker without journaling it", async () => {
     const proof = { proofId: randomUUID(), token: "ephemeral-session-proof-0123456789abcdef" };
     const h = harness({

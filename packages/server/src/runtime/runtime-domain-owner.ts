@@ -1,3 +1,4 @@
+import type { TurnActivityRequest, TurnActivityResult } from "@opentag/shared";
 import {
   type AgentTraceBatch,
   type ClientRuntimeBusinessFrame,
@@ -97,6 +98,7 @@ export type RuntimeDispatchAdmission<T> = (
 export interface RuntimeDomainOwnerOptions {
   logger?: ServiceLogger;
   maxPendingRequests?: number;
+  onTurnActivity?(frame: TurnActivityRequest, context: RuntimeBusinessContext): Promise<TurnActivityResult>;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
   onImCredentialGrant?(
     request: RuntimeImCredentialGrantRequest,
@@ -220,7 +222,7 @@ export class RuntimeDomainOwner {
   readonly #custody: RuntimeCustodyStore;
   readonly #logger?: ServiceLogger;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace" | "prepareReconcile">;
+    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace" | "onTurnActivity" | "prepareReconcile">;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
@@ -238,6 +240,7 @@ export class RuntimeDomainOwner {
     this.#options = {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
+      onTurnActivity: options.onTurnActivity,
       onImCredentialGrant: options.onImCredentialGrant,
       prepareReconcile: options.prepareReconcile,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
@@ -640,7 +643,7 @@ export class RuntimeDomainOwner {
   async handle(
     frame: DomainBusinessFrame,
     context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
+  ): Promise<TurnReportResult | TurnActivityResult | RuntimeImCredentialGrantResult | undefined> {
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -654,6 +657,7 @@ export class RuntimeDomainOwner {
       if (frame.type === "im:credential") return this.#rejectCredentialGrant(frame, context, "placement_stale");
       return undefined;
     }
+    if (frame.type === "turn:activity") return this.#handleActivity(frame, context);
     if (
       frame.type === "turn:report" &&
       frame.outgoingReplies !== undefined &&
@@ -683,20 +687,38 @@ export class RuntimeDomainOwner {
       await this.#completeSessionMessage(frame, context);
       return undefined;
     }
-    if (frame.type === "agent:trace") {
-      const delivery = await this.#custody.getDeliveryByTurn(frame.turnId);
-      if (
-        delivery &&
-        delivery.computerId === context.computerId &&
-        delivery.instanceId === context.instanceId &&
-        delivery.sessionId === frame.sessionId &&
-        delivery.placementGeneration === frame.placementGeneration
-      ) {
-        await this.#options.onTrace?.(frame, context);
-      }
-      return undefined;
-    }
+    if (frame.type === "agent:trace") return this.#handleTrace(frame, context);
     return this.#handleResidualFrame(frame, context);
+  }
+
+  async #handleTrace(frame: AgentTraceBatch, context: RuntimeBusinessContext): Promise<undefined> {
+    const delivery = await this.#custody.getDeliveryByTurn(frame.turnId);
+    if (
+      delivery &&
+      delivery.computerId === context.computerId &&
+      delivery.instanceId === context.instanceId &&
+      delivery.sessionId === frame.sessionId &&
+      delivery.placementGeneration === frame.placementGeneration
+    ) {
+      await this.#options.onTrace?.(frame, context);
+    }
+    return undefined;
+  }
+
+  #handleActivity(
+    frame: TurnActivityRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<TurnActivityResult> | TurnActivityResult {
+    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.turnActivity] === 1 && this.#options.onTurnActivity) {
+      return this.#options.onTurnActivity(frame, context);
+    }
+    return {
+      type: "turn:activity:result",
+      requestId: frame.requestId,
+      turnId: frame.turnId,
+      sequence: frame.sequence,
+      status: "unsupported_capability",
+    };
   }
 
   #rejectCredentialGrant(
@@ -1162,7 +1184,8 @@ function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult |
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "context-tree:operation:result") return `request:${frame.requestId}`;
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
-  if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
+  if (frame.type === "im:deliver:result" || frame.type === "turn:report" || frame.type === "turn:activity")
+    return `delivery:${frame.deliveryId}`;
   if (frame.type === "im:steer:result") return `delivery:${frame.rootDeliveryId}`;
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;
   if (frame.type === "session:message:deliver:result") {

@@ -125,6 +125,12 @@ pnpm --filter @opentag/server test:integration
 The server integration tests need Docker. Run `pnpm test:coverage` when changing coverage configuration or
 investigating coverage gaps. See the [E2E guide](./e2e/README.md) for browser tests.
 
+Each PostgreSQL integration fixture starts its own disposable database. With a local Docker endpoint, its random
+published port binds to `127.0.0.1`; remote Docker endpoints retain Docker's default binding. Startup runs a host-side
+`SELECT 1` with a five-second connection timeout before migrations or tests begin. If container health passes but this
+query fails, check Docker port forwarding: an open TCP port alone does not prove that PostgreSQL traffic reaches the
+container. The fixture closes the probe connection and removes the container on failure.
+
 CI runs formatting, builds, type checks, repository script tests, PostgreSQL integration tests, and Agent Runtime
 coverage in parallel jobs. Workspace unit tests run on Node.js 22.22.2, 24, and 26, with three Vitest shards per version.
 Repository script tests also run on all three versions; the compatibility jobs verify the packed CLI on Node.js 22.22.2

@@ -45,6 +45,7 @@ function mcpCredentialOptions(mounts: McpUsableMountReader | undefined): { mcp?:
 }
 
 export async function createPlatformRuntime(options: {
+  slackWorkingStatus?: boolean;
   config: ServerConfig;
   database: DatabaseClient;
   cipher: ApplicationCipher;
@@ -112,6 +113,7 @@ export async function createPlatformRuntime(options: {
   }
   const controlAuthority = createCloudControlAuthority(options);
   const credentials = createRuntimeCredentialServices({
+    slackWorkingStatus: options.slackWorkingStatus,
     database: options.database,
     cipher: options.cipher,
     registry: options.registry,

@@ -2,13 +2,14 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "../../db/migrate.js";
 import { AuthService } from "../../services/auth/index.js";
 import { AccountSetupService } from "../../services/setup/index.js";
+import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -33,7 +34,7 @@ const LATE = new Date("2026-08-20T00:00:00.000Z");
 const THROUGH_0028_IDX = 28;
 const THROUGH_0028_COUNT = 29;
 const THROUGH_0030_COUNT = 31;
-const CURRENT_MIGRATION_COUNT = 57;
+const CURRENT_MIGRATION_COUNT = 59;
 
 type Journal = {
   version: string;
@@ -45,7 +46,7 @@ let container: StartedPostgreSqlContainer;
 let databaseUrl: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer("postgres:17-alpine").start();
+  container = await startPostgresTestContainer();
   databaseUrl = container.getConnectionUri();
 }, 120_000);
 

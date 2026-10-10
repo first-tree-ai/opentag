@@ -1,5 +1,5 @@
 {
-  "id": "39b08146-8352-4e77-bed5-1c6b49e55c9f",
+  "id": "10063f1d-9e4d-46bf-8107-f5f36dc1ad17",
   "prevId": "1048c8e7-ae89-481c-b400-7cc295df1bd7",
   "version": "7",
   "dialect": "postgresql",
@@ -51,13 +51,6 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": false
-        },
-        "permissions": {
-          "name": "permissions",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{\"approvalPolicy\":\"on-request\",\"allowCommands\":[]}'::jsonb"
         },
         "created_at": {
           "name": "created_at",
@@ -1587,12 +1580,6 @@
         "current_instance_id": {
           "name": "current_instance_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "current_connection_id": {
-          "name": "current_connection_id",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -4174,153 +4161,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.runtime_approvals": {
-      "name": "runtime_approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "server_instance_id": {
-          "name": "server_instance_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "computer_id": {
-          "name": "computer_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "instance_id": {
-          "name": "instance_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "im_binding_id": {
-          "name": "im_binding_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request": {
-          "name": "request",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority": {
-          "name": "authority",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "message_id": {
-          "name": "message_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "message_channel_id": {
-          "name": "message_channel_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "card_updated_at": {
-          "name": "card_updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "runtime_approvals_dispatch_idx": {
-          "name": "runtime_approvals_dispatch_idx",
-          "columns": [
-            {
-              "expression": "server_instance_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "runtime_approvals_computer_id_computers_id_fk": {
-          "name": "runtime_approvals_computer_id_computers_id_fk",
-          "tableFrom": "runtime_approvals",
-          "tableTo": "computers",
-          "columnsFrom": [
-            "computer_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "runtime_approvals_im_binding_id_im_bindings_id_fk": {
-          "name": "runtime_approvals_im_binding_id_im_bindings_id_fk",
-          "tableFrom": "runtime_approvals",
-          "tableTo": "im_bindings",
-          "columnsFrom": [
-            "im_binding_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.runtime_durable_work": {
       "name": "runtime_durable_work",
       "schema": "",
@@ -5977,6 +5817,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "working_status_not_before_at": {
+          "name": "working_status_not_before_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'epoch'::timestamptz"
+        },
         "activated_at": {
           "name": "activated_at",
           "type": "timestamp with time zone",
@@ -6480,6 +6327,283 @@
           "value": "(\"slack_webhook_receipts\".\"status\" = 'processed' and \"slack_webhook_receipts\".\"processed_at\" is not null)\n        or (\"slack_webhook_receipts\".\"status\" <> 'processed')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.slack_working_targets": {
+      "name": "slack_working_targets",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "installation_id": {
+          "name": "installation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_generation": {
+          "name": "credential_generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_ts": {
+          "name": "thread_ts",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "working": {
+          "name": "working",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "disabled": {
+          "name": "disabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "not_before_at": {
+          "name": "not_before_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "claim_id": {
+          "name": "claim_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_expires_at": {
+          "name": "claim_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failures": {
+          "name": "failures",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {
+        "slack_working_targets_due_idx": {
+          "name": "slack_working_targets_due_idx",
+          "columns": [
+            {
+              "expression": "disabled",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "slack_working_targets_thread_unique": {
+          "name": "slack_working_targets_thread_unique",
+          "columns": [
+            {
+              "expression": "installation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "channel_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thread_ts",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "slack_working_targets_binding_id_im_bindings_id_fk": {
+          "name": "slack_working_targets_binding_id_im_bindings_id_fk",
+          "tableFrom": "slack_working_targets",
+          "tableTo": "im_bindings",
+          "columnsFrom": [
+            "binding_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "slack_working_targets_installation_id_slack_installations_id_fk": {
+          "name": "slack_working_targets_installation_id_slack_installations_id_fk",
+          "tableFrom": "slack_working_targets",
+          "tableTo": "slack_installations",
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.slack_working_turns": {
+      "name": "slack_working_turns",
+      "schema": "",
+      "columns": {
+        "delivery_id": {
+          "name": "delivery_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "target_id": {
+          "name": "target_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "turn_id": {
+          "name": "turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phase": {
+          "name": "phase",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deadline_at": {
+          "name": "deadline_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "slack_working_turns_target_idx": {
+          "name": "slack_working_turns_target_idx",
+          "columns": [
+            {
+              "expression": "target_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "slack_working_turns_delivery_id_im_message_deliveries_id_fk": {
+          "name": "slack_working_turns_delivery_id_im_message_deliveries_id_fk",
+          "tableFrom": "slack_working_turns",
+          "tableTo": "im_message_deliveries",
+          "columnsFrom": [
+            "delivery_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "slack_working_turns_target_id_slack_working_targets_id_fk": {
+          "name": "slack_working_turns_target_id_slack_working_targets_id_fk",
+          "tableFrom": "slack_working_turns",
+          "tableTo": "slack_working_targets",
+          "columnsFrom": [
+            "target_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

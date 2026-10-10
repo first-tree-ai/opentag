@@ -725,4 +725,10 @@ export {
   serializeDiagnostic,
 } from "./structured-errors.js";
 export * from "./task.js";
+export {
+  type TurnActivityRequest,
+  TurnActivityRequestSchema,
+  type TurnActivityResult,
+  TurnActivityResultSchema,
+} from "./turn-activity.js";
 export * from "./web-tools.js";

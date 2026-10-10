@@ -1821,6 +1821,116 @@ describe("Agent-level overrides", () => {
     }
   }, 30_000);
 
+  it("accepts a provider-shaped resource identity and repeats it on exchange and refresh", async () => {
+    /*
+     * Airtable/Amplitude shape: the well-known document advertises the origin while the transport
+     * endpoint answers on /mcp. Discovery accepts the encoded identity, and the exact accepted string
+     * must travel on the token exchange and every refresh.
+     */
+    const fixture = await McpFixtureServer.start({
+      protectedResourceMetadata: (self) => ({
+        resource: self,
+        authorization_servers: [self],
+        scopes_supported: ["mcp.read", "mcp.write"],
+      }),
+    });
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      const origin = new URL(fixture.endpoint).origin;
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      expect(new URL(started.authorizationUrl).searchParams.get("resource")).toBe(origin);
+
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.mcpServerId, server.id));
+      expect(row).toMatchObject({ status: "active", oauthResource: origin, flowOauthResource: null });
+      expect(String(fixture.requests.find((request) => request.url === "/token")?.body)).toContain(
+        `resource=${encodeURIComponent(origin)}`,
+      );
+
+      await harness.flows.refreshAuthorization(row?.id as string);
+      const tokenRequests = fixture.requests.filter((request) => request.url === "/token");
+      const refresh = tokenRequests[tokenRequests.length - 1];
+      expect(String(refresh?.body)).toContain("grant_type=refresh_token");
+      expect(String(refresh?.body)).toContain(`resource=${encodeURIComponent(origin)}`);
+      const [after] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.id, row?.id as string));
+      expect(after).toMatchObject({ status: "active", oauthResource: origin, refreshGeneration: 1 });
+    } finally {
+      await fixture.stop();
+    }
+  }, 30_000);
+
+  it("refreshes a pre-change row with the endpoint-derived resource", async () => {
+    /*
+     * A row written before the column existed has no recorded audience; it keeps the derivation it was
+     * started under, so an upgrade does not invalidate existing authorizations.
+     */
+    const fixture = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.mcpServerId, server.id));
+      expect(row?.oauthResource).toBe(fixture.endpoint);
+      await harness.database
+        .update(mcpServerAuthorizations)
+        .set({ oauthResource: null })
+        .where(eq(mcpServerAuthorizations.id, row?.id as string));
+
+      await harness.flows.refreshAuthorization(row?.id as string);
+      const tokenRequests = fixture.requests.filter((request) => request.url === "/token");
+      const refresh = tokenRequests[tokenRequests.length - 1];
+      expect(String(refresh?.body)).toContain(`resource=${encodeURIComponent(fixture.endpoint)}`);
+      const [after] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.id, row?.id as string));
+      expect(after).toMatchObject({ status: "active", oauthResource: null });
+    } finally {
+      await fixture.stop();
+    }
+  }, 30_000);
+
   it("revokes an OAuth credential when the endpoint moves to a new origin", async () => {
     /*
      * S2. An access token is issued for one resource, and the AS's `resource` binding is what stops it
@@ -1864,6 +1974,8 @@ describe("Agent-level overrides", () => {
         return row;
       };
       expect((await stateOf(harness.agentA))?.status).toBe("active");
+      // The strict path stored the endpoint itself as the credential's audience.
+      expect((await stateOf(harness.agentA))?.oauthResource).toBe(first.endpoint);
 
       // A different origin: the token was issued for the old resource and must not follow.
       const definition = (await harness.servers.listServers(harness.accountId))[0];
@@ -1875,6 +1987,9 @@ describe("Agent-level overrides", () => {
       const moved = await stateOf(harness.agentA);
       expect(moved?.status).toBe("revoked");
       expect(moved?.ciphertext).toBeNull();
+      // The audience is dropped with the credential, and the in-flight flow's resource with its flow.
+      expect(moved?.oauthResource).toBeNull();
+      expect(moved?.flowOauthResource).toBeNull();
       // The Bearer key is untouched: it is not bound to an origin, and dropping it would be a surprise.
       const bearer = await stateOf(harness.agentB);
       expect(bearer?.status).toBe("active");

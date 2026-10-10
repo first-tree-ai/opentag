@@ -149,6 +149,28 @@ function endpointUrl(document: Record<string, unknown>, key: string, allowLoopba
 }
 
 /**
+ * Whether an advertised `resource` is usable as a request parameter: an absolute `https:` URL, or
+ * loopback `http:` where the deployment opted in, with no userinfo and no fragment.
+ *
+ * The value is never dialed, but it is still peer-chosen identity material: a fragment would make
+ * the wire value differ from the identity the comparison accepted, and credentials in a resource
+ * identifier have no legitimate use. The endpoint scheme rules are shared deliberately, so a
+ * deployment that refuses plain-HTTP endpoints cannot be steered at one through `resource`.
+ */
+function isUsableResourceIdentifier(raw: string, allowLoopback: boolean): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.username || url.password) return false;
+  if (url.hash) return false;
+  if (url.protocol === "https:") return true;
+  return allowLoopback && url.protocol === "http:" && isLoopbackHost(url.hostname);
+}
+
+/**
  * The `resource` parameter's exact spelling: lowercase scheme and host, no fragment, and no trailing
  * slash unless the path is only a slash. Case tolerance is for the peer's spelling, not ours.
  *
@@ -164,6 +186,58 @@ export function normalizeResource(advertised: string | undefined, fallback: stri
   url.hash = "";
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) url.pathname = url.pathname.replace(/\/+$/, "");
   return url.toString();
+}
+
+/**
+ * The resource identifier a protected-resource metadata URL encodes (RFC 9728 §3).
+ *
+ * The well-known construction inserts the protected resource's identifier between the origin and
+ * the well-known suffix: the bare form identifies the origin, and the path-inserted form identifies
+ * origin + path. Returns undefined for any other URL, so the caller keeps strict endpoint equality
+ * rather than inventing an identity from a challenge-chosen location.
+ */
+export function wellKnownProtectedResourceIdentity(documentUrl: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(documentUrl);
+  } catch {
+    return undefined;
+  }
+  if (url.pathname === PRM_WELL_KNOWN) return url.origin;
+  if (url.pathname.startsWith(`${PRM_WELL_KNOWN}/`)) {
+    return `${url.origin}${url.pathname.slice(PRM_WELL_KNOWN.length)}`;
+  }
+  return undefined;
+}
+
+/** One trailing run of slashes removed, except the root path. */
+function trimTrailingPathSlashes(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  return trimmed === "" ? "/" : trimmed;
+}
+
+/**
+ * Whether `resource` may stand for `endpoint`'s audience: identical after normalization, or an
+ * ancestor-or-equal of the endpoint path at a segment boundary on the same origin. The endpoint's
+ * query is ignored for the path comparison.
+ *
+ * This is the relationship a stored resource is re-checked with on refresh. Discovery requires one
+ * more condition on top of it: the value must equal the identity of the well-known URL it was read
+ * from, so a document cannot name an arbitrary ancestor of the endpoint.
+ */
+export function resourceRelatesToEndpoint(resource: string, endpoint: string): boolean {
+  let resourceUrl: URL;
+  let endpointUrl: URL;
+  try {
+    resourceUrl = new URL(normalizeResource(resource, resource));
+    endpointUrl = new URL(normalizeResource(undefined, endpoint));
+  } catch {
+    return false;
+  }
+  if (resourceUrl.origin !== endpointUrl.origin) return false;
+  const resourcePath = trimTrailingPathSlashes(resourceUrl.pathname);
+  const endpointPath = trimTrailingPathSlashes(endpointUrl.pathname);
+  return resourcePath === "/" || endpointPath === resourcePath || endpointPath.startsWith(`${resourcePath}/`);
 }
 
 /**
@@ -217,6 +291,39 @@ export function protectedResourceMetadataUrls(mcpEndpoint: string): string[] {
   const withPath = `${url.origin}${PRM_WELL_KNOWN}${path}`;
   const bare = `${url.origin}${PRM_WELL_KNOWN}`;
   return path === "" || path === "/" ? [bare] : [withPath, bare];
+}
+
+/**
+ * The `resource` one published document authorizes for the configured endpoint, or `undefined`
+ * when the document cannot describe this endpoint.
+ *
+ * The strict rule comes first and stays the default: no advertised value means the endpoint
+ * itself, and a value that normalizes to the endpoint is accepted as published.
+ *
+ * The compatibility path exists because several official providers publish the resource identifier
+ * their well-known URL encodes rather than the transport URL they answer on (RFC 9728 §3.3, first
+ * paragraph: bare well-known -> origin, path-inserted -> origin + path). Their documents are served
+ * by the endpoint's own origin, so accepting that identity cannot hand the token to another origin;
+ * the advertised value must equal the encoded identity exactly, and that identity must be an
+ * ancestor-or-equal of the endpoint path, which refuses sibling paths. This is a deliberate,
+ * bounded exception to §3.3's second paragraph for challenge-named well-known URLs: strict equality
+ * remains the rule everywhere else.
+ */
+function acceptedResource(input: {
+  advertised: string | undefined;
+  endpoint: string;
+  metadataUrl: string;
+  allowLoopback: boolean;
+}): string | undefined {
+  const { advertised, endpoint, metadataUrl, allowLoopback } = input;
+  if (advertised === undefined) return endpoint;
+  if (!isUsableResourceIdentifier(advertised, allowLoopback)) return undefined;
+  if (normalizeResource(advertised, advertised) === normalizeResource(undefined, endpoint)) return advertised;
+  const identity = wellKnownProtectedResourceIdentity(metadataUrl);
+  if (identity === undefined) return undefined;
+  if (normalizeResource(advertised, advertised) !== normalizeResource(identity, identity)) return undefined;
+  if (!resourceRelatesToEndpoint(identity, endpoint)) return undefined;
+  return advertised;
 }
 
 /**
@@ -286,23 +393,19 @@ export class McpOAuthClient {
         const authorizationServers = stringArray(document, "authorization_servers");
         if (authorizationServers.length === 0) return undefined;
         /*
-         * An advertised `resource` that names a different endpoint is refused (RFC 9728 §3.3).
-         *
-         * This is the one identity check the document has, and it is load-bearing for two reasons.
-         * The value travels as the authorization request's `resource`, so a hostile Server could
-         * otherwise name another resource server and have this deployment obtain a token for it from a
-         * shared authorization server. And our two requests have to agree: the authorization request
-         * sent the advertised value while the token request sends the endpoint, and a mismatch there is
-         * what the specification's `resource` binding exists to prevent.
-         *
-         * Compared after normalization so a peer's spelling of the same endpoint — a trailing slash,
-         * an uppercase host — is accepted rather than treated as an attack.
+         * The advertised `resource` is the audience this document claims, and it is the value both
+         * our requests carry, so accepting a value that names some other resource server would let a
+         * hostile Server have this deployment obtain a token for that server from a shared
+         * authorization server (RFC 9728 §3.3, §7.3). `acceptedResource` decides; see it for the
+         * strict rule and the bounded well-known-identity compatibility path.
          */
-        const advertised = stringField(document, "resource");
-        const resource = advertised ?? mcpEndpoint;
-        if (normalizeResource(advertised, mcpEndpoint) !== normalizeResource(undefined, mcpEndpoint)) {
-          return undefined;
-        }
+        const resource = acceptedResource({
+          advertised: stringField(document, "resource"),
+          endpoint: mcpEndpoint,
+          metadataUrl: candidate,
+          allowLoopback: this.#fetcher.policy.allowLoopback,
+        });
+        if (resource === undefined) return undefined;
         return {
           resource,
           authorizationServers,

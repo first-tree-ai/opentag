@@ -199,3 +199,22 @@ test("rejects drift between the sources and the generated module", (t) => {
   assert.notEqual(drifted.status, 0);
   assert.match(drifted.stderr, /out of date/);
 });
+
+test("embeds a PNG provider asset with its correct media type", (t) => {
+  const fixture = fixtureDirectory(t, {
+    entries: [entry({ icon: "notion.png", iconIsOfficial: true })],
+    icons: ["notion.png"],
+  });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  const generated = readFileSync(fixture.target, "utf8");
+  assert.match(generated, /data:image\/png;base64,/);
+  assert.match(generated, /iconIsOfficial: true/);
+});
+
+test("keeps unverified assets unmarked and rejects invalid official-mark metadata", (t) => {
+  const fixture = fixtureDirectory(t);
+  assert.equal(runGenerator(fixture.root).status, 0);
+  assert.doesNotMatch(readFileSync(fixture.target, "utf8"), /iconIsOfficial: true/);
+  assertRejected(t, /iconIsOfficial: must be a boolean/, { entries: [entry({ iconIsOfficial: "yes" })] });
+});

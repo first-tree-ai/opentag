@@ -12,6 +12,7 @@ import {
   type RuntimeImSteerResult,
   redactForLog,
   redactSensitive,
+  type TurnActivityResult,
   type TurnFailureReason,
   type TurnOutgoingReplySnapshot,
   type TurnReportHashInput,
@@ -55,6 +56,7 @@ import {
   SessionRuntimeNotPreparedError,
 } from "./session-runtime-manager.js";
 import { TurnTraceBuffer } from "./trace-buffer.js";
+import { TurnActivityReporter } from "./turn-activity-reporter.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
 
@@ -146,8 +148,14 @@ export class AgentTurnRunner {
   readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
+  readonly #activity: TurnActivityReporter;
 
   constructor(options: AgentTurnRunnerOptions) {
+    this.#activity = new TurnActivityReporter({
+      enabled: () => options.connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnActivity) === 1,
+      send: (frame) => options.connection.send(frame, { priority: "trace", signal: AbortSignal.timeout(1_000) }),
+      ...(options.now ? { now: options.now } : {}),
+    });
     this.#bindingStore = options.bindingStore;
     this.#connection = options.connection;
     this.#custody = options.custody;
@@ -163,6 +171,10 @@ export class AgentTurnRunner {
     // Defaulted rather than optional so the failure path calls it unconditionally: a composition that
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
+  }
+
+  handleActivityResult(result: TurnActivityResult): void {
+    this.#activity.acknowledge(result);
   }
 
   get activeCount(): number {
@@ -282,6 +294,7 @@ export class AgentTurnRunner {
   stop(): void {
     if (this.#stopped) return;
     this.#stopped = true;
+    this.#activity.close();
     for (const turn of this.#turns.values()) turn.abort.abort("client_shutdown");
   }
 
@@ -296,6 +309,7 @@ export class AgentTurnRunner {
       if (event.type === "interaction_requested" && event.runId === owner.turnId)
         await this.#requestApproval(turn, runtime, event.request);
       if (event.type === "run_started" && event.runId === owner.turnId) {
+        this.#activity.start(owner.request, owner.turnId);
         await this.#bindingStore.updateUnresolved(
           owner.request.agentId,
           owner.request.sessionId,
@@ -310,6 +324,7 @@ export class AgentTurnRunner {
         event.type === "run_aborted" ||
         event.type === "run_cancelled"
       ) {
+        if (event.runId === owner.turnId) this.#activity.end(owner.turnId);
         onTerminal();
       }
       await this.#onRuntimeEvent?.(event);
@@ -439,6 +454,7 @@ export class AgentTurnRunner {
       /* v8 ignore else -- a terminal event observed before the failure already recorded the outcome. */
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {
+      this.#activity.end(owner.turnId);
       releaseObserver();
       if (turnPlanInput) {
         /* v8 ignore next -- turn-plan teardown is best-effort. */

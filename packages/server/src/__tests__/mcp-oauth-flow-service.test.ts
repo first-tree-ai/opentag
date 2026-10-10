@@ -45,6 +45,7 @@ beforeEach(async () => {
 const PUBLIC_ORIGIN = "https://opentag.test";
 const MCP_URL = "https://mcp.example.com/mcp";
 const PRM_URL = "https://mcp.example.com/.well-known/oauth-protected-resource/mcp";
+const BARE_PRM_URL = "https://mcp.example.com/.well-known/oauth-protected-resource";
 const ISSUER = "https://auth.example.com";
 const AS_URL = `${ISSUER}/.well-known/oauth-authorization-server`;
 const TOKEN_URL = `${ISSUER}/token`;
@@ -703,6 +704,37 @@ describe("McpOAuthFlowService.start", () => {
       code: MCP_ERROR_CODES.BINDING_NOT_FOUND,
     });
   });
+
+  it("records the well-known identity as the flow's resource and leaves the credential's alone", async () => {
+    /*
+     * Airtable and Amplitude shape: the bare well-known document names the origin while the endpoint
+     * answers on /mcp. The re-authorization must not rewrite the working credential's audience.
+     */
+    const ids = await seed();
+    let advertised = MCP_URL;
+    const { flows } = build({
+      [BARE_PRM_URL]: () => doc({ resource: advertised, authorization_servers: [ISSUER] }),
+      [AS_URL]: asMetadata({ registration_endpoint: REGISTER_URL }),
+      [REGISTER_URL]: doc({ client_id: "dcr_reuse", client_secret: "cs" }),
+      [TOKEN_URL]: doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 3600 }),
+    });
+
+    // First flow: the document names the endpoint, so the strict rule accepts it.
+    const first = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(first.authorizationUrl).searchParams.get("resource")).toBe(MCP_URL);
+    await flows.callback({ code: "c1", state: stateOf(first.authorizationUrl) }, FLOW_SECRET);
+    expect(await readAuthorization(ids)).toMatchObject({ oauthResource: MCP_URL, flowOauthResource: null });
+
+    // Re-authorization: the same origin's bare document now names the origin itself.
+    advertised = "https://mcp.example.com";
+    const second = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(second.authorizationUrl).searchParams.get("resource")).toBe("https://mcp.example.com");
+    expect(await readAuthorization(ids)).toMatchObject({
+      oauthResource: MCP_URL,
+      flowOauthResource: "https://mcp.example.com",
+      status: "active",
+    });
+  });
 });
 
 const FAKE_SECOND_SECRET = "flow-secret-for-the-second-browser";
@@ -1048,7 +1080,13 @@ describe("McpOAuthFlowService.callback", () => {
       [TOKEN_URL]: async () => {
         await unit.database
           .update(mcpServerAuthorizations)
-          .set({ state: null, stateExpiresAt: null, loginSessionHash: null, status: "revoked" })
+          .set({
+            state: null,
+            stateExpiresAt: null,
+            loginSessionHash: null,
+            flowOauthResource: null,
+            status: "revoked",
+          })
           .where(eq(mcpServerAuthorizations.agentId, ids.agentId));
         return doc({ access_token: "at_1", expires_in: 3600 });
       },
@@ -1105,6 +1143,71 @@ describe("McpOAuthFlowService.callback", () => {
     const failure = new URL(flows.redirectFor(ids.agentId, ids.mcpServerId, MCP_ERROR_CODES.OAUTH_DENIED));
     expect(failure.searchParams.get("mcp_oauth")).toBe("error");
     expect(failure.searchParams.get("mcp_oauth_error")).toBe(MCP_ERROR_CODES.OAUTH_DENIED);
+  });
+
+  it("repeats the flow's recorded resource on the exchange and stores it with the credential", async () => {
+    const ids = await seed();
+    const { flows } = build({
+      [BARE_PRM_URL]: doc({ resource: "https://mcp.example.com", authorization_servers: [ISSUER] }),
+      [AS_URL]: asMetadata({ registration_endpoint: REGISTER_URL }),
+      [REGISTER_URL]: doc({ client_id: "dcr_exchange", client_secret: "cs" }),
+      [TOKEN_URL]: (init) => {
+        const body = new URLSearchParams(String(init.body));
+        expect(body.get("resource")).toBe("https://mcp.example.com");
+        return doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 3600 });
+      },
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await flows.callback({ code: "c1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+    expect(await readAuthorization(ids)).toMatchObject({
+      oauthResource: "https://mcp.example.com",
+      flowOauthResource: null,
+      status: "active",
+    });
+  });
+
+  it("keeps a live pre-change flow working by deriving its resource from the endpoint", async () => {
+    const ids = await seed();
+    const { flows } = build({
+      ...discoverableAs(),
+      [TOKEN_URL]: (init) => {
+        const body = new URLSearchParams(String(init.body));
+        expect(body.get("resource")).toBe(MCP_URL);
+        return doc({ access_token: "at_1", refresh_token: "rt_1", expires_in: 3600 });
+      },
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    // A flow started before the column existed carries no flow resource.
+    await unit.database
+      .update(mcpServerAuthorizations)
+      .set({ flowOauthResource: null })
+      .where(eq(mcpServerAuthorizations.agentId, ids.agentId));
+    await flows.callback({ code: "c1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+    expect(await readAuthorization(ids)).toMatchObject({ oauthResource: MCP_URL, flowOauthResource: null });
+  });
+
+  it("clears the flow resource when a denial ends the flow", async () => {
+    const ids = await seed();
+    const { flows } = build(discoverableAs());
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await expect(
+      flows.callback({ error: "access_denied", state: stateOf(started.authorizationUrl) }, FLOW_SECRET),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_DENIED });
+    expect(await readAuthorization(ids)).toMatchObject({ flowOauthResource: null, state: null });
+  });
+
+  it("clears the flow resource when an expired flow is swept", async () => {
+    const ids = await seed();
+    const { flows } = build(discoverableAs());
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await unit.database
+      .update(mcpServerAuthorizations)
+      .set({ stateExpiresAt: new Date(Date.now() - 1000) })
+      .where(eq(mcpServerAuthorizations.agentId, ids.agentId));
+    await expect(
+      flows.callback({ code: "c1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED });
+    expect(await readAuthorization(ids)).toMatchObject({ flowOauthResource: null, state: null });
   });
 });
 
@@ -1418,5 +1521,75 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
       status: "error",
       failureCode: MCP_ERROR_CODES.OAUTH_FAILED,
     });
+  });
+
+  it("repeats the recorded resource on refresh instead of re-deriving it", async () => {
+    const ids = await seed();
+    const { row } = await authorizedRow(
+      ids,
+      { accessToken: "at_1", refreshToken: "rt_1" },
+      { oauthResource: "https://mcp.example.com" },
+    );
+    await unit.database.insert(mcpClientRegistrations).values({
+      accountId: ids.accountId,
+      authorizationServer: ISSUER,
+      source: "preregistered",
+      clientId: "deployment-client",
+    });
+    const { flows } = build({
+      ...discoverableAs(),
+      [TOKEN_URL]: (init) => {
+        const body = new URLSearchParams(String(init.body));
+        expect(body.get("resource")).toBe("https://mcp.example.com");
+        return doc({ access_token: "at_2", refresh_token: "rt_2", expires_in: 600 });
+      },
+    });
+    await flows.refreshAuthorization(row?.id as string);
+    expect(await readAuthorization(ids)).toMatchObject({
+      status: "active",
+      oauthResource: "https://mcp.example.com",
+      refreshGeneration: 1,
+    });
+  });
+
+  it("derives the resource from the endpoint for a row that predates the column", async () => {
+    const ids = await seed();
+    const { row } = await authorizedRow(ids, { accessToken: "at_1", refreshToken: "rt_1" });
+    await unit.database.insert(mcpClientRegistrations).values({
+      accountId: ids.accountId,
+      authorizationServer: ISSUER,
+      source: "preregistered",
+      clientId: "deployment-client",
+    });
+    const { flows } = build({
+      ...discoverableAs(),
+      [TOKEN_URL]: (init) => {
+        expect(new URLSearchParams(String(init.body)).get("resource")).toBe(MCP_URL);
+        return doc({ access_token: "at_2", expires_in: 600 });
+      },
+    });
+    await flows.refreshAuthorization(row?.id as string);
+    expect(await readAuthorization(ids)).toMatchObject({ status: "active", oauthResource: null });
+  });
+
+  it("refuses to re-audience a credential the endpoint no longer matches", async () => {
+    const ids = await seed();
+    const { row } = await authorizedRow(
+      ids,
+      { accessToken: "at_1", refreshToken: "rt_1" },
+      { oauthResource: "https://other.example.com" },
+    );
+    const { calls, flows } = build(discoverableAs());
+    await flows.refreshAuthorization(row?.id as string);
+    // No authorization-server contact: the mismatch is decided from the row and the effective URL.
+    expect(calls).toEqual([]);
+    const after = await readAuthorization(ids);
+    expect(after).toMatchObject({
+      status: "error",
+      failureCode: MCP_ERROR_CODES.AUTHORIZATION_REQUIRED,
+      refreshClaimId: null,
+    });
+    // The credential stays for a later reauthorization; only the verdict is recorded.
+    expect(after?.ciphertext).not.toBeNull();
   });
 });

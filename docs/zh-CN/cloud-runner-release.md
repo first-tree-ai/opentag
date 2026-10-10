@@ -1,7 +1,7 @@
 # Cloud Runner 发布
 
 [English](../cloud-runner-release.md)
-> Last synced with: 2026-09-21
+> Last synced with: 2026-10-09
 
 Runner 使用 CLI 的发布版本。现有 npm 发布流程先从同一份干净源码构建 linux/amd64 Runner、运行离线验收、
 发布到 Artifact Registry，再发布 npm 和 portable 产物。整次发布成功后，通过 GitHub Actions artifact 记录
@@ -56,6 +56,51 @@ production 启用使用 `CAPROVER_PROD_SERVER`、`CAPROVER_PROD_APP`；生产批
 staging 部署在 `npm Publish` 成功后启动，读取该次运行的准确发布记录，验证 npm gitHead 和镜像身份。
 先部署匹配的 Server，再一起更新 `OPENTAG_CLOUD_RUNNER_IMAGE` 和 `OPENTAG_CLOUD_RUNNER_VERSION`。
 已被 main 新提交替代的自动部署仍跳过；Runner 发布不完整时，不能悄悄保留旧 Runner 却宣称新 Cloud 版本发布完成。
+
+### Server 启动后的后台镜像准备
+
+Server 在开始监听并完成就绪标记后，启动独立的镜像准备 Worker。Cloud Runner 开启时，staging/prod 默认启用，
+开发环境默认关闭。无需新增必填配置或 GitHub IAM 授权，复用 Server 已有的 Instance 管理、运行时服务账号
+act-as 权限、Direct VPC 配置及 metadata 凭证提供器。每次 API 调用获取有效的缓存或刷新令牌，长时间导入后的
+清理也会刷新，不读取凭证文件或执行 gcloud。
+
+首次检查立即在后台执行，此后默认每 60 秒检查一次，同一进程不重叠执行。失败通过现有后台监督器记录
+`RUNNER_IMAGE_PREWARM_FAILED`，下次检查重试。不会延迟 `/readyz`、阻塞发布或消息投递。
+若消息在准备完成前到达，仍可能遇到未缓存镜像导入。
+
+多个副本通过 PostgreSQL 非阻塞会话级 advisory lock 协调，主副本占用一个独立连接；不新增数据表、迁移、
+长事务或外部调度服务。锁键包含环境、项目、区域、运行时身份、镜像仓库和网络位置，digest 变化时保持稳定。
+成功后保留锁，定时仅检查当前会话是否仍持锁，健康主副本不反复创建探针。主副本退出或连接丢失后，其他副本
+可在下一次检查接管。滚动部署期间，新副本需等旧主副本释放锁后才能准备新 digest。
+Server 整体重启或主副本更替可能重复导入。
+
+Worker 使用确定的 `ot-warm-*` 名称和独立 purpose/target 标签创建一个 Cloud Run Instance，配置内部入口、
+禁用默认 URL、准确镜像 digest 和相同 Direct VPC。覆盖后的 entrypoint 只运行非特权最小 HTTP 监听器，
+两分钟后自行退出；不传入 bootstrap token、Server URL、Session、Turn 或模型凭证。
+业务分配、就绪、队列消费及空闲回收保持独立。
+
+准备最多等待五分钟，要求 `ContainerReady` 和 `Running` 同时满足；清理另有两分钟期限，直到最终返回不存在。
+删除前检查 purpose/target/environment 标签、镜像仓库、服务账号、命令、参数、无环境凭证、UID 和 etag，
+创建及删除前再次检查持锁状态。同一命名空间的旧 digest 探针先清理再创建新探针；归属不匹配或 UID 被替换的
+资源拒绝删除。创建响应不确定时进行核实，不盲目重复 POST。
+
+正常关闭会中止准备、等待有时限的清理，再关闭持锁连接。强制终止可能打断清理，下一任主副本通过相同名称和
+严格归属校验恢复。项目、身份、仓库或 VPC 位置变化会生成不同命名空间，这类变更后需显式检查旧 `ot-warm-*`
+探针。清理失败会记录错误，不能被报告为准备成功。
+
+可选 Server 配置：
+
+| 变量 | 默认值／含义 |
+| --- | --- |
+| `OPENTAG_CLOUD_RUNNER_PREWARM_ENABLED` | staging/prod 默认 `true`，dev 默认 `false`；设 `false` 关闭 Worker |
+| `OPENTAG_CLOUD_RUNNER_PREWARM_INTERVAL_MS` | 默认 `60000`；失败重试／持锁检查周期，范围 1000–3600000 |
+
+发布与启用流程保留原有发布记录、提交祖先及 `/readyz` 验证；`Deploy Runner check` 保持只读。
+不再增加 CI 预热 workflow 或部署预热门禁。
+
+成功日志在探针删除后记录镜像、资源名、UID、导入／运行时间和准备耗时，只证明指定 digest 在该 region 导入并
+启动过可丢弃探针，不保证缓存保留、未来命中、原生 Runner 就绪或业务完成。新镜像仍应按“预导入 → 删除 →
+新建实例”验证，分别记录导入及剩余启动耗时。已有冷启动与端到端验收继续执行，本改动不能单独证明三秒目标。
 
 npm 接受发布后，包仍可能处于处理阶段。准确版本查询返回 E404 时进行有时限的等待；元数据无效、认证失败或
 源码不匹配仍立即失败。Runner 启用还会先等待初始 CapRover 构建完成，再获取配置快照。`check` 与写入前的

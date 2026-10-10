@@ -49,6 +49,9 @@ export const slackInstallations = pgTable(
 
     observedConnectedAt: timestamp("observed_connected_at", { withTimezone: true }),
     observedAt: timestamp("observed_at", { withTimezone: true }),
+    workingStatusNotBeforeAt: timestamp("working_status_not_before_at", { withTimezone: true })
+      .notNull()
+      .default(sql`'epoch'::timestamptz`),
 
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     disabledAt: timestamp("disabled_at", { withTimezone: true }),

@@ -19,6 +19,7 @@
 #   category         an id declared in `mcp-categories.yaml`
 #   website          the provider's site, linked from the card
 #   icon             a file under `packages/mcp-presets/icons/`
+#   iconIsOfficial   true only for a verified official product mark; unverified assets use a generic UI icon
 #   order            position within the category
 #
 # Entries carry no credential of any kind.
@@ -35,7 +36,8 @@
   defaultAuthKind: oauth
   category: general
   website: https://www.notion.com
-  icon: notion.svg
+  icon: notion.png
+  iconIsOfficial: true
   order: 10
 
 - id: exa
@@ -51,6 +53,7 @@
   category: general
   website: https://exa.ai
   icon: exa.svg
+  iconIsOfficial: true
   order: 20
 
 - id: linear
@@ -66,6 +69,7 @@
   category: engineering
   website: https://linear.app
   icon: linear.svg
+  iconIsOfficial: true
   order: 10
 
 - id: sentry
@@ -81,7 +85,24 @@
   category: engineering
   website: https://sentry.io
   icon: sentry.svg
+  iconIsOfficial: true
   order: 20
+
+- id: atlassian
+  name: atlassian
+  title:
+    en: Atlassian
+    zh: Atlassian
+  description:
+    en: Jira issues, Confluence pages, and team knowledge.
+    zh: Jira 事务、Confluence 页面与团队知识。
+  url: https://mcp.atlassian.com/v2/mcp?tools=all
+  defaultAuthKind: oauth
+  category: engineering
+  website: https://www.atlassian.com
+  icon: atlassian.svg
+  iconIsOfficial: true
+  order: 30
 
 - id: gmail
   name: gmail
@@ -99,6 +120,7 @@
   category: google-workspace
   website: https://workspace.google.com/products/gmail/
   icon: gmail.svg
+  iconIsOfficial: true
   order: 10
 
 - id: google-drive
@@ -117,6 +139,7 @@
   category: google-workspace
   website: https://workspace.google.com/products/drive/
   icon: google-drive.svg
+  iconIsOfficial: true
   order: 20
 
 - id: google-docs
@@ -137,6 +160,7 @@
   category: google-workspace
   website: https://workspace.google.com/products/docs/
   icon: google-docs.svg
+  iconIsOfficial: true
   order: 30
 
 - id: google-sheets
@@ -157,6 +181,7 @@
   category: google-workspace
   website: https://workspace.google.com/products/sheets/
   icon: google-sheets.svg
+  iconIsOfficial: true
   order: 40
 
 - id: google-slides
@@ -177,6 +202,7 @@
   category: google-workspace
   website: https://workspace.google.com/products/slides/
   icon: google-slides.svg
+  iconIsOfficial: true
   order: 50
 
 - id: google-calendar
@@ -196,6 +222,7 @@
   category: google-workspace
   website: https://workspace.google.com/products/calendar/
   icon: google-calendar.svg
+  iconIsOfficial: true
   order: 60
 
 - id: google-chat
@@ -217,6 +244,7 @@
   category: google-workspace
   website: https://workspace.google.com/products/chat/
   icon: google-chat.svg
+  iconIsOfficial: true
   order: 70
 
 - id: google-people
@@ -237,3 +265,218 @@
   website: https://developers.google.com/people
   icon: google-people.svg
   order: 80
+
+- id: microsoft-365
+  name: microsoft-365
+  title:
+    en: Microsoft 365
+    zh: Microsoft 365
+  description:
+    en: Microsoft 365 roadmap, Azure updates, and release communications.
+    zh: Microsoft 365 路线图、Azure 更新与发布信息。
+  url: https://www.microsoft.com/releasecommunications/mcp
+  defaultAuthKind: none
+  category: productivity
+  website: https://www.microsoft.com
+  icon: microsoft-365.svg
+  iconIsOfficial: true
+  order: 10
+
+- id: asana
+  name: asana
+  title:
+    en: Asana
+    zh: Asana
+  description:
+    en: Tasks, projects, and workspaces.
+    zh: 任务、项目与工作区。
+  url: https://mcp.asana.com/v2/mcp
+  defaultAuthKind: oauth
+  category: productivity
+  website: https://asana.com
+  icon: asana.png
+  iconIsOfficial: true
+  order: 20
+
+- id: monday
+  name: monday
+  title:
+    en: monday.com
+    zh: monday.com
+  description:
+    en: Work management, boards, and automations.
+    zh: 工作管理、看板与自动化。
+  url: https://mcp.monday.com/mcp
+  defaultAuthKind: oauth
+  category: productivity
+  website: https://monday.com
+  icon: monday.png
+  iconIsOfficial: true
+  order: 30
+
+- id: hubspot
+  name: hubspot
+  title:
+    en: HubSpot
+    zh: HubSpot
+  description:
+    en: CRM, marketing, and customer data.
+    zh: CRM、营销与客户数据。
+  url: https://mcp.hubspot.com
+  defaultAuthKind: oauth
+  category: productivity
+  website: https://www.hubspot.com
+  icon: hubspot.png
+  iconIsOfficial: true
+  order: 40
+
+- id: figma
+  name: figma
+  title:
+    en: Figma
+    zh: Figma
+  description:
+    en: Files, designs, and Dev Mode context.
+    zh: 文件、设计与开发模式上下文。
+  url: https://mcp.figma.com/mcp
+  defaultAuthKind: oauth
+  category: design
+  website: https://www.figma.com
+  icon: figma.svg
+  iconIsOfficial: true
+  order: 10
+
+- id: canva
+  name: canva
+  title:
+    en: Canva
+    zh: Canva
+  description:
+    en: Designs, assets, and exports.
+    zh: 设计、素材与导出。
+  url: https://mcp.canva.com/mcp
+  defaultAuthKind: oauth
+  category: design
+  website: https://www.canva.com
+  icon: canva.png
+  iconIsOfficial: true
+  order: 20
+
+- id: tavily
+  name: tavily
+  title:
+    en: Tavily
+    zh: Tavily
+  description:
+    en: Web search and research.
+    zh: 网页搜索与研究。
+  url: https://mcp.tavily.com/mcp
+  defaultAuthKind: none
+  category: search
+  website: https://tavily.com
+  icon: tavily.svg
+  iconIsOfficial: true
+  order: 10
+
+- id: firecrawl
+  name: firecrawl
+  title:
+    en: Firecrawl
+    zh: Firecrawl
+  description:
+    en: Web scraping, crawling, and extraction.
+    zh: 网页抓取、爬取与提取。
+  url: https://mcp.firecrawl.dev/v2/mcp
+  defaultAuthKind: none
+  category: search
+  website: https://www.firecrawl.dev
+  icon: firecrawl.svg
+  iconIsOfficial: true
+  order: 20
+
+- id: zapier
+  name: zapier
+  title:
+    en: Zapier
+    zh: Zapier
+  description:
+    en: Connect to 9,000+ apps and workflows.
+    zh: 连接 9,000+ 应用与自动化流程。
+  url: https://mcp.zapier.com/api/v1/connect
+  defaultAuthKind: oauth
+  category: automation
+  website: https://zapier.com
+  icon: zapier.png
+  iconIsOfficial: true
+  order: 10
+
+# Official business and data endpoints. Atlassian, Airtable, and Amplitude are enabled by the
+# protected-resource identity compatibility for issue #814: discovery accepts the identity each
+# provider's well-known metadata document encodes. Amplitude's authorization remains unverified until
+# OpenTag supports its token-endpoint authentication methods (its server advertises
+# `client_secret_post` and `none`, not `client_secret_basic`); see #814 for the follow-up.
+# These presets still need end-to-end authorization and tool-call verification.
+
+- id: airtable
+  name: airtable
+  title:
+    en: Airtable
+    zh: Airtable
+  description:
+    en: Bases, tables, records, and business workflows.
+    zh: 数据库、数据表、记录与业务流程。
+  url: https://mcp.airtable.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://www.airtable.com
+  icon: airtable.png
+  iconIsOfficial: true
+  order: 10
+
+- id: supabase
+  name: supabase
+  title:
+    en: Supabase
+    zh: Supabase
+  description:
+    en: Projects, databases, and backend development.
+    zh: 项目、数据库与后端开发。
+  url: https://mcp.supabase.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://supabase.com
+  icon: supabase.svg
+  iconIsOfficial: true
+  order: 20
+
+- id: amplitude
+  name: amplitude
+  title:
+    en: Amplitude
+    zh: Amplitude
+  description:
+    en: Product analytics, funnels, and retention.
+    zh: 产品分析、漏斗与留存。
+  url: https://mcp.amplitude.com/mcp
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://amplitude.com
+  icon: amplitude.png
+  iconIsOfficial: true
+  order: 30
+
+- id: stripe
+  name: stripe
+  title:
+    en: Stripe
+    zh: Stripe
+  description:
+    en: Payments, customers, and subscriptions.
+    zh: 支付、客户与订阅。
+  url: https://mcp.stripe.com
+  defaultAuthKind: oauth
+  category: business-data
+  website: https://stripe.com
+  icon: stripe.svg
+  iconIsOfficial: true
+  order: 40

@@ -9,6 +9,8 @@ import {
   normalizeAuthorizationServerIssuer,
   parseBearerChallenge,
   protectedResourceMetadataUrls,
+  resourceRelatesToEndpoint,
+  wellKnownProtectedResourceIdentity,
 } from "../services/mcp/mcp-oauth.js";
 import { normalizeResource, orderIssuers } from "../services/mcp/mcp-oauth-flow-service.js";
 import { refreshAtFrom, refreshLeadMs } from "../services/mcp/mcp-refresh-worker.js";
@@ -137,7 +139,7 @@ describe("MCP OAuth discovery order", () => {
 
   it("accepts the same endpoint spelled with an uppercase host or a trailing slash", async () => {
     // Compared after normalization, so a peer's spelling is not mistaken for an attack.
-    for (const advertised of ["HTTPS://MCP.example.com/mcp/", "https://mcp.example.com/mcp#frag"]) {
+    for (const advertised of ["HTTPS://MCP.example.com/mcp", "https://mcp.example.com/mcp/"]) {
       const { client } = stubOAuth([
         json({ resource: advertised, authorization_servers: ["https://auth.example.com"] }),
       ]);
@@ -146,6 +148,19 @@ describe("MCP OAuth discovery order", () => {
         advertised,
       ).resolves.toBeDefined();
     }
+  });
+
+  it("refuses an advertised resource that carries a fragment", async () => {
+    /*
+     * Normalization drops the fragment while the wire value would keep it, so a value that compared
+     * equal would travel as something else. The advertised string must be usable as published.
+     */
+    const { client } = stubOAuth([
+      json({ resource: "https://mcp.example.com/mcp#frag", authorization_servers: ["https://auth.example.com"] }),
+    ]);
+    await expect(client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/mcp")).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+    });
   });
 
   it("rejects an authorization server whose document names a different issuer", async () => {
@@ -421,6 +436,39 @@ describe("normalizeAuthorizationServerIssuer", () => {
   });
 });
 
+/**
+ * The identity rule the protected-resource reader builds on: the well-known URL's encoded identity,
+ * and the ancestor-or-equal relationship a stored resource is re-checked with on refresh.
+ */
+describe("MCP protected-resource identity helpers", () => {
+  it("derives the identity a well-known protected-resource URL encodes", () => {
+    expect(wellKnownProtectedResourceIdentity("https://mcp.example.com/.well-known/oauth-protected-resource")).toBe(
+      "https://mcp.example.com",
+    );
+    expect(wellKnownProtectedResourceIdentity("https://mcp.example.com/.well-known/oauth-protected-resource/a/b")).toBe(
+      "https://mcp.example.com/a/b",
+    );
+    // A challenge-chosen location encodes no identity, so the reader keeps strict endpoint equality.
+    expect(wellKnownProtectedResourceIdentity("https://mcp.example.com/prm.json")).toBeUndefined();
+    expect(wellKnownProtectedResourceIdentity("not a url")).toBeUndefined();
+  });
+
+  it("relates an endpoint's origin and ancestor paths to it, and refuses siblings and other origins", () => {
+    expect(resourceRelatesToEndpoint("https://mcp.example.com", "https://mcp.example.com/mcp")).toBe(true);
+    expect(resourceRelatesToEndpoint("https://mcp.example.com/a", "https://mcp.example.com/a/mcp")).toBe(true);
+    expect(resourceRelatesToEndpoint("https://mcp.example.com/a/mcp", "https://mcp.example.com/a/mcp")).toBe(true);
+    // The endpoint's query never participates in the path relationship.
+    expect(resourceRelatesToEndpoint("https://mcp.example.com/a/mcp?tools=all", "https://mcp.example.com/a/mcp")).toBe(
+      true,
+    );
+    // A prefix that is not a whole path segment is a sibling, not an ancestor.
+    expect(resourceRelatesToEndpoint("https://mcp.example.com/a", "https://mcp.example.com/ab/mcp")).toBe(false);
+    expect(resourceRelatesToEndpoint("https://mcp.example.com/a/b", "https://mcp.example.com/a/mcp")).toBe(false);
+    expect(resourceRelatesToEndpoint("https://other.example.com", "https://mcp.example.com/mcp")).toBe(false);
+    expect(resourceRelatesToEndpoint("not a url", "https://mcp.example.com/mcp")).toBe(false);
+  });
+});
+
 describe("MCP scope resolution", () => {
   const { client } = stubOAuth([]);
   const metadata = {
@@ -669,6 +717,116 @@ describe("MCP well-known discovery documents", () => {
         authorizationServers: [AS],
         scopesSupported: ["mcp.read", "mcp.write"],
       },
+    });
+  });
+
+  it("accepts the origin a bare well-known document names for a path endpoint", async () => {
+    /*
+     * Airtable and Amplitude publish the identity their bare well-known URL encodes (RFC 9728 §3):
+     * the origin, while the transport endpoint answers on /mcp.
+     */
+    const mcpEndpoint = "https://mcp.airtable.com/mcp";
+    const { client } = stubOAuth([json({ resource: "https://mcp.airtable.com", authorization_servers: [AS] })]);
+    await expect(
+      client.protectedResourceMetadata(
+        ACCOUNT,
+        mcpEndpoint,
+        "https://mcp.airtable.com/.well-known/oauth-protected-resource",
+      ),
+    ).resolves.toEqual({
+      metadata: { resource: "https://mcp.airtable.com", authorizationServers: [AS], scopesSupported: [] },
+    });
+  });
+
+  it("accepts the endpoint path a path-inserted well-known document names while the endpoint adds a query", async () => {
+    // Atlassian advertises the canonical path; the transport endpoint adds ?tools=all.
+    const mcpEndpoint = "https://mcp.atlassian.com/v2/mcp?tools=all";
+    const { client } = stubOAuth([json({ resource: "https://mcp.atlassian.com/v2/mcp", authorization_servers: [AS] })]);
+    await expect(
+      client.protectedResourceMetadata(
+        ACCOUNT,
+        mcpEndpoint,
+        "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp",
+      ),
+    ).resolves.toEqual({
+      metadata: { resource: "https://mcp.atlassian.com/v2/mcp", authorizationServers: [AS], scopesSupported: [] },
+    });
+  });
+
+  it("accepts a provider whose advertised resource equals the endpoint", async () => {
+    // Supabase and Stripe match after normalization, so they stay on the strict path.
+    const mcpEndpoint = "https://mcp.stripe.com";
+    const { client } = stubOAuth([json({ resource: mcpEndpoint, authorization_servers: [AS] })]);
+    await expect(
+      client.protectedResourceMetadata(
+        ACCOUNT,
+        mcpEndpoint,
+        "https://mcp.stripe.com/.well-known/oauth-protected-resource",
+      ),
+    ).resolves.toMatchObject({ metadata: { resource: mcpEndpoint } });
+  });
+
+  it("falls through to the bare well-known fallback when the path-inserted form answers with an origin identity", async () => {
+    const mcpEndpoint = "https://mcp.example.com/mcp";
+    const { calls, client } = stubOAuth([
+      { status: 404 },
+      json({ resource: "https://mcp.example.com", authorization_servers: [AS] }),
+    ]);
+    await expect(client.protectedResourceMetadata(ACCOUNT, mcpEndpoint)).resolves.toMatchObject({
+      metadata: { resource: "https://mcp.example.com" },
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+      "https://mcp.example.com/.well-known/oauth-protected-resource",
+    ]);
+  });
+
+  it("refuses a same-origin sibling path the well-known URL encodes", async () => {
+    const { client } = stubOAuth([json({ resource: "https://mcp.example.com/a/b", authorization_servers: [AS] })]);
+    await expect(
+      client.protectedResourceMetadata(
+        ACCOUNT,
+        "https://mcp.example.com/a/mcp",
+        "https://mcp.example.com/.well-known/oauth-protected-resource/a/b",
+      ),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_ERROR });
+  });
+
+  it("refuses an identity on another origin even from that origin's own well-known URL", async () => {
+    /*
+     * The challenge names the document location, so a hostile Server could point at a victim's
+     * metadata. The encoded identity is still compared with the endpoint, which refuses the victim.
+     */
+    const { client } = stubOAuth([json({ resource: "https://other.example.com", authorization_servers: [AS] })]);
+    await expect(
+      client.protectedResourceMetadata(
+        ACCOUNT,
+        "https://mcp.example.com/mcp",
+        "https://other.example.com/.well-known/oauth-protected-resource",
+      ),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_ERROR });
+  });
+
+  it("does not use the compatibility path for a challenge location that is not well-known-shaped", async () => {
+    const { client } = stubOAuth([json({ resource: "https://mcp.example.com", authorization_servers: [AS] })]);
+    await expect(
+      client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/mcp", "https://mcp.example.com/prm.json"),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_ERROR });
+  });
+
+  it("refuses a resource whose scheme the endpoint policy does not admit", async () => {
+    const { client } = stubOAuth([json({ resource: "javascript:alert(1)", authorization_servers: [AS] })]);
+    await expect(client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/mcp")).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+    });
+  });
+
+  it("refuses a resource that carries credentials", async () => {
+    const { client } = stubOAuth([
+      json({ resource: "https://user:secret@mcp.example.com/mcp", authorization_servers: [AS] }),
+    ]);
+    await expect(client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/mcp")).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
     });
   });
 });

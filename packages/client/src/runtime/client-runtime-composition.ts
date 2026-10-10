@@ -891,6 +891,7 @@ export async function createClientRuntime(
       }
     },
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
+    handleTurnActivityResult: runner.handleActivityResult.bind(runner),
   });
   return new ComposedClientRuntime(runtime, {
     admission,

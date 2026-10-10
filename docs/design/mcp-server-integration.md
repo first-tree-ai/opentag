@@ -150,7 +150,7 @@ agent_mcp_servers               Agent <-> Server mount, plus that Agent's overri
 mcp_server_authorizations       exactly one row per (Server, Agent)
   id, mcp_server_id, agent_id, kind, status,
   ciphertext, key_id, scopes, access_token_expires_at,
-  authorization_server, client_registration_id,
+  authorization_server, oauth_resource, flow_oauth_resource, client_registration_id,
   state, state_expires_at, pkce_ciphertext, login_session_hash,
   probe_state, probed_at, probe_error,
   protocol_era, protocol_version, server_info, capabilities, instructions,
@@ -371,7 +371,7 @@ POST <url>  server/discover  (modern headers + _meta)
        b. <origin>/.well-known/oauth-protected-resource
 
 Read the Protected Resource Metadata document (RFC 9728)
-  → authorization_servers[] (>= 1), scopes_supported[], resource
+  → authorization_servers[] (>= 1), scopes_supported[], resource (the identity check below)
 
 Try each authorization server, in the document's order, using the well-known forms in this order:
   with a path:  /.well-known/oauth-authorization-server/<path>
@@ -394,6 +394,20 @@ well-known document — and records that spelling on the row. Every other advert
 requested exactly as published and compared exactly, so a provider whose legitimate issuer ends in a
 slash keeps its identity and still matches its own metadata document (RFC 8414 §3.3); case, ports,
 paths, and encoding remain significant.
+
+The **resource check** is an identity check with one bounded compatibility path (RFC 9728 §3.3).
+The default is strict: a document that names no `resource` uses the endpoint, and an advertised value
+that normalizes to the endpoint is accepted as published. When the document was retrieved from a
+well-known protected-resource URL on the endpoint's own origin, the advertised value may instead be
+the identity that URL encodes — the bare form identifies the origin, the path-inserted form
+identifies origin + path — provided that identity is an ancestor-or-equal of the endpoint path at a
+path-segment boundary, ignoring the endpoint's query. That is what lets Airtable and Amplitude
+advertise their origin for an endpoint at `/mcp`, and Atlassian advertise `/v2/mcp` while its
+endpoint adds `?tools=all`. Everything else is refused: another origin, a same-origin sibling path,
+a value that is not an absolute HTTP(S) URL, userinfo, or a fragment. The accepted spelling is kept
+verbatim and travels as the `resource` parameter on the authorization request, the code exchange,
+and every refresh. This paragraph-1 mapping for challenge-named well-known URLs is a deliberate,
+bounded exception to §3.3's second paragraph; strict equality remains the rule everywhere else.
 
 ### Choosing an authorization server
 
@@ -461,8 +475,12 @@ the variables takes effect immediately and leaves nothing to clean up.
 ### The authorization round trip
 
 - PKCE `S256`; the verifier is encrypted and the challenge travels.
-- **`resource` appears on both the authorization request and the token request**, spelled with a
-  lowercase scheme and host and no fragment.
+- **`resource` is established at discovery and travels verbatim.** The accepted value is the
+  advertised one, or the endpoint when the document named none. `start` records it as
+  `flow_oauth_resource`; the callback stores it with the credential as `oauth_resource` and clears
+  the flow's copy, so the authorization request, the code exchange, and every refresh send exactly
+  the same string. Rows created before the columns existed derive it from the effective endpoint,
+  so existing authorizations keep working.
 - `state` is single use, valid for 10 minutes, and stored **hashed**: the raw value only ever exists
   in the URL the browser carries, so a leaked row cannot be turned into a redeemable callback.
 - **The flow is bound to the browser that started it.** `start` issues a single-use secret as an
@@ -513,6 +531,15 @@ Refresh happens only for rows whose `kind='oauth'` and whose expiry is near, and
 re-discovers: it uses the endpoint the row already recorded, so a peer cannot move this client's
 token endpoint mid-flight.
 
+The credential's recorded `oauth_resource` is its audience for its whole life. Before contacting the
+authorization server, refresh re-checks that the recorded resource still relates to the effective
+endpoint (strict equality, or the same-origin ancestor-or-equal rule above). A mismatch — an
+effective endpoint whose origin moved, say — marks the row `error` with
+`failure_code = MCP_AUTHORIZATION_REQUIRED` and keeps the credential for a deliberate
+reauthorization instead of minting a token for an audience it no longer talks to. The
+management-plane URL change already revokes origin-bound credentials outright; this is the invariant
+behind that behavior, not a replacement for it.
+
 The deadline is pulled forward by `min(5 minutes, half the lifetime)`, so a refresh never races the
 request that uses the token. A lifetime shorter than ten minutes therefore gets half of it. A missing
 `expires_in` is treated as a five-minute lifetime.
@@ -527,6 +554,7 @@ row), and a generation fence on the write-back.
 | `invalid_grant` | **Terminal** | `revoked`; the user must authorize again |
 | `invalid_client` | **Terminal** | `revoked`; the user must re-register the client |
 | Transport failure, timeout, 5xx, unparseable | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, keep the refresh token, require reauthorization, **never** auto-retry |
+| Recorded resource no longer matches the effective endpoint | No call made | `error` with `failure_code = MCP_AUTHORIZATION_REQUIRED`, credential kept for a deliberate reauthorization |
 | Local envelope decryption failure | Nothing was sent | Release the claim, leave the state, retry next pass |
 | MCP Server returns 401/403 | Not evidence the credential is dead | Never clear the refresh token |
 
@@ -1079,6 +1107,15 @@ re-authorization flow always does — only a card has a catalog entry to consult
 carry Google's recommended per-product subsets, which deliberately exclude restricted scopes such as
 `https://mail.google.com/`.
 
+A provider may be listed only when credentials-free discovery of its published endpoint succeeds
+under the identity rules above. Three entries exist because of that path: **Atlassian**,
+**Airtable**, and **Amplitude** publish a resource identity that is not their transport URL, and
+their endpoints are recorded exactly as published — Atlassian keeps `?tools=all`, the parameter its
+documentation recommends for a complete, paginated tool list. Amplitude's entry also records a
+known limitation: its authorization server advertises `client_secret_post` and `none`, not the
+`client_secret_basic` the dynamic-registration path presents, so its authorization stays unverified
+until token-endpoint authentication-method support exists (issue #814 tracks the follow-up).
+
 The generator refuses, at build time, at minimum:
 
 - an entry URL the outbound policy would refuse;
@@ -1131,7 +1168,7 @@ Unit tests (no network, no database):
 | Header construction | OAuth always uses `Authorization`; an empty scheme sends verbatim; `none` sends no authorization header; extra headers apply to all three kinds; a collision is refused case-insensitively; the reserved names are refused |
 | Header validation | The RFC 9110 token set, CR/LF in a name or value, the count and size bounds, and each reserved name |
 | AAD | The literal format; a different Agent, a different authorization server, and the other envelope's domain all fail to open; a kind change is openable because the context never names the kind |
-| Discovery | The exact well-known order; a mismatched issuer propagates; multi-issuer ordering; the registration choice in all four cases; CIMD self-naming and same-host redirects; PKCE; `resource` on both requests; the four `iss` rows; scope priority; the refresh lead |
+| Discovery | The exact well-known order; a mismatched issuer propagates; multi-issuer ordering; the registration choice in all four cases; CIMD self-naming and same-host redirects; PKCE; the protected-resource identity matrix (strict equality, an origin advertised for a `/mcp` endpoint, a path identity with the endpoint's query ignored, cross-origin, same-origin sibling, fragment, userinfo, non-HTTP, and a non-well-known challenge location); the accepted resource recorded on the flow and sent verbatim on both requests; `resource` on both requests; the four `iss` rows; scope priority; the refresh lead; the refresh guard for a recorded resource that no longer matches the endpoint |
 | Probing | Two pages merged into one snapshot on both eras; the cursor sent only on later pages; each per-tool bound skipping the tool (in bytes, proven with multi-byte text), a nameless entry and a non-object entry skipped, a page whose every tool is skipped still succeeding, pagination continuing past a skipped tool, the `warn` line naming the bound; the cap, the budget, and a skipped tool all setting `tools_truncated`; an error page still failing the probe; a malformed page (non-object result, missing or non-array `tools`, non-string or empty cursor) failing both eras while a null cursor ends the list; SSE discovery; the era paths |
 | Config import | Every documented dialect (OpenCode `mcp`, `mcpServers`, `servers`, their YAML spellings, TOML `[mcp_servers.*]` with `headers`, `http_headers`, and `env_http_headers`, `claude`/`codex` command lines, and JSON with comments and trailing commas); a `command` entry whose arguments carry an HTTPS URL read as local; the multi-server list and each "no importable Server" outcome; name normalization, the host fallback, and de-duplication; the paste bound; the credential-name vocabulary read from the shared redactor's own source, matched for `X-PrivateKey` as well as `x-private-key`, with its two deliberate differences from the redactor pinned — narrower for structural names such as `payload`, wider for separatorless spellings such as `x-privatekey` — and no `client-secret`, `credential`, `passwd`, or `*key` name reaching the shared extra headers; the accumulated extra-header count and size bounds refused by name; an environment-backed header refused rather than shared as an empty value, including when a literal header declares the same name and when that name is credential-shaped; a rejected URL's userinfo dropped from the stored value; an edited paste discarding its previous list and any read still running; a token reaching the authorization write only, and never a message |
 
@@ -1141,7 +1178,7 @@ fixture Server that is also its own authorization server:
 | Path | What it proves |
 | --- | --- |
 | P2 — management plane | One Server holds `kind='bearer'` for one Agent and `kind='oauth'` for another; a disable keeps the credential and re-enabling needs no reauthorization; two Agents see different Server sets; the aggregate counts and `lastProbedAt`; an Agent-level override re-probes only that Agent while a shared edit re-probes every mount |
-| P3 — OAuth round trip | The flow reaches `active` with the state cleared, the probe reports the modern era and both pages' tools, a restart invalidates the old state, `invalid_grant` revokes, a refresh rotates without re-probing, and a Bearer row is left alone by the refresh pass |
+| P3 — OAuth round trip | The flow reaches `active` with the state cleared, the probe reports the modern era and both pages' tools, a restart invalidates the old state, `invalid_grant` revokes, a refresh rotates without re-probing, a provider-shaped identity (origin advertised for a `/mcp` endpoint) is accepted and repeated on the exchange and refresh, a pre-change row derives the endpoint resource, and a Bearer row is left alone by the refresh pass |
 | P3 — flow security | A callback presented by a browser holding no flow secret, or a different one, is refused and stores nothing (session fixation); the callback redeems the code under the registration `start` recorded, leaving exactly one registration per `(Account, issuer)` pair and the row still pointing at it |
 | P4 — outbound gate | A challenge naming a link-local document, a Protected Resource Metadata document naming a private issuer, and an AS document naming a private token endpoint are each refused with `MCP_URL_BLOCKED`, and the fixture's request log shows nothing was sent |
 | P5 — lifecycle | A soft-deleted Agent drops `boundAgentCount` to 0 so the definition can be deleted; an onboarding reset leaves no mount behind; detaching releases the credential; a client registration survives its Server's deletion |
@@ -1151,3 +1188,21 @@ Runtime unit tests cover gateway authorization and revocation, Pi's explicit ext
 Cloud's ephemeral handoff and journal exclusion. A production acceptance claim still requires a
 real Computer and Provider Turn that calls an MCP tool, and for Cloud a pinned Runner image and
 observed end-to-end reply. Those observations are recorded separately from source and test gates.
+
+### Authenticated provider smoke test (manual)
+
+The suites above prove the client, not the providers. For each preset enabled by the
+protected-resource identity work — Atlassian, Airtable, and Amplitude — a maintainer with a real
+account records, in the pull request:
+
+1. **Discovery and consent**: the authorization screen appears and completes, and the row reaches
+   `active`.
+2. **Tool discovery**: the probe stores a tool snapshot and the tools appear on the Agent's page.
+3. **One tool call**: a read-only call succeeds through the gateway.
+4. **One refresh**: after forcing the access token's expiry, a refresh pass rotates the credential
+   without re-probing.
+
+Amplitude's authorization is expected to stop at client registration until token-endpoint
+authentication methods (`client_secret_post` or a public client) are supported; record that outcome
+as the evidence for the follow-up rather than treating the preset as verified. Credential-free
+probes remain the only automated evidence, and no source gate claims end-to-end support.

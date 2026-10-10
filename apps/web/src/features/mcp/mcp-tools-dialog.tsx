@@ -8,6 +8,7 @@ import {
   Collapsible,
   Dialog,
   Icon,
+  Info,
   KumoInputControl,
   MagnifyingGlass,
 } from "../../ui/design-system.js";
@@ -32,16 +33,27 @@ export function toolExcerpt(description: string | null, query: string): string {
   }
   return excerpt.trim();
 }
-export function McpPartialTools() {
+function McpPartialTools() {
   return (
-    <Collapsible.Root className="min-w-0">
-      <Collapsible.Trigger render={<Button className="-ml-2 text-kumo-warning" size="compact" variant="ghost" />}>
-        <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-current" />
+    <Collapsible.Root className="min-w-0 rounded-lg bg-kumo-recessed p-3">
+      <Collapsible.Trigger
+        render={
+          <Button
+            className="h-auto w-full justify-start whitespace-normal px-0 py-0 text-left"
+            size="compact"
+            variant="ghost"
+          />
+        }
+      >
+        <Info aria-hidden className="size-4 shrink-0 text-kumo-warning" />
         {m.mcp_partial()}
-        <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
+        <Icon
+          className="ml-auto size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-180"
+          name="chevron-down"
+        />
       </Collapsible.Trigger>
       <Collapsible.Panel className="pt-2">
-        <p className="wrap-anywhere rounded bg-kumo-recessed p-3 text-sm text-kumo-subtle">{m.mcp_partial_help()}</p>
+        <p className="wrap-anywhere pl-6 text-sm text-kumo-subtle">{m.mcp_partial_help()}</p>
       </Collapsible.Panel>
     </Collapsible.Root>
   );
@@ -59,7 +71,7 @@ export function McpToolsDialog({
 }) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string>();
-  const list = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const inFlight = useRef(false);
   const probe = useProbeMcpServer(agentId);
@@ -125,7 +137,7 @@ export function McpToolsDialog({
         ) : null}
         {history ? <p className="mb-3 text-xs text-kumo-subtle">{m.mcp_tools_previous_hint()}</p> : null}
         {entry.authorization?.toolsTruncated ? (
-          <div className="mb-4">
+          <div className="mb-4 shrink-0">
             <McpPartialTools />
           </div>
         ) : null}
@@ -201,14 +213,20 @@ function ToolList({
   truncated,
   onClear,
 }: {
-  list: RefObject<HTMLDivElement | null>;
+  list: RefObject<HTMLElement | null>;
   matches: Tool[];
   query: string;
   truncated: boolean;
   onClear: () => void;
 }) {
   return (
-    <div ref={list} className="mcp-tool-list border-t border-kumo-line">
+    <section
+      ref={list}
+      className="mcp-tool-list border-t border-kumo-line focus-visible:outline-2 focus-visible:outline-kumo-ring"
+      aria-label={m.mcp_tools_title()}
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: The tool list must support keyboard scrolling inside the dialog.
+      tabIndex={0}
+    >
       <ul className="divide-y divide-kumo-line">
         {matches.map((tool) => (
           <ToolRow key={tool.name} tool={tool} query={query} />
@@ -227,6 +245,6 @@ function ToolList({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }

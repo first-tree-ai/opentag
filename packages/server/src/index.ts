@@ -70,12 +70,15 @@ import {
   PostAuthenticationService,
 } from "./services/auth/index.js";
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
+import { createRunnerImagePrewarmWorker } from "./services/cloud-run/runner-image-prewarm-worker.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
+import { SlackWorkingStore } from "./services/im/slack-working-store.js";
+import { SlackWorkingWorker, slackWorkingCredentialResolver } from "./services/im/slack-working-worker.js";
 import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
 import {
   DefaultFeishuRegistrationGateway,
@@ -550,6 +553,13 @@ export async function startServer(): Promise<void> {
         supervisor: backgroundFailureSupervisor,
       },
     });
+    const runnerImagePrewarmWorker = createRunnerImagePrewarmWorker({
+      environment: config.environment,
+      config: config.cloudRunner,
+      databaseUrl: config.databaseUrl,
+      logger: serviceLogger("runner-image-prewarm"),
+      supervisor: backgroundFailureSupervisor,
+    });
     /*
      * E7 idle reclamation runs on the existing Server lifecycle: one fixed 15s cadence, one idle
      * budget from lastActivityAt, bounded batches, and a database CAS that converges across
@@ -589,6 +599,7 @@ export async function startServer(): Promise<void> {
      */
     const mcpServers = new McpServerService({ database });
     const platformRuntime = await createPlatformRuntime({
+      slackWorkingStatus: true,
       config,
       database,
       cipher: applicationCipher,
@@ -706,7 +717,9 @@ export async function startServer(): Promise<void> {
       sessionAuthority.proof,
     );
     const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
+    const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
+      onTurnActivity: (frame, context) => slackWorkingStore.record(frame, context),
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
@@ -815,6 +828,12 @@ export async function startServer(): Promise<void> {
       cloudAvailability: (now) => cloudAvailability(config, now),
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
+    const slackWorkingWorker = new SlackWorkingWorker({
+      store: slackWorkingStore,
+      api: slackApi,
+      token: slackWorkingCredentialResolver(database, applicationCipher),
+      logger: serviceLogger("slack-working-status"),
+    });
     const slackConfigurationService = new SlackConfigurationService({
       onDiagnostic: reportDiagnostic,
       api: slackApi,
@@ -843,6 +862,7 @@ export async function startServer(): Promise<void> {
      * factory and grant instance feed the owner and the createApp model route below.
      */
     const cloudDelivery = createCloudDeliveryComposition({
+      onTurnActivity: (frame, context) => slackWorkingStore.record(frame, context),
       cloudModel: config.cloudModel,
       jwtSecret: config.jwtSecret,
       publicUrl: config.publicUrl,
@@ -1138,6 +1158,7 @@ export async function startServer(): Promise<void> {
     feishuConnections.start();
     approvalOwner.start();
     imDeliveryWorker.start();
+    slackWorkingWorker.start();
     scheduleScheduler.start();
     sandboxIdleReclaimer?.start();
     github?.worker.start();
@@ -1155,10 +1176,12 @@ export async function startServer(): Promise<void> {
     app.addHook("onClose", async () => {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
+      const imagePrewarmStopped = runnerImagePrewarmWorker?.stop();
       await scheduleScheduler.stop();
       channelTargetPoller.stop();
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
+      await slackWorkingWorker.stop();
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();
@@ -1166,6 +1189,7 @@ export async function startServer(): Promise<void> {
       await platformRuntime.close();
       await feishuSetupService.stop();
       await feishuConnections.stop();
+      await imagePrewarmStopped;
       await sql.end();
       await shutdownTelemetry();
     });
@@ -1173,6 +1197,7 @@ export async function startServer(): Promise<void> {
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");
+    runnerImagePrewarmWorker?.start();
   } catch (error) {
     if (app) {
       app.log.error({ detail: formatStartupError(error, knownSecrets) }, "Failed to start OpenTag server");

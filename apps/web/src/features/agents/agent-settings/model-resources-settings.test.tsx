@@ -97,7 +97,7 @@ describe("AgentModelSettings", () => {
       runtimeConfig: {
         ...config.runtimeConfig,
         revision: 8,
-        model: "gpt-5.6-sol",
+        model: "gpt-6.1-sol",
         reasoningEffort: "xhigh",
       },
     };
@@ -119,22 +119,19 @@ describe("AgentModelSettings", () => {
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
       "Custom model ID…",
     ]);
-    await chooseOption(dialog, "Model", "gpt-5.6-sol");
+    await chooseOption(dialog, "Model", "gpt-6.1-sol");
     await chooseOption(dialog, "Reasoning level", "xhigh");
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save).toHaveBeenCalledWith(agentId, {
       expectedRevision: 4,
-      runtimeConfig: { model: "gpt-5.6-sol", reasoningEffort: "xhigh" },
+      runtimeConfig: { model: "gpt-6.1-sol", reasoningEffort: "xhigh" },
     });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Change model" })).toBeNull());
-    expect(screen.getByText("gpt-5.6-sol")).toBeTruthy();
+    expect(screen.getByText("gpt-6.1-sol")).toBeTruthy();
     expect(screen.getByText("XHigh")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toBe("Model settings saved.");
     expect(onAgentChanged).toHaveBeenCalledOnce();

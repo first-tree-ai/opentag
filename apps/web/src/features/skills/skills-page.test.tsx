@@ -86,6 +86,8 @@ describe("SkillsPage", () => {
     expect(download.getAttribute("href")).toBe(`/api/v1/agents/${AGENT_ID}/skills/${SKILL_ID}/bundle`);
     // W2: the saved filename is the canonical archive this page's own upload pre-check accepts.
     expect(download.getAttribute("download")).toBe("Release notes writer.tar.gz");
+    fireEvent.click(download);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });
 
   it("offers remote installation and opens the dialog", async () => {

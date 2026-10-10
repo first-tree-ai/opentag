@@ -6,6 +6,9 @@ installed Skills with varied description lengths, one disabled Skill, and single
 The isolated preview harness and its build output are not shipped. The full Skill reader is a
 separate change.
 
+The subsequent [full-application PR review](./review/README.md) records real API upload/download,
+preset installation, deletion, storage gates, browser accessibility checks, and the follow-up fixes.
+
 - Desktop: 1440 × 1000; 108px rows, single-line descriptions, 24px between text and controls.
 - Mobile: 390 × 844; descriptions use the full row width and at most two lines.
 - Additional widths checked: 320px and 768px, with no horizontal overflow.

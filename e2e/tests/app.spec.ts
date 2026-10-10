@@ -474,7 +474,7 @@ test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", as
    */
   await expect(page.getByText(/No Skills yet/)).toBeVisible();
   await expect(page.getByText(/Skill storage is not configured/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Upload skill" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add skill", exact: true })).toBeDisabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
     await page.evaluate(() => document.documentElement.clientWidth),
   );

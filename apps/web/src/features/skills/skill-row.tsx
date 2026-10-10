@@ -69,6 +69,7 @@ export function SkillRow({
           <DropdownMenu.Content align="end">
             {storageAvailable ? (
               <DropdownMenu.LinkItem
+                closeOnClick
                 href={downloadUrl}
                 icon={DownloadSimple}
                 render={<a href={downloadUrl} download={`${skill.name}.tar.gz`} />}

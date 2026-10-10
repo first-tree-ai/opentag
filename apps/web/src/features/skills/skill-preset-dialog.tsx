@@ -60,7 +60,7 @@ export function SkillPresetDialog({ agentId, onClose }: { agentId: string; onClo
       onClose={onClose}
       title={m.skills_preset_title()}
     >
-      <div className="grid gap-4" data-ui="skill-preset-dialog">
+      <div className="skill-preset-body" data-ui="skill-preset-dialog">
         {showSearch ? (
           <Field htmlFor="skill-preset-search" label={m.skills_preset_search_label()}>
             <KumoInputControl

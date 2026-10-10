@@ -22,13 +22,33 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
   gap: 1rem;
+  min-height: 0;
   max-height: min(55dvh, 28rem);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1px;
 }
 .skill-preset-dialog {
+  display: flex;
+  flex-direction: column;
   width: calc(100vw - 2rem);
   max-width: 44rem;
+  top: 4rem;
+  max-height: calc(100dvh - 8rem);
+  overflow: hidden;
+}
+.skill-preset-dialog > header,
+.skill-preset-dialog > p {
+  flex-shrink: 0;
+}
+.skill-preset-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 0;
+}
+.skill-preset-body > :not(.skill-preset-grid) {
+  flex-shrink: 0;
 }
 .skill-preset-dialog--single {
   max-width: 35rem;
@@ -116,6 +136,11 @@
   outline-offset: -2px;
 }
 @media (max-width: 40rem), (max-height: 32rem) {
+  .skill-preset-dialog {
+    top: 1rem;
+    max-height: calc(100dvh - 2rem);
+    padding: 1rem;
+  }
   .skill-install-dialog {
     top: 1.5rem;
     max-height: calc(100dvh - 3rem);
@@ -134,6 +159,16 @@
 }
 /* Keep one selectable row readable when a landscape viewport leaves very little height. */
 @media (max-height: 26rem) {
+  .skill-preset-dialog {
+    padding: 0.75rem;
+  }
+  .skill-preset-dialog > header,
+  .skill-preset-dialog > p {
+    margin-bottom: 0.5rem;
+  }
+  .skill-preset-body {
+    gap: 0.5rem;
+  }
   .skill-install-dialog {
     padding: 0.75rem;
   }

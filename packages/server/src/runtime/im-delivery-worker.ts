@@ -67,6 +67,7 @@ import {
   runImDeliveryJanitor,
   runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
+import { recordOfflineRecovery } from "./im-delivery-offline-recovery.js";
 import { ImDeliveryReadyWakeup, isCloudReadinessRetry, readySessionClaimGuard } from "./im-delivery-ready-wakeup.js";
 import type {
   CloudSessionAllocationPort,
@@ -1157,7 +1158,14 @@ export class ImDeliveryWorker {
     }
     const instanceId = this.#registry.currentInstanceId(row.computer.id);
     if (!instanceId || row.computer.currentInstanceId !== instanceId) {
-      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
+      await recordOfflineRecovery({
+        computer: row.computer,
+        database: this.#database,
+        deliveryId,
+        isReady: () => this.#registry.currentInstanceId(row.computer.id) !== undefined,
+        now: this.#clock,
+        recordFailure: (id, code, claimToken, retryDelayMs) => this.#recordFailure(id, code, claimToken, retryDelayMs),
+      });
       return;
     }
     const recovery = await this.#resolveRecoveryRuntime(row, deliveryId);

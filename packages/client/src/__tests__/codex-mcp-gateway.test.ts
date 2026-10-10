@@ -168,6 +168,17 @@ async function persistedRuntime(options: { mcpAttachTimeoutMs?: number } = {}) {
 }
 
 describe("Codex MCP gateway delivery", () => {
+  it("keeps local MCP write tools behind native approvals", async () => {
+    const { client, factory } = setup();
+    const request = createRequest();
+    const runtime = await factory.create({ ...request, policy: { ...request.policy, approvals: "on-request" } });
+    await runtime.prompt(prompt("local", true));
+    expect(client.last("thread/start")).toMatchObject({
+      config: { mcp_servers: { "opentag-mcp": { default_tools_approval_mode: "writes" } } },
+    });
+    await runtime.close();
+  });
+
   it("replaces a thread that has no rollout yet, moving the binding to the new thread", async () => {
     const { client, factory } = setup();
     const events: AgentRuntimeEvent[] = [];

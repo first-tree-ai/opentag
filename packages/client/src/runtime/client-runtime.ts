@@ -14,6 +14,8 @@ import {
   type ImMessageDeliveryResult,
   ImMessageDeliveryResultSchema,
   type InputRejectReason,
+  type RuntimeApprovalDecision,
+  type RuntimeApprovalResult,
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
   RuntimeImSteerResultSchema,
@@ -46,6 +48,7 @@ type ResidualBusinessFrame = Extract<
       | "agent-runtime:test"
       | "agent-runtime:test:cancel"
       | "turn:report:result"
+      | "approval:decision"
       | "turn:activity:result";
   }
 >;
@@ -56,6 +59,7 @@ export interface DeliveryDecision {
 }
 
 export interface ClientRuntimeOptions {
+  handleApproval?(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult>;
   contextTreeSettings?: {
     run(frame: ContextTreeOperationFrame): Promise<ContextTreeOperationResponse>;
     close?(): void;
@@ -209,6 +213,12 @@ export class ClientRuntime {
   }
 
   async #handleResidualFrame(frame: ResidualBusinessFrame): Promise<void> {
+    if (frame.type === "approval:decision") {
+      const result = await this.#options.handleApproval?.(frame);
+      if (result) await this.#connection.send(result);
+      return;
+    }
+
     if (frame.type === "agent-runtime:options:cancel") {
       this.#optionQueries.get(frame.requestId)?.abort();
       return;

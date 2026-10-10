@@ -70,7 +70,7 @@ export interface ProviderCliTurnPlanPrepareInput {
   /** Absolute Slack config leaf supplied by the trusted caller; Feishu must omit this. */
   readonly configDir?: string;
   readonly captureOutgoingReplies?: boolean;
-  /** Runtime proxy mode: absolute path of the current execution environment manifest. */
+  /** Absolute path of the current execution credential environment manifest. */
   readonly environmentManifest?: string;
   /** Runtime proxy mode: loopback HTTPS endpoint pinned through `--apihost` (Slack only). */
   readonly slackApiHost?: string;

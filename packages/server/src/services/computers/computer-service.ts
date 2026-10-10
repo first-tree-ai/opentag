@@ -7,7 +7,14 @@ import type {
 } from "@opentag/shared";
 import { and, asc, eq, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computerConnectCodes, computerCredentials, computers, imBindings } from "../../db/schema/index.js";
+import {
+  agents,
+  computerConnectCodes,
+  computerCredentials,
+  computers,
+  imBindings,
+  runtimeApprovals,
+} from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AuthServiceError } from "../auth/index.js";
 import { lockActiveAccount } from "./account-lock.js";
@@ -282,7 +289,7 @@ export class ComputerService {
     return row;
   }
 
-  async register(context: ComputerAuthContext, frame: ComputerRegisterFrame): Promise<void> {
+  async register(context: ComputerAuthContext, frame: ComputerRegisterFrame, connectionId?: string): Promise<void> {
     rejectUnsupportedClientVersion(frame.clientVersion);
     if (frame.installationId !== context.installationId) {
       throw new AuthServiceError(
@@ -301,6 +308,7 @@ export class ComputerService {
         arch: frame.arch,
         clientVersion: frame.clientVersion,
         currentInstanceId: frame.instanceId,
+        currentConnectionId: connectionId ?? null,
         connectedAt: now,
         lastSeenAt: now,
         updatedAt: now,
@@ -317,10 +325,20 @@ export class ComputerService {
         )
         .returning({ id: computers.id });
       if (updated.length !== 1) throw unavailableComputer();
+      await transaction
+        .update(runtimeApprovals)
+        .set({ status: "stale" })
+        .where(
+          and(
+            eq(runtimeApprovals.computerId, context.computerId),
+            connectionId === undefined ? undefined : ne(runtimeApprovals.connectionId, connectionId),
+            inArray(runtimeApprovals.status, ["pending", "accept", "decline"]),
+          ),
+        );
     });
   }
 
-  async heartbeat(context: ComputerAuthContext, instanceId: string): Promise<boolean> {
+  async heartbeat(context: ComputerAuthContext, instanceId: string, connectionId?: string): Promise<boolean> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
       await this.#lockActiveCredential(transaction, context);
@@ -332,6 +350,9 @@ export class ComputerService {
             eq(computers.id, context.computerId),
             eq(computers.currentInstallationId, context.installationId),
             eq(computers.currentInstanceId, instanceId),
+            connectionId === undefined
+              ? isNull(computers.currentConnectionId)
+              : eq(computers.currentConnectionId, connectionId),
             eq(computers.kind, context.kind ?? "local"),
           ),
         )
@@ -344,17 +365,26 @@ export class ComputerService {
     await this.#database.transaction((transaction) => this.#lockActiveCredential(transaction, context));
   }
 
-  async disconnect(computerId: string, instanceId: string): Promise<boolean> {
+  async disconnect(computerId: string, instanceId: string, connectionId?: string): Promise<boolean> {
     const now = this.#now();
     const updated = await this.#database
       .update(computers)
       .set({
         currentInstanceId: null,
+        currentConnectionId: null,
         connectedAt: null,
         lastSeenAt: now,
         updatedAt: now,
       })
-      .where(and(eq(computers.id, computerId), eq(computers.currentInstanceId, instanceId)))
+      .where(
+        and(
+          eq(computers.id, computerId),
+          eq(computers.currentInstanceId, instanceId),
+          connectionId === undefined
+            ? isNull(computers.currentConnectionId)
+            : eq(computers.currentConnectionId, connectionId),
+        ),
+      )
       .returning({ id: computers.id });
     return updated.length === 1;
   }

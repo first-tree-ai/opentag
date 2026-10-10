@@ -165,6 +165,14 @@ describe("OpenTag Web App Shell", () => {
     expect(disconnect.className).toContain("text-kumo-danger");
   });
 
+  it("needs no approval account-linking step", async () => {
+    installApi({ bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Link my account" })).toBeNull();
+  });
+
   it("names a Slack channel by its verified Bot rather than by an invented Agent handle", async () => {
     installApi({ bound: true, handoffReady: true, provider: "slack" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);

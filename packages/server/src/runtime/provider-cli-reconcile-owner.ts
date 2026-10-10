@@ -715,7 +715,7 @@ export class ProviderCliReconcileOwner {
   ): Promise<undefined> {
     if (frame.type === "provider-cli:prewarm:result") {
       const completed = this.#registry.completePreparation(context.computerId, context.instanceId, frame, this.#now());
-      if (completed) this.#disarmPreparation(context.computerId, frame.requestId);
+      if (completed && frame.providers !== undefined) this.#disarmPreparation(context.computerId, frame.requestId);
       return undefined;
     }
     const current = this.#requests.get(requestKey(context.computerId, frame.integrationId));

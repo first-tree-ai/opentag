@@ -158,6 +158,9 @@ describe("Kumo integration contract", () => {
       "features/mcp/mcp-form.tsx -> ./mcp.css",
       // Skill reader owns document typography and independent file/body scrolling.
       "features/skills/skill-details-dialog.tsx -> ./skill-reader.css",
+      // Skills owns list/card geometry, description clamping, and bounded dialog scrolling.
+      // Controls, typography values, and palette continue to use the shared Kumo adapter.
+      "features/skills/skills-page.tsx -> ./skills.css",
       "app.css -> @fontsource/manrope/400.css",
       "app.css -> @fontsource/manrope/500.css",
       "app.css -> @fontsource/manrope/600.css",

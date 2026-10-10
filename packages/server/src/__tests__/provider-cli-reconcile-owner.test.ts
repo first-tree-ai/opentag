@@ -944,6 +944,20 @@ describe("ProviderCliReconcileOwner", () => {
     await owner.businessOptions().handle(
       {
         type: "provider-cli:prewarm:result",
+        requestId: request.requestId,
+        runtime: { provider: "codex", status: "sign-in" },
+      },
+      contextOf(connection),
+    );
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("sign-in");
+    expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+      "checking",
+      "checking",
+    ]);
+
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:prewarm:result",
         requestId: randomUUID(),
         runtime: { provider: "codex", status: "ready" },
         providers: [
@@ -953,7 +967,7 @@ describe("ProviderCliReconcileOwner", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("sign-in");
 
     await owner.businessOptions().handle(
       {

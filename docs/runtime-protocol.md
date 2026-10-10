@@ -98,13 +98,17 @@ catalog upload or a provider-cache purge. Computers do not overwrite
 a shared Server catalog. A response from another Computer or an old daemon instance
 cannot complete the pending request.
 
-The Web model selector merges native results with preset suggestions and removes
-duplicates, so a smaller native catalog does not hide the presets. Codex presets
-include the current `gpt-6.1-sol`, `gpt-6-astra`, and `gpt-6-luna` models plus
-`gpt-6-sol` for compatibility; see the [OpenAI model catalog](https://developers.openai.com/api/docs/models).
-Older IDs remain usable through native results, saved configuration, or custom input.
-Suggestions are not proof of account access. Reasoning efforts still use the selected
-model's native metadata; unknown metadata remains explicitly unconfirmed.
+The Web model selector uses successful native results without adding preset suggestions,
+including when the native catalog is empty. Presets are used only while no confirmed
+native result is available, with the existing loading or unavailable feedback. Saved
+IDs and custom input remain available. Suggestions are not proof of account access.
+Reasoning efforts use the selected model's native metadata; an empty list stays empty,
+while unknown metadata keeps suggested values explicitly unconfirmed.
+
+Directory queries require the provider to be ready and reuse the same selected CLI
+factory as task creation and resume, including its executable path and provider
+environment. A query never discovers a separate CLI or initiates readiness repair.
+This does not migrate already-running processes when a CLI installation changes.
 
 Refreshing options does not save Agent configuration or modify the local CLI's
 defaults. Saving `null` model or effort values means inheriting local configuration;

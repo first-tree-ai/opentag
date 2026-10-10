@@ -21,6 +21,10 @@ import {
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_OUTGOING_REPLY_SNAPSHOT_MAX_BYTES,
   RUNTIME_TRACE_EVENT_MAX_BYTES,
+  RuntimeApprovalDecisionSchema,
+  RuntimeApprovalRequestSchema,
+  RuntimeApprovalResultSchema,
+  RuntimeFrameEnvelopeSchema,
   RuntimeImCredentialGrantResultSchema,
   RuntimeImSteerRequestSchema,
   RuntimeImSteerResultSchema,
@@ -40,6 +44,35 @@ import {
 } from "../index.js";
 
 describe("runtime domain contract", () => {
+  it("uses transport request IDs for approval requests, decisions, and acknowledgements", () => {
+    const identity = {
+      requestId: randomUUID(),
+      turnId: "turn-1",
+      sessionId: "session-1",
+      deliveryId: "delivery-1",
+      placementGeneration: 1,
+    };
+    const request = {
+      ...identity,
+      type: "approval:request",
+      title: "Approve command",
+      description: "curl -I https://example.com",
+      expiresAt: new Date().toISOString(),
+    };
+    const decision = { ...identity, type: "approval:decision", decision: "accept" };
+    const result = { ...identity, type: "approval:result", status: "applied" };
+    expect(RuntimeApprovalRequestSchema.parse(request)).toEqual(request);
+    expect(RuntimeApprovalDecisionSchema.parse(decision)).toEqual(decision);
+    expect(RuntimeApprovalResultSchema.parse(result)).toEqual(result);
+    for (const frame of [request, decision, result]) {
+      expect(RuntimeFrameEnvelopeSchema.parse(frame).requestId).toBe(identity.requestId);
+    }
+    expect(ClientRuntimeBusinessFrameSchema.parse(request)).toEqual(request);
+    expect(ServerRuntimeBusinessFrameSchema.parse(decision)).toEqual(decision);
+    expect(ClientRuntimeBusinessFrameSchema.parse(result)).toEqual(result);
+    expect(RuntimeApprovalRequestSchema.safeParse({ ...request, requestId: "number:0" }).success).toBe(false);
+  });
+
   it("B-01 validates every V0 domain request and result through the public schema surface", () => {
     const runtime = snapshot();
     expect(
@@ -313,16 +346,34 @@ describe("runtime domain contract", () => {
     ).toThrow();
   });
 
+  it("includes allowed commands in snapshot and delivery identity", () => {
+    const original: EffectiveRuntimeSnapshot = {
+      ...snapshot(),
+      execution: { approvalPolicy: "on-request", networkAccess: false, allowCommands: [] },
+    };
+    const changed = {
+      ...original,
+      execution: {
+        ...original.execution,
+        allowCommands: ["git status"],
+      },
+    };
+    expect(computeRuntimeSnapshotHashes(changed).sessionConfigHash).not.toBe(
+      computeRuntimeSnapshotHashes(original).sessionConfigHash,
+    );
+    expect(computeDirectInputHash(directDelivery(changed))).not.toBe(computeDirectInputHash(directDelivery(original)));
+  });
+
   it("B-04/B-05 produces stable golden hashes from fixed tuples", () => {
     const runtime = snapshot();
     const hashes = computeRuntimeSnapshotHashes(runtime);
     expect(hashes).toEqual({
       agentConfigHash: "5f97c5990e34142c90ead2977be8846cd24939243f43567f2ee1dd8728764f10",
-      sessionConfigHash: "9b51b9872c3617a33b57b2068500c3c645be5f1ed4662e613101b8c20546eea6",
-      effectiveSnapshotHash: "630f5ebbeac713b010d77d7833e5f458e9ec689d05ef464c1e67da5aff916540",
+      sessionConfigHash: "29e21fcb7e9545ba048d4bcef339a9870395e0df2a9530c48b6b7172c9660a18",
+      effectiveSnapshotHash: "75869c4c434b9a0c0a635e19c459b3214251dba3ca26e1eb2e71f6696f2e8d10",
     });
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "78fba4d088258093c5234aa76c6077e75225c365bc700e0e3e0c946862cbe4e5",
+      "cb60f417e57531d7f6067e7da55c5c93a30a3785370fe46f6afb6a91ba764be3",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
     const withReplies = turnReport({
@@ -438,7 +489,7 @@ describe("runtime domain contract", () => {
       runtime: snapshot(),
     };
     expect(computeReconcilePayloadHash(request)).toBe(
-      "c39b21f8edb13ce756ebcbc96b64acd22955974070ab9803ab9e748fd8c345d8",
+      "51c763972c52240b19fc3a17233903267ecb13ada8927cd962ef89405384b0b6",
     );
     expect(
       computeReconcilePayloadHash({ ...request, installationId: "77777777-7777-4777-8777-777777777777" }),

@@ -52,6 +52,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 7,
     model: null,
@@ -93,6 +94,126 @@ describe("RuntimeConfigurationForm", () => {
     vi.restoreAllMocks();
   });
 
+  it("omits approval controls and permission updates for local Pi", async () => {
+    const piConfig = { ...config, runtimeProvider: "pi" as const };
+    const save = vi.fn(async () => piConfig);
+    render(<RuntimeConfigurationForm initialConfig={piConfig} save={save} section="execution" />);
+    expect(screen.queryByRole("switch", { name: "Ask for approval" })).toBeNull();
+    expect(screen.queryByText("Additional allowed commands")).toBeNull();
+    await chooseOption("Model", "__custom_model__");
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom model ID" }), { target: { value: "pi-model" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { model: "pi-model", reasoningEffort: null },
+    });
+  });
+
+  it("saves permissions independently of an unsupported saved reasoning value", async () => {
+    vi.mocked(browserApi.agentRuntimeOptions).mockResolvedValue({
+      modelSuggestions: [],
+      reasoningEffortAllowedValues: ["high"],
+    });
+    const configured = { ...config, runtimeConfig: { ...config.runtimeConfig, reasoningEffort: "historical-effort" } };
+    const save = vi.fn(async () => configured);
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} section="execution" />);
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    expect(await optionLabels("Reasoning effort")).toEqual([
+      "Inherit local configuration",
+      "historical-effort (saved value)",
+      "High",
+    ]);
+    fireEvent.click(screen.getByRole("switch", { name: "Ask for approval" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: "historical-effort",
+        permissions: { approvalPolicy: "never", allowCommands: [] },
+      },
+    });
+  });
+
+  it("turns off approvals while preserving allowed commands", async () => {
+    const permissions = {
+      approvalPolicy: "on-request" as const,
+      allowCommands: ["docker ps"],
+    };
+    const configured = { ...config, runtimeConfig: { ...config.runtimeConfig, permissions } };
+    const save = vi.fn(async () => ({
+      ...configured,
+      revision: 5,
+      runtimeConfig: { ...configured.runtimeConfig, permissions: { ...permissions, approvalPolicy: "never" as const } },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} section="execution" />);
+
+    expect(
+      (screen.getByRole("switch", { name: "Ask for approval" }) as HTMLButtonElement).dataset.checked,
+    ).toBeDefined();
+    fireEvent.click(screen.getByRole("switch", { name: "Ask for approval" }));
+    expect(screen.queryByText("Additional allowed commands")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: null,
+        permissions: { ...permissions, approvalPolicy: "never" },
+      },
+    });
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+  });
+
+  it("adds and removes only additional commands, then saves the allowlist", async () => {
+    const permissions = { approvalPolicy: "on-request" as const, allowCommands: [] };
+    const save = vi.fn(async () => ({
+      ...config,
+      revision: 5,
+      runtimeConfig: {
+        ...config.runtimeConfig,
+        permissions: { ...permissions, allowCommands: ["docker ps"] },
+      },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
+
+    expect(screen.queryByRole("list", { name: "Additional allowed commands" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add git status" }));
+    expect(screen.getByRole("button", { name: "Remove git status" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove git status" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Command to allow" }), {
+      target: { value: "docker ps" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: null,
+        permissions: { ...permissions, allowCommands: ["docker ps"] },
+      },
+    });
+  });
+
+  it("rejects shell syntax and duplicate commands in the simple editor", () => {
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} section="execution" />);
+    const input = screen.getByRole("textbox", { name: "Command to allow" });
+    fireEvent.change(input, { target: { value: "git status && rm -rf /" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    expect(screen.getByRole("alert").textContent).toContain("without shell operators or wildcards");
+    fireEvent.click(screen.getByRole("button", { name: "Add git status" }));
+    fireEvent.change(input, { target: { value: "git status" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    expect(screen.getByRole("alert").textContent).toBe("This command is already added.");
+  });
+
   it.each([
     {
       provider: "codex" as const,
@@ -112,7 +233,7 @@ describe("RuntimeConfigurationForm", () => {
       discovered: ["google/gemini-3.8-flash"],
       expected: ["anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol"],
     },
-  ])("keeps $provider suggestions when loading and refreshing a smaller native catalog", async (entry) => {
+  ])("replaces $provider presets with the native catalog and preserves an unlisted saved model", async (entry) => {
     let resolveInitial!: (options: AgentRuntimeOptions) => void;
     vi.mocked(browserApi.agentRuntimeOptions)
       .mockImplementationOnce(
@@ -122,7 +243,7 @@ describe("RuntimeConfigurationForm", () => {
           }),
       )
       .mockResolvedValue({
-        modelSuggestions: [...entry.discovered, "live/added"],
+        modelSuggestions: [...entry.discovered.slice(0, 1), "live/added"],
         reasoningEffortAllowedValues: ["high"],
       });
     const configured = {
@@ -138,10 +259,8 @@ describe("RuntimeConfigurationForm", () => {
     resolveInitial({ modelSuggestions: entry.discovered, reasoningEffortAllowedValues: ["high"] });
     await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
     const initial = await optionLabels("Model");
-    expect(initial).toEqual(expect.arrayContaining([...entry.expected, ...entry.discovered]));
-    expect(new Set(initial).size).toBe(initial.length);
-    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain(entry.model);
-    expect(screen.queryByRole("textbox", { name: "Custom model ID" })).toBeNull();
+    expect(initial).toEqual(["Inherit local configuration", ...entry.discovered, "Custom model ID…"]);
+    expect(screen.getByRole("textbox", { name: "Custom model ID" })).toHaveProperty("value", entry.model);
     expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration", "High"]);
 
     expect(screen.queryByRole("button", { name: "Refresh models and effort" })).toBeNull();
@@ -149,9 +268,59 @@ describe("RuntimeConfigurationForm", () => {
     await waitFor(() => expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
     const refreshed = await optionLabels("Model");
-    expect(refreshed).toEqual(expect.arrayContaining([...entry.expected, ...entry.discovered, "live/added"]));
-    expect(new Set(refreshed).size).toBe(refreshed.length);
-    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain(entry.model);
+    expect(refreshed).toEqual(["Inherit local configuration", entry.discovered[0], "live/added", "Custom model ID…"]);
+    expect(screen.getByRole("textbox", { name: "Custom model ID" })).toHaveProperty("value", entry.model);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    (["codex", "claude-code", "pi"] as const).flatMap((provider) =>
+      [null, "private/saved"].map((model) => ({ provider, model })),
+    ),
+  )("keeps an empty $provider native catalog empty with saved model $model", async ({ provider, model }) => {
+    vi.mocked(browserApi.agentRuntimeOptions).mockResolvedValue({
+      modelSuggestions: [],
+      reasoningEffortAllowedValues: [],
+    });
+    const save = vi.fn();
+    render(
+      <RuntimeConfigurationForm
+        initialConfig={{ ...config, runtimeProvider: provider, runtimeConfig: { ...config.runtimeConfig, model } }}
+        save={save}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    expect(await optionLabels("Model")).toEqual(["Inherit local configuration", "Custom model ID…"]);
+    expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration"]);
+    if (model) expect(screen.getByRole("textbox", { name: "Custom model ID" })).toHaveProperty("value", model);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { provider: "codex" as const, preset: "gpt-6.1-sol" },
+    { provider: "claude-code" as const, preset: "claude-fable-5-1" },
+    { provider: "pi" as const, preset: "openai/gpt-6.1-sol" },
+  ])("uses $provider presets only until the unavailable native directory recovers", async ({ provider, preset }) => {
+    vi.mocked(browserApi.agentRuntimeOptions)
+      .mockRejectedValueOnce(new ApiError(503, "Provider unavailable"))
+      .mockResolvedValue({ modelSuggestions: ["native/only"], reasoningEffortAllowedValues: null });
+    const save = vi.fn();
+    render(<RuntimeConfigurationForm initialConfig={{ ...config, runtimeProvider: provider }} save={save} />);
+    await screen.findByText(
+      "Local model options are unavailable. Showing suggestions; custom model IDs remain available.",
+    );
+    expect(await optionLabels("Model")).toContain(preset);
+    await returnToPage();
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Local model options are unavailable. Showing suggestions; custom model IDs remain available.",
+        ),
+      ).toBeNull(),
+    );
+    expect(await optionLabels("Model")).toEqual(["Inherit local configuration", "native/only", "Custom model ID…"]);
+    expect(screen.getByText("The reasoning effort options for this model have not been confirmed.")).toBeTruthy();
+    expect((await optionLabels("Reasoning effort")).length).toBeGreaterThan(1);
     expect(save).not.toHaveBeenCalled();
   });
 

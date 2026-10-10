@@ -16,7 +16,7 @@ function snapshot(overrides: Partial<EffectiveRuntimeSnapshot["execution"]> = {}
 
 describe("Pi runtime policy", () => {
   it("does not claim a filesystem sandbox and keeps network plus never-approvals", () => {
-    expect(piRuntimePolicy(snapshot())).toEqual({
+    expect(piRuntimePolicy()).toEqual({
       fileSystem: "unrestricted",
       network: "enabled",
       approvals: "never",

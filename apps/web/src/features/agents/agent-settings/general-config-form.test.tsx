@@ -17,6 +17,7 @@ const config: AgentAdminConfig = {
   status: "active",
   revision: 4,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 7,
     model: null,

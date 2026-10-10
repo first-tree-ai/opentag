@@ -1,6 +1,7 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "skills_delete": "Delete",
+  "skills_add": "Add skill",
+  "skills_delete_action": "Delete skill",
   "skills_delete_confirm": "Delete Skill",
   "skills_delete_description": "This removes the Skill and its stored archive from this Agent. This cannot be undone.",
   "skills_delete_in_progress": "Deleting…",
@@ -23,8 +24,9 @@
   "skills_details_source": "Source",
   "skills_details_title": "Skill details",
   "skills_download": "Download",
+  "skills_download_action": "Download skill",
   "skills_empty": "No Skills yet",
-  "skills_empty_description": "Upload a skill archive to give this Agent reusable know-how.",
+  "skills_empty_description": "Add skills to give this Agent reusable know-how.",
   "skills_error_archive_invalid": "The archive could not be read. Upload a valid .zip, .skill, .tar.gz, or .tgz archive.",
   "skills_error_archive_too_large": "The archive is larger than 16 MiB.",
   "skills_error_client_too_large": "This archive is larger than 16 MiB.",
@@ -44,57 +46,55 @@
   "skills_error_source_too_large": "That source is larger than this deployment will read.",
   "skills_error_source_unreachable": "That source could not be reached.",
   "skills_error_storage_unavailable": "Skill storage is unavailable on this deployment.",
-  "skills_file_count": [
-    {
-      "declarations": ["input count", "local countPlural = count: plural"],
-      "selectors": ["countPlural"],
-      "match": {
-        "countPlural=one": "{count} file",
-        "countPlural=other": "{count} files"
-      }
-    }
-  ],
   "skills_install": "Install from URL",
-  "skills_install_already": "Already installed — it will be skipped",
+  "skills_install_already": "Installed",
+  "skills_install_candidate_title": "Skill found at this URL",
   "skills_install_candidates_aria": "Skills at this source",
-  "skills_install_clear": "Clear selection",
-  "skills_install_confirm": "Install selected",
-  "skills_install_description": "Paste a repository address or a skills.sh link. Nothing is installed until you confirm.",
-  "skills_install_empty": "No Skills were found at that source.",
-  "skills_install_fetch": "Find Skills",
-  "skills_install_fetching": "Looking up…",
-  "skills_install_found": [
+  "skills_install_count": [
     {
       "declarations": ["input count", "local countPlural = count: plural"],
       "selectors": ["countPlural"],
       "match": {
-        "countPlural=one": "{count} Skill",
-        "countPlural=other": "{count} Skills"
+        "countPlural=one": "Install skill",
+        "countPlural=other": "Install {count} skills"
       }
     }
   ],
+  "skills_install_empty": "No Skills were found at that source.",
+  "skills_install_fetching": "Loading skills…",
   "skills_install_installing": "Installing…",
   "skills_install_result_installed": "Installed",
   "skills_install_result_skipped": "Skipped — a Skill with this name already exists",
   "skills_install_results_aria": "Install results",
-  "skills_install_select_all": "Select all",
-  "skills_install_source_label": "Source",
-  "skills_install_source_placeholder": "owner/repo or https://github.com/owner/repo",
-  "skills_install_title": "Install Skills from a URL",
+  "skills_install_selection_title": "Skills found at this URL",
+  "skills_install_source_label": "URL",
+  "skills_install_source_placeholder": "Paste a repository or skill URL",
+  "skills_install_success": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "Skill installed",
+        "countPlural=other": "{count} skills installed"
+      }
+    }
+  ],
+  "skills_install_title": "Install from URL",
   "skills_install_unavailable_manifest_invalid": "Its SKILL.md is missing or invalid",
   "skills_install_unavailable_name_reserved": "Its name is reserved by the platform",
   "skills_install_unavailable_path_invalid": "It contains a file path a Skill archive cannot hold",
   "skills_install_unavailable_too_large": "It is larger than a Skill archive may be",
   "skills_list_aria": "Skills for this Agent",
+  "skills_more_actions": "More actions for {name}",
   "skills_page_description": "Reusable skills for your Agent.",
   "skills_page_title": "Skills",
   "skills_preset_action_installed": "Installed",
   "skills_preset_action_unchanged": "Already up to date",
   "skills_preset_action_updated": "Updated",
-  "skills_preset_button": "Presets",
+  "skills_preset_button": "Browse skills",
   "skills_preset_category_engineering": "Engineering",
   "skills_preset_category_getting_started": "Getting started",
-  "skills_preset_description": "Install a Skill the platform ships, or update one you already installed.",
+  "skills_preset_description": "Ready-to-use skills for your Agent.",
   "skills_preset_empty": "No presets match your search.",
   "skills_preset_install": "Install",
   "skills_preset_list_aria": "Preset Skills",
@@ -106,7 +106,7 @@
   "skills_preset_state_name_conflict": "Another Skill already uses this name",
   "skills_preset_state_not_installed": "Not installed",
   "skills_preset_state_update_available": "Update available",
-  "skills_preset_title": "Preset Skills",
+  "skills_preset_title": "Browse skills",
   "skills_preset_unavailable": "Unavailable",
   "skills_preset_update": "Update",
   "skills_replace_confirm": "Replace Skill",
@@ -120,8 +120,6 @@
   "skills_source_web_upload": "Web upload",
   "skills_storage_unavailable": "Skill storage is not configured on this deployment, so uploads and downloads are unavailable. Existing Skills are still listed.",
   "skills_toggle_label": "Enable {name}",
-  "skills_updated": "Updated {time}",
   "skills_upload": "Upload skill",
-  "skills_upload_in_progress": "Uploading {name}…",
-  "skills_upload_requirements": ".zip, .skill, .tar.gz, .tgz · Up to 16 MiB"
+  "skills_upload_in_progress": "Uploading {name}…"
 }

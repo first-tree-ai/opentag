@@ -137,6 +137,7 @@ export interface AgentRuntimeWorkspace {
 }
 
 export interface AgentRuntimePolicy {
+  readonly allowedCommands?: readonly string[];
   readonly fileSystem: "read-only" | "workspace-write" | "unrestricted";
   readonly network: "disabled" | "enabled";
   readonly approvals: "never" | "on-request" | "unless-trusted";

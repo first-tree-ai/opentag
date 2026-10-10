@@ -1802,7 +1802,17 @@ describe("provider CLI reconciler", () => {
       { provider: "slack", status: "checking" },
       { provider: "slack", status: "ready" },
     ]);
-    expect(runtime.send).toHaveBeenCalledWith(
+    expect(runtime.send).toHaveBeenNthCalledWith(
+      1,
+      {
+        type: "provider-cli:prewarm:result",
+        requestId,
+        runtime: { provider: "codex", status: "ready" },
+      },
+      { priority: "result", signal: undefined },
+    );
+    expect(runtime.send).toHaveBeenNthCalledWith(
+      2,
       {
         type: "provider-cli:prewarm:result",
         requestId,
@@ -1811,6 +1821,41 @@ describe("provider CLI reconciler", () => {
       },
       { priority: "result", signal: undefined },
     );
+    await reconciler.close();
+  });
+
+  it("reports a settled runtime while messaging CLI repair is still pending", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let finishEnsure:
+      | ((value: Awaited<ReturnType<ProviderCliReconcilerOptions["manager"]["ensure"]>>) => void)
+      | undefined;
+    const ensure = vi.fn(
+      () =>
+        new Promise<Awaited<ReturnType<ProviderCliReconcilerOptions["manager"]["ensure"]>>>((resolve) => {
+          finishEnsure = resolve;
+        }),
+    );
+    const inspect = vi
+      .fn()
+      .mockResolvedValueOnce(notReadyInspect("slack", "install", { code: "not_installed" }))
+      .mockResolvedValueOnce(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      refreshRuntimeProvider: vi.fn(async () => ({ provider: "claude-code" as const, status: "sign-in" as const })),
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const pending = runtime.emit({ ...prewarm, mode: "ensure", runtimeProvider: "claude-code", providers: ["slack"] });
+    await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledTimes(1));
+    expect(runtime.send).toHaveBeenCalledWith(
+      { type: "provider-cli:prewarm:result", requestId, runtime: { provider: "claude-code", status: "sign-in" } },
+      { priority: "result", signal: undefined },
+    );
+    finishEnsure?.({ ok: true, action: "installed-managed" } as never);
+    await pending;
+    expect(runtime.send).toHaveBeenCalledTimes(2);
     await reconciler.close();
   });
 

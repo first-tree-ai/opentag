@@ -193,6 +193,51 @@ describe("Computer connection persistence", () => {
     }
   });
 
+  it("fences old heartbeats and closes after a same-instance reconnect on another replica", async () => {
+    const value = await fixture();
+    try {
+      const exchange = await connect(value);
+      const instanceId = crypto.randomUUID();
+      const oldConnectionId = crypto.randomUUID();
+      const newConnectionId = crypto.randomUUID();
+      const oldRegistry = new ConnectionRegistry();
+      const newRegistry = new ConnectionRegistry();
+      const oldSocket = { close: vi.fn() } as unknown as WebSocket;
+      const newSocket = { close: vi.fn() } as unknown as WebSocket;
+      const frame = registerFrame(exchange.installationId, instanceId);
+      const entry = {
+        computerId: exchange.computerId,
+        installationId: exchange.installationId,
+        instanceId,
+        lastHeartbeatAt: Date.now(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+      };
+      await oldRegistry.register({ ...entry, connectionId: oldConnectionId, socket: oldSocket }, () =>
+        value.service.register(exchange, frame, oldConnectionId),
+      );
+      await newRegistry.register({ ...entry, connectionId: newConnectionId, socket: newSocket }, () =>
+        value.service.register(exchange, frame, newConnectionId),
+      );
+      // The old replica still owns its socket locally; only the database knows it was replaced.
+      expect(oldRegistry.isCurrent(exchange.computerId, instanceId, oldSocket)).toBe(true);
+      expect(await value.service.heartbeat(exchange, instanceId, oldConnectionId)).toBe(false);
+      expect(oldRegistry.remove(exchange.computerId, instanceId, oldSocket)).toBe(true);
+      expect(await value.service.disconnect(exchange.computerId, instanceId, oldConnectionId)).toBe(false);
+      // Omitting a v2 connection ID must also fail rather than bypass the durable fence.
+      expect(await value.service.heartbeat(exchange, instanceId)).toBe(false);
+      expect(await value.service.disconnect(exchange.computerId, instanceId)).toBe(false);
+      expect(newRegistry.isCurrent(exchange.computerId, instanceId, newSocket)).toBe(true);
+      expect(await value.service.heartbeat(exchange, instanceId, newConnectionId)).toBe(true);
+      const [current] = await value.database.select().from(computers);
+      expect(current).toMatchObject({ currentInstanceId: instanceId, currentConnectionId: newConnectionId });
+      expect(await value.service.disconnect(exchange.computerId, instanceId, newConnectionId)).toBe(true);
+      const [disconnected] = await value.database.select().from(computers);
+      expect(disconnected).toMatchObject({ currentInstanceId: null, currentConnectionId: null, connectedAt: null });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("creates a new Computer for every create code and never reuses an installation", async () => {
     const value = await fixture();
     try {

@@ -3,8 +3,8 @@
 [简体中文](../zh-CN/design/skill-details-reader.md)
 
 A Skill's summary cannot replace its instructions. Open the installed Skill's name to read the complete `SKILL.md` and
-switch to supporting files without leaving the management page. This change is independent of the management-layout
-redesign in PR #820; it does not copy that PR's layout or installer changes.
+switch to supporting files without leaving the management page. The reader integrates with the Skills management layout merged in PR #820: the name opens details, while the existing
+switch and More menu retain their management actions.
 
 ## Reading experience
 

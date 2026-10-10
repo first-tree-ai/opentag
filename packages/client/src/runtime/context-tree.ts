@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { type AgentRuntimeProvider, type ContextTreeConnection, normalizeContextTrees } from "@opentag/shared";
@@ -354,6 +355,22 @@ export class ContextTreeManager {
   /** Directory to prepend to a Session PATH so the packaged skills can invoke `context-tree`. */
   binDirectory(): string {
     return resolveOpenTagHomeLayout(this.#home).contextTreeBin;
+  }
+
+  /** Explicit packaged assets for providers that disable automatic workspace skill discovery. */
+  async skillPaths(): Promise<string[]> {
+    if (!this.#package) return [];
+    const root = this.#package.skillsPath;
+    try {
+      const entries = await readdir(root, { withFileTypes: true });
+      return entries.filter((entry) => entry.isDirectory()).map((entry) => join(root, entry.name));
+    } catch (error) {
+      this.#logger.warn(
+        { code: "context_tree_skills_unavailable", reason: String(error) },
+        "Context Tree skills are unavailable",
+      );
+      return [];
+    }
   }
 
   /**

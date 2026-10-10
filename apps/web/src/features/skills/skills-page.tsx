@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Empty, Icon, Loader, Text } from "../../ui/design-system.js";
+import { Banner, Button, DropdownMenu, Empty, Icon, Loader } from "../../ui/design-system.js";
+import "./skills.css";
 import { InstallSkillDialog } from "./install-skill-dialog.js";
 import { SkillDetailsDialog } from "./skill-details-dialog.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
@@ -56,6 +57,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
       alive.current = false;
     };
   }, []);
+  const [installationNotice, setInstallationNotice] = useState<string | undefined>();
   const [actionError, setActionError] = useState<string | undefined>();
   const [uploadingName, setUploadingName] = useState<string | undefined>();
   const [pendingReplace, setPendingReplace] = useState<PendingReplace | undefined>();
@@ -80,16 +82,19 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const uploadBusy = uploadingName !== undefined || upload.isPending;
 
   const openFilePicker = () => {
+    setInstallationNotice(undefined);
     setActionError(undefined);
     fileInputRef.current?.click();
   };
 
   const openInstaller = () => {
+    setInstallationNotice(undefined);
     setActionError(undefined);
     setInstallOpen(true);
   };
 
   const openPresetCatalog = () => {
+    setInstallationNotice(undefined);
     setActionError(undefined);
     setPresetOpen(true);
   };
@@ -176,36 +181,31 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
     }
   };
 
-  const installAction = (
-    <Button aria-label={m.skills_install()} disabled={!storageAvailable} onClick={openInstaller} variant="secondary">
-      <Icon name="plus" />
-      {m.skills_install()}
-    </Button>
+  const addAction = (
+    <DropdownMenu>
+      <DropdownMenu.Trigger
+        render={
+          <Button
+            aria-label={m.skills_add()}
+            disabled={!storageAvailable || uploadBusy}
+            loading={uploadBusy}
+            variant="secondary"
+          />
+        }
+      >
+        {m.skills_add()}
+        <Icon name="chevron-down" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content align="end">
+        <DropdownMenu.Item onClick={openInstaller}>{m.skills_install()}</DropdownMenu.Item>
+        <DropdownMenu.Item onClick={openFilePicker}>{m.skills_upload()}</DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu>
   );
 
   const presetAction = (
-    <Button
-      aria-label={m.skills_preset_button()}
-      disabled={!storageAvailable}
-      onClick={openPresetCatalog}
-      variant="secondary"
-    >
-      <Icon name="overview" />
+    <Button disabled={!storageAvailable} onClick={openPresetCatalog} variant="secondary">
       {m.skills_preset_button()}
-    </Button>
-  );
-
-  const uploadAction = (
-    <Button
-      aria-label={m.skills_upload()}
-      aria-busy={uploadBusy}
-      disabled={!storageAvailable}
-      loading={uploadBusy}
-      onClick={openFilePicker}
-      variant="secondary"
-    >
-      {!uploadBusy ? <Icon name="upload" /> : null}
-      {m.skills_upload()}
     </Button>
   );
 
@@ -229,13 +229,19 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           }}
           ref={fileInputRef}
         />
-        {installAction}
-        {presetAction}
-        {uploadAction}
+        <div className="flex flex-wrap items-center gap-3">
+          {presetAction}
+          {addAction}
+        </div>
       </PageHeader>
 
       {storage === "unavailable" ? <Banner variant="alert">{m.skills_storage_unavailable()}</Banner> : null}
       {actionError ? <Banner variant="error">{actionError}</Banner> : null}
+      {installationNotice ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          {installationNotice}
+        </p>
+      ) : null}
       {skills.isError ? (
         <Banner
           action={<Banner.Action onClick={() => void skills.refetch()}>{m.common_try_again()}</Banner.Action>}
@@ -279,7 +285,13 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
         storageAvailable={storageAvailable}
       />
       {deleteTarget ? <RemoveSkillDialog onClose={() => setDeleteTarget(undefined)} skill={deleteTarget} /> : null}
-      {installOpen ? <InstallSkillDialog agentId={agentId} onClose={() => setInstallOpen(false)} /> : null}
+      {installOpen ? (
+        <InstallSkillDialog
+          agentId={agentId}
+          onClose={() => setInstallOpen(false)}
+          onInstalled={(count) => setInstallationNotice(m.skills_install_success({ count }))}
+        />
+      ) : null}
       {presetOpen ? <SkillPresetDialog agentId={agentId} onClose={() => setPresetOpen(false)} /> : null}
     </section>
   );
@@ -328,14 +340,9 @@ function SkillList({
         title={m.skills_empty()}
         description={m.skills_empty_description()}
         contents={
-          <>
-            <Button disabled={!presetsAvailable} onClick={onOpenPresets} variant="secondary">
-              {m.skills_preset_button()}
-            </Button>
-            <Text as="p" size="sm" variant="secondary">
-              {m.skills_upload_requirements()}
-            </Text>
-          </>
+          <Button disabled={!presetsAvailable} onClick={onOpenPresets} variant="secondary">
+            {m.skills_preset_button()}
+          </Button>
         }
       />
     );

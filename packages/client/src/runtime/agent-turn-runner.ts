@@ -1,4 +1,4 @@
-import type { TurnActivityResult } from "@opentag/shared";
+import { randomUUID } from "node:crypto";
 import {
   computeRuntimeImMessageSemanticHash,
   type DirectImMessageDeliveryRequest,
@@ -6,9 +6,13 @@ import {
   RUNTIME_CAPABILITY,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
+  type RuntimeApprovalDecision,
+  type RuntimeApprovalResult,
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
   redactForLog,
+  redactSensitive,
+  type TurnActivityResult,
   type TurnFailureReason,
   type TurnOutgoingReplySnapshot,
   type TurnReportHashInput,
@@ -111,11 +115,13 @@ export type AgentTurnErrorReporter = (failure: AgentTurnFailure) => void;
 
 interface RunningTurn {
   readonly abort: AbortController;
+  readonly approvals: Map<string, string>;
   readonly owner: LiveTurnOwner;
   readonly captureInReport: boolean;
   phase: "starting" | "running" | "reporting";
   promise: Promise<void>;
   runtime?: AgentRuntime;
+  expiresAt?: string;
 }
 
 export interface TurnCompletion {
@@ -180,6 +186,7 @@ export class AgentTurnRunner {
     const abort = new AbortController();
     const turn: RunningTurn = {
       abort,
+      approvals: new Map(),
       owner,
       // Negotiation is cleared on disconnect. Keep this Turn's report contract
       // until its durable report can be replayed after reconnection.
@@ -254,6 +261,36 @@ export class AgentTurnRunner {
     return steerResult(request, "steered");
   }
 
+  async respondToApproval(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult> {
+    const { type: _type, decision: _decision, ...identity } = request;
+    const turn = this.#turns.get(request.turnId);
+    const providerRequestId = turn?.approvals.get(request.requestId);
+    if (
+      !turn?.runtime ||
+      providerRequestId === undefined ||
+      turn.phase !== "running" ||
+      turn.owner.request.sessionId !== request.sessionId ||
+      turn.owner.request.deliveryId !== request.deliveryId ||
+      turn.owner.request.placementGeneration !== request.placementGeneration ||
+      !turn.expiresAt ||
+      Date.parse(turn.expiresAt) <= this.#now()
+    )
+      return { ...identity, type: "approval:result", status: "stale" };
+    turn.approvals.delete(request.requestId);
+    try {
+      await turn.runtime.respond({
+        expectedRunId: request.turnId,
+        requestId: providerRequestId,
+        kind: "approval",
+        decision: request.decision,
+        scope: "run",
+      });
+      return { ...identity, type: "approval:result", status: "applied" };
+    } catch {
+      return { ...identity, type: "approval:result", status: "stale" };
+    }
+  }
+
   stop(): void {
     if (this.#stopped) return;
     this.#stopped = true;
@@ -263,6 +300,80 @@ export class AgentTurnRunner {
 
   async settled(): Promise<void> {
     await Promise.all([...this.#turns.values()].map((turn) => turn.promise));
+  }
+
+  #observeTurn(turn: RunningTurn, runtime: AgentRuntime, trace: TurnTraceBuffer, onTerminal: () => void): () => void {
+    const owner = turn.owner;
+    return this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
+      trace.record(event);
+      if (event.type === "interaction_requested" && event.runId === owner.turnId)
+        await this.#requestApproval(turn, runtime, event.request);
+      if (event.type === "run_started" && event.runId === owner.turnId) {
+        this.#activity.start(owner.request, owner.turnId);
+        await this.#bindingStore.updateUnresolved(
+          owner.request.agentId,
+          owner.request.sessionId,
+          owner.turnId,
+          "running",
+        );
+        turn.phase = "running";
+      }
+      if (
+        event.type === "run_completed" ||
+        event.type === "run_failed" ||
+        event.type === "run_aborted" ||
+        event.type === "run_cancelled"
+      ) {
+        if (event.runId === owner.turnId) this.#activity.end(owner.turnId);
+        onTerminal();
+      }
+      await this.#onRuntimeEvent?.(event);
+    });
+  }
+
+  async #requestApproval(
+    turn: RunningTurn,
+    runtime: AgentRuntime,
+    request: import("../agent-runtime/types.js").AgentInteractionRequest,
+  ): Promise<void> {
+    const owner = turn.owner;
+    const details = request.details;
+    const action =
+      details && typeof details === "object" && !Array.isArray(details)
+        ? (details.command ?? details.permissions ?? details.grantRoot ?? details)
+        : details;
+    const description = [
+      ...new Set([request.message, action ? describeApprovalAction(redactSensitive(action)) : undefined]),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    if (request.kind !== "approval" || description.length === 0 || description.length > 6000) {
+      // Cancel unsupported dialogs and refuse requests without a reviewable action.
+      const response =
+        request.kind === "approval"
+          ? { kind: "approval" as const, decision: "decline" as const }
+          : { kind: "question" as const, decision: "cancel" as const };
+      queueMicrotask(
+        () =>
+          void runtime
+            .respond({ expectedRunId: owner.turnId, requestId: request.requestId, ...response })
+            .catch(() => turn.abort.abort("interaction_unavailable")),
+      );
+      return;
+    }
+    const requestId = randomUUID();
+    turn.approvals.set(requestId, request.requestId);
+    await this.#connection.send({
+      type: "approval:request",
+      requestId,
+      turnId: owner.turnId,
+      deliveryId: owner.request.deliveryId,
+      sessionId: owner.request.sessionId,
+      placementGeneration: owner.request.placementGeneration,
+      title: request.title.slice(0, 256),
+      description: redactSensitive(description),
+      expiresAt: turn.expiresAt,
+    });
   }
 
   async #run(turn: RunningTurn, shutdownSignal: AbortSignal): Promise<void> {
@@ -276,6 +387,7 @@ export class AgentTurnRunner {
     };
     this.#logger.info(fields, "Turn started");
     const timeout = new AbortController();
+    turn.expiresAt = new Date(startedAt + turnTimeoutMs(owner.request, startedAt)).toISOString();
     /* v8 ignore next -- the turn-timeout callback only fires for wall-clock overruns tests cannot wait out. */
     const timer = setTimeout(() => timeout.abort("turn_timeout"), turnTimeoutMs(owner.request, this.#now()));
     timer.unref();
@@ -302,28 +414,8 @@ export class AgentTurnRunner {
       turn.runtime = runtime;
       const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
       const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
-      releaseObserver = this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
-        trace.record(event);
-        if (event.type === "run_started" && event.runId === owner.turnId) {
-          this.#activity.start(owner.request, owner.turnId);
-          await this.#bindingStore.updateUnresolved(
-            owner.request.agentId,
-            owner.request.sessionId,
-            owner.turnId,
-            "running",
-          );
-          turn.phase = "running";
-        }
-        if (
-          event.type === "run_completed" ||
-          event.type === "run_failed" ||
-          event.type === "run_aborted" ||
-          event.type === "run_cancelled"
-        ) {
-          if (event.runId === owner.turnId) this.#activity.end(owner.turnId);
-          terminalObserved = true;
-        }
-        await this.#onRuntimeEvent?.(event);
+      releaseObserver = this.#observeTurn(turn, runtime, trace, () => {
+        terminalObserved = true;
       });
       const result = await runtime.prompt({
         runId: owner.turnId,
@@ -609,14 +701,26 @@ export function buildAgentInput(
     request.attention === "direct"
       ? "A human explicitly addressed this Agent/Session."
       : "This Agent overheard the message.";
-  const attentionMeaning = observer
-    ? `${attentionFact} Treat it as ambient channel context only; the observer reply role below governs what this Session may do with it.`
+  const { attentionMeaning, actionInstruction } = observer
+    ? {
+        attentionMeaning: `${attentionFact} Treat it as ambient channel context only; the observer reply role below governs what this Session may do with it.`,
+        actionInstruction:
+          "Do not run a provider CLI mutation for this observer copy. The CLI and credentials remain available because they are Session capabilities, not reply-role authorization.",
+      }
     : request.attention === "direct"
-      ? `${attentionFact} Handle the message normally, then choose whether to reply, react, or send proactively; choosing not to reply remains valid.`
-      : `${attentionFact} Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.`;
+      ? {
+          attentionMeaning: `${attentionFact} If this Session is the reply owner, handle the request and report its result to that human through the provider CLI, including after an approval decision. If the task fails or is blocked, explain that through the provider CLI too. Only omit a message when the human explicitly requested silence or a different provider action instead.`,
+          actionInstruction:
+            "Before ending this Turn, send a concise completion, failure, or blocker update to the IM participant with the provider CLI. Your final text to OpenTag does not count as the reply. If the human explicitly asked for silence or a different provider action instead, honor that request. This does not waive a pre-work reaction required by the managed instructions.",
+        }
+      : {
+          attentionMeaning: `${attentionFact} Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.`,
+          actionInstruction:
+            "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
+        };
   const replyRoleMeaning = observer
     ? "A Thread Session owns the provider reply and the task execution for this same message. Use this Channel delivery only for ambient channel context; do not reply, react, or perform any other provider mutation for this message, and do not investigate, execute or repeat, delegate, or create artifacts for that task. Finish this observer Turn without tool calls or task work."
-    : "This Session is the reply owner for this message. It may reply, react, send another provider message, or choose not to reply.";
+    : "This Session is the reply owner for this message. For direct requests, deliver the result through the provider CLI before ending the Turn. For ambient messages, choose whether a provider action is useful.";
   // Rebind the provider's native user-facing output to OpenTag's runtime console. Merely saying that
   // final text is not auto-sent is too weak when the provider treats its final channel as the reply.
   const context = [
@@ -634,9 +738,7 @@ export function buildAgentInput(
      */
     `Processing time (UTC): ${processedAt.toISOString()} (sampled when this input was assembled for actual processing, after any queue wait)`,
     ...buildProviderOutboxInstructions({
-      actionInstruction: observer
-        ? "Do not run a provider CLI mutation for this observer copy. The CLI and credentials remain available because they are Session capabilities, not reply-role authorization."
-        : "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
+      actionInstruction,
       provider,
       target: request.content.providerRef,
       targetLabel: "Current provider reference",
@@ -770,6 +872,35 @@ export function completionForError(error: unknown, abortReason: unknown): TurnCo
   }
   if (error instanceof AgentProviderError) return completionForProviderError(error);
   return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };
+}
+
+function describeApprovalAction(value: JsonValue): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(describeApprovalAction).join("\n");
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .filter(
+        ([key]) =>
+          ![
+            "threadId",
+            "turnId",
+            "itemId",
+            "approvalId",
+            "environmentId",
+            "reason",
+            "cwd",
+            "commandActions",
+            "availableDecisions",
+            "proposedExecpolicyAmendment",
+          ].includes(key),
+      )
+      .map(
+        ([key, entry]) =>
+          `${key.replaceAll(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")}: ${describeApprovalAction(entry)}`,
+      )
+      .join("\n");
+  }
+  return String(value);
 }
 
 /**

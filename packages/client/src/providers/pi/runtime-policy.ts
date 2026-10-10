@@ -1,11 +1,7 @@
 import type { EffectiveRuntimeSnapshot, InputRejectReason } from "@opentag/shared";
 import type { AgentRuntimePolicy } from "../../agent-runtime/types.js";
 
-/**
- * Pi has no OS filesystem sandbox and no approval gate. Product policy must stay unrestricted
- * writes plus network; anything stricter is rejected instead of being silently ignored.
- */
-export function piRuntimePolicy(_snapshot: EffectiveRuntimeSnapshot): AgentRuntimePolicy {
+export function piRuntimePolicy(): AgentRuntimePolicy {
   return {
     fileSystem: "unrestricted",
     network: "enabled",
@@ -15,7 +11,7 @@ export function piRuntimePolicy(_snapshot: EffectiveRuntimeSnapshot): AgentRunti
 }
 
 export function validatePiRuntimePolicy(snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined {
-  if (snapshot.execution.approvalPolicy !== "never" || !snapshot.execution.networkAccess) {
+  if (!snapshot.execution.networkAccess || snapshot.execution.approvalPolicy !== "never") {
     return "configuration_unsupported";
   }
   return undefined;

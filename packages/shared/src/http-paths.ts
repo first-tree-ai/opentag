@@ -35,6 +35,8 @@ export const AGENT_SLACK_EVENTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/s
 export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindingId`;
 export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
+export const SLACK_INTERACTIONS_PATH = `${API_V1_PREFIX}/im-bindings/slack/interactions`;
+export const AGENT_SLACK_INTERACTIONS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/interactions`;
 export const SLACK_OAUTH_CALLBACK_PATH = `${API_V1_PREFIX}/im-bindings/slack/oauth/callback`;
 /*
  * Account-scoped GitHub integration management. One deployment-level GitHub App, one current

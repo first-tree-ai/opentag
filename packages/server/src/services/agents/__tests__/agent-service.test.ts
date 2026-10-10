@@ -220,6 +220,22 @@ async function createDelivery(
 }
 
 describe("AgentService", () => {
+  it("rejects permission configuration when creating or updating local Pi", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const input = { computerId: computer.id, name: "pi-agent", displayName: "Pi", runtimeProvider: "pi" as const };
+    const permissions = { approvalPolicy: "on-request" as const, allowCommands: [] };
+    await expect(
+      service.createForAccount(bootstrap.userId, { ...input, runtimeConfig: { permissions } }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    const agent = await service.createForAccount(bootstrap.userId, input);
+    await expect(
+      service.updateById(bootstrap.userId, agent.id, {
+        expectedRevision: agent.revision,
+        runtimeConfig: { permissions },
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
   it("lists Agents by creation time and ID, preserving order through edits and appending new Agents", async () => {
     const { bootstrap, computer, service } = await fixture();
     const oldest = {

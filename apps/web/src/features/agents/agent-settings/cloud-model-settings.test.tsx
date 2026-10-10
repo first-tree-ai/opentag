@@ -82,8 +82,8 @@ describe("Cloud model settings", () => {
       </QueryClientProvider>,
     );
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Be concise." } });
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    expect(await screen.findByText("Instructions saved.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    expect(await screen.findByText("Changes applied.")).toBeTruthy();
     expect(read).not.toHaveBeenCalled();
     expect(save).toHaveBeenCalledWith({ expectedRevision: 4, runtimeConfig: { instructions: "Be concise." } });
   });

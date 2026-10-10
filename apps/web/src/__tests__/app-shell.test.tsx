@@ -109,10 +109,10 @@ describe("OpenTag Web App Shell", () => {
         .getAllByRole("link")
         .map((item) => item.textContent),
       /*
-       * Instructions, Memory, MCP and Skills are present with no Internal Tools flag: they are
+       * Soul, Memory, MCP and Skills are present with no Internal Tools flag: they are
        * ordinary management surfaces, unlike Integrations which the next test gates.
        */
-    ).toEqual(["Overview", "Tasks", "Instructions", "Memory", "MCP", "Skills", "Usage"]);
+    ).toEqual(["Overview", "Tasks", "Soul", "Memory", "MCP", "Skills", "Usage"]);
     const navigationIcons = workspaceNavigation.querySelectorAll("svg");
     expect(navigationIcons).toHaveLength(7);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
@@ -164,7 +164,7 @@ describe("OpenTag Web App Shell", () => {
         within(workspaceNavigation)
           .getAllByRole("link")
           .map((item) => item.textContent),
-      ).toEqual(["Overview", "Tasks", "Instructions", "Memory", "MCP", "Skills", "Integrations", "Usage"]),
+      ).toEqual(["Overview", "Tasks", "Soul", "Memory", "MCP", "Skills", "Integrations", "Usage"]),
     );
   });
 

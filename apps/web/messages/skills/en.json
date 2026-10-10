@@ -30,7 +30,7 @@
   "skills_error_storage_unavailable": "Skill storage is unavailable on this deployment.",
   "skills_install": "Install from URL",
   "skills_install_already": "Installed",
-  "skills_install_candidate_title": "Skill to install",
+  "skills_install_candidate_title": "Skill found at this URL",
   "skills_install_candidates_aria": "Skills at this source",
   "skills_install_count": [
     {
@@ -48,9 +48,9 @@
   "skills_install_result_installed": "Installed",
   "skills_install_result_skipped": "Skipped — a Skill with this name already exists",
   "skills_install_results_aria": "Install results",
-  "skills_install_selection_title": "Select skills to install",
+  "skills_install_selection_title": "Skills found at this URL",
   "skills_install_source_label": "URL",
-  "skills_install_source_placeholder": "Repository or skill URL",
+  "skills_install_source_placeholder": "Paste a repository or skill URL",
   "skills_install_success": [
     {
       "declarations": ["input count", "local countPlural = count: plural"],

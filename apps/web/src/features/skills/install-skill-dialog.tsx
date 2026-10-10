@@ -1,8 +1,8 @@
 import type { RemoteSkillCandidate, RemoteSkillInstallResult } from "@opentag/shared/browser";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Checkbox, Dialog, Input, Loader, Text } from "../../ui/design-system.js";
+import { Badge, Banner, Button, Checkbox, Dialog, Input, Loader, Text } from "../../ui/design-system.js";
 import { skillErrorMessage, skillInstallResultMessage, skillUnavailableMessage } from "./skills-page-model.js";
 import { useInstallRemoteSkills } from "./skills-queries.js";
 import { useSkillSourcePreview } from "./use-skill-source-preview.js";
@@ -78,13 +78,13 @@ export function InstallSkillDialog({
       onClose={onClose}
       title={m.skills_install_title()}
     >
-      <div className="grid gap-6" data-ui="install-skill-dialog">
+      <div className="skill-install-body" data-ui="install-skill-dialog">
         <Input
           autoCapitalize="none"
           autoCorrect="off"
           disabled={busy || results !== undefined}
           inputMode="url"
-          label={m.skills_install_source_label()}
+          aria-label={m.skills_install_source_label()}
           placeholder={m.skills_install_source_placeholder()}
           ref={inputRef}
           spellCheck={false}
@@ -130,14 +130,9 @@ export function InstallSkillDialog({
             }
           />
         ) : null}
-        {error ? (
-          <Banner role="alert" variant="error">
-            {error}
-          </Banner>
-        ) : null}
         {source.preview && candidates.length === 0 ? <Banner variant="alert">{m.skills_install_empty()}</Banner> : null}
         {candidates.length > 0 && results === undefined ? (
-          <CandidateList candidates={candidates} selected={names} busy={busy} onToggle={toggle} />
+          <CandidateList candidates={candidates} selected={names} busy={busy} error={error} onToggle={toggle} />
         ) : null}
         {results === undefined ? null : <ResultList results={results} />}
         <InstallActions
@@ -169,7 +164,7 @@ function InstallActions({
   onConfirm: () => void;
 }) {
   return (
-    <div className="flex justify-end gap-3 border-t border-kumo-line pt-4">
+    <div className="skill-install-actions flex justify-end gap-3 border-t border-kumo-line pt-4">
       {done ? (
         <Button onClick={onClose} variant="primary">
           {m.common_done()}
@@ -196,53 +191,84 @@ function CandidateList({
   candidates,
   selected,
   busy,
+  error,
   onToggle,
 }: {
   candidates: readonly RemoteSkillCandidate[];
   selected: readonly string[];
   busy: boolean;
+  error?: string;
   onToggle: (name: string, checked: boolean) => void;
 }) {
   const single = candidates.length === 1;
+  const id = useId();
+  const listRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (error && listRef.current) listRef.current.scrollTop = 0;
+  }, [error]);
   return (
-    <section className="grid gap-2" aria-labelledby="skill-install-selection-title">
-      <Text as="h3" id="skill-install-selection-title" variant="heading">
+    <div className="skill-install-selection">
+      <Text as="h3" id={`${id}-title`} variant="heading">
         {single ? m.skills_install_candidate_title() : m.skills_install_selection_title()}
       </Text>
-      <ul
-        aria-label={m.skills_install_candidates_aria()}
-        className="skill-install-candidates ui-surface divide-y divide-kumo-line bg-kumo-base"
+      <section
+        aria-labelledby={`${id}-title`}
+        className="skill-install-candidates ui-surface bg-kumo-base"
         data-ui="install-skill-candidates"
+        ref={listRef}
+        tabIndex={single && !error ? undefined : 0}
       >
-        {candidates.map((candidate) => (
-          <li className="grid min-w-0 gap-2 p-4" key={candidate.name}>
-            {single ? (
-              <strong className="wrap-anywhere font-semibold">{candidate.name}</strong>
-            ) : (
-              <Checkbox
-                checked={selected.includes(candidate.name)}
-                disabled={busy || !isSelectable(candidate)}
-                label={candidate.name}
-                onCheckedChange={(checked) => onToggle(candidate.name, checked === true)}
-              />
-            )}
-            <Text as="p" size="sm" variant="secondary" DANGEROUS_className="wrap-anywhere">
-              {candidate.description}
-            </Text>
-            {candidate.alreadyInstalled ? (
-              <Text as="p" size="sm" variant="secondary">
-                {m.skills_install_already()}
+        {error ? (
+          <div className="p-4">
+            <Banner role="alert" variant="error">
+              {error}
+            </Banner>
+          </div>
+        ) : null}
+        <ul aria-label={m.skills_install_candidates_aria()} className="divide-y divide-kumo-line">
+          {candidates.map((candidate, index) => (
+            <li
+              className={`skill-install-candidate p-4${single ? "" : " skill-install-candidate--multiple"}`}
+              key={candidate.name}
+            >
+              <div className="min-w-0 wrap-anywhere">
+                {single ? (
+                  <strong className="font-semibold">{candidate.name}</strong>
+                ) : (
+                  <Checkbox
+                    aria-describedby={`${id}-summary-${index}`}
+                    checked={selected.includes(candidate.name)}
+                    disabled={busy || !isSelectable(candidate)}
+                    label={
+                      <span className={isSelectable(candidate) ? "font-semibold" : "font-semibold text-kumo-subtle"}>
+                        {candidate.name}
+                      </span>
+                    }
+                    onCheckedChange={(checked) => onToggle(candidate.name, checked === true)}
+                  />
+                )}
+              </div>
+              {candidate.alreadyInstalled ? <Badge variant="secondary">{m.skills_install_already()}</Badge> : null}
+              <Text
+                as="p"
+                size="sm"
+                variant="secondary"
+                DANGEROUS_className="skill-install-summary"
+                id={`${id}-summary-${index}`}
+                title={candidate.description}
+              >
+                {candidate.description}
               </Text>
-            ) : null}
-            {candidate.unavailableReason ? (
-              <Text as="p" size="sm" variant="secondary">
-                {skillUnavailableMessage(candidate.unavailableReason)}
-              </Text>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-    </section>
+              {candidate.unavailableReason ? (
+                <Text as="p" size="sm" variant="secondary" DANGEROUS_className="skill-install-reason">
+                  {skillUnavailableMessage(candidate.unavailableReason)}
+                </Text>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
   );
 }
 
@@ -255,7 +281,13 @@ function ResultList({ results }: { results: readonly RemoteSkillInstallResult[] 
     return { key: `${base}-${occurrence}`, result };
   });
   return (
-    <ul aria-label={m.skills_install_results_aria()} className="grid gap-1" data-ui="install-skill-results">
+    <ul
+      aria-label={m.skills_install_results_aria()}
+      className="skill-install-results grid gap-3"
+      data-ui="install-skill-results"
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: A scrollable report without controls must support keyboard scrolling.
+      tabIndex={0}
+    >
       {rows.map(({ key, result }) => (
         <li className="grid gap-0.5" key={key}>
           <Text as="p" variant="body">

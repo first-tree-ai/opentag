@@ -67,6 +67,8 @@ describe("InstallSkillDialog", () => {
     const install = stubInstall([]);
     renderDialog();
 
+    expect(screen.getByPlaceholderText("Paste a repository or skill URL")).toBe(screen.getByLabelText("URL"));
+    expect(screen.queryByText("URL")).toBeNull();
     expect((screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -74,9 +76,11 @@ describe("InstallSkillDialog", () => {
 
     expect(resolve).toHaveBeenCalledWith(AGENT_ID, "owner/repo");
     expect(install).not.toHaveBeenCalled();
-    expect(screen.getByRole("checkbox", { name: "demo" })).toBeTruthy();
+    const checkbox = screen.getByRole("checkbox", { name: "demo" });
+    expect(checkbox).toBeTruthy();
+    expect(document.getElementById(checkbox.getAttribute("aria-describedby") ?? "")?.textContent).toBe("A demo Skill");
     expect(screen.getByText("A demo Skill")).toBeTruthy();
-    expect(screen.getByText("Select skills to install")).toBeTruthy();
+    expect(screen.getByText("Skills found at this URL")).toBeTruthy();
   });
 
   it("keeps the install action disabled until something is selected", async () => {
@@ -188,9 +192,12 @@ describe("InstallSkillDialog", () => {
     renderDialog();
     await lookUp();
 
+    const list = screen.getByRole("region", { name: "Skill found at this URL" });
+    list.scrollTop = 200;
     fireEvent.click(screen.getByRole("button", { name: /^Install (skill|\d+ skills)$/ }));
 
     await waitFor(() => expect(screen.getByText(/storage is unavailable/)).toBeTruthy());
+    expect(list.scrollTop).toBe(0);
     expect(screen.queryByRole("list", { name: "Install results" })).toBeNull();
   });
 
@@ -199,7 +206,7 @@ describe("InstallSkillDialog", () => {
     const install = stubInstall([]);
     renderDialog();
     fireEvent.paste(screen.getByLabelText("URL"), { clipboardData: { getData: () => "https://github.com/o/r" } });
-    expect(await screen.findByText("Skill to install")).toBeTruthy();
+    expect(await screen.findByText("Skill found at this URL")).toBeTruthy();
     expect(screen.queryByRole("checkbox")).toBeNull();
     expect((screen.getByRole("button", { name: "Install skill" }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.blur(screen.getByLabelText("URL"));
@@ -257,7 +264,7 @@ describe("InstallSkillDialog", () => {
       skills: [candidate()],
     });
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByText("Skill to install")).toBeTruthy();
+    expect(await screen.findByText("Skill found at this URL")).toBeTruthy();
     expect(resolve).toHaveBeenCalledTimes(2);
   });
 
@@ -289,7 +296,7 @@ describe("InstallSkillDialog", () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(resolve).not.toHaveBeenCalled();
     fireEvent.blur(screen.getByLabelText("URL"));
-    expect(await screen.findByText("Skill to install")).toBeTruthy();
+    expect(await screen.findByText("Skill found at this URL")).toBeTruthy();
     expect(resolve).toHaveBeenCalledOnce();
   });
 });

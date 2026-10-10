@@ -112,7 +112,7 @@ describe("RuntimeConfigurationForm", () => {
       discovered: ["google/gemini-3.8-flash"],
       expected: ["anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol"],
     },
-  ])("keeps $provider suggestions when loading and refreshing a smaller native catalog", async (entry) => {
+  ])("replaces $provider presets with the native catalog and preserves an unlisted saved model", async (entry) => {
     let resolveInitial!: (options: AgentRuntimeOptions) => void;
     vi.mocked(browserApi.agentRuntimeOptions)
       .mockImplementationOnce(
@@ -122,7 +122,7 @@ describe("RuntimeConfigurationForm", () => {
           }),
       )
       .mockResolvedValue({
-        modelSuggestions: [...entry.discovered, "live/added"],
+        modelSuggestions: [...entry.discovered.slice(0, 1), "live/added"],
         reasoningEffortAllowedValues: ["high"],
       });
     const configured = {
@@ -138,10 +138,8 @@ describe("RuntimeConfigurationForm", () => {
     resolveInitial({ modelSuggestions: entry.discovered, reasoningEffortAllowedValues: ["high"] });
     await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
     const initial = await optionLabels("Model");
-    expect(initial).toEqual(expect.arrayContaining([...entry.expected, ...entry.discovered]));
-    expect(new Set(initial).size).toBe(initial.length);
-    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain(entry.model);
-    expect(screen.queryByRole("textbox", { name: "Custom model ID" })).toBeNull();
+    expect(initial).toEqual(["Inherit local configuration", ...entry.discovered, "Custom model ID…"]);
+    expect(screen.getByRole("textbox", { name: "Custom model ID" })).toHaveProperty("value", entry.model);
     expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration", "High"]);
 
     expect(screen.queryByRole("button", { name: "Refresh models and effort" })).toBeNull();
@@ -149,9 +147,59 @@ describe("RuntimeConfigurationForm", () => {
     await waitFor(() => expect(browserApi.agentRuntimeOptions).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
     const refreshed = await optionLabels("Model");
-    expect(refreshed).toEqual(expect.arrayContaining([...entry.expected, ...entry.discovered, "live/added"]));
-    expect(new Set(refreshed).size).toBe(refreshed.length);
-    expect(screen.getByRole("combobox", { name: "Model" }).textContent).toContain(entry.model);
+    expect(refreshed).toEqual(["Inherit local configuration", entry.discovered[0], "live/added", "Custom model ID…"]);
+    expect(screen.getByRole("textbox", { name: "Custom model ID" })).toHaveProperty("value", entry.model);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    (["codex", "claude-code", "pi"] as const).flatMap((provider) =>
+      [null, "private/saved"].map((model) => ({ provider, model })),
+    ),
+  )("keeps an empty $provider native catalog empty with saved model $model", async ({ provider, model }) => {
+    vi.mocked(browserApi.agentRuntimeOptions).mockResolvedValue({
+      modelSuggestions: [],
+      reasoningEffortAllowedValues: [],
+    });
+    const save = vi.fn();
+    render(
+      <RuntimeConfigurationForm
+        initialConfig={{ ...config, runtimeProvider: provider, runtimeConfig: { ...config.runtimeConfig, model } }}
+        save={save}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByText("Reading local models…")).toBeNull());
+    expect(await optionLabels("Model")).toEqual(["Inherit local configuration", "Custom model ID…"]);
+    expect(await optionLabels("Reasoning effort")).toEqual(["Inherit local configuration"]);
+    if (model) expect(screen.getByRole("textbox", { name: "Custom model ID" })).toHaveProperty("value", model);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { provider: "codex" as const, preset: "gpt-6.1-sol" },
+    { provider: "claude-code" as const, preset: "claude-fable-5-1" },
+    { provider: "pi" as const, preset: "openai/gpt-6.1-sol" },
+  ])("uses $provider presets only until the unavailable native directory recovers", async ({ provider, preset }) => {
+    vi.mocked(browserApi.agentRuntimeOptions)
+      .mockRejectedValueOnce(new ApiError(503, "Provider unavailable"))
+      .mockResolvedValue({ modelSuggestions: ["native/only"], reasoningEffortAllowedValues: null });
+    const save = vi.fn();
+    render(<RuntimeConfigurationForm initialConfig={{ ...config, runtimeProvider: provider }} save={save} />);
+    await screen.findByText(
+      "Local model options are unavailable. Showing suggestions; custom model IDs remain available.",
+    );
+    expect(await optionLabels("Model")).toContain(preset);
+    await returnToPage();
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Local model options are unavailable. Showing suggestions; custom model IDs remain available.",
+        ),
+      ).toBeNull(),
+    );
+    expect(await optionLabels("Model")).toEqual(["Inherit local configuration", "native/only", "Custom model ID…"]);
+    expect(screen.getByText("The reasoning effort options for this model have not been confirmed.")).toBeTruthy();
+    expect((await optionLabels("Reasoning effort")).length).toBeGreaterThan(1);
     expect(save).not.toHaveBeenCalled();
   });
 

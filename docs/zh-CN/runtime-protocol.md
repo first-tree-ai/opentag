@@ -1,7 +1,7 @@
 # Runtime 协议兼容
 
 > Canonical source: [../runtime-protocol.md](../runtime-protocol.md)
-> Last synced with: 2026-10-09
+> Last synced with: 2026-10-10
 
 ## 范围
 
@@ -92,11 +92,14 @@ HTTP 响应使用 `Cache-Control: no-store`。模型页面挂载且可见时自�
 provider 自身的缓存。不同 Computer 不会覆盖 Server 上的一份
 共享模型目录。其他 Computer 或旧 daemon 实例的响应不能完成当前待处理请求。
 
-Web 模型选择器合并原生结果与预置建议并去重，较小的原生目录不会隐藏预置项。
-Codex 预置包含当前的 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-luna`，以及兼容用的
-`gpt-6-sol`，来源见 [OpenAI 模型目录](https://developers.openai.com/api/docs/models)。
-旧 ID 仍可通过原生结果、已保存配置或自定义输入使用。建议项不能证明账号权限。
-推理强度仍使用所选模型的原生元数据；未知元数据明确标为未确认。
+Web 模型选择器使用成功返回的原生结果，不追加预置建议，原生目录为空时也保持为空。
+仅在没有已确认原生结果时使用预置建议，并保留现有的加载或不可用提示。
+已保存 ID 和自定义输入继续可用。建议项不能证明账号权限。
+推理强度使用所选模型的原生元数据；空列表保持为空，未知元数据使用建议值并明确标为未确认。
+
+目录查询要求 provider 已就绪，复用任务创建和恢复使用的 CLI 工厂，包括可执行文件路径
+和 provider 环境。查询不会独立寻找另一套 CLI，也不会发起就绪修复。
+CLI 安装变化时，此机制不会迁移已经运行的进程。
 
 刷新选项不会保存 Agent 配置，也不会修改本地 CLI 默认值。将模型或强度保存为 `null`
 表示继承本地配置；它们是每个 Agent 的覆盖值，不是每台 Computer 的模型目录。

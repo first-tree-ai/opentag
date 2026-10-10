@@ -3165,6 +3165,25 @@ describe("IM binding persistence", () => {
         state: "accepted",
         dispatchInputHash: request && computeDirectInputHash(request),
       });
+      if (!request || !delivery?.turnId) throw new Error("Attachment delivery was not accepted");
+      await expect(
+        domain.handle(
+          turnReportFor({
+            agentId: request.agentId,
+            deliveryId: request.deliveryId,
+            placementGeneration: request.placementGeneration,
+            sessionId: request.sessionId,
+            turnId: delivery.turnId,
+          }),
+          runtime.context,
+        ),
+      ).resolves.toMatchObject({ status: "recorded" });
+      const [reported] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, request.deliveryId));
+      expect(reported?.reportedAt).toBeInstanceOf(Date);
+      expect(reported?.dispatchInputHash).toBe(delivery.dispatchInputHash);
     } finally {
       domain?.close();
       await value.sql.end();

@@ -44,16 +44,25 @@ export function SkillRow({
 
   return (
     <li className="skill-row min-w-0 p-4" data-ui="skill-row">
-      <Text as="h2" title={skill.name} variant="heading" DANGEROUS_className="min-w-0 truncate">
-        <Button
-          aria-label={m.skills_details_open({ name: skill.name })}
-          className="max-w-full justify-start text-left"
-          variant="inline"
-          onClick={(event) => onViewDetails(skill, event.currentTarget)}
-        >
-          <span className="truncate">{skill.name}</span>
-        </Button>
-      </Text>
+      <Tooltip
+        content={skill.description}
+        render={<div className="skill-row-content min-w-0 rounded-md hover:bg-kumo-tint" />}
+      >
+        <Text as="h2" title={skill.name} variant="heading" DANGEROUS_className="min-w-0 truncate">
+          <Button
+            aria-label={m.skills_details_open({ name: skill.name })}
+            aria-haspopup="dialog"
+            className="skill-row-open max-w-full justify-start text-left"
+            variant="inline"
+            onClick={(event) => onViewDetails(skill, event.currentTarget)}
+          >
+            <span className="truncate">{skill.name}</span>
+          </Button>
+        </Text>
+        <p className="skill-row-description ui-text text-kumo-subtle" data-text-size="sm">
+          {skill.description}
+        </p>
+      </Tooltip>
       <div className="skill-row-controls flex shrink-0 items-center gap-3">
         <Switch
           aria-label={m.skills_toggle_label({ name: skill.name })}
@@ -102,12 +111,6 @@ export function SkillRow({
           </DropdownMenu.Content>
         </DropdownMenu>
       </div>
-      <Tooltip
-        content={skill.description}
-        render={<p className="skill-row-description ui-text text-kumo-subtle" data-text-size="sm" />}
-      >
-        {skill.description}
-      </Tooltip>
       {error ? (
         <div className="col-span-2 mt-2">
           <Banner variant="error">{error}</Banner>

@@ -2,9 +2,11 @@
 
 [简体中文](../zh-CN/design/skill-details-reader.md)
 
-A Skill's summary cannot replace its instructions. Open the installed Skill's name to read the complete `SKILL.md` and
-switch to supporting files without leaving the management page. The reader integrates with the Skills management layout merged in PR #820: the name opens details, while the existing
-switch and More menu retain their management actions.
+A Skill's summary cannot replace its instructions. Click the installed Skill's content area—name, description or
+surrounding whitespace—to read the complete `SKILL.md` and switch to supporting files without leaving the management
+page. The reader integrates with the Skills management layout merged in PR #820. A stretched native name button owns
+this larger hit area; the switch and More menu sit outside it and retain their independent management actions.
+The content area has a subtle hover fill and a visible keyboard focus outline, without an extra details action.
 
 ## Reading experience
 
@@ -20,7 +22,7 @@ HTML, SVG and other UTF-8 files appear as escaped, unhighlighted source text. Bi
 explicit empty state. There is no editor, sharing workflow, file execution, or automatic remote image loading.
 
 The existing Kumo dialog owns focus trapping and Escape. It remains mounted between openings; focus returns to the
-Skill-name button. Package links focus the new reading region after loading. File buttons and folder disclosures use
+Skill-details trigger. Package links focus the new reading region after loading. File buttons and folder disclosures use
 normal Tab/Enter/Space behavior; they are a navigation list, not an ARIA tree requiring a separate keyboard model.
 The source, code and table scroll regions are keyboard accessible. Agent changes unmount the reader and cancel reads.
 

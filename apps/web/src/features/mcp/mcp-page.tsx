@@ -15,24 +15,60 @@ import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
 import { actionError } from "./mcp-form-model.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
 import { useAgentMcpServers, useProbeMcpServer, useUpdateMcpBinding } from "./mcp-queries.js";
+import { consumeMcpReturn, type McpReturnContext, rememberMcpReturn } from "./mcp-return-context.js";
 import { McpServerCard, type ServerAction } from "./mcp-server-card.js";
-import { McpConfirmDialog, McpDetailsDialog } from "./mcp-server-dialogs.js";
 import { McpSettingsDialog } from "./mcp-settings-dialog.js";
-import { McpToolsDialog } from "./mcp-tools-dialog.js";
 
-type Panel = { kind: "none" } | { kind: "add"; source?: AddSource } | { kind: ServerAction; entry: MCPAgentServer };
+type Panel =
+  | { kind: "none" }
+  | { kind: "add"; source?: AddSource }
+  | { kind: ServerAction | "tools"; entry: MCPAgentServer; context?: McpReturnContext; authenticationError?: string };
 /** One Agent's connections; runtime access remains determined by the server's actual authorization. */
 export function McpPage({ agentId }: { agentId: string }) {
   const identity = useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) });
   const agentName = identity.data?.displayName ?? agentId;
   const mounted = useAgentMcpServers(agentId);
   const servers = mounted.data?.servers ?? [];
-  const [outcome] = useState(() => readMcpOAuthOutcome());
+  const [{ outcome, returnContext }] = useState(() => {
+    const outcome = readMcpOAuthOutcome();
+    return { outcome, returnContext: outcome ? consumeMcpReturn(agentId, outcome.mcpServerId) : undefined };
+  });
+  const restored = useRef(false);
   const [panel, setPanel] = useState<Panel>({ kind: "none" });
   const [highlight, setHighlight] = useState(outcome?.mcpServerId);
   const [completed, setCompleted] = useState<{ id: string; authorized: boolean }>();
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissed, setDismissed] = useState(Boolean(returnContext));
+  useEffect(() => {
+    if (!returnContext || restored.current || mounted.isPending) return;
+    const entry = servers.find((server) => server.mcpServerId === returnContext.serverId);
+    if (!entry) return;
+    restored.current = true;
+    if (returnContext.source === "authorize" && outcome?.outcome.kind === "success") return;
+    setPanel({
+      kind: returnContext.source,
+      entry,
+      context: returnContext,
+      authenticationError: outcome?.outcome.kind === "error" ? m.mcp_oauth_return_failed() : undefined,
+    });
+  }, [returnContext, outcome, mounted.isPending, servers]);
+  const [removed, setRemoved] = useState<string>();
+  const addTrigger = useRef<HTMLButtonElement>(null);
+  const neighbors = useRef<string[]>([]);
+  useEffect(() => {
+    if (!removed) return;
+    const timer = window.setTimeout(() => setRemoved(undefined), 5000);
+    return () => window.clearTimeout(timer);
+  }, [removed]);
   const close = () => setPanel({ kind: "none" });
+  const removedServer = (entry: MCPAgentServer) => {
+    close();
+    setDismissed(true);
+    setRemoved(m.mcp_removed({ server: entry.name }));
+    requestAnimationFrame(() => {
+      const next = neighbors.current.map((id) => document.getElementById(`mcp-server-${id}-details`)).find(Boolean);
+      (next ?? addTrigger.current)?.focus({ preventScroll: true });
+    });
+  };
   const locate = (id: string) => {
     close();
     setHighlight(id);
@@ -52,6 +88,7 @@ export function McpPage({ agentId }: { agentId: string }) {
     <section className="grid gap-6" aria-labelledby="mcp-page-title" data-ui="mcp-page">
       <PageHeader title={m.mcp_heading()} titleId="mcp-page-title" description={m.mcp_intro()}>
         <Button
+          ref={addTrigger}
           variant="secondary"
           disabled={mounted.isPending || mounted.isError}
           onClick={() => setPanel({ kind: "add" })}
@@ -94,7 +131,13 @@ export function McpPage({ agentId }: { agentId: string }) {
               agentId={agentId}
               agentName={agentName}
               highlighted={highlight === entry.mcpServerId}
-              onAction={(kind) => setPanel({ kind, entry })}
+              onAction={(kind) => {
+                const index = servers.indexOf(entry);
+                neighbors.current = [...servers.slice(index + 1), ...servers.slice(0, index).reverse()].map(
+                  (server) => server.mcpServerId,
+                );
+                setPanel({ kind, entry });
+              }}
             />
           ))}
         </ul>
@@ -111,6 +154,11 @@ export function McpPage({ agentId }: { agentId: string }) {
           }
         />
       ) : null}
+      {removed ? (
+        <p role="status" className="text-sm text-kumo-subtle">
+          {removed}
+        </p>
+      ) : null}
       <McpPanel
         panel={panel}
         agentId={agentId}
@@ -118,6 +166,7 @@ export function McpPage({ agentId }: { agentId: string }) {
         servers={servers}
         onClose={close}
         onLocate={locate}
+        onRemoved={removedServer}
         onCompleted={(entry, auth) => {
           setCompleted({ id: entry.mcpServerId, authorized: auth });
           setDismissed(false);
@@ -177,6 +226,7 @@ function McpPanel({
   onClose,
   onLocate,
   onCompleted,
+  onRemoved,
 }: {
   panel: Panel;
   agentId: string;
@@ -185,6 +235,7 @@ function McpPanel({
   onClose: () => void;
   onLocate: (id: string) => void;
   onCompleted: (entry: MCPAgentServer, authorized: boolean) => void;
+  onRemoved: (entry: MCPAgentServer) => void;
 }) {
   if (panel.kind === "none") return null;
   if (panel.kind === "add")
@@ -202,19 +253,38 @@ function McpPanel({
   if (!("entry" in panel)) return null;
   // A tool browser follows new snapshots after refresh; edit drafts retain their opening baseline.
   const current = servers.find((entry) => entry.mcpServerId === panel.entry.mcpServerId) ?? panel.entry;
-  const props = { agentId, agentName, entry: panel.entry, onClose };
+  const props = { agentId, agentName, entry: current, onClose };
   switch (panel.kind) {
     case "authorize":
-      return <McpAuthorizeDialog {...props} onAuthorized={() => onCompleted(panel.entry, true)} />;
+      return (
+        <McpAuthorizeDialog
+          {...props}
+          initialError={panel.authenticationError}
+          onBeforeOAuth={() => rememberMcpReturn({ agentId, serverId: current.mcpServerId, source: "authorize" })}
+          onAuthorized={onClose}
+        />
+      );
     case "edit":
-      return <McpSettingsDialog {...props} />;
+      return (
+        <McpSettingsDialog
+          {...props}
+          onRemoved={() => onRemoved(current)}
+          initialAuthentication={Boolean(panel.authenticationError)}
+          authenticationError={panel.authenticationError}
+        />
+      );
     case "tools":
-      return <McpToolsDialog {...props} entry={current} />;
-    case "details":
-      return <McpDetailsDialog entry={current} onClose={onClose} />;
-    case "remove":
-    case "revoke":
-      return <McpConfirmDialog {...props} kind={panel.kind} />;
+      return (
+        <McpSettingsDialog
+          {...props}
+          onRemoved={() => onRemoved(current)}
+          initialTools
+          initialQuery={panel.context?.query}
+          initialScrollTop={panel.context?.scrollTop}
+          initialAuthentication={Boolean(panel.authenticationError)}
+          authenticationError={panel.authenticationError}
+        />
+      );
   }
 }
 function McpRow({

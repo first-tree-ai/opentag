@@ -295,6 +295,11 @@
       "idx": 58,
       "tag": "0058_agent_permissions",
       "sha256": "215931ead3ac2c5edb5a54675b0ba8ad30da0fed138444acf6214b0eca2843b7"
+    },
+    {
+      "idx": 59,
+      "tag": "0059_bump_runtime_config_revision",
+      "sha256": "4bef59bc615c23592c25e853eaf1f187736d23687a9840669db2acbbc0bbeed0"
     }
   ]
 }

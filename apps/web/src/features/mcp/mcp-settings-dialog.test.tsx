@@ -4,7 +4,7 @@ import { ApiError, browserApi } from "../../api.js";
 import { McpAccountDialog } from "./mcp-account-settings.js";
 import { McpDefaultsDialog } from "./mcp-defaults-dialog.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, detail, entry, menuAction, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
+import { AGENT_ID, detail, entry, openDetails, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
 const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
@@ -20,7 +20,7 @@ describe("MCP settings drafts and scope", () => {
     stub([localEntry()]);
     const update = vi.spyOn(browserApi, "updateAgentMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await menuAction("Settings");
+    await openDetails();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Use account default for MCP URL" }).hasAttribute("disabled")).toBe(
         false,
@@ -36,7 +36,7 @@ describe("MCP settings drafts and scope", () => {
     stub([localEntry()]);
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await menuAction("Settings");
+    await openDetails();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Use account default for MCP URL" }).hasAttribute("disabled")).toBe(
         false,
@@ -53,28 +53,71 @@ describe("MCP settings drafts and scope", () => {
     stub([entry({ overridden: { ...entry().overridden, extraHeaders: true } })]);
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await menuAction("Settings");
-    click("Advanced connection settings");
+    await openDetails();
+    click("Advanced settings");
     fireEvent.click(await screen.findByRole("radio", { name: label as string }));
     click("Save changes");
     await waitFor(() => expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, patch));
   });
-  it("keeps the Agent draft when returning from account defaults", async () => {
-    stub([localEntry()], detail(2));
-    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
+  it("saves before opening authentication and retains the draft when a save fails", async () => {
+    stub([localEntry()]);
+    const saved = entry({
+      effective: { ...entry().effective, url: "https://draft.example.com/mcp" },
+      authorization: null,
+    });
+    const update = vi
+      .spyOn(browserApi, "updateAgentMcpServer")
+      .mockRejectedValueOnce(new ApiError(503, "Save unavailable"))
+      .mockImplementation(async () => {
+        vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [saved] });
+        return saved;
+      });
+    const authorize = vi.spyOn(browserApi, "setMcpAuthorization");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await menuAction("Settings");
+    await openDetails();
     change("MCP URL", "https://draft.example.com/mcp");
-    click("Edit account defaults");
-    await screen.findByText("Used by");
-    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(detail(2).server.url);
-    expect(screen.getByRole("link", { name: "Helper" })).toBeTruthy();
-    click("Cancel");
+    click("Authentication");
+    expect(screen.getByText("Save connection changes before authentication.")).toBeTruthy();
+    click("Save and continue");
+    await screen.findByText("Save unavailable");
     expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe("https://draft.example.com/mcp");
+    expect(authorize).not.toHaveBeenCalled();
+    click("Save and continue");
+    await screen.findByRole("dialog", { name: "linear authentication" });
+    expect(update).toHaveBeenLastCalledWith(AGENT_ID, SERVER_ID, { url: "https://draft.example.com/mcp" });
+    expect(authorize).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("MCP URL")).toBeNull();
+    click("Cancel");
+    await screen.findByRole("dialog", { name: "linear" });
+    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(saved.effective.url);
+    expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(true);
+  });
+  it("continues without a write if connection changes are withdrawn", async () => {
+    stub([entry()]);
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
+    change("MCP URL", "https://draft.example.com/mcp");
+    click("Authentication");
+    change("MCP URL", entry().effective.url);
+    click("Continue");
+    await screen.findByRole("dialog", { name: "linear authentication" });
+    expect(update).not.toHaveBeenCalled();
+  });
+  it("changes token settings using the stored credential without requesting another key", async () => {
+    stub([entry()]);
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
+    const authorize = vi.spyOn(browserApi, "setMcpAuthorization");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
+    click("Advanced settings");
+    change("Auth header", "x-api-key");
+    change("Token prefix", "");
     click("Save changes");
     await waitFor(() =>
-      expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { url: "https://draft.example.com/mcp" }),
+      expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { authHeader: "x-api-key", authScheme: "" }),
     );
+    expect(authorize).not.toHaveBeenCalled();
   });
   it("shows an account read error without offering a guessed baseline", async () => {
     stub([]);
@@ -139,11 +182,50 @@ describe("MCP settings drafts and scope", () => {
       }),
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await menuAction("Settings");
-    click("Advanced connection settings");
+    await openDetails();
+    click("Advanced settings");
     expect((await screen.findByRole("radio", { name: "Send no extra headers" })).getAttribute("aria-checked")).toBe(
       "true",
     );
+    expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(true);
+  });
+});
+
+describe("MCP tools authentication preserves connection drafts", () => {
+  it("saves before authentication from Tools and returns to the same search", async () => {
+    stub([entry({ authorization: null })]);
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth");
+    const saved = entry({
+      authorization: null,
+      effective: { ...entry().effective, url: "https://draft.example.com/mcp" },
+    });
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation(async () => {
+      vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [saved] });
+      return saved;
+    });
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
+    change("MCP URL", saved.effective.url);
+    click("Tools");
+    change("Search tools", "issue");
+    click("Reconnect");
+    await screen.findByRole("dialog", { name: "linear" });
+    expect(screen.getByText("Save connection changes before authentication.")).toBeTruthy();
+    expect(oauth).not.toHaveBeenCalled();
+    click("Keep editing");
+    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(saved.effective.url);
+    click("Tools");
+    expect((screen.getByLabelText("Search tools") as HTMLInputElement).value).toBe("issue");
+    click("Reconnect");
+    click("Save and continue");
+    await screen.findByRole("dialog", { name: "linear authentication" });
+    expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { url: saved.effective.url });
+    expect(oauth).not.toHaveBeenCalled();
+    click("Cancel");
+    await screen.findByRole("dialog", { name: "linear tools" });
+    expect((screen.getByLabelText("Search tools") as HTMLInputElement).value).toBe("issue");
+    click("Back to server details");
+    expect((screen.getByLabelText("MCP URL") as HTMLInputElement).value).toBe(saved.effective.url);
     expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(true);
   });
 });

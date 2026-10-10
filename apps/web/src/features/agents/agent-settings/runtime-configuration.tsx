@@ -7,17 +7,19 @@ import {
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import { liveResourceQueryOptions } from "../../../query/live.js";
-import { Banner, InputArea, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
+import { Banner, Select, SettingsList, SettingsRow, Text } from "../../../ui/design-system.js";
 import { isConfirmedQuerySuccess } from "../../resource/resource-state.js";
 import { runtimeProviderName } from "../agent-presentation.js";
 import { type CloudModelState, RuntimeModelField, runtimeModelField } from "./runtime-model-field.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
+import { SoulEditor } from "./soul-editor.js";
+import { SoulFooter } from "./soul-footer.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 const PROVIDER_DEFAULT_OPTION = "__provider_default__";
@@ -80,6 +82,7 @@ function RuntimeConfigurationEditor({
     initialConfig.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION,
   );
   const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
+  const soulFooterRef = useRef<HTMLDivElement>(null);
   const [message, setMessage] = useState<{
     kind: "error" | "success";
     section: "runtime" | "instructions";
@@ -153,9 +156,9 @@ function RuntimeConfigurationEditor({
       });
       setConfig(updated);
       setInstructionsDraft(updated.runtimeConfig.instructions);
-      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_instructions_saved() });
+      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_soul_updated() });
     } catch {
-      setMessage({ kind: "error", section: "instructions", text: m.agent_settings_instructions_save_failed() });
+      setMessage({ kind: "error", section: "instructions", text: m.agent_settings_soul_apply_failed() });
     } finally {
       setSaving(undefined);
     }
@@ -170,7 +173,7 @@ function RuntimeConfigurationEditor({
 
   return (
     <div className="grid gap-6" data-ui={section === "all" ? "runtime-settings" : "settings-section"}>
-      <UnsavedChangesGuard when={runtimeDirty || instructionsDirty} />
+      <UnsavedChangesGuard soul={section === "instructions"} when={runtimeDirty || instructionsDirty} />
       {section !== "instructions" ? (
         <section aria-labelledby="execution-heading" className={section === "execution" ? "grid gap-6" : "grid gap-4"}>
           {section === "execution" ? (
@@ -283,7 +286,7 @@ function RuntimeConfigurationEditor({
         >
           {section === "instructions" ? (
             <AgentSettingsPageHeader
-              description={m.agent_settings_instructions_description()}
+              description={m.agent_settings_instructions_description({ agentName: config.displayName })}
               id="agent-instructions-heading"
               title={m.agent_settings_instructions_title()}
             />
@@ -292,35 +295,34 @@ function RuntimeConfigurationEditor({
               <Text as="h3" id="agent-instructions-heading" variant="heading">
                 {m.agent_settings_instructions_title()}
               </Text>
-              <p className="text-sm text-kumo-subtle">{m.agent_settings_instructions_description()}</p>
+              <p className="text-sm text-kumo-subtle">
+                {m.agent_settings_instructions_description({ agentName: config.displayName })}
+              </p>
             </header>
           )}
           <form className="grid gap-4" onSubmit={saveInstructions}>
-            <InputArea
-              aria-label={m.agent_settings_instructions_title()}
-              autoResize
+            <SoulEditor
+              disabled={Boolean(saving)}
+              footerRef={soulFooterRef}
               id={fieldId("instructions")}
-              maxRows={16}
-              minRows={8}
-              name="instructions"
-              placeholder={m.agent_settings_instructions_placeholder()}
               value={instructionsDraft}
               onValueChange={(value) => {
                 setInstructionsDraft(value);
                 setMessage(undefined);
               }}
             />
-            {instructionsDirty ? (
-              <SettingsSaveActions
-                busy={Boolean(saving)}
-                onDiscard={() => {
-                  setInstructionsDraft(config.runtimeConfig.instructions);
-                  setMessage(undefined);
-                }}
-              />
-            ) : null}
+            <SoulFooter
+              busy={Boolean(saving)}
+              dirty={instructionsDirty}
+              empty={instructionsDraft === ""}
+              feedback={message?.section === "instructions" ? message : undefined}
+              footerRef={soulFooterRef}
+              onDiscard={() => {
+                setInstructionsDraft(config.runtimeConfig.instructions);
+                setMessage(undefined);
+              }}
+            />
           </form>
-          {message?.section === "instructions" ? <SaveMessage message={message} /> : null}
         </section>
       ) : null}
     </div>

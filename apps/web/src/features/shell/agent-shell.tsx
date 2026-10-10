@@ -30,7 +30,7 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
     { section: "tasks", icon: "instructions", label: m.shell_tasks(), link: agentTasksLink(agentId) },
     {
       section: "instructions",
-      icon: "instructions",
+      icon: "soul",
       label: m.agent_settings_instructions_title(),
       link: agentInstructionsLink(agentId),
     },

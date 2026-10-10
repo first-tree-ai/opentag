@@ -1,11 +1,13 @@
 import { AGENT_SLACK_EVENTS_TEMPLATE, SLACK_EVENTS_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { createServiceLoggerPort } from "../observability/service-logger.js";
+import type { RuntimeApprovalOwner } from "../runtime/runtime-approval-owner.js";
 import type { ImMessageInbox } from "../services/im/index.js";
 import type { ImBindingService, SlackInstallationIngress } from "../services/im-bindings/index.js";
 import type { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
 import type { SlackWebhookReceiptStore } from "../services/im-bindings/slack/webhook-receipt-store.js";
+import { registerSlackInteractionsRoute } from "./slack-interactions.js";
 
 interface SlackEnvelopeBase {
   type?: string;
@@ -46,6 +48,7 @@ export type SlackWebhookReceiptStoreLike = Pick<SlackWebhookReceiptStore, "claim
 type SlackEventsReceiptOptions = { receipts?: SlackWebhookReceiptStoreLike };
 
 export interface SlackEventsRouteOptions extends SlackEventsReceiptOptions {
+  approvalOwner?: Pick<RuntimeApprovalOwner, "decide">;
   imBindings: ImBindingService;
   inbox: ImMessageInbox;
   createAdapter(installation: SlackInstallationIngress): SlackAdapter;
@@ -63,6 +66,7 @@ function slackEventLogContext(installation: SlackInstallationIngress, envelope: 
 }
 
 export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEventsRouteOptions): void {
+  registerSlackInteractionsRoute(app, options);
   const logger = createServiceLoggerPort(() => app.log, "slack-events");
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(

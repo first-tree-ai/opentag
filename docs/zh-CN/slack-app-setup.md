@@ -15,6 +15,12 @@ remove/uninstall，使旧 row 保留历史 Agent owner 并进入 disabled，再�
 真实入站消息只属于运行观测；两者都不能创建、完成或激活凭证代际。生产 Events API 仍是带签名的 HTTP，并包含
 `app_uninstalled` 与 `tokens_revoked`。不使用 Socket Mode。
 
+## 本地 Agent 审批
+
+启用 Interactivity，请求 URL 为 `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/interactions`。
+发行 manifest 已包含此设置。本地 Agent 会向任务发送者私聊发送审批按钮，任务发送者
+可以批准或拒绝待执行操作。设置与允许命令配置见 [Agent 权限](./agent-permissions.md)。
+
 ## 机器人头像
 
 安装和重新连接时，OpenTag 使用现有的 `users:read` 权限，通过 `users.info` 读取已安装机器人的资料。

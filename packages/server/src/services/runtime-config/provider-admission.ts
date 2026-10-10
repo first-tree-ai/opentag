@@ -2,7 +2,7 @@ import { AGENT_RUNTIME_PROVIDERS, type AgentRuntimeProvider } from "@opentag/sha
 
 export interface ServerAgentRuntimeProviderPolicy {
   readonly execution: {
-    readonly approvalPolicy: "never";
+    readonly approvalPolicy: "never" | "on-request";
     readonly networkAccess: boolean;
   };
 }
@@ -25,6 +25,8 @@ export function isServerAdmittedAgentRuntimeProvider(value: string): value is Se
 
 export function serverAgentRuntimeProviderPolicy(
   provider: ServerAdmittedAgentRuntimeProvider,
+  computerKind: "local" | "cloud" = "local",
 ): ServerAgentRuntimeProviderPolicy {
-  return SERVER_AGENT_RUNTIME_PROVIDER_POLICIES[provider];
+  if (computerKind === "cloud" || provider === "pi") return SERVER_AGENT_RUNTIME_PROVIDER_POLICIES[provider];
+  return { execution: { approvalPolicy: "on-request", networkAccess: provider !== "codex" } };
 }

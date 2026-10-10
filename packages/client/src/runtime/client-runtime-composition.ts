@@ -160,6 +160,7 @@ interface SharedProviderRefreshContext {
   readonly readinessSignal: AbortSignal;
   readonly providerProbeDeadlineMs: number;
   readonly sharedProviderRefreshes: Map<string, SharedProviderRefresh>;
+  readonly publishChecking: boolean;
 }
 
 async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
@@ -220,7 +221,11 @@ async function runSharedProviderRefresh(
     if (context.providers.isReady(providerId)) {
       releaseReadiness = context.connection.leaseProviderReadiness({ provider, status: "ready" });
     }
-    if (!releaseReadiness) context.connection.setProviderReadiness({ provider, status: "checking" });
+    // A background recheck must not replace a settled install/sign-in diagnosis with a spinner.
+    // Explicit preparation and first discovery still publish checking.
+    if (!releaseReadiness && (context.publishChecking || !context.providers.probeResult(providerId))) {
+      context.connection.setProviderReadiness({ provider, status: "checking" });
+    }
     const ownerSignal = AbortSignal.any([context.readinessSignal, owner.controller.signal]);
     let settled: { available: boolean } | { error: unknown };
     try {
@@ -646,13 +651,17 @@ export async function createClientRuntime(
     if (!owner || owner.settled || owner.controller.signal.aborted) return undefined;
     return owner;
   };
-  const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
+  const refreshProviderReadiness = async (
+    providerId: string,
+    signal?: AbortSignal,
+    publishChecking = true,
+  ): Promise<boolean> => {
     signal?.throwIfAborted();
     readinessSignal.throwIfAborted();
     const owner =
       liveSharedProviderRefresh(providerId) ??
       startSharedProviderRefresh(
-        { connection, providers, readinessSignal, providerProbeDeadlineMs, sharedProviderRefreshes },
+        { connection, providers, readinessSignal, providerProbeDeadlineMs, sharedProviderRefreshes, publishChecking },
         providerId,
       );
     owner.waiters += 1;
@@ -669,7 +678,7 @@ export async function createClientRuntime(
   };
   const refreshCapability = async (): Promise<void> => {
     const results = await Promise.allSettled([
-      ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)),
+      ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId, undefined, false)),
     ]);
     readinessSignal.throwIfAborted();
     const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
@@ -860,6 +869,7 @@ export async function createClientRuntime(
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
+    handleApproval: runner.respondToApproval.bind(runner),
     availabilityTester,
     async getRuntimeOptions(frame, signal) {
       const factory = factories.find((factory) => factory.manifest.providerId === frame.provider);

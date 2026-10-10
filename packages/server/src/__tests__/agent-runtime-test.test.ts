@@ -24,6 +24,7 @@ const agent = {
   status: "active" as const,
   revision: 4,
   runtimeConfig: {
+    permissions: { approvalPolicy: "on-request", allowCommands: [] },
     contextTrees: [],
     revision: 2,
     model: "gpt-5.6",

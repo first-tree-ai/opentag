@@ -18,6 +18,13 @@ verification and inbound messages are runtime observations; neither creates, com
 generation. Production Events API remains signed HTTP and includes `app_uninstalled` and `tokens_revoked`. Socket Mode
 is not used.
 
+## Local Agent approvals
+
+Enable Interactivity with request URL `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/interactions`.
+The distribution manifest includes this setting. Local Agents send approval buttons in a private
+message to the task sender, who can approve or deny the pending action.
+See [Agent permissions](./agent-permissions.md) for setup and allowed-command settings.
+
 ## Bot avatars
 
 Installation and reconnection read the installed Bot User profile through `users.info` using

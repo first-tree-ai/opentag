@@ -290,6 +290,11 @@
       "idx": 57,
       "tag": "0057_wandering_silhouette",
       "sha256": "4f0ca66de2bee0d6a438ce4bffaa9c2d14f8c0c37405dfc83b082d2b151a0c0b"
+    },
+    {
+      "idx": 58,
+      "tag": "0058_agent_permissions",
+      "sha256": "215931ead3ac2c5edb5a54675b0ba8ad30da0fed138444acf6214b0eca2843b7"
     }
   ]
 }

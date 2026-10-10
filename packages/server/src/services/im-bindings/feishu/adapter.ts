@@ -479,10 +479,13 @@ export function feishuEnvelopeEventId(event: NormalizedInboundImEvent): string |
 
 export function createReliableFeishuDispatcher(
   onMessage: (message: NormalizedMessage) => Promise<void> | void,
+  onCardAction?: (event: unknown) => Promise<unknown>,
 ): EventDispatcher {
   const dispatcher = new EventDispatcher({ logger: REDACTING_SDK_LOGGER, loggerLevel: LoggerLevel.error });
   const deduplicate = createFeishuInboundDeduplicator();
   dispatcher.register({
+    "card.action.trigger": async (event: unknown) =>
+      (await onCardAction?.(event)) ?? { toast: { type: "error", content: "This approval is unavailable." } },
     "im.message.receive_v1": async (raw: RawFeishuMessageEvent) => {
       // Deliberately bypass LarkChannel's SafetyPipeline. EventDispatcher
       // awaits this promise, and WSClient maps rejection to a 500 ACK.
@@ -505,7 +508,12 @@ class ReliableFeishuChannel implements FeishuChannel {
   #resolveReady: () => void = () => undefined;
   #rejectReady: (error: unknown) => void = () => undefined;
 
-  constructor(input: { appId: string; appSecret: string; domain: Domain }) {
+  constructor(input: {
+    appId: string;
+    appSecret: string;
+    domain: Domain;
+    onCardAction?: (event: unknown) => Promise<unknown>;
+  }) {
     this.#ready = new Promise<void>((resolve, reject) => {
       this.#resolveReady = resolve;
       this.#rejectReady = reject;
@@ -524,7 +532,7 @@ class ReliableFeishuChannel implements FeishuChannel {
       const handler = this.#handlers.message;
       if (!handler) throw new Error("FEISHU_ADMISSION_NOT_READY");
       await handler(message);
-    });
+    }, input.onCardAction);
     this.#wsClient = new WSClient({
       appId: input.appId,
       appSecret: input.appSecret,
@@ -610,6 +618,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   readonly #policy: ExternalCallPolicy;
 
   constructor(input: {
+    onCardAction?: (event: unknown) => Promise<unknown>;
     appId: string;
     appSecret: string;
     teamId: string | null;
@@ -650,7 +659,13 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     this.#channel =
       input.channel === null
         ? undefined
-        : (input.channel ?? new ReliableFeishuChannel({ appId: input.appId, appSecret: input.appSecret, domain }));
+        : (input.channel ??
+          new ReliableFeishuChannel({
+            appId: input.appId,
+            appSecret: input.appSecret,
+            domain,
+            onCardAction: input.onCardAction,
+          }));
   }
 
   get channel(): FeishuChannel {

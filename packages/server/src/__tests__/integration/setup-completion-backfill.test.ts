@@ -34,7 +34,7 @@ const LATE = new Date("2026-08-20T00:00:00.000Z");
 const THROUGH_0028_IDX = 28;
 const THROUGH_0028_COUNT = 29;
 const THROUGH_0030_COUNT = 31;
-const CURRENT_MIGRATION_COUNT = 58;
+const CURRENT_MIGRATION_COUNT = 59;
 
 type Journal = {
   version: string;

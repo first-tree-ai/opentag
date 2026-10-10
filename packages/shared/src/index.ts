@@ -72,6 +72,7 @@ export {
   type UpdateAgentRuntimeConfig,
   UpdateAgentRuntimeConfigSchema,
 } from "./agent.js";
+export * from "./agent-permissions.js";
 export * from "./agent-self.js";
 export * from "./agent-setup.js";
 export {
@@ -286,6 +287,7 @@ export {
   AGENT_SKILLS_INSTALL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
+  AGENT_SLACK_INTERACTIONS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
@@ -395,6 +397,7 @@ export {
   runtimeWebSocketUrl,
   SANDBOX_RUNNER_WEBSOCKET_PATH,
   SLACK_EVENTS_PATH,
+  SLACK_INTERACTIONS_PATH,
   SLACK_OAUTH_CALLBACK_PATH,
   sandboxRunnerWebSocketUrl,
   TASK_BY_ID_TEMPLATE,
@@ -492,6 +495,12 @@ export {
   RUNTIME_OUTGOING_REPLY_TEXT_MAX_BYTES,
   RUNTIME_TRACE_BATCH_MAX_EVENTS,
   RUNTIME_TRACE_EVENT_MAX_BYTES,
+  type RuntimeApprovalDecision,
+  RuntimeApprovalDecisionSchema,
+  type RuntimeApprovalRequest,
+  RuntimeApprovalRequestSchema,
+  type RuntimeApprovalResult,
+  RuntimeApprovalResultSchema,
   type RuntimeDurableFailure,
   RuntimeDurableFailureSchema,
   type RuntimeDurableWorkKind,

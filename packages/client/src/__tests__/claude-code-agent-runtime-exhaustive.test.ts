@@ -229,6 +229,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const gatewayBridge = vi.fn(async () => ({
       allowedTools: [] as readonly string[],
       configPath: "/tmp/mcp.json",
+      pluginPath: "/tmp/opentag",
       close: async () => undefined,
     }));
     const gatewayRuntime = await new ClaudeCodeAgentRuntimeFactory({
@@ -237,15 +238,22 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       startHostedToolBridge: gatewayBridge as never,
     }).create({
       ...createRequest(() => undefined),
+      skillPaths: ["/workspace/.claude/skills/selected"],
       configuration: {
         provider: { mcpGateway: { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" } },
       },
     });
     await gatewayRuntime.prompt({ runId: "run-gateway", input: input("x") });
-    expect(gatewayBridge).toHaveBeenCalledWith(undefined, "run-gateway", expect.anything(), {
-      url: "https://server.example.test/api/v1/mcp",
-      token: "otmg_secret",
-    });
+    expect(gatewayBridge).toHaveBeenCalledWith(
+      undefined,
+      "run-gateway",
+      expect.anything(),
+      ["/workspace/.claude/skills/selected"],
+      {
+        url: "https://server.example.test/api/v1/mcp",
+        token: "otmg_secret",
+      },
+    );
     await gatewayRuntime.close();
 
     const bridgeRuntime = await new ClaudeCodeAgentRuntimeFactory({
@@ -368,7 +376,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: { ...createRequest(() => undefined), workspace: { cwd: "/workspace", writableRoots: ["relative"] } },
         message: "writable roots",
       },
-      { request: withPolicy({ approvals: "on-request" }), message: "approvals=never" },
+      { request: withPolicy({ approvals: "unless-trusted" }), message: "approvals=never or on-request" },
       {
         request: withPolicy({ fileSystem: "read-only" }),
         message: "constrained filesystem",
@@ -495,7 +503,10 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: withPolicy({ fileSystem: "unrestricted", network: "enabled" }),
         expected: (args) => {
           expect(argumentAfter(args, "--permission-mode")).toBe("bypassPermissions");
-          expect(args).not.toContain("--settings");
+          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({
+            disableAllHooks: true,
+            disableSkillShellExecution: true,
+          });
           expect(args).not.toContain("--tools");
         },
       },
@@ -503,7 +514,10 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: withPolicy({ tools: { mode: "allow-list", names: [] } }),
         expected: (args) => {
           expect(argumentAfter(args, "--tools")).toBe("");
-          expect(args).not.toContain("--settings");
+          expect(JSON.parse(argumentAfter(args, "--settings") as string)).toEqual({
+            disableAllHooks: true,
+            disableSkillShellExecution: true,
+          });
         },
       },
       {
@@ -633,7 +647,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const command = join(directory, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -679,6 +693,28 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     }
   });
 
+  it.each(["auto", "--permission-prompt-tool"])("rejects a CLI without %s support", async (missing) => {
+    const directory = await temporaryDirectory("opentag-claude-probe-");
+    const command = join(directory, "claude-fixture");
+    const help =
+      "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools auto --permission-prompt-tool --append-system-prompt";
+    await writeFile(
+      command,
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then echo '2.1.295 (Claude Code)'; exit 0; fi
+if [ "$1" = "--help" ]; then echo '${help.replace(missing, "")}'; exit 0; fi
+exit 1
+`,
+      "utf8",
+    );
+    await chmod(command, 0o755);
+    await expect(
+      new ClaudeCodeAgentRuntimeFactory({
+        process: { command, env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: "fixture" } },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "version_incompatible" }] });
+  });
+
   it.each(["logged-out", "invalid", "empty"])("rejects %s local credentials", async (mode) => {
     const directory = await temporaryDirectory("opentag-claude-probe-");
     const missingCommand = join(directory, `claude-${mode}`);
@@ -690,7 +726,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
           : "exit 1";
     await writeFile(
       missingCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\n${authResponse}\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\n${authResponse}\n`,
       "utf8",
     );
     await chmod(missingCommand, 0o755);
@@ -703,18 +739,18 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     });
   });
 
-  it("probes credentials through the project setting sources the runtime loads", async () => {
+  it("probes credentials without loading writable settings, matching the runtime", async () => {
     const directory = await temporaryDirectory("opentag-claude-probe-");
     const authArguments = join(directory, "auth-arguments");
     const userCredentialCommand = join(directory, "claude-user-credential");
     /*
      * The credential lives in user-level settings: the CLI defaults report a login that the
-     * project-scoped runtime can never use. The probe must not repeat that false positive, so
+     * settings-free runtime can never use. The probe must not repeat that false positive, so
      * this fixture only reports `loggedIn` when the default sources are in effect.
      */
     await writeFile(
       userCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "project" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nprintf '%s\\n' "$*" > '${authArguments}'\nif [ "$1" = "--setting-sources" ] && [ "$2" = "" ]; then printf '{"loggedIn":false}\\n'; exit 1; fi\nprintf '{"loggedIn":true}\\n'\n`,
       "utf8",
     );
     await chmod(userCredentialCommand, 0o755);
@@ -726,20 +762,20 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       version: "2.1.210 (Claude Code)",
       issues: [{ code: "credential_missing" }],
     });
-    await expect(readFile(authArguments, "utf8")).resolves.toBe("--setting-sources project auth status --json\n");
+    await expect(readFile(authArguments, "utf8")).resolves.toBe("--setting-sources  auth status --json\n");
 
-    // A credential visible under the project setting sources still reports ready.
-    const projectCredentialCommand = join(directory, "claude-project-credential");
+    // Subscription or API credentials that do not require settings still report ready.
+    const nativeCredentialCommand = join(directory, "claude-native-credential");
     await writeFile(
-      projectCredentialCommand,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "project" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
+      nativeCredentialCommand,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; exit 0; fi\nif [ "$1" = "--setting-sources" ] && [ "$2" = "" ]; then printf '{"loggedIn":true}\\n'; exit 0; fi\nprintf '{"loggedIn":false}\\n'; exit 1\n`,
       "utf8",
     );
-    await chmod(projectCredentialCommand, 0o755);
-    const projectCredential = new ClaudeCodeAgentRuntimeFactory({
-      process: { command: projectCredentialCommand, env: { PATH: process.env.PATH } },
+    await chmod(nativeCredentialCommand, 0o755);
+    const nativeCredential = new ClaudeCodeAgentRuntimeFactory({
+      process: { command: nativeCredentialCommand, env: { PATH: process.env.PATH } },
     });
-    await expect(projectCredential.probe({})).resolves.toMatchObject({ ready: true, issues: [] });
+    await expect(nativeCredential.probe({})).resolves.toMatchObject({ ready: true, issues: [] });
   });
 
   it("handles a disappearing CLI and an empty version response", async () => {
@@ -747,7 +783,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const vanishingCommand = join(directory, "claude-vanishing");
     await writeFile(
       vanishingCommand,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; touch "$0.version-read"; exit 0; fi\nif [ "$1" = "--help" ]; then while [ ! -f "$0.version-read" ]; do sleep 0.01; done; printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool "auto" --append-system-prompt\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
       "utf8",
     );
     await chmod(vanishingCommand, 0o755);

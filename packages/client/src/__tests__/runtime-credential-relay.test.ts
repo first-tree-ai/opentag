@@ -591,7 +591,12 @@ describe("runtime proxy error reasons", () => {
 
 describe("RuntimeCredentialEnvironmentManager", () => {
   it("delegates unchanged to the legacy environment manager in legacy mode", async () => {
-    const preparedLegacy = { path: "/tmp/legacy.sh", provider: "slack" as const, slackConfigDir: "/tmp/cfg" };
+    const preparedLegacy = {
+      path: "/tmp/legacy.sh",
+      environmentManifest: "/tmp/legacy.json",
+      provider: "slack" as const,
+      slackConfigDir: "/tmp/cfg",
+    };
     const calls: string[] = [];
     const legacy = {
       prepare: async () => {

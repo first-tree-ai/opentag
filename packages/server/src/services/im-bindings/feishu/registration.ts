@@ -110,6 +110,7 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
               // receiveMode gates Agent delivery, not the Bot authority ceiling or durable ImMessage history.
               scopes: { tenant: [...FEISHU_REQUIRED_TENANT_SCOPES] },
               events: { items: { tenant: ["im.message.receive_v1", "im.message.recalled_v1"] } },
+              callbacks: { items: ["card.action.trigger"] },
             },
             onQRCodeReady: ({ url, expireIn }) => {
               resolveQr({ url, expiresAt: new Date(Date.now() + expireIn * 1000) });

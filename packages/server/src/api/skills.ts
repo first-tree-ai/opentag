@@ -1,8 +1,11 @@
 import {
   AGENT_SKILL_BUNDLE_TEMPLATE,
+  AGENT_SKILL_FILE_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   ListAgentSkillsResponseSchema,
+  ReadSkillFileQuerySchema,
+  ReadSkillFileResponseSchema,
   SkillDetailSchema,
   type SkillSource,
   UpdateSkillRequestSchema,
@@ -70,6 +73,15 @@ export function registerSkillRoutes(
   app.get(AGENT_SKILL_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId, skillId } = parseRequest(AgentSkillParamsSchema, request.params);
     const response = SkillDetailSchema.parse(await skillService.get(authenticatedUserId(request), agentId, skillId));
+    return reply.header("cache-control", "no-store").code(200).send(response);
+  });
+
+  app.get(AGENT_SKILL_FILE_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId, skillId } = parseRequest(AgentSkillParamsSchema, request.params);
+    const query = parseRequest(ReadSkillFileQuerySchema, request.query);
+    const response = ReadSkillFileResponseSchema.parse(
+      await skillService.readFile(authenticatedUserId(request), agentId, skillId, query),
+    );
     return reply.header("cache-control", "no-store").code(200).send(response);
   });
 

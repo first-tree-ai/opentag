@@ -56,6 +56,7 @@ import {
   agentSetupPath,
   agentSetupRefreshPath,
   agentSkillBundlePath,
+  agentSkillFilePath,
   agentSkillPath,
   agentSkillPresetInstallPath,
   agentSkillPresetsPath,
@@ -151,6 +152,8 @@ import {
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
+  type ReadSkillFileResponse,
+  ReadSkillFileResponseSchema,
   type RebindAgentComputerRequest,
   type RemoteSkillSelection,
   type ResolveRemoteSkillsResponse,
@@ -823,6 +826,19 @@ export class BrowserApi {
 
   agentSkill(agentId: string, skillId: string): Promise<SkillDetail> {
     return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema);
+  }
+
+  agentSkillFile(
+    agentId: string,
+    skillId: string,
+    path: string,
+    archiveSha256: string,
+    signal?: AbortSignal,
+  ): Promise<ReadSkillFileResponse> {
+    const query = new URLSearchParams({ path, archiveSha256 });
+    return this.request(`${agentSkillFilePath(agentId, skillId)}?${query}`, ReadSkillFileResponseSchema, {
+      ...(signal ? { signal } : {}),
+    });
   }
 
   /**

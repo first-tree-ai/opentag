@@ -107,14 +107,14 @@ describe("SkillPresetDialog", () => {
     renderDialog();
     await screen.findByText("mcp-onboarding");
 
-    fireEvent.change(screen.getByLabelText("Search presets"), { target: { value: "catalog" } });
+    fireEvent.change(screen.getByLabelText("Search skills"), { target: { value: "catalog" } });
     expect(await screen.findByText("mcp-catalog-entry")).toBeTruthy();
     expect(screen.queryByText("mcp-onboarding")).toBeNull();
 
-    fireEvent.change(screen.getByLabelText("Search presets"), { target: { value: "nothing matches" } });
-    expect(await screen.findByText("No presets match your search.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Search skills"), { target: { value: "nothing matches" } });
+    expect(await screen.findByText("No skills match your search.")).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("Search presets"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Search skills"), { target: { value: "" } });
     expect(await screen.findByText("mcp-onboarding")).toBeTruthy();
   });
 
@@ -170,13 +170,13 @@ describe("SkillPresetDialog", () => {
     stubCatalog(new ApiError(500, "boom", "INTERNAL_ERROR"));
     renderDialog();
 
-    expect(await screen.findByText("The presets could not be loaded.")).toBeTruthy();
+    expect(await screen.findByText("The skill catalog could not be loaded.")).toBeTruthy();
   });
   it("omits redundant discovery controls for a single preset", async () => {
     stubCatalog(catalog({ categories: [{ id: "getting-started", order: 10 }], presets: [preset()] }));
     renderDialog();
     await screen.findByText("mcp-onboarding");
-    expect(screen.queryByLabelText("Search presets")).toBeNull();
+    expect(screen.queryByLabelText("Search skills")).toBeNull();
     expect(screen.queryByRole("button", { name: "Getting started" })).toBeNull();
     expect(screen.getByRole("button", { name: "Install: mcp-onboarding" })).toBeTruthy();
   });

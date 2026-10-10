@@ -223,7 +223,7 @@ describe("SkillsPage Agent changes", () => {
     const router = await renderSkillsRoute(`/agents/${AGENT_A}/skills`);
 
     await screen.findByText("Release notes writer");
-    fireEvent.click(screen.getByRole("button", { name: "Add skill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import skill" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Install from URL" }));
     expect(await screen.findByText("Install from URL")).toBeTruthy();
 

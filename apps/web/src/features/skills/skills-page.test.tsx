@@ -47,7 +47,7 @@ function wrap(children: ReactNode, client = new QueryClient({ defaultOptions: { 
 }
 
 function uploadButton(): HTMLButtonElement {
-  return screen.getAllByRole("button", { name: "Add skill" })[0] as HTMLButtonElement;
+  return screen.getAllByRole("button", { name: "Import skill" })[0] as HTMLButtonElement;
 }
 
 function fileInput(): HTMLInputElement {
@@ -100,7 +100,7 @@ describe("SkillsPage", () => {
     // The button exists before the list arrives, when storage is still unknown and it is disabled;
     // storage is only a fact once a successful list has said so.
     await screen.findByText(/No Skills yet/);
-    const install = screen.getByRole("button", { name: "Add skill" }) as HTMLButtonElement;
+    const install = screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement;
     expect(install.disabled).toBe(false);
     fireEvent.click(install);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Install from URL" }));
@@ -129,12 +129,12 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     await screen.findByText(/No Skills yet/);
-    // The header and empty-state Browse skills actions both open the independent catalog.
-    const buttons = screen.getAllByRole("button", { name: "Browse skills" }) as HTMLButtonElement[];
+    // The header and empty-state Explore skills actions both open the independent catalog.
+    const buttons = screen.getAllByRole("button", { name: "Explore skills" }) as HTMLButtonElement[];
     expect(buttons.length).toBeGreaterThan(0);
     expect(buttons[0]?.disabled).toBe(false);
     fireEvent.click(buttons[0] as HTMLButtonElement);
-    expect((await screen.findAllByText("Browse skills")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Skill catalog")).length).toBeGreaterThan(0);
     expect(presets).toHaveBeenCalledWith(AGENT_ID);
   });
 
@@ -143,7 +143,7 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText(/Skill storage is not configured/)).toBeTruthy();
-    const install = screen.getByRole("button", { name: "Add skill" }) as HTMLButtonElement;
+    const install = screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement;
     expect(install.disabled).toBe(true);
     fireEvent.click(install);
     expect(screen.queryByText("Install from URL")).toBeNull();
@@ -156,8 +156,8 @@ describe("SkillsPage", () => {
     expect(await screen.findByText(/No Skills yet/)).toBeTruthy();
     expect(screen.getByText("Add skills to give this Agent reusable know-how.")).toBeTruthy();
     const chooseFile = vi.spyOn(fileInput(), "click");
-    fireEvent.click(screen.getByRole("button", { name: "Add skill" }) as HTMLButtonElement);
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Upload skill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Upload file" }));
     expect(chooseFile).toHaveBeenCalledOnce();
   });
 
@@ -175,7 +175,7 @@ describe("SkillsPage", () => {
     fireEvent.change(fileInput(), { target: { files: [file] } });
 
     expect(screen.getByText("Uploading notes.zip…").getAttribute("role")).toBe("status");
-    for (const button of screen.getAllByRole("button", { name: "Add skill" })) {
+    for (const button of screen.getAllByRole("button", { name: "Import skill" })) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     }
     expect(upload).not.toHaveBeenCalled();
@@ -508,7 +508,7 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByText(/Skill storage is not configured/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Add skill" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement).disabled).toBe(true);
     // The Skill is still listed, with download disabled in its More menu.
     expect(screen.getByText("Release notes writer")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "More actions for Release notes writer" }));

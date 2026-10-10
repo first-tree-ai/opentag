@@ -126,6 +126,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   probeMcpServer: [ID, ID],
   agentSkills: [ID],
   agentSkill: [ID, ID],
+  agentSkillFile: [ID, ID, "SKILL.md", "a".repeat(64)],
   uploadAgentSkill: [ID, { file: new Blob(["bundle"]), sha256: "a".repeat(64), format: "zip", replace: false }],
   updateAgentSkill: [ID, ID, { enabled: false }],
   removeAgentSkill: [ID, ID],

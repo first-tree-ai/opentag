@@ -111,6 +111,7 @@ export const MCP_CLIENT_METADATA_PATH = "/oauth/client-metadata.json";
  */
 export const AGENT_SKILLS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/skills`;
 export const AGENT_SKILL_TEMPLATE = `${AGENT_SKILLS_TEMPLATE}/:skillId`;
+export const AGENT_SKILL_FILE_TEMPLATE = `${AGENT_SKILL_TEMPLATE}/file`;
 export const AGENT_SKILL_BUNDLE_TEMPLATE = `${AGENT_SKILL_TEMPLATE}/bundle`;
 /*
  * Remote Skill installation. `resolve` only reads: it normalizes the source, fetches it, and returns
@@ -483,6 +484,10 @@ export function agentSkillsInstallPath(agentId: string): string {
 /** The remote-install preview: same source in, candidate Skills out, and no write. */
 export function agentSkillsInstallResolvePath(agentId: string): string {
   return `${agentSkillsInstallPath(agentId)}/resolve`;
+}
+
+export function agentSkillFilePath(agentId: string, skillId: string): string {
+  return `${agentSkillPath(agentId, skillId)}/file`;
 }
 
 export function agentSkillBundlePath(agentId: string, skillId: string): string {

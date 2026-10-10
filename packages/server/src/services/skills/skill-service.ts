@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   type ListAgentSkillsResponse,
+  type ReadSkillFileQuery,
+  type ReadSkillFileResponse,
   type RuntimeSkillManifest,
   SKILL_MAX_PER_AGENT,
   type Skill,
@@ -23,6 +25,7 @@ import {
 } from "./errors.js";
 import { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-archive.js";
 import type { SkillReadLimits } from "./skill-archive-reader.js";
+import { readSkillFile } from "./skill-file-reader.js";
 import {
   bestEffortDeleteSkillObject,
   discardUnreferencedObject,
@@ -202,6 +205,18 @@ export class SkillService {
   async openBundle(callerUserId: string, agentId: string, skillId: string): Promise<SkillBundle> {
     await this.#requireAgent(callerUserId, agentId);
     return this.#openBundle(await this.#requireSkill(agentId, skillId));
+  }
+
+  async readFile(
+    callerUserId: string,
+    agentId: string,
+    skillId: string,
+    query: ReadSkillFileQuery,
+  ): Promise<ReadSkillFileResponse> {
+    await this.#requireAgent(callerUserId, agentId);
+    const row = await this.#requireSkill(agentId, skillId);
+    if (query.archiveSha256 !== row.archiveSha256) throw skillRevisionConflict();
+    return readSkillFile(await this.#openBundle(row), query.path, this.#readLimits);
   }
 
   // ----------------------------------------------------------------- computer

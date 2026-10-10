@@ -6,6 +6,7 @@ import * as m from "../../paraglide/messages.js";
 import { Banner, Button, DropdownMenu, Empty, Icon, Loader } from "../../ui/design-system.js";
 import "./skills.css";
 import { InstallSkillDialog } from "./install-skill-dialog.js";
+import { SkillDetailsDialog } from "./skill-details-dialog.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
 import { SkillPresetDialog } from "./skill-preset-dialog.js";
 import { SkillRow } from "./skill-row.js";
@@ -60,6 +61,8 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const [actionError, setActionError] = useState<string | undefined>();
   const [uploadingName, setUploadingName] = useState<string | undefined>();
   const [pendingReplace, setPendingReplace] = useState<PendingReplace | undefined>();
+  const [detailsTarget, setDetailsTarget] = useState<Skill | undefined>();
+  const detailsTrigger = useRef<HTMLElement | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Skill | undefined>();
   /*
    * Remote installation lives in this body too, so a pending dialog cannot survive an Agent change:
@@ -201,7 +204,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   );
 
   const presetAction = (
-    <Button disabled={!storageAvailable} onClick={openPresetCatalog} variant="secondary">
+    <Button disabled={!storageAvailable} onClick={openPresetCatalog} variant="ghost">
       {m.skills_preset_button()}
     </Button>
   );
@@ -256,6 +259,10 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
       <SkillList
         hasData={skills.data !== undefined}
         isPending={skills.isPending}
+        onViewDetails={(skill, trigger) => {
+          detailsTrigger.current = trigger;
+          setDetailsTarget(skill);
+        }}
         onDelete={setDeleteTarget}
         onOpenPresets={openPresetCatalog}
         presetsAvailable={storageAvailable}
@@ -271,6 +278,12 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           onConfirm={() => void confirmReplace()}
         />
       ) : null}
+      <SkillDetailsDialog
+        skill={detailsTarget}
+        onClose={() => setDetailsTarget(undefined)}
+        returnFocusRef={detailsTrigger}
+        storageAvailable={storageAvailable}
+      />
       {deleteTarget ? <RemoveSkillDialog onClose={() => setDeleteTarget(undefined)} skill={deleteTarget} /> : null}
       {installOpen ? (
         <InstallSkillDialog
@@ -296,6 +309,7 @@ function SkillList({
   isPending,
   onDelete,
   onOpenPresets,
+  onViewDetails,
   presetsAvailable,
   skills,
   storageAvailable,
@@ -304,6 +318,7 @@ function SkillList({
   isPending: boolean;
   onDelete: (skill: Skill) => void;
   onOpenPresets: () => void;
+  onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
   presetsAvailable: boolean;
   skills: Skill[];
   storageAvailable: boolean;
@@ -342,6 +357,7 @@ function SkillList({
           downloadUrl={browserApi.agentSkillBundleUrl(skill.agentId, skill.id)}
           key={skill.id}
           onDelete={onDelete}
+          onViewDetails={onViewDetails}
           skill={skill}
           storageAvailable={storageAvailable}
         />

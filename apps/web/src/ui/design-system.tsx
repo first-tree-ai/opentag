@@ -672,6 +672,7 @@ export function Dialog({
   children,
   className,
   closeLabel,
+  headerActions,
   description,
   eyebrow,
   initialFocusRef,
@@ -685,6 +686,7 @@ export function Dialog({
   children: ReactNode;
   className?: string;
   closeLabel?: string;
+  headerActions?: ReactNode;
   description?: ReactNode;
   eyebrow?: ReactNode;
   initialFocusRef?: RefObject<HTMLElement | null>;
@@ -723,19 +725,22 @@ export function Dialog({
               {title}
             </KumoDialog.Title>
           </div>
-          <Button
-            aria-label={
-              closeLabel ?? (typeof title === "string" ? m.common_close_title({ title }) : m.common_close_dialog())
-            }
-            className="shrink-0"
-            disabled={busy}
-            shape="square"
-            size="compact"
-            variant="ghost"
-            onClick={onClose}
-          >
-            <Icon name="close" />
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {headerActions}
+            <Button
+              aria-label={
+                closeLabel ?? (typeof title === "string" ? m.common_close_title({ title }) : m.common_close_dialog())
+              }
+              className="shrink-0"
+              disabled={busy}
+              shape="square"
+              size="compact"
+              variant="ghost"
+              onClick={onClose}
+            >
+              <Icon name="close" />
+            </Button>
+          </div>
         </header>
         {description ? (
           <KumoDialog.Description className="mb-4 text-sm text-kumo-subtle">{description}</KumoDialog.Description>

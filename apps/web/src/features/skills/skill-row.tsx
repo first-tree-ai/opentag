@@ -1,6 +1,6 @@
 import type { Skill } from "@opentag/shared/browser";
 import { DownloadSimple, Trash } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, DropdownMenu, Icon, Switch, Text, Tooltip } from "../../ui/design-system.js";
@@ -17,11 +17,13 @@ import { useUpdateSkill } from "./skills-queries.js";
 export function SkillRow({
   downloadUrl,
   onDelete,
+  onViewDetails,
   skill,
   storageAvailable,
 }: {
   downloadUrl: string;
   onDelete: (skill: Skill) => void;
+  onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
   skill: Skill;
   storageAvailable: boolean;
 }) {
@@ -29,6 +31,29 @@ export function SkillRow({
   // Agent can never be written through a mutation that belongs to another.
   const update = useUpdateSkill();
   const [error, setError] = useState<string>();
+  const descriptionRef = useRef<HTMLParagraphElement>(null);
+  const [descriptionTruncated, setDescriptionTruncated] = useState(false);
+
+  useLayoutEffect(() => {
+    const description = descriptionRef.current;
+    if (!description) return;
+    if (!skill.description) {
+      setDescriptionTruncated(false);
+      return;
+    }
+    const measure = () =>
+      setDescriptionTruncated(
+        description.scrollWidth > description.clientWidth || description.scrollHeight > description.clientHeight,
+      );
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(description);
+    document.fonts?.addEventListener("loadingdone", measure);
+    return () => {
+      observer.disconnect();
+      document.fonts?.removeEventListener("loadingdone", measure);
+    };
+  }, [skill.description]);
 
   const toggle = async (enabled: boolean) => {
     if (update.isPending) return;
@@ -42,9 +67,26 @@ export function SkillRow({
 
   return (
     <li className="skill-row min-w-0 p-4" data-ui="skill-row">
-      <Text as="h2" title={skill.name} variant="heading" DANGEROUS_className="min-w-0 truncate">
-        {skill.name}
-      </Text>
+      <Tooltip
+        content={skill.description}
+        disabled={!descriptionTruncated}
+        render={<div className="skill-row-content min-w-0 rounded-md hover:bg-kumo-tint" />}
+      >
+        <Text as="h2" title={skill.name} variant="heading" DANGEROUS_className="min-w-0 truncate">
+          <Button
+            aria-label={m.skills_details_open({ name: skill.name })}
+            aria-haspopup="dialog"
+            className="skill-row-open max-w-full justify-start text-left"
+            variant="inline"
+            onClick={(event) => onViewDetails(skill, event.currentTarget)}
+          >
+            <span className="truncate">{skill.name}</span>
+          </Button>
+        </Text>
+        <p className="skill-row-description ui-text text-kumo-subtle" data-text-size="sm" ref={descriptionRef}>
+          {skill.description}
+        </p>
+      </Tooltip>
       <div className="skill-row-controls flex shrink-0 items-center gap-3">
         <Switch
           aria-label={m.skills_toggle_label({ name: skill.name })}
@@ -93,12 +135,6 @@ export function SkillRow({
           </DropdownMenu.Content>
         </DropdownMenu>
       </div>
-      <Tooltip
-        content={skill.description}
-        render={<p className="skill-row-description ui-text text-kumo-subtle" data-text-size="sm" />}
-      >
-        {skill.description}
-      </Tooltip>
       {error ? (
         <div className="col-span-2 mt-2">
           <Banner variant="error">{error}</Banner>

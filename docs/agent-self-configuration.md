@@ -22,8 +22,9 @@ Every command accepts `--json`. `<server>` is an MCP Server name or ID.
 
 ## Owner opt-in
 
-Self-configuration is disabled by default for new and existing Agents. The owner can enable the **Self-configuration**
-switch in the Agent's settings. The Account-scoped Agent update API also accepts `selfConfigurationEnabled`.
+Self-configuration is disabled by default for new and existing Agents. The web settings currently do not expose
+this permission. The owner can still enable or disable it through the Account-scoped Agent update API using
+`selfConfigurationEnabled`; hiding the web control does not revoke existing opt-ins.
 The Agent cannot change this flag through `agent self update`.
 
 When `selfConfigurationEnabled` is false, every route under `/api/v1/runtime/agent` returns HTTP 403 with

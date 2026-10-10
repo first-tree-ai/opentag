@@ -1,7 +1,7 @@
 # Agent 自我配置
 
 > Canonical source: [agent-self-configuration.md](../agent-self-configuration.md)
-> Last synced with: 2026-10-01
+> Last synced with: 2026-10-10
 
 所有者启用自助配置后，运行在 OpenTag managed Session 内的 Agent 才可以通过 CLI 查看并修改自己的部分配置，无需 Account 登录：
 
@@ -22,8 +22,9 @@ opentag agent self mcp detach <server>
 
 ## 所有者主动授权
 
-新建和已有 Agent 的自助配置默认均关闭。所有者可以在 Agent 设置中启用**自助配置**开关。
-Account 作用域的 Agent 更新 API 也接受 `selfConfigurationEnabled`。
+新建和已有 Agent 的自助配置默认均关闭。Web 设置目前不展示此权限。
+所有者仍可通过 Account 作用域的 Agent 更新 API，使用 `selfConfigurationEnabled` 启用或关闭此权限；
+隐藏 Web 控件不会撤销已有授权。
 Agent 不能通过 `agent self update` 修改此开关。
 
 当 `selfConfigurationEnabled` 为 false 时，`/api/v1/runtime/agent` 下的所有路由（包括读取路由）

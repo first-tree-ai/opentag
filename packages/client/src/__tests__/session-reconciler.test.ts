@@ -7,6 +7,7 @@ import type {
   SessionReconcileRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { SessionBindingConflictError } from "../runtime/session-binding-store.js";
 import { type RuntimePreparation, SessionReconciler } from "../runtime/session-reconciler.js";
 
 describe("SessionReconciler", () => {
@@ -180,6 +181,42 @@ describe("SessionReconciler", () => {
       reason: "stale_configuration",
     });
     expect(reconciler.getAgent("agent-1")?.revisionSequence).toBe(2);
+  });
+
+  it("answers durable binding conflicts found during preparation instead of throwing", async () => {
+    const computerId = randomUUID();
+    const cases = [
+      ["conflict", "session_binding_conflict"],
+      ["stale", "stale_configuration"],
+      ["recovery_required", "unresolved_turn"],
+    ] as const;
+    for (const [code, reason] of cases) {
+      const preparation: RuntimePreparation = {
+        prepareAgent: async () => undefined,
+        prepareSession: async () => {
+          throw new SessionBindingConflictError(code, "binding conflict");
+        },
+        stopSession: async () => undefined,
+      };
+      const reconciler = new SessionReconciler({ installationId: computerId, preparation });
+      const request = reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"));
+      await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "rejected", reason });
+      expect(reconciler.getSession("session-1")).toBeUndefined();
+    }
+
+    const failing = new SessionReconciler({
+      installationId: computerId,
+      preparation: {
+        prepareAgent: async () => undefined,
+        prepareSession: async () => {
+          throw new Error("disk full");
+        },
+        stopSession: async () => undefined,
+      },
+    });
+    await expect(
+      failing.reconcile(reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"))),
+    ).rejects.toThrow("disk full");
   });
 
   it("B-11/B-12 blocks session migration and agent revision changes while a turn owns the binding", async () => {

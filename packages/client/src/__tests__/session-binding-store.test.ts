@@ -306,9 +306,13 @@ describe("SessionBindingStore", () => {
     });
     const mismatchedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: mismatchedStore });
     const mismatched = new SessionReconciler({ installationId: fixture.computerId, preparation: mismatchedWorkspace });
-    await expect(mismatched.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
-      /identity|binding/i,
-    );
+    await expect(mismatched.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "rejected",
+      reason: "session_binding_conflict",
+    });
+    await expect(mismatchedStore.read("agent-1", "session-1")).resolves.toMatchObject({
+      providerHomeIdentity: fixture.homeIdentity,
+    });
 
     const unavailableStore = new SessionBindingStore({
       home: fixture.home,
@@ -319,9 +323,10 @@ describe("SessionBindingStore", () => {
       installationId: fixture.computerId,
       preparation: unavailableWorkspace,
     });
-    await expect(unavailable.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
-      "artifact identity is unavailable",
-    );
+    await expect(unavailable.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "rejected",
+      reason: "session_binding_conflict",
+    });
   });
 
   it("stores each Session in an independent private file and isolates Agents", async () => {

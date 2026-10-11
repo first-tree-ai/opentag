@@ -10,6 +10,13 @@ import {
   SessionReconcileRequestSchema,
   type SessionReconcileResult,
 } from "@opentag/shared";
+import { SessionBindingConflictError } from "./session-binding-store.js";
+
+const BINDING_CONFLICT_REASONS: Record<SessionBindingConflictError["code"], string> = {
+  conflict: "session_binding_conflict",
+  recovery_required: "unresolved_turn",
+  stale: "stale_configuration",
+};
 
 export type SessionActivityPhase = "running" | "reporting";
 
@@ -368,7 +375,9 @@ export class SessionReconciler {
       this.#preparation.requiresSessionPreparation?.(request, hashes) === true;
     if (shouldPrepareAgent) await this.#preparation.prepareAgent(snapshot, hashes);
     else await this.#preparation.verifyAgent?.(snapshot, hashes);
-    const preparedSession = shouldPrepareSession ? await this.#preparation.prepareSession(request, hashes) : undefined;
+    const prepared = await this.#prepareSessionOrReject(request, hashes, shouldPrepareSession);
+    if ("rejected" in prepared) return prepared.rejected;
+    const preparedSession = prepared.session;
 
     if (shouldPrepareAgent) {
       this.#agents.set(request.agentId, {
@@ -404,6 +413,24 @@ export class SessionReconciler {
       };
     }
     return this.#result(request, "ready");
+  }
+
+  async #prepareSessionOrReject(
+    request: SessionReconcileRequest,
+    hashes: RuntimeSnapshotHashes,
+    shouldPrepare: boolean,
+  ): Promise<
+    { session: Awaited<ReturnType<RuntimePreparation["prepareSession"]>> } | { rejected: SessionReconcileResult }
+  > {
+    if (!shouldPrepare) return { session: undefined };
+    try {
+      return { session: await this.#preparation.prepareSession(request, hashes) };
+    } catch (error) {
+      // The durable binding outlives this in-memory state, so after a restart it is the first
+      // place a same-sequence conflict is seen. Answer the Server instead of dropping the frame.
+      if (!(error instanceof SessionBindingConflictError)) throw error;
+      return { rejected: this.#result(request, "rejected", BINDING_CONFLICT_REASONS[error.code]) };
+    }
   }
 
   #result(

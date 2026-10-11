@@ -204,6 +204,10 @@ async function readState({ server, token, appName, fetchImpl, deadline = null, n
   return { definition, snapshot: snapshotAppDefinition(definition), envVars: readEnvVars(definition), isBuilding };
 }
 
+function activeBillingRevision(envVars, revision) {
+  return envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") === "true" ? revision : undefined;
+}
+
 /** Every read-only gate a release must pass before a mutation is even considered. */
 function validateState({ state, release, serverRevision, billingRevision, publicUrl }) {
   assertAppIdle(state);
@@ -397,7 +401,7 @@ export async function runDeploy({
   mode,
   release,
   serverRevision,
-  billingRevision,
+  billingRevision: bundledBillingRevision,
   config,
   fetchImpl = fetch,
   runCommand = runLocalCommand,
@@ -407,7 +411,7 @@ export async function runDeploy({
   now = Date.now,
 }) {
   assertFullSha(serverRevision, "--server-revision");
-  if (billingRevision !== undefined) assertFullSha(billingRevision, "billing revision");
+  if (bundledBillingRevision !== undefined) assertFullSha(bundledBillingRevision, "billing revision");
   const runnerHash = runnerTargetHash({ image: release.image, version: release.version });
   const password = await readCaproverPassword({ secret: config.passwordSecret, runCommand });
   const token = await caproverLogin({ server: config.server, password, fetchImpl });
@@ -424,6 +428,7 @@ export async function runDeploy({
   // The Server's own redeploy has just restarted the app behind CapRover, so the first look at it
   // is the one most likely to find the API unreachable. It observes; it does not mutate.
   let initial = await observe("reading the app state");
+  const billingRevision = activeBillingRevision(initial.envVars, bundledBillingRevision);
   const cloudTimeout = assertBillingEnvironment({
     definition: initial.definition,
     envVars: initial.envVars,

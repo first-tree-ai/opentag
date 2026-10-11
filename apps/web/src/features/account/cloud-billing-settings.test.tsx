@@ -1,6 +1,6 @@
 import type { CloudBillingSummary } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
 import { CloudBillingSettings } from "./cloud-billing-settings.js";
@@ -15,19 +15,40 @@ const summary: CloudBillingSummary = {
   maximumTopUpCents: 100_000,
 };
 afterEach(() => vi.restoreAllMocks());
-function mount() {
+function mount(initialSummary?: CloudBillingSummary) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  if (initialSummary) client.setQueryData(["cloud-billing"], initialSummary);
+  const view = render(
     <QueryClientProvider client={client}>
       <CloudBillingSettings />
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 function checkoutFailure() {
   return vi.spyOn(browserApi, "cloudCreditCheckout").mockRejectedValue(new Error("temporarily unavailable"));
 }
 
 describe("cloud credit settings", () => {
+  it("keeps billing invisible while its flag loads, including when it resolves disabled", async () => {
+    let resolve!: (value: CloudBillingSummary) => void;
+    vi.spyOn(browserApi, "cloudBilling").mockImplementation(
+      () =>
+        new Promise((complete) => {
+          resolve = complete;
+        }),
+    );
+    const view = mount();
+    expect(view.container.innerHTML).toBe("");
+    await act(async () => resolve({ enabled: false }));
+    expect(view.container.innerHTML).toBe("");
+  });
+  it("keeps billing invisible when its flag cannot be loaded", async () => {
+    vi.spyOn(browserApi, "cloudBilling").mockRejectedValue(new Error("offline"));
+    const view = mount();
+    await waitFor(() => expect(view.client.getQueryState(["cloud-billing"])?.status).toBe("error"));
+    expect(view.container.innerHTML).toBe("");
+  });
   it("hides disabled billing", async () => {
     const load = vi.spyOn(browserApi, "cloudBilling").mockResolvedValue({ enabled: false });
     mount();
@@ -132,7 +153,7 @@ describe("cloud credit settings", () => {
   });
   it("allows retrying a failed balance load", async () => {
     vi.spyOn(browserApi, "cloudBilling").mockRejectedValueOnce(new Error("offline")).mockResolvedValue(summary);
-    mount();
+    mount(summary);
     fireEvent.click(await screen.findByRole("button", { name: "Refresh balance" }));
     expect(await screen.findByText("$1.00")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();

@@ -27,14 +27,13 @@ export function CloudBillingSettings() {
     refetchInterval: (query) => (query.state.data?.enabled && query.state.data.usagePaused ? 5_000 : 30_000),
   });
   const summary = query.data;
-  if (summary?.enabled === false) return null;
+  if (!summary?.enabled) return null;
 
   return (
     <section className="grid gap-4" aria-label={m.account_billing_title()}>
       <Text as="h2" variant="heading">
         {m.account_billing_title()}
       </Text>
-      {query.isPending ? <p role="status">{m.account_billing_loading()}</p> : null}
       {query.isError ? (
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm text-kumo-danger" role="alert">
@@ -45,17 +44,15 @@ export function CloudBillingSettings() {
           </Button>
         </div>
       ) : null}
-      {summary?.enabled ? (
-        <div className="ui-surface overflow-hidden bg-kumo-base">
-          <div className="grid gap-2 bg-kumo-tint p-6 sm:p-8">
-            <span className="text-sm text-kumo-subtle">{m.account_billing_balance()}</span>
-            <p className="text-4xl font-semibold text-kumo-strong tabular-nums sm:text-5xl">
-              {dollars(summary.availableMicros)}
-            </p>
-          </div>
-          <CloudCreditForm summary={summary} />
+      <div className="ui-surface overflow-hidden bg-kumo-base">
+        <div className="grid gap-2 bg-kumo-tint p-6 sm:p-8">
+          <span className="text-sm text-kumo-subtle">{m.account_billing_balance()}</span>
+          <p className="text-4xl font-semibold text-kumo-strong tabular-nums sm:text-5xl">
+            {dollars(summary.availableMicros)}
+          </p>
         </div>
-      ) : null}
+        <CloudCreditForm summary={summary} />
+      </div>
     </section>
   );
 }

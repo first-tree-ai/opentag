@@ -34,9 +34,11 @@ OpenTag 转发模型响应，不解析 Token 用量。完成或中断后，它�
 
 ## CapRover 部署
 
+`OPENTAG_CLOUD_BILLING_ENABLED` 默认值为 `false`，各应用环境独立配置。生产环境保持未设置或 `false`，Staging 设为 `true` 即可测试计费。打包私有包不会启用计费。关闭时，服务端不加载私有包、不初始化 Stripe、不检查额度、不授予起始额度，也不注册支付 Webhook。确认计费已启用前，额度区域保持隐藏，包括加载中和首次设置读取失败时。云端 Token 用量仍会记录，但不扣款。只有目标应用启用计费时，部署检查才要求计费就绪及计费专用的发布配置。
+
 公开仓库的 `Docker`、`Deploy Staging` 和 `Deploy Runner` 工作流一起发布应用和计费包。`cloud-billing.json` 固定私有包提交。配置仅可读 `first-tree-ai/opentag-billing` Contents 的 `OPENTAG_BILLING_READ_TOKEN`；可信 main 镜像构建检出该提交，针对应用运行检查及测试，再打包进 `ghcr.io/first-tree-ai/opentag:<应用 SHA>`。镜像记录两个源代码版本。PR 和默认本地镜像不需要私有访问权限。生产镜像可能公开，包含私有包代码；运行时凭证保存在 CapRover。
 
-先部署 Router 用量端点，并使用 OpenTag 租户键验证（`llm` scope）。`OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` 指向其 `/v1` 地址，`OPENTAG_CLOUD_MODEL_MASTER_KEY` 使用该租户键。验证每个模型的最终、待核对、缺失及拒绝状态，再开启云端身份、云端模型、计费及 `OPENTAG_AUTO_MIGRATE=true`。启动先运行公开迁移再创建服务。Staging 工作流发布应用和 CLI/Runner，部署应用前检查 CapRover 计费安全配置，再启用匹配的 Runner。部署同时要求 `/readyz` 应用就绪和 `/cloud-readyz` 计费就绪，并验证预期镜像版本。
+先部署 Router 用量端点，并使用 OpenTag 租户键验证（`llm` scope）。`OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` 指向其 `/v1` 地址，`OPENTAG_CLOUD_MODEL_MASTER_KEY` 使用该租户键。验证每个模型的最终、待核对、缺失及拒绝状态，再开启云端身份、云端模型、计费及 `OPENTAG_AUTO_MIGRATE=true`。启动先运行公开迁移再创建服务。Staging 工作流发布应用和 CLI/Runner，部署应用前检查 CapRover 计费安全配置，再启用匹配的 Runner。启用计费的部署同时要求 `/readyz` 应用就绪和 `/cloud-readyz` 计费就绪，并验证预期镜像版本。
 
 使用单应用副本，无 predeploy function，更新和回滚均先停止旧实例。`UpdateConfig` 为 `{"Order":"stop-first","Parallelism":1,"FailureAction":"pause"}`，`RollbackConfig` 为 `{"Order":"stop-first","Parallelism":1}`，`TaskTemplate.ContainerSpec.StopGracePeriod` 至少为 `(OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS + 30000) * 1000000` 纳秒。默认 600 秒超时需要 `630000000000`，避免启动恢复误将其他活动进程调用视为遗留调用。让镜像提供 `OPENTAG_BUILD_REVISION` 和 `OPENTAG_BILLING_REVISION`。备份共享数据库；已运行的迁移需要兼容镜像，优先向前修复。
 

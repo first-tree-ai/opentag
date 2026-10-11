@@ -7,7 +7,6 @@
   "account_billing_blocked": "Cloud billing is restricted. Contact support.",
   "account_billing_buy": "Buy credits",
   "account_billing_error": "Cloud billing could not be reached. Try again.",
-  "account_billing_loading": "Loading cloud credits…",
   "account_billing_redirecting": "Opening checkout…",
   "account_billing_refresh": "Refresh balance",
   "account_billing_title": "Cloud credits",

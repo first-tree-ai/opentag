@@ -237,12 +237,11 @@ export function assertRunnerEnvironment({ envVars, channel, publicUrl }) {
 
 /** Enforce single-replica cloud recovery and return the request timeout needed for rollout draining. */
 export function assertBillingEnvironment({ definition, envVars, billingRevision }) {
+  if (envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") !== "true") return 0;
   if (!billingRevision) {
-    if (envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") === "true")
-      throw new Error("Billing deployments require the application's pinned billing revision");
-    return 0;
+    throw new Error("Billing deployments require the application's pinned billing revision");
   }
-  for (const key of ["OPENTAG_CLOUD_BILLING_ENABLED", "OPENTAG_CLOUD_MODEL_ENABLED", "OPENTAG_AUTO_MIGRATE"]) {
+  for (const key of ["OPENTAG_CLOUD_MODEL_ENABLED", "OPENTAG_AUTO_MIGRATE"]) {
     if (envVars.get(key) !== "true") throw new Error(`${key} must remain enabled for cloud billing`);
   }
   if (envVars.get("OPENTAG_BUILD_REVISION") || envVars.get("OPENTAG_BILLING_REVISION"))

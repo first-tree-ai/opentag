@@ -96,6 +96,20 @@ describe("in-process cloud billing", () => {
     expect((await app.inject({ url: CLOUD_BILLING_PATH })).statusCode).toBe(401);
     expect((await app.inject({ url: CLOUD_BILLING_PATH, headers })).json()).toEqual({ enabled: false });
   });
+  it("does not expose payments when billing is disabled", async () => {
+    const app = accountApp();
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: CLOUD_BILLING_CHECKOUT_PATH,
+          headers,
+          payload: { amountCents: 1000, idempotencyKey: SESSION },
+        })
+      ).statusCode,
+    ).toBe(503);
+    expect((await app.inject({ method: "POST", url: "/stripe/webhook", payload: {} })).statusCode).toBe(404);
+  });
   it("derives Account ownership from authentication for balance, usage and checkout", async () => {
     const billing = moduleFixture();
     const app = accountApp(billing);

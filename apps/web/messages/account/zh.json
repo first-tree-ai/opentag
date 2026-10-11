@@ -7,7 +7,6 @@
   "account_billing_blocked": "云端计费受到限制，请联系支持。",
   "account_billing_buy": "购买额度",
   "account_billing_error": "无法连接云端计费服务，请重试。",
-  "account_billing_loading": "正在加载云端额度…",
   "account_billing_redirecting": "正在打开付款页面…",
   "account_billing_refresh": "刷新余额",
   "account_billing_title": "云端额度",

@@ -968,11 +968,37 @@ test("billing configuration rejects overlapping processes, insufficient drain ti
   assert.throws(() => validate(overridden), /come from the image/);
   const disabled = billingDefinition();
   disabled.envVars.find(({ key }) => key === "OPENTAG_CLOUD_BILLING_ENABLED").value = "false";
-  assert.throws(() => validate(disabled), /must remain enabled/);
+  assert.equal(validate(disabled), 0);
   assert.throws(
     () => assertBillingEnvironment({ definition: billingDefinition(), envVars: readEnvVars(billingDefinition()) }),
     /pinned billing revision/,
   );
+});
+
+test("a bundled billing package does not enable billing during preflight, checks or Runner activation", async () => {
+  for (const flag of [undefined, "false"]) {
+    for (const mode of ["preflight", "check", "apply"]) {
+      const definition = appDefinition();
+      if (flag) definition.envVars.push({ key: "OPENTAG_CLOUD_BILLING_ENABLED", value: flag });
+      const fake = caproverFake({ definition });
+      const result = await runDeploy(
+        deployDeps(fake, {
+          mode,
+          billingRevision: BILLING_SHA,
+          fetchImpl: async (url, options) => {
+            assert.ok(!url.endsWith("/cloud-readyz"), "Disabled billing must not be a readiness gate");
+            return fake.fetchImpl(url, options);
+          },
+        }),
+      );
+      assert.equal(result.mode, mode);
+      assert.equal(fake.updates().length, mode === "apply" ? 1 : 0);
+      if (mode === "apply") {
+        const environment = fake.state.definition.envVars;
+        assert.equal(environment.find(({ key }) => key === "OPENTAG_CLOUD_BILLING_ENABLED")?.value, flag);
+      }
+    }
+  }
 });
 
 function cloudFake({ status = 200, revision = BILLING_SHA, malformed = false } = {}) {

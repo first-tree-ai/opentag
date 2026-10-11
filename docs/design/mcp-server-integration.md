@@ -1079,12 +1079,12 @@ The empty state starts directly with **Quick start**, without repeating the page
 a separate onboarding banner. It offers Exa, Notion, Linear, and Airtable, using brand names
 and example tasks for web research, documents, tasks, and table records. Google Workspace services
 remain in Discover but are excluded from Quick start because their developer preview requires
-enrollment and deployment configuration. Asana is not a Quick start substitute because its V2 MCP
+preview access and deployment configuration. Asana is not a Quick start substitute because its V2 MCP
 server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
 See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
 [Linear's MCP setup](https://linear.app/docs/mcp), and
 [Airtable's authentication guide](https://airtable.com/developers/agents/mcp/getting-started).
-Google Workspace cards are labeled **Limited access** and show enrollment and OAuth
+Google Workspace cards are labeled **Limited access** and show preview-access and OAuth
 setup requirements before adding the service. All available cards use **Add**. Once mounted, a card
 shows a single non-interactive **✓ Added** status in the action position, regardless of authorization or probe status. Authentication methods and
 connection health belong to service setup and the Agent's management list, not catalog or quick-start

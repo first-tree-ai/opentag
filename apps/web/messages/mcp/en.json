@@ -287,7 +287,7 @@
   "mcp_quick_example_notion": "“Summarize the project notes in my workspace.”",
   "mcp_quick_example_linear": "“Find my tasks due this week.”",
   "mcp_quick_example_airtable": "“Find the records for this client.”",
-  "mcp_preview_description": "Google Workspace MCP is in developer preview. Your Google Cloud project must be enrolled, the relevant API enabled, and a Google OAuth client configured for this OpenTag deployment. Ask your administrator to confirm these requirements before connecting.",
+  "mcp_preview_description": "Google Workspace MCP is in developer preview. Your Google Cloud project must have preview access, the relevant API enabled, and a Google OAuth client configured for this OpenTag deployment. Ask your administrator to confirm these requirements before connecting.",
   "mcp_preview_guide": "Read Google’s setup guide",
   "mcp_preview_continue": "Requirements met — add service",
   "mcp_catalog_limited_access": "Limited access",

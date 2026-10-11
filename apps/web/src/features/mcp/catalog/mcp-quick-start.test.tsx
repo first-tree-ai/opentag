@@ -34,7 +34,7 @@ describe("MCP onboarding", () => {
     fireEvent.change(search, { target: { value: title } });
     fireEvent.click(await screen.findByRole("button", { name: `Add: ${title}` }));
     const dialog = within(await screen.findByRole("dialog"));
-    const requirements = await dialog.findByText(/Your Google Cloud project must be enrolled/);
+    const requirements = await dialog.findByText(/Your Google Cloud project must have preview access/);
     await waitFor(() => expect(document.activeElement).toBe(requirements));
     expect(create).not.toHaveBeenCalled();
     expect(oauth).not.toHaveBeenCalled();

@@ -83,7 +83,6 @@ export function McpToolsDialog({
   const reconnectTrigger = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState<string>();
   const list = useRef<HTMLElement>(null);
-  const { bodyHeight, sizeBody } = useToolsBodySize(list);
   const search = useRef<HTMLInputElement>(null);
   const inFlight = useRef(false);
   const probe = useProbeMcpServer(agentId);
@@ -157,7 +156,7 @@ export function McpToolsDialog({
       onClose={onClose}
       onBack={onBack ? () => onBack(query, scrollTop.current) : undefined}
     >
-      <div className="mcp-tools-body" ref={sizeBody} style={bodyHeight ? { height: bodyHeight } : undefined}>
+      <div className={`mcp-tools-body ${tools.length > 5 ? "mcp-tools-body-long" : ""}`}>
         <ToolsToolbar
           entry={entry}
           history={history}
@@ -399,21 +398,6 @@ function toolsEmptyHelp(
 function toolFailure(entry: MCPAgentServer, pending: boolean, error?: string): string | undefined {
   if (pending) return undefined;
   return error ?? (entry.authorization?.probeState === "failed" ? m.mcp_tools_refresh_error() : undefined);
-}
-
-function useToolsBodySize(list: RefObject<HTMLElement | null>) {
-  const [bodyHeight, setBodyHeight] = useState<number>();
-  const sizeBody = useCallback(
-    (body: HTMLDivElement | null) => {
-      const tools = list.current;
-      if (!body || !tools) return;
-      const height = body.getBoundingClientRect().height;
-      if (!height) return;
-      setBodyHeight(height - tools.clientHeight + Math.max(160, tools.scrollHeight));
-    },
-    [list],
-  );
-  return { bodyHeight, sizeBody };
 }
 
 function ToolsStatus({

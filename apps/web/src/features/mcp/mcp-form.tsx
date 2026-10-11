@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Collapsible, Field, Icon, KumoInputControl, Radio } from "../../ui/design-system.js";
 import { type AuthDraft, type HeaderMode, type HeaderRow, newHeader, validHeaders } from "./mcp-form-model.js";
@@ -141,6 +141,7 @@ export function McpAuthFields({
   connectionSettings?: boolean;
 }) {
   const help = authMethodHelp(draft.kind, variant);
+  const choiceClass = variant === "settings" ? "mcp-auth-choice" : undefined;
   return (
     <>
       <div>
@@ -154,11 +155,12 @@ export function McpAuthFields({
             onValueChange={(kind) => onChange({ ...draft, kind: kind as AuthDraft["kind"] })}
           >
             <Radio.Item
+              className={choiceClass}
               value="oauth"
               label={variant === "settings" ? m.mcp_settings_auth_browser() : m.mcp_auth_oauth()}
             />
-            <Radio.Item value="bearer" label={m.mcp_auth_token()} />
-            <Radio.Item value="none" label={m.mcp_auth_none()} />
+            <Radio.Item className={choiceClass} value="bearer" label={m.mcp_auth_token()} />
+            <Radio.Item className={choiceClass} value="none" label={m.mcp_auth_none()} />
           </Radio.Group>
         </fieldset>
         {variant === "setup" ? <p className="mt-3 text-xs leading-relaxed text-kumo-subtle">{help}</p> : null}
@@ -216,8 +218,14 @@ function McpAuthMethodDetails({
   help: string;
   variant: "setup" | "settings";
 }) {
+  const details = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (variant === "settings" && draft.kind === "bearer") {
+      details.current?.scrollIntoView?.({ block: "nearest" });
+    }
+  }, [draft.kind, variant]);
   return (
-    <div className={variant === "settings" ? "mcp-auth-method-details" : "contents"}>
+    <div ref={details} className={variant === "settings" ? "mcp-auth-method-details" : "contents"}>
       {variant === "settings" ? <p className="text-xs leading-relaxed text-kumo-subtle">{help}</p> : null}
       {draft.kind === "bearer" ? <McpKeyField draft={draft} onChange={onChange} /> : null}
     </div>

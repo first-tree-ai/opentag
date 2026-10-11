@@ -43,6 +43,7 @@ import { PostgresApprovalStore } from "./runtime/approval-store.js";
 import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ContextTreeOperationOwner } from "./runtime/context-tree-operation-owner.js";
 import { handleFeishuApprovalAction } from "./runtime/feishu-approval-action.js";
+import { wakeOfflineRecoveryDeliveries } from "./runtime/im-delivery-offline-recovery.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
 import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owner.js";
@@ -1103,6 +1104,11 @@ export async function startServer(): Promise<void> {
         contextTreeOperationOwner,
         providerCliReconcileOwner,
         channelTarget: () => channelTargetPoller.get(),
+        onRegistered: async (input) => {
+          await wakeOfflineRecoveryDeliveries(database, input.computerId, new Date()).catch((error: unknown) => {
+            app?.log.warn({ err: error, computerId: input.computerId }, "IM delivery recovery wake failed");
+          });
+        },
       },
       runtimeDurableWork: { machineAuth: platformRuntime.auth, store: durableWorkStore },
       runtimeAgent: {

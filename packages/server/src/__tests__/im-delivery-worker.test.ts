@@ -25,6 +25,7 @@ import { BackgroundFailureSupervisor } from "../observability/background-failure
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-delivery-content.js";
 import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
+import { recordOfflineRecovery, wakeOfflineRecoveryDeliveries } from "../runtime/im-delivery-offline-recovery.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "../services/runtime-config/errors.js";
@@ -1736,6 +1737,173 @@ describe("ImDeliveryWorker database workflow", () => {
       onDiagnostic: (code) => unavailableEvents.push(code),
     }).runOnce();
     expect(unavailableEvents).toContain("IM_DELIVERY_RUNTIME_UNAVAILABLE");
+  });
+
+  it("backs off recovery retries with the Computer's offline time", async () => {
+    for (const [offlineMs, expectedDelayMs] of [
+      [60_000, 2_000],
+      [10 * 60_000, 30_000],
+      [2 * 24 * 60 * 60_000, 30 * 60_000],
+    ] as const) {
+      await unit.reset();
+      const fixture = await workerFixture(unit);
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          inputHash: computeDirectInputHash(fixture.request),
+          turnId: `offline-${offlineMs}`,
+          reportOwnerInstanceId: fixture.instanceId,
+          acceptedAt: new Date(),
+        })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      await unit.database
+        .update(computers)
+        .set({ lastSeenAt: new Date(Date.now() - offlineMs), currentInstanceId: null, connectedAt: null })
+        .where(eq(computers.id, fixture.computerId));
+
+      const before = Date.now();
+      await new ImDeliveryWorker({
+        database: unit.database,
+        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+        assembler: { assembleForSession: vi.fn() },
+        registry: new ConnectionRegistry(),
+        onDiagnostic: vi.fn(),
+      }).runOnce();
+      const after = Date.now();
+
+      const [row] = await unit.database
+        .select({ code: imMessageDeliveries.lastErrorCode, nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row?.code).toBe("IM_DELIVERY_RUNTIME_UNAVAILABLE");
+      expect(row?.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + expectedDelayMs);
+      expect(row?.nextAttemptAt.getTime()).toBeLessThanOrEqual(after + expectedDelayMs);
+    }
+  });
+
+  it("wakes parked recovery rows when the Computer reconnects", async () => {
+    const fixture = await workerFixture(unit);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: computeDirectInputHash(fixture.request),
+        turnId: "wake-turn",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(),
+        nextAttemptAt: new Date(Date.now() + 30 * 60_000),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    await unit.database.update(computers).set({ lastSeenAt: new Date() }).where(eq(computers.id, fixture.computerId));
+
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry: new ConnectionRegistry(),
+      onDiagnostic: vi.fn(),
+    });
+    await wakeOfflineRecoveryDeliveries(unit.database, fixture.computerId, new Date());
+    await worker.runOnce();
+    worker.stop();
+
+    await vi.waitFor(async () => {
+      const [row] = await unit.database
+        .select({ attemptCount: imMessageDeliveries.attemptCount })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row?.attemptCount).toBeGreaterThanOrEqual(1);
+    });
+    const [row] = await unit.database
+      .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now() + 5_000);
+  });
+
+  it("restores the reconnect wake that a late offline write would overwrite", async () => {
+    const fixture = await workerFixture(unit);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: computeDirectInputHash(fixture.request),
+        turnId: "late-write-turn",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const offlineSince = new Date(Date.now() - 2 * 24 * 60 * 60_000);
+    await unit.database
+      .update(computers)
+      .set({ lastSeenAt: offlineSince, currentInstanceId: null, connectedAt: null })
+      .where(eq(computers.id, fixture.computerId));
+
+    await recordOfflineRecovery({
+      computer: { id: fixture.computerId, connectedAt: null, lastSeenAt: offlineSince },
+      database: unit.database,
+      deliveryId: fixture.deliveryId,
+      isReady: () => true,
+      now: () => new Date(),
+      recordFailure: async (deliveryId, code, _claimToken, retryDelayMs) => {
+        // The registration wake commits first; the stale offline update lands on top of it.
+        await wakeOfflineRecoveryDeliveries(unit.database, fixture.computerId, new Date());
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({ nextAttemptAt: new Date(Date.now() + retryDelayMs), lastErrorCode: code })
+          .where(eq(imMessageDeliveries.id, deliveryId));
+      },
+    });
+
+    const [row] = await unit.database
+      .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("keeps a recovery row due when its Computer becomes ready during the offline write", async () => {
+    const fixture = await workerFixture(unit);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: computeDirectInputHash(fixture.request),
+        turnId: "ready-race-turn",
+        reportOwnerInstanceId: fixture.instanceId,
+        acceptedAt: new Date(),
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    await unit.database
+      .update(computers)
+      .set({ lastSeenAt: new Date(Date.now() - 2 * 24 * 60 * 60_000), currentInstanceId: null, connectedAt: null })
+      .where(eq(computers.id, fixture.computerId));
+
+    let registryReads = 0;
+    const registry = {
+      currentInstanceId: () => {
+        registryReads += 1;
+        // The offline read sees no runtime; the registration lands while the failure write is in
+        // flight, so the post-write readiness re-check sees the Computer ready.
+        return registryReads === 1 ? undefined : fixture.instanceId;
+      },
+    } as never;
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry,
+      onDiagnostic: vi.fn(),
+    });
+    await worker.runOnce();
+    worker.stop();
+
+    const [row] = await unit.database
+      .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.nextAttemptAt.getTime()).toBeLessThanOrEqual(Date.now());
   });
 
   it("records reconcile and delivery disposition branches", async () => {

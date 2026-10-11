@@ -1,4 +1,9 @@
-import { type MCPAgentServer, MCPAuthSchemeSchema, MCPCustomAuthHeaderSchema } from "@opentag/shared/browser";
+import {
+  type MCPAgentServer,
+  type MCPAuthKind,
+  MCPAuthSchemeSchema,
+  MCPCustomAuthHeaderSchema,
+} from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog } from "../../ui/design-system.js";
@@ -68,7 +73,7 @@ export function useMcpAuthorization(agentId: string) {
       window.location.assign(result.authorizationUrl);
       return;
     }
-    await authorize.mutateAsync({
+    return authorize.mutateAsync({
       mcpServerId: entry.mcpServerId,
       kind: draft.kind,
       ...(draft.kind === "bearer" ? { bearerKey: draft.token } : {}),
@@ -84,6 +89,7 @@ export function McpAuthorizeDialog({
   onAuthorized,
   onBeforeOAuth,
   initialError,
+  presetAuthKind,
 }: {
   agentId: string;
   agentName: string;
@@ -93,12 +99,13 @@ export function McpAuthorizeDialog({
   onAuthorized: () => void;
   onBeforeOAuth?: () => void;
   initialError?: string;
+  presetAuthKind?: MCPAuthKind;
 }) {
   const [draft, setDraft] = useState<AuthDraft>(() => ({
-    ...authDraft(entry.effective, entry.authorization?.kind ?? "oauth"),
+    ...authDraft(entry.effective, presetAuthKind ?? entry.authorization?.kind ?? "oauth"),
     headerMode: connectionHeaderMode(entry),
   }));
-  const defaults = useMcpServerDetail(entry.authorization ? undefined : entry.mcpServerId);
+  const defaults = useMcpServerDetail(entry.authorization || presetAuthKind ? undefined : entry.mcpServerId);
   const chosen = useRef(false);
   const defaultKind = defaults.data?.server.defaultAuthKind;
   useEffect(() => {
@@ -185,6 +192,7 @@ export function McpAuthorizeDialog({
               }}
               existing
               connectionSettings={false}
+              fixedMethod={presetAuthKind !== undefined}
             />
           </fieldset>
           {error ? (

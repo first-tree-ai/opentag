@@ -992,8 +992,10 @@ The "new Server" wizard asks for the definition first and the authorization meth
 
 ### Adding a Server by hand
 
-The picker's sources are the catalog's **Discover**, the Account pool under **Use an existing
-Server**, **Import configuration**, and **Configure manually**. Where the Account pool and the paste
+The MCP page header offers **Discover services** next to **Add server**. Discover opens a
+separate directory with search, an initial **All** category, and a two-column card grid (one column
+on mobile). **Add server** retains **Discover**, the Account pool under **Use an existing Server**,
+**Import configuration**, and **Configure manually**. Where the Account pool and the paste
 readers start from something the user already has, **Configure manually** is the home for a Server
 typed from nothing: it shows the new Server's fields — address, name, authentication method, and the
 advanced connection settings — straight away, so a user who knows the address but has neither an
@@ -1070,7 +1072,54 @@ create → attach → authorize sequence the manual wizard uses.
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
-that an Agent can add in one action, from the add flow's Discover source and from its empty state.
+that an Agent can add from the independent **Discover services** directory and from its empty state.
+The existing **Add server** picker retains its Discover, Account pool, import, and manual sources.
+Removing its Discover source is a separate change; the standalone directory owns only its add state.
+The empty state starts directly with **Quick start**, without repeating the page introduction in
+a separate onboarding banner. It offers Exa, Notion, Linear, and Airtable, using brand names
+and example tasks for web research, documents, tasks, and table records. Google Workspace services
+remain in Discover but are excluded from Quick start because their developer preview requires
+enrollment and deployment configuration. Asana is not a Quick start substitute because its V2 MCP
+server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
+See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
+[Linear's MCP setup](https://linear.app/docs/mcp), and
+[Airtable's authentication guide](https://airtable.com/developers/agents/mcp/getting-started).
+Google Workspace cards are labeled **Limited access** and show enrollment and OAuth
+setup requirements before adding the service. All available cards use **Add**. Once mounted, a card
+shows a single non-interactive **✓ Added** status in the action position, regardless of authorization or probe status. Authentication methods and
+connection health belong to service setup and the Agent's management list, not catalog or quick-start
+cards. These are starting points, not popularity rankings.
+
+Directory cards place the service name and description on the left, with **Add** or **Added** on the
+right rather than in a separate footer row. Limited-access labels sit beside the service name.
+On narrow screens, descriptions span the card width. Quick-start cards retain their task examples.
+
+Adding creates or reuses the Account definition and mounts it to this Agent. The directory closes as
+soon as the mount is confirmed, and the management list highlights the service without waiting for
+authorization or tools. OAuth services immediately navigate to the provider without another confirmation.
+Bearer services open the shared authentication dialog with the known method fixed and no connection
+settings; saving credentials closes it. Closing authentication leaves the mount on the list with
+**Not connected** and **Connect**. Anonymous mounts already authorized by the server trigger an
+immediate tool probe on the page; they do not wait for the periodic background worker or rewrite
+their authorization.
+
+Create and attach errors remain in the directory, preserving its search and category. Confirmed
+definitions are retained for retries. After mounting, connection startup errors and probe retries
+belong to the existing list; credential errors remain in the shared authentication form. There is no
+separate setup, connection-progress, or connection-result view. OAuth uses the existing return context
+and completion handling, including authentication errors returned by the provider.
+
+The current management layout is preserved: service identity opens settings, the list shows connection
+status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.
+An empty tool result is inspected in the existing tool browser. Authentication preserves the binding's
+effective settings and extra-header inheritance; catalog scopes are supplied only for its exact endpoint.
+Account definitions retain their chosen default authentication kind when reused. Catalog defaults apply
+to newly created definitions.
+
+UI validation captures use an isolated local MCP/OAuth fixture deployment: [desktop](assets/mcp-discover/desktop.png),
+[320px](assets/mcp-discover/mobile-320.png), [390px](assets/mcp-discover/mobile-390.png), and
+[768px](assets/mcp-discover/tablet-768.png). They show the shipped directory layout with disposable
+test connections, rather than third-party account data.
 
 The catalog is committed repository data in the `@opentag/mcp-presets` workspace, not a service:
 
@@ -1153,6 +1202,46 @@ deliberate exception to the rule that user-facing copy goes through Paraglide. T
 own chrome — the source label, the search field, the method labels, and the installed states — stays
 in `messages/mcp/{en,zh}.json`. `web-ui-contract.md` records the same exception from the web side, so
 the catalog's copy is not "fixed" into the message catalog as an apparent omission.
+
+Card descriptions use an action and its object, in one short sentence. Prefer one or two core
+actions over feature lists, jargon, promotional claims, or changing app counts. Aim for no more
+than 45 characters in English and 20 in Chinese, including punctuation; these are editorial
+budgets, not rendering limits. Allow natural wrapping on narrow screens without truncating the
+meaning. Review both locales in Discover and Quick start. Descriptions summarize documented MCP
+capabilities within the preset's configured scopes; they do not promise every feature of the
+provider's product or establish successful OpenTag authorization.
+
+The description review on 2026-10-10 used the following provider documentation. These references
+record provenance for maintainers without adding links or explanatory copy to the cards.
+
+| Entries | Official capability reference |
+| --- | --- |
+| Notion | [Notion MCP](https://www.notion.com/help/notion-mcp) |
+| Exa | [Exa MCP tools](https://exa.ai/docs/get-started/exa-mcp) |
+| Linear | [Linear MCP server](https://linear.app/docs/mcp) |
+| Sentry | [Sentry MCP server](https://mcp.sentry.dev/) |
+| Atlassian | [Atlassian Rovo MCP server](https://support.atlassian.com/atlassian-ai-gateway/docs/use-atlassian-rovo-mcp-server/) |
+| Gmail | [Gmail MCP server](https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server) |
+| Google Drive | [Drive MCP server](https://developers.google.com/workspace/drive/api/guides/configure-mcp-server) |
+| Google Docs | [Docs MCP server](https://developers.google.com/workspace/docs/api/guides/configure-mcp-server) |
+| Google Sheets | [Sheets MCP server](https://developers.google.com/workspace/sheets/api/guides/configure-mcp-server) |
+| Google Slides | [Slides MCP server](https://developers.google.com/workspace/slides/api/guides/configure-mcp-server) |
+| Google Calendar | [Calendar MCP server](https://developers.google.com/workspace/calendar/api/guides/configure-mcp-server); the preset requests read and free/busy scopes, so copy describes viewing events and availability |
+| Google Chat | [Chat MCP server](https://developers.google.com/workspace/chat/api/guides/configure-mcp-server) |
+| People | [Workspace MCP tool reference](https://developers.google.com/workspace/guides/configure-mcp-servers) |
+| Microsoft 365 | [Release Communications MCP server](https://learn.microsoft.com/en-us/microsoft-365/admin/manage/mrc-mcp?view=o365-worldwide); this endpoint exposes roadmap and Azure update information |
+| Asana | [Asana MCP tools](https://developers.asana.com/docs/mcp-tools-reference) |
+| monday.com | [Platform MCP tools](https://developer.monday.com/api-reference/docs/platform-mcp-tools) |
+| HubSpot | [Remote HubSpot MCP server](https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server) |
+| Figma | [Figma MCP tools](https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/) |
+| Canva | [Canva MCP tools](https://www.canva.dev/docs/apps/mcp/tools/) |
+| Tavily | [Tavily MCP server](https://docs.tavily.com/documentation/mcp) |
+| Firecrawl | [Firecrawl MCP server](https://docs.firecrawl.dev/mcp-server) |
+| Zapier | [Zapier MCP](https://docs.zapier.com/mcp/home) |
+| Airtable | [Airtable MCP server](https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server) |
+| Supabase | [Supabase MCP tools](https://supabase.com/docs/guides/ai-tools/mcp) |
+| Amplitude | [Amplitude MCP server](https://amplitude.com/docs/amplitude-ai/amplitude-mcp) |
+| Stripe | [Stripe MCP tools](https://docs.stripe.com/mcp) |
 
 ## Verification
 

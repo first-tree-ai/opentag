@@ -132,13 +132,13 @@ describe("MCP daily use", () => {
     vi.mocked(browserApi.agentMcpServers).mockRejectedValue(new ApiError(503, "MCP unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("MCP unavailable")).toBeTruthy();
-    expect(screen.queryByText("No servers added")).toBeNull();
+    expect(screen.queryByText("Quick start")).toBeNull();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
   it("shows an actionable empty state only after a successful read", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("No servers added")).toBeTruthy();
+    expect(await screen.findByText("Quick start")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Add server" }).length).toBeGreaterThan(0);
   });
   it("shows tool truncation only as a disclosure in the tool browser", async () => {

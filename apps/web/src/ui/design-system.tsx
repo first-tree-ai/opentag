@@ -713,6 +713,9 @@ export function Dialog({
   return (
     <KumoDialog.Root
       open={open}
+      onOpenChangeComplete={(next) => {
+        if (next) initialFocusRef?.current?.focus();
+      }}
       onOpenChange={(next) => {
         if (!next && busy) return;
         if (!next) onClose();

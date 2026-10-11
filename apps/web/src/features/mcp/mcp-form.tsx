@@ -132,6 +132,7 @@ export function McpAuthFields({
   label = m.mcp_auth_label(),
   variant = "setup",
   connectionSettings = true,
+  fixedMethod = false,
 }: {
   draft: AuthDraft;
   onChange: (draft: AuthDraft) => void;
@@ -139,8 +140,10 @@ export function McpAuthFields({
   label?: string;
   variant?: "setup" | "settings";
   connectionSettings?: boolean;
+  fixedMethod?: boolean;
 }) {
   const help = authMethodHelp(draft.kind, variant);
+  if (fixedMethod) return <McpAuthMethodDetails draft={draft} onChange={onChange} help={help} variant={variant} />;
   return (
     <>
       <div>

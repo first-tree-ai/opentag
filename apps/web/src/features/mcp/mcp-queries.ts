@@ -41,6 +41,14 @@ export function useAgentMcpServers(agentId: string) {
     ...liveResourceQueryOptions,
     queryKey: queryKeys.mcp.agentServers(agentId),
     queryFn: (): Promise<ListAgentMCPServersResponse> => browserApi.agentMcpServers(agentId),
+    // Show the completed connection promptly while its asynchronous tool probe is pending.
+    refetchInterval: (query) =>
+      query.state.data?.servers.some(
+        (entry) =>
+          entry.enabled && entry.authorization?.status === "active" && entry.authorization.probeState === "pending",
+      )
+        ? 1_000
+        : LIVE_REFETCH_INTERVAL_MS,
   });
 }
 

@@ -2,7 +2,7 @@ import { configDefaults, coverageConfigDefaults, defineConfig, defineProject } f
 
 export default defineConfig({
   test: {
-    maxWorkers: 2,
+    maxWorkers: 4,
     projects: [
       defineProject({
         test: {

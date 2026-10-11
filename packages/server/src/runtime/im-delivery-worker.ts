@@ -68,6 +68,7 @@ import {
   runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
 import { ImDeliveryReadyWakeup, isCloudReadinessRetry, readySessionClaimGuard } from "./im-delivery-ready-wakeup.js";
+import { cappedRetryDelayMs } from "./im-delivery-retry.js";
 import type {
   CloudSessionAllocationPort,
   ImDeliveryWorkerInput,
@@ -1001,12 +1002,19 @@ export class ImDeliveryWorker {
         return;
       }
       if (!(await lease.assertOwned())) return;
-      if (reconcile.status !== "ready") {
+      if (reconcile.status === "rejected") {
+        // A rejection is answered immediately and may persist (e.g. a durable binding conflict),
+        // so back off instead of re-reconciling on the fixed cadence until the message expires.
         await this.#recordFailure(
           deliveryId,
-          reconcile.status === "rejected" ? "IM_DELIVERY_RECONCILE_REJECTED" : "IM_DELIVERY_RECONCILE_NOT_READY",
+          "IM_DELIVERY_RECONCILE_REJECTED",
           claimToken,
+          cappedRetryDelayMs(row.delivery.attemptCount),
         );
+        return;
+      }
+      if (reconcile.status !== "ready") {
+        await this.#recordFailure(deliveryId, "IM_DELIVERY_RECONCILE_NOT_READY", claimToken);
         return;
       }
       if (reconcile.retainedReports?.some((claim) => claim.deliveryId === deliveryId)) {

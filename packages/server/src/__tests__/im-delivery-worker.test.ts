@@ -1805,6 +1805,41 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(failedEvents).toContain("IM_DELIVERY_RUNTIME_FAILED");
   });
 
+  it("backs off rejected reconciles exponentially up to a cap while not-ready keeps the fixed retry", async () => {
+    const cases = [
+      { reconcileStatus: "rejected", priorAttempts: 0, delayMs: 2_000 },
+      { reconcileStatus: "rejected", priorAttempts: 2, delayMs: 8_000 },
+      { reconcileStatus: "rejected", priorAttempts: 50, delayMs: 30_000 },
+      { reconcileStatus: "busy", priorAttempts: 50, delayMs: 2_000 },
+    ] as const;
+    for (const { reconcileStatus, priorAttempts, delayMs } of cases) {
+      await unit.reset();
+      const fixture = await workerFixture(unit);
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ attemptCount: priorAttempts })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      const clock = Date.now() + 1_000;
+      await new ImDeliveryWorker({
+        database: unit.database,
+        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { reconcileStatus }) as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        now: () => new Date(clock),
+      }).runOnce();
+      const [row] = await unit.database
+        .select({
+          attemptCount: imMessageDeliveries.attemptCount,
+          nextAttemptAt: imMessageDeliveries.nextAttemptAt,
+          state: imMessageDeliveries.state,
+        })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row).toMatchObject({ attemptCount: priorAttempts + 1, state: "pending" });
+      expect(row?.nextAttemptAt.getTime()).toBe(clock + delayMs);
+    }
+  });
+
   it("rejects deliveries when the Computer owner or steer authority is stale", async () => {
     const ownerMismatch = await workerFixture(unit);
     const otherUserId = randomUUID();

@@ -116,7 +116,7 @@ async function truncateApplicationTables(engine: PGlite): Promise<void> {
       select string_agg(format('%I.%I', schemaname, tablename), ', ')
       into table_list
       from pg_tables
-      where schemaname = 'public';
+      where schemaname in ('public', 'billing');
 
       if table_list is not null then
         execute 'truncate table ' || table_list || ' restart identity cascade';

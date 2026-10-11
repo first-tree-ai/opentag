@@ -11,9 +11,9 @@ import { z } from "zod";
 /**
  * The single Server-owned authority for Cloud model choices. The deployment Router's
  * authenticated `GET {upstreamBaseUrl}/models` (OpenAI `{object:"list",data:[{id,...}]}`) is the
- * only source: it already applies tenant permissions and the priced registry, so the Server keeps
+ * source of availability and native limits: it applies tenant permissions, so the Server keeps
  * no static allowlist of its own. The same fixed upstream base URL and platform master key the
- * chat-completions proxy uses authorize the read; no new URL, key, or switch exists.
+ * chat-completions proxy uses authorize the read. Customer token rates are set by account pricing plans independently of this catalog.
  *
  * The catalog is lazy and bounded: the first read after construction or cache expiry performs one
  * fetch, concurrent readers share the single in-flight fetch, and a successful list is reused for
@@ -59,7 +59,7 @@ function prioritizeCloudDefaultModel(models: readonly string[]): string[] {
 export interface CloudModelCapabilities {
   /** Router-verified native context window in tokens (a positive integer, never estimated). */
   readonly contextWindow: number;
-  /** Router-verified native output ceiling in tokens (a positive integer, at most the platform limit). */
+  /** Router-verified native output ceiling in tokens (a positive integer; execution grants clamp it to the platform limit). */
   readonly maxOutputTokens: number;
 }
 
@@ -145,11 +145,7 @@ function parseEntryCapabilities(entry: {
 }): CloudModelCapabilities | undefined {
   const { context_window: contextWindow, max_output_tokens: maxOutputTokens } = entry;
   if (!Number.isSafeInteger(contextWindow) || (contextWindow as number) < 1) return undefined;
-  if (
-    !Number.isSafeInteger(maxOutputTokens) ||
-    (maxOutputTokens as number) < 1 ||
-    (maxOutputTokens as number) > CLOUD_MODEL_OUTPUT_TOKEN_LIMIT
-  ) {
+  if (!Number.isSafeInteger(maxOutputTokens) || (maxOutputTokens as number) < 1) {
     return undefined;
   }
   return { contextWindow: contextWindow as number, maxOutputTokens: maxOutputTokens as number };
@@ -300,7 +296,9 @@ export class RouterCloudModelCatalog implements CloudModelCatalog {
       }
       const text = await readBoundedResponseText(response, this.#maxResponseBytes);
       if (text === undefined) return undefined;
-      return parseRouterModelList(text, this.#maxModels);
+      const snapshot = parseRouterModelList(text, this.#maxModels);
+      if (!snapshot) return undefined;
+      return snapshot;
     } catch {
       return undefined;
     } finally {

@@ -421,6 +421,13 @@
       "when": 1791618609383,
       "tag": "0059_bump_runtime_config_revision",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1791648013664,
+      "tag": "0060_cloud_billing",
+      "breakpoints": true
     }
   ]
 }

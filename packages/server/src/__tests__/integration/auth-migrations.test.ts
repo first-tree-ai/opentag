@@ -24,6 +24,7 @@ import {
   ConnectCodeService,
   hashSecret,
 } from "../../services/auth/index.js";
+import { CloudCallStore } from "../../services/cloud-call-store.js";
 import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
@@ -54,6 +55,7 @@ afterAll(async () => {
 beforeEach(async () => {
   const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
   try {
+    await sql.unsafe("drop schema if exists billing cascade");
     await sql.unsafe("drop schema if exists public cascade");
     await sql.unsafe("drop schema if exists drizzle cascade");
     await sql.unsafe("create schema public");
@@ -524,6 +526,90 @@ describe("database migrations", () => {
       }
     } finally {
       await rm(legacyFolder, { force: true, recursive: true });
+    }
+  });
+
+  it("shares Account identity with the billing schema and limits its runtime role to ledger data", async () => {
+    await migrateDatabase(databaseUrl, migrationsFolder);
+    const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    const account = crypto.randomUUID();
+    try {
+      await sql`insert into public.users(id, email, display_name) values (${account}, 'billing@example.com', 'Billing')`;
+      await expect(sql`insert into billing.accounts(id) values (${crypto.randomUUID()})`).rejects.toMatchObject({
+        code: "23503",
+      });
+      const calls = new CloudCallStore({
+        query: async (statement, parameters = []) => ({
+          rows: await sql.unsafe(statement, parameters as postgres.ParameterOrJSON<never>[]),
+        }),
+      });
+      const rates = {
+        inputMicrosPerMillion: 1000000,
+        cachedInputMicrosPerMillion: 500000,
+        cacheWriteInputMicrosPerMillion: 1500000,
+        outputMicrosPerMillion: 2000000,
+      };
+      const callId = await calls.create(
+        { accountId: account, agentId: crypto.randomUUID(), sessionId: null, source: "execution" },
+        { gateway: "litellm", model: "model-a" },
+        rates,
+      );
+      expect((await calls.get(callId)).rates).toEqual(rates);
+      await calls.finalize(
+        callId,
+        {
+          status: "complete",
+          usage: { inputTokens: 100, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 10 },
+        },
+        { resolution: "charged", pricedMicros: 110, debitedMicros: 110 },
+      );
+      expect(await calls.get(callId)).toMatchObject({
+        input_tokens: 100,
+        cached_input_tokens: 40,
+        output_tokens: 10,
+        cache_write_input_tokens: 20,
+      });
+      await sql`insert into billing.accounts(id) values (${account})`;
+      expect((await sql`select blocked from billing.accounts where id=${account}`)[0]).toMatchObject({
+        blocked: false,
+      });
+      await sql`insert into billing.grants(id,account,amount,kind) values ('trial',${account},1000000,'promotion')`;
+      await expect(sql`delete from public.users where id=${account}`).rejects.toMatchObject({ code: "23503" });
+      await sql`insert into billing.attempts(id,account,agent_id,source,gateway,model) values ('call',${account},${crypto.randomUUID()},'execution','litellm','model-a')`;
+      await expect(sql`update billing.attempts set input_tokens=-1 where id='call'`).rejects.toMatchObject({
+        code: "23514",
+      });
+      await expect(
+        sql`update billing.attempts set priced_micros=1,debited_micros=2 where id='call'`,
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(sql`update billing.attempts set state='finalized' where id='call'`).rejects.toMatchObject({
+        code: "23514",
+      });
+      await sql.unsafe("create role billing_runtime_test nologin");
+      await sql.unsafe("grant usage on schema billing to billing_runtime_test");
+      await sql.unsafe("grant select, insert, update on all tables in schema billing to billing_runtime_test");
+      await sql.begin(async (transaction) => {
+        await transaction.unsafe("set local role billing_runtime_test");
+        const [row] = await transaction`select amount from billing.grants where account=${account}`;
+        expect(row?.amount).toBe("1000000");
+        await transaction`update billing.accounts set blocked=true where id=${account}`;
+      });
+      for (const statement of [
+        "select * from public.users",
+        "delete from billing.grants",
+        "create table billing.forbidden(id integer)",
+      ]) {
+        await expect(
+          sql.begin(async (transaction) => {
+            await transaction.unsafe("set local role billing_runtime_test");
+            await transaction.unsafe(statement);
+          }),
+        ).rejects.toMatchObject({ code: "42501" });
+      }
+      await migrateDatabase(databaseUrl, migrationsFolder);
+      expect(await sql`select * from billing.grants`).toHaveLength(1);
+    } finally {
+      await sql.end();
     }
   });
 

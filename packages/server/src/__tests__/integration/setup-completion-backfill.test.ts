@@ -34,7 +34,7 @@ const LATE = new Date("2026-08-20T00:00:00.000Z");
 const THROUGH_0028_IDX = 28;
 const THROUGH_0028_COUNT = 29;
 const THROUGH_0030_COUNT = 31;
-const CURRENT_MIGRATION_COUNT = 60;
+const CURRENT_MIGRATION_COUNT = 61;
 
 type Journal = {
   version: string;
@@ -57,6 +57,7 @@ afterAll(async () => {
 beforeEach(async () => {
   const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
   try {
+    await sql.unsafe("drop schema if exists billing cascade");
     await sql.unsafe("drop schema if exists public cascade");
     await sql.unsafe("drop schema if exists drizzle cascade");
     await sql.unsafe("create schema public");

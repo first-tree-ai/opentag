@@ -617,6 +617,7 @@ export class ImDeliveryWorker {
         await transaction
           .update(imMessageDeliveries)
           .set({
+            executionOrigin: null,
             dispatchRequestId: null,
             dispatchInputHash: null,
             dispatchPayload: null,
@@ -632,8 +633,10 @@ export class ImDeliveryWorker {
         .set({
           attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
           ...(row.state === "pending" ? { placementGeneration: row.generation } : {}),
+          executionOrigin: sql`case when ${imMessageDeliveries.dispatchRequestId} is null then null else ${imMessageDeliveries.executionOrigin} end`,
           ...(retiredSteerCorrelation
             ? {
+                executionOrigin: null,
                 dispatchRequestId: null,
                 dispatchInputHash: null,
                 dispatchPayload: null,
@@ -798,6 +801,10 @@ export class ImDeliveryWorker {
       fitDeliveryFrame(request);
       validateFreshImRequest(request);
       if (!(await lease.assertOwned())) return;
+      await this.#database
+        .update(imMessageDeliveries)
+        .set({ executionOrigin: "local" })
+        .where(and(eq(imMessageDeliveries.id, claim.id), eq(imMessageDeliveries.lastErrorCode, claim.claimToken)));
       const admitted = await this.#withActiveAgentAdmission(
         {
           agentId: row.agent.id,
@@ -896,20 +903,21 @@ export class ImDeliveryWorker {
     }
     validateUndispatchedContent(row);
     /*
-     * E4 Cloud branch: a Cloud Computer is a logical identity with one Sandbox Runner per Agent
-     * Session, so deliveries route through the per-Sandbox Cloud dispatch owner, never the Local
-     * runtime registry (`computer.currentInstanceId`/`registry.currentInstanceId` are Local-only
-     * facts). Cloud pending-deadline discipline, deliberately reusing Local bounds:
-     * - the claim lease (claimLeaseMs) and operation deadline (operationTimeoutMs) are unchanged:
-     *   Cloud dispatch is a short custody write + control-frame send, never a wait for cold start;
-     * - an unready environment/Runner is a TRANSIENT failure retried on RETRY_DELAY_MS, so long
-     *   allocations are absorbed by repeated short attempts instead of one long in-operation wait;
-     * - no Local admission/queue-age TTL applies (maxQueueAgeMs is unset in production wiring);
-     *   the delivery's own expiresAt — set at ingress and protected by the Cloud-aware
-     *   inbox/janitor retention — is the bounded deadline for the UNDISPATCHED pending input;
-     *   once a dispatch window is frozen, its runtime-budget deadline (separate from the short
-     *   operationTimeoutMs and ingress TTL) bounds it; accepted-unreported custody is never expired.
+     * Cloud dispatch uses the per-Sandbox owner and short claim/operation deadlines, not the
+     * Local runtime registry or queue-age TTL. Unready Runners retry in short attempts; ingress
+     * expiresAt bounds undispatched input, the runtime budget bounds frozen dispatches, and
+     * accepted-unreported custody never expires.
      */
+    await this.#database
+      .update(imMessageDeliveries)
+      .set({ executionOrigin: row.computer.kind })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          eq(imMessageDeliveries.lastErrorCode, claimToken),
+          isNull(imMessageDeliveries.executionOrigin),
+        ),
+      );
     if (row.computer.kind === "cloud") {
       await this.#deliverCloud(row, claimToken, lease, signal);
       return;
@@ -1337,6 +1345,7 @@ export class ImDeliveryWorker {
     const [released] = await this.#database
       .update(imMessageDeliveries)
       .set({
+        executionOrigin: null,
         dispatchRequestId: null,
         dispatchInputHash: null,
         dispatchPayload: null,
@@ -1379,6 +1388,7 @@ export class ImDeliveryWorker {
       .update(imMessageDeliveries)
       .set({
         state: "terminal_rejected",
+        executionOrigin: null,
         dispatchRequestId: null,
         dispatchInputHash: null,
         dispatchPayload: null,

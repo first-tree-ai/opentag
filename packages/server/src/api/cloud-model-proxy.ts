@@ -1,8 +1,15 @@
 import type { ServerResponse } from "node:http";
 import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { z } from "zod";
+import type { z } from "zod";
+import type { CloudCallContext } from "../cloud-call-contracts.js";
 import type { CloudModelConfig } from "../cloud-model-config.js";
+import {
+  applyCloudModelOutputBudget,
+  CLOUD_MODEL_ERROR_BODY_MAX_BYTES,
+  CloudModelRequestSchema,
+} from "../cloud-model-request.js";
+import type { CloudModelService } from "../services/cloud-model-service.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 
@@ -34,177 +41,6 @@ import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-g
  *   grant service, so `app.close()` cannot wait indefinitely on an open model stream.
  */
 
-/**
- * Chat history for one turn is bounded by the route's HTTP body byte cap, not by a message count:
- * a long compacted Session legitimately holds far more than a thousand short messages, and byte
- * accounting is the bound that protects the process. The per-message structural bounds below stay.
- */
-const MAX_CONTENT_PARTS_PER_MESSAGE = 64;
-const MAX_TOOLS_PER_REQUEST = 128;
-const MAX_TOOL_CALLS_PER_MESSAGE = 128;
-const MAX_REASONING_DETAILS_PER_MESSAGE = 128;
-const MAX_REASONING_DETAIL_CHARS = 64 * 1_024;
-const MAX_REASONING_DETAIL_FIELDS = 8;
-/**
- * Tool call and tool result identifiers stay intact end to end: providers emit opaque ids well
- * beyond the historical 256-byte norm, and only the request body cap — never a per-field guess —
- * decides what fits the model window.
- */
-
-const textContentPart = z.object({ type: z.literal("text"), text: z.string() }).strict();
-const imageContentPart = z
-  .object({ type: z.literal("image_url"), image_url: z.object({ url: z.string().min(1) }).strict() })
-  .strict();
-
-const functionToolCall = z
-  .object({
-    id: z.string().min(1),
-    type: z.literal("function"),
-    function: z.object({ name: z.string().min(1).max(128), arguments: z.string() }).strict(),
-  })
-  .strict();
-
-/**
- * One encrypted reasoning detail the pinned Pi re-emits: it JSON-parses each signed tool call's
- * `thoughtSignature` (an upstream `reasoning.encrypted` object) and writes the parsed object back
- * verbatim, so the opaque `id`/`data` and any provider metadata must round-trip unchanged. The
- * signed payload is preserved; the object stays bounded and only exists inside an assistant
- * message's `reasoning_details` — never at the request or message top level.
- */
-const reasoningDetailScalar = z.union([
-  z.string().max(MAX_REASONING_DETAIL_CHARS),
-  z.number().finite(),
-  z.boolean(),
-  z.null(),
-]);
-const encryptedReasoningDetail = z
-  .object({
-    type: z.literal("reasoning.encrypted"),
-    id: z.string().min(1).max(512),
-    data: z.string().min(1).max(MAX_REASONING_DETAIL_CHARS),
-  })
-  .catchall(reasoningDetailScalar)
-  .refine((detail) => Object.keys(detail).length <= MAX_REASONING_DETAIL_FIELDS, {
-    message: "too many reasoning detail fields",
-  });
-
-/**
- * The exact message shapes the pinned Pi's openai-completions conversion emits (system/user text,
- * assistant text-or-null with function tool calls, the upstream reasoning echo under whichever of
- * `reasoning_content`/`reasoning`/`reasoning_text` the provider streamed, encrypted
- * `reasoning_details` for signed tool calls, tool results, and text/image user content parts).
- * `developer` covers the OpenAI reasoning-model role.
- */
-const chatMessage = z.discriminatedUnion("role", [
-  z.object({ role: z.literal("system"), content: z.string() }).strict(),
-  z.object({ role: z.literal("developer"), content: z.string() }).strict(),
-  z
-    .object({
-      role: z.literal("user"),
-      content: z.union([
-        z.string(),
-        z
-          .array(z.union([textContentPart, imageContentPart]))
-          .min(1)
-          .max(MAX_CONTENT_PARTS_PER_MESSAGE),
-      ]),
-    })
-    .strict(),
-  z
-    .object({
-      role: z.literal("assistant"),
-      content: z.string().nullable().optional(),
-      tool_calls: z.array(functionToolCall).min(1).max(MAX_TOOL_CALLS_PER_MESSAGE).optional(),
-      // Pi tracks whichever reasoning field the upstream streamed (`reasoning_content`,
-      // `reasoning`, or `reasoning_text`) and echoes it under that same key on the next call.
-      reasoning_content: z.string().optional(),
-      reasoning: z.string().optional(),
-      reasoning_text: z.string().optional(),
-      // Signed tool-call thinking: the parsed `thoughtSignature` objects, verbatim.
-      reasoning_details: z.array(encryptedReasoningDetail).min(1).max(MAX_REASONING_DETAILS_PER_MESSAGE).optional(),
-    })
-    .strict(),
-  z.object({ role: z.literal("tool"), content: z.string(), tool_call_id: z.string().min(1) }).strict(),
-]);
-
-const chatTool = z
-  .object({
-    type: z.literal("function"),
-    function: z
-      .object({
-        name: z.string().min(1).max(128),
-        description: z.string().optional(),
-        parameters: z.record(z.string(), z.unknown()).optional(),
-        strict: z.boolean().optional(),
-      })
-      .strict(),
-  })
-  .strict();
-
-const chatToolChoice = z.union([
-  z.enum(["none", "auto", "required"]),
-  z
-    .object({
-      type: z.literal("function"),
-      function: z.object({ name: z.string().min(1).max(128) }).strict(),
-    })
-    .strict(),
-]);
-
-/**
- * Strict request allowlist: exactly the fields the pinned Pi openai-completions path can emit for
- * the Sandbox's custom provider (model/messages/stream/stream_options/store/max_completion_tokens
- * or max_tokens/temperature/tools/tool_choice), the standard `top_p`/`n` knobs, and the bounded
- * DeepSeek reasoning fields (`thinking`, `reasoning_effort`, message-level `reasoning_content`).
- * Everything else — above all router/credential overrides — is rejected. `n` is bounded to a
- * single choice: Pi never sets it and `n > 1` would multiply completions on the master key.
- */
-const ChatCompletionsBodySchema = z
-  .object({
-    model: z.string().min(1).max(128),
-    // Non-empty history; the total size is bounded by the route body byte cap, not a count.
-    messages: z.array(chatMessage).min(1),
-    stream: z.boolean().optional(),
-    stream_options: z.object({ include_usage: z.boolean().optional() }).strict().optional(),
-    store: z.boolean().optional(),
-    temperature: z.number().min(0).max(2).optional(),
-    top_p: z.number().min(0).max(1).optional(),
-    // Output budgets are validated structurally here and clamped to the issued grant's budget in
-    // `authorize`, once the token's Server-selected capability is known.
-    max_tokens: z.number().int().min(1).optional(),
-    max_completion_tokens: z.number().int().min(1).optional(),
-    n: z.literal(1).optional(),
-    tools: z.array(chatTool).max(MAX_TOOLS_PER_REQUEST).optional(),
-    tool_choice: chatToolChoice.optional(),
-    reasoning_effort: z.string().min(1).max(32).optional(),
-    thinking: z
-      .object({ type: z.enum(["enabled", "disabled"]) })
-      .strict()
-      .optional(),
-  })
-  .strict();
-
-/**
- * Apply the issued grant's output budget: each explicit budget field is clamped to it (never
- * relayed above the issued capability), and when the caller supplied neither field the proxy
- * supplies the issued budget itself, so omission cannot bypass the bound.
- */
-function applyIssuedOutputBudget(
-  body: z.infer<typeof ChatCompletionsBodySchema>,
-  maxTokens: number,
-): z.infer<typeof ChatCompletionsBodySchema> {
-  const clamp = (value: number | undefined): number | undefined =>
-    value === undefined ? undefined : Math.min(value, maxTokens);
-  const budget = {
-    max_tokens: clamp(body.max_tokens),
-    max_completion_tokens: clamp(body.max_completion_tokens),
-  };
-  if (budget.max_tokens === undefined && budget.max_completion_tokens === undefined) {
-    return { ...body, max_tokens: maxTokens };
-  }
-  return { ...body, ...budget };
-}
-
 const JSON_CONTENT_TYPE = "application/json";
 const SSE_CONTENT_TYPE = "text/event-stream";
 /** Matches the Runner wire bound for one model token. */
@@ -213,7 +49,8 @@ const MAX_TOKEN_CHARS = 4_096;
 export interface CloudModelProxyRouteOptions {
   config: Extract<CloudModelConfig, { enabled: true }>;
   grants: CloudModelGrantService;
-  fetchImpl?: typeof fetch;
+  modelService: CloudModelService;
+  contextForExecution: (claims: GrantClaims) => Promise<CloudCallContext | undefined>;
   now?: () => number;
 }
 
@@ -253,7 +90,7 @@ async function authorize(
   request: FastifyRequest,
   reply: FastifyReply,
   options: CloudModelProxyRouteOptions,
-): Promise<{ claims: GrantClaims; body: z.infer<typeof ChatCompletionsBodySchema> } | undefined> {
+): Promise<{ claims: GrantClaims; body: z.infer<typeof CloudModelRequestSchema> } | undefined> {
   const token = bearerToken(request);
   if (!token) {
     await fail(reply, 401, "CLOUD_MODEL_TOKEN_INVALID", "A model call token is required");
@@ -264,7 +101,7 @@ async function authorize(
     await fail(reply, 401, "CLOUD_MODEL_TOKEN_INVALID", "The model call token is invalid or expired");
     return undefined;
   }
-  const parsed = ChatCompletionsBodySchema.safeParse(request.body);
+  const parsed = CloudModelRequestSchema.safeParse(request.body);
   if (!parsed.success) {
     await fail(reply, 400, "CLOUD_MODEL_REQUEST_INVALID", "The chat completions request body is invalid");
     return undefined;
@@ -273,35 +110,20 @@ async function authorize(
     await fail(reply, 403, "CLOUD_MODEL_MODEL_DENIED", "The token does not cover the requested model");
     return undefined;
   }
-  return { claims, body: applyIssuedOutputBudget(parsed.data, claims.maxTokens) };
+  return { claims, body: applyCloudModelOutputBudget(parsed.data, claims.maxTokens) };
 }
 
 /** Call the fixed upstream with the platform master key; bounded by timeout and revocation. */
 async function callUpstream(
   options: CloudModelProxyRouteOptions,
   model: string,
-  body: z.infer<typeof ChatCompletionsBodySchema>,
+  body: z.infer<typeof CloudModelRequestSchema>,
   signal: AbortSignal,
+  claims: GrantClaims,
 ): Promise<Response | undefined> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  try {
-    return await fetchImpl(`${options.config.upstreamBaseUrl}/chat/completions`, {
-      body: JSON.stringify({ ...body, model }),
-      headers: {
-        accept: body.stream === true ? SSE_CONTENT_TYPE : JSON_CONTENT_TYPE,
-        // Byte accounting and size caps apply to the bytes actually read, not a decompression ratio.
-        "accept-encoding": "identity",
-        authorization: `Bearer ${options.config.masterKey}`,
-        "content-type": JSON_CONTENT_TYPE,
-      },
-      method: "POST",
-      // A redirect from the fixed upstream must never steer the proxy to another origin.
-      redirect: "error",
-      signal,
-    });
-  } catch {
-    return undefined;
-  }
+  const context = await options.contextForExecution(claims);
+  if (!context) throw new Error("Cloud execution has no owner");
+  return options.modelService.request({ ...body, model }, signal, options.config, context);
 }
 
 /** Wait for socket drain, but never past a close, error, or abort. */
@@ -430,7 +252,7 @@ interface UpstreamRejection {
  * under this cap exactly once for classification and is never relayed or logged: a provider or
  * Router error may echo secret-bearing request material in its message or param fields.
  */
-const UPSTREAM_ERROR_BODY_MAX_BYTES = 8 * 1024;
+const UPSTREAM_ERROR_BODY_MAX_BYTES = CLOUD_MODEL_ERROR_BODY_MAX_BYTES;
 
 /**
  * The safe upstream error classification. Only the confirmed classes below change the answer; an
@@ -545,7 +367,7 @@ function classifiedRejection(kind: UpstreamErrorClass, upstreamStatus: number): 
 /** Reject non-2xx responses (classified safely) and unusable 2xx shapes. */
 async function rejectUnusableUpstream(
   upstream: Response,
-  body: z.infer<typeof ChatCompletionsBodySchema>,
+  body: z.infer<typeof CloudModelRequestSchema>,
   maxResponseBytes: number,
 ): Promise<UpstreamRejection | undefined> {
   if (upstream.status < 200 || upstream.status >= 300) {
@@ -623,16 +445,34 @@ function finalizePipedOutcome(
   return fail(reply, 502, "CLOUD_MODEL_UPSTREAM_INVALID", "The model upstream ended without a complete response");
 }
 
+function billingFailure(error: unknown): UpstreamRejection | undefined {
+  if (!(error instanceof Error)) return undefined;
+  if ("code" in error && error.code === "usage_pending")
+    return { status: 503, code: "usage_pending", message: "Cloud usage is awaiting settlement" };
+  const status = "statusCode" in error ? error.statusCode : undefined;
+  if (status === 402) return { status, code: "insufficient_credit", message: "Cloud credit is exhausted" };
+  if (status === 429) return { status, code: "rate_limit_exceeded", message: "Too many concurrent cloud calls" };
+  if (status === 403) return { status, code: "authentication_error", message: "Cloud credit requires payment review" };
+  return undefined;
+}
+
 /** Forward one authorized request and finalize the client response in every path. */
 async function forwardChatCompletions(
   options: CloudModelProxyRouteOptions,
   reply: FastifyReply,
   claims: GrantClaims,
-  body: z.infer<typeof ChatCompletionsBodySchema>,
+  body: z.infer<typeof CloudModelRequestSchema>,
   signal: AbortSignal,
   timedOut: () => boolean,
 ): Promise<FastifyReply> {
-  const upstream = await callUpstream(options, claims.model, body, signal);
+  let upstream: Response | undefined;
+  try {
+    upstream = await callUpstream(options, claims.model, body, signal, claims);
+  } catch (error) {
+    const billingRejection = billingFailure(error);
+    if (billingRejection) return fail(reply, billingRejection.status, billingRejection.code, billingRejection.message);
+    return finalizeUpstreamUnavailable(reply, signal, timedOut);
+  }
   if (!upstream) return finalizeUpstreamUnavailable(reply, signal, timedOut);
   const rejection = await rejectUnusableUpstream(upstream, body, options.config.maxResponseBytes);
   if (rejection) {
@@ -654,6 +494,7 @@ export function registerCloudModelProxyRoutes(app: FastifyInstance, options: Clo
   app.addHook("preClose", async () => {
     for (const controller of [...active]) controller.abort(new Error("cloud_model_server_shutdown"));
     options.grants.close();
+    await options.modelService.close();
   });
 
   app.post(CLOUD_MODEL_CHAT_COMPLETIONS_PATH, { bodyLimit: options.config.maxRequestBytes }, async (request, reply) => {

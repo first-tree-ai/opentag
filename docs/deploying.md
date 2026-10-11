@@ -98,7 +98,7 @@ server container.
 | `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging; signs every Account session |
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
-| `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
+| `OPENTAG_AUTO_MIGRATE` | `true`, including [cloud billing releases](cloud-billing.md); startup applies the public migrations |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
 | `GOOGLE_CLOUD_PROJECT` | Optional; forwards relayed Web App and CLI errors to Google Cloud Error Reporting, see [Client error reporting](./error-reporting.md) |

@@ -17,6 +17,8 @@ import {
   sessionPlacements,
   sessions,
 } from "../../../db/schema/index.js";
+import { CloudCallStore } from "../../cloud-call-store.js";
+import { CloudUsageService } from "../../cloud-usage.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
 import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
@@ -458,6 +460,73 @@ describe("AgentService", () => {
     });
   });
 
+  it("counts cloud ledger tokens once while preserving local reports and task counts", async () => {
+    const { bootstrap, computer, service: original } = await fixture();
+    const created = await createAgent(original, bootstrap.userId, computer.id, "mixed-agent", "pi");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    await createDelivery(binding.id, session.id, {
+      reportedAt: NOW,
+      usage: { inputTokens: 10, cachedInputTokens: 20, outputTokens: 5 },
+    });
+    const cloudDelivery = await createDelivery(binding.id, session.id, {
+      reportedAt: NOW,
+      usage: { inputTokens: 999999, cachedInputTokens: 99999, outputTokens: 99999 },
+    });
+    await unitDatabase.database
+      .update(imMessageDeliveries)
+      .set({ executionOrigin: "cloud" })
+      .where(eq(imMessageDeliveries.id, cloudDelivery.id));
+    const calls = new CloudCallStore({ query: (query, parameters) => unitDatabase.engine.query(query, parameters) });
+    const id = await calls.create(
+      { accountId: bootstrap.userId, agentId: created.id, sessionId: session.id, source: "execution" },
+      { gateway: "litellm", model: "model-a" },
+      null,
+    );
+    await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [id, NOW.toISOString()]);
+    const service = new AgentService(unitDatabase.database, {
+      now: () => NOW,
+      cloudUsage: new CloudUsageService(calls.db),
+    });
+    await expect(service.getUsageById(bootstrap.userId, created.id, 30)).resolves.toMatchObject({
+      tasks: 2,
+      measuredTasks: 1,
+      tokens: 35,
+    });
+    await calls.finalize(
+      id,
+      {
+        status: "complete",
+        usage: { inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 0, outputTokens: 10 },
+      },
+      { resolution: "unbilled", pricedMicros: 0, debitedMicros: 0 },
+    );
+    // A second model call has not yet supplied authoritative usage. The Runner's report cannot
+    // prove task coverage, even when another call in the same session has been settled.
+    const pendingId = await calls.create(
+      { accountId: bootstrap.userId, agentId: created.id, sessionId: session.id, source: "execution" },
+      { gateway: "litellm", model: "model-a" },
+      null,
+    );
+    await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [pendingId, NOW.toISOString()]);
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.usage).toEqual({
+      windowDays: 30,
+      tasks: 2,
+      failed: 0,
+      tokens: 165,
+    });
+    const usage = await service.getUsageById(bootstrap.userId, created.id, 30);
+    expect(usage).toMatchObject({
+      tasks: 2,
+      measuredTasks: 1,
+      inputTokens: 150,
+      cachedInputTokens: 60,
+      outputTokens: 15,
+      tokens: 165,
+    });
+    expect(usage.daily.reduce((total, point) => total + point.measuredTasks, 0)).toBe(1);
+    expect(usage.daily.reduce((total, point) => total + point.tokens, 0)).toBe(165);
+  });
   it("projects an orphaned accepted delivery older than the recovery window as unknown", async () => {
     const { bootstrap, computer, service } = await fixture();
     const created = await createAgent(service, bootstrap.userId, computer.id, "stale-agent");

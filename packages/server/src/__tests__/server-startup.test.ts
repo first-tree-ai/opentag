@@ -339,6 +339,8 @@ function defaultConfig() {
     autoMigrate: true,
     cloudIdentities: { enabled: false },
     cloudRunner: { enabled: false },
+    cloudModel: { enabled: false },
+    cloudBilling: { enabled: false },
     skillStorage: { enabled: false },
     channelTarget: {
       downloadBaseUrl: "https://download.test/releases",

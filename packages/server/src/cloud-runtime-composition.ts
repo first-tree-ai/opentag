@@ -271,6 +271,7 @@ export function cloudAppOptions(input: {
   runnerRuntime: SandboxRunnerRuntime | undefined;
   composition: CloudDeliveryComposition;
   cloudModel: CloudModelConfig;
+  model?: Pick<CloudModelProxyRouteOptions, "modelService" | "contextForExecution">;
 }): {
   sandboxRunnerService?: SandboxRunnerService;
   runnerChannel?: {
@@ -283,6 +284,8 @@ export function cloudAppOptions(input: {
   cloudModel?: CloudModelProxyRouteOptions;
   cloudModelCatalog?: CloudModelCatalog;
 } {
+  if (input.composition.cloudModelGrants && input.cloudModel.enabled && !input.model)
+    throw new Error("Cloud model routes require metering dependencies");
   const runnerOptions = sandboxRunnerRouteOptions(
     input.runnerRuntime,
     input.composition.cloudDeliveryOwner,
@@ -293,8 +296,14 @@ export function cloudAppOptions(input: {
     // The workspace routes exist exactly when the runtime configured persistence; without them a
     // workspace Runner can never claim/restore and fails closed before readiness.
     ...(input.runnerRuntime?.runnerWorkspace ? { runnerWorkspace: input.runnerRuntime.runnerWorkspace } : {}),
-    ...(input.composition.cloudModelGrants && input.cloudModel.enabled
-      ? { cloudModel: { config: input.cloudModel, grants: input.composition.cloudModelGrants } }
+    ...(input.composition.cloudModelGrants && input.cloudModel.enabled && input.model
+      ? {
+          cloudModel: {
+            config: input.cloudModel,
+            grants: input.composition.cloudModelGrants,
+            ...input.model,
+          },
+        }
       : {}),
     // The account-facing model options route reads the same catalog the runtime enforces.
     ...(input.composition.cloudModelCatalog ? { cloudModelCatalog: input.composition.cloudModelCatalog } : {}),
@@ -337,23 +346,22 @@ function sandboxRunnerRouteOptions(
  */
 export function collectKnownSecrets(environment: NodeJS.ProcessEnv): string[] {
   return [
-    environment.OPENTAG_DATABASE_URL ?? "",
-    environment.OPENTAG_JWT_SECRET ?? "",
-    environment.BETTER_AUTH_SECRET ?? "",
-    environment.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
-    environment.OPENTAG_ENCRYPTION_KEY ?? "",
-    environment.OPENTAG_ENCRYPTION_KEY_RING ?? "",
-    environment.OPENTAG_OTEL_HEADERS ?? "",
-    environment.OPENTAG_SLACK_CLIENT_SECRET ?? "",
-    environment.OPENTAG_SLACK_SIGNING_SECRET ?? "",
-    environment.OPENTAG_GITHUB_APP_CLIENT_SECRET ?? "",
-    environment.OPENTAG_GITHUB_APP_PRIVATE_KEY ?? "",
-    environment.OPENTAG_GITHUB_APP_WEBHOOK_SECRET ?? "",
-    // The Cloud model master key authorizes real upstream spend; it is never printed or echoed.
-    environment.OPENTAG_CLOUD_MODEL_MASTER_KEY ?? "",
-    // The dev-only static Cloud Runner token is a live Google access token while it is set.
-    environment.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN ?? "",
-    // The Skill object-store secret authorizes writes to every Agent's Skill bundles.
-    environment.OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY ?? "",
-  ];
+    "OPENTAG_DATABASE_URL",
+    "OPENTAG_JWT_SECRET",
+    "BETTER_AUTH_SECRET",
+    "OPENTAG_GOOGLE_CLIENT_SECRET",
+    "OPENTAG_ENCRYPTION_KEY",
+    "OPENTAG_ENCRYPTION_KEY_RING",
+    "OPENTAG_OTEL_HEADERS",
+    "OPENTAG_SLACK_CLIENT_SECRET",
+    "OPENTAG_SLACK_SIGNING_SECRET",
+    "OPENTAG_GITHUB_APP_CLIENT_SECRET",
+    "OPENTAG_GITHUB_APP_PRIVATE_KEY",
+    "OPENTAG_GITHUB_APP_WEBHOOK_SECRET",
+    "OPENTAG_CLOUD_MODEL_MASTER_KEY",
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET",
+    "OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN",
+    "OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY",
+  ].map((name) => environment[name] ?? "");
 }

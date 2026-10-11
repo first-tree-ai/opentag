@@ -1,7 +1,7 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-10-09
+> Last synced with: 2026-10-10
 
 OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI、完成 CLI/Runner 发布的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
@@ -92,7 +92,7 @@ service，不会配置 CapRover 的 server container。
 | `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用；签发全部 Account session |
 | `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `BETTER_AUTH_SECRET` 不同；仅用于签名 Slack OAuth state |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 编码的 32 字节 key，Staging 专用 |
-| `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
+| `OPENTAG_AUTO_MIGRATE` | 使用 `true`，包括[云端计费发布](cloud-billing.md)；启动时应用公开迁移 |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
 | `GOOGLE_CLOUD_PROJECT` | 可选；将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting，参见 [客户端错误上报](./error-reporting.md) |

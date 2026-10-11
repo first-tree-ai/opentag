@@ -105,7 +105,7 @@ export function AgentUsageOverview({ accountId, agentId }: { accountId?: string;
   );
 }
 
-function UsageWindowSelect({
+export function UsageWindowSelect({
   onChange,
   options,
   value,
@@ -389,7 +389,7 @@ function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
   );
 }
 
-function Metric({ compact = false, label, value }: { compact?: boolean; label: string; value: string }) {
+export function Metric({ compact = false, label, value }: { compact?: boolean; label: string; value: string }) {
   return (
     <div className={compact ? "grid min-w-0 gap-1 px-4 first:pl-0 last:pr-0" : "grid gap-1 p-5"}>
       <Text as="dt" size="sm" variant="secondary">
@@ -464,7 +464,13 @@ function UsageEmpty() {
   );
 }
 
-function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
+export function TokenTrendChart({
+  usage,
+}: {
+  usage: Pick<AgentUsageDetail, "windowDays" | "tokens" | "endedAt"> & {
+    daily: ReadonlyArray<Pick<AgentUsageDetail["daily"][number], "date" | "tokens">>;
+  };
+}) {
   const nonEmpty = usage.daily.some((point) => point.tokens > 0);
   if (!nonEmpty) {
     return <UsageEmpty />;
@@ -528,7 +534,13 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
   );
 }
 
-function TokenBreakdown({ usage }: { usage: AgentUsageDetail }) {
+export function TokenBreakdown({
+  usage,
+  includeCached = true,
+}: {
+  usage: Pick<AgentUsageDetail, "tokens" | "inputTokens" | "outputTokens" | "cachedInputTokens">;
+  includeCached?: boolean;
+}) {
   const total = Math.max(usage.tokens, 1);
   return (
     <div className="grid gap-3">
@@ -551,17 +563,21 @@ function TokenBreakdown({ usage }: { usage: AgentUsageDetail }) {
               share={formatPercent(usage.outputTokens / total)}
               value={usage.outputTokens}
             />
-            <BreakdownRow
-              label={m.usage_breakdown_cached_input()}
-              share={m.usage_breakdown_not_in_total()}
-              value={usage.cachedInputTokens}
-            />
+            {includeCached ? (
+              <BreakdownRow
+                label={m.usage_breakdown_cached_input()}
+                share={m.usage_breakdown_not_in_total()}
+                value={usage.cachedInputTokens}
+              />
+            ) : null}
           </Table.Body>
         </Table>
       </div>
-      <Text as="p" size="sm" variant="secondary">
-        {m.usage_breakdown_note()}
-      </Text>
+      {includeCached ? (
+        <Text as="p" size="sm" variant="secondary">
+          {m.usage_breakdown_note()}
+        </Text>
+      ) : null}
     </div>
   );
 }

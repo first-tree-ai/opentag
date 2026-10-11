@@ -139,60 +139,65 @@ describe("browser authentication routes", () => {
     expect(betterAuth.paths).toEqual([]);
   });
 
-  it("signs in the configured development user only from a loopback request", async () => {
-    const betterAuth = betterAuthStub(devSession);
-    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, devSignIn: true });
-    expect((await app.inject({ method: "GET", url: HTTP_PATHS.authProviders })).json()).toEqual({
-      providers: [
-        { id: "google", enabled: false, startUrl: null },
-        { id: "dev", enabled: true, startUrl: HTTP_PATHS.authDevCallback },
-        { id: "password", enabled: false, startUrl: null },
-      ],
-    });
-    expect(
-      (
-        await app.inject({
-          method: "GET",
-          url: HTTP_PATHS.authProviders,
-          headers: { host: "example.com" },
-          remoteAddress: "127.0.0.1",
-        })
-      ).json(),
-    ).toMatchObject({
-      providers: [{ id: "google" }, { id: "dev", enabled: false, startUrl: null }, { id: "password" }],
-    });
+  it.each(["/agents", "/account", "/usage"])(
+    "signs in the configured development user from loopback and returns to %s",
+    async (next) => {
+      const betterAuth = betterAuthStub(devSession);
+      const { app } = createBrowserApp({ betterAuth: betterAuth.instance, devSignIn: true });
+      expect((await app.inject({ method: "GET", url: HTTP_PATHS.authProviders })).json()).toEqual({
+        providers: [
+          { id: "google", enabled: false, startUrl: null },
+          { id: "dev", enabled: true, startUrl: HTTP_PATHS.authDevCallback },
+          { id: "password", enabled: false, startUrl: null },
+        ],
+      });
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url: HTTP_PATHS.authProviders,
+            headers: { host: "example.com" },
+            remoteAddress: "127.0.0.1",
+          })
+        ).json(),
+      ).toMatchObject({
+        providers: [{ id: "google" }, { id: "dev", enabled: false, startUrl: null }, { id: "password" }],
+      });
 
-    const response = await app.inject({
-      method: "GET",
-      url: `${HTTP_PATHS.authDevCallback}?next=%2Fagents`,
-      headers: {
-        host: "localhost:8000",
-        origin: "http://localhost:5173",
-        referer: "http://localhost:5173/agents/setup",
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-      },
-      remoteAddress: "127.0.0.1",
-    });
-    expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe("/agents");
-    expect(betterAuth.paths).toEqual(["/api/v1/auth/dev/sign-in"]);
-    expect(betterAuth.browserOrigins).toEqual([{ origin: "http://localhost:8000", referer: null, secFetchSite: null }]);
-    const cookies = String(response.headers["set-cookie"]);
-    expect(cookies).toContain("opentag.session_token=dev-session");
-    // Without the double-submit token a signed-in development browser could read but never write, sign-out included.
-    expect(cookies).toContain("opentag_csrf=");
+      const response = await app.inject({
+        method: "GET",
+        url: `${HTTP_PATHS.authDevCallback}?next=${encodeURIComponent(next)}`,
+        headers: {
+          host: "localhost:8000",
+          origin: "http://localhost:5173",
+          referer: "http://localhost:5173/agents/setup",
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "same-origin",
+        },
+        remoteAddress: "127.0.0.1",
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(next);
+      expect(betterAuth.paths).toEqual(["/api/v1/auth/dev/sign-in"]);
+      expect(betterAuth.browserOrigins).toEqual([
+        { origin: "http://localhost:8000", referer: null, secFetchSite: null },
+      ]);
+      const cookies = String(response.headers["set-cookie"]);
+      expect(cookies).toContain("opentag.session_token=dev-session");
+      // Without the double-submit token a signed-in development browser could read but never write, sign-out included.
+      expect(cookies).toContain("opentag_csrf=");
 
-    for (const request of [
-      { headers: { host: "localhost:8000" }, remoteAddress: "192.0.2.10" },
-      { headers: { host: "example.com" }, remoteAddress: "127.0.0.1" },
-    ]) {
-      const rejected = await app.inject({ method: "GET", url: HTTP_PATHS.authDevCallback, ...request });
-      expect(rejected.statusCode).toBe(404);
-    }
-    expect(betterAuth.paths).toEqual(["/api/v1/auth/dev/sign-in"]);
-  });
+      for (const request of [
+        { headers: { host: "localhost:8000" }, remoteAddress: "192.0.2.10" },
+        { headers: { host: "example.com" }, remoteAddress: "127.0.0.1" },
+      ]) {
+        const rejected = await app.inject({ method: "GET", url: HTTP_PATHS.authDevCallback, ...request });
+        expect(rejected.statusCode).toBe(404);
+      }
+      expect(betterAuth.paths).toEqual(["/api/v1/auth/dev/sign-in"]);
+    },
+  );
 
   it("rejects an external development redirect before issuing credentials", async () => {
     const betterAuth = betterAuthStub(devSession);

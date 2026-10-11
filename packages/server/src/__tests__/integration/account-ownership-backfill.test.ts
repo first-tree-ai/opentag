@@ -76,6 +76,7 @@ afterAll(async () => {
 beforeEach(async () => {
   const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
   try {
+    await sql.unsafe("drop schema if exists billing cascade");
     await sql.unsafe("drop schema if exists public cascade");
     await sql.unsafe("drop schema if exists drizzle cascade");
     await sql.unsafe("create schema public");

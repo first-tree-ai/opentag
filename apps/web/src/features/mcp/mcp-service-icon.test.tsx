@@ -6,8 +6,17 @@ import { entry } from "./mcp-test-fixtures.js";
 
 vi.mock("@opentag/mcp-presets", () => ({
   MCP_CATALOG_ENTRIES: [
-    { url: "https://mcp.provider.test/mcp", iconUrl: "/provider.svg", iconIsOfficial: true },
-    { url: "https://mcp.unverified.test/mcp", iconUrl: "/placeholder.svg" },
+    {
+      url: "https://mcp.provider.test/mcp",
+      description: { en: "Search provider documents.", zh: "搜索服务商文档。" },
+      iconUrl: "/provider.svg",
+      iconIsOfficial: true,
+    },
+    {
+      url: "https://mcp.unverified.test/mcp",
+      description: { en: "Search team documents.", zh: "搜索团队文档。" },
+      iconUrl: "/placeholder.svg",
+    },
   ],
 }));
 

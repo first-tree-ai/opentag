@@ -1148,6 +1148,9 @@ authorization footer. Current component evidence is recorded in
 
 The current management layout is preserved: service identity opens settings, the list shows connection
 status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.
+The identity subtitle uses the matched catalog entry's localized purpose description. Custom connectors
+use their user-supplied description, with the effective URL as the fallback when the description is blank.
+Subtitles stay on one line with truncation and a full-text tooltip; the complete URL remains in settings.
 An empty tool result is inspected in the existing tool browser. Authentication preserves the binding's
 effective settings and extra-header inheritance; catalog scopes are supplied only for its exact endpoint.
 Account definitions retain their chosen default authentication kind when reused. Catalog defaults apply

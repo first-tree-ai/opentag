@@ -243,7 +243,7 @@
   "mcp_add_url_label": "连接器地址",
   "mcp_add_url_error": "请输入完整的连接器地址。",
   "mcp_add_key_label": "API 密钥",
-  "mcp_add_previous": "或选择已添加的连接器",
+  "mcp_add_previous": "或选择已有连接器",
   "mcp_add_view_all": "查看全部（{count}）",
   "mcp_add_show_recent": "显示最近添加",
   "mcp_add_loading": "正在加载连接器",

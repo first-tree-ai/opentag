@@ -215,7 +215,7 @@ describe("URL and server shortcuts", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openAdd();
     const dialog = within(screen.getByRole("dialog"));
-    expect(dialog.queryByText("Or choose an existing connector")).toBeNull();
+    expect(dialog.queryByText("Or choose a connector")).toBeNull();
     expect(dialog.queryByRole("button", { name: "linear" })).toBeNull();
     expect(dialog.getByLabelText("Connector URL")).toBeTruthy();
   });

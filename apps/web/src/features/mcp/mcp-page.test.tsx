@@ -21,12 +21,18 @@ import {
 afterEach(() => vi.restoreAllMocks());
 describe("MCP daily use", () => {
   it("keeps normal rows quiet and offers refresh inside the tool browser", async () => {
-    stub([entry({ discoveredDescription: "Long server-provided description" })]);
+    stub([
+      entry({
+        effective: { ...entry().effective, url: "https://mcp.linear.app/mcp" },
+        discoveredDescription: "Long server-provided description",
+      }),
+    ]);
     wrap(<McpPage agentId={AGENT_ID} />);
     await openTools();
     expect(screen.getByRole("button", { name: "Refresh tools" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Tool list incomplete" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close linear tools" }));
+    expect(screen.getByText("Find and update tasks and projects.")).toBeTruthy();
     expect(screen.queryByText("Long server-provided description")).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
     await openDetails();
@@ -34,11 +40,12 @@ describe("MCP daily use", () => {
     expect(screen.queryByText("Long server-provided description")).toBeNull();
   });
   it("uses identity navigation without menus or a permanent tools action", async () => {
-    stub([entry()]);
+    const description = "Search internal support documents.";
+    stub([entry({ description })]);
     wrap(<McpPage agentId={AGENT_ID} />);
     await screen.findByRole("button", { name: "linear" });
     expect(screen.queryByRole("button", { name: /More actions|View tools/ })).toBeNull();
-    fireEvent.click(screen.getByText(entry().effective.url));
+    fireEvent.click(screen.getByText(description));
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open linear details" }));
     expect(await screen.findByRole("dialog", { name: "linear" })).toBeTruthy();

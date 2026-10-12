@@ -37,7 +37,7 @@ API key entry uses 352px. View all explicitly expands to 480px. The opening top 
 key collection, and expansion, and every height is bounded by the remaining viewport. Explicit steps animate only
 the bottom edge over 160ms, with no animation when reduced motion is requested. Loading and errors retain their height.
 
-The lightweight heading reads “Or choose an existing connector” (“或选择已添加的连接器”). At most four available
+The lightweight heading reads “Or choose a connector” (“或选择已有连接器”). At most four available
 recent services appear on desktop and two on mobile, with the selected service kept visible. Default choices contain
 only their names: no logos, URLs, Added labels or check icons. Selection retains `aria-pressed` and uses the existing
 background and border treatments plus a heavier name. The caption uses the secondary text size and compact action

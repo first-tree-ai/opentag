@@ -16,6 +16,10 @@ their natural content height; the list's minimum height leaves space beneath the
 multi-row preview verified that the desktop list retains its bounded scrolling region.
 
 The current entry labels are **Discover** and **Add custom**. The directory has no Agent scope footer.
+Management card subtitles show the catalog's localized purpose description for known endpoints,
+the user-supplied description for custom connectors, and the effective URL when no description exists.
+Descriptions retain the existing single-line layout and full-text tooltip; the complete address remains
+available in connector settings. The catalog previews above do not capture this management subtitle change.
 Adding and authorizing a connector have no separate success or failure notification. The card
 shows connection status; errors stay on the corresponding card or connection form with a retry
 action. Unit tests verify the Connected state and OAuth return handling. Unit tests also cover the existing

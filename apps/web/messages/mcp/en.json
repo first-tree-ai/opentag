@@ -243,7 +243,7 @@
   "mcp_add_url_label": "Connector URL",
   "mcp_add_url_error": "Enter a complete connector URL.",
   "mcp_add_key_label": "API key",
-  "mcp_add_previous": "Or choose an existing connector",
+  "mcp_add_previous": "Or choose a connector",
   "mcp_add_view_all": "View all ({count})",
   "mcp_add_show_recent": "Show recent",
   "mcp_add_loading": "Loading connectors",

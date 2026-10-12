@@ -314,7 +314,7 @@ test("another Agent reuses the server and supplies its own API key", async ({ pa
   expect(fixture.servers).toHaveLength(1);
   const dialog = await openAdd(page, second);
   await expect(dialog.locator(".mcp-add-tag")).toHaveCount(0);
-  await expect(dialog).not.toContainText("Or choose an existing connector");
+  await expect(dialog).not.toContainText("Or choose a connector");
   expect((await dialog.boundingBox())?.height).toBeLessThanOrEqual(280);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
@@ -336,7 +336,7 @@ test("an empty server pool opens at the same compact size on first use and reope
   await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
   const reopened = await geometry(dialog);
   expect(reopened).toEqual(initial);
-  await expect(dialog).not.toContainText("Or choose an existing connector");
+  await expect(dialog).not.toContainText("Or choose a connector");
   await dialog.getByLabel("Connector URL", { exact: true }).fill("example.com");
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(dialog.getByRole("alert")).toHaveText("Enter a complete connector URL.");

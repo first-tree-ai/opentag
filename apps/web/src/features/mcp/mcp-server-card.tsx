@@ -3,7 +3,7 @@ import type { MCPAgentServer } from "@opentag/shared/browser";
 import { useId } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, Info, Loader, Popover, Switch, Text, Tooltip } from "../../ui/design-system.js";
-import { findCatalogEntryByUrl } from "./catalog/mcp-catalog-model.js";
+import { findCatalogEntryByUrl, localizedText } from "./catalog/mcp-catalog-model.js";
 import { McpServiceIcon } from "./mcp-service-icon.js";
 
 export type ServerAction = "authorize" | "edit";
@@ -33,6 +33,9 @@ export function McpServerCard({
   connecting?: boolean;
 }) {
   const catalogEntry = findCatalogEntryByUrl(entry.effective.url, MCP_CATALOG_ENTRIES);
+  const subtitle = catalogEntry
+    ? localizedText(catalogEntry.description)
+    : entry.description?.trim() || entry.effective.url;
   const authorized = entry.authorization?.status === "active";
   const pending = probing || entry.authorization?.probeState === "pending";
   return (
@@ -67,8 +70,8 @@ export function McpServerCard({
               <Icon name="chevron-right" className="size-3.5 shrink-0 text-kumo-subtle" />
             </Button>
           </Text>
-          <Tooltip content={entry.effective.url} render={<p className="truncate text-sm text-kumo-subtle" />}>
-            {entry.effective.url}
+          <Tooltip content={subtitle} render={<p className="truncate text-sm text-kumo-subtle" />}>
+            {subtitle}
           </Tooltip>
         </div>
       </div>

@@ -100,10 +100,8 @@ export function registerRuntimeRoutes(
     logger,
     now: options.now,
     onRegistered: async (input) => {
-      if (registry.allowsBusiness(input.computerId, input.instanceId)) {
-        await options.onRegistered?.(input);
-        await providerCliReconcileOwner?.onComputerRegistered(input);
-      }
+      await options.onRegistered?.(input);
+      await providerCliReconcileOwner?.onComputerRegistered(input);
     },
     registerTimeoutMs: options.registerTimeoutMs,
   };

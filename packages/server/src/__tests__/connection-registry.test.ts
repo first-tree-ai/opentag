@@ -10,7 +10,11 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { ServiceLogger } from "../observability/service-logger.js";
-import { allowsRuntimeBusiness, COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "../runtime/connection-registry.js";
+import {
+  COMPUTER_DELETED_CLOSE,
+  ConnectionRegistry,
+  canReceiveRuntimeSnapshot,
+} from "../runtime/connection-registry.js";
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
 describe("ConnectionRegistry", () => {
@@ -19,85 +23,84 @@ describe("ConnectionRegistry", () => {
     "bad",
     "0.1.0",
     "0.1.0+build.7",
-    "0.1.2",
-    "0.1.2-beta.1",
-    "0.1.2-staging.0.1",
-    "0.1.2-staging.1.0",
-    "0.1.2-staging.1.1.extra",
-    "0.1.3-staging.1.1",
-    "1.0.0",
-  ])("keeps unknown/legacy version %s limited to validated settlement", (clientVersion) => {
+    "0.1.1-staging.1.1",
+    "0.1.1-staging.16.1",
+    "0.1.1-staging.43.2",
+  ])("blocks only new snapshots for the old format %s", async (clientVersion) => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID(),
+      instanceId = randomUUID(),
+      connectionId = randomUUID();
+    const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
     const entry = {
       clientVersion,
-      computerId: "computer",
-      installationId: "install",
-      instanceId: "instance",
+      computerId,
+      instanceId,
+      connectionId,
+      installationId: randomUUID(),
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      negotiatedCapabilities: {},
       lastHeartbeatAt: 1,
-      socket: {} as WebSocket,
+      socket: { ...socket(), readyState: WebSocket.OPEN, send } as unknown as WebSocket,
     };
-    expect(allowsRuntimeBusiness(entry)).toBe(false);
-    expect(allowsRuntimeBusiness(entry, { type: "im:deliver" })).toBe(false);
-    expect(
-      allowsRuntimeBusiness(entry, {
+    await registry.register(entry, async () => undefined);
+    expect(canReceiveRuntimeSnapshot(entry)).toBe(false);
+    for (const frame of [
+      { type: "session:reconcile", desired: "ready", runtime: {} },
+      { type: "im:deliver", runtime: {} },
+      { type: "session:message:deliver", runtime: {} },
+    ])
+      await expect(registry.send(computerId, instanceId, frame)).rejects.toMatchObject({ code: "unavailable" });
+    expect(send).not.toHaveBeenCalled();
+    for (const frame of [
+      { type: "session:reconcile", desired: "stopped" },
+      { type: "provider-cli:prewarm", requestId: randomUUID(), providers: ["feishu", "slack"] },
+      { type: "im:steer" },
+      {
         type: "turn:report:result",
         requestId: randomUUID(),
         turnId: "turn",
         resultHash: "a".repeat(64),
         status: "recorded",
-      }),
-    ).toBe(true);
-    expect(allowsRuntimeBusiness(entry, { type: "turn:report:result", status: "recorded", extra: true })).toBe(false);
+      },
+    ])
+      await expect(registry.send(computerId, instanceId, frame)).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(4);
+    expect(registry.currentInstanceId(computerId)).toBe(instanceId);
   });
-  it.each(["0.1.1+build.7", "0.1.1-staging.61.1", "0.1.2-staging.1.1", "0.1.2-staging.62.2"])(
-    "admits the current release format %s while retaining operation capability gates",
-    (clientVersion) => {
-      const entry = {
-        clientVersion,
-        computerId: "computer",
-        installationId: "install",
-        instanceId: "instance",
-        lastHeartbeatAt: 1,
-        socket: {} as WebSocket,
-        negotiatedCapabilities: {},
-      };
-      expect(allowsRuntimeBusiness(entry)).toBe(true);
-      expect(allowsRuntimeBusiness(entry, { type: "im:deliver" })).toBe(false);
-      expect(
-        allowsRuntimeBusiness(
-          { ...entry, negotiatedCapabilities: { "runtime.imDelivery": 2 } },
-          { type: "im:deliver" },
-        ),
-      ).toBe(true);
+
+  it.each(["0.1.1-staging.44.1", "0.1.1+build.7", "0.1.1-staging.61.1", "0.1.2-staging.1.1", "0.1.2", "1.0.0"])(
+    "sends current-format snapshots at %s without a global capability gate and retains the fence",
+    async (clientVersion) => {
+      const registry = new ConnectionRegistry();
+      const computerId = randomUUID(),
+        instanceId = randomUUID(),
+        connectionId = randomUUID();
+      const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
+      await registry.register(
+        {
+          clientVersion,
+          computerId,
+          instanceId,
+          connectionId,
+          installationId: randomUUID(),
+          protocolVersion: RUNTIME_PROTOCOL_V2,
+          negotiatedCapabilities: {},
+          lastHeartbeatAt: 1,
+          socket: { ...socket(), readyState: WebSocket.OPEN, send } as unknown as WebSocket,
+        },
+        async () => undefined,
+      );
+      expect(registry.canReceiveSnapshot(computerId, instanceId)).toBe(true);
+      await expect(
+        registry.send(computerId, instanceId, { type: "im:deliver", runtime: {} }, connectionId),
+      ).resolves.toBeUndefined();
+      expect(JSON.parse(send.mock.calls[0]?.[0] ?? "null")).toEqual({ type: "im:deliver", runtime: {}, connectionId });
+      await expect(
+        registry.send(computerId, instanceId, { type: "im:deliver", runtime: {} }, randomUUID()),
+      ).rejects.toMatchObject({ code: "instance_replaced" });
     },
   );
-
-  it("sends current staging business through the registry with the connection fence", async () => {
-    const registry = new ConnectionRegistry();
-    const computerId = randomUUID();
-    const instanceId = randomUUID();
-    const connectionId = randomUUID();
-    const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
-    await registry.register(
-      {
-        clientVersion: "0.1.2-staging.1.1",
-        computerId,
-        installationId: randomUUID(),
-        instanceId,
-        connectionId,
-        protocolVersion: RUNTIME_PROTOCOL_V2,
-        negotiatedCapabilities: { [RUNTIME_CAPABILITY.imDelivery]: 2 },
-        lastHeartbeatAt: 1,
-        socket: { ...socket(), readyState: WebSocket.OPEN, send } as unknown as WebSocket,
-      },
-      async () => undefined,
-    );
-    expect(registry.allowsBusiness(computerId, instanceId)).toBe(true);
-    await expect(registry.send(computerId, instanceId, { type: "im:deliver" }, connectionId)).resolves.toBeUndefined();
-    expect(JSON.parse(send.mock.calls[0]?.[0] ?? "null")).toEqual({ type: "im:deliver", connectionId });
-    await expect(registry.send(computerId, instanceId, { type: "im:deliver" }, randomUUID())).rejects.toMatchObject({
-      code: "instance_replaced",
-    });
-  });
 
   it("keeps two Computers independently online", async () => {
     const registry = new ConnectionRegistry();

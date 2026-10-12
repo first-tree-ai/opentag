@@ -992,83 +992,93 @@ describe("Computer runtime WebSocket", () => {
     expect(machineAuth.verifyMachineToken).not.toHaveBeenCalled();
   });
 
-  it("keeps heartbeat independent from slow keyed business work and isolates handler failures", async () => {
-    const computers = computerService();
-    let releaseSlow: (() => void) | undefined;
-    let markSlowStarted: (() => void) | undefined;
-    const slow = new Promise<void>((resolve) => {
-      releaseSlow = resolve;
-    });
-    const slowStarted = new Promise<void>((resolve) => {
-      markSlowStarted = resolve;
-    });
-    const app = createRuntimeApp({
-      authService: authService(),
-      computerService: computers as unknown as ComputerService,
-      runtime: {
-        business: {
-          parse: (value) => businessFrame(value),
-          laneKey: (frame) => String(frame.key),
-          handle: async (frame) => {
-            if (frame.key === "slow") {
-              markSlowStarted?.();
-              await slow;
-            }
-            if (frame.key === "fail") throw new Error("expected handler failure");
-            return { type: "test:result", requestId: frame.requestId, status: "ok" };
+  it.each(["0.1.0", "0.1.1-staging.43.1", "0.1.2"])(
+    "keeps registration, heartbeat and direct responses independent of business version %s",
+    async (clientVersion) => {
+      const onRegistered = vi.fn(async () => {});
+      const computers = computerService();
+      let releaseSlow: (() => void) | undefined;
+      let markSlowStarted: (() => void) | undefined;
+      const slow = new Promise<void>((resolve) => {
+        releaseSlow = resolve;
+      });
+      const slowStarted = new Promise<void>((resolve) => {
+        markSlowStarted = resolve;
+      });
+      const app = createRuntimeApp({
+        authService: authService(),
+        computerService: computers as unknown as ComputerService,
+        runtime: {
+          onRegistered,
+          business: {
+            parse: (value) => businessFrame(value),
+            laneKey: (frame) => String(frame.key),
+            handle: async (frame) => {
+              if (frame.key === "slow") {
+                markSlowStarted?.();
+                await slow;
+              }
+              if (frame.key === "fail") throw new Error("expected handler failure");
+              return { type: "test:result", requestId: frame.requestId, status: "ok" };
+            },
+            overloadResult: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "busy" }),
+            failureResult: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "failed" }),
+            maxConcurrent: 2,
           },
-          overloadResult: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "busy" }),
-          failureResult: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "failed" }),
-          maxConcurrent: 2,
         },
-      },
-    });
-    apps.push(app);
-    const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
-    const frames = rawFrameQueue(socket);
-    await authenticateRaw(socket, frames);
-    const register = registerFrame(machineContext.installationId, randomUUID());
-    socket.send(JSON.stringify(register));
-    expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+      });
+      apps.push(app);
+      const address = await app.listen({ host: "127.0.0.1", port: 0 });
+      const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+      const frames = rawFrameQueue(socket);
+      await authenticateRaw(socket, frames);
+      const register = {
+        ...registerFrame(machineContext.installationId, randomUUID()),
+        clientVersion,
+        supportedCapabilities: {},
+      };
+      socket.send(JSON.stringify(register));
+      expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+      await vi.waitFor(() => expect(onRegistered).toHaveBeenCalledOnce());
 
-    const slowRequestId = randomUUID();
-    socket.send(
-      JSON.stringify({
-        type: "test:work",
-        connectionId: runtimeFence(socket).connectionId,
-        requestId: slowRequestId,
-        key: "slow",
-      }),
-    );
-    await slowStarted;
-    const heartbeatRequestId = randomUUID();
-    socket.send(
-      JSON.stringify({
-        type: "heartbeat",
-        ...runtimeFence(socket),
-        requestId: heartbeatRequestId,
-        installationId: register.installationId,
-        instanceId: register.instanceId,
-      }),
-    );
-    expect(await frames.next()).toMatchObject({ type: "heartbeat:result", requestId: heartbeatRequestId, ok: true });
-    releaseSlow?.();
-    expect(await frames.next()).toMatchObject({ type: "test:result", requestId: slowRequestId, status: "ok" });
+      const slowRequestId = randomUUID();
+      socket.send(
+        JSON.stringify({
+          type: "test:work",
+          connectionId: runtimeFence(socket).connectionId,
+          requestId: slowRequestId,
+          key: "slow",
+        }),
+      );
+      await slowStarted;
+      const heartbeatRequestId = randomUUID();
+      socket.send(
+        JSON.stringify({
+          type: "heartbeat",
+          ...runtimeFence(socket),
+          requestId: heartbeatRequestId,
+          installationId: register.installationId,
+          instanceId: register.instanceId,
+        }),
+      );
+      expect(await frames.next()).toMatchObject({ type: "heartbeat:result", requestId: heartbeatRequestId, ok: true });
+      releaseSlow?.();
+      expect(await frames.next()).toMatchObject({ type: "test:result", requestId: slowRequestId, status: "ok" });
 
-    const failedRequestId = randomUUID();
-    socket.send(
-      JSON.stringify({
-        type: "test:work",
-        connectionId: runtimeFence(socket).connectionId,
-        requestId: failedRequestId,
-        key: "fail",
-      }),
-    );
-    expect(await frames.next()).toMatchObject({ type: "test:result", requestId: failedRequestId, status: "failed" });
-    expect(socket.readyState).toBe(WebSocket.OPEN);
-    socket.close();
-  });
+      const failedRequestId = randomUUID();
+      socket.send(
+        JSON.stringify({
+          type: "test:work",
+          connectionId: runtimeFence(socket).connectionId,
+          requestId: failedRequestId,
+          key: "fail",
+        }),
+      );
+      expect(await frames.next()).toMatchObject({ type: "test:result", requestId: failedRequestId, status: "failed" });
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      socket.close();
+    },
+  );
 });
 
 describe("RuntimeSession direct protocol coverage", () => {

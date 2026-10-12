@@ -1,6 +1,7 @@
 import {
   AGENT_RUNTIME_PROVIDERS,
   type AgentRuntimeProvider,
+  compareSemVer,
   type ImCliProvider,
   type ImCliReadinessStatus,
   type IntegrationCredentialExecutionReason,
@@ -15,15 +16,11 @@ import {
   RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS,
   RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS,
   type RuntimeClientCapabilities,
-  RuntimeCredentialServerFrameSchema,
   type RuntimeImCliReadinessCollection,
-  RuntimeImCredentialGrantResultSchema,
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
   runtimeFrameByteLength,
-  SessionReconcileRequestSchema,
-  TurnReportResultSchema,
 } from "@opentag/shared";
 import WebSocket from "ws";
 import type { ServiceLogger } from "../observability/service-logger.js";
@@ -433,14 +430,24 @@ export class ConnectionRegistry {
     return current;
   }
 
-  allowsBusiness(computerId: string, instanceId: string, frame?: unknown): boolean {
+  canReceiveSnapshot(computerId: string, instanceId: string): boolean {
     const entry = this.#currentWritable(computerId, instanceId);
-    return entry !== undefined && allowsRuntimeBusiness(entry, frame);
+    return entry !== undefined && canReceiveRuntimeSnapshot(entry);
   }
 
-  assertBusinessAllowed(computerId: string, instanceId: string, frame?: unknown): void {
-    if (!this.allowsBusiness(computerId, instanceId, frame)) {
-      throw new RuntimeRegistrySendError("unavailable", "The Client must upgrade before starting this business");
+  assertSnapshotCompatible(computerId: string, instanceId: string, frame: unknown): void {
+    const entry = this.#currentWritable(computerId, instanceId);
+    if (!entry) throw new RuntimeRegistrySendError("unavailable", "The Computer instance is not current");
+    if (
+      frame !== null &&
+      typeof frame === "object" &&
+      "type" in frame &&
+      (frame.type === "im:deliver" ||
+        frame.type === "session:message:deliver" ||
+        (frame.type === "session:reconcile" && "runtime" in frame && frame.runtime !== undefined)) &&
+      !canReceiveRuntimeSnapshot(entry)
+    ) {
+      throw new RuntimeRegistrySendError("unavailable", "The Client must upgrade before receiving this snapshot");
     }
   }
 
@@ -458,7 +465,7 @@ export class ConnectionRegistry {
     if (current.socket.readyState !== WebSocket.OPEN) {
       throw new RuntimeRegistrySendError("unavailable", "The Computer runtime socket is unavailable");
     }
-    this.assertBusinessAllowed(computerId, instanceId, frame);
+    this.assertSnapshotCompatible(computerId, instanceId, frame);
     let outbound = frame;
     if ((current.protocolVersion ?? RUNTIME_PROTOCOL_V1) === RUNTIME_PROTOCOL_V2) {
       try {
@@ -657,35 +664,9 @@ function withConnectionId(frame: unknown, connectionId?: string): unknown {
   return { ...record, connectionId };
 }
 
-const BUSINESS_CAPABILITY: Readonly<Record<string, string>> = {
-  "session:reconcile": RUNTIME_CAPABILITY.sessionReconcile,
-  "im:deliver": RUNTIME_CAPABILITY.imDelivery,
-  "im:steer": RUNTIME_CAPABILITY.imSteer,
-  "session:message:deliver": RUNTIME_CAPABILITY.sessionCollaboration,
-  "context-tree:operation": RUNTIME_CAPABILITY.contextTreeSettings,
-  "agent-runtime:test": RUNTIME_CAPABILITY.agentRuntimeTest,
-  "agent-runtime:options": RUNTIME_CAPABILITY.agentRuntimeOptions,
-  "provider-cli:prewarm": RUNTIME_CAPABILITY.providerCliPrewarm,
-  "provider-cli:requirement": RUNTIME_CAPABILITY.providerCliReconcile,
-};
-
-/** This transition admits the verified next format, never an arbitrary future version. */
-export function allowsRuntimeBusiness(entry: RuntimeConnectionEntry, frame?: unknown): boolean {
+/** First published snapshot with self-configuration, approvals, commands and the current hash layout. */
+export function canReceiveRuntimeSnapshot(entry: RuntimeConnectionEntry): boolean {
   if (entry.control?.kind === "cloud") return true;
   const version = entry.clientVersion ? parseSemVer(entry.clientVersion) : undefined;
-  const currentRelease = version?.major === 0 && version.minor === 1 && version.patch === 1;
-  // The 0.1.1 source is published to staging as 0.1.2-staging.<sequence>.<attempt>.
-  // Admit that channel's current format without admitting the future stable 0.1.2 release.
-  const currentStaging = /^0\.1\.2-staging\.[1-9]\d*\.[1-9]\d*$/.test(entry.clientVersion ?? "");
-  if (currentRelease || currentStaging) {
-    if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") return true;
-    const required = BUSINESS_CAPABILITY[frame.type];
-    return required === undefined || entry.negotiatedCapabilities?.[required] !== undefined;
-  }
-  // Settlement handlers still verify the original execution/custody and current authorization.
-  if (TurnReportResultSchema.safeParse(frame).success || RuntimeImCredentialGrantResultSchema.safeParse(frame).success)
-    return true;
-  if (RuntimeCredentialServerFrameSchema.safeParse(frame).success) return true;
-  const recovery = SessionReconcileRequestSchema.safeParse(frame);
-  return recovery.success && recovery.data.desired === "stopped" && recovery.data.runtime === undefined;
+  return version !== undefined && compareSemVer(version, "0.1.1-staging.44.1") >= 0;
 }

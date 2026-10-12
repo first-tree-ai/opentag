@@ -77,7 +77,7 @@ export class AgentRuntimeTestOwner {
 
   async start(computerId: string, input: AgentRuntimeTestDispatchInput): Promise<AgentRuntimeTestResponse> {
     const instanceId = this.#registry.currentInstanceId(computerId);
-    if (!instanceId || !this.#registry.allowsBusiness(computerId, instanceId)) return failed("computer_unavailable");
+    if (!instanceId) return failed("computer_unavailable");
     if (!this.#registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.agentRuntimeTest)) {
       return failed("capability_missing");
     }

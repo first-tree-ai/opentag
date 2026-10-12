@@ -3451,7 +3451,7 @@ describe("IM binding persistence", () => {
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-worker"));
-      const registry = { allowsBusiness: () => true, currentInstanceId: () => instanceId };
+      const registry = { canReceiveSnapshot: () => true, currentInstanceId: () => instanceId };
       const failedDomain = {
         requestReconcile: dispatchedRuntimeFailure(new Error("runtime unavailable")),
         requestDelivery: vi.fn(),
@@ -4353,7 +4353,7 @@ describe("IM binding persistence", () => {
         },
       };
       const oldDomain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
-      const oldRegistry = { allowsBusiness: () => true, currentInstanceId: () => firstInstanceId };
+      const oldRegistry = { canReceiveSnapshot: () => true, currentInstanceId: () => firstInstanceId };
       const racingRun = new ImDeliveryWorker({
         assembler: guardedAssembler,
         database: value.database,
@@ -4524,7 +4524,7 @@ describe("IM binding persistence", () => {
       };
       const firstWorker = imDeliveryWorker({
         database: value.database,
-        registry: { allowsBusiness: () => true, currentInstanceId: () => instanceId } as never,
+        registry: { canReceiveSnapshot: () => true, currentInstanceId: () => instanceId } as never,
         domain: firstDomain as never,
         claimLeaseMs: 300,
         claimRenewMs: 50,
@@ -4564,7 +4564,7 @@ describe("IM binding persistence", () => {
       const secondDomain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
       const secondWorker = imDeliveryWorker({
         database: value.database,
-        registry: { allowsBusiness: () => true, currentInstanceId: () => undefined } as never,
+        registry: { canReceiveSnapshot: () => true, currentInstanceId: () => undefined } as never,
         domain: secondDomain as never,
       });
       await secondWorker.runOnce();
@@ -4622,7 +4622,7 @@ describe("IM binding persistence", () => {
       const domain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
       await imDeliveryWorker({
         database: value.database,
-        registry: { allowsBusiness: () => true, currentInstanceId: () => staleInstanceId } as never,
+        registry: { canReceiveSnapshot: () => true, currentInstanceId: () => staleInstanceId } as never,
         domain: domain as never,
       }).runOnce();
 
@@ -4674,7 +4674,7 @@ describe("IM binding persistence", () => {
 
       const worker = imDeliveryWorker({
         database: value.database,
-        registry: { allowsBusiness: () => true, currentInstanceId: () => instanceId } as never,
+        registry: { canReceiveSnapshot: () => true, currentInstanceId: () => instanceId } as never,
         domain: {
           requestReconcile: dispatchedRuntimeResult({ status: "ready" }),
           requestDelivery: dispatchedRuntimeResult({
@@ -4774,7 +4774,7 @@ describe("IM binding persistence", () => {
         requestReconcile: dispatchedRuntimeFailure(new Error("reconcile failed before dispatch")),
         requestDelivery: vi.fn(),
       };
-      const registry = { allowsBusiness: () => true, currentInstanceId: () => instanceId };
+      const registry = { canReceiveSnapshot: () => true, currentInstanceId: () => instanceId };
       const worker = imDeliveryWorker({
         database: value.database,
         registry: registry as never,

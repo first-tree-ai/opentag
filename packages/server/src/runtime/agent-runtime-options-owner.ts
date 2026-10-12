@@ -50,7 +50,7 @@ export class AgentRuntimeOptionsOwner {
   ): Promise<AgentRuntimeOptions> {
     signal?.throwIfAborted();
     const instanceId = this.registry.currentInstanceId(input.computerId);
-    if (!instanceId || !this.registry.allowsBusiness(input.computerId, instanceId)) throw unavailable(503);
+    if (!instanceId) throw unavailable(503);
     if (!this.registry.supportsCapability(input.computerId, instanceId, RUNTIME_CAPABILITY.agentRuntimeOptions))
       throw unavailable(501);
     if (this.#pending.size >= 32) throw unavailable(503);

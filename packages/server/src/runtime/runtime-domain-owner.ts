@@ -299,7 +299,7 @@ export class RuntimeDomainOwner {
     });
     let operation: Promise<SessionReconcileResult>;
     try {
-      this.#registry.assertBusinessAllowed(computerId, instanceId, request);
+      this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
       const hash = computeReconcilePayloadHash(request);
       const preparation = this.#options.prepareReconcile;
       if (!preparation) {
@@ -387,7 +387,9 @@ export class RuntimeDomainOwner {
     request: RuntimeImSteerRequest,
     onDispatched?: () => void,
   ): Promise<RuntimeImSteerResult> {
-    this.#registry.assertBusinessAllowed(computerId, instanceId, request);
+    if (this.#registry.currentInstanceId(computerId) !== instanceId) {
+      throw new RuntimeDomainRequestError("authority_unavailable", "The Computer instance is not current");
+    }
     const inputHash = computeRuntimeImSteerInputHash(request);
     const semanticHash = computeRuntimeImMessageSemanticHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
@@ -566,7 +568,7 @@ export class RuntimeDomainOwner {
         onDispatched,
       ) as Promise<ImMessageDeliveryResult>;
     }
-    this.#registry.assertBusinessAllowed(computerId, instanceId, request);
+    this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
     const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched);
     const owner = { computerId, hash: requestHash, instanceId, promise };
     this.#startingDeliveries.set(request.requestId, owner);
@@ -847,7 +849,7 @@ export class RuntimeDomainOwner {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
     }
-    this.#registry.assertBusinessAllowed(computerId, instanceId, request);
+    this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
     if (this.#pending.size >= this.#options.maxPendingRequests) {
       throw new RuntimeDomainRequestError("capacity", "The runtime request owner is full");
     }

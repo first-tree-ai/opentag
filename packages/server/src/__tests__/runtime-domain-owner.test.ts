@@ -30,6 +30,30 @@ import {
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 
 describe("RuntimeDomainOwner", () => {
+  it.each(["0.1.0", "0.1.1-staging.43.1"])(
+    "rejects new snapshots before preparation or custody on %s",
+    async (version) => {
+      const prepareReconcile = vi.fn(
+        async (_computerId: string, _instanceId: string, request: SessionReconcileRequest) => request,
+      );
+      const fixture = await ownerFixture(1_000, { prepareReconcile }, version);
+      const begin = vi.spyOn(fixture.custody, "beginDeliveryDispatch");
+      try {
+        expect(() =>
+          fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcileRequest(fixture.computerId)),
+        ).toThrow("The Client must upgrade before receiving this snapshot");
+        expect(() => fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequest())).toThrow(
+          "The Client must upgrade before receiving this snapshot",
+        );
+        expect(prepareReconcile).not.toHaveBeenCalled();
+        expect(begin).not.toHaveBeenCalled();
+        expect(fixture.frames).toEqual([]);
+      } finally {
+        fixture.owner.close();
+      }
+    },
+  );
+
   it.each([undefined, 1, 2])("gates Turn activity on the exact negotiated version %s", async (version) => {
     const onTurnActivity = vi.fn(async (frame: TurnActivityRequest) => ({
       type: "turn:activity:result" as const,
@@ -277,7 +301,7 @@ describe("RuntimeDomainOwner", () => {
     const release = vi.spyOn(custody, "releaseDeliveryDispatch");
     const owner = new RuntimeDomainOwner(
       {
-        assertBusinessAllowed: vi.fn(),
+        assertSnapshotCompatible: vi.fn(),
         send: vi.fn(() => {
           throw new Error("sync send failed");
         }),
@@ -1110,14 +1134,18 @@ async function waitForDeliveryFrame(frames: unknown[], requestId: string): Promi
   });
 }
 
-async function ownerFixture(requestTimeoutMs = 1_000, options: Partial<RuntimeDomainOwnerOptions> = {}) {
+async function ownerFixture(
+  requestTimeoutMs = 1_000,
+  options: Partial<RuntimeDomainOwnerOptions> = {},
+  clientVersion = "0.1.1",
+) {
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
   const instanceId = randomUUID();
   const frames: unknown[] = [];
   await registry.register(
     {
-      clientVersion: "0.1.1",
+      clientVersion,
       computerId,
       installationId: computerId,
       instanceId,
@@ -1133,14 +1161,15 @@ async function ownerFixture(requestTimeoutMs = 1_000, options: Partial<RuntimeDo
     },
     async () => undefined,
   );
-  const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), { requestTimeoutMs, ...options });
+  const custody = new MemoryRuntimeCustodyStore();
+  const owner = new RuntimeDomainOwner(registry, custody, { requestTimeoutMs, ...options });
   const context: RuntimeBusinessContext = {
     computerId,
     installationId: computerId,
     instanceId,
     signal: new AbortController().signal,
   };
-  return { computerId, context, frames, instanceId, owner, registry };
+  return { computerId, context, custody, frames, instanceId, owner, registry };
 }
 
 async function replaceRuntimeInstance(fixture: Awaited<ReturnType<typeof ownerFixture>>) {

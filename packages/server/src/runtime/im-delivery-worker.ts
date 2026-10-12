@@ -938,7 +938,7 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_OBSERVER_UNSUPPORTED", claimToken);
       return;
     }
-    if (!this.#registry.allowsBusiness(row.computer.id, instanceId)) {
+    if (!this.#registry.canReceiveSnapshot(row.computer.id, instanceId)) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UPGRADE_REQUIRED", claimToken);
       return;
     }
@@ -1193,10 +1193,13 @@ export class ImDeliveryWorker {
     const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
     let pinnedInputHash = pinned.success ? computeDirectInputHash(pinned.data) : undefined;
     if (pinned.success && pinnedInputHash !== row.delivery.dispatchInputHash) {
-      try {
-        pinnedInputHash = computeLegacyDirectInputHash(pinned.data);
-      } catch {
-        pinnedInputHash = undefined;
+      for (const layout of ["0.1.0", "self-configuration"] as const) {
+        try {
+          pinnedInputHash = computeLegacyDirectInputHash(pinned.data, layout);
+        } catch {
+          pinnedInputHash = undefined;
+        }
+        if (pinnedInputHash === row.delivery.dispatchInputHash) break;
       }
     }
     if (

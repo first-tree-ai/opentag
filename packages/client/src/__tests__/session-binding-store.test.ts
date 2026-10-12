@@ -104,12 +104,61 @@ describe("SessionBindingStore", () => {
     ).toEqual(old);
   });
 
-  it.each(["accepted", "reporting"] as const)(
-    "settles an old disk-only %s Turn after upgrade before applying the migrated snapshot",
-    async (phase) => {
+  it.each(["preserved", "changed", "omitted"] as const)(
+    "continues a staging binding only with authentic opt-in: %s",
+    async (optIn) => {
       const fixture = await bindingFixture();
-      const old = { ...fixture.runtime, execution: { approvalPolicy: "never" as const, networkAccess: true } };
-      const hashes = computeLegacyRuntimeSnapshotHashes(old);
+      const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+      const binding = JSON.parse(await readFile(path, "utf8"));
+      const old = { ...fixture.runtime, ...(optIn === "omitted" ? {} : { selfConfigurationEnabled: true }) };
+      const hashes = computeLegacyRuntimeSnapshotHashes(old, "self-configuration");
+      Object.assign(binding, {
+        sessionConfigHash: hashes.sessionConfigHash,
+        lastEffectiveSnapshotHash: hashes.effectiveSnapshotHash,
+        runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "original-staging-thread" } },
+      });
+      await writeFile(snapshotPath(fixture.home, "agent-1", hashes.effectiveSnapshotHash), JSON.stringify(old));
+      await writeFile(path, JSON.stringify(binding));
+      const runtime: EffectiveRuntimeSnapshot = {
+        ...old,
+        selfConfigurationEnabled: optIn === "preserved",
+        revision: { agent: { sequence: 2, id: "new-agent" }, session: { sequence: 2, id: "new-session" } },
+        execution: { approvalPolicy: "on-request", networkAccess: false, allowCommands: [] },
+      };
+      const request = { ...fixture.reconcile, requestId: randomUUID(), runtime };
+      const nextHashes = computeRuntimeSnapshotHashes(runtime);
+      if (optIn === "changed") {
+        const before = await readFile(path, "utf8");
+        await expect(fixture.store.prepare(request, nextHashes)).rejects.toThrow("changed content");
+        expect(await readFile(path, "utf8")).toBe(before);
+        return;
+      }
+      await fixture.store.validatePreparation(request, nextHashes);
+      const prepared = await fixture.store.prepare(request, nextHashes);
+      expect(prepared.binding.runtimeBinding).toEqual(binding.runtimeBinding);
+      expect(prepared.binding.recentRecordedInputs).toEqual(binding.recentRecordedInputs);
+      expect(prepared.binding.lastEffectiveSnapshotHash).toBe(nextHashes.effectiveSnapshotHash);
+      expect(
+        JSON.parse(await readFile(snapshotPath(fixture.home, "agent-1", hashes.effectiveSnapshotHash), "utf8")),
+      ).toEqual(old);
+    },
+  );
+
+  it.each([
+    ["0.1.0", "accepted"],
+    ["0.1.0", "reporting"],
+    ["self-configuration", "accepted"],
+    ["self-configuration", "reporting"],
+  ] as const)(
+    "settles a %s disk-only %s Turn after upgrade before applying the migrated snapshot",
+    async (layout, phase) => {
+      const fixture = await bindingFixture();
+      const old = {
+        ...fixture.runtime,
+        ...(layout === "self-configuration" ? { selfConfigurationEnabled: true } : {}),
+        execution: { approvalPolicy: "never" as const, networkAccess: true },
+      };
+      const hashes = computeLegacyRuntimeSnapshotHashes(old, layout);
       const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
       const report = turnReport(delivery(old, 99), "old-turn");
       const binding = {
@@ -189,7 +238,7 @@ describe("SessionBindingStore", () => {
         requestId: randomUUID(),
         runtime: {
           ...old,
-          selfConfigurationEnabled: false,
+          selfConfigurationEnabled: old.selfConfigurationEnabled ?? false,
           revision: { agent: { sequence: 2, id: "migrated-agent" }, session: { sequence: 2, id: "migrated-session" } },
           execution: { approvalPolicy: "on-request", networkAccess: false, allowCommands: [] },
         },

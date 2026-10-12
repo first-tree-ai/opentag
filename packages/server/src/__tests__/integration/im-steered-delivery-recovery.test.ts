@@ -386,7 +386,7 @@ async function runRecoveryWorker(
     } as never,
     assembler: { assembleForSession: vi.fn(async () => fixture.runtime) },
     registry: {
-      allowsBusiness: vi.fn(() => true),
+      canReceiveSnapshot: vi.fn(() => true),
       currentInstanceId: vi.fn(() => fixture.dispatchContext.instanceId),
       capabilityVersion: vi.fn(() => 2),
     } as never,

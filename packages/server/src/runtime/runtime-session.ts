@@ -624,10 +624,6 @@ export class RuntimeSession {
       return;
     }
     if (!this.#computerId || !this.#instanceId) return;
-    if (!this.#registry.allowsBusiness(this.#computerId, this.#instanceId, result)) {
-      this.#logger?.warn({}, "Runtime business response blocked while awaiting upgrade");
-      return;
-    }
     this.#send(result, true);
   }
 

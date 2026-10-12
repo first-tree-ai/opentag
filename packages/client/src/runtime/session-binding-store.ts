@@ -4,6 +4,7 @@ import {
   computeRuntimeImMessageSemanticHash,
   computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
+  type EffectiveRuntimeSnapshot,
   EffectiveRuntimeSnapshotSchema,
   LegacyRuntimeSnapshotSchema,
   type RuntimeImSteerRequest,
@@ -455,8 +456,9 @@ export class SessionBindingStore {
       return false;
     }
     if (computeRuntimeSnapshotHashes(stored).effectiveSnapshotHash === current.lastEffectiveSnapshotHash) return false;
-    const old = LegacyRuntimeSnapshotSchema.parse(stored);
-    const hashes = computeLegacyRuntimeSnapshotHashes(old);
+    const layout = legacySnapshotLayout(stored, current.lastEffectiveSnapshotHash);
+    const old = stored;
+    const hashes = computeLegacyRuntimeSnapshotHashes(old, layout);
     if (
       hashes.effectiveSnapshotHash !== current.lastEffectiveSnapshotHash ||
       hashes.sessionConfigHash !== current.sessionConfigHash ||
@@ -475,6 +477,7 @@ export class SessionBindingStore {
     const { allowCommands: _commands, ...execution } = unchanged.execution;
     const candidate = {
       ...unchanged,
+      ...(layout === "self-configuration" ? { selfConfigurationEnabled: runtime.selfConfigurationEnabled } : {}),
       revision: old.revision,
       execution: {
         ...execution,
@@ -485,7 +488,7 @@ export class SessionBindingStore {
             : execution.networkAccess,
       },
     };
-    if (computeLegacyRuntimeSnapshotHashes(candidate).effectiveSnapshotHash !== hashes.effectiveSnapshotHash)
+    if (computeLegacyRuntimeSnapshotHashes(candidate, layout).effectiveSnapshotHash !== hashes.effectiveSnapshotHash)
       throw new SessionBindingConflictError(
         "conflict",
         "The legacy Session cannot safely continue with changed content",
@@ -856,6 +859,13 @@ function isSequence(value: unknown): value is number {
 function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
   const accepted = new Set(allowed);
   return Object.keys(value).every((key) => accepted.has(key));
+}
+
+function legacySnapshotLayout(snapshot: EffectiveRuntimeSnapshot, hash: string): "0.1.0" | "self-configuration" {
+  const original = LegacyRuntimeSnapshotSchema.safeParse(snapshot);
+  if (original.success && computeLegacyRuntimeSnapshotHashes(original.data).effectiveSnapshotHash === hash)
+    return "0.1.0";
+  return "self-configuration";
 }
 
 function retainedRuntimeBinding(current: LocalSessionBinding | undefined, hash: string, legacy: boolean) {

@@ -264,10 +264,7 @@ export class ProviderCliReconcileOwner {
     },
     mode: "ensure" | "inspect",
   ): Promise<boolean> {
-    if (
-      !this.#registry.allowsBusiness(input.computerId, input.instanceId) ||
-      !this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliPrewarm)
-    ) {
+    if (!this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliPrewarm)) {
       return false;
     }
     let shouldPrewarm = false;
@@ -479,7 +476,6 @@ export class ProviderCliReconcileOwner {
     requirement: ProviderCliRequirementSnapshot,
     options: { force?: boolean; resetBudget?: boolean; retry?: boolean } = {},
   ): Promise<void> {
-    if (!this.#registry.allowsBusiness(computerId, instanceId)) return;
     const key = requestKey(computerId, requirement.integrationId);
     const transition = this.#transitionOf(key);
     const seq = this.#currentAgentReconcile(computerId, requirement.agentId);

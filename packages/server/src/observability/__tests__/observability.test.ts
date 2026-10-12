@@ -1018,7 +1018,7 @@ describe("background and WebSocket tracing", () => {
     for (const [error, expectedCode] of typedRegistryFailures) {
       const request = runtimeReconcileRequest(randomUUID());
       const typedFailureOwner = new RuntimeDomainOwner(
-        { assertBusinessAllowed: vi.fn(), send: vi.fn().mockRejectedValue(error) } as never,
+        { assertSnapshotCompatible: vi.fn(), send: vi.fn().mockRejectedValue(error) } as never,
         custody as never,
       );
       typedFailureRequests.push({ expectedCode, requestId: request.requestId });

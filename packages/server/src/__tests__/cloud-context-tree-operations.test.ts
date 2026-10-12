@@ -346,7 +346,6 @@ function request(overrides: Partial<ContextTreeOperationRequest> = {}): ContextT
 
 function dispatchFixture(kind: "local" | "cloud" | undefined, config = agentConfig()) {
   const registry = {
-    allowsBusiness: vi.fn(() => true),
     currentInstanceId: vi.fn(() => randomUUID()),
     supportsCapability: vi.fn(() => true),
     send: vi.fn(async () => undefined),

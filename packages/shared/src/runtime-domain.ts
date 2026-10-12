@@ -181,6 +181,11 @@ export const LegacyRuntimeSnapshotSchema = EffectiveRuntimeSnapshotSchema.omit({
   execution: z.object({ approvalPolicy: z.literal("never"), networkAccess: z.boolean() }).strict(),
 });
 
+/** Published staging.16 through staging.43 added self-configuration before permissions. */
+const LegacyStagingRuntimeSnapshotSchema = LegacyRuntimeSnapshotSchema.extend({
+  selfConfigurationEnabled: z.boolean().optional(),
+});
+
 export const InputRejectReasonSchema = z.enum([
   "invalid_input",
   "target_mismatch",
@@ -1346,9 +1351,15 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
   };
 }
 
-/** Hash layout from published v0.1.0 (2f37f05c); preserve saved identities during upgrade. */
-export function computeLegacyRuntimeSnapshotHashes(input: unknown): RuntimeSnapshotHashes {
-  const snapshot = LegacyRuntimeSnapshotSchema.parse(input);
+/** Frozen published layouts; only verify saved identities, never downgrade new work. */
+export function computeLegacyRuntimeSnapshotHashes(
+  input: unknown,
+  layout: "0.1.0" | "self-configuration" = "0.1.0",
+): RuntimeSnapshotHashes {
+  const snapshot: EffectiveRuntimeSnapshot =
+    layout === "self-configuration"
+      ? LegacyStagingRuntimeSnapshotSchema.parse(input)
+      : LegacyRuntimeSnapshotSchema.parse(input);
   const agentConfigHash = hashTuple([
     1,
     snapshot.agentId,
@@ -1357,6 +1368,7 @@ export function computeLegacyRuntimeSnapshotHashes(input: unknown): RuntimeSnaps
     snapshot.revision.agent.id,
     snapshot.instructions.platform,
     snapshot.instructions.agent,
+    ...(layout === "self-configuration" ? [snapshot.selfConfigurationEnabled ?? false] : []),
     snapshot.workspace.workspaceId,
     snapshot.workspace.mode,
     snapshot.workspace.sharing,
@@ -1380,9 +1392,9 @@ export function computeLegacyRuntimeSnapshotHashes(input: unknown): RuntimeSnaps
   };
 }
 
-export function computeLegacyDirectInputHash(input: unknown): string {
+export function computeLegacyDirectInputHash(input: unknown, layout: "0.1.0" | "self-configuration" = "0.1.0"): string {
   const frame = DirectImMessageDeliveryRequestSchema.parse(input);
-  return directInputHash(frame, computeLegacyRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash);
+  return directInputHash(frame, computeLegacyRuntimeSnapshotHashes(frame.runtime, layout).effectiveSnapshotHash);
 }
 
 export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): string {

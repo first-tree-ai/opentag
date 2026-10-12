@@ -41,8 +41,7 @@ export class ContextTreeOperationOwner {
 
   async start(input: Omit<ContextTreeOperationFrame, "type" | "requestId">): Promise<ContextTreeOperationResponse> {
     const instanceId = this.registry.currentInstanceId(input.computerId);
-    if (!instanceId || !this.registry.allowsBusiness(input.computerId, instanceId))
-      return { status: "failed", code: "computer_unavailable" };
+    if (!instanceId) return { status: "failed", code: "computer_unavailable" };
     if (!this.registry.supportsCapability(input.computerId, instanceId, RUNTIME_CAPABILITY.contextTreeSettings))
       return { status: "failed", code: "capability_missing" };
     if (

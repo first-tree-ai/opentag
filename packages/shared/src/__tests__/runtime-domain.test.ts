@@ -62,6 +62,28 @@ describe("runtime domain contract", () => {
     expect(() => computeLegacyRuntimeSnapshotHashes({ ...snapshot(), selfConfigurationEnabled: false })).toThrow();
   });
 
+  it("verifies the published staging self-configuration hash layout without dropping the opt-in", () => {
+    // Frozen vector from published 0a9e717e, before permissions added allowCommands to the hash.
+    const old = { ...snapshot(), selfConfigurationEnabled: false };
+    const hashes = computeLegacyRuntimeSnapshotHashes(old, "self-configuration");
+    expect(hashes.effectiveSnapshotHash).toBe("630f5ebbeac713b010d77d7833e5f458e9ec689d05ef464c1e67da5aff916540");
+    expect(hashes.sessionConfigHash).toBe("9b51b9872c3617a33b57b2068500c3c645be5f1ed4662e613101b8c20546eea6");
+    expect(
+      computeLegacyRuntimeSnapshotHashes({ ...old, selfConfigurationEnabled: true }, "self-configuration"),
+    ).not.toEqual(hashes);
+    expect(computeLegacyRuntimeSnapshotHashes(snapshot(), "self-configuration")).toEqual(hashes);
+    expect(() => computeLegacyRuntimeSnapshotHashes(old)).toThrow();
+    expect(() =>
+      computeLegacyRuntimeSnapshotHashes(
+        { ...old, execution: { ...old.execution, allowCommands: [] } },
+        "self-configuration",
+      ),
+    ).toThrow();
+    expect(computeLegacyDirectInputHash(directDelivery(old), "self-configuration")).not.toBe(
+      computeDirectInputHash(directDelivery(old)),
+    );
+  });
+
   it("uses transport request IDs for approval requests, decisions, and acknowledgements", () => {
     const identity = {
       requestId: randomUUID(),

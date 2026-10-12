@@ -907,13 +907,21 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_EXPIRED");
   });
 
-  it.each(["pending", "accepted", "accepted after upgrade", "tampered"] as const)(
+  it.each([
+    ["pending", "0.1.0", "0.1.0", {}],
+    ["accepted", "0.1.0", "0.1.0", {}],
+    ["accepted after upgrade", "0.1.1", "0.1.0", {}],
+    ["tampered", "0.1.0", "0.1.0", {}],
+    ["staging accepted", "0.1.1-staging.43.1", "self-configuration", { selfConfigurationEnabled: true }],
+    ["staging tampered", "0.1.1-staging.43.1", "self-configuration", { selfConfigurationEnabled: true }],
+  ] as const)(
     "keeps legacy %s work behind the upgrade gate without new runtime snapshots",
-    async (scenario) => {
+    async (scenario, clientVersion, layout, snapshotFields) => {
       const fixture = await workerFixture(unit);
+      const request = { ...fixture.request, runtime: { ...fixture.runtime, ...snapshotFields } };
       await fixture.registry.register(
         {
-          clientVersion: scenario === "accepted after upgrade" ? "0.1.1" : "0.1.0",
+          clientVersion,
           negotiatedCapabilities: { "runtime.sessionReconcile": 1 },
           computerId: fixture.computerId,
           installationId: randomUUID(),
@@ -924,7 +932,7 @@ describe("ImDeliveryWorker database workflow", () => {
         async () => undefined,
       );
       if (scenario !== "pending") {
-        const inputHash = computeLegacyDirectInputHash(fixture.request);
+        const inputHash = computeLegacyDirectInputHash(request, layout);
         await unit.database
           .update(imMessageDeliveries)
           .set({
@@ -935,10 +943,9 @@ describe("ImDeliveryWorker database workflow", () => {
             turnId: "legacy-turn",
             acceptedAt: new Date(),
             reportOwnerInstanceId: fixture.instanceId,
-            dispatchPayload:
-              scenario === "tampered"
-                ? { ...fixture.request, content: { ...fixture.request.content, text: "changed" } }
-                : fixture.request,
+            dispatchPayload: scenario.endsWith("tampered")
+              ? { ...request, content: { ...request.content, text: "changed" } }
+              : request,
           })
           .where(eq(imMessageDeliveries.id, fixture.deliveryId));
       }
@@ -959,7 +966,7 @@ describe("ImDeliveryWorker database workflow", () => {
       }).runOnce();
       expect(assembler.assembleForSession).not.toHaveBeenCalled();
       expect(domain.requestDelivery).not.toHaveBeenCalled();
-      if (scenario === "accepted" || scenario === "accepted after upgrade") {
+      if (scenario.includes("accepted")) {
         expect(domain.requestReconcile).toHaveBeenCalledWith(
           fixture.computerId,
           fixture.instanceId,
@@ -969,7 +976,8 @@ describe("ImDeliveryWorker database workflow", () => {
       } else {
         expect(domain.requestReconcile).not.toHaveBeenCalled();
       }
-      if (scenario === "tampered") expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+      if (scenario.endsWith("tampered"))
+        expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
     },
   );
 

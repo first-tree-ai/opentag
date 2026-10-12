@@ -27,7 +27,7 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
   const internal = useInternalNavigationVisibility();
   const items = [
     { section: "home", icon: "overview", label: m.shell_overview(), link: agentDetailLink(agentId) },
-    { section: "tasks", icon: "instructions", label: m.shell_tasks(), link: agentTasksLink(agentId) },
+    { section: "tasks", icon: "tasks", label: m.shell_tasks(), link: agentTasksLink(agentId) },
     {
       section: "instructions",
       icon: "soul",
@@ -36,16 +36,16 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
     },
     {
       section: "context-tree",
-      icon: "tree",
+      icon: "memory",
       label: m.shell_context_tree(),
       link: agentContextTreeLink(agentId),
     },
     /*
-     * Visible by default, with no internal-tools gate: MCP Servers and Agent Skills are ordinary
+     * Visible by default, with no internal-tools gate: Connectors and Agent Skills are ordinary
      * per-Agent management surfaces, not previews.
      */
-    { section: "mcp", icon: "integrations", label: m.shell_mcp(), link: agentMcpLink(agentId) },
-    { section: "skills", icon: "shield", label: m.shell_skills(), link: agentSkillsLink(agentId) },
+    { section: "skills", icon: "skills", label: m.shell_skills(), link: agentSkillsLink(agentId) },
+    { section: "mcp", icon: "connector", label: m.shell_mcp(), link: agentMcpLink(agentId) },
     ...(internal.integrations
       ? ([
           {
@@ -60,7 +60,7 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
   ] as const;
   return (
     <>
-      <Sidebar.Header className="h-16 border-b-0 px-1.5">
+      <Sidebar.Header className="h-auto border-b-0 px-1.5 pb-4">
         <Sidebar.Menu className="min-w-0 flex-1">
           <Sidebar.MenuItem>
             <AgentSwitcher agent={agent} agents={agents} pathname={pathname} agentId={agentId} />
@@ -69,7 +69,7 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
       </Sidebar.Header>
       <Sidebar.Content className="[&_[data-sidebar=viewport]]:px-1.5 [&_[data-sidebar=viewport]]:pt-0">
         <nav aria-label={m.shell_agent()}>
-          <Sidebar.Group className="pt-1">
+          <Sidebar.Group>
             <Sidebar.Menu className="gap-1">
               {items.map((item) => {
                 const active = isAgentSectionActive(pathname, agentId, item.section);
@@ -78,11 +78,14 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
                     key={item.section}
                     active={active}
                     aria-current={active ? "page" : undefined}
-                    className="min-h-11 rounded-lg px-3 font-normal data-[active]:bg-(--brand-soft) data-[active]:font-medium focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
+                    className="h-11 rounded-lg px-3 font-normal data-[active]:bg-(--brand-soft) data-[active]:font-medium data-[active]:text-kumo-brand focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
                     href={router.buildLocation(item.link).href}
                     icon={
-                      <span className="grid size-6 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
-                        <Icon className="size-4" name={item.icon} />
+                      <span
+                        className="grid size-6 shrink-0 place-items-center text-kumo-subtle group-data-[active]/menu-button:text-kumo-brand"
+                        aria-hidden="true"
+                      >
+                        <Icon className="size-4.5" name={item.icon} weight="regular" />
                       </span>
                     }
                   >

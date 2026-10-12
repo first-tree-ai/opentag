@@ -558,6 +558,7 @@
   gap: 1rem;
 }
 .mcp-catalog-grid {
+  align-content: start;
   max-height: min(30rem, calc(100dvh - 22rem));
   min-height: 8rem;
   overflow-y: auto;

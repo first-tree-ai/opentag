@@ -1,13 +1,17 @@
-# MCP settings refinement
+# Connector settings refinement
 
-These screenshots show the current React components after reconciliation with the MCP management journeys on `main`. They use disposable sample data in a local preview, not a signed-in provider account.
+Updated: 2026-10-12.
+
+The current UI uses Connectors, Add custom, and Discover. Existing screenshots record the UI before this rename; the MCP protocol and page URL remain unchanged.
+
+These screenshots show the current React components after reconciliation with the connector management journeys on `main`. They use disposable sample data in a local preview, not a signed-in provider account.
 
 - [Desktop settings (1440 × 900)](settings-desktop.jpg)
 - [Desktop authentication (1440 × 900)](authentication-desktop.jpg)
 - [Settings (320 × 640)](settings-320.jpg)
 - [Authorization required (320 × 640)](disconnected-320.jpg)
 
-The settings page keeps the Server address label, removes the redundant Agent scope sentence and Server information disclosure, and uses consistent 44 px navigation rows with restrained hover backgrounds. Back returns to the parent; Close and Escape dismiss the entire flow. Drafts, disclosure state and scroll positions survive returning from child dialogs. Dirty connection settings must still be saved before authentication.
+The settings page keeps the Connector address label, removes the redundant Agent scope sentence and Connector information disclosure, and uses consistent 44 px navigation rows with restrained hover backgrounds. Back returns to the parent; Close and Escape dismiss the entire flow. Drafts, disclosure state and scroll positions survive returning from child dialogs. Dirty connection settings must still be saved before authentication.
 
 Authentication reserves space for its method-specific content, so switching between browser sign-in, a token and no authentication leaves the dialog position and footer unchanged. Settings and authentication share a top anchor and scroll their body when viewport space is limited. Tools uses the initial list size with a minimum list area, caps at the remaining viewport height, and keeps its height while filtering.
 

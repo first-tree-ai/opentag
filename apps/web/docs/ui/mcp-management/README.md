@@ -1,9 +1,11 @@
-# MCP management UI validation
+# Connector management UI validation
+
+The current UI uses Connectors, Add custom, and Discover. Existing screenshots record the UI before this rename; the MCP protocol and page URL remain unchanged.
 
 ## Empty state refinement (2026-10-12)
 
 The page describes its purpose as connecting the Agent to external tools. The empty state uses the existing
-connection icon at 32px, an 18px heading and concise guidance directly on the page background. One Add server
+connection icon at 32px, an 18px heading and concise guidance directly on the page background. One Add custom
 action remains in the page header. It opens the same URL-and-shortcuts dialog for an Agent with no
 mounted Servers and an Agent with existing mounts.
 
@@ -20,8 +22,8 @@ No reusable block, theme value or CSS exception was added.
 
 ## Existing management journeys
 
-The MCP list opens server details from the service identity and keeps the Agent enable switch independent.
-Details group Authentication, Tools, Advanced settings and Server information in that order. Authentication and
+The connector list opens server details from the service identity and keeps the Agent enable switch independent.
+Details group Authentication, Tools, Advanced settings and Connector information in that order. Authentication and
 Tools replace the current dialog and return to their source; destructive confirmations replace it as well.
 
 ## Browser validation
@@ -37,7 +39,7 @@ credentials or accounts were used. Screenshots below use disposable fixture data
 | API key and no authentication | Method selection, masked/revealed input, credential save, failure retry and return navigation work. |
 | Clear credentials | Cancellation keeps the typed draft. Confirmation clears the credential and tool snapshot, returns to authentication and empties the key field. |
 | Tools | Search empty state, query preservation through Details, refresh progress, cached results on failure and successful retry work. Refreshing a disabled server does not enable it. |
-| Remove from agent | Cancellation retains settings, disclosures and focus. Pending confirmation ignores Escape. Failure stays inline and can be retried. Successful removal closes the dialogs, removes the row and focuses Add server for the empty list. |
+| Remove from agent | Cancellation retains settings, disclosures and focus. Pending confirmation ignores Escape. Failure stays inline and can be retried. Successful removal closes the dialogs, removes the row and focuses Add custom for the empty list. |
 | Account scope | Removing the Agent binding leaves the account server available. It can be reattached through the existing-server picker without a duplicate row. |
 
 Refresh, credential-save and removal failures were injected as HTTP 503 responses at the browser network boundary;

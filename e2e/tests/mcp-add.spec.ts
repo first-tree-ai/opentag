@@ -189,8 +189,8 @@ async function mcpFixture(page: Page, servers: MCPServer[] = []) {
 }
 async function openAdd(page: Page, agentId: string) {
   await page.goto(`/agents/${agentId}/mcp`);
-  await page.getByRole("button", { name: "Add server", exact: true }).first().click();
-  const dialog = page.getByRole("dialog", { name: "Add server", exact: true });
+  await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Add custom connector", exact: true });
   await expect(dialog).toBeVisible();
   return dialog;
 }
@@ -198,21 +198,21 @@ async function geometry(dialog: Locator) {
   return Promise.all([
     dialog.boundingBox(),
     dialog.locator("header").boundingBox(),
-    dialog.getByLabel("Server URL", { exact: true }).boundingBox(),
+    dialog.getByLabel("Connector URL", { exact: true }).boundingBox(),
     dialog.locator("footer").boundingBox(),
   ]);
 }
 
-test("Add server accepts only a URL and retries tools without another create or bind", async ({ page }) => {
+test("Add custom accepts only a URL and retries tools without another create or bind", async ({ page }) => {
   const agentId = await createAgent(page, "MCP first Agent");
   const fixture = await mcpFixture(page);
   fixture.failProbe(true);
   const dialog = await openAdd(page, agentId);
   await expect(dialog.getByRole("textbox")).toHaveCount(1);
-  const url = dialog.getByLabel("Server URL", { exact: true });
+  const url = dialog.getByLabel("Connector URL", { exact: true });
   await url.fill("claude mcp add docs https://docs.example.com/mcp");
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(dialog).toContainText("Enter a complete server URL.");
+  await expect(dialog).toContainText("Enter a complete connector URL.");
   expect(fixture.writes).toHaveLength(0);
   await url.fill("https://docs.example.com/mcp");
   const initial = await geometry(dialog);
@@ -288,7 +288,7 @@ for (const { width, height } of [
   { width: 390, height: 844 },
   { width: 768, height: 900 },
 ]) {
-  test(`Add server stays stable through loading, search, selection and authentication at ${width}x${height}`, async ({
+  test(`Add custom stays stable through loading, search, selection and authentication at ${width}x${height}`, async ({
     page,
   }) => {
     const agentId = await createAgent(page, "MCP layout review");
@@ -299,7 +299,7 @@ for (const { width, height } of [
     fixture.holdPool();
     await page.setViewportSize({ width, height });
     const dialog = await openAdd(page, agentId);
-    await expect(dialog.getByRole("status", { name: "Loading servers" })).toBeVisible();
+    await expect(dialog.getByRole("status", { name: "Loading connectors" })).toBeVisible();
     const initial = await geometry(dialog);
     fixture.releasePool();
     await dialog.getByRole("button", { name: "View all (8)" }).click();
@@ -307,7 +307,7 @@ for (const { width, height } of [
     expect(expanded.slice(1, 3)).toEqual(initial.slice(1, 3));
     expect(expanded[0]).toMatchObject({ x: initial[0]?.x, y: initial[0]?.y, width: initial[0]?.width });
     expect(expanded[0]?.height).toBeGreaterThanOrEqual(initial[0]?.height ?? 0);
-    await dialog.getByRole("textbox", { name: "Search servers" }).fill("service-7");
+    await dialog.getByRole("textbox", { name: "Search connectors" }).fill("service-7");
     await dialog.getByRole("button", { name: /service-7.*https/ }).click();
     await expect(dialog.getByRole("button", { name: "service-7", exact: true })).toHaveAttribute(
       "aria-pressed",
@@ -331,16 +331,16 @@ for (const { width, height } of [
     await expectNoPageOverflow(page);
     await expectAccessible(page);
     await page.screenshot({ path: test.info().outputPath(`mcp-key-${width}-${height}.png`) });
-    await dialog.getByLabel("Server URL", { exact: true }).fill("https://changed.example.com/mcp");
+    await dialog.getByLabel("Connector URL", { exact: true }).fill("https://changed.example.com/mcp");
     await expect(dialog.getByLabel("API key", { exact: true })).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
-    await expect(page.getByRole("button", { name: "Add server", exact: true }).first()).toBeFocused();
+    await expect(page.getByRole("button", { name: "Add custom", exact: true }).first()).toBeFocused();
     expect(fixture.writes).toHaveLength(0);
   });
 }
 
-test("OAuth cancellation restores Add server and retries its existing binding", async ({ page }) => {
+test("OAuth cancellation restores Add custom and retries its existing binding", async ({ page }) => {
   const agentId = await createAgent(page, "MCP browser sign-in");
   const shared = server("oauth-service", "oauth");
   const fixture = await mcpFixture(page, [shared]);
@@ -356,8 +356,8 @@ test("OAuth cancellation restores Add server and retries its existing binding", 
   await dialog.getByRole("button", { name: "oauth-service", exact: true }).click();
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
   await page.getByRole("link", { name: "Cancel sign-in" }).click();
-  const restored = page.getByRole("dialog", { name: "Add server", exact: true });
-  await expect(restored.getByLabel("Server URL", { exact: true })).toHaveValue(shared.url);
+  const restored = page.getByRole("dialog", { name: "Add custom connector", exact: true });
+  await expect(restored.getByLabel("Connector URL", { exact: true })).toHaveValue(shared.url);
   await expect(restored).toContainText("Sign-in was not completed. Try again.");
   await expect(page.getByText(/Authorization for oauth-service is not complete/)).toHaveCount(0);
   await expect(restored.getByLabel("API key", { exact: true })).toHaveCount(0);

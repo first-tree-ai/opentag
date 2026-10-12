@@ -1,4 +1,6 @@
-# MCP Add server UI evidence
+# Add custom UI evidence
+
+The current UI uses Connectors, Add custom, and Discover. Existing screenshots record the UI before this rename; the MCP protocol and page URL remain unchanged.
 
 These screenshots come from `e2e/tests/mcp-add.spec.ts`, using the built application and fictional MCP fixtures.
 MCP management responses and provider consent are simulated; these tests do not authorize a real provider account.
@@ -20,5 +22,5 @@ per-Agent authentication, retry without duplicate creation, OAuth cancellation, 
 Verified viewports are 1440×720, 768×900, 390×844, 320×720, and 320×480. Compact and explicitly expanded
 sizes are bounded by the viewport, without intermediate breakpoints.
 
-The MCP list page retains its existing layout. See [the integration design](../../../../../docs/design/mcp-server-integration.md)
+The connector list page retains its existing layout. See [the integration design](../../../../../docs/design/mcp-server-integration.md)
 for the connection flow and existing API limitations.

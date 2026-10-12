@@ -61,7 +61,6 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
           searchRef={searchRef}
           onAdd={openEntry}
         />
-        <p className="mt-4 text-xs text-kumo-subtle">{m.mcp_discover_scope({ agent: props.agentName })}</p>
       </div>
       {preview ? (
         <div className="grid gap-5">

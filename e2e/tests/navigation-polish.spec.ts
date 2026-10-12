@@ -166,7 +166,7 @@ test("Instructions saves on its own page and preserves the section when switchin
   await expect(page.getByRole("main").getByRole("link", { name: /^Instructions/ })).toHaveCount(0);
   const navigation = page.getByRole("navigation", { name: "Agent", exact: true });
   await expect(navigation.getByRole("link", { name: "Memory", exact: true })).toBeVisible();
-  await expect(navigation.getByRole("link", { name: "MCP", exact: true })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Connectors", exact: true })).toBeVisible();
   await navigation.getByRole("link", { name: "Instructions", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${firstId}/instructions$`));
   const editor = page.getByRole("textbox", { name: "Instructions", exact: true });

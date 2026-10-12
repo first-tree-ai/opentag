@@ -6,7 +6,7 @@ import { AGENT_ID, entry, openDetails, SERVER_ID, stub, wrap } from "./mcp-test-
 
 afterEach(() => vi.restoreAllMocks());
 const click = (name: string | RegExp) => fireEvent.click(screen.getByRole("button", { name }));
-const address = () => screen.getByLabelText("Server address") as HTMLInputElement;
+const address = () => screen.getByLabelText("Connector address") as HTMLInputElement;
 
 async function openSettings() {
   wrap(<McpPage agentId={AGENT_ID} />);
@@ -31,7 +31,7 @@ describe("MCP settings navigation", () => {
     const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
     await openSettings();
     expect(screen.queryByText(/Used to connect/)).toBeNull();
-    expect(screen.queryByRole("button", { name: /Server information/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Connector information/ })).toBeNull();
     fireEvent.change(address(), { target: { value: "https://draft.example.com/mcp" } });
     click("Tools");
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
@@ -95,10 +95,10 @@ describe("MCP settings navigation", () => {
     expect(screen.getByRole("button", { name: "Back" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Close Authentication" }).hasAttribute("disabled")).toBe(true);
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    expect(screen.queryByLabelText("Server address")).toBeNull();
+    expect(screen.queryByLabelText("Connector address")).toBeNull();
     await waitFor(() => expect(authorize).toHaveBeenCalledTimes(1));
     finish();
-    await screen.findByLabelText("Server address");
+    await screen.findByLabelText("Connector address");
     expect(screen.getByRole("button", { name: "Authentication" })).toBeTruthy();
   });
 

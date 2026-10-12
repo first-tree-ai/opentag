@@ -1,16 +1,12 @@
 import type { McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
-import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, Icon, Loader } from "../../ui/design-system.js";
-import { readImBinding } from "../agents/agent-queries.js";
-import { agentSettingsSectionLink } from "../agents/agent-routes.js";
 import { useMcpCatalogConnection } from "./catalog/mcp-catalog-connection.js";
 import { McpDiscoverDialog } from "./catalog/mcp-discover-dialog.js";
 import { McpQuickStart } from "./catalog/mcp-quick-start.js";
@@ -51,6 +47,7 @@ export function McpPage({ agentId }: { agentId: string }) {
   const [highlight, setHighlight] = useState(outcome?.mcpServerId);
   const [completed, setCompleted] = useState<{ id: string; authorized: boolean }>();
   const [dismissed, setDismissed] = useState(hideReturnedCompletion(returnContext, outcome?.outcome.kind === "error"));
+  const dismissCompletion = useCallback(() => setDismissed(true), []);
   useEffect(() => {
     if (!returnContext || returnContext.source === "add" || restored.current || mounted.isPending) return;
     const entry = servers.find((server) => server.mcpServerId === returnContext.serverId);
@@ -136,12 +133,12 @@ export function McpPage({ agentId }: { agentId: string }) {
       </PageHeader>
       {!dismissed && (completed || outcome) ? (
         <McpCompletion
+          key={resultId}
           result={result}
           outcome={outcome}
           completed={completed}
           agentName={agentName}
-          agentId={agentId}
-          onDismiss={() => setDismissed(true)}
+          onDismiss={dismissCompletion}
         />
       ) : null}
       {mounted.isError ? (
@@ -217,29 +214,30 @@ function McpCompletion({
   outcome,
   completed,
   agentName,
-  agentId,
   onDismiss,
 }: {
   result?: MCPAgentServer;
   outcome: ReturnType<typeof readMcpOAuthOutcome>;
   completed?: { id: string; authorized: boolean };
   agentName: string;
-  agentId: string;
   onDismiss: () => void;
 }) {
   const authorized = completed?.authorized || outcome?.outcome.kind === "success";
-  const ready =
-    result?.enabled &&
-    result.authorization?.status === "active" &&
-    result.authorization.probeState === "succeeded" &&
-    (result.authorization.toolsCount ?? 0) > 0;
-  const message = completionMessage(result, outcome?.outcome.kind === "error", Boolean(authorized), agentName);
+  const failed = outcome?.outcome.kind === "error";
+  const hasResult = Boolean(result);
+  useEffect(() => {
+    if (failed || !hasResult) return;
+    const timer = window.setTimeout(onDismiss, 5000);
+    return () => window.clearTimeout(timer);
+  }, [failed, hasResult, onDismiss]);
+  if (!hasResult && !failed) return null;
+  const message = completionMessage(result, failed, Boolean(authorized), agentName);
   return (
-    <div role="status" className="flex items-start justify-between gap-4 border-b border-kumo-line pb-5">
-      <div className="grid gap-2 text-sm">
-        <p>{message}</p>
-        {ready ? <McpUseGuidance agentId={agentId} agentName={agentName} server={result.name} /> : null}
-      </div>
+    <div
+      role="status"
+      className="ui-surface fixed right-4 bottom-4 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 bg-kumo-base px-4 py-3 text-sm ring ring-kumo-line shadow-lg"
+    >
+      <p>{message}</p>
       <Button aria-label={m.mcp_completion_dismiss()} variant="ghost" shape="square" size="compact" onClick={onDismiss}>
         <Icon name="close" />
       </Button>
@@ -389,27 +387,6 @@ function McpRow({
       toggling={update.isPending}
       error={error ?? connectionError}
     />
-  );
-}
-
-function McpUseGuidance({ agentId, agentName, server }: { agentId: string; agentName: string; server: string }) {
-  const channel = useQuery({ queryKey: queryKeys.agents.imBinding(agentId), queryFn: () => readImBinding(agentId) });
-  const binding = channel.data;
-  const connected = !channel.isError && binding?.bindingState === "active";
-  return (
-    <>
-      {connected ? (
-        <p className="text-kumo-subtle">
-          {m.mcp_completion_channel({ agent: agentName, server, channel: messagingProviderLabel(binding.provider) })}
-        </p>
-      ) : null}
-      {!channel.isError && channel.isSuccess && !binding ? (
-        <p className="text-kumo-subtle">{m.mcp_completion_connect({ agent: agentName })}</p>
-      ) : null}
-      <Link {...agentSettingsSectionLink(agentId, "messaging")} className="text-xs underline underline-offset-4">
-        {m.mcp_completion_settings()}
-      </Link>
-    </>
   );
 }
 

@@ -944,6 +944,11 @@ callback fires the probe without awaiting it, so a flow started from the browser
 
 ## Web UI
 
+The product navigation and page title use **Connectors** (Chinese: **连接器**). A connector
+provides tools to an Agent; messaging channels let a user communicate with the Agent. The current
+connectors use MCP. Protocol labels, endpoint instructions, configuration import formats, CLI
+commands, API paths, schema names, and the `/agents/{agentId}/mcp` page URL retain their MCP names.
+
 The page lives at `/agents/{agentId}/mcp`, under the existing shell routes. It shows one Agent's
 mounted Servers, and each row displays **four independent states** rather than one merged status:
 
@@ -988,10 +993,12 @@ edit, and remove.
   discovery offers **Retry** in the tool footer, with the same pending guard; a partial list alone
   does not promote that action.
 
-### Adding a Server
+### Adding a Connector
 
-The MCP list page keeps its existing layout and actions. **Add server** opens one compact dialog:
-**Server URL**, optional **Previously added servers** shortcuts, and **Cancel / Connect**. There is
+The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
+**Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
+**发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
+**Connector URL**, optional **Previously added connectors** shortcuts, and **Cancel / Connect**. There is
 no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
 manual configuration, and configuration import remain implementation capabilities rather than entry
 points in this dialog.
@@ -1087,12 +1094,12 @@ create → attach → authorize sequence used by the connection flow.
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
-that an Agent can add from the independent **Discover services** directory and from its empty state.
-The page keeps one **Add server** action in its header alongside the independent directory action.
-Add server opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
+that an Agent can add from the independent **Discover** directory and from its empty state.
+The page keeps one **Add custom** action in its header alongside the independent directory action.
+Add custom opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
 Discover, manual-configuration, or import source switch. The standalone directory owns its add state.
 The empty state starts directly with **Quick start**, without repeating
-the page introduction or Add server action in a separate onboarding panel. It offers Exa, Notion, Linear, and Airtable, using brand names
+the page introduction or Add custom action in a separate onboarding panel. It offers Exa, Notion, Linear, and Airtable, using brand names
 and example tasks for web research, documents, tasks, and table records. Google Workspace services
 remain in Discover but are excluded from Quick start because their developer preview requires
 preview access and deployment configuration. Asana is not a Quick start substitute because its V2 MCP
@@ -1128,7 +1135,14 @@ Create and attach errors remain in the directory, preserving its search and cate
 definitions are retained for retries. After mounting, connection startup errors and probe retries
 belong to the existing list; credential errors remain in the shared authentication form. There is no
 separate setup, connection-progress, or connection-result view. OAuth uses the existing return context
-and completion handling, including authentication errors returned by the provider.
+and completion handling, including authentication errors returned by the provider. Add and
+authorization success are confirmed in a compact notification that disappears after five seconds;
+there is no permanent success panel or messaging-channel guidance above the connector list.
+
+The catalog aligns rows to the top of its bounded scroll area. Minimum list height leaves space
+below the cards instead of stretching a lone row. The directory omits the redundant Agent
+authorization footer. Current component evidence is recorded in
+[Connector UI polish](../../apps/web/docs/ui/connector-polish/README.md).
 
 The current management layout is preserved: service identity opens settings, the list shows connection
 status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.

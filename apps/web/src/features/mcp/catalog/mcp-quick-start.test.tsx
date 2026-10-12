@@ -18,7 +18,7 @@ describe("MCP onboarding", () => {
     expect(screen.queryByText("Preview access required")).toBeNull();
     expect(screen.queryByText("No API key needed")).toBeNull();
     expect(screen.queryByText("Authorize on the service’s website")).toBeNull();
-    expect(screen.getByRole("button", { name: "Discover services" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Discover" })).toBeTruthy();
   });
 
   it.each(["Google Drive", "Gmail"])("shows %s requirements before creating or authorizing", async (title) => {
@@ -26,10 +26,10 @@ describe("MCP onboarding", () => {
     const create = vi.spyOn(browserApi, "createMcpServer");
     const oauth = vi.spyOn(browserApi, "startMcpOAuth");
     wrap(<McpPage agentId={AGENT_ID} />);
-    const discover = await screen.findByRole("button", { name: "Discover services" });
+    const discover = await screen.findByRole("button", { name: "Discover" });
     await waitFor(() => expect(discover.hasAttribute("disabled")).toBe(false));
     fireEvent.click(discover);
-    const search = await screen.findByLabelText("Search services");
+    const search = await screen.findByLabelText("Search connectors");
     await waitFor(() => expect(document.activeElement).toBe(search));
     fireEvent.change(search, { target: { value: title } });
     fireEvent.click(await screen.findByRole("button", { name: `Add: ${title}` }));
@@ -49,12 +49,12 @@ describe("MCP onboarding", () => {
     let finish: (value: { servers: [] }) => void = () => {};
     vi.spyOn(browserApi, "mcpServers").mockImplementation(() => new Promise((resolve) => (finish = resolve)));
     wrap(<McpPage agentId={AGENT_ID} />);
-    const discover = await screen.findByRole("button", { name: "Discover services" });
+    const discover = await screen.findByRole("button", { name: "Discover" });
     await waitFor(() => expect(discover.hasAttribute("disabled")).toBe(false));
     fireEvent.click(discover);
     await screen.findByRole("dialog");
     finish({ servers: [] });
-    const search = await screen.findByLabelText("Search services");
+    const search = await screen.findByLabelText("Search connectors");
     await waitFor(() => expect(document.activeElement).toBe(search));
   });
 });

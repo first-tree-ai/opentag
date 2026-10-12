@@ -18,7 +18,7 @@ import {
 
 afterEach(() => vi.restoreAllMocks());
 const connect = () => fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
-const writeUrl = (value: string) => fireEvent.change(screen.getByLabelText("Server URL"), { target: { value } });
+const writeUrl = (value: string) => fireEvent.change(screen.getByLabelText("Connector URL"), { target: { value } });
 const ready = {
   probeState: "succeeded" as const,
   probeError: null,
@@ -44,8 +44,14 @@ describe("URL and server shortcuts", () => {
     await newAddress();
     expect(screen.queryByLabelText("Name")).toBeNull();
     expect(screen.queryByLabelText("API key")).toBeNull();
-    for (const name of ["Discover", "Configure manually", "Import configuration", "Use an existing Server", "Continue"])
-      expect(screen.queryByRole("button", { name })).toBeNull();
+    for (const name of [
+      "Discover",
+      "Configure manually",
+      "Import configuration",
+      "Use an existing connector",
+      "Continue",
+    ])
+      expect(within(screen.getByRole("dialog")).queryByRole("button", { name })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(create).not.toHaveBeenCalled();
   });
@@ -64,7 +70,7 @@ describe("URL and server shortcuts", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await newAddress(value);
     connect();
-    expect(await screen.findByText("Enter a complete server URL.")).toBeTruthy();
+    expect(await screen.findByText("Enter a complete connector URL.")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
   });
   it("selects a shortcut without connecting, switches exclusively, and clears selection on editing", async () => {
@@ -77,7 +83,7 @@ describe("URL and server shortcuts", () => {
     await openAdd();
     const first = await screen.findByRole("button", { name: "linear" });
     fireEvent.click(first);
-    expect((screen.getByLabelText("Server URL") as HTMLInputElement).value).toBe(a.url);
+    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe(a.url);
     expect(first.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "docs" }));
     expect(first.getAttribute("aria-pressed")).toBe("false");
@@ -98,9 +104,9 @@ describe("URL and server shortcuts", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openAdd();
     fireEvent.click(await screen.findByRole("button", { name: "View all (8)" }));
-    fireEvent.change(screen.getByLabelText("Search servers"), { target: { value: "tools-0" } });
+    fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "tools-0" } });
     fireEvent.click(screen.getByRole("button", { name: /tools-0.*https/ }));
-    expect(screen.queryByLabelText("Search servers")).toBeNull();
+    expect(screen.queryByLabelText("Search connectors")).toBeNull();
     expect(screen.getByRole("button", { name: "tools-0" }).getAttribute("aria-pressed")).toBe("true");
   });
   it("preloads the pool before opening and offers retry when loading fails", async () => {
@@ -112,18 +118,18 @@ describe("URL and server shortcuts", () => {
       }),
     );
     wrap(<McpPage agentId={AGENT_ID} />);
-    const add = await screen.findByRole("button", { name: "Add server" });
+    const add = await screen.findByRole("button", { name: "Add custom" });
     expect(add.hasAttribute("disabled")).toBe(true);
     expect(screen.queryByRole("dialog")).toBeNull();
     reject(new Error("offline"));
     await newAddress();
-    expect(await screen.findByText("Couldn’t load servers.")).toBeTruthy();
-    expect((screen.getByLabelText("Server URL") as HTMLInputElement).value).toBe("https://mcp.example.com/mcp");
+    expect(await screen.findByText("Couldn’t load connectors.")).toBeTruthy();
+    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe("https://mcp.example.com/mcp");
     vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(0).server] });
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("button", { name: "linear" })).toBeTruthy();
-    expect(screen.queryByText("Couldn’t load servers.")).toBeNull();
-    expect((screen.getByLabelText("Server URL") as HTMLInputElement).value).toBe("https://mcp.example.com/mcp");
+    expect(screen.queryByText("Couldn’t load connectors.")).toBeNull();
+    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe("https://mcp.example.com/mcp");
   });
   it("lets an ambiguous URL be resolved through View all when its matches are outside recent shortcuts", async () => {
     stub([]);
@@ -139,7 +145,7 @@ describe("URL and server shortcuts", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await newAddress("https://shared.example.com/mcp");
     connect();
-    await screen.findByText("Choose an existing server for this URL.");
+    await screen.findByText("Choose an existing connector for this URL.");
     fireEvent.click(screen.getByRole("button", { name: "View all (6)" }));
     fireEvent.click(screen.getByRole("button", { name: /service-0.*https/ }));
     expect(screen.getByRole("button", { name: "service-0" }).getAttribute("aria-pressed")).toBe("true");
@@ -147,8 +153,14 @@ describe("URL and server shortcuts", () => {
     expect(calls.attach).not.toHaveBeenCalled();
   });
   it("creates, binds, and probes a new anonymous service through the existing APIs", async () => {
+    const scroll = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: scroll });
     stub([]);
     const calls = writes();
+    calls.auth.mockImplementation(async () => {
+      vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [entry()] });
+      return entry();
+    });
     wrap(<McpPage agentId={AGENT_ID} />);
     await newAddress("  https://docs.example.com/mcp  ");
     connect();
@@ -160,6 +172,12 @@ describe("URL and server shortcuts", () => {
     });
     expect(calls.auth).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { kind: "none" });
     expect(calls.probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
+    expect(await screen.findByText("Connected")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement?.id).toBe(`mcp-server-${SERVER_ID}`));
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    expect(screen.queryByText("linear added to Reviewer")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Message channel settings" })).toBeNull();
   });
   it("does not replace an edited URL when an OAuth return's server pool arrives late", async () => {
     stub([]);
@@ -180,12 +198,12 @@ describe("URL and server shortcuts", () => {
         onLocate={vi.fn()}
       />,
     );
-    await screen.findByLabelText("Server URL");
+    await screen.findByLabelText("Connector URL");
     writeUrl("https://new.example.com/mcp");
     resolve({ servers: [detail(1).server] });
-    await waitFor(() => expect(screen.queryByRole("status", { name: "Loading servers" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Loading connectors" })).toBeNull());
     expect(screen.queryByRole("button", { name: "linear" })).toBeNull();
-    expect((screen.getByLabelText("Server URL") as HTMLInputElement).value).toBe("https://new.example.com/mcp");
+    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe("https://new.example.com/mcp");
   });
   it.each([
     ["connected", entry()],
@@ -197,9 +215,9 @@ describe("URL and server shortcuts", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openAdd();
     const dialog = within(screen.getByRole("dialog"));
-    expect(dialog.queryByText("Or choose an existing server")).toBeNull();
+    expect(dialog.queryByText("Or choose a connector")).toBeNull();
     expect(dialog.queryByRole("button", { name: "linear" })).toBeNull();
-    expect(dialog.getByLabelText("Server URL")).toBeTruthy();
+    expect(dialog.getByLabelText("Connector URL")).toBeTruthy();
   });
   it("filters mounted services from shortcuts, counts and search while keeping available choices text-only", async () => {
     const servers = Array.from({ length: 6 }, (_, i) => ({
@@ -218,13 +236,13 @@ describe("URL and server shortcuts", () => {
     expect(dialog.queryByRole("button", { name: "service-0" })).toBeNull();
     expect(dialog.getByRole("button", { name: "service-1" }).querySelector("svg, img")).toBeNull();
     fireEvent.click(dialog.getByRole("button", { name: "View all (5)" }));
-    fireEvent.change(dialog.getByLabelText("Search servers"), { target: { value: "service-0" } });
+    fireEvent.change(dialog.getByLabelText("Search connectors"), { target: { value: "service-0" } });
     expect(dialog.queryByRole("button", { name: /service-0.*https/ })).toBeNull();
-    expect(dialog.getByText("No matching servers.")).toBeTruthy();
-    fireEvent.change(dialog.getByLabelText("Search servers"), { target: { value: "service-5" } });
+    expect(dialog.getByText("No matching connectors.")).toBeTruthy();
+    fireEvent.change(dialog.getByLabelText("Search connectors"), { target: { value: "service-5" } });
     fireEvent.click(dialog.getByRole("button", { name: /service-5.*https/ }));
     expect(dialog.getByRole("button", { name: "service-5" }).getAttribute("aria-pressed")).toBe("true");
-    expect((dialog.getByLabelText("Server URL") as HTMLInputElement).value).toBe(servers[5]?.url);
+    expect((dialog.getByLabelText("Connector URL") as HTMLInputElement).value).toBe(servers[5]?.url);
   });
   it("collects a known API key only after Connect, without creating a new definition", async () => {
     stub([]);
@@ -332,7 +350,7 @@ describe("URL and server shortcuts", () => {
       probeError: `${MCP_ERROR_CODES.PROBE_FAILED}: ${MCP_AUTH_REJECTION_SUMMARY}`,
       message: "Couldn’t load tools. Try again.",
     },
-    { ...ready, toolsCount: 0, message: "This server has no available tools." },
+    { ...ready, toolsCount: 0, message: "This connector has no available tools." },
   ])("does not claim readiness when $message", async (result) => {
     stub([]);
     const calls = writes();

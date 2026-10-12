@@ -44,6 +44,7 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
+  Brain,
   CaretDown,
   CaretRight,
   CaretUp,
@@ -63,6 +64,7 @@ import {
   Info,
   Laptop,
   List,
+  ListChecks,
   MagnifyingGlass,
   type Icon as PhosphorIcon,
   PlugsConnected,
@@ -99,6 +101,7 @@ import {
 } from "react";
 import * as m from "../paraglide/messages.js";
 import { designTokens } from "./design.tokens.js";
+import { ConnectorIcon, SkillsIcon } from "./navigation-icons.js";
 
 export {
   Banner,
@@ -512,6 +515,7 @@ export type IconName =
   | "chevron-right"
   | "chevron-up"
   | "close"
+  | "connector"
   | "copy"
   | "eye"
   | "eye-slash"
@@ -522,14 +526,17 @@ export type IconName =
   | "integrations"
   | "laptop"
   | "message"
+  | "memory"
   | "model"
   | "more-vertical"
   | "plus"
   | "settings"
   | "shield"
+  | "skills"
   | "soul"
   | "sign-out"
   | "tree"
+  | "tasks"
   | "upload"
   | "user"
   | "usage";
@@ -542,6 +549,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   "chevron-right": CaretRight,
   "chevron-up": CaretUp,
   close: X,
+  connector: ConnectorIcon,
   copy: Copy,
   eye: Eye,
   "eye-slash": EyeSlash,
@@ -552,14 +560,17 @@ const icons: Record<IconName, PhosphorIcon> = {
   integrations: PlugsConnected,
   laptop: Laptop,
   message: ChatCircle,
+  memory: Brain,
   model: Cpu,
   "more-vertical": DotsThreeVertical,
   plus: Plus,
   settings: Gear,
   shield: Shield,
+  skills: SkillsIcon,
   soul: Fingerprint,
   "sign-out": ArrowRight,
   tree: TreeStructure,
+  tasks: ListChecks,
   upload: UploadSimple,
   user: User,
   usage: ChartLine,

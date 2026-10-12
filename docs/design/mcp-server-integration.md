@@ -944,6 +944,11 @@ callback fires the probe without awaiting it, so a flow started from the browser
 
 ## Web UI
 
+The product navigation and page title use **Connectors** (Chinese: **连接器**). A connector
+provides tools to an Agent; messaging channels let a user communicate with the Agent. The current
+connectors use MCP. Protocol labels, endpoint instructions, configuration import formats, CLI
+commands, API paths, schema names, and the `/agents/{agentId}/mcp` page URL retain their MCP names.
+
 The page lives at `/agents/{agentId}/mcp`, under the existing shell routes. It shows one Agent's
 mounted Servers, and each row displays **four independent states** rather than one merged status:
 
@@ -988,10 +993,12 @@ edit, and remove.
   discovery offers **Retry** in the tool footer, with the same pending guard; a partial list alone
   does not promote that action.
 
-### Adding a Server
+### Adding a Connector
 
-The MCP list page keeps its existing layout and actions. **Add server** opens one compact dialog:
-**Server URL**, optional **Previously added servers** shortcuts, and **Cancel / Connect**. There is
+The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
+**Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
+**发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
+**Connector URL**, optional **Previously added connectors** shortcuts, and **Cancel / Connect**. There is
 no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
 manual configuration, and configuration import remain implementation capabilities rather than entry
 points in this dialog.
@@ -1087,28 +1094,26 @@ create → attach → authorize sequence used by the connection flow.
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
-that an Agent can add from the independent **Discover services** directory and from its empty state.
-The page keeps one **Add server** action in its header alongside the independent directory action.
-Add server opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
+that an Agent can add from the independent **Discover** directory.
+The page keeps one **Add custom** action in its header alongside the independent directory action.
+Add custom opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
 Discover, manual-configuration, or import source switch. The standalone directory owns its add state.
-The empty state starts directly with **Quick start**, without repeating
-the page introduction or Add server action in a separate onboarding panel. It offers Exa, Notion, Linear, and Airtable, using brand names
-and example tasks for web research, documents, tasks, and table records. Google Workspace services
-remain in Discover but are excluded from Quick start because their developer preview requires
-preview access and deployment configuration. Asana is not a Quick start substitute because its V2 MCP
-server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
+The empty state matches Skills: a centered 32px connection icon, the heading **No connectors yet**,
+and concise guidance directly on the page background. Connector choices stay in Discover; there are
+no recommendation cards, example tasks, or duplicate browse actions on the management page.
+Asana's V2 MCP server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
 See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
 [Linear's MCP setup](https://linear.app/docs/mcp), and
 [Airtable's authentication guide](https://airtable.com/developers/agents/mcp/getting-started).
 Google Workspace cards are labeled **Limited access** and show preview-access and OAuth
 setup requirements before adding the service. All available cards use **Add**. Once mounted, a card
 shows a single non-interactive **✓ Added** status in the action position, regardless of authorization or probe status. Authentication methods and
-connection health belong to service setup and the Agent's management list, not catalog or quick-start
-cards. These are starting points, not popularity rankings.
+connection health belong to service setup and the Agent's management list, not catalog
+cards. The directory is not a popularity ranking.
 
 Directory cards place the service name and description on the left, with **Add** or **Added** on the
 right rather than in a separate footer row. Limited-access labels sit beside the service name.
-On narrow screens, descriptions span the card width. Quick-start cards retain their task examples.
+On narrow screens, descriptions span the card width.
 
 Adding creates or reuses the Account definition and mounts it to this Agent. The directory closes as
 soon as the mount is confirmed, and the management list highlights the service without waiting for
@@ -1128,10 +1133,22 @@ Create and attach errors remain in the directory, preserving its search and cate
 definitions are retained for retries. After mounting, connection startup errors and probe retries
 belong to the existing list; credential errors remain in the shared authentication form. There is no
 separate setup, connection-progress, or connection-result view. OAuth uses the existing return context
-and completion handling, including authentication errors returned by the provider.
+handling, including authentication errors returned by the provider. Adding and authorizing a
+connector have no separate success or failure notification. Connection status remains on the card;
+failures remain on the corresponding card or connection form with a retry action. An OAuth error
+without a corresponding card remains an inline page error. There is no success panel or
+messaging-channel guidance above the connector list.
+
+The catalog aligns rows to the top of its bounded scroll area. Minimum list height leaves space
+below the cards instead of stretching a lone row. The directory omits the redundant Agent
+authorization footer. Current component evidence is recorded in
+[Connector UI polish](../../apps/web/docs/ui/connector-polish/README.md).
 
 The current management layout is preserved: service identity opens settings, the list shows connection
 status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.
+The identity subtitle uses the matched catalog entry's localized purpose description. Custom connectors
+use their user-supplied description, with the effective URL as the fallback when the description is blank.
+Subtitles stay on one line with truncation and a full-text tooltip; the complete URL remains in settings.
 An empty tool result is inspected in the existing tool browser. Authentication preserves the binding's
 effective settings and extra-header inheritance; catalog scopes are supplied only for its exact endpoint.
 Account definitions retain their chosen default authentication kind when reused. Catalog defaults apply
@@ -1225,7 +1242,7 @@ Card descriptions use an action and its object, in one short sentence. Prefer on
 actions over feature lists, jargon, promotional claims, or changing app counts. Aim for no more
 than 45 characters in English and 20 in Chinese, including punctuation; these are editorial
 budgets, not rendering limits. Allow natural wrapping on narrow screens without truncating the
-meaning. Review both locales in Discover and Quick start. Descriptions summarize documented MCP
+meaning. Review both locales in Discover. Descriptions summarize documented MCP
 capabilities within the preset's configured scopes; they do not promise every feature of the
 provider's product or establish successful OpenTag authorization.
 

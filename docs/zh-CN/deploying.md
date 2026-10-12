@@ -92,7 +92,7 @@ service，不会配置 CapRover 的 server container。
 | `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用；签发全部 Account session |
 | `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `BETTER_AUTH_SECRET` 不同；仅用于签名 Slack OAuth state |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 编码的 32 字节 key，Staging 专用 |
-| `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
+| `OPENTAG_AUTO_MIGRATE` | 使用 `true`，包括[云端计费发布](cloud-billing.md)；启动时应用公开迁移 |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
 | `GOOGLE_CLOUD_PROJECT` | 可选；将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting，参见 [客户端错误上报](./error-reporting.md) |
@@ -205,8 +205,10 @@ update agent_skills set source = 'web_upload' where source in ('url_install', 'p
 前再次执行审计，确认所有不受支持的来源值均已清零。
 
 这项映射会丢失原始来源标记。重新部署新版 Server 不会自动恢复这些标记，恢复需要使用备份；新的 URL 或预设安装仍可
-再次写入这些值。若必须在当前数据库中保留原始来源，只能回滚到接受这些值的 Server。单独部署 enum migration 并不能
-让旧应用的校验器兼容新值。
+再次写入这些值。恢复前，预设目录会将映射后的预设 Skill 视为用户上传：归档相同时显示为 `installed`，归档变化后则
+显示为 `name_conflict` 并拒绝更新。重新安装同名预设不会修复来源标记；应从备份恢复原始来源，或删除该 Skill 后重新
+安装。若必须在当前数据库中保留原始来源，只能回滚到接受这些值的 Server。单独部署 enum migration 并不能让旧应用
+的校验器兼容新值。
 
 ## 验证一次部署
 

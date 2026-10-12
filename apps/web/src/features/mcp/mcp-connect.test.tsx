@@ -144,10 +144,10 @@ describe("ordinary MCP Connect", () => {
       .mockResolvedValue(ready);
     wrap(<McpPage agentId={AGENT_ID} />);
     fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
-    await screen.findByText("This server has no available tools.");
+    await screen.findByText("This connector has no available tools.");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText("This server has no available tools.")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("This connector has no available tools.")).toBeNull());
   });
   it("does not start authorization after leaving during definition lookup", async () => {
     stub([entry({ authorization: null })]);

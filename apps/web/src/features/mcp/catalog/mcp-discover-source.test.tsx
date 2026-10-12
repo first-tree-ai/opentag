@@ -193,17 +193,17 @@ async function discover(overrides: { servers?: MCPServer[]; mounted?: MCPAgentSe
       onAdd={onAdd}
     />,
   );
-  await screen.findByLabelText("Search services");
+  await screen.findByLabelText("Search connectors");
   return onAdd;
 }
 
 /** The directory is a first-class page action, independent of custom connections. */
 async function openDiscover() {
-  const button = await screen.findByRole("button", { name: "Discover services" });
+  const button = await screen.findByRole("button", { name: "Discover" });
   await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
   fireEvent.click(button);
   await screen.findByRole("dialog");
-  await screen.findByLabelText("Search services");
+  await screen.findByLabelText("Search connectors");
 }
 
 /** Choose a category tab inside the open dialog. */
@@ -231,14 +231,14 @@ describe("Discover catalog surface", () => {
 
   it("filters by the active locale's text, the name, and the URL", async () => {
     await discover();
-    const search = screen.getByLabelText("Search services");
+    const search = screen.getByLabelText("Search connectors");
     fireEvent.change(search, { target: { value: "wiki" } });
     expect(screen.getByText("Alpha")).toBeTruthy();
     expect(screen.queryByText("Beta")).toBeNull();
     fireEvent.change(search, { target: { value: "mcp.beta.test" } });
     expect(screen.getByText("Beta")).toBeTruthy();
     fireEvent.change(search, { target: { value: "nothing here" } });
-    expect(screen.getByText("No MCP servers match this search.")).toBeTruthy();
+    expect(screen.getByText("No connectors match this search.")).toBeTruthy();
   });
 
   it("uses one add action without exposing authentication methods while browsing", async () => {
@@ -274,15 +274,15 @@ describe("Discover to Agent management", () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    expect(screen.queryByRole("button", { name: "Use an existing Server" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Close Discover services" }));
-    expect(screen.getAllByRole("button", { name: "Add server" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Use an existing connector" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
+    expect(screen.getAllByRole("button", { name: "Add custom" })).toHaveLength(1);
     await openAdd();
-    expect(await screen.findByLabelText("Server URL")).toBeTruthy();
-    for (const name of ["Discover", "Use an existing Server", "Import configuration", "Configure manually"]) {
-      expect(screen.queryByRole("button", { name })).toBeNull();
+    expect(await screen.findByLabelText("Connector URL")).toBeTruthy();
+    for (const name of ["Discover", "Use an existing connector", "Import configuration", "Configure manually"]) {
+      expect(within(screen.getByRole("dialog")).queryByRole("button", { name })).toBeNull();
     }
-    expect(screen.queryByLabelText("Search services")).toBeNull();
+    expect(screen.queryByLabelText("Search connectors")).toBeNull();
   });
 
   it.each(["Alpha", "Delta"])("starts %s OAuth directly and puts startup failures on the list", async (title) => {
@@ -293,7 +293,7 @@ describe("Discover to Agent management", () => {
     await openDiscover();
     fireEvent.click(screen.getByRole("button", { name: `Add: ${title}` }));
     await screen.findByText("Couldn’t start sign-in. Try again.");
-    expect(screen.queryByRole("dialog", { name: "Discover services" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Discover" })).toBeNull();
     expect(screen.queryByRole("dialog", { name: /authentication/ })).toBeNull();
     expect(screen.queryByText(/^Set up /)).toBeNull();
     expect(oauth).toHaveBeenCalledWith(
@@ -472,7 +472,7 @@ describe("Discover to Agent management", () => {
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.queryByRole("radio")).toBeNull();
     expect(dialog.queryByRole("button", { name: "Advanced connection settings" })).toBeNull();
-    expect(screen.queryByLabelText("Search services")).toBeNull();
+    expect(screen.queryByLabelText("Search connectors")).toBeNull();
     fireEvent.change(key, { target: { value: "sample-key" } });
     fireEvent.click(dialog.getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -531,10 +531,10 @@ describe("Discover to Agent management", () => {
     const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "upstream detail"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    fireEvent.change(screen.getByLabelText("Search services"), { target: { value: "Alpha" } });
+    fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "Alpha" } });
     fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
     await screen.findByText("Attach unavailable");
-    expect((screen.getByLabelText("Search services") as HTMLInputElement).value).toBe("Alpha");
+    expect((screen.getByLabelText("Search connectors") as HTMLInputElement).value).toBe("Alpha");
     expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(1));

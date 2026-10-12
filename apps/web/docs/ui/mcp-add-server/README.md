@@ -1,8 +1,10 @@
-# MCP Add server UI evidence
+# Add custom UI evidence
+
+The current UI uses Connectors, Add custom, and Discover. Existing screenshots record the UI before this rename; the MCP protocol and page URL remain unchanged.
 
 These screenshots come from `e2e/tests/mcp-add.spec.ts`, using the built application and fictional MCP fixtures.
 MCP management responses and provider consent are simulated; these tests do not authorize a real provider account.
-The spec is included in the smoke project so the Browser Smoke gate runs the Add server layout and interaction checks.
+The spec is included in the smoke project so the Browser Smoke gate runs the Add custom layout and interaction checks.
 
 `e2e/tests/mcp-auth-rejection.spec.ts` additionally runs the real management API and a local HTTP peer.
 Both 401 and 403 are passed through transport, probe persistence, and the browser Add flow: anonymous
@@ -23,9 +25,9 @@ The real-HTTP rejection spec remains in the journey project and must be run sepa
 - [Desktop sign-in error](./sign-in-error-desktop.png) and [320px sign-in error](./sign-in-error-320.png):
   feedback stays below the URL and above saved servers, without clipping or overlapping either.
 
-The page preloads saved servers before enabling Add server, so first use and reopening choose the same compact size.
+The page preloads saved servers before enabling Add custom, so first use and reopening choose the same compact size.
 The picker offers only services that were absent from this Agent when the dialog opened, regardless of an existing
-binding's enabled or authentication state. Those bindings continue to be managed from the MCP list. The complete
+binding's enabled or authentication state. Those bindings continue to be managed from the connector list. The complete
 account pool remains available to the unchanged connection logic for URL matching and retry; only picker presentation
 is filtered. The opening filter stays stable when an in-progress attempt creates a binding, so error recovery does not
 remove the selected choice or resize the dialog. No available choices means no picker heading and URL-only sizing.
@@ -35,7 +37,7 @@ API key entry uses 352px. View all explicitly expands to 480px. The opening top 
 key collection, and expansion, and every height is bounded by the remaining viewport. Explicit steps animate only
 the bottom edge over 160ms, with no animation when reduced motion is requested. Loading and errors retain their height.
 
-The lightweight heading reads “Or choose an existing server” (“或选择已添加的服务”). At most four available
+The lightweight heading reads “Or choose a connector” (“或选择已有连接器”). At most four available
 recent services appear on desktop and two on mobile, with the selected service kept visible. Default choices contain
 only their names: no logos, URLs, Added labels or check icons. Selection retains `aria-pressed` and uses the existing
 background and border treatments plus a heavier name. The caption uses the secondary text size and compact action
@@ -60,5 +62,5 @@ Sign-in startup failures use a short retry message rather than directing users t
 instructions. No provider admission status is inferred from a generic OAuth failure; these changes do not alter
 OAuth discovery, registration, or per-Agent credential storage.
 
-The MCP list page retains its existing layout. See [the integration design](../../../../../docs/design/mcp-server-integration.md)
+The connector list page retains its existing layout. See [the integration design](../../../../../docs/design/mcp-server-integration.md)
 for the connection flow and existing API limitations.

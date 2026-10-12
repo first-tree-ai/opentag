@@ -39,6 +39,7 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import type { CloudUsageService } from "../cloud-usage.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { lockMcpBindings } from "../mcp/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
@@ -346,6 +347,27 @@ function uniqueConstraintName(error: unknown): string | undefined {
   return undefined;
 }
 
+function mergeCloudUsage(
+  result: AgentUsageDetail,
+  cloud: Awaited<ReturnType<CloudUsageService["readDetail"]>> | undefined,
+): void {
+  if (cloud) {
+    result.inputTokens += cloud.inputTokens;
+    result.cachedInputTokens += cloud.cachedInputTokens;
+    result.outputTokens += cloud.outputTokens;
+    result.tokens += cloud.inputTokens + cloud.outputTokens;
+    for (const row of cloud.points) {
+      const point = result.daily.find((point) => point.date === row.date);
+      if (point) {
+        point.inputTokens += row.inputTokens;
+        point.cachedInputTokens += row.cachedInputTokens;
+        point.outputTokens += row.outputTokens;
+        point.tokens += row.tokens;
+      }
+    }
+  }
+}
+
 export class AgentService {
   readonly #afterAgentLocked?: () => Promise<void>;
   readonly #afterMembershipLocked?: () => Promise<void>;
@@ -363,6 +385,7 @@ export class AgentService {
   readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
   readonly #cloudIdentitiesEnabled: boolean;
   readonly #cloudModelCatalog?: CloudModelCatalog;
+  readonly #cloudUsage?: CloudUsageService;
 
   constructor(
     database: DatabaseClient,
@@ -376,6 +399,7 @@ export class AgentService {
        * Cloud Computer, never by Local or unrelated writes.
        */
       cloudModelCatalog?: CloudModelCatalog;
+      cloudUsage?: CloudUsageService;
       now?: () => Date;
       onDiagnostic?: (code: string) => void;
       onProviderCliPlacementChanged?: (input: {
@@ -391,6 +415,7 @@ export class AgentService {
     this.#afterMembershipLocked = options.afterMembershipLocked;
     this.#cloudIdentitiesEnabled = options.cloudIdentitiesEnabled ?? false;
     this.#cloudModelCatalog = options.cloudModelCatalog;
+    this.#cloudUsage = options.cloudUsage;
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
@@ -654,9 +679,15 @@ export class AgentService {
       recoveryStartedAt,
     );
 
-    const inputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`;
-    const cachedInputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`;
-    const outputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`;
+    const inputTokensText = sql<
+      string | null
+    >`case when ${imMessageDeliveries.executionOrigin} = 'cloud' then null else ${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}' end`;
+    const cachedInputTokensText = sql<
+      string | null
+    >`case when ${imMessageDeliveries.executionOrigin} = 'cloud' then null else ${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}' end`;
+    const outputTokensText = sql<
+      string | null
+    >`case when ${imMessageDeliveries.executionOrigin} = 'cloud' then null else ${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}' end`;
     const usageRows = (await this.#database
       .select({
         agentId: imBindings.agentId,
@@ -692,6 +723,7 @@ export class AgentService {
       )
       .groupBy(imBindings.agentId)) as AgentUsageAggregate[];
 
+    const cloudTokens = await this.#cloudUsage?.totalsByAgent(callerUserId, AGENT_USAGE_WINDOW_DAYS, now);
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
     const runtimeProviderByAgent = new Map(summaries.map((agent) => [agent.id, agent.runtimeProvider]));
     for (const row of usageRows) {
@@ -722,6 +754,11 @@ export class AgentService {
       });
     }
 
+    for (const [agentId, tokens] of cloudTokens ?? []) {
+      const usage = usageByAgent.get(agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
+      usage.tokens += tokens;
+      usageByAgent.set(agentId, usage);
+    }
     return {
       agents: summaries.map((agent): AgentListItem => {
         const usage = usageByAgent.get(agent.id) ?? { failed: 0, tasks: 0, tokens: 0 };
@@ -781,6 +818,7 @@ export class AgentService {
     const rows = await this.#database
       .select({
         acceptedAt: imMessageDeliveries.acceptedAt,
+        executionOrigin: imMessageDeliveries.executionOrigin,
         cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
         inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
         outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
@@ -834,12 +872,17 @@ export class AgentService {
       if (!row.acceptedAt) continue;
       result.tasks += 1;
       if (row.outcome === "failed") result.failed += 1;
-      const tokenCounts = deliveryUsageTokenCounts(
-        agent.runtimeProvider,
-        row.inputTokens,
-        row.cachedInputTokens,
-        row.outputTokens,
-      );
+      const tokenCounts =
+        row.executionOrigin === "cloud"
+          ? {
+              // The ledger measures model calls, not tasks; Runner reports cannot prove cloud coverage.
+              measured: false,
+              inputTokens: 0,
+              cachedInputTokens: 0,
+              outputTokens: 0,
+              tokens: 0,
+            }
+          : deliveryUsageTokenCounts(agent.runtimeProvider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
       if (tokenCounts.measured) result.measuredTasks += 1;
       addUsageTokenCounts(result, tokenCounts);
 
@@ -852,6 +895,8 @@ export class AgentService {
       daily.set(date, point);
     }
     result.daily = [...daily.values()];
+    const cloud = await this.#cloudUsage?.readDetail(callerUserId, windowDays, agentId, usageEndedAt);
+    mergeCloudUsage(result, cloud);
     return result;
   }
 

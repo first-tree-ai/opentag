@@ -12,6 +12,8 @@ import {
   startCloudModelUpstream,
 } from "./fixtures/cloud-model-upstream.js";
 
+import { cloudTestOwner, createTestCloudModelService } from "./support/cloud-model-service.js";
+
 const COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const VALID_COMPLETION = {
   id: "chatcmpl-fixture",
@@ -46,7 +48,7 @@ async function makeTester(
   const upstream = await startCloudModelUpstream(handler);
   upstreams.push(upstream);
   const tester = new CloudAgentRuntimeTester({
-    config: testConfig(upstream.baseUrl),
+    modelService: createTestCloudModelService(testConfig(upstream.baseUrl)),
     catalog: createStaticCloudModelCatalog(options.models ?? ["router-model-a", "router-model-b"]),
     ...(options.maxPending !== undefined ? { maxPending: options.maxPending } : {}),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
@@ -58,9 +60,11 @@ async function makeTester(
 describe("CloudAgentRuntimeTester", () => {
   it("probes the fixed chat-completions path with the saved model and the master key", async () => {
     const { tester, upstream } = await makeTester({ kind: "json", payload: VALID_COMPLETION });
-    await expect(tester.test({ computerId: COMPUTER_ID, model: "router-model-b" })).resolves.toEqual({
-      status: "passed",
-    });
+    await expect(tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: "router-model-b" })).resolves.toEqual(
+      {
+        status: "passed",
+      },
+    );
     expect(upstream.stats.methods).toEqual(["POST"]);
     expect(upstream.stats.paths).toEqual(["/chat/completions"]);
     expect(upstream.stats.authorizations).toEqual([`Bearer ${FIXTURE_MASTER_KEY}`]);
@@ -76,13 +80,15 @@ describe("CloudAgentRuntimeTester", () => {
 
   it("resolves an unsaved model to the current Router default", async () => {
     const { tester, upstream } = await makeTester({ kind: "json", payload: VALID_COMPLETION });
-    await expect(tester.test({ computerId: COMPUTER_ID, model: null })).resolves.toEqual({ status: "passed" });
+    await expect(tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: null })).resolves.toEqual({
+      status: "passed",
+    });
     expect(upstream.stats.lastRequestBody).toMatchObject({ model: "router-model-a" });
   });
 
   it("fails provider_start_failed when no Router default is available", async () => {
     const { tester, upstream } = await makeTester({ kind: "json", payload: VALID_COMPLETION }, { models: [] });
-    await expect(tester.test({ computerId: COMPUTER_ID, model: null })).resolves.toEqual({
+    await expect(tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: null })).resolves.toEqual({
       status: "failed",
       code: "provider_start_failed",
     });
@@ -92,13 +98,15 @@ describe("CloudAgentRuntimeTester", () => {
   it("requires a valid completion shape, not any 200, and never relays upstream material", async () => {
     for (const payload of [{ choices: [] }, { object: "list", data: [] }, { choices: [{ index: 0 }] }, "not-json"]) {
       const { tester } = await makeTester({ kind: "json", payload });
-      await expect(tester.test({ computerId: COMPUTER_ID, model: "router-model-a" })).resolves.toEqual({
+      await expect(
+        tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: "router-model-a" }),
+      ).resolves.toEqual({
         status: "failed",
         code: "provider_failed",
       });
     }
     const { tester, upstream } = await makeTester({ kind: "error", status: 400 });
-    const result = await tester.test({ computerId: COMPUTER_ID, model: "router-model-a" });
+    const result = await tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: "router-model-a" });
     expect(result).toEqual({ status: "failed", code: "provider_failed" });
     // The fixture echoes auth material in its error body; nothing of it reached the result.
     expect(upstream.stats.sawFixtureMasterKey).toBe(true);
@@ -112,13 +120,17 @@ describe("CloudAgentRuntimeTester", () => {
       totalBytes: 256 * 1024,
       chunkBytes: 8 * 1024,
     });
-    await expect(overflowing.test({ computerId: COMPUTER_ID, model: "router-model-a" })).resolves.toEqual({
+    await expect(
+      overflowing.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: "router-model-a" }),
+    ).resolves.toEqual({
       status: "failed",
       code: "provider_failed",
     });
 
     const { tester: stalled } = await makeTester({ kind: "stall" }, { timeoutMs: 60 });
-    await expect(stalled.test({ computerId: COMPUTER_ID, model: "router-model-a" })).resolves.toEqual({
+    await expect(
+      stalled.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: "router-model-a" }),
+    ).resolves.toEqual({
       status: "failed",
       code: "timeout",
     });
@@ -126,17 +138,19 @@ describe("CloudAgentRuntimeTester", () => {
 
   it("enforces one pending probe per Cloud Computer and a bounded total", async () => {
     const { tester } = await makeTester({ kind: "stall" }, { timeoutMs: 5_000, maxPending: 2 });
-    const first = tester.test({ computerId: COMPUTER_ID, model: "router-model-a" });
+    const first = tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: "router-model-a" });
     await vi.waitFor(() => expect(tester.pendingCount).toBe(1));
-    await expect(tester.test({ computerId: COMPUTER_ID, model: "router-model-a" })).resolves.toEqual({
-      status: "failed",
-      code: "busy",
-    });
+    await expect(tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: "router-model-a" })).resolves.toEqual(
+      {
+        status: "failed",
+        code: "busy",
+      },
+    );
     const secondComputer = "11111111-1111-4111-8111-111111111111";
-    const second = tester.test({ computerId: secondComputer, model: "router-model-a" });
+    const second = tester.test({ ...cloudTestOwner, computerId: secondComputer, model: "router-model-a" });
     await vi.waitFor(() => expect(tester.pendingCount).toBe(2));
     await expect(
-      tester.test({ computerId: "22222222-2222-4222-8222-222222222222", model: "router-model-a" }),
+      tester.test({ ...cloudTestOwner, computerId: "22222222-2222-4222-8222-222222222222", model: "router-model-a" }),
     ).resolves.toEqual({ status: "failed", code: "busy" });
     tester.close();
     await expect(first).resolves.toEqual({ status: "failed", code: "cancelled" });
@@ -147,7 +161,12 @@ describe("CloudAgentRuntimeTester", () => {
   it("aborts the probe when the caller disconnects", async () => {
     const { tester, upstream } = await makeTester({ kind: "stall" }, { timeoutMs: 5_000 });
     const controller = new AbortController();
-    const pending = tester.test({ computerId: COMPUTER_ID, model: "router-model-a", signal: controller.signal });
+    const pending = tester.test({
+      ...cloudTestOwner,
+      computerId: COMPUTER_ID,
+      model: "router-model-a",
+      signal: controller.signal,
+    });
     // Wait for the probe to actually reach the Router before disconnecting: pending registration
     // is synchronous and precedes the fetch dispatch.
     await vi.waitFor(() => expect(upstream.stats.hits).toBe(1));
@@ -162,7 +181,7 @@ describe("CloudAgentRuntimeTester", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(
-      tester.test({ computerId: COMPUTER_ID, model: "router-model-a", signal: controller.signal }),
+      tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: "router-model-a", signal: controller.signal }),
     ).resolves.toEqual({ status: "failed", code: "cancelled" });
     expect(upstream.stats.hits).toBe(0);
   });
@@ -175,7 +194,7 @@ describe("CloudAgentRuntimeTester", () => {
 
   function makeTesterSync() {
     const tester = new CloudAgentRuntimeTester({
-      config: testConfig("https://router.example.com/v1"),
+      modelService: createTestCloudModelService(testConfig("https://router.example.com/v1")),
       catalog: createStaticCloudModelCatalog(["router-model-a"]),
     });
     testers.push(tester);

@@ -1,4 +1,6 @@
-# MCP Settings UI simplification
+# Connector Settings UI simplification
+
+The current UI uses Connectors, Add custom, and Discover. Existing screenshots record the UI before this rename; the MCP protocol and page URL remain unchanged.
 
 Captured from the actual Settings component in a production-bundled, temporary preview using
 non-secret fixture data. The preview uses OpenTag's existing theme, components, styles, and English /

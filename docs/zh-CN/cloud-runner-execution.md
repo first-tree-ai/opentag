@@ -1,6 +1,6 @@
 # Cloud Runner 执行（E3–E8）
 
-> Synced: 2026-10-09
+> Synced: 2026-10-10
 
 [English](../cloud-runner-execution.md)
 
@@ -207,17 +207,16 @@ Cloud 模型选项来自 Router 的认证 `GET /models` 响应，复用上述地
 时优先以其为默认，否则使用首个通过校验的 Router 模型。为兼容已有客户端，Server 将默认模型
 发布在列表首位，其余模型保持原有相对顺序；
 显式模型必须属于当前目录。刷新失败或列表
-为空时显示不可用，不回退到 Local Pi 的建议模型。`OPENTAG_CLOUD_MODEL_ALLOWED_MODELS` 已退出
-运行逻辑，不再提供或限制 Cloud 模型；回滚窗口结束后可移除。
+为空时显示不可用，不回退到 Local Pi 的建议模型。
+Router 通过 `context_window` 和 `max_output_tokens` 提供原生上限；缺少有效上限的模型不可用。
+客户 token 费率由账户的计费方案决定，与所选模型无关。
 
 模型设置页通过一次简短的 Server → Router 请求测试托管模型连接。这会消耗少量模型配额，但不
 创建 Session、Sandbox 或 Instance，也不写入任务用量历史。成功仅证明模型访问可用；Pi 执行、
 工具、消息和工作区恢复仍需真实任务验收。Local 模型选择和 daemon 诊断保持原有行为。
 
-从直连模型供应商的部署升级时，应将现有地址和凭证切换到对应环境的 Router 租户。直接读取供应商
-模型列表不能证明已接入 Router。Runner 的 Pi provider 配置将输出限制为 Router 支持的 8,192
-tokens，并关闭不支持的 OpenAI `store` 字段。应通过现有 CLI／Runner 联合发布流程更新 Runner，
-再验收 Router 上的真实 Cloud 任务；不需要新开关、数据库迁移或 Runner 协议升级。
+Runner 将输出限制为模型原生上限与 8,192 tokens 中较小的值，并关闭 OpenAI `store` 字段。
+Cloud 连接探测与任务执行使用同一个模型网关和调用账本，其 tokens 计入 Cloud 用量。
 
 默认保留现有传输限制；仅在验收证据表明需要时调整。可选超时、请求和响应大小、并发流与令牌
 期限配置见 [cloud-model-config.ts](../../packages/server/src/cloud-model-config.ts)。本文不会实际配置环境。

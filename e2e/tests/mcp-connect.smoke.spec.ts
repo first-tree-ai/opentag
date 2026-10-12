@@ -127,9 +127,9 @@ async function peer(kind: MCPAuthKind) {
 
 async function openAdd(page: Page, id: string, url: string) {
   await page.goto(`/agents/${id}/mcp`);
-  await page.getByRole("button", { name: "Add server", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Add server", exact: true });
-  await dialog.getByLabel("Server URL", { exact: true }).fill(url);
+  await page.getByRole("button", { name: "Add custom", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add custom connector", exact: true });
+  await dialog.getByLabel("Connector URL", { exact: true }).fill(url);
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
   return dialog;
 }
@@ -191,7 +191,7 @@ test("real local OAuth success, cancellation, token failure and reconnect retain
     const current = await agent(page);
     await openAdd(page, current.id, upstream.url);
     await page.getByRole("link", { name: "Cancel sign-in" }).click();
-    const restored = page.getByRole("dialog", { name: "Add server", exact: true });
+    const restored = page.getByRole("dialog", { name: "Add custom connector", exact: true });
     await expect(restored).toContainText("Sign-in was not completed. Try again.");
     const initial = await mounts(page, current.id);
     expect(initial).toHaveLength(1);
@@ -351,11 +351,11 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
     ] as const) {
       await page.goto(`/agents/${id}/mcp`);
       if (source === "add") {
-        await page.getByRole("button", { name: "Add server", exact: true }).click();
-        await page.getByLabel("Server URL", { exact: true }).fill(definition.url);
+        await page.getByRole("button", { name: "Add custom", exact: true }).click();
+        await page.getByLabel("Connector URL", { exact: true }).fill(definition.url);
         await page.getByRole("dialog").getByRole("button", { name: "Connect", exact: true }).click();
       } else if (source === "discover") {
-        await page.getByRole("button", { name: "Discover services", exact: true }).click();
+        await page.getByRole("button", { name: "Discover", exact: true }).click();
         await page.getByRole("button", { name: "Add: Linear", exact: true }).click();
       } else await page.getByRole("button", { name: "Connect", exact: true }).click();
       if (kind === "oauth") {

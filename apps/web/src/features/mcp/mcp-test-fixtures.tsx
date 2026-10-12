@@ -156,7 +156,7 @@ export async function openRemove() {
   await screen.findByRole("alertdialog");
 }
 export async function openAdd() {
-  const buttons = await screen.findAllByRole("button", { name: "Add server" });
+  const buttons = await screen.findAllByRole("button", { name: "Add custom" });
   await waitFor(() => {
     if (buttons[0]?.hasAttribute("disabled")) throw new Error("Still loading connections");
   });
@@ -165,7 +165,7 @@ export async function openAdd() {
 }
 export async function newAddress(url = "https://mcp.example.com/mcp") {
   await openAdd();
-  fireEvent.change(await screen.findByLabelText("Server URL"), { target: { value: url } });
+  fireEvent.change(await screen.findByLabelText("Connector URL"), { target: { value: url } });
 }
 
 export function authorization() {

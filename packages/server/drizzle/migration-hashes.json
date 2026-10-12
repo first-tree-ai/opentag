@@ -300,6 +300,11 @@
       "idx": 59,
       "tag": "0059_bump_runtime_config_revision",
       "sha256": "4bef59bc615c23592c25e853eaf1f187736d23687a9840669db2acbbc0bbeed0"
+    },
+    {
+      "idx": 60,
+      "tag": "0060_cloud_billing",
+      "sha256": "018448538305599eca1e725843a6cfacffba2597defd63549b4733ca9ce4d032"
     }
   ]
 }

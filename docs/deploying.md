@@ -98,7 +98,7 @@ server container.
 | `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging; signs every Account session |
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
-| `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
+| `OPENTAG_AUTO_MIGRATE` | `true`, including [cloud billing releases](cloud-billing.md); startup applies the public migrations |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
 | `GOOGLE_CLOUD_PROJECT` | Optional; forwards relayed Web App and CLI errors to Google Cloud Error Reporting, see [Client error reporting](./error-reporting.md) |
@@ -225,9 +225,12 @@ If the target already accepts `url_install` but not `preset`, map only `preset`;
 supports. Re-run the audit and require zero rows with unsupported sources before switching the Server revision.
 
 This mapping loses the original source labels. Re-deploying the newer Server does not restore them automatically;
-restoration needs the backup, and new URL or preset installations can write those values again. If the original sources
-must remain in the live database, roll back only to a Server that accepts them. Deploying the enum migrations alone does
-not make older application validators compatible.
+restoration needs the backup, and new URL or preset installations can write those values again. Until restoration, the
+preset catalog treats mapped preset Skills as user uploads: an identical archive reports `installed`, but a changed
+archive reports `name_conflict` and refuses updates. Reinstalling the same-named preset does not repair the source label;
+restore the original source from the backup, or delete that Skill and reinstall it. If the original sources must remain
+in the live database, roll back only to a Server that accepts them. Deploying the enum migrations alone does not make
+older application validators compatible.
 
 ## Verifying a deployment
 

@@ -76,7 +76,7 @@ describe("MCP advanced settings by authentication method", () => {
     click("Authentication");
     fireEvent.click(screen.getByRole("radio", { name: "No authentication" }));
     click("Continue");
-    await screen.findByLabelText("Server address");
+    await screen.findByLabelText("Connector address");
     expect(screen.queryByLabelText("Auth header")).toBeNull();
     expect(screen.queryByLabelText("Token prefix")).toBeNull();
     expect(update).not.toHaveBeenCalled();
@@ -86,7 +86,7 @@ describe("MCP advanced settings by authentication method", () => {
       target: { value: "example-key" },
     });
     click("Save credentials");
-    await screen.findByLabelText("Server address");
+    await screen.findByLabelText("Connector address");
     expect((screen.getByLabelText("Auth header") as HTMLInputElement).value).toBe("x-api-key");
     expect((screen.getByLabelText("Token prefix") as HTMLInputElement).value).toBe("");
     expect(update).not.toHaveBeenCalled();

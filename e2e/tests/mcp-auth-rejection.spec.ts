@@ -91,9 +91,9 @@ for (const status of [401, 403]) {
             oauthRequests.push(request.url());
         });
         await page.goto(`/agents/${agent}/mcp`);
-        await page.getByRole("button", { name: "Add server", exact: true }).first().click();
-        const dialog = page.getByRole("dialog", { name: "Add server", exact: true });
-        await dialog.getByLabel("Server URL", { exact: true }).fill(upstream.endpoint);
+        await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
+        const dialog = page.getByRole("dialog", { name: "Add custom connector", exact: true });
+        await dialog.getByLabel("Connector URL", { exact: true }).fill(upstream.endpoint);
         if (bearer) {
           await dialog.getByRole("button", { name: "Connect", exact: true }).click();
           await dialog.getByLabel("API key", { exact: true }).fill("wrong-fixture-key");

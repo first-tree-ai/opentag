@@ -1070,7 +1070,8 @@ create → attach → authorize sequence the manual wizard uses.
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
-that an Agent can add in one action, from the add flow's Discover source and from its empty state.
+that an Agent can add in one action from the add flow's Discover source. The page keeps one Add server
+action in its header; its empty state uses a compact, borderless icon and guidance.
 
 The catalog is committed repository data in the `@opentag/mcp-presets` workspace, not a service:
 

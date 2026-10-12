@@ -7,7 +7,7 @@ import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
-import { Banner, Button, Empty, Icon, Loader } from "../../ui/design-system.js";
+import { Banner, Button, Icon, Loader, Text } from "../../ui/design-system.js";
 import { readImBinding } from "../agents/agent-queries.js";
 import { agentSettingsSectionLink } from "../agents/agent-routes.js";
 import { type AddSource, McpAddDialog } from "./mcp-add-dialog.js";
@@ -142,17 +142,17 @@ export function McpPage({ agentId }: { agentId: string }) {
           ))}
         </ul>
       ) : !mounted.isError ? (
-        <Empty
-          title={m.mcp_empty_title()}
-          description={m.mcp_empty()}
-          icon={<Icon name="integrations" />}
-          contents={
-            <Button variant="secondary" onClick={() => setPanel({ kind: "add", source: "discover" })}>
-              <Icon name="plus" />
-              {m.mcp_create_action()}
-            </Button>
-          }
-        />
+        <div className="flex flex-col items-center gap-5 px-4 py-12 text-center sm:py-16" data-ui="mcp-empty-state">
+          <Icon name="integrations" weight="light" className="size-8 text-kumo-inactive" />
+          <div className="flex max-w-sm flex-col gap-2">
+            <Text as="h2" size="lg" variant="heading">
+              {m.mcp_empty_title()}
+            </Text>
+            <Text as="p" size="sm" variant="secondary">
+              {m.mcp_empty()}
+            </Text>
+          </div>
+        </div>
       ) : null}
       {removed ? (
         <p role="status" className="text-sm text-kumo-subtle">

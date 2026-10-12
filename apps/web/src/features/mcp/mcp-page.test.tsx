@@ -7,6 +7,7 @@ import {
   AGENT_ID,
   authorization,
   entry,
+  openAdd,
   openDetails,
   openRemove,
   openTools,
@@ -132,14 +133,18 @@ describe("MCP daily use", () => {
     vi.mocked(browserApi.agentMcpServers).mockRejectedValue(new ApiError(503, "MCP unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("MCP unavailable")).toBeTruthy();
-    expect(screen.queryByText("No servers added")).toBeNull();
+    expect(screen.queryByText("No servers yet")).toBeNull();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
   it("shows an actionable empty state only after a successful read", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("No servers added")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Add server" }).length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { name: "No servers yet" })).toBeTruthy();
+    expect(screen.getByText("Connect your Agent to external tools.")).toBeTruthy();
+    expect(screen.getByText("Add an MCP server to connect your Agent to its tools.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Add server" })).toHaveLength(1);
+    await openAdd();
+    expect(screen.getByRole("dialog", { name: "Add server" })).toBeTruthy();
   });
   it("shows tool truncation only as a disclosure in the tool browser", async () => {
     stub([entry({ authorization: { ...authorization(), toolsCount: 200, toolsTruncated: true } })]);

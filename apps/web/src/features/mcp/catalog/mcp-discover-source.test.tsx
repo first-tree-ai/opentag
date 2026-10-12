@@ -185,18 +185,6 @@ async function openDiscover() {
   fireEvent.click(await screen.findByRole("button", { name: "Discover" }));
 }
 
-/** Click the page's "Add server" button once the Agent read has settled and it is enabled. */
-async function clickAddButton(which: "first" | "last") {
-  const opens = await screen.findAllByRole("button", { name: "Add server" });
-  const button = (which === "first" ? opens[0] : opens[opens.length - 1]) as HTMLButtonElement;
-  await waitFor(() => {
-    if (button.hasAttribute("disabled")) throw new Error("Still loading connections");
-  });
-  fireEvent.click(button);
-  await screen.findByRole("dialog");
-  return button;
-}
-
 /** Choose a category tab inside the open dialog. */
 function chooseCategory(name: string) {
   fireEvent.click(screen.getByRole("button", { name }));
@@ -257,9 +245,9 @@ describe("Discover inside the add flow", () => {
   it("offers the catalog from the empty state of an Agent with no mounts", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    // The header offers the manual source; the empty state is the second "Add server" action.
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Add server" }).length).toBeGreaterThan(1));
-    await clickAddButton("last");
+    await screen.findByRole("heading", { name: "No servers yet" });
+    expect(screen.getAllByRole("button", { name: "Add server" })).toHaveLength(1);
+    await openDiscover();
     expect((await screen.findByRole("button", { name: "Discover" })).getAttribute("aria-pressed")).toBe("true");
     expect(await screen.findByText("Alpha")).toBeTruthy();
   });

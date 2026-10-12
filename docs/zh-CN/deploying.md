@@ -1,7 +1,7 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-10-09
+> Last synced with: 2026-10-12
 
 OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI、完成 CLI/Runner 发布的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
@@ -182,17 +182,31 @@ bundle 始终以调用方自己的凭据（Account session、Computer machine to
 回滚只回退应用代码，不会回退更新的 revision 已经执行过的数据库 migration，因此跨越破坏性 migration 的回滚需要一份
 有意为之的数据库方案。
 
-有一次 migration 需要先做数据步骤，再回滚代码：`0053_white_killmonger` 为 `skill_source` enum 增加了 `url_install`，
-而旧版 Server 只接受此前的三个取值。若行中仍带有 `url_install` 就回滚 Server，受影响 Agent 的每次 Skill 读取都会因
-校验失败而报错。因此请先执行下面的语句——它保留 Skill，只是把它们呈现为 Web 上传，也就是旧版本最接近的表示：
+有两次 migration 需要在回滚代码前检查数据兼容性：`0053_white_killmonger` 为 `skill_source` enum 增加了
+`url_install`，`0055_first_angel` 增加了 `preset`。早于这两次新增的 Server 只接受 `web_upload`、`cli_upload` 和
+`agent_upload`。若行中仍带有目标 Server 不接受的来源值就回滚，受影响 Agent 的 Skill 读取会因校验失败而报错，
+即使这两次 migration 都只是扩展数据库 enum。
+
+先检查目标 revision 的 `SkillSourceSchema`，并审计当前数据，再选择映射方式：
 
 ```sql
-update agent_skills set source = 'web_upload' where source = 'url_install';
+select source, count(*) from agent_skills where source in ('url_install', 'preset') group by source;
 ```
 
-之后重新部署新版 Server 是安全的；该取值不会被自动恢复，因此回滚期间通过 URL 安装的 Skill 会重新显示为 Web 上传。
-如果这个 enum 取值必须跨过回滚窗口存活，替代方案是分两次发布：先单独发布这条 migration，再在下一个 release 中发布
-写入 `url_install` 的代码。
+修改前备份受影响的行，包括 ID 和原始来源。暂停 Skill 安装直到回滚完成，避免数据步骤与代码切换之间再次写入不兼容
+的值。若回滚目标对这两个新来源都不支持，请先执行下面的语句——它保留 Skill 及其归档，只是把它们呈现为 Web 上传，
+也就是旧版本最接近的表示：
+
+```sql
+update agent_skills set source = 'web_upload' where source in ('url_install', 'preset');
+```
+
+若目标已支持 `url_install`、但不支持 `preset`，则只映射 `preset`，不要改写目标已支持的来源。切换 Server revision
+前再次执行审计，确认所有不受支持的来源值均已清零。
+
+这项映射会丢失原始来源标记。重新部署新版 Server 不会自动恢复这些标记，恢复需要使用备份；新的 URL 或预设安装仍可
+再次写入这些值。若必须在当前数据库中保留原始来源，只能回滚到接受这些值的 Server。单独部署 enum migration 并不能
+让旧应用的校验器兼容新值。
 
 ## 验证一次部署
 

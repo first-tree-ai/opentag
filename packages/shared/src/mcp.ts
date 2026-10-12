@@ -725,6 +725,8 @@ export const MCP_ERROR_CODES = {
   REFRESH_OUTCOME_UNKNOWN: "MCP_REFRESH_OUTCOME_UNKNOWN",
 } as const;
 export type MCPErrorCode = (typeof MCP_ERROR_CODES)[keyof typeof MCP_ERROR_CODES];
+/** Credential-free HTTP 401/403 summary retained in probe results and consumed by management UIs. */
+export const MCP_AUTH_REJECTION_SUMMARY = "The MCP Server refused this credential";
 export type MCPErrorCategory = "credential" | "deterministic" | "validation" | "transient";
 
 /** The `category` / `statusCode` mapping every MCP failure uses; see the design document. */

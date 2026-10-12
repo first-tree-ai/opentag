@@ -116,6 +116,10 @@ export class AgentWorkspaceManager implements RuntimePreparation {
     }
   }
 
+  validateSession(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<void> {
+    return this.#bindingStore.validatePreparation(request, hashes);
+  }
+
   async prepareSession(
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,

@@ -1331,6 +1331,7 @@ async function registerRuntimeConnection(
   const instanceId = crypto.randomUUID();
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       installationId: crypto.randomUUID(),
       instanceId,

@@ -230,7 +230,7 @@ describe("Computer runtime WebSocket", () => {
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
-      clientVersion: "0.0.1",
+      clientVersion: "0.1.1",
       providerReadiness: [{ provider: "codex", status: "install" }],
     };
     socket.send(JSON.stringify(register));
@@ -321,7 +321,7 @@ describe("Computer runtime WebSocket", () => {
     expect(await frames.next()).toMatchObject({
       type: "server:welcome",
       protocolVersion: RUNTIME_PROTOCOL_V2,
-      requiredClientCapabilities: ["runtime.contextTreeSettings"],
+      requiredClientCapabilities: [],
     });
 
     const register = {
@@ -333,7 +333,7 @@ describe("Computer runtime WebSocket", () => {
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
-      clientVersion: "0.0.2",
+      clientVersion: "0.1.1",
       capabilities: { imCredentialGrant: 1 },
       supportedCapabilities: {
         ...RUNTIME_CLIENT_CAPABILITY_OFFERS,
@@ -436,7 +436,7 @@ describe("Computer runtime WebSocket", () => {
         displayName: "workstation",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.2",
+        clientVersion: "0.1.1",
         capabilities: { imCredentialGrant: 0 },
         supportedCapabilities,
         requiredServerCapabilities: [],
@@ -471,7 +471,7 @@ describe("Computer runtime WebSocket", () => {
     expect(withoutCapability).not.toHaveProperty("channelTarget");
   });
 
-  it("rejects missing required v2 capabilities before registration side effects", async () => {
+  it("keeps control registration when a business capability is unavailable", async () => {
     const computers = computerService();
     const app = createRuntimeApp({
       authService: authService(),
@@ -492,15 +492,16 @@ describe("Computer runtime WebSocket", () => {
         displayName: "workstation",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.2",
+        clientVersion: "0.1.1",
         capabilities: { imCredentialGrant: 0 },
         supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
         requiredServerCapabilities: ["future.requiredFeature"],
       }),
     );
-    expect(await frames.next()).toMatchObject({ type: "error", code: "PROTOCOL_CAPABILITY_UNSUPPORTED" });
-    await expect(closeCode(socket)).resolves.toBe(4400);
-    expect(computers.register).not.toHaveBeenCalled();
+    expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+    expect(computers.register).toHaveBeenCalledOnce();
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    socket.close();
   });
 
   it("rejects protocol v1 before authentication or registration", async () => {
@@ -691,7 +692,7 @@ describe("Computer runtime WebSocket", () => {
         displayName: "host",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.1.1",
       }),
     );
     expect(await nextFrame(socket)).toMatchObject({ type: "error", code: "PROTOCOL_ERROR" });
@@ -735,7 +736,7 @@ describe("Computer runtime WebSocket", () => {
         displayName: "host",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.1.1",
       }),
     );
     await nextFrame(socket);
@@ -1271,9 +1272,9 @@ describe("RuntimeSession direct protocol coverage", () => {
       }),
       false,
     );
-    await vi.waitFor(() =>
-      expect(noBusiness.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
-    );
+    await waitImmediate();
+    expect(noBusiness.socket.closeCode).toBeUndefined();
+    expect(noBusiness.frames()).not.toContainEqual(expect.objectContaining({ type: "error" }));
 
     const parseThrows = directRuntimeSession({
       business: {
@@ -1296,9 +1297,9 @@ describe("RuntimeSession direct protocol coverage", () => {
       }),
       false,
     );
-    await vi.waitFor(() =>
-      expect(parseThrows.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
-    );
+    await waitImmediate();
+    expect(parseThrows.socket.closeCode).toBeUndefined();
+    expect(parseThrows.frames()).not.toContainEqual(expect.objectContaining({ type: "error" }));
 
     const credentialRevoked = directRuntimeSession({
       computers: { assertActiveCredential: vi.fn().mockRejectedValue(new Error("revoked")) },
@@ -1384,7 +1385,8 @@ describe("RuntimeSession direct protocol coverage", () => {
       JSON.stringify({ type: "work", requestId: randomUUID(), connectionId: registration.connectionId }),
       false,
     );
-    await vi.waitFor(() => expect(v2.socket.closeCode).toBe(1011));
+    await waitImmediate();
+    expect(v2.socket.closeCode).toBeUndefined();
   });
 
   it("handles heartbeat fences, duplicate heartbeats, and replacement races", async () => {
@@ -1469,9 +1471,9 @@ describe("RuntimeSession direct protocol coverage", () => {
       }),
       false,
     );
-    await vi.waitFor(() =>
-      expect(invalid.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
-    );
+    await waitImmediate();
+    expect(invalid.socket.closeCode).toBeUndefined();
+    expect(invalid.frames()).not.toContainEqual(expect.objectContaining({ type: "error" }));
 
     let slowStarted: (() => void) | undefined;
     const slowReady = new Promise<void>((resolve) => {
@@ -1561,7 +1563,8 @@ describe("RuntimeSession direct protocol coverage", () => {
       }),
       false,
     );
-    await vi.waitFor(() => expect(runtime.socket.closeCode).toBe(1011));
+    await waitImmediate();
+    expect(runtime.socket.closeCode).toBeUndefined();
 
     const outbound = directRuntimeSession({
       business: {
@@ -1586,7 +1589,8 @@ describe("RuntimeSession direct protocol coverage", () => {
       }),
       false,
     );
-    await vi.waitFor(() => expect(outbound.socket.closeCode).toBe(1011));
+    await waitImmediate();
+    expect(outbound.socket.closeCode).toBeUndefined();
   });
 
   it("cleans up on close and supports all raw data representations", async () => {
@@ -1863,7 +1867,7 @@ function registerFrame(installationId: string, instanceId: string) {
     displayName: "host",
     platform: "linux" as const,
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.1.1",
   };
 }
 

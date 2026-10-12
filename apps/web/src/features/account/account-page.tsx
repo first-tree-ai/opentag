@@ -5,7 +5,6 @@ import { getLocale, isLocale, LOCALE_LABELS, locales, setLocale, toLocale } from
 import * as m from "../../paraglide/messages.js";
 import { Button, Field, KumoInputControl, Select, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
-import { McpAccountSettings } from "../mcp/mcp-account-settings.js";
 import { useAccount } from "../session/session-context.js";
 import { CloudBillingSettings } from "./cloud-billing-settings.js";
 import { GitHubIntegrationSettings } from "./github-integration-settings.js";
@@ -17,7 +16,6 @@ export function AccountPage() {
       <AccountSettings refreshMe={refreshMe} user={me.user} />
       <CloudBillingSettings />
       <GitHubIntegrationSettings />
-      <McpAccountSettings />
     </Page>
   );
 }

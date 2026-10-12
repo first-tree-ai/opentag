@@ -264,20 +264,20 @@ Each Agent may override four fields independently. `NULL` means inherit; any pre
 | Override with nothing | `extra_headers_override = '{}'` | This Agent sends **no** extra headers |
 | Override with a set | `extra_headers_override = '{...}'` | Use this Agent's set |
 
-"Restore inheritance" and "override with nothing" are therefore separate actions in both surfaces
-(`--clear-extra-headers` versus `--empty-extra-headers`; "use the shared headers" versus "send no
-extra headers"). Collapsing them would leave a user unable to drop a shared `x-workspace-id` for one
-Agent without deleting it for everyone.
+"Restore inheritance" and "override with nothing" remain separate API and CLI actions
+(`--clear-extra-headers` versus `--empty-extra-headers`). The GUI directly edits the effective header
+list; deleting all rows writes an explicit empty map for this Agent. It does not expose inheritance
+selectors or restore controls.
 
 The other three fields need no such distinction, but they do need an **explicit** clear: an empty
 string is a legitimate value for `auth_scheme`, so "clear" can never be spelled as an empty value.
 
-Editing scope is a user choice:
+The API and CLI retain both editing scopes; GUI Settings writes only Agent overrides:
 
 | Scope | Writes to | Affects |
 | --- | --- | --- |
-| This Agent (the default) | `agent_mcp_servers.*_override` | Only this Agent |
-| Shared definition | `mcp_servers.*` | Every Agent that mounts it, named in the dialog before the user confirms |
+| This Agent | `agent_mcp_servers.*_override` | Only this Agent |
+| Shared definition | `mcp_servers.*` | Agents inheriting the changed fields |
 
 Changing an Agent's overrides re-probes only that Agent. Changing the shared definition marks every
 mount's probe pending, and a background pass re-probes each one; the previous snapshot stays readable
@@ -944,6 +944,11 @@ callback fires the probe without awaiting it, so a flow started from the browser
 
 ## Web UI
 
+The product navigation and page title use **Connectors** (Chinese: **连接器**). A connector
+provides tools to an Agent; messaging channels let a user communicate with the Agent. The current
+connectors use MCP. Protocol labels, endpoint instructions, configuration import formats, CLI
+commands, API paths, schema names, and the `/agents/{agentId}/mcp` page URL retain their MCP names.
+
 The page lives at `/agents/{agentId}/mcp`, under the existing shell routes. It shows one Agent's
 mounted Servers, and each row displays **four independent states** rather than one merged status:
 
@@ -961,15 +966,16 @@ does. A merged column would send a user to reauthorize a Server that was only sw
 Each row offers the enable/disable switch, authorize / reauthorize / revoke, view tools, re-probe,
 edit, and remove.
 
-- **Edit** opens on "this Agent only", which writes the override columns and affects nobody else.
-  Choosing "shared definition" shows a warning naming the Agents it will affect — the same set the
-  Server counts for `boundAgentCount`. Each field shows its current effective value and whether it is
-  inherited or overridden, because a user cannot otherwise tell what the Server is actually being
-  sent. `extra_headers` carries both actions: "use the shared headers" and "send no extra headers".
-- **Remove** offers "from this Agent only", which leaves the definition in the Account pool, and
-  "remove and delete the definition", which is disabled while another Agent still mounts it and names
-  that Agent. Without the second option a definition with no mounts could never be reclaimed, since
-  there is no Account-level page that lists it.
+- **Settings** displays the current Agent's connection address, authentication status, and tools.
+  Advanced settings is collapsed by default. Authentication header and token prefix appear only for
+  API-key/token authorization; extra headers are directly editable for all authorization methods.
+  Account-default selectors, restore controls, shared-editor links, and the Account-page MCP manager
+  are omitted. Generic setup guidance is omitted; the short empty-prefix hint is retained.
+  Only changed fields are written through the existing Agent binding API. Unedited inherited fields
+  continue following shared definitions; this UI change does not introduce connection snapshots or
+  alter API, CLI, authorization-header validation, or database behavior.
+- **Remove** disconnects this Agent and drops its credential. The shared definition remains available
+  to previously added server shortcuts and the CLI's definition-management commands.
 - **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
   context to the authorization server rather than fetching the URL.
 - **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
@@ -987,30 +993,48 @@ edit, and remove.
   discovery offers **Retry** in the tool footer, with the same pending guard; a partial list alone
   does not promote that action.
 
-The "new Server" wizard asks for the definition first and the authorization method second, so
-`default_auth_kind` is never presented as a statement about the Server.
+### Adding a Connector
 
-### Adding a Server by hand
+The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
+**Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
+**发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
+**Connector URL**, optional **Previously added connectors** shortcuts, and **Cancel / Connect**. There is
+no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
+manual configuration, and configuration import remain implementation capabilities rather than entry
+points in this dialog.
 
-The picker's sources are the catalog's **Discover**, the Account pool under **Use an existing
-Server**, **Import configuration**, and **Configure manually**. Where the Account pool and the paste
-readers start from something the user already has, **Configure manually** is the home for a Server
-typed from nothing: it shows the new Server's fields — address, name, authentication method, and the
-advanced connection settings — straight away, so a user who knows the address but has neither an
-Account entry nor a configuration fragment to paste does not have to work out that pasting an
-address into a search field was the way in. It reuses the wizard's own validation and its
-create → attach → authorize sequence, and the copy that rejects an address, a name, or a header is
-the copy the configuration step shows. The source switch stays visible above it, because switching
-sources is how a user leaves a form that has no step behind it to go back to.
+The four most recently created Account definitions appear as shortcuts. Selecting one highlights it
+and fills its URL without making a request. **View all** replaces the shortcut area with search and
+selection; choosing a result collapses it and keeps the chosen shortcut visible. Editing the URL
+clears the selection and its credential draft. Complete HTTP(S) endpoint URLs are required; only
+outer whitespace is trimmed, and configuration snippets, commands, multiple addresses, userinfo,
+and fragments are refused. One matching definition is reused; ambiguous matches require explicit
+selection. Service names are suggested automatically, with collision handling.
 
-**Use an existing Server** keeps a shortcut of its own: its field searches the Account pool, and
-pasting an MCP address the Account does not hold still continues to the configuration step. The
-shortcut predates the manual source and is kept beside it rather than folded into it, so neither
-entry loses a capability it had.
+Connect reuses the existing create, attach, authorization, OAuth, and probe APIs. Saved configuration
+and exact preset matches provide authentication defaults; Bearer defaults reveal an API-key field
+only after Connect, and OAuth defaults start provider sign-in directly. An unknown endpoint starts
+with an anonymous probe; an explicit authentication rejection permits an OAuth attempt through the
+existing discovery flow. The transport retains the shared `MCP_AUTH_REJECTION_SUMMARY` in probe errors,
+prefixed by `MCP_UPSTREAM_ERROR`; Add matches that contract to distinguish HTTP 401/403 rejections
+from other failures. It never infers an API key from a rejection. Tool failures and empty tool
+sets keep the dialog open with concise feedback. Retries retain confirmed definitions and bindings,
+while switching addresses discards that attempt. OAuth stores only Agent/Server identifiers and the
+return view; cancellation restores this same dialog against its existing binding. Credentials remain
+strictly per Agent.
+
+The dialog is 440px wide and 352px high, bounded by the viewport with 16px margins. View all explicitly
+expands its height to 440px while keeping the header and URL field in place; choosing a server restores
+the compact height. Search results and constrained content scroll independently. Loading, API-key
+entry, errors, and changing button labels do not change the compact geometry. The opening server list
+is retained during background refreshes. Loading skeletons replace only the shortcut area, icons and
+selection marks reserve their dimensions, validation has a reserved line, and connection feedback
+has a fixed area above the footer. Only opacity transitions are used, with reduced-motion support.
 
 ### Importing a Server from another client's configuration
 
-The paste readers of **Import configuration** accept a configuration instead of a URL. They read the
+The retained configuration-import readers accept a configuration instead of a URL. This capability
+has no entry point in the current Add server dialog. The readers support the
 shapes other clients write: OpenCode's `mcp` map with `"type": "remote"`, the `mcpServers` map of the
 Claude-family clients, VS Code's `servers` map with `"type": "http"` or `"sse"`, the TOML
 `[mcp_servers.<name>]` tables other clients use, the YAML spelling of any of those, and the
@@ -1020,7 +1044,7 @@ routinely carry both.
 
 Parsing happens in the browser, never on the Server: a paste may carry a live credential, and the
 text itself is not sent anywhere. Only the values the user confirms travel, through the same
-create → attach → authorize sequence the manual wizard uses.
+create → attach → authorize sequence used by the connection flow.
 
 - **Only remote Servers are importable.** `stdio`, `local`, `command`, and `npx` entries are listed
   by name and reported as a category OpenTag does not support. An entry that declares a `command` is
@@ -1070,7 +1094,72 @@ create → attach → authorize sequence the manual wizard uses.
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
-that an Agent can add in one action, from the add flow's Discover source and from its empty state.
+that an Agent can add from the independent **Discover** directory and from its empty state.
+The page keeps one **Add custom** action in its header alongside the independent directory action.
+Add custom opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
+Discover, manual-configuration, or import source switch. The standalone directory owns its add state.
+The empty state starts directly with **Quick start**, without repeating
+the page introduction or Add custom action in a separate onboarding panel. It offers Exa, Notion, Linear, and Airtable, using brand names
+and example tasks for web research, documents, tasks, and table records. Google Workspace services
+remain in Discover but are excluded from Quick start because their developer preview requires
+preview access and deployment configuration. Asana is not a Quick start substitute because its V2 MCP
+server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
+See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
+[Linear's MCP setup](https://linear.app/docs/mcp), and
+[Airtable's authentication guide](https://airtable.com/developers/agents/mcp/getting-started).
+Google Workspace cards are labeled **Limited access** and show preview-access and OAuth
+setup requirements before adding the service. All available cards use **Add**. Once mounted, a card
+shows a single non-interactive **✓ Added** status in the action position, regardless of authorization or probe status. Authentication methods and
+connection health belong to service setup and the Agent's management list, not catalog or quick-start
+cards. These are starting points, not popularity rankings.
+
+Directory cards place the service name and description on the left, with **Add** or **Added** on the
+right rather than in a separate footer row. Limited-access labels sit beside the service name.
+On narrow screens, descriptions span the card width. Quick-start cards retain their task examples.
+
+Adding creates or reuses the Account definition and mounts it to this Agent. The directory closes as
+soon as the mount is confirmed, and the management list highlights the service without waiting for
+authorization or tools. OAuth services immediately navigate to the provider without another confirmation.
+Bearer services open the shared authentication dialog with the known method fixed and no connection
+settings; saving credentials closes it. Closing authentication leaves the mount on the list with
+**Not connected** and **Connect**. Anonymous mounts already authorized by the server trigger an
+immediate tool probe on the page; they do not wait for the periodic background worker or rewrite
+their authorization.
+
+Pending tool probes poll every second for their first 30 seconds, then return to the ordinary
+30-second live cadence. The budget follows each mount in its query cache and uses elapsed time,
+so failed reads cannot leave a page polling every second indefinitely. Newly pending mounts
+receive their own fast-poll window; settled or disabled mounts stop using it.
+
+Create and attach errors remain in the directory, preserving its search and category. Confirmed
+definitions are retained for retries. After mounting, connection startup errors and probe retries
+belong to the existing list; credential errors remain in the shared authentication form. There is no
+separate setup, connection-progress, or connection-result view. OAuth uses the existing return context
+handling, including authentication errors returned by the provider. Adding and authorizing a
+connector have no separate success or failure notification. Connection status remains on the card;
+failures remain on the corresponding card or connection form with a retry action. An OAuth error
+without a corresponding card remains an inline page error. There is no success panel or
+messaging-channel guidance above the connector list.
+
+The catalog aligns rows to the top of its bounded scroll area. Minimum list height leaves space
+below the cards instead of stretching a lone row. The directory omits the redundant Agent
+authorization footer. Current component evidence is recorded in
+[Connector UI polish](../../apps/web/docs/ui/connector-polish/README.md).
+
+The current management layout is preserved: service identity opens settings, the list shows connection
+status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.
+The identity subtitle uses the matched catalog entry's localized purpose description. Custom connectors
+use their user-supplied description, with the effective URL as the fallback when the description is blank.
+Subtitles stay on one line with truncation and a full-text tooltip; the complete URL remains in settings.
+An empty tool result is inspected in the existing tool browser. Authentication preserves the binding's
+effective settings and extra-header inheritance; catalog scopes are supplied only for its exact endpoint.
+Account definitions retain their chosen default authentication kind when reused. Catalog defaults apply
+to newly created definitions.
+
+UI validation captures use an isolated local MCP/OAuth fixture deployment: [desktop](assets/mcp-discover/desktop.png),
+[320px](assets/mcp-discover/mobile-320.png), [390px](assets/mcp-discover/mobile-390.png), and
+[768px](assets/mcp-discover/tablet-768.png). They show the shipped directory layout with disposable
+test connections, rather than third-party account data.
 
 The catalog is committed repository data in the `@opentag/mcp-presets` workspace, not a service:
 
@@ -1093,17 +1182,14 @@ and category rules, the icon, and the gates to run — is a first-party Skill at
 `skills/mcp-catalog-entry`. It is a contributor bundle rather than a shipped preset: an operator
 uploads it explicitly, and the Presets catalog never offers it.
 
-Adding from a card is a prefill of the chain this page already documents, not a new API. The entry's
-URL is matched against the Account's definitions, and an existing definition is mounted rather than
-duplicated; otherwise the entry itself is the create payload. `default_auth_kind` remains a prefill
-for the new authorization, never a statement about the Server. Anonymous and OAuth entries complete
-from the card, with OAuth navigating to the authorization server; a bearer entry stops to collect the
-key.
+The current Add server flow uses an exact catalog endpoint match to supply authentication defaults
+and a suggested name. Account definitions are reused before creating another definition.
+`default_auth_kind` remains a prefill for the new authorization, never a statement about the Server.
 
 An entry's `oauthScopes`, when present, travel as the OAuth start request's explicit scopes, so the
 provider's consent screen is asked for exactly the scopes the catalog author recorded. An entry that
-declares none leaves scope selection to the flow's own discovery rules, and a manual, imported, or
-re-authorization flow always does — only a card has a catalog entry to consult. Google's entries
+declares none leaves scope selection to the flow's own discovery rules. The Add server flow consults
+scopes only for an exact endpoint match. Google's entries
 carry Google's recommended per-product subsets, which deliberately exclude restricted scopes such as
 `https://mail.google.com/`.
 
@@ -1153,6 +1239,46 @@ deliberate exception to the rule that user-facing copy goes through Paraglide. T
 own chrome — the source label, the search field, the method labels, and the installed states — stays
 in `messages/mcp/{en,zh}.json`. `web-ui-contract.md` records the same exception from the web side, so
 the catalog's copy is not "fixed" into the message catalog as an apparent omission.
+
+Card descriptions use an action and its object, in one short sentence. Prefer one or two core
+actions over feature lists, jargon, promotional claims, or changing app counts. Aim for no more
+than 45 characters in English and 20 in Chinese, including punctuation; these are editorial
+budgets, not rendering limits. Allow natural wrapping on narrow screens without truncating the
+meaning. Review both locales in Discover and Quick start. Descriptions summarize documented MCP
+capabilities within the preset's configured scopes; they do not promise every feature of the
+provider's product or establish successful OpenTag authorization.
+
+The description review on 2026-10-10 used the following provider documentation. These references
+record provenance for maintainers without adding links or explanatory copy to the cards.
+
+| Entries | Official capability reference |
+| --- | --- |
+| Notion | [Notion MCP](https://www.notion.com/help/notion-mcp) |
+| Exa | [Exa MCP tools](https://exa.ai/docs/get-started/exa-mcp) |
+| Linear | [Linear MCP server](https://linear.app/docs/mcp) |
+| Sentry | [Sentry MCP server](https://mcp.sentry.dev/) |
+| Atlassian | [Atlassian Rovo MCP server](https://support.atlassian.com/atlassian-ai-gateway/docs/use-atlassian-rovo-mcp-server/) |
+| Gmail | [Gmail MCP server](https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server) |
+| Google Drive | [Drive MCP server](https://developers.google.com/workspace/drive/api/guides/configure-mcp-server) |
+| Google Docs | [Docs MCP server](https://developers.google.com/workspace/docs/api/guides/configure-mcp-server) |
+| Google Sheets | [Sheets MCP server](https://developers.google.com/workspace/sheets/api/guides/configure-mcp-server) |
+| Google Slides | [Slides MCP server](https://developers.google.com/workspace/slides/api/guides/configure-mcp-server) |
+| Google Calendar | [Calendar MCP server](https://developers.google.com/workspace/calendar/api/guides/configure-mcp-server); the preset requests read and free/busy scopes, so copy describes viewing events and availability |
+| Google Chat | [Chat MCP server](https://developers.google.com/workspace/chat/api/guides/configure-mcp-server) |
+| People | [Workspace MCP tool reference](https://developers.google.com/workspace/guides/configure-mcp-servers) |
+| Microsoft 365 | [Release Communications MCP server](https://learn.microsoft.com/en-us/microsoft-365/admin/manage/mrc-mcp?view=o365-worldwide); this endpoint exposes roadmap and Azure update information |
+| Asana | [Asana MCP tools](https://developers.asana.com/docs/mcp-tools-reference) |
+| monday.com | [Platform MCP tools](https://developer.monday.com/api-reference/docs/platform-mcp-tools) |
+| HubSpot | [Remote HubSpot MCP server](https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server) |
+| Figma | [Figma MCP tools](https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/) |
+| Canva | [Canva MCP tools](https://www.canva.dev/docs/apps/mcp/tools/) |
+| Tavily | [Tavily MCP server](https://docs.tavily.com/documentation/mcp) |
+| Firecrawl | [Firecrawl MCP server](https://docs.firecrawl.dev/mcp-server) |
+| Zapier | [Zapier MCP](https://docs.zapier.com/mcp/home) |
+| Airtable | [Airtable MCP server](https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server) |
+| Supabase | [Supabase MCP tools](https://supabase.com/docs/guides/ai-tools/mcp) |
+| Amplitude | [Amplitude MCP server](https://amplitude.com/docs/amplitude-ai/amplitude-mcp) |
+| Stripe | [Stripe MCP tools](https://docs.stripe.com/mcp) |
 
 ## Verification
 

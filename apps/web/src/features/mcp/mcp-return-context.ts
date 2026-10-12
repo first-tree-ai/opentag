@@ -2,7 +2,7 @@
 export type McpReturnContext = {
   agentId: string;
   serverId: string;
-  source: "edit" | "tools" | "authorize";
+  source: "edit" | "tools" | "authorize" | "add";
   query?: string;
   scrollTop?: number;
 };
@@ -41,7 +41,7 @@ export function consumeMcpReturn(agentId: string, serverId?: string): McpReturnC
       typeof item.savedAt !== "number" ||
       Date.now() - item.savedAt > MAX_AGE ||
       item.savedAt > Date.now() ||
-      !["edit", "tools", "authorize"].includes(String(item.source))
+      !["edit", "tools", "authorize", "add"].includes(String(item.source))
     )
       return undefined;
     return {

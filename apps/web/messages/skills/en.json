@@ -86,7 +86,7 @@
   "skills_install_unavailable_too_large": "It is larger than a Skill archive may be",
   "skills_list_aria": "Skills for this Agent",
   "skills_more_actions": "More actions for {name}",
-  "skills_page_description": "Reusable skills for your Agent.",
+  "skills_page_description": "Guide your Agent with reusable instructions.",
   "skills_page_title": "Skills",
   "skills_preset_action_installed": "Installed",
   "skills_preset_action_unchanged": "Already up to date",

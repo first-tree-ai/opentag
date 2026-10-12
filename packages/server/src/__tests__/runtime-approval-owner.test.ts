@@ -323,6 +323,7 @@ describe("Runtime approvals", () => {
     const register = (connectionId: string) =>
       registry.register(
         {
+          clientVersion: "0.1.1",
           ...s.context,
           connectionId,
           socket: socket(),

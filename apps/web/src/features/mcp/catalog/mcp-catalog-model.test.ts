@@ -146,19 +146,19 @@ describe("per-Agent catalog state", () => {
     expect(catalogEntryState(catalogEntry(), [accountServer()], [other])).toBe("available");
   });
 
-  it("is installed when mounted without an active authorization", () => {
+  it("is added when mounted without an active authorization", () => {
     const authorization = mount().authorization;
     const mounted = mount({ authorization: authorization && { ...authorization, status: "pending" } });
-    expect(catalogEntryState(catalogEntry(), [accountServer()], [mounted])).toBe("installed");
+    expect(catalogEntryState(catalogEntry(), [accountServer()], [mounted])).toBe("added");
   });
 
-  it("is authorized when mounted with an active authorization", () => {
-    expect(catalogEntryState(catalogEntry(), [accountServer()], [mount()])).toBe("authorized");
+  it("is added when mounted with an active authorization", () => {
+    expect(catalogEntryState(catalogEntry(), [accountServer()], [mount()])).toBe("added");
   });
 
   it("matches an Agent-level URL override back to the entry", () => {
     const mounted = mount({ effective: { ...mount().effective, url: "https://internal.example.com/mcp" } });
-    expect(catalogEntryState(catalogEntry(), [accountServer()], [mounted])).toBe("authorized");
+    expect(catalogEntryState(catalogEntry(), [accountServer()], [mounted])).toBe("added");
   });
 });
 

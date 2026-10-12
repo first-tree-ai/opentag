@@ -3,7 +3,7 @@ import type { MCPAgentServer } from "@opentag/shared/browser";
 import { useId } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, Info, Loader, Popover, Switch, Text, Tooltip } from "../../ui/design-system.js";
-import { findCatalogEntryByUrl } from "./catalog/mcp-catalog-model.js";
+import { findCatalogEntryByUrl, localizedText } from "./catalog/mcp-catalog-model.js";
 import { McpServiceIcon } from "./mcp-service-icon.js";
 
 export type ServerAction = "authorize" | "edit";
@@ -16,7 +16,9 @@ export function McpServerCard({
   probing,
   toggling,
   error,
+  connectionError,
   highlighted = false,
+  connecting = false,
 }: {
   entry: MCPAgentServer;
   agentName: string;
@@ -26,9 +28,14 @@ export function McpServerCard({
   probing: boolean;
   toggling: boolean;
   error?: string;
+  connectionError?: string;
   highlighted?: boolean;
+  connecting?: boolean;
 }) {
   const catalogEntry = findCatalogEntryByUrl(entry.effective.url, MCP_CATALOG_ENTRIES);
+  const subtitle = catalogEntry
+    ? localizedText(catalogEntry.description)
+    : entry.description?.trim() || entry.effective.url;
   const authorized = entry.authorization?.status === "active";
   const pending = probing || entry.authorization?.probeState === "pending";
   return (
@@ -43,6 +50,7 @@ export function McpServerCard({
           className="mcp-server-logo"
           tabIndex={-1}
           variant="ghost"
+          disabled={connecting}
           aria-label={m.mcp_open_details({ server: entry.name })}
           onClick={() => onAction("edit")}
         >
@@ -54,6 +62,7 @@ export function McpServerCard({
               id={`mcp-server-${entry.mcpServerId}-details`}
               className="mcp-server-name"
               variant="ghost"
+              disabled={connecting}
               title={entry.name}
               onClick={() => onAction("edit")}
             >
@@ -61,8 +70,8 @@ export function McpServerCard({
               <Icon name="chevron-right" className="size-3.5 shrink-0 text-kumo-subtle" />
             </Button>
           </Text>
-          <Tooltip content={entry.effective.url} render={<p className="truncate text-sm text-kumo-subtle" />}>
-            {entry.effective.url}
+          <Tooltip content={subtitle} render={<p className="truncate text-sm text-kumo-subtle" />}>
+            {subtitle}
           </Tooltip>
         </div>
       </div>
@@ -75,7 +84,7 @@ export function McpServerCard({
                 <Switch
                   aria-label={m.mcp_toggle_label({ agent: agentName, name: entry.name })}
                   checked={entry.enabled}
-                  disabled={toggling}
+                  disabled={toggling || connecting}
                   transitioning={toggling}
                   onCheckedChange={onToggle}
                 />
@@ -84,22 +93,29 @@ export function McpServerCard({
           />
         </div>
         <div className="mcp-server-actions flex min-w-0 items-center justify-end gap-3" aria-live="polite">
-          <ToolStatus entry={entry} agentName={agentName} pending={pending} error={error} />
+          <ToolStatus
+            entry={entry}
+            pending={pending}
+            connecting={connecting}
+            error={error}
+            connectionError={connectionError}
+          />
           {entry.enabled && !authorized ? (
             <Button
               size="compact"
               className="px-1 text-kumo-link"
               variant="ghost"
+              disabled={connecting}
               onClick={() => onAction("authorize")}
             >
               {entry.authorization ? m.mcp_reconnect() : m.mcp_connect()}
             </Button>
           ) : null}
-          {entry.enabled && authorized && entry.authorization?.probeState === "failed" ? (
+          {entry.enabled && authorized && (entry.authorization?.probeState === "failed" || connectionError) ? (
             <Button
               className="px-1 text-kumo-link"
               aria-label={m.mcp_retry()}
-              disabled={pending}
+              disabled={connecting || probing}
               size="compact"
               variant="ghost"
               onClick={onProbe}
@@ -114,24 +130,31 @@ export function McpServerCard({
 }
 function ToolStatus({
   entry,
-  agentName,
   pending,
   error,
+  connectionError,
+  connecting,
 }: {
   entry: MCPAgentServer;
-  agentName: string;
   pending: boolean;
   error?: string;
+  connectionError?: string;
+  connecting: boolean;
 }) {
-  if (error) return <McpRowError key={error} label={m.mcp_row_action_failed()} error={error} defaultOpen />;
   if (!entry.enabled)
+    return <span className="mcp-server-status text-sm text-kumo-subtle">{m.mcp_mount_disabled()}</span>;
+  if (connectionError)
     return (
-      <span
-        className="mcp-server-status truncate text-sm text-kumo-subtle"
-        title={m.mcp_disabled_for({ agent: agentName })}
-      >
-        <span className="mcp-server-status-full">{m.mcp_disabled_for({ agent: agentName })}</span>
-        <span className="mcp-server-status-short">{m.mcp_mount_disabled()}</span>
+      <span role="alert" className="mcp-server-status text-sm text-kumo-danger">
+        {connectionError}
+      </span>
+    );
+  if (error) return <McpRowError key={error} label={m.mcp_row_action_failed()} error={error} defaultOpen />;
+  if (connecting)
+    return (
+      <span className="mcp-server-status flex items-center gap-2 text-sm text-kumo-subtle">
+        <Loader size="sm" />
+        {m.mcp_connecting()}
       </span>
     );
   if (entry.authorization?.status !== "active")

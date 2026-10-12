@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, DropdownMenu, Empty, Icon, Loader } from "../../ui/design-system.js";
+import { Banner, Button, DropdownMenu, Icon, Loader, Text } from "../../ui/design-system.js";
 import "./skills.css";
 import { InstallSkillDialog } from "./install-skill-dialog.js";
 import { SkillDetailsDialog } from "./skill-details-dialog.js";
@@ -311,11 +311,17 @@ function SkillList({
   if (!hasData) return null;
   if (skills.length === 0)
     return (
-      <Empty
-        className="ui-surface min-h-48 justify-center gap-3 bg-kumo-base px-4 py-6 text-sm"
-        title={m.skills_empty()}
-        description={m.skills_empty_description()}
-      />
+      <div className="flex flex-col items-center gap-5 px-4 py-12 text-center sm:py-16" data-ui="skills-empty-state">
+        <Icon name="file" weight="light" className="size-8 text-kumo-inactive" />
+        <div className="flex max-w-sm flex-col gap-2">
+          <Text as="h2" size="lg" variant="heading">
+            {m.skills_empty()}
+          </Text>
+          <Text as="p" size="sm" variant="secondary">
+            {m.skills_empty_description()}
+          </Text>
+        </div>
+      </div>
     );
   return (
     <ul

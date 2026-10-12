@@ -136,7 +136,7 @@ describe("SkillsPage", () => {
     stubList([]);
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
-    expect(await screen.findByText(/No Skills yet/)).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 2, name: "No Skills yet" })).toBeTruthy();
     expect(screen.getByText("Import a skill from a URL or upload a file to get started.")).toBeTruthy();
     const chooseFile = vi.spyOn(fileInput(), "click");
     fireEvent.click(screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement);

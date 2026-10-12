@@ -14,7 +14,9 @@ describe("MCP details and removal journey", () => {
     const detach = vi.spyOn(browserApi, "detachMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails();
-    fireEvent.change(screen.getByLabelText("Server address"), { target: { value: "https://draft.example.com/mcp" } });
+    fireEvent.change(screen.getByLabelText("Connector address"), {
+      target: { value: "https://draft.example.com/mcp" },
+    });
     click("Advanced settings");
     const body = screen.getByRole("dialog").querySelector(".mcp-settings-body") as HTMLElement;
     body.scrollTop = 80;
@@ -24,9 +26,11 @@ describe("MCP details and removal journey", () => {
     click("Back");
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Tools" })));
     expect(screen.getByRole("dialog").querySelector(".mcp-settings-body")?.scrollTop).toBe(80);
-    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe("https://draft.example.com/mcp");
+    expect((screen.getByLabelText("Connector address") as HTMLInputElement).value).toBe(
+      "https://draft.example.com/mcp",
+    );
     expect(screen.getByRole("button", { name: "Advanced settings" }).getAttribute("aria-expanded")).toBe("true");
-    expect(screen.queryByRole("button", { name: "Server information" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connector information" })).toBeNull();
     click("Tools");
     expect((screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement).value).toBe("issue");
     click("Back");
@@ -35,12 +39,14 @@ describe("MCP details and removal journey", () => {
     expect(screen.getAllByRole("alertdialog")).toHaveLength(1);
     click("Cancel", true);
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Remove from agent" })));
-    expect((screen.getByLabelText("Server address") as HTMLInputElement).value).toBe("https://draft.example.com/mcp");
+    expect((screen.getByLabelText("Connector address") as HTMLInputElement).value).toBe(
+      "https://draft.example.com/mcp",
+    );
     expect(update).not.toHaveBeenCalled();
     expect(detach).not.toHaveBeenCalled();
   });
   it.each([false, true])(
-    "closes on success and focuses the remaining entry or Add server (empty=%s)",
+    "closes on success and focuses the remaining entry or Add custom (empty=%s)",
     async (empty) => {
       const other = entry({ mcpServerId: "other", name: "notion" });
       stub(empty ? [entry()] : [entry(), other]);
@@ -55,7 +61,7 @@ describe("MCP details and removal journey", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
       expect(screen.queryByRole("button", { name: "linear" })).toBeNull();
       expect(screen.getByText("linear removed from agent")).toBeTruthy();
-      await waitFor(() => expect(document.activeElement?.textContent).toBe(empty ? "Add server" : "notion"));
+      await waitFor(() => expect(document.activeElement?.textContent).toBe(empty ? "Add custom" : "notion"));
       expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
       expect(remove).not.toHaveBeenCalled();
     },

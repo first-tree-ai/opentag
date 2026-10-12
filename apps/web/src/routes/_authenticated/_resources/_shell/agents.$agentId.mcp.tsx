@@ -11,5 +11,5 @@ export const Route = createFileRoute("/_authenticated/_resources/_shell/agents/$
  */
 function AgentMcpRoute() {
   const { agentId } = Route.useParams();
-  return <McpPage agentId={agentId} />;
+  return <McpPage key={agentId} agentId={agentId} />;
 }

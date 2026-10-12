@@ -15,6 +15,7 @@ function fixture() {
   const computerId = randomUUID();
   const instanceId = randomUUID();
   const registry = {
+    allowsBusiness: vi.fn(() => true),
     currentInstanceId: vi.fn(() => instanceId),
     supportsCapability: vi.fn(() => true),
     send: vi.fn(async (..._args: unknown[]) => undefined),

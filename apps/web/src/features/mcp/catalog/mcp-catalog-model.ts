@@ -72,24 +72,35 @@ export function findAccountServer(entry: McpCatalogEntry, servers: readonly MCPS
  * What a card should show for one Agent:
  *
  *   available   this Agent does not mount the entry's Server; the card offers add
- *   installed   mounted, but no active authorization yet
- *   authorized  mounted and usable
+ *   added       mounted; setup and connection health belong to the management view
  *
  * A mount is matched by its effective URL first, so an Agent-level URL override still counts, and by
  * the definition's id second.
  */
-export type McpCatalogEntryState = "available" | "installed" | "authorized";
+export type McpCatalogEntryState = "available" | "added";
 
 export function catalogEntryState(
   entry: McpCatalogEntry,
   servers: readonly MCPServer[],
   mounted: readonly MCPAgentServer[],
 ): McpCatalogEntryState {
+  return findCatalogBinding(entry, servers, mounted) ? "added" : "available";
+}
+
+export function findCatalogBinding(
+  entry: McpCatalogEntry,
+  servers: readonly MCPServer[],
+  mounted: readonly MCPAgentServer[],
+): MCPAgentServer | undefined {
   const target = comparableUrl(entry.url);
   const definition = findAccountServer(entry, servers);
-  const binding =
+  return (
     mounted.find((candidate) => comparableUrl(candidate.effective.url) === target) ??
-    (definition ? mounted.find((candidate) => candidate.mcpServerId === definition.id) : undefined);
-  if (!binding) return "available";
-  return binding.authorization?.status === "active" ? "authorized" : "installed";
+    (definition ? mounted.find((candidate) => candidate.mcpServerId === definition.id) : undefined)
+  );
+}
+
+/** Google Workspace MCP endpoints require access to the developer preview. */
+export function isCatalogPreview(entry: McpCatalogEntry): boolean {
+  return entry.category === "google-workspace";
 }

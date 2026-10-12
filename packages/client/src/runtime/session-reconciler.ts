@@ -29,6 +29,7 @@ export interface SessionProtectedWorkSnapshot {
 }
 
 export interface RuntimePreparation {
+  validateSession?(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<void>;
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
   verifyAgent?(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
   requiresSessionPreparation?(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): boolean;
@@ -366,6 +367,7 @@ export class SessionReconciler {
       snapshot.revision.session.sequence > existingSession.revisionSequence ||
       existingSession.status === "stopped" ||
       this.#preparation.requiresSessionPreparation?.(request, hashes) === true;
+    await this.#preparation.validateSession?.(request, hashes);
     if (shouldPrepareAgent) await this.#preparation.prepareAgent(snapshot, hashes);
     else await this.#preparation.verifyAgent?.(snapshot, hashes);
     const preparedSession = shouldPrepareSession ? await this.#preparation.prepareSession(request, hashes) : undefined;

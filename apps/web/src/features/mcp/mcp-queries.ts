@@ -36,11 +36,35 @@ export function useMcpServerDetail(mcpServerId: string | undefined) {
   });
 }
 
+const PROBE_REFETCH_INTERVAL_MS = 1_000;
+const PROBE_FAST_POLL_WINDOW_MS = 30_000;
+const pendingProbeStarts = new WeakMap<object, Map<string, number>>();
+
+/** Fast polling is bounded even when failed requests keep the cached probe state pending. */
+export function mcpProbeRefetchInterval(query: { state: { data: ListAgentMCPServersResponse | undefined } }): number {
+  const pending = query.state.data?.servers.filter(
+    (entry) =>
+      entry.enabled && entry.authorization?.status === "active" && entry.authorization.probeState === "pending",
+  );
+  if (!pending?.length) {
+    pendingProbeStarts.delete(query);
+    return LIVE_REFETCH_INTERVAL_MS;
+  }
+  const now = Date.now();
+  const previous = pendingProbeStarts.get(query);
+  const starts = new Map(pending.map((entry) => [entry.mcpServerId, previous?.get(entry.mcpServerId) ?? now]));
+  pendingProbeStarts.set(query, starts);
+  return [...starts.values()].some((startedAt) => now - startedAt < PROBE_FAST_POLL_WINDOW_MS)
+    ? PROBE_REFETCH_INTERVAL_MS
+    : LIVE_REFETCH_INTERVAL_MS;
+}
+
 export function useAgentMcpServers(agentId: string) {
   return useQuery({
     ...liveResourceQueryOptions,
     queryKey: queryKeys.mcp.agentServers(agentId),
     queryFn: (): Promise<ListAgentMCPServersResponse> => browserApi.agentMcpServers(agentId),
+    refetchInterval: mcpProbeRefetchInterval,
   });
 }
 

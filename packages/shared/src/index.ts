@@ -117,11 +117,6 @@ export {
   type ServiceId,
   ServiceIdSchema,
 } from "./channel.js";
-export {
-  isSupportedClientVersion,
-  MINIMUM_SUPPORTED_CLIENT_VERSION,
-  unsupportedClientVersionMessage,
-} from "./client-version.js";
 export * from "./cloud-billing.js";
 export * from "./cloud-product.js";
 export * from "./cloud-runner.js";
@@ -447,6 +442,8 @@ export {
   type ClientRuntimeBusinessFrame,
   ClientRuntimeBusinessFrameSchema,
   computeDirectInputHash,
+  computeLegacyDirectInputHash,
+  computeLegacyRuntimeSnapshotHashes,
   computeReconcilePayloadHash,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
@@ -463,6 +460,7 @@ export {
   InputRejectReasonSchema,
   type InternalSessionRuntimeOverrides,
   InternalSessionRuntimeOverridesSchema,
+  LegacyRuntimeSnapshotSchema,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   type ProviderCliArtifactStatusFrame,
   ProviderCliArtifactStatusFrameSchema,
@@ -599,7 +597,6 @@ export {
   HeartbeatResultFrameSchema,
   HeartbeatV1FrameSchema,
   HeartbeatV2FrameSchema,
-  missingRuntimeCapabilities,
   negotiateProviderReadinessFromHeaders,
   negotiateRuntimeCapabilities,
   RUNTIME_AGENT_RUNTIME_TEST_CLEANUP_MS,

@@ -2,20 +2,35 @@
 
 [简体中文](README.zh-CN.md)
 
-Captured on 2026-10-10 in headed Chrome through Playwright, using the production `SkillsPage` and reader components
+Reader and historical import/discovery screenshots were captured on 2026-10-10 in headed Chrome through Playwright, using the production `SkillsPage` and reader components
 under React StrictMode. A temporary Vite entry outside the repository supplied synthetic in-memory API responses.
 These screenshots validate the real UI, not a static mockup. They do not claim a live PostgreSQL/storage end-to-end run.
 The server contract is separately covered with authenticated route/service tests and real tar.gz fixtures.
-The current import-only and historical discovery/import screenshots below were captured in the Codex in-app browser with the same fixture entry. Earlier
+The historical import-only and discovery/import screenshots below were captured in the Codex in-app browser with the same fixture entry. Earlier
 reader screenshots retain the previous action labels. Historical discovery screenshots show an entry that is now hidden.
+
+## Empty state refinement (2026-10-12)
+
+The empty Skills list now sits directly on the page background, with a 32px document icon, an 18px semantic
+heading and 14px import guidance. The wording and single header import menu retain their existing behavior.
+The screenshots use production components and theme in a disposable built preview with synthetic in-memory
+API responses; they do not claim live storage or provider validation.
+
+Browser checks covered 320px, 390px, 768px and 1440px with no horizontal overflow. Tab and Enter opened the
+import menu and URL dialog; Escape closed the dialog and restored focus to Import skill. The populated list
+and storage-unavailable disabled import state were also checked. No new axe scan, reusable block, theme value
+or CSS exception was added.
 
 ## Screenshots
 
 | View | Viewport | Evidence |
 | --- | --- | --- |
-| Import-only header | 1280 × 720 | [Current desktop](import-only-desktop.jpg) |
-| Empty state, narrow mobile | 320 × 844 | [Current empty state](import-empty-320.jpg) |
-| Chinese import menu, narrow mobile | 320 × 844 | [Current Chinese menu](import-only-zh-320.jpg) |
+| Borderless empty state, desktop | 1440 × 900 | [Current desktop](empty-refined-desktop.png) |
+| Borderless empty state, narrow mobile | 320 × 640 | [Current empty state](empty-refined-320.png) |
+| Borderless Chinese empty state, narrow mobile | 320 × 640 | [Current Chinese empty state](empty-refined-zh-320.png) |
+| Historical import-only header | 1280 × 720 | [Previous desktop](import-only-desktop.jpg) |
+| Historical empty state, narrow mobile | 320 × 844 | [Previous empty state](import-empty-320.jpg) |
+| Historical Chinese import menu, narrow mobile | 320 × 844 | [Previous Chinese menu](import-only-zh-320.jpg) |
 | Historical discovery and import entries | 1280 × 720 | [Desktop entries](discovery-import-desktop.jpg) |
 | Discovery and import entries, narrow mobile | 320 × 844 | [English entries](discovery-import-320.jpg) |
 | Chinese import menu, narrow mobile | 320 × 844 | [Chinese entries](discovery-import-zh-320.jpg) |

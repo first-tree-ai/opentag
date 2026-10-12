@@ -7,8 +7,6 @@ import {
   type ComputerConnectCodeStatus,
   clientSupportsComputerRuntimeProvider,
   getChannelConfig,
-  isSupportedClientVersion,
-  unsupportedClientVersionMessage,
 } from "@opentag/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -165,7 +163,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   }
 
   async exchangeConnectCode(input: ComputerConnectExchangeInput): Promise<ComputerConnectExchangeResult> {
-    rejectUnsupportedClientVersion(input.clientVersion);
     const clientSupportsRuntimeProvider = clientSupportsComputerRuntimeProvider(input.clientVersion);
     const tokenHash = hashSecret(input.code);
     const result = await this.#database.transaction(async (transaction) => {
@@ -637,9 +634,4 @@ function invalidMachineCredential(
   message: string,
 ): AuthServiceError {
   return new AuthServiceError(code, "credential", message, 401);
-}
-
-export function rejectUnsupportedClientVersion(clientVersion: string): void {
-  if (isSupportedClientVersion(clientVersion)) return;
-  throw new AuthServiceError("CLIENT_VERSION_UNSUPPORTED", "validation", unsupportedClientVersionMessage(), 400);
 }

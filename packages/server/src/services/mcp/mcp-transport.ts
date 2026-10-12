@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  MCP_AUTH_REJECTION_SUMMARY,
   MCP_LEGACY_PROTOCOL_VERSIONS,
   MCP_MODERN_PROTOCOL_VERSION,
   MCP_SUPPORTED_PROTOCOL_VERSIONS,
@@ -395,9 +396,7 @@ function interpretSseResponse(
 
 function upstreamFailure(status: number): McpTransportError {
   const message =
-    status === 401 || status === 403
-      ? "The MCP Server refused this credential"
-      : `The MCP Server returned HTTP ${status}`;
+    status === 401 || status === 403 ? MCP_AUTH_REJECTION_SUMMARY : `The MCP Server returned HTTP ${status}`;
   return new McpTransportError(MCP_ERROR_CODES.UPSTREAM_ERROR, message, status, undefined, { status });
 }
 

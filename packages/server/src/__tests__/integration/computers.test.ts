@@ -114,44 +114,21 @@ async function repair(
 }
 
 describe("Computer connection persistence", () => {
-  it("enforces the 0.0.2 Client floor and strict SemVer before any side effects", async () => {
+  it("keeps old and unrecognized Client versions connected for upgrades", async () => {
     const value = await fixture();
     try {
       const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
-      const computerId = crypto.randomUUID();
-      await expect(
-        value.machineAuth.exchangeConnectCode({
-          ...exchangeInput(issued.code, computerId),
-          clientVersion: "0.0.1",
-        }),
-      ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
-      await expect(
-        value.machineAuth.exchangeConnectCode({
-          ...exchangeInput(issued.code, computerId),
-          clientVersion: "0.0.3-01",
-        }),
-      ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
-      const [unspent] = await value.database
-        .select({ consumedAt: computerConnectCodes.consumedAt })
-        .from(computerConnectCodes);
-      expect(unspent?.consumedAt).toBeNull();
-
-      const exchange = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, computerId));
-      const [before] = await value.database.select().from(computers).where(eq(computers.id, exchange.computerId));
-      await expect(
-        value.service.register(exchange, {
-          ...registerFrame(exchange.installationId, crypto.randomUUID()),
-          clientVersion: "1.0.0+build..7",
-        }),
-      ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
-      await expect(
-        value.service.register(exchange, {
-          ...registerFrame(exchange.installationId, crypto.randomUUID()),
-          clientVersion: "0.0.1",
-        }),
-      ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
-      const [after] = await value.database.select().from(computers).where(eq(computers.id, exchange.computerId));
-      expect(after).toEqual(before);
+      const installationId = crypto.randomUUID();
+      const exchange = await value.machineAuth.exchangeConnectCode({
+        ...exchangeInput(issued.code, installationId),
+        clientVersion: "0.0.1",
+      });
+      for (const clientVersion of ["0.0.1", "1.0.0+build..7"]) {
+        const frame = { ...registerFrame(installationId, crypto.randomUUID()), clientVersion };
+        await value.service.register(exchange, frame);
+        const [stored] = await value.database.select().from(computers).where(eq(computers.id, exchange.computerId));
+        expect(stored).toMatchObject({ clientVersion, currentInstanceId: frame.instanceId });
+      }
     } finally {
       await value.sql.end();
     }

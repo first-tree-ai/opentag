@@ -68,7 +68,7 @@
   "skills_install_unavailable_too_large": "它超出技能归档的大小上限",
   "skills_list_aria": "此 Agent 的技能",
   "skills_more_actions": "{name} 的更多操作",
-  "skills_page_description": "为 Agent 添加可复用的技能。",
+  "skills_page_description": "通过可复用的指令，指导 Agent 工作。",
   "skills_page_title": "技能",
   "skills_preset_action_installed": "已安装",
   "skills_preset_action_unchanged": "已是最新",

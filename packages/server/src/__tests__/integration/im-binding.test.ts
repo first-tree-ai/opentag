@@ -366,6 +366,7 @@ async function createDurableClientReconciler(home: string, installationId: strin
       installationId: string;
       preparation: object;
     }) => {
+      claimRecovery: (sessionId: string, turn: { deliveryId: string; turnId: string }) => boolean;
       clearRecovery: (sessionId: string, turnId: string) => boolean;
       getAgent: (agentId: string) => { revisionSequence: number } | undefined;
       reconcile: (request: SessionReconcileRequest) => Promise<SessionReconcileResult>;
@@ -467,6 +468,8 @@ async function respondingRuntime(input: {
   const register = async (negotiatedCapabilities = input.negotiatedCapabilities) =>
     registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionReconcile]: 1, [RUNTIME_CAPABILITY.imDelivery]: 1 },
         capabilities: { imCredentialGrant: 1 },
         capabilitiesUpdatedAt: Date.now(),
         computerId: input.computerId,
@@ -477,6 +480,8 @@ async function respondingRuntime(input: {
           ? {
               connectionId: crypto.randomUUID(),
               negotiatedCapabilities: {
+                [RUNTIME_CAPABILITY.sessionReconcile]: 1,
+                [RUNTIME_CAPABILITY.imDelivery]: 1,
                 ...(input.steerResult ? { [RUNTIME_CAPABILITY.imSteer]: 1 } : {}),
                 ...negotiatedCapabilities,
               },
@@ -3446,7 +3451,7 @@ describe("IM binding persistence", () => {
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-worker"));
-      const registry = { currentInstanceId: () => instanceId };
+      const registry = { allowsBusiness: () => true, currentInstanceId: () => instanceId };
       const failedDomain = {
         requestReconcile: dispatchedRuntimeFailure(new Error("runtime unavailable")),
         requestDelivery: vi.fn(),
@@ -4164,7 +4169,13 @@ describe("IM binding persistence", () => {
         installationId: value.computer.currentInstallationId,
         reconcileResult: async (frame) => {
           const result = await rebuiltClient.reconciler.reconcile(frame as unknown as SessionReconcileRequest);
-          return result.status === "recovery_required"
+          if (result.status === "stopped") {
+            rebuiltClient.reconciler.claimRecovery(accepted.sessionId, {
+              deliveryId: accepted.id,
+              turnId,
+            });
+          }
+          return result.status === "recovery_required" || result.status === "stopped"
             ? {
                 ...result,
                 retainedReports: [
@@ -4210,10 +4221,9 @@ describe("IM binding persistence", () => {
         .where(eq(imMessageDeliveries.id, firstRequest.deliveryId));
       await worker.runOnce();
       const recovery = second.frames[0] as SessionReconcileRequest | undefined;
-      expect(recovery).toMatchObject({ type: "session:reconcile", runtime: firstRequest.runtime });
-      expect(rebuiltClient.reconciler.getAgent(value.agent.id)?.revisionSequence).toBe(
-        firstRequest.runtime.revision.agent.sequence,
-      );
+      expect(recovery).toMatchObject({ type: "session:reconcile", desired: "stopped" });
+      expect(recovery).not.toHaveProperty("runtime");
+      expect(rebuiltClient.reconciler.getAgent(value.agent.id)).toBeUndefined();
       await expect(second.domain.handle(report, second.context)).resolves.toMatchObject({ status: "recorded" });
       await rebuiltClient.bindingStore.recordResult(value.agent.id, firstRequest.sessionId, turnId, report.resultHash);
       expect(rebuiltClient.reconciler.clearRecovery(firstRequest.sessionId, turnId)).toBe(true);
@@ -4343,7 +4353,7 @@ describe("IM binding persistence", () => {
         },
       };
       const oldDomain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
-      const oldRegistry = { currentInstanceId: () => firstInstanceId };
+      const oldRegistry = { allowsBusiness: () => true, currentInstanceId: () => firstInstanceId };
       const racingRun = new ImDeliveryWorker({
         assembler: guardedAssembler,
         database: value.database,
@@ -4408,7 +4418,13 @@ describe("IM binding persistence", () => {
         installationId: value.computer.currentInstallationId,
         reconcileResult: async (frame) => {
           const result = await rebuiltClient.reconciler.reconcile(frame as unknown as SessionReconcileRequest);
-          return result.status === "recovery_required"
+          if (result.status === "stopped") {
+            rebuiltClient.reconciler.claimRecovery(accepted.sessionId, {
+              deliveryId: accepted.id,
+              turnId,
+            });
+          }
+          return result.status === "recovery_required" || result.status === "stopped"
             ? {
                 ...result,
                 retainedReports: [
@@ -4446,7 +4462,8 @@ describe("IM binding persistence", () => {
         domain: recovered.domain,
       });
       await recoveryWorker.runOnce();
-      expect(recovered.frames[0]).toMatchObject({ type: "session:reconcile", runtime: pinnedRuntime });
+      expect(recovered.frames[0]).toMatchObject({ type: "session:reconcile", desired: "stopped" });
+      expect(recovered.frames[0]).not.toHaveProperty("runtime");
       await expect(recovered.domain.handle(report, recovered.context)).resolves.toMatchObject({ status: "recorded" });
       await rebuiltClient.bindingStore.recordResult(value.agent.id, firstRequest.sessionId, turnId, report.resultHash);
       expect(rebuiltClient.reconciler.clearRecovery(firstRequest.sessionId, turnId)).toBe(true);
@@ -4507,7 +4524,7 @@ describe("IM binding persistence", () => {
       };
       const firstWorker = imDeliveryWorker({
         database: value.database,
-        registry: { currentInstanceId: () => instanceId } as never,
+        registry: { allowsBusiness: () => true, currentInstanceId: () => instanceId } as never,
         domain: firstDomain as never,
         claimLeaseMs: 300,
         claimRenewMs: 50,
@@ -4547,7 +4564,7 @@ describe("IM binding persistence", () => {
       const secondDomain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
       const secondWorker = imDeliveryWorker({
         database: value.database,
-        registry: { currentInstanceId: () => undefined } as never,
+        registry: { allowsBusiness: () => true, currentInstanceId: () => undefined } as never,
         domain: secondDomain as never,
       });
       await secondWorker.runOnce();
@@ -4605,7 +4622,7 @@ describe("IM binding persistence", () => {
       const domain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
       await imDeliveryWorker({
         database: value.database,
-        registry: { currentInstanceId: () => staleInstanceId } as never,
+        registry: { allowsBusiness: () => true, currentInstanceId: () => staleInstanceId } as never,
         domain: domain as never,
       }).runOnce();
 
@@ -4657,7 +4674,7 @@ describe("IM binding persistence", () => {
 
       const worker = imDeliveryWorker({
         database: value.database,
-        registry: { currentInstanceId: () => instanceId } as never,
+        registry: { allowsBusiness: () => true, currentInstanceId: () => instanceId } as never,
         domain: {
           requestReconcile: dispatchedRuntimeResult({ status: "ready" }),
           requestDelivery: dispatchedRuntimeResult({
@@ -4757,7 +4774,7 @@ describe("IM binding persistence", () => {
         requestReconcile: dispatchedRuntimeFailure(new Error("reconcile failed before dispatch")),
         requestDelivery: vi.fn(),
       };
-      const registry = { currentInstanceId: () => instanceId };
+      const registry = { allowsBusiness: () => true, currentInstanceId: () => instanceId };
       const worker = imDeliveryWorker({
         database: value.database,
         registry: registry as never,
@@ -4878,7 +4895,8 @@ describe("IM binding persistence", () => {
         (frame): frame is Record<string, unknown> & { runtime: DirectImMessageDeliveryRequest["runtime"] } =>
           typeof frame === "object" && frame !== null && (frame as { type?: unknown }).type === "session:reconcile",
       );
-      expect(recoveryReconcile?.runtime).toEqual(pinnedRuntime);
+      expect(recoveryReconcile).toMatchObject({ desired: "stopped" });
+      expect(recoveryReconcile).not.toHaveProperty("runtime");
       expect(await second.domain.getDelivery(accepted.id)).toMatchObject({ instanceId: secondInstanceId });
       await expect(second.domain.handle(report, second.context)).resolves.toMatchObject({ status: "recorded" });
       expect(await second.domain.getTurn(report.turnId)).toMatchObject({ resultHash: report.resultHash });
@@ -5004,7 +5022,7 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("uses a diagnostic best-effort assembler fallback only for legacy accepted rows without payload", async () => {
+  it("recovers legacy accepted rows without preparing replacement snapshots", async () => {
     const value = await fixture();
     const owners: RuntimeDomainOwner[] = [];
     try {
@@ -5053,13 +5071,14 @@ describe("IM binding persistence", () => {
         domain: second.domain,
         onDiagnostic: diagnostic,
       }).runOnce();
-      expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
+      expect(diagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
       expect(second.frames).toEqual([
         expect.objectContaining({
           type: "session:reconcile",
-          runtime: expect.objectContaining({ agentId: value.agent.id }),
+          desired: "stopped",
         }),
       ]);
+      expect(second.frames[0]).not.toHaveProperty("runtime");
     } finally {
       for (const owner of owners) owner.close();
       await value.sql.end();

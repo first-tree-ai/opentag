@@ -208,6 +208,7 @@
   "onboarding_v2_runtime_pi_description": "多供应商",
   "onboarding_v2_runtime_pi_title": "Pi",
   "onboarding_v2_setup_computer_rebind": "{computerName} 属于其他账户。请为 {name} 选择当前账户中的电脑。",
+  "onboarding_v2_setup_later": "稍后配置",
   "onboarding_v2_setup_load_failed": "无法读取你的 Agent 的设置状态。",
   "onboarding_v2_setup_messaging_auth_failed": "{provider} 授权未完成。请断开 {provider}，然后重新连接。",
   "onboarding_v2_setup_messaging_computer_attention": "使用这台电脑上的编程助手修复 {provider} 连接，然后重新检查。",

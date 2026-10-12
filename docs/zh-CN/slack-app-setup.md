@@ -2,7 +2,12 @@
 
 [English](../slack-app-setup.md)
 
-OpenTag 对每个 App/Team 组合最多保留一组当前 Slack App/Team/Bot 安装。一个 Slack workspace 通过一等 OAuth 为一个
+每个 Agent 最多绑定一组当前 Slack App/Team/Bot 安装，每个 App/Team 组合归一个 Agent 所有。
+可以通过 OAuth 使用公开分发的 **@OpenTag** App，也可以在同一个工作区为每个 Agent 创建独立 Slack App。
+两种方式复用现有 Agent installation、加密凭证和 default route。创建 Agent 不强制绑定消息应用；
+可以选择**稍后配置**，再从消息设置连接。
+
+当前 Slack App/Team/Bot 安装。一个 Slack workspace 通过一等 OAuth 为一个
 OpenTag Agent 安装公开分发的 **@OpenTag** Bot。installation 归该 Agent 所有；V1 入站只使用其已配置的 **default** Agent
 route，否则失败关闭。
 
@@ -125,16 +130,34 @@ manifest、轮换 installation 凭证代际、要求重新安装或授权、重�
 
 ## Agent 配置流程
 
-1. 打开 **Add OpenTag to Slack** 或 **Reauthorize Slack**。OpenTag 发起一等 OAuth。阅读页面不写入数据。
-2. 在目标 Slack 工作区批准 OpenTag Slack App。
-3. 公开 callback 用 Slack code 换 token，检查 Bot 身份、Team、存在时的 Enterprise，以及实际 `x-oauth-scopes`，并要求完整
-   十八项固定 bot scopes。若 Slack 返回 App ID，也必须与一等 OpenTag App 相同。
-4. OpenTag 锁定 Agent 当前 route，重新核验 Team 权限与预期 route 代际，再按 Slack installation 原子执行提交意图。
-   **Create** 会安装 Slack installation 并把该 Agent 设为 default route。**Reauthorize** 必须保持当前 App、Team、Bot
-   User，即使 `auth.test` 不返回 `app_id`。Slack 没有 Change App 或 replace 意图；若 Agent 要离开 Slack，断开当前 route。
-   随后原子写入 installation 身份、加密凭证、完整授权和新代际。验证失败、身份漂移或预期代际过期时，当前 installation
-   不变。
-5. 写入成功后，Slack 的共享 Events Request URL 已在一等 App 上配置完成。真实测试消息不属于配置验收步骤。
+配置 Slack 前先绑定 Computer。创建引导和消息设置都提供**使用自建 Slack App**，不依赖官方 OAuth 是否配置。
+
+### 自建 Slack App
+
+1. 选择**使用自建 Slack App**，再点击**在 Slack 创建 App**并选择目标工作区。链接一次预填完整 Manifest：
+   十八项 bot scopes、七项 bot events、当前 Agent 的 Events Request URL、可写 Messages 页，以及现有本地审批
+   Interactivity 回调。创建 App 并安装到该工作区。
+2. 从 **OAuth & Permissions** 复制 **Bot User OAuth Token**，从 **Basic Information → App Credentials** 复制
+   **Signing Secret**，粘贴回 OpenTag。只填写这两个字段，不填写 App ID 或 Bot 消息策略。
+3. 点击一次**保存并前往 Slack 验证**。OpenTag 通过 `auth.test`、实际 `x-oauth-scopes` 和 `bots.info` 核验
+   App、Team、Bot User、Bot，再按预期 binding/generation 原子写入现有加密 installation 和 default route。
+   不新增配置方式字段、Bot 策略字段、表、列或迁移。
+4. 回到 Slack App 设置验证 Events Request URL，再点击**打开 Bot 对话**发送私聊。URL challenge 只证明
+   Signing Secret；匹配的签名真实事件闭合身份，runtime handoff 也完成后才显示就绪。保存凭证或打开 Slack 不代表就绪。
+
+完整 Manifest 只用于新 App。已有 App 按页面补充 URL/events，不覆盖其余设置；权限变化后重新安装。
+更新凭证只填写变化的字段，空白保留原值，至少修改一项。更新保持 App、Team、Bot User、Bot ID、绑定身份、
+历史和 Agent `receiveMode`；旧代际或不同身份会被拒绝。确定性失败保留输入供修正；保存结果不确定时先读取当前状态，
+不自动重复提交。关闭、成功或切换 Agent 都清除表单凭证。管理响应不返回已存凭证。
+
+另一 Agent 不能占用同一 App/Team；在同 Team 创建另一个 App 即可。触发仍使用 Agent 已有的
+`mention_only` / `all_message`，同样适用于其他 Bot 的消息。ambient Turn 可以保持静默；已有自身消息过滤和事件去重不变。
+
+### 官方 OpenTag App
+
+官方 OAuth 已配置时保留原入口；start/callback 继续检查 session、Account、nonce、代际及安装归属。
+显式 OAuth 恢复可能替换自建 App 并结束活跃会话，页面明确说明。默认恢复入口通过比较已存 Signing Secret
+与当前官方配置派生，不保存来源字段；官方配置轮换后仍可手动恢复。旧服务端继续使用原 OAuth 恢复入口。
 
 Slack 不保证 Bot Token 的 `auth.test` 一定返回 `app_id`。因此，OAuth 写入的 App ID 会以**配置证据**存储和投影，而不是冒充
 Slack API 已证明身份。每次请求仍有独立证明边界。Agent 专属 Request URL 只按 Agent 的 Slack route 定位 workspace
@@ -157,7 +180,7 @@ authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑�
 | App、Team、Enterprise、Bot User/Bot 身份 | 保留 | App ID 是显式配置证据；Team 与 bot 身份来自 token 检查；Enterprise 可为空。 |
 | Team 与 Bot 展示元数据 | 作为可选展示数据保留 | Team 名称、Bot 展示名称和头像可显示在管理视图中，但绝不参与配置、入口或 runtime 授权。 |
 | Bot Token 与 Signing Secret | 加密保留在 installation | 一起存入 installation credential envelope；绝不复制到多个 Agent route，管理、诊断、runtime-config API 都不返回。Signing Secret 永不投影给 runtime。 |
-| `credentialGeneration` 与 credential schema version | 保留在 installation | installation 为权威的单调凭证修订；route 只同步脱敏快照，供 Session fencing 与诊断使用。同身份重新授权递增 installation 代际。Slack 没有 replace-App 切换。 |
+| `credentialGeneration` 与 credential schema version | 保留在 installation | installation 为权威的单调凭证修订；route 只同步脱敏快照，供 Session fencing 与诊断使用。同身份重新授权递增 installation 代际。手动凭证更新保持同一身份；显式 OAuth 重授权保留既有行为。 |
 | `grantedCapabilities` | 保留在 installation | Slack 实际返回的 token scopes。route 同步脱敏快照。active/ready 投影要求完整十八项固定 scopes。 |
 | `activatedAt`、`disabledAt`、`createdAt`、`updatedAt` | 保留 | 持久 installation 生命周期时间，Slack route 上保留脱敏副本。配置提交设置激活，入站事件不设置。公共 API 将 `activatedAt` 投影为 `lastValidatedAt`。 |
 | `observedAt` | 仅作运行观测保留 | installation 为权威。正确签名的 Agent 专属 URL challenge，或正确签名且 App、Team、bot authorization 都匹配的真实事件会更新。route 同步脱敏时间戳。公共 API 将其投影为 `lastRuntimeObservationAt`。不是配置证据，也不改变代际。 |

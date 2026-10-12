@@ -283,6 +283,7 @@ export {
   AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
   AGENT_SKILLS_INSTALL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
+  AGENT_SLACK_CONFIGURATION_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
   AGENT_SLACK_INTERACTIONS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
@@ -331,6 +332,7 @@ export {
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
+  agentSlackConfigurationPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
@@ -694,6 +696,7 @@ export * from "./skill.js";
 export * from "./skill-discovery.js";
 export * from "./skill-preset.js";
 export * from "./skill-source.js";
+export * from "./slack-configuration.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,

@@ -208,6 +208,7 @@
   "onboarding_v2_runtime_pi_description": "Multi-provider",
   "onboarding_v2_runtime_pi_title": "Pi",
   "onboarding_v2_setup_computer_rebind": "{computerName} belongs to another account. Choose a computer from this account for {name}.",
+  "onboarding_v2_setup_later": "Set up later",
   "onboarding_v2_setup_load_failed": "We couldn't read your agent's setup.",
   "onboarding_v2_setup_messaging_auth_failed": "{provider} authorization didn't complete. Disconnect {provider}, then reconnect it.",
   "onboarding_v2_setup_messaging_computer_attention": "Repair the {provider} connection in your coding assistant on this computer, then check again.",

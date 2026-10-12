@@ -32,6 +32,7 @@ export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/feish
 export const FEISHU_SETUP_ATTEMPT_CHECK_TEMPLATE = `${FEISHU_SETUP_ATTEMPT_TEMPLATE}/check`;
 export const AGENT_SLACK_OAUTH_START_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/oauth/start`;
 export const AGENT_SLACK_EVENTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/events`;
+export const AGENT_SLACK_CONFIGURATION_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/configuration`;
 export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindingId`;
 export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
@@ -381,6 +382,10 @@ export function agentSlackOAuthStartPath(agentId: string): string {
 
 export function agentSlackEventsPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/im-binding/slack/events`;
+}
+
+export function agentSlackConfigurationPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/im-binding/slack/configuration`;
 }
 
 export function githubIntegrationPath(): string {

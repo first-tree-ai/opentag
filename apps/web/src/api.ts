@@ -63,6 +63,7 @@ import {
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
+  agentSlackConfigurationPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -166,6 +167,7 @@ import {
   type RemoteSkillSelection,
   type ResolveRemoteSkillsResponse,
   ResolveRemoteSkillsResponseSchema,
+  type SaveSlackConfigurationRequest,
   type SetMCPAuthorizationRequest,
   SKILL_FORMAT_HEADER,
   SKILL_REPLACE_HEADER,
@@ -174,6 +176,10 @@ import {
   type SkillArchiveFormat,
   type SkillDetail,
   SkillDetailSchema,
+  type SlackConfigurationResult,
+  SlackConfigurationResultSchema,
+  type SlackConfigurationView,
+  SlackConfigurationViewSchema,
   type StartGitHubAuthorizationRequest,
   type StartGitHubAuthorizationResponse,
   StartGitHubAuthorizationResponseSchema,
@@ -593,6 +599,18 @@ export class BrowserApi {
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {
     return this.request(agentSlackOAuthStartPath(agentId), StartSlackOAuthResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  slackConfiguration(agentId: string): Promise<SlackConfigurationView> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationViewSchema);
+  }
+
+  saveSlackConfiguration(agentId: string, input: SaveSlackConfigurationRequest): Promise<SlackConfigurationResult> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },

@@ -50,6 +50,7 @@ import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "
 import { registerRuntimeSkillRoutes } from "./api/runtime-skills.js";
 import { type RuntimeWebRoutesOptions, registerRuntimeWebRoutes } from "./api/runtime-web.js";
 import { registerSkillRoutes } from "./api/skills.js";
+import { registerSlackConfigurationRoutes, type SlackConfigurationRouteOptions } from "./api/slack-configuration.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWebsiteSessionRoutes } from "./api/website-session.js";
@@ -195,6 +196,7 @@ export interface CreateAppOptions {
     proofs?: Pick<SessionCliProofService, "authenticate">;
   };
   slackOAuth?: SlackOAuthRouteOptions;
+  slackConfiguration?: SlackConfigurationRouteOptions;
   /** GitHub integration management; always registered so the UI can read availability. */
   githubIntegrations?: Omit<GitHubIntegrationsRouteOptions, "authService" | "authOptions">;
   loggerStream?: FastifyLoggerOptions["stream"];
@@ -692,7 +694,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
-    if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
+    registerSlackSetupRoutes(app, authService, options, authOptions);
     if (options.githubIntegrations) {
       registerGitHubIntegrationsRoutes(app, { ...options.githubIntegrations, authService, authOptions });
     }
@@ -847,6 +849,17 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   return app;
+}
+
+function registerSlackSetupRoutes(
+  app: Parameters<typeof registerAccountRoutes>[0],
+  authService: UserAuthService,
+  options: CreateAppOptions,
+  authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
+): void {
+  if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
+  if (options.slackConfiguration)
+    registerSlackConfigurationRoutes(app, authService, options.slackConfiguration, authOptions);
 }
 
 function registerAvailableAccountRoutes(

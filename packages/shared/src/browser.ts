@@ -34,6 +34,7 @@ export * from "./skill.js";
 export * from "./skill-discovery.js";
 export * from "./skill-preset.js";
 export * from "./skill-source.js";
+export * from "./slack-configuration.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,

@@ -193,6 +193,8 @@ async function currentBindingId(adapter: AgentSetupAdapter): Promise<string> {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Existing OAuth recovery remains usable against a server predating the custom App endpoint.
+  vi.spyOn(browserApi, "slackConfiguration").mockRejectedValue(new ApiError(404, "old server"));
 });
 
 afterEach(() => {
@@ -501,7 +503,7 @@ describe("AgentSetupPage stages", () => {
     const alert = screen.getByRole("alert");
     expect(messaging?.contains(alert)).toBe(true);
     expect(alert.textContent).toBe(
-      "This Slack workspace is already connected to another Agent. Disconnect it from that Agent, or choose a different workspace.",
+      "This Slack App is already connected to another Agent. Create another App for this Agent; you can use the same workspace.",
     );
   });
 
@@ -977,6 +979,7 @@ describe("AgentSetupPage transitions", () => {
       const start = vi.spyOn(memory.adapter, "startSlackInstall");
       renderSetup(memory.adapter);
       await settle();
+      await advance(1);
 
       fireEvent.click(screen.getByRole("button", { name: "Update permissions" }));
       await settle();

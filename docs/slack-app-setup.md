@@ -2,13 +2,10 @@
 
 [简体中文](./zh-CN/slack-app-setup.md)
 
-OpenTag supports at most one current Slack App/Team/Bot installation for an App/Team pair. One Slack workspace installs
-the publicly distributed **@OpenTag** Bot for one OpenTag Agent through first-party OAuth. The installation is owned by
-that Agent, and V1 inbound delivery uses its configured **default** Agent route or fails closed.
-
-An authenticated Agent management flow starts OAuth; the callback creates or updates that Agent's Slack installation
-and sets the Agent's default route. Internal subagents stay invisible in Slack. There is no customer-owned Slack App,
-manual token, or Change App path.
+OpenTag supports one current Slack App/Team/Bot installation per Agent and one owning Agent per App/Team pair.
+Use the distributed **@OpenTag** App through OAuth, or create a separate Slack App for each Agent in the same workspace.
+Both paths reuse the existing Agent-owned installation, encrypted credentials and default route. Creating an Agent
+never requires a messaging app; choose **Set up later** and connect it from Messaging settings when needed.
 
 A current Slack App/Team installation is never silently shared or transferred to another Agent. A different Agent
 claiming the same App/Team returns `SLACK_APP_TEAM_ALREADY_BOUND` without side effects. The owning Agent may
@@ -143,21 +140,41 @@ A credential-free local live acceptance checklist for a separately registered te
 
 ## Agent configuration flow
 
-1. Open **Add OpenTag to Slack** or **Reauthorize Slack**. OpenTag starts first-party OAuth. Reading the page writes
-   nothing.
-2. Approve the OpenTag Slack App in the intended Slack workspace.
-3. The public callback exchanges the Slack code, inspects Bot identity, Team, Enterprise when present, and the actual
-   `x-oauth-scopes`, and requires all eighteen fixed bot scopes. If Slack returns an App ID, it must match the first-party OpenTag
-   App.
-4. OpenTag locks the Agent's current route, rechecks Team authority and the expected route generation, and atomically
-   enforces the submitted intent against the Slack installation. **Create** installs the Slack installation and
-   sets this Agent as the default route. **Reauthorize** must preserve the current App, Team, and Bot User even when
-   `auth.test` omits `app_id`. There is no Slack Change App or replace intent; disconnect the current route if the Agent
-   should leave Slack. OpenTag then atomically writes the installation identity, encrypted credentials, complete grants,
-   and new generation. Validation failure, identity drift, or a stale expected generation leaves the current installation
-   unchanged.
-5. After the write succeeds, Slack's shared Events Request URL is already configured on the first-party App. A real
-   message is not part of configuration acceptance.
+Connect a Computer before configuring Slack. The creation guide and Messaging settings both offer **Use your own
+Slack App**, including on servers without first-party Slack OAuth.
+
+### Your own Slack App
+
+1. Choose **Use your own Slack App**, then **Create App in Slack**. Select the intended workspace. The creation link
+   prefills one complete Manifest: eighteen bot scopes, seven bot events, this Agent's Events Request URL, writable
+   Messages tab and the existing Interactivity endpoint for local approvals. Create the App and install it in that workspace.
+2. Copy **Bot User OAuth Token** from **OAuth & Permissions** and **Signing Secret** from **Basic Information → App
+   Credentials** into OpenTag. These are the only two inputs; no App ID or policy selection is needed.
+3. Choose **Save and verify in Slack** once. OpenTag checks `auth.test`, actual `x-oauth-scopes` and `bots.info` to identify
+   the App, Team, Bot User and Bot. It then atomically saves the existing encrypted installation and default route under
+   the expected binding/generation. No configuration-method field, Bot policy field, table or migration is added.
+4. Return to Slack's App settings and verify the Events Request URL, then choose **Open Bot conversation** and send a
+   direct message. A URL challenge only verifies the Signing Secret. A matching signed event closes identity; runtime
+   handoff must also succeed before the page reports ready. Saving credentials or opening Slack alone never reports ready.
+
+The full Manifest is for a new App. For an existing App, add the displayed URL/events without overwriting its other
+settings; reinstall if scopes changed. Credential updates accept only changed fields, preserve blank fields and require
+at least one change. They preserve App, Team, Bot User and Bot ID, binding identity, history and Agent `receiveMode`.
+A stale generation or different identity is rejected. Failed validation retains the form for correction; an uncertain
+save reads current state before any retry and never automatically posts twice. Closing, success or changing Agent clears
+credential inputs. Neither management response returns saved credentials.
+
+The App/Team pair cannot be claimed by another Agent. Create another App in the same Team instead. Message triggers
+remain the Agent's existing `mention_only` / `all_message` property, including other Bots' messages. Ambient Turns may
+remain silent; existing self-message filtering and event deduplication are unchanged.
+
+### Distributed OpenTag App
+
+The existing first-party OAuth entry remains available when configured. Its authenticated start and callback retain
+session/Account authority, nonce, generation and installation checks. Explicit OAuth recovery may replace a custom App
+and end its active conversations; the UI labels that impact. A derived recovery preference compares the saved Signing
+Secret with the current official configuration and stores no provenance. Manual recovery remains available if official
+configuration rotates. Older servers retain the existing OAuth recovery entry.
 
 Slack does not guarantee `app_id` in `auth.test` for a Bot Token. The App ID stored from OAuth is therefore projected as
 **configured evidence**, not as Slack API-attested identity. Every request still has an independent proof boundary.
@@ -285,8 +302,8 @@ The Agent-installation cutover then:
 
 Reauthorization validates the proposed credential and locked current App/Team/Bot identity before touching the current
 installation. An App ID mismatch therefore cannot become an implicit replacement when `auth.test` omits `app_id`.
-Same-identity success advances the installation generation atomically and syncs sanitized snapshots onto routes. Slack
-has no Change App or replace intent; disconnect ends the Agent route's Sessions without uninstalling the Slack
+Manual credential updates require the same identity. Same-identity success advances the installation generation atomically
+and syncs sanitized snapshots onto routes. OAuth retains its explicit existing reauthorization behavior; disconnect ends the Agent route's Sessions without uninstalling the Slack
 installation. Concurrent configuration is fenced by the expected route ID and generation plus database uniqueness
 constraints. Runtime observations, identity closure, provider revocation, and provider disable are independently fenced
 to the event's exact installation credential generation.

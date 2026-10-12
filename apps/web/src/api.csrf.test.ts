@@ -86,6 +86,11 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   cancelFeishuSetupAttempt: [ID],
   checkFeishuSetupAttempt: [ID],
   startSlackOAuth: [ID, { intent: "create" }],
+  slackConfiguration: [ID],
+  saveSlackConfiguration: [
+    ID,
+    { intent: "create", expectedMessaging: { kind: "unbound" }, botAccessToken: "token", signingSecret: "secret" },
+  ],
   imBindingDiagnostics: [ID],
   disableImBinding: [ID],
   computers: [],

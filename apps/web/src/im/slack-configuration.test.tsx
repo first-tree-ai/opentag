@@ -115,7 +115,7 @@ describe("SlackConfiguration", () => {
 
     expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
-      "This Slack workspace is already connected to another Agent. Disconnect it from that Agent, or choose a different workspace.",
+      "This Slack App is already connected to another Agent. Create another App for this Agent; you can use the same workspace.",
     );
   });
 });

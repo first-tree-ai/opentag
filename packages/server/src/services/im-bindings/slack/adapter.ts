@@ -71,6 +71,7 @@ export interface SlackOAuthAccessResult {
 
 export interface SlackApiClient {
   botProfile?(token: string, botUserId: string): Promise<BotProfile>;
+  botInfo?(token: string, botId: string): Promise<{ id: string; userId: string; appId: string; deleted: boolean }>;
   authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }>;
   inspectInstallation(token: string): Promise<SlackInstallationInspection>;
   oauthAccess(input: {

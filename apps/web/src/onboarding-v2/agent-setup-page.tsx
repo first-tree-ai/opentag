@@ -8,6 +8,8 @@
  * across a Slack round trip: the browser leaves and comes back to a fresh mount, and the waiting
  * app is still the one the snapshot names, not one a destroyed page once chose.
  *
+ * Custom Slack Apps additionally read their authenticated configuration endpoint; that entry is
+ * independent of first-party OAuth availability and does not extend the setup action contract.
  * The actions map one-to-one onto the shared contract. Messaging can be started only from a
  * not-configured snapshot; a current binding is reauthorized (or, for Feishu, replaced) in place;
  * moving to a different Provider is an explicit unbind followed by the fresh choice the cleared
@@ -37,6 +39,7 @@ import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { FeishuActivationWaiting } from "../im/feishu-activation-waiting.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
+import { SlackCustomApp } from "../im/slack-custom-app.js";
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { queryKeys } from "../query/keys.js";
@@ -770,7 +773,7 @@ function AgentSetupPageContent({
         <OpenTagLogo label={m.onboarding_v2_brand_name()} />
         {onOpenAgent && !ready ? (
           <Button onClick={onOpenAgent} variant="ghost">
-            {m.onboarding_v2_back_to_agent()}
+            {setupExitLabel(snapshot)}
           </Button>
         ) : null}
       </header>
@@ -1511,6 +1514,7 @@ function MessagingSetupSection({
       {messaging.kind === "not-configured" ? (
         <MessagingStartChoice busyKey={controller.busyKey} onStart={controller.act} snapshot={snapshot} />
       ) : null}
+      <SlackSetupConfiguration controller={controller} snapshot={snapshot} />
       {messaging.kind === "authorizing" && messaging.provider === "feishu" ? (
         <FeishuAuthorizing
           busyKey={controller.busyKey}
@@ -1535,7 +1539,41 @@ function MessagingSetupSection({
   );
 }
 
-/** The fresh Provider choice — the only place Messaging can be started, and only when the snapshot says so. */
+function setupExitLabel(snapshot: AgentSetupSnapshot | undefined): string {
+  return snapshot?.stage === "messaging" && snapshot.messaging.kind === "not-configured"
+    ? m.onboarding_v2_setup_later()
+    : m.onboarding_v2_back_to_agent();
+}
+
+/** Custom App setup remains available independently of the official OAuth actions. */
+function SlackSetupConfiguration({
+  controller,
+  snapshot,
+}: {
+  controller: AgentSetupController;
+  snapshot: AgentSetupSnapshot;
+}) {
+  const messaging = snapshot.messaging;
+  if (messaging.kind !== "not-configured" && !("provider" in messaging && messaging.provider === "slack")) return null;
+  const reauthorize = snapshot.actions.find(
+    (action): action is Extract<AgentSetupAction, { kind: "reauthorize-messaging" }> =>
+      action.kind === "reauthorize-messaging" && action.provider === "slack",
+  );
+  return (
+    <SlackCustomApp
+      agentId={snapshot.agent.id}
+      bindingId={"bindingId" in messaging ? messaging.bindingId : undefined}
+      onSaved={controller.reload}
+      onOAuth={reauthorize ? () => void controller.act(reauthorize) : undefined}
+      oauthLabel={
+        snapshot.messaging.kind === "blocked" && snapshot.messaging.code !== "reauthorization-required"
+          ? m.im_reconnect()
+          : m.im_update_permissions()
+      }
+    />
+  );
+}
+
 function MessagingStartChoice({
   busyKey,
   onStart,
@@ -1774,6 +1812,7 @@ function BlockedMessaging({
   const reauthorize = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "reauthorize-messaging" }> =>
       action.kind === "reauthorize-messaging" &&
+      action.provider === "feishu" &&
       binding !== undefined &&
       action.provider === binding.provider &&
       action.bindingId === binding.bindingId,

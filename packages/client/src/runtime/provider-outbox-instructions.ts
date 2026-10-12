@@ -34,7 +34,7 @@ export function buildProviderOutboxInstructions(options: ProviderOutboxInstructi
 export const SLACK_NATIVE_CLI_GUIDANCE_MAX_BYTES = 4 * 1024;
 
 export const SLACK_NATIVE_CLI_GUIDANCE = [
-  "Use the native CLI as `slack api chat.postMessage --json '<json>'`. Other methods use the same form: `slack api <method> --json '<json>'`. Pass exactly one JSON object; never key=value pairs, which form-encode the token into the request body.",
+  "Write with `slack api chat.postMessage --json '<json>'`. Pass exactly one JSON object. For reads (files.info, users.info/list, conversations read methods, reactions.get/list, team.info, chat.scheduledMessages.list), use `slack api <method> --data '<urlencoded parameters>'`; Slack legacy reads ignore JSON. Never supply token parameters; never key=value pairs as positional arguments.",
   "Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update, or other token, app, team, workspace, config, or update override flags. The launcher and environment already bind this Turn.",
   "Set channel to the supplied channelId. Thread placement is a Session policy decision: when the current context includes threadTs, that value is this Session's Slack thread_ts; otherwise messageTs identifies the source message you may thread from.",
   "You may discover, read, or write another public channel, private channel, DM, or existing MPIM with its provider-native ID when that conversation is relevant to the current task, even if the user did not name it. Otherwise stay in this Session's conversation. Do not roam through, bulk-join, or inspect task-unrelated conversations.",
@@ -45,7 +45,6 @@ export const SLACK_NATIVE_CLI_GUIDANCE = [
   "For not_in_channel, first confirm with conversations.info or conversations.list that the target is a public channel and relevant to the current task. Then call conversations.join `{channel}` once and retry the original action once. Joining enrolls future messages in normal OpenTag ingress: they are persisted, then mention_only or all_message controls delivery. Do not join merely to explore. For private channels, MPIMs, channel_not_found, or an unknown type, ask the user to invite the bot; do not guess or retry.",
   "Add, read, or remove emoji with reactions.add, reactions.get, and reactions.remove using channel, timestamp, and name.",
   "Upload files with Slack's current external flow only: files.getUploadURLExternal `{filename,length}` → HTTP POST the raw bytes to upload_url (not via slack api) → files.completeUploadExternal `{files:[{id,title}],channel_id,thread_ts?}`. Do not call the deprecated files.upload method.",
-  "For raw attachment requests, run `printenv OPENTAG_PROVIDER_ENV_FILE`, then `rg 'OPENTAG_PROVIDER_' '<returned path>'` to read only the nonsecret proxy URL and CA path. Use literal values in `curl https://slack.com --request-target '/__opentag__/handles/<id>' --proxy '<proxy URL>' --cacert '<CA path>' --noproxy '' --fail --silent --show-error`. Copy the handle path from upload_url, url_private, or url_private_download. Upload with --request POST --data-binary @<file>; download with --output <file>. Do not source the environment, add authorization headers, or use shell substitutions.",
   "Never print credentials, tokens, or the environment file. CLI argv and command output are visible on the OpenTag runtime console.",
 ] as const;
 
@@ -67,18 +66,21 @@ function providerBodyInstructions(provider: ProviderOutboxProvider): readonly st
 export const GITHUB_NATIVE_CLI_INSTRUCTIONS =
   "GitHub integration, when enabled, preconfigures native git and gh. Read OPENTAG_GITHUB_REPOSITORIES for granted repositories, role, branch, publish mode and workBranchPrefix. Create task branches under the supplied workBranchPrefix; Context Tree direct mode targets its configured branch. Authentication and renewal are automatic; do not run interactive login or replace managed credentials.";
 
-/** The same on-demand reads serve Local and Cloud; no credentials or ephemeral URL enter input. */
+/** On-demand reads support both default Local credentials and the Cloud credential proxy. */
 function providerAttachmentInstructions(provider: ProviderOutboxProvider): readonly string[] {
   const common = [
-    "Incoming attachments are references, not downloaded files. Read them only when the task needs them. Run the provider CLI directly; the launcher loads this Turn's credentials automatically. For Slack private bytes, use the scoped proxy command described above with literal arguments. Never print credentials or the environment file.",
+    "Incoming attachments are references, not downloaded files. Read them only when the task needs them. Run the provider CLI directly; the launcher loads this Turn's credentials automatically. Never print credentials or the environment file.",
     "The source message and attachment IDs are provider-native. If the input is truncated or an older Server supplied only OpenTag resource ordinals, query the original provider message to discover its resources. A message readback can reflect later edits; do not present it as the frozen historical version.",
     "A failed attachment read does not authorize replaying the Turn or repeating a send. Report deleted, inaccessible, unsupported, or unreadable content accurately; do not invent its contents.",
   ];
   if (provider === "slack")
     return [
       ...common,
-      'For a Slack file_id, run `slack api files.info --json \'{"file":"F..."}\'`. Check ok, then HTTP GET url_private_download (or url_private) through the configured proxy to a workspace file. files.info returns metadata, not file bytes. For a public attachment URL use existing HTTP tools without adding Slack credentials.',
-      "Private download handles expire. Re-query files.info once for a fresh handle if expired; retry only the read. Use conversations.history with channelId and messageTs for source messages, or conversations.replies with channelId and threadTs for a thread. Do not poll or bulk-fetch unrelated messages.",
+      "For a Slack file_id, run `slack api files.info --data 'file=F...'`. Check ok, then download url_private_download (or url_private) to a workspace file using the matching credential path below. files.info returns metadata, not file bytes. URL-encode parameter values, including spaces, &, and Unicode. Use conversations.history with channelId and messageTs for source messages, or conversations.replies with channelId and threadTs for a thread.",
+      "For raw attachment requests, run `printenv OPENTAG_PROVIDER_ENV_FILE`, then `rg '^export OPENTAG_(PROVIDER_(PROXY_URL|CA_PATH)|SLACK_DOWNLOAD_CONFIG)=' '<returned path>'` to read only nonsecret routing/config paths. Do not read the download config, source the environment, add authorization headers, or use shell substitutions.",
+      "When proxy URL and CA are present, use literal values in `curl https://slack.com --request-target '/__opentag__/handles/<id>' --proxy '<proxy URL>' --cacert '<CA path>' --noproxy '' --fail --silent --show-error`. Copy the handle path from upload_url, url_private, or url_private_download. Upload with --request POST --data-binary @<file>; download with --output <file>.",
+      "Otherwise, for Local credentials, use `curl --disable --config '<OPENTAG_SLACK_DOWNLOAD_CONFIG path>' --fail --silent --show-error '<url_private_download>' --output <file>` only for HTTPS files.slack.com URLs returned by files.info. The private Turn config supplies authentication; never print it or use verbose/trace/header output or redirect flags. Public URLs and native upload_url requests use existing HTTP tools without this config or Slack credentials.",
+      "Private download handles and Turn configs expire. Re-query files.info once if expired; retry only the read. Do not poll or bulk-fetch unrelated messages.",
     ];
   return [
     ...common,

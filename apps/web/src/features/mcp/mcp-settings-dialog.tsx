@@ -359,8 +359,10 @@ function SettingsAdvanced({
         <p className="text-xs leading-relaxed text-kumo-subtle">{m.mcp_settings_advanced_help()}</p>
         <div className="grid gap-3">
           <p className="text-xs text-kumo-subtle">{m.mcp_settings_token_help()}</p>
-          {field("authHeader", m.mcp_edit_auth_header_label())}
-          {field("authScheme", m.mcp_edit_auth_scheme_label(), m.mcp_edit_auth_scheme_help())}
+          <div className="mcp-token-fields">
+            {field("authHeader", m.mcp_edit_auth_header_label())}
+            {field("authScheme", m.mcp_edit_auth_scheme_label(), m.mcp_edit_auth_scheme_help())}
+          </div>
         </div>
         {!validTokenSettings(draft) ? <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p> : null}
         <McpHeaderMode value={draft.headerMode} onChange={(headerMode) => setDraft({ ...draft, headerMode })} />

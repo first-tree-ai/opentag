@@ -200,10 +200,12 @@ export function McpAuthorizeDialog({
               {error}
             </p>
           ) : null}
+        </div>
+        <footer className="mcp-settings-footer">
           {canRevoke(entry) && entry.authorization?.hasCredential ? (
             <Button
               ref={clearTrigger}
-              className="mt-4 px-0 text-kumo-danger"
+              className="mcp-settings-remove"
               size="compact"
               variant="ghost"
               disabled={busy}
@@ -212,8 +214,6 @@ export function McpAuthorizeDialog({
               {m.mcp_clear_credentials()}
             </Button>
           ) : null}
-        </div>
-        <footer className="mcp-settings-footer">
           <Button
             aria-label={authorizationLabel(draft.kind, entry)}
             type="submit"

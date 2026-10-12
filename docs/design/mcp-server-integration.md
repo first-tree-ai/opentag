@@ -1103,6 +1103,11 @@ settings; saving credentials closes it. Closing authentication leaves the mount 
 immediate tool probe on the page; they do not wait for the periodic background worker or rewrite
 their authorization.
 
+Pending tool probes poll every second for their first 30 seconds, then return to the ordinary
+30-second live cadence. The budget follows each mount in its query cache and uses elapsed time,
+so failed reads cannot leave a page polling every second indefinitely. Newly pending mounts
+receive their own fast-poll window; settled or disabled mounts stop using it.
+
 Create and attach errors remain in the directory, preserving its search and category. Confirmed
 definitions are retained for retries. After mounting, connection startup errors and probe retries
 belong to the existing list; credential errors remain in the shared authentication form. There is no

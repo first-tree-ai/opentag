@@ -103,7 +103,7 @@ describe("URL and server shortcuts", () => {
     expect(screen.queryByLabelText("Search servers")).toBeNull();
     expect(screen.getByRole("button", { name: "tools-0" }).getAttribute("aria-pressed")).toBe("true");
   });
-  it("keeps the URL editable while the pool loads and retains its draft when loading fails", async () => {
+  it("preloads the pool before opening and offers retry when loading fails", async () => {
     stub([]);
     let reject: (reason: unknown) => void = () => {};
     vi.mocked(browserApi.mcpServers).mockReturnValue(
@@ -112,10 +112,17 @@ describe("URL and server shortcuts", () => {
       }),
     );
     wrap(<McpPage agentId={AGENT_ID} />);
-    await newAddress();
-    expect(screen.getByRole("status", { name: "Loading servers" })).toBeTruthy();
+    const add = await screen.findByRole("button", { name: "Add server" });
+    expect(add.hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("dialog")).toBeNull();
     reject(new Error("offline"));
+    await newAddress();
     expect(await screen.findByText("Couldn’t load servers.")).toBeTruthy();
+    expect((screen.getByLabelText("Server URL") as HTMLInputElement).value).toBe("https://mcp.example.com/mcp");
+    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(0).server] });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("button", { name: "linear" })).toBeTruthy();
+    expect(screen.queryByText("Couldn’t load servers.")).toBeNull();
     expect((screen.getByLabelText("Server URL") as HTMLInputElement).value).toBe("https://mcp.example.com/mcp");
   });
   it("lets an ambiguous URL be resolved through View all when its matches are outside recent shortcuts", async () => {

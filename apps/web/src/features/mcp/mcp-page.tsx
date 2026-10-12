@@ -2,7 +2,7 @@ import type { McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
@@ -18,7 +18,7 @@ import { McpAddDialog } from "./mcp-add-dialog.js";
 import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
 import { actionError } from "./mcp-form-model.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
-import { useAgentMcpServers, useProbeMcpServer, useUpdateMcpBinding } from "./mcp-queries.js";
+import { useAgentMcpServers, useMcpServers, useProbeMcpServer, useUpdateMcpBinding } from "./mcp-queries.js";
 import { consumeMcpReturn, type McpReturnContext, rememberMcpReturn } from "./mcp-return-context.js";
 import { McpServerCard, type ServerAction } from "./mcp-server-card.js";
 import { McpSettingsDialog } from "./mcp-settings-dialog.js";
@@ -39,6 +39,7 @@ export function McpPage({ agentId }: { agentId: string }) {
   const identity = useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) });
   const agentName = identity.data?.displayName ?? agentId;
   const mounted = useAgentMcpServers(agentId);
+  const account = useMcpServers();
   const servers = mounted.data?.servers ?? [];
   const connection = useMcpCatalogConnection(agentId);
   const addDisabled = mounted.isPending || mounted.isError || Boolean(connection.connectingId);
@@ -65,13 +66,13 @@ export function McpPage({ agentId }: { agentId: string }) {
     });
   }, [returnContext, outcome, mounted.isPending, servers]);
   useEffect(() => {
-    if (returnContext?.source !== "add" || restored.current || mounted.isPending) return;
+    if (returnContext?.source !== "add" || restored.current || mounted.isPending || account.isPending) return;
     const entry = servers.find((server) => server.mcpServerId === returnContext.serverId);
     if (!entry) return;
     restored.current = true;
     if (outcome?.outcome.kind === "error")
       setPanel({ kind: "add", serverId: entry.mcpServerId, authenticationError: m.mcp_oauth_return_failed() });
-  }, [returnContext, outcome, mounted.isPending, servers]);
+  }, [returnContext, outcome, mounted.isPending, account.isPending, servers]);
   const [removed, setRemoved] = useState<string>();
   const addTrigger = useRef<HTMLButtonElement>(null);
   const neighbors = useRef<string[]>([]);
@@ -129,10 +130,12 @@ export function McpPage({ agentId }: { agentId: string }) {
           <Icon name="integrations" />
           {m.mcp_discover_action()}
         </Button>
-        <Button ref={addTrigger} variant="secondary" disabled={addDisabled} onClick={() => setPanel({ kind: "add" })}>
-          <Icon name="plus" />
-          {m.mcp_create_action()}
-        </Button>
+        <AddServerButton
+          buttonRef={addTrigger}
+          disabled={addDisabled}
+          loading={account.isPending}
+          onClick={() => setPanel({ kind: "add" })}
+        />
       </PageHeader>
       {!dismissed && (completed || outcome) ? (
         <McpCompletion
@@ -210,6 +213,31 @@ export function McpPage({ agentId }: { agentId: string }) {
         }}
       />
     </section>
+  );
+}
+function AddServerButton({
+  buttonRef,
+  disabled,
+  loading,
+  onClick,
+}: {
+  buttonRef: RefObject<HTMLButtonElement | null>;
+  disabled: boolean;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      ref={buttonRef}
+      variant="secondary"
+      aria-label={m.mcp_create_action()}
+      disabled={disabled || loading}
+      loading={loading}
+      onClick={onClick}
+    >
+      <Icon name="plus" />
+      {m.mcp_create_action()}
+    </Button>
   );
 }
 function McpCompletion({

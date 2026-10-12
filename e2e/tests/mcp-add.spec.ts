@@ -317,20 +317,23 @@ test("another Agent reuses the server and supplies its own API key", async ({ pa
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
-test("an empty server pool stays stable while loading and reopens compactly", async ({ page }) => {
+test("an empty server pool opens at the same compact size on first use and reopen", async ({ page }) => {
   const agentId = await createAgent(page, "MCP first use layout");
   const fixture = await mcpFixture(page);
   fixture.holdPool();
-  const dialog = await openAdd(page, agentId);
-  await expect(dialog.getByRole("status", { name: "Loading servers" })).toBeVisible();
-  const loading = await geometry(dialog);
+  await page.goto(`/agents/${agentId}/mcp`);
+  const add = page.getByRole("button", { name: "Add server", exact: true }).first();
+  await expect(add).toBeDisabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   fixture.releasePool();
-  await expect(dialog.getByRole("status", { name: "Loading servers" })).toHaveCount(0);
-  expect(await geometry(dialog)).toEqual(loading);
+  await add.click();
+  const dialog = page.getByRole("dialog", { name: "Add server", exact: true });
+  const initial = await geometry(dialog);
+  expect(initial[0]?.height).toBeLessThanOrEqual(280);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("button", { name: "Add server", exact: true }).first().click();
   const reopened = await geometry(dialog);
-  expect(reopened[0]?.height).toBeLessThan(loading[0]?.height ?? 0);
+  expect(reopened).toEqual(initial);
   await expect(dialog).not.toContainText("Previously added servers");
   await dialog.getByLabel("Server URL", { exact: true }).fill("example.com");
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
@@ -357,12 +360,14 @@ for (const { width, height } of [
     );
     fixture.holdPool();
     await page.setViewportSize({ width, height });
-    const dialog = await openAdd(page, agentId);
-    await expect(dialog.getByRole("status", { name: "Loading servers" })).toBeVisible();
-    const initial = await geometry(dialog);
+    await page.goto(`/agents/${agentId}/mcp`);
+    await expect(page.getByRole("button", { name: "Add server", exact: true }).first()).toBeDisabled();
     fixture.releasePool();
-    const shortcuts = dialog.locator(".mcp-add-tag");
-    await expect(shortcuts).toHaveCount(4);
+    await page.getByRole("button", { name: "Add server", exact: true }).first().click();
+    const dialog = page.getByRole("dialog", { name: "Add server", exact: true });
+    const initial = await geometry(dialog);
+    const shortcuts = dialog.locator(".mcp-add-tag:visible");
+    await expect(shortcuts).toHaveCount(width <= 600 ? 2 : 4);
     for (const shortcut of await shortcuts.all()) await expectUnclipped(shortcut);
     expect(await geometry(dialog)).toEqual(initial);
     await page.screenshot({ path: test.info().outputPath(`mcp-shortcuts-${width}-${height}.png`) });
@@ -371,21 +376,44 @@ for (const { width, height } of [
     expect(expanded.slice(1, 3)).toEqual(initial.slice(1, 3));
     expect(expanded[0]).toMatchObject({ x: initial[0]?.x, y: initial[0]?.y, width: initial[0]?.width });
     expect(expanded[0]?.height).toBeGreaterThanOrEqual(initial[0]?.height ?? 0);
+    const rows = dialog.locator(".mcp-add-server-row");
+    await expect(rows).toHaveCount(8);
+    for (const row of await rows.all()) {
+      expect(
+        await row.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          const copy = element.querySelector(".mcp-add-server-copy")?.getBoundingClientRect();
+          return copy && copy.top >= bounds.top && copy.bottom <= bounds.bottom;
+        }),
+        "wrapped names and addresses must fit inside their result row",
+      ).toBe(true);
+    }
+    await rows.last().scrollIntoViewIfNeeded();
+    await expectUnclipped(rows.last());
+    await expectWithinViewport(dialog);
+    await rows.first().scrollIntoViewIfNeeded();
+    await expectUnclipped(rows.first());
+    await page.screenshot({ path: test.info().outputPath(`mcp-all-${width}-${height}.png`) });
     await dialog.getByRole("textbox", { name: "Search servers" }).fill("service-7");
     await dialog.getByRole("button", { name: /service-7.*https/ }).click();
     await expect(dialog.getByRole("button", { name: "service-7", exact: true })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(await geometry(dialog)).toEqual(initial);
+    await expect.poll(() => geometry(dialog)).toEqual(initial);
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(dialog.getByLabel("API key", { exact: true })).toBeFocused();
-    expect(await geometry(dialog)).toEqual(initial);
+    await expect.poll(async () => (await dialog.boundingBox())?.height).toBe(width <= 600 ? 352 : 336);
+    const settledKey = await geometry(dialog);
+    expect(settledKey.slice(1, 3)).toEqual(initial.slice(1, 3));
+    expect(settledKey[0]).toMatchObject({ x: initial[0]?.x, y: initial[0]?.y, width: initial[0]?.width });
     const keyBounds = await dialog.getByLabel("API key", { exact: true }).boundingBox();
     const footerBounds = await dialog.locator("footer").boundingBox();
     expect(keyBounds).not.toBeNull();
     expect(footerBounds).not.toBeNull();
     if (keyBounds && footerBounds) expect(footerBounds.y - keyBounds.y - keyBounds.height).toBeLessThanOrEqual(64);
+    const urlBounds = await dialog.getByLabel("Server URL", { exact: true }).boundingBox();
+    if (urlBounds && keyBounds) expect(keyBounds.y - urlBounds.y - urlBounds.height).toBeLessThanOrEqual(56);
     const bodyBounds = await dialog.locator(".mcp-add-body").boundingBox();
     expect(bodyBounds).not.toBeNull();
     if (keyBounds && bodyBounds)
@@ -478,8 +506,8 @@ test("long saved server names and Added labels fit in two complete rows", async 
   fixture.mounts.set(agentId, [{ ...binding(saved), enabled: false }]);
   await page.setViewportSize({ width: 320, height: 480 });
   const dialog = await openAdd(page, agentId);
-  const tags = dialog.locator(".mcp-add-tag");
-  await expect(tags).toHaveCount(4);
+  const tags = dialog.locator(".mcp-add-tag:visible");
+  await expect(tags).toHaveCount(2);
   await expect(dialog.getByRole("button", { name: `${saved.name} Added`, exact: true })).toBeDisabled();
   await expectUnclipped(dialog.locator(".mcp-add-added"));
   const boxes = [];
@@ -491,4 +519,41 @@ test("long saved server names and Added labels fit in two complete rows", async 
   await expectUnclipped(dialog.getByRole("button", { name: "View all (6)" }));
   await expectNoPageOverflow(page);
   await page.screenshot({ path: test.info().outputPath("mcp-long-shortcuts-320.png") });
+});
+
+test("saved service shortcuts align consistently and keep recognizable names readable", async ({ page }) => {
+  const agentId = await createAgent(page, "MCP saved services");
+  const saved = [
+    { ...server("exa"), url: "https://mcp.exa.ai/mcp" },
+    { ...server("google-slides"), url: "https://slidesmcp.googleapis.com/mcp/v1" },
+    { ...server("figma"), url: "https://mcp.figma.com/mcp" },
+    { ...server("monday"), url: "https://mcp.monday.com/mcp" },
+  ];
+  const fixture = await mcpFixture(page, saved);
+  const alreadyAdded = saved[0];
+  if (!alreadyAdded) throw new Error("Missing saved service fixture");
+  fixture.mounts.set(agentId, [{ ...binding(alreadyAdded), enabled: false }]);
+  for (const width of [1440, 320]) {
+    await page.setViewportSize({ width, height: 720 });
+    const dialog = await openAdd(page, agentId);
+    const tags = dialog.locator(".mcp-add-tag:visible");
+    await expect(tags).toHaveCount(width === 320 ? 2 : 4);
+    const viewAll = dialog.getByRole("button", { name: "View all (4)" });
+    if (width === 320) await expect(viewAll).toBeVisible();
+    else await expect(viewAll).toBeHidden();
+    const bounds = [];
+    for (const tag of await tags.all()) {
+      await expectUnclipped(tag);
+      expect(await tag.locator(".mcp-add-server-name").evaluate((name) => name.scrollWidth <= name.clientWidth)).toBe(
+        true,
+      );
+      bounds.push(await tag.boundingBox());
+    }
+    expect(new Set(bounds.map((box) => box?.width)).size).toBe(1);
+    expect(new Set(bounds.map((box) => box?.height)).size).toBe(1);
+    await expectUnclipped(dialog.locator(".mcp-add-added"));
+    await page.screenshot({ path: test.info().outputPath(`mcp-saved-services-${width}.png`) });
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  }
+  expect(fixture.writes).toHaveLength(0);
 });

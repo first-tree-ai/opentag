@@ -27,14 +27,23 @@ export function serverTitle(server: MCPServer): string {
 export function McpAddDialog(props: McpAddProps) {
   const state = useMcpAddConnection(props);
   const keyRef = useRef<HTMLInputElement>(null);
-  // Reserve shortcut space while the pool is unknown, then keep the opening size through retries.
-  const [compact] = useState(() => state.account.data?.servers.length === 0);
+  const size = state.needsKey
+    ? "key"
+    : state.servers.length > 2
+      ? "multiple"
+      : state.servers.length === 2
+        ? "pair"
+        : state.servers.length
+          ? "single"
+          : "url";
+  // The page preloads the pool; explicit steps can resize downward without moving the opening anchor.
+  const [anchor] = useState(size);
   const connectLabel =
     state.phase === "tools" ? m.mcp_add_loading_tools() : state.busy ? m.mcp_add_connecting() : m.mcp_connect();
   return (
     <Dialog
       title={m.mcp_create_title()}
-      className={`mcp-add-dialog${compact ? " mcp-add-dialog-compact" : ""}`}
+      className={`mcp-add-dialog mcp-add-size-${size} mcp-add-anchor-${anchor}`}
       busy={state.busy}
       onClose={props.onClose}
     >
@@ -166,7 +175,9 @@ function ServicePicker({ state }: { state: AddState }) {
   const recent = state.servers.slice(0, 4);
   const selected = state.servers.find((server) => server.id === state.selectedId);
   const shortcuts =
-    selected && !recent.some((server) => server.id === selected.id) ? [selected, ...recent.slice(0, 3)] : recent;
+    selected && !recent.slice(0, 2).includes(selected)
+      ? [selected, ...recent.filter((server) => server.id !== selected.id).slice(0, 3)]
+      : recent;
   const filtered = state.servers.filter((server) =>
     `${serverTitle(server)} ${server.url}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
@@ -179,10 +190,11 @@ function ServicePicker({ state }: { state: AddState }) {
     <>
       <div className="mcp-add-servers-heading">
         <span className="text-sm text-kumo-subtle">{m.mcp_add_previous()}</span>
-        {state.servers.length > 4 || allOpen ? (
+        {state.servers.length > 2 || allOpen ? (
           <Button
             variant="ghost"
             size="compact"
+            className={state.servers.length <= 4 && !allOpen ? "mcp-add-mobile-all" : undefined}
             disabled={state.busy}
             aria-expanded={allOpen}
             aria-controls="mcp-add-server-choices"

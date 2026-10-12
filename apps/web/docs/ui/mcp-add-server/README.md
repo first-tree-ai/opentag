@@ -13,19 +13,33 @@ The real-HTTP rejection spec remains in the journey project and must be run sepa
 - [Desktop authentication](./authentication-desktop.png): API key appears only after Connect requires it.
 - [320px authentication](./authentication-320.png): the dialog remains within the viewport and preserves focused input borders.
 - [Desktop loading](./loading-desktop.png): the loading label stays on one line and the footer remains in place.
-- [Desktop shortcuts](./shortcuts-desktop.png) and [320px shortcuts](./shortcuts-320.png): two complete rows remain visible.
+- [Desktop shortcuts](./shortcuts-desktop.png) and [320px shortcuts](./shortcuts-320.png): four equal-width desktop
+  shortcuts or two full-width mobile shortcuts remain visible.
+- [Saved services](./saved-services-desktop.png) and [320px saved services](./saved-services-320.png): recognizable
+  service names remain readable, with consistent button heights and an unwrapped Added label.
+- [All servers](./all-servers-desktop.png) and [320px all servers](./all-servers-320.png): View all opens a searchable,
+  bounded list while keeping the header and URL field in place.
 - [Desktop sign-in error](./sign-in-error-desktop.png) and [320px sign-in error](./sign-in-error-320.png):
   feedback stays below the URL and above saved servers, without clipping or overlapping either.
 
-The dialog reserves 416px for two rows of saved shortcuts, or 352px if the server pool is already known to be empty
-when it opens. Its opening size stays fixed even when an initially unknown pool resolves to empty. View all explicitly
-expands it to 480px with a stable header and URL field; selection restores the opening height. All sizes are bounded
-by the viewport. API key collection replaces the shortcut area, with feedback below the key. URL validation and
-connection feedback share one two-line area below the URL when a key is not requested.
+The page preloads saved servers before enabling Add server, so first use and reopening choose the same compact size.
+Desktop height is 256px for URL-only entry, 336px for one row of shortcuts or an API key, and 384px for two rows.
+At widths up to 600px, shortcuts use one column: one server retains 336px, while two visible servers use 408px;
+API key entry uses 352px. View all explicitly expands to 480px. The opening top anchor stays fixed through selection,
+key collection, and expansion, and every height is bounded by the remaining viewport. Explicit steps animate only
+the bottom edge over 160ms, with no animation when reduced motion is requested. Loading and errors retain their height.
 
-Browser tests verify identical opening geometry through account loading, selection, authentication, connection
-loading, and errors, and cap the gap between the API key and footer at 64px. They check the full bounds of every
-shortcut against clipping ancestors, including long names and an unwrapped Added label at 320×480.
+At most four recent services appear on desktop and two on mobile, with the selected service kept visible.
+Long names truncate with a full-name title; Added and selection indicators retain their own space.
+View all appears when services exceed the visible limit and expands in place with search and a scrolling result list.
+API key collection replaces shortcuts and sits 24px below the URL, with feedback below the key.
+URL validation and connection feedback share a reserved line below the URL; longer feedback can wrap naturally.
+
+Browser tests verify preloading, consistent first-use geometry, stable header and URL positions through explicit steps,
+and unchanged geometry through connection loading and errors. They cap the gap between the API key and footer at 64px
+and between the URL and API key inputs at 56px. They check the full bounds of visible shortcuts and the last expanded
+result against clipping ancestors, including long names and an unwrapped Added label at 320×480, and verify readable
+short names and equal shortcut dimensions using catalog service fixtures.
 They also cover strict URL input,
 per-Agent authentication, retry without duplicate creation, OAuth cancellation, Escape focus return, and axe checks.
 Verified viewports are 1440×720, 768×900, 390×844, 320×720, and 320×480.

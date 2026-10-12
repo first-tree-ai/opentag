@@ -40,7 +40,7 @@ export default defineConfig({
   projects: [
     {
       name: "smoke",
-      testMatch: "**/*smoke.spec.ts",
+      testMatch: ["**/*smoke.spec.ts", "**/mcp-add.spec.ts"],
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1440, height: 900 },
@@ -50,7 +50,7 @@ export default defineConfig({
     },
     {
       name: "journey",
-      testIgnore: "**/*smoke.spec.ts",
+      testIgnore: ["**/*smoke.spec.ts", "**/mcp-add.spec.ts"],
       use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } },
     },
   ],

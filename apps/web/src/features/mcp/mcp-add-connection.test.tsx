@@ -146,6 +146,8 @@ describe("URL and server shortcuts", () => {
     expect(calls.attach).not.toHaveBeenCalled();
   });
   it("creates, binds, and probes a new anonymous service through the existing APIs", async () => {
+    const scroll = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: scroll });
     stub([]);
     const calls = writes();
     calls.auth.mockImplementation(async () => {
@@ -163,11 +165,12 @@ describe("URL and server shortcuts", () => {
     });
     expect(calls.auth).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { kind: "none" });
     expect(calls.probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
-    expect(await screen.findByText("linear added to Reviewer")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Message channel settings" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss message" }));
+    expect(await screen.findByText("Connected")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement?.id).toBe(`mcp-server-${SERVER_ID}`));
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
     expect(screen.queryByText("linear added to Reviewer")).toBeNull();
-    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Message channel settings" })).toBeNull();
   });
   it("does not replace an edited URL when an OAuth return's server pool arrives late", async () => {
     stub([]);

@@ -673,7 +673,11 @@ const BUSINESS_CAPABILITY: Readonly<Record<string, string>> = {
 export function allowsRuntimeBusiness(entry: RuntimeConnectionEntry, frame?: unknown): boolean {
   if (entry.control?.kind === "cloud") return true;
   const version = entry.clientVersion ? parseSemVer(entry.clientVersion) : undefined;
-  if (version?.major === 0 && version.minor === 1 && version.patch === 1) {
+  const currentRelease = version?.major === 0 && version.minor === 1 && version.patch === 1;
+  // The 0.1.1 source is published to staging as 0.1.2-staging.<sequence>.<attempt>.
+  // Admit that channel's current format without admitting the future stable 0.1.2 release.
+  const currentStaging = /^0\.1\.2-staging\.[1-9]\d*\.[1-9]\d*$/.test(entry.clientVersion ?? "");
+  if (currentRelease || currentStaging) {
     if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") return true;
     const required = BUSINESS_CAPABILITY[frame.type];
     return required === undefined || entry.negotiatedCapabilities?.[required] !== undefined;

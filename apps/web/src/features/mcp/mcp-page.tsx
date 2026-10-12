@@ -1,7 +1,7 @@
 import type { McpCatalogEntry } from "@opentag/mcp-presets";
-import type { MCPAgentServer, MCPAuthKind } from "@opentag/shared/browser";
+import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
@@ -11,11 +11,11 @@ import { useMcpCatalogConnection } from "./catalog/mcp-catalog-connection.js";
 import { McpDiscoverDialog } from "./catalog/mcp-discover-dialog.js";
 import { McpQuickStart } from "./catalog/mcp-quick-start.js";
 import { McpAddDialog } from "./mcp-add-dialog.js";
-import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
+import { McpConnectDialog } from "./mcp-connect-dialog.js";
 import { actionError } from "./mcp-form-model.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
-import { useAgentMcpServers, useProbeMcpServer, useUpdateMcpBinding } from "./mcp-queries.js";
-import { consumeMcpReturn, type McpReturnContext, rememberMcpReturn } from "./mcp-return-context.js";
+import { useAgentMcpServers, useUpdateMcpBinding } from "./mcp-queries.js";
+import { consumeMcpReturn, type McpReturnContext } from "./mcp-return-context.js";
 import { McpServerCard, type ServerAction } from "./mcp-server-card.js";
 import { McpSettingsDialog } from "./mcp-settings-dialog.js";
 
@@ -28,7 +28,6 @@ type Panel =
       entry: MCPAgentServer;
       context?: McpReturnContext;
       authenticationError?: string;
-      presetAuthKind?: MCPAuthKind;
     };
 /** One Agent's connections; runtime access remains determined by the server's actual authorization. */
 export function McpPage({ agentId }: { agentId: string }) {
@@ -45,15 +44,13 @@ export function McpPage({ agentId }: { agentId: string }) {
   const restored = useRef(false);
   const [panel, setPanel] = useState<Panel>({ kind: "none" });
   const [highlight, setHighlight] = useState(outcome?.mcpServerId);
-  const [completed, setCompleted] = useState<{ id: string; authorized: boolean }>();
-  const [dismissed, setDismissed] = useState(hideReturnedCompletion(returnContext, outcome?.outcome.kind === "error"));
-  const dismissCompletion = useCallback(() => setDismissed(true), []);
+  const [returnedFailure, setReturnedFailure] = useState(hasReturnedFailure(outcome, returnContext));
   useEffect(() => {
     if (!returnContext || returnContext.source === "add" || restored.current || mounted.isPending) return;
     const entry = servers.find((server) => server.mcpServerId === returnContext.serverId);
     if (!entry) return;
     restored.current = true;
-    if (returnContext.source === "authorize" && outcome?.outcome.kind === "success") return;
+    if (returnContext.source === "authorize") return;
     setPanel({
       kind: returnContext.source,
       entry,
@@ -80,7 +77,6 @@ export function McpPage({ agentId }: { agentId: string }) {
   const close = () => setPanel({ kind: "none" });
   const removedServer = (entry: MCPAgentServer) => {
     close();
-    setDismissed(true);
     setRemoved(m.mcp_removed({ server: entry.name }));
     requestAnimationFrame(() => {
       const next = neighbors.current.map((id) => document.getElementById(`mcp-server-${id}-details`)).find(Boolean);
@@ -96,29 +92,20 @@ export function McpPage({ agentId }: { agentId: string }) {
       row?.focus({ preventScroll: true });
     });
   };
-  const addedFromCatalog = (entry: MCPAgentServer, catalog: McpCatalogEntry) => {
-    setCompleted({ id: entry.mcpServerId, authorized: false });
-    setHighlight(entry.mcpServerId);
-    setDismissed(false);
-    const kind = entry.authorization?.kind ?? catalog.defaultAuthKind;
-    if (entry.authorization?.status !== "active" && kind === "bearer") {
-      setPanel({ kind: "authorize", entry, presetAuthKind: kind });
-      requestAnimationFrame(() =>
-        document.getElementById(`mcp-server-${entry.mcpServerId}`)?.scrollIntoView({ block: "nearest" }),
-      );
-    } else {
-      locate(entry.mcpServerId);
-      if (entry.authorization?.status !== "active" || entry.authorization.probeState === "pending") {
-        void connection.connect(entry, catalog);
-      }
-    }
+  const connect = async (entry: MCPAgentServer, token?: string, definition?: MCPServer) => {
+    if (entry.mcpServerId === outcome?.mcpServerId) setReturnedFailure(false);
+    const result = await connection.connect(entry, token, definition);
+    if (result === "key") setPanel({ kind: "authorize", entry });
+    else if (result === "connected") locate(entry.mcpServerId);
+  };
+  const addedFromCatalog = (entry: MCPAgentServer, _catalog: McpCatalogEntry, definition?: MCPServer) => {
+    locate(entry.mcpServerId);
+    void connect(entry, undefined, definition);
   };
   useEffect(() => {
     if (!outcome?.mcpServerId || mounted.isPending) return;
     document.getElementById(`mcp-server-${outcome.mcpServerId}`)?.scrollIntoView({ block: "nearest" });
   }, [outcome, mounted.isPending]);
-  const resultId = completed?.id ?? outcome?.mcpServerId;
-  const result = servers.find((entry) => entry.mcpServerId === resultId);
   return (
     <section className="grid gap-6" aria-labelledby="mcp-page-title" data-ui="mcp-page">
       <PageHeader title={m.mcp_heading()} titleId="mcp-page-title" description={m.mcp_intro()}>
@@ -131,15 +118,8 @@ export function McpPage({ agentId }: { agentId: string }) {
           {m.mcp_create_action()}
         </Button>
       </PageHeader>
-      {!dismissed && (completed || outcome) ? (
-        <McpCompletion
-          key={resultId}
-          result={result}
-          outcome={outcome}
-          completed={completed}
-          agentName={agentName}
-          onDismiss={dismissCompletion}
-        />
+      {returnedFailure && mounted.isSuccess && !servers.some((entry) => entry.mcpServerId === outcome?.mcpServerId) ? (
+        <Banner variant="error">{m.mcp_authorize_failed()}</Banner>
       ) : null}
       {mounted.isError ? (
         <div className="grid gap-3">
@@ -166,10 +146,16 @@ export function McpPage({ agentId }: { agentId: string }) {
               agentName={agentName}
               highlighted={highlight === entry.mcpServerId}
               connecting={connection.connectingId === entry.mcpServerId}
-              connectionError={connection.errorFor(entry.mcpServerId)}
+              connectionError={
+                panel.kind === "authorize"
+                  ? undefined
+                  : (connection.errorFor(entry.mcpServerId) ??
+                    returnedConnectionError(outcome, entry.mcpServerId, returnedFailure))
+              }
+              onRetry={() => void connect(entry)}
               onAction={(kind) => {
-                if (kind === "authorize" && connection.failure?.binding.mcpServerId === entry.mcpServerId) {
-                  void connection.connect(entry, connection.failure.catalog);
+                if (kind === "authorize") {
+                  void connect(entry);
                   return;
                 }
                 connection.clearFailure();
@@ -199,57 +185,14 @@ export function McpPage({ agentId }: { agentId: string }) {
         onLocate={locate}
         onRemoved={removedServer}
         onCatalogAdded={addedFromCatalog}
-        onCompleted={(entry, auth) => {
-          setCompleted({ id: entry.mcpServerId, authorized: auth });
-          setDismissed(false);
-          setHighlight(entry.mcpServerId);
-          close();
-        }}
+        connecting={Boolean(connection.connectingId)}
+        connectionError={panel.kind === "authorize" ? connection.errorFor(panel.entry.mcpServerId) : undefined}
+        onConnect={(entry, token) => void connect(entry, token)}
+        onCredentialChange={connection.clearFailure}
+        onCompleted={(entry) => locate(entry.mcpServerId)}
       />
     </section>
   );
-}
-function McpCompletion({
-  result,
-  outcome,
-  completed,
-  agentName,
-  onDismiss,
-}: {
-  result?: MCPAgentServer;
-  outcome: ReturnType<typeof readMcpOAuthOutcome>;
-  completed?: { id: string; authorized: boolean };
-  agentName: string;
-  onDismiss: () => void;
-}) {
-  const authorized = completed?.authorized || outcome?.outcome.kind === "success";
-  const failed = outcome?.outcome.kind === "error";
-  const hasResult = Boolean(result);
-  useEffect(() => {
-    if (failed || !hasResult) return;
-    const timer = window.setTimeout(onDismiss, 5000);
-    return () => window.clearTimeout(timer);
-  }, [failed, hasResult, onDismiss]);
-  if (!hasResult && !failed) return null;
-  const message = completionMessage(result, failed, Boolean(authorized), agentName);
-  return (
-    <div
-      role="status"
-      className="ui-surface fixed right-4 bottom-4 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 bg-kumo-base px-4 py-3 text-sm ring ring-kumo-line shadow-lg"
-    >
-      <p>{message}</p>
-      <Button aria-label={m.mcp_completion_dismiss()} variant="ghost" shape="square" size="compact" onClick={onDismiss}>
-        <Icon name="close" />
-      </Button>
-    </div>
-  );
-}
-function completionMessage(result: MCPAgentServer | undefined, failed: boolean, authorized: boolean, agent: string) {
-  if (!result) return failed ? m.mcp_authorize_failed() : m.mcp_authorization_status_active();
-  if (failed) return m.mcp_completion_oauth_failed({ server: result.name });
-  return authorized
-    ? m.mcp_completion_authorized({ server: result.name, agent })
-    : m.mcp_completion_added({ server: result.name, agent });
 }
 function McpPanel({
   panel,
@@ -261,16 +204,24 @@ function McpPanel({
   onCompleted,
   onRemoved,
   onCatalogAdded,
+  connecting,
+  connectionError,
+  onConnect,
+  onCredentialChange,
 }: {
   panel: Panel;
+  connecting: boolean;
+  connectionError?: string;
+  onConnect: (entry: MCPAgentServer, token: string) => void;
+  onCredentialChange: () => void;
   agentId: string;
   agentName: string;
   servers: MCPAgentServer[];
   onClose: () => void;
   onLocate: (id: string) => void;
-  onCompleted: (entry: MCPAgentServer, authorized: boolean) => void;
+  onCompleted: (entry: MCPAgentServer) => void;
   onRemoved: (entry: MCPAgentServer) => void;
-  onCatalogAdded: (entry: MCPAgentServer, catalog: McpCatalogEntry) => void;
+  onCatalogAdded: (entry: MCPAgentServer, catalog: McpCatalogEntry, server?: MCPServer) => void;
 }) {
   if (panel.kind === "none") return null;
   if (panel.kind === "discover")
@@ -293,7 +244,7 @@ function McpPanel({
         initialServerId={panel.serverId}
         initialError={panel.authenticationError}
         onClose={onClose}
-        onAdded={(entry) => onCompleted(entry, false)}
+        onAdded={onCompleted}
         onLocate={onLocate}
       />
     );
@@ -304,13 +255,16 @@ function McpPanel({
   switch (panel.kind) {
     case "authorize":
       return (
-        <McpAuthorizeDialog
-          {...props}
-          initialError={panel.authenticationError}
-          presetAuthKind={panel.presetAuthKind}
-          onBeforeOAuth={() => rememberMcpReturn({ agentId, serverId: current.mcpServerId, source: "authorize" })}
-          onClose={panel.presetAuthKind ? () => onLocate(current.mcpServerId) : onClose}
-          onAuthorized={panel.presetAuthKind ? () => onLocate(current.mcpServerId) : onClose}
+        <McpConnectDialog
+          entry={current}
+          busy={connecting}
+          error={connectionError}
+          onChange={onCredentialChange}
+          onClose={() => {
+            onCredentialChange();
+            onLocate(current.mcpServerId);
+          }}
+          onConnect={(token) => onConnect(current, token)}
         />
       );
     case "edit":
@@ -344,6 +298,7 @@ function McpRow({
   onAction,
   connecting,
   connectionError,
+  onRetry,
 }: {
   agentId: string;
   agentName: string;
@@ -352,9 +307,9 @@ function McpRow({
   onAction: (action: ServerAction) => void;
   connecting: boolean;
   connectionError?: string;
+  onRetry: () => void;
 }) {
   const update = useUpdateMcpBinding(agentId);
-  const probe = useProbeMcpServer(agentId);
   const [error, setError] = useState<string>();
   const inFlight = useRef(false);
   const run = async (operation: () => Promise<unknown>, fallback: string) => {
@@ -382,14 +337,23 @@ function McpRow({
           m.mcp_edit_failed(),
         )
       }
-      onProbe={() => void run(() => probe.mutateAsync(entry.mcpServerId), m.mcp_probe_failed())}
-      probing={probe.isPending}
+      onProbe={onRetry}
+      probing={connecting}
       toggling={update.isPending}
-      error={error ?? connectionError}
+      error={error}
+      connectionError={connectionError}
     />
   );
 }
 
-function hideReturnedCompletion(context: McpReturnContext | undefined, failed: boolean) {
-  return Boolean(context && (context.source !== "add" || failed));
+function hasReturnedFailure(outcome: ReturnType<typeof readMcpOAuthOutcome>, context: McpReturnContext | undefined) {
+  return outcome?.outcome.kind === "error" && (context?.source ?? "authorize") === "authorize";
+}
+
+function returnedConnectionError(
+  outcome: ReturnType<typeof readMcpOAuthOutcome>,
+  id: string,
+  returnedFailure: boolean,
+): string | undefined {
+  if (returnedFailure && outcome?.mcpServerId === id) return m.mcp_oauth_return_failed();
 }

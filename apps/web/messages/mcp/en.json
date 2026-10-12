@@ -137,7 +137,7 @@
   "mcp_account_search": "Search connectors",
   "mcp_remove_action": "Remove",
   "mcp_remove_description": "{server} will no longer be available to Agent “{agent}”.",
-  "mcp_remove_kept": "Its configuration stays in Account settings → Connectors.",
+  "mcp_remove_kept": "Its configuration stays in your account and can be added again later.",
   "mcp_empty_title": "No connectors yet",
   "mcp_disabled_for": "Disabled for {agent} · Settings kept",
   "mcp_authorization_required": "Authorization required",
@@ -162,15 +162,7 @@
   "mcp_details_no_description": "No description provided.",
   "mcp_details_protocol": "MCP protocol",
   "mcp_details_last_loaded": "Last loaded",
-  "mcp_completion_added": "{server} added to {agent}",
-  "mcp_completion_authorized": "{server} authorized for {agent}",
-  "mcp_completion_oauth_failed": "Authorization for {server} is not complete. Try connecting again.",
-  "mcp_completion_use": "Ask {agent} to use {server} in your connected messaging app.",
-  "mcp_completion_settings": "Message channel settings",
-  "mcp_completion_dismiss": "Dismiss message",
   "mcp_details_expires": "Access expires",
-  "mcp_completion_channel": "Ask {agent} to use {server} in {channel}.",
-  "mcp_completion_connect": "Connect a messaging app to start asking {agent} to use these tools.",
   "mcp_import_open": "Import from config",
   "mcp_import_label": "Configuration",
   "mcp_import_help": "Paste a JSON, TOML, or YAML fragment, or a claude/codex mcp add command.",
@@ -265,5 +257,7 @@
   "mcp_add_no_tools": "This connector has no available tools.",
   "mcp_add_choose_existing": "More than one connector uses this URL. Select an existing connector.",
   "mcp_add_key_error": "Invalid API key. Try again.",
-  "mcp_add_sign_in_failed": "Couldn’t start sign-in. Check the service’s setup instructions."
+  "mcp_add_sign_in_failed": "Couldn’t start sign-in. Check the service’s setup instructions.",
+  "mcp_connect_failed": "Couldn’t connect. Try again.",
+  "mcp_connect_sign_in_failed": "Couldn’t start sign-in. Try again."
 }

@@ -16,7 +16,8 @@ their natural content height; the list's minimum height leaves space beneath the
 multi-row preview verified that the desktop list retains its bounded scrolling region.
 
 The current entry labels are **Discover** and **Add custom**. The directory has no Agent scope footer.
-Success notifications auto-dismiss after five seconds; unit tests verify this behavior, manual
-dismissal, preserved Connected state, and OAuth return handling. Unit tests also cover the existing
+Adding and authorizing a connector have no separate success or failure notification. The card
+shows connection status; errors stay on the corresponding card or connection form with a retry
+action. Unit tests verify the Connected state and OAuth return handling. Unit tests also cover the existing
 keyboard/focus return journeys. Full application E2E validation was attempted but could not start
 because the disposable PostgreSQL connection was reset.

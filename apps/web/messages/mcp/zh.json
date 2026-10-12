@@ -137,7 +137,7 @@
   "mcp_account_search": "搜索连接器",
   "mcp_remove_action": "移除",
   "mcp_remove_description": "Agent「{agent}」将无法再使用 {server}。",
-  "mcp_remove_kept": "配置保留在「账号设置 → 连接器」中。",
+  "mcp_remove_kept": "配置保留在你的账号中，之后可以再次添加。",
   "mcp_empty_title": "暂无连接器",
   "mcp_disabled_for": "已对 {agent} 停用 · 设置保留",
   "mcp_authorization_required": "需要授权",
@@ -162,15 +162,7 @@
   "mcp_details_no_description": "暂无说明。",
   "mcp_details_protocol": "MCP 协议",
   "mcp_details_last_loaded": "最近加载",
-  "mcp_completion_added": "已将 {server} 添加到 {agent}",
-  "mcp_completion_authorized": "已为 {agent} 授权 {server}",
-  "mcp_completion_oauth_failed": "{server} 尚未完成授权，请重新连接。",
-  "mcp_completion_use": "在已连接的消息应用中，请 {agent} 使用 {server} 完成任务。",
-  "mcp_completion_settings": "消息渠道设置",
-  "mcp_completion_dismiss": "关闭提示",
   "mcp_details_expires": "授权到期时间",
-  "mcp_completion_channel": "在{channel}中让 {agent} 使用 {server}。",
-  "mcp_completion_connect": "连接消息应用后，就可以让 {agent} 使用这些工具了。",
   "mcp_import_open": "从配置导入",
   "mcp_import_label": "配置内容",
   "mcp_import_help": "粘贴 JSON、TOML 或 YAML 片段，或 claude/codex 的 mcp add 命令。",
@@ -265,5 +257,7 @@
   "mcp_add_no_tools": "此连接器暂无可用工具。",
   "mcp_add_choose_existing": "多个连接器使用此地址，请选择已添加过的连接器。",
   "mcp_add_key_error": "API 密钥无效，请重试。",
-  "mcp_add_sign_in_failed": "无法开始登录，请检查服务商的配置说明。"
+  "mcp_add_sign_in_failed": "无法开始登录，请检查服务商的配置说明。",
+  "mcp_connect_failed": "无法连接，请重试。",
+  "mcp_connect_sign_in_failed": "无法启动登录，请重试。"
 }

@@ -1135,9 +1135,11 @@ Create and attach errors remain in the directory, preserving its search and cate
 definitions are retained for retries. After mounting, connection startup errors and probe retries
 belong to the existing list; credential errors remain in the shared authentication form. There is no
 separate setup, connection-progress, or connection-result view. OAuth uses the existing return context
-and completion handling, including authentication errors returned by the provider. Add and
-authorization success are confirmed in a compact notification that disappears after five seconds;
-there is no permanent success panel or messaging-channel guidance above the connector list.
+handling, including authentication errors returned by the provider. Adding and authorizing a
+connector have no separate success or failure notification. Connection status remains on the card;
+failures remain on the corresponding card or connection form with a retry action. An OAuth error
+without a corresponding card remains an inline page error. There is no success panel or
+messaging-channel guidance above the connector list.
 
 The catalog aligns rows to the top of its bounded scroll area. Minimum list height leaves space
 below the cards instead of stretching a lone row. The directory omits the redundant Agent

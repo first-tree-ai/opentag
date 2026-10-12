@@ -14,8 +14,42 @@ import { allowsRuntimeBusiness, COMPUTER_DELETED_CLOSE, ConnectionRegistry } fro
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
 describe("ConnectionRegistry", () => {
-  it.each([undefined, "bad", "0.1.0", "0.1.0+build.7", "0.1.2", "1.0.0"])(
-    "keeps unknown/legacy version %s limited to validated settlement",
+  it.each([
+    undefined,
+    "bad",
+    "0.1.0",
+    "0.1.0+build.7",
+    "0.1.2",
+    "0.1.2-beta.1",
+    "0.1.2-staging.0.1",
+    "0.1.2-staging.1.0",
+    "0.1.2-staging.1.1.extra",
+    "0.1.3-staging.1.1",
+    "1.0.0",
+  ])("keeps unknown/legacy version %s limited to validated settlement", (clientVersion) => {
+    const entry = {
+      clientVersion,
+      computerId: "computer",
+      installationId: "install",
+      instanceId: "instance",
+      lastHeartbeatAt: 1,
+      socket: {} as WebSocket,
+    };
+    expect(allowsRuntimeBusiness(entry)).toBe(false);
+    expect(allowsRuntimeBusiness(entry, { type: "im:deliver" })).toBe(false);
+    expect(
+      allowsRuntimeBusiness(entry, {
+        type: "turn:report:result",
+        requestId: randomUUID(),
+        turnId: "turn",
+        resultHash: "a".repeat(64),
+        status: "recorded",
+      }),
+    ).toBe(true);
+    expect(allowsRuntimeBusiness(entry, { type: "turn:report:result", status: "recorded", extra: true })).toBe(false);
+  });
+  it.each(["0.1.1+build.7", "0.1.1-staging.61.1", "0.1.2-staging.1.1", "0.1.2-staging.62.2"])(
+    "admits the current release format %s while retaining operation capability gates",
     (clientVersion) => {
       const entry = {
         clientVersion,
@@ -24,36 +58,45 @@ describe("ConnectionRegistry", () => {
         instanceId: "instance",
         lastHeartbeatAt: 1,
         socket: {} as WebSocket,
+        negotiatedCapabilities: {},
       };
-      expect(allowsRuntimeBusiness(entry)).toBe(false);
+      expect(allowsRuntimeBusiness(entry)).toBe(true);
       expect(allowsRuntimeBusiness(entry, { type: "im:deliver" })).toBe(false);
       expect(
-        allowsRuntimeBusiness(entry, {
-          type: "turn:report:result",
-          requestId: randomUUID(),
-          turnId: "turn",
-          resultHash: "a".repeat(64),
-          status: "recorded",
-        }),
+        allowsRuntimeBusiness(
+          { ...entry, negotiatedCapabilities: { "runtime.imDelivery": 2 } },
+          { type: "im:deliver" },
+        ),
       ).toBe(true);
-      expect(allowsRuntimeBusiness(entry, { type: "turn:report:result", status: "recorded", extra: true })).toBe(false);
     },
   );
-  it("uses operation capabilities without making them a connection requirement", () => {
-    const entry = {
-      clientVersion: "0.1.1+build.7",
-      computerId: "computer",
-      installationId: "install",
-      instanceId: "instance",
-      lastHeartbeatAt: 1,
-      socket: {} as WebSocket,
-      negotiatedCapabilities: {},
-    };
-    expect(allowsRuntimeBusiness(entry)).toBe(true);
-    expect(allowsRuntimeBusiness(entry, { type: "im:deliver" })).toBe(false);
-    expect(
-      allowsRuntimeBusiness({ ...entry, negotiatedCapabilities: { "runtime.imDelivery": 2 } }, { type: "im:deliver" }),
-    ).toBe(true);
+
+  it("sends current staging business through the registry with the connection fence", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const connectionId = randomUUID();
+    const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
+    await registry.register(
+      {
+        clientVersion: "0.1.2-staging.1.1",
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        connectionId,
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.imDelivery]: 2 },
+        lastHeartbeatAt: 1,
+        socket: { ...socket(), readyState: WebSocket.OPEN, send } as unknown as WebSocket,
+      },
+      async () => undefined,
+    );
+    expect(registry.allowsBusiness(computerId, instanceId)).toBe(true);
+    await expect(registry.send(computerId, instanceId, { type: "im:deliver" }, connectionId)).resolves.toBeUndefined();
+    expect(JSON.parse(send.mock.calls[0]?.[0] ?? "null")).toEqual({ type: "im:deliver", connectionId });
+    await expect(registry.send(computerId, instanceId, { type: "im:deliver" }, randomUUID())).rejects.toMatchObject({
+      code: "instance_replaced",
+    });
   });
 
   it("keeps two Computers independently online", async () => {

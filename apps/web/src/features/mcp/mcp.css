@@ -171,6 +171,10 @@
   min-height: 2rem;
   flex-shrink: 0;
 }
+.mcp-add-servers-heading > button {
+  flex-shrink: 0;
+  padding-inline: 0.25rem;
+}
 .mcp-add-choices {
   display: flex;
   flex-direction: column;
@@ -201,6 +205,10 @@
   border-color: var(--color-kumo-focus);
   background: var(--color-kumo-tint);
 }
+.mcp-add-tag[aria-pressed="true"] .mcp-add-server-name,
+.mcp-add-server-row[aria-pressed="true"] .mcp-add-server-name {
+  font-weight: 600;
+}
 .mcp-add-tag {
   width: 100%;
 }
@@ -214,10 +222,6 @@
 .mcp-add-tag .mcp-add-server-name {
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mcp-add-added {
-  flex-shrink: 0;
   white-space: nowrap;
 }
 .mcp-add-results {

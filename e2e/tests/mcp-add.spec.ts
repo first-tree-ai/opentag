@@ -313,7 +313,9 @@ test("another Agent reuses the server and supplies its own API key", async ({ pa
   }
   expect(fixture.servers).toHaveLength(1);
   const dialog = await openAdd(page, second);
-  await expect(dialog.getByRole("button", { name: "documents Added", exact: true })).toBeDisabled();
+  await expect(dialog.locator(".mcp-add-tag")).toHaveCount(0);
+  await expect(dialog).not.toContainText("Or choose an existing server");
+  expect((await dialog.boundingBox())?.height).toBeLessThanOrEqual(280);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
@@ -334,7 +336,7 @@ test("an empty server pool opens at the same compact size on first use and reope
   await page.getByRole("button", { name: "Add server", exact: true }).first().click();
   const reopened = await geometry(dialog);
   expect(reopened).toEqual(initial);
-  await expect(dialog).not.toContainText("Previously added servers");
+  await expect(dialog).not.toContainText("Or choose an existing server");
   await dialog.getByLabel("Server URL", { exact: true }).fill("example.com");
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(dialog.getByRole("alert")).toHaveText("Enter a complete server URL.");
@@ -366,6 +368,14 @@ for (const { width, height } of [
     await page.getByRole("button", { name: "Add server", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "Add server", exact: true });
     const initial = await geometry(dialog);
+    expect(
+      await dialog.locator(".mcp-add-servers-heading > span").evaluate((heading) => {
+        const text = document.createRange();
+        text.selectNodeContents(heading);
+        return text.getClientRects().length;
+      }),
+      "the existing-server hint should stay on one line",
+    ).toBe(1);
     const shortcuts = dialog.locator(".mcp-add-tag:visible");
     await expect(shortcuts).toHaveCount(width <= 600 ? 2 : 4);
     for (const shortcut of await shortcuts.all()) await expectUnclipped(shortcut);
@@ -495,7 +505,7 @@ for (const width of [1440, 320]) {
   });
 }
 
-test("long saved server names and Added labels fit in two complete rows", async ({ page }) => {
+test("long existing server names fit in two complete rows and mounted services are excluded", async ({ page }) => {
   const agentId = await createAgent(page, "MCP long server names");
   const fixture = await mcpFixture(
     page,
@@ -508,15 +518,15 @@ test("long saved server names and Added labels fit in two complete rows", async 
   const dialog = await openAdd(page, agentId);
   const tags = dialog.locator(".mcp-add-tag:visible");
   await expect(tags).toHaveCount(2);
-  await expect(dialog.getByRole("button", { name: `${saved.name} Added`, exact: true })).toBeDisabled();
-  await expectUnclipped(dialog.locator(".mcp-add-added"));
+  await expect(dialog.getByRole("button", { name: saved.name, exact: true })).toHaveCount(0);
+  await expect(tags.locator("svg, img")).toHaveCount(0);
   const boxes = [];
   for (const tag of await tags.all()) {
     await expectUnclipped(tag);
     boxes.push(await tag.boundingBox());
   }
   expect(new Set(boxes.map((box) => box?.y)).size).toBe(2);
-  await expectUnclipped(dialog.getByRole("button", { name: "View all (6)" }));
+  await expectUnclipped(dialog.getByRole("button", { name: "View all (5)" }));
   await expectNoPageOverflow(page);
   await page.screenshot({ path: test.info().outputPath("mcp-long-shortcuts-320.png") });
 });
@@ -528,6 +538,7 @@ test("saved service shortcuts align consistently and keep recognizable names rea
     { ...server("google-slides"), url: "https://slidesmcp.googleapis.com/mcp/v1" },
     { ...server("figma"), url: "https://mcp.figma.com/mcp" },
     { ...server("monday"), url: "https://mcp.monday.com/mcp" },
+    { ...server("linear"), url: "https://mcp.linear.app/mcp" },
   ];
   const fixture = await mcpFixture(page, saved);
   const alreadyAdded = saved[0];
@@ -551,8 +562,15 @@ test("saved service shortcuts align consistently and keep recognizable names rea
     }
     expect(new Set(bounds.map((box) => box?.width)).size).toBe(1);
     expect(new Set(bounds.map((box) => box?.height)).size).toBe(1);
-    await expectUnclipped(dialog.locator(".mcp-add-added"));
+    await expect(dialog.getByRole("button", { name: "Exa", exact: true })).toHaveCount(0);
+    await expect(tags.locator("svg, img")).toHaveCount(0);
+    const choice = tags.first();
+    const beforeSelection = await geometry(dialog);
+    await choice.click();
+    await expect(choice).toHaveAttribute("aria-pressed", "true");
+    expect(await geometry(dialog)).toEqual(beforeSelection);
     await page.screenshot({ path: test.info().outputPath(`mcp-saved-services-${width}.png`) });
+    await dialog.screenshot({ path: test.info().outputPath(`mcp-picker-${width}.png`) });
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   }
   expect(fixture.writes).toHaveLength(0);

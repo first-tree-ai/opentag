@@ -29,6 +29,7 @@ async function peer(kind: MCPAuthKind, isolated = false, toolCount = 1) {
   let unavailable = false;
   let tokenFailure = false;
   let expired = false;
+  let registrationGate: Promise<void> | undefined;
   const requiresCredential = (authorization?: string) =>
     kind !== "none" && (expired || authorization !== "Bearer fixture-key");
   const server = createServer(async (request, response) => {
@@ -39,7 +40,7 @@ async function peer(kind: MCPAuthKind, isolated = false, toolCount = 1) {
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(body));
     };
-    if (oauthResponse(url, response, json)) return;
+    if (await oauthResponse(url, response, json)) return;
     if (url.pathname !== "/mcp") return json({}, 404);
     if (unavailable) return json({ error: "unavailable" }, 503);
     if (requiresCredential(request.headers.authorization)) {
@@ -73,7 +74,11 @@ async function peer(kind: MCPAuthKind, isolated = false, toolCount = 1) {
           serverInfo: { name: "connect-fixture", version: "1" },
         };
   }
-  function oauthResponse(url: URL, response: ServerResponse, json: (body: unknown, status?: number) => void): boolean {
+  async function oauthResponse(
+    url: URL,
+    response: ServerResponse,
+    json: (body: unknown, status?: number) => void,
+  ): Promise<boolean> {
     if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
       json({ resource: `${origin}/mcp`, authorization_servers: [origin] });
       return true;
@@ -88,7 +93,7 @@ async function peer(kind: MCPAuthKind, isolated = false, toolCount = 1) {
       return true;
     }
     if (url.pathname === "/register") {
-      json({ client_id: "connect-fixture", token_endpoint_auth_method: "none" });
+      await registerClient(json);
       return true;
     }
     if (url.pathname === "/authorize") {
@@ -104,6 +109,14 @@ async function peer(kind: MCPAuthKind, isolated = false, toolCount = 1) {
       return true;
     }
     return false;
+  }
+  async function registerClient(json: (body: unknown, status?: number) => void) {
+    if (registrationGate) {
+      await registrationGate;
+      json({ error: "temporarily_unavailable" }, 503);
+    } else {
+      json({ client_id: "connect-fixture", token_endpoint_auth_method: "none" });
+    }
   }
   function consent(url: URL, response: ServerResponse) {
     const callback = new URL(url.searchParams.get("redirect_uri") ?? baseURL);
@@ -133,6 +146,9 @@ async function peer(kind: MCPAuthKind, isolated = false, toolCount = 1) {
     },
     tokenFailure: (value: boolean) => {
       tokenFailure = value;
+    },
+    failRegistrationAfter: (gate: Promise<void>) => {
+      registrationGate = gate;
     },
     stop: async () => {
       server.closeAllConnections();
@@ -164,7 +180,7 @@ async function discoverPeer(page: Page, current: Awaited<ReturnType<typeof agent
   expect(created.ok()).toBeTruthy();
   const serverId = ((await created.json()) as { id: string }).id;
   // Reuse a real local peer through one catalog entry, without contacting an external provider.
-  await page.route("**/api/v1/mcp-servers", async (route) => {
+  await page.context().route("**/api/v1/mcp-servers", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     await route.fulfill({
@@ -678,6 +694,8 @@ const discoverCopy = {
     search: "Search connectors",
     add: "Add: Linear",
     preparing: "Preparing sign-in…",
+    popupTitle: "Connect Linear",
+    opening: "Opening authorization page…",
     failed: "Couldn’t start sign-in. Try again.",
   },
   zh: {
@@ -687,6 +705,8 @@ const discoverCopy = {
     search: "搜索连接器",
     add: "添加: Linear",
     preparing: "正在准备授权…",
+    popupTitle: "连接 Linear",
+    opening: "正在打开授权页面…",
     failed: "无法启动登录，请重试。",
   },
 } as const;
@@ -732,10 +752,7 @@ for (const locale of ["en", "zh"] as const) {
         const gate = new Promise<void>((resolve) => {
           release = resolve;
         });
-        await page.route("**/authorization/oauth", async (route) => {
-          await gate;
-          await route.fulfill({ status: 503, json: { error: { message: "Fixture OAuth unavailable" } } });
-        });
+        upstream.failRegistrationAfter(gate);
         await page.goto(`/agents/${current.id}/mcp`);
         const copy = discoverCopy[locale];
         await expect(page.getByRole("heading", { name: copy.empty, exact: true })).toBeVisible();
@@ -750,7 +767,7 @@ for (const locale of ["en", "zh"] as const) {
         const box = await add.boundingBox();
         if (!box) throw new Error("Missing add control");
         expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(width < 768 ? 44 : 24);
-        await expectAddContrast(add);
+        const addColors = await expectAddContrast(add);
         await add.hover();
         await expectAddContrast(add);
         await add.focus();
@@ -776,10 +793,34 @@ for (const locale of ["en", "zh"] as const) {
         await expectWithinViewport(dialog);
         await expectAccessible(page);
         await dialog.screenshot({ path: test.info().outputPath(`discover-${locale}-${width}-preparing.png`) });
-        if (opening)
-          await (await opening).screenshot({
-            path: test.info().outputPath(`authorization-${locale}-${width}-preparing.png`),
-          });
+        if (opening) {
+          const popup = await opening;
+          await page.context().unroute("**/api/v1/mcp-servers");
+          await expect(popup).toHaveTitle(`${copy.popupTitle} · OpenTag`);
+          await expect(popup.getByRole("heading", { name: copy.popupTitle, exact: true })).toBeVisible();
+          await expect(popup.getByRole("status")).toHaveText(copy.opening);
+          await expect(popup.getByText("Discover", { exact: false })).toHaveCount(0);
+          await expect
+            .poll(() => popup.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth))
+            .toBeGreaterThan(0);
+          await expect(popup.getByRole("heading", { name: copy.popupTitle, exact: true })).toHaveCSS(
+            "font-size",
+            "18px",
+          );
+          await expect(popup.locator("main")).toHaveCSS("align-items", "center");
+          await expect(popup.locator('div[role="status"]')).toHaveCSS("display", "flex");
+          await expect(popup.locator('div[role="status"] svg')).toHaveCSS("color", addColors.foreground);
+          await expect
+            .poll(() =>
+              popup.evaluate(() =>
+                Array.from(document.fonts).some((font) => font.family === "Manrope" && font.status === "loaded"),
+              ),
+            )
+            .toBe(true);
+          await expectAccessible(popup);
+          await expectNoPageOverflow(popup);
+          await popup.screenshot({ path: test.info().outputPath(`authorization-${locale}-${width}-preparing.png`) });
+        }
         release();
         await expect(dialog.getByRole("alert")).toContainText(copy.failed);
         await expect(add).toBeEnabled();

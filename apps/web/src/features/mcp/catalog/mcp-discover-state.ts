@@ -6,6 +6,7 @@ import * as m from "../../../paraglide/messages.js";
 import { connectionFailure, useMcpConnectionOperation } from "../mcp-connection.js";
 import { allowsOAuthDiscovery, connectionAuthKind } from "../mcp-connection-model.js";
 import { actionError } from "../mcp-form-model.js";
+import { mcpOAuthIdentity } from "../mcp-oauth-identity.js";
 import { closeMcpOAuthWindow, type McpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
 import { useAttachMcpServer, useCreateMcpServer, useDetachMcpServer, useMcpServers } from "../mcp-queries.js";
 import type { McpReturnContext } from "../mcp-return-context.js";
@@ -136,7 +137,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     const knownBinding = findCatalogBinding(catalog, servers, props.mounted);
     const knownServer = findAccountServer(catalog, servers);
     const kind = connectionAuthKind(knownBinding?.effective.url ?? catalog.url, knownBinding, knownServer);
-    const prepared = kind === "oauth" ? prepareMcpOAuthWindow(m.mcp_oauth_preparing()) : undefined;
+    const prepared = kind === "oauth" ? prepareMcpOAuthWindow(mcpOAuthIdentity(catalog.url)) : undefined;
     preparedWindow.current = prepared;
     setBusy(true);
     setChecking(false);

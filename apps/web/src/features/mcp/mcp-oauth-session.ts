@@ -1,6 +1,7 @@
 import { MCP_ERROR_CODES } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
+import type { McpOAuthIdentity } from "./mcp-oauth-identity.js";
 import {
   closeMcpOAuthWindow,
   type McpOAuthWindow,
@@ -37,8 +38,13 @@ export function useMcpOAuthSession(agentId: string) {
     controller.current?.abort();
     fallback.current?.finish("cancelled");
   };
-  const start = async (context: McpReturnContext, scopes?: readonly string[], prepared?: McpOAuthWindow) => {
-    const reserved = prepared ?? prepareMcpOAuthWindow(m.mcp_oauth_preparing());
+  const start = async (
+    context: McpReturnContext,
+    scopes?: readonly string[],
+    prepared?: McpOAuthWindow,
+    identity?: McpOAuthIdentity,
+  ) => {
+    const reserved = prepared ?? prepareMcpOAuthWindow(identity);
     const abort = new AbortController();
     controller.current = abort;
     setDetached(false);

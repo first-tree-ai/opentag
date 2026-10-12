@@ -263,5 +263,8 @@
   "mcp_catalog_unconnected": "Not connected",
   "mcp_catalog_connected": "Connected",
   "mcp_setup_cleanup_failed": "Couldn’t finish cancelling setup. Try again.",
-  "mcp_oauth_window_detached": "If the authorization window was closed, cancel this attempt to try again."
+  "mcp_oauth_window_detached": "If the authorization window was closed, cancel this attempt to try again.",
+  "mcp_oauth_connect_title": "Connect {server}",
+  "mcp_oauth_window_title": "Connector authorization",
+  "mcp_oauth_opening": "Opening authorization page…"
 }

@@ -12,6 +12,7 @@ import {
 } from "./mcp-connection.js";
 import { allowsOAuthDiscovery, connectionAuthKind, connectionPreset } from "./mcp-connection-model.js";
 import { suggestServerName } from "./mcp-form-model.js";
+import { mcpOAuthIdentity } from "./mcp-oauth-identity.js";
 import { closeMcpOAuthWindow, type McpOAuthWindow, prepareMcpOAuthWindow } from "./mcp-oauth-window.js";
 import { useAttachMcpServer, useCreateMcpServer, useDetachMcpServer, useMcpServers } from "./mcp-queries.js";
 import { discardMcpSetup } from "./mcp-setup-cleanup.js";
@@ -232,7 +233,7 @@ export function useMcpAddConnection(props: McpAddProps) {
     }
     oauthWindow.current =
       connectionAuthKind(url, attempt.current.binding, attempt.current.server) === "oauth"
-        ? prepareMcpOAuthWindow(m.mcp_oauth_preparing())
+        ? prepareMcpOAuthWindow(mcpOAuthIdentity(url, attempt.current.server?.name))
         : undefined;
     inFlight.current = true;
     setPhase("connecting");

@@ -1,7 +1,6 @@
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
-import * as m from "../../../paraglide/messages.js";
 import {
   type ConnectionAttempt,
   connectionFailure,
@@ -9,6 +8,7 @@ import {
   useMcpConnectionOperation,
 } from "../mcp-connection.js";
 import { allowsOAuthDiscovery, connectionAuthKind } from "../mcp-connection-model.js";
+import { mcpOAuthIdentity } from "../mcp-oauth-identity.js";
 import { closeMcpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
 
 /** Runs on the page so closing Discover cannot interrupt a connection or hide its error. */
@@ -29,7 +29,7 @@ export function useMcpCatalogConnection(agentId: string) {
     if (inFlight.current || !binding.enabled) return "busy" as const;
     const oauthWindow =
       connectionAuthKind(binding.effective.url, binding, definition) === "oauth"
-        ? prepareMcpOAuthWindow(m.mcp_oauth_preparing())
+        ? prepareMcpOAuthWindow(mcpOAuthIdentity(binding.effective.url, binding.name))
         : undefined;
     inFlight.current = true;
     setConnectingId(binding.mcpServerId);

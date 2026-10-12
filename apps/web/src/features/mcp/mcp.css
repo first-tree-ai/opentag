@@ -606,6 +606,11 @@
   }
 }
 
+.mcp-oauth-preparation .mcp-oauth-title.ui-text {
+  font-size: var(--ui-section-title);
+  letter-spacing: normal;
+}
+
 /* The directory owns its scroll area so filters remain within reach. */
 .mcp-discover-dialog {
   width: calc(100vw - 2rem);

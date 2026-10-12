@@ -1,4 +1,6 @@
+import type { McpOAuthIdentity } from "./mcp-oauth-identity.js";
 import { type McpOAuthOutcomeRead, readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
+import { renderMcpOAuthPreparation } from "./mcp-oauth-preparation.js";
 
 const KEY = "opentag:mcp:oauth-window";
 const MAX_AGE = 10 * 60 * 1000;
@@ -18,40 +20,27 @@ export function closeMcpOAuthWindow(popup?: Window | null): void {
 }
 
 /** Reserve during the click, before any asynchronous creation or discovery loses user activation. */
-export function prepareMcpOAuthWindow(label: string): McpOAuthWindow {
+export function prepareMcpOAuthWindow(identity?: McpOAuthIdentity): McpOAuthWindow {
   const mobile = window.matchMedia("(max-width: 640px)").matches;
   let popup: Window | null = null;
   try {
-    popup = mobile ? null : window.open("", "_blank", "popup,width=560,height=720");
-    if (popup) {
-      popup.document.title = label;
-      popup.document.documentElement.lang = document.documentElement.lang;
-      const style = getComputedStyle(document.querySelector(".ui-dialog") ?? document.body);
-      Object.assign(popup.document.body.style, {
-        margin: "0",
-        minHeight: "100vh",
-        display: "grid",
-        placeItems: "center",
-        padding: "24px",
-        boxSizing: "border-box",
-        fontFamily: style.fontFamily,
-        fontSize: "14px",
-        lineHeight: "1.5",
-        color: style.color,
-        backgroundColor: style.backgroundColor,
-      });
-      const heading = popup.document.createElement("p");
-      heading.setAttribute("role", "status");
-      heading.style.margin = "0";
-      heading.textContent = label;
-      popup.document.body.replaceChildren(heading);
-    }
+    popup = mobile ? null : window.open("", "_blank", oauthWindowFeatures());
+    if (popup) renderMcpOAuthPreparation(popup, identity);
   } catch {
     closeMcpOAuthWindow(popup);
     popup = null;
     console.warn("Could not prepare the MCP authorization window.");
   }
   return { popup, mobile };
+}
+
+function oauthWindowFeatures(): string {
+  const frame = Math.max(0, window.outerHeight - window.innerHeight);
+  const width = Math.min(560, Math.max(320, (window.screen.availWidth || 592) - 32));
+  const height = Math.min(720, Math.max(320, (window.screen.availHeight || 752 + frame) - frame - 32));
+  const left = Math.round(window.screenX + ((window.outerWidth || window.innerWidth) - width) / 2);
+  const top = Math.round(window.screenY + ((window.outerHeight || window.innerHeight) - height) / 2);
+  return `popup,width=${width},height=${height},left=${left},top=${top}`;
 }
 
 /** BroadcastChannel survives providers severing window.opener with COOP; no credential crosses it. */

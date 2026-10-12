@@ -1,8 +1,9 @@
 import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
 import { useEffect, useRef, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
-import { Banner, Button, Dialog, Loader } from "../../../ui/design-system.js";
+import { Banner, Button, Dialog, Field, KumoInputControl, Loader } from "../../../ui/design-system.js";
 import { actionError } from "../mcp-form-model.js";
+import { McpOAuthControls } from "../mcp-oauth-controls.js";
 import { isCatalogPreview, localizedText } from "./mcp-catalog-model.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
 import { type DiscoverProps, useMcpDiscoverState } from "./mcp-discover-state.js";
@@ -31,9 +32,9 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
     <Dialog
       initialFocusRef={preview ? requirementsRef : searchRef}
       busy={state.busy}
-      onClose={props.onClose}
-      onBack={preview ? back : undefined}
-      title={preview ? `${localizedText(preview.title)} · ${m.mcp_catalog_limited_access()}` : m.mcp_discover_action()}
+      onClose={state.keySetup ? () => void state.cancelKey() : props.onClose}
+      onBack={preview ? back : state.keySetup ? () => void state.cancelKey() : undefined}
+      title={discoverTitle(preview, state)}
       className={preview ? "mcp-form-dialog" : "mcp-discover-dialog"}
     >
       {state.account.isPending ? <Loader /> : null}
@@ -45,23 +46,8 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
           </Button>
         </div>
       ) : null}
-      <div hidden={Boolean(preview) || state.account.isPending || state.account.isError}>
-        {state.error ? (
-          <div className="mb-4">
-            <Banner variant="error">{state.error}</Banner>
-          </div>
-        ) : null}
-        <McpDiscoverSource
-          categories={MCP_CATALOG_CATEGORIES}
-          entries={MCP_CATALOG_ENTRIES}
-          servers={state.servers}
-          mounted={props.mounted}
-          busy={state.busy}
-          pendingEntryId={state.pendingEntryId}
-          searchRef={searchRef}
-          onAdd={openEntry}
-        />
-      </div>
+      <DiscoverCatalog state={state} props={props} preview={preview} openEntry={openEntry} searchRef={searchRef} />
+      <DiscoverKeyForm state={state} />
       {preview ? (
         <div className="grid gap-5">
           <p ref={requirementsRef} tabIndex={-1} className="text-sm leading-relaxed text-kumo-subtle outline-none">
@@ -86,5 +72,114 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
         </div>
       ) : null}
     </Dialog>
+  );
+}
+
+type DiscoverState = ReturnType<typeof useMcpDiscoverState>;
+function discoverTitle(preview: McpCatalogEntry | undefined, state: DiscoverState) {
+  if (preview) return `${localizedText(preview.title)} · ${m.mcp_catalog_limited_access()}`;
+  if (state.keySetup) return m.mcp_authentication_title({ server: state.keySetup.binding.name });
+  return m.mcp_discover_action();
+}
+function DiscoverKeyForm({ state }: { state: DiscoverState }) {
+  const keyRef = useRef<HTMLInputElement>(null);
+  const [token, setToken] = useState("");
+  useEffect(() => {
+    setToken("");
+    if (state.keySetup) keyRef.current?.focus();
+  }, [state.keySetup]);
+  const setup = state.keySetup;
+  if (!setup) return null;
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void state.addFromCatalog(setup.catalog, token);
+      }}
+      className="grid gap-3"
+    >
+      <Field htmlFor="mcp-discover-key" label={m.mcp_authorize_bearer_label()}>
+        <KumoInputControl
+          ref={keyRef}
+          id="mcp-discover-key"
+          type="password"
+          autoComplete="off"
+          value={token}
+          disabled={state.busy}
+          onChange={(event) => setToken(event.target.value)}
+        />
+      </Field>
+      {state.error ? <Banner variant="error">{state.error}</Banner> : null}
+      <Button type="submit" disabled={state.busy || !token.trim()} loading={state.busy}>
+        {m.mcp_connect()}
+      </Button>
+      <Button variant="ghost" disabled={state.busy} onClick={() => void state.cancelKey()}>
+        {m.common_cancel()}
+      </Button>
+    </form>
+  );
+}
+function DiscoverCatalog({
+  state,
+  props,
+  preview,
+  openEntry,
+  searchRef,
+}: {
+  state: DiscoverState;
+  props: DiscoverProps;
+  preview?: McpCatalogEntry;
+  openEntry: (entry: McpCatalogEntry) => void;
+  searchRef: import("react").RefObject<HTMLInputElement | null>;
+}) {
+  const catalogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const scroller = catalogRef.current?.closest<HTMLElement>(".ui-dialog");
+    if (!scroller) return;
+    if (!state.account.isPending && props.initialContext?.scrollTop)
+      scroller.scrollTop = props.initialContext.scrollTop;
+    const save = () => {
+      state.view.current.scrollTop = scroller.scrollTop;
+    };
+    scroller.addEventListener("scroll", save);
+    return () => scroller.removeEventListener("scroll", save);
+  }, [props.initialContext, state.account.isPending, state.view]);
+  return (
+    <div
+      ref={catalogRef}
+      onScroll={(event) => {
+        state.view.current.scrollTop = event.currentTarget.scrollTop;
+      }}
+      hidden={Boolean(preview) || Boolean(state.keySetup) || state.account.isPending || state.account.isError}
+    >
+      {state.error && !state.keySetup ? (
+        <div className="mb-4">
+          <Banner variant="error">{state.error}</Banner>
+        </div>
+      ) : null}
+      <McpOAuthControls session={state.oauth} />
+      {state.notice ? (
+        <p role="status" className="text-sm text-kumo-subtle">
+          {state.notice}
+        </p>
+      ) : null}
+      {state.busy && !state.oauth.phase && !state.checking ? <p role="status">{m.mcp_connecting()}</p> : null}
+      {state.checking ? <p role="status">{m.mcp_oauth_checking()}</p> : null}
+      <McpDiscoverSource
+        categories={MCP_CATALOG_CATEGORIES}
+        entries={MCP_CATALOG_ENTRIES}
+        servers={state.servers}
+        mounted={props.mounted}
+        busy={state.busy}
+        pendingEntryId={state.pendingEntryId}
+        searchRef={searchRef}
+        onAdd={openEntry}
+        connectedIds={state.connectedIds}
+        initialView={state.view.current}
+        onViewChange={(view) => {
+          state.view.current = { ...state.view.current, ...view };
+        }}
+      />
+    </div>
   );
 }

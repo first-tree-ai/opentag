@@ -24,7 +24,7 @@ async function agent(page: Page) {
 }
 
 /** A local HTTP MCP/OAuth peer; OpenTag's API, storage, redirects, and probes are real. */
-async function peer(kind: MCPAuthKind) {
+async function peer(kind: MCPAuthKind, isolated = false) {
   let origin = "";
   let unavailable = false;
   let tokenFailure = false;
@@ -101,7 +101,10 @@ async function peer(kind: MCPAuthKind) {
     const cancel = new URL(callback);
     cancel.searchParams.set("error", "access_denied");
     callback.searchParams.set("code", "fixture-code");
-    response.writeHead(200, { "content-type": "text/html" });
+    response.writeHead(200, {
+      "content-type": "text/html",
+      ...(isolated ? { "cross-origin-opener-policy": "same-origin" } : {}),
+    });
     response.end(
       `<html lang="en"><title>Local consent fixture</title><h1>Local consent fixture</h1><a href="${callback}">Approve</a><a href="${cancel}">Cancel sign-in</a></html>`,
     );
@@ -140,6 +143,30 @@ async function mounts(page: Page, id: string) {
   }[];
 }
 
+async function discoverPeer(page: Page, current: Awaited<ReturnType<typeof agent>>, url: string) {
+  const created = await page.request.post("/api/v1/mcp-servers", {
+    headers: current.headers,
+    data: { name: `discover-${randomUUID()}`, url: url, defaultAuthKind: "oauth" },
+  });
+  expect(created.ok()).toBeTruthy();
+  const serverId = ((await created.json()) as { id: string }).id;
+  // Reuse a real local peer through one catalog entry, without contacting an external provider.
+  await page.route("**/api/v1/mcp-servers", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        servers: body.servers.map((server: { id: string }) =>
+          server.id === serverId ? { ...server, url: "https://mcp.linear.app/mcp" } : server,
+        ),
+      },
+    });
+  });
+  return serverId;
+}
+
 for (const kind of ["bearer", "none"] as const) {
   test(`real local ${kind} failure retries without creating or binding twice`, async ({ page }) => {
     const upstream = await peer(kind);
@@ -162,18 +189,14 @@ for (const kind of ["bearer", "none"] as const) {
       const initial = await mounts(page, current.id);
       expect(initial).toHaveLength(1);
       await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      await page.getByRole("button", { name: "Retry", exact: true }).click();
+      await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+      if (kind === "none") upstream.unavailable(false);
+      const retryDialog = await openAdd(page, current.id, upstream.url);
       if (kind === "bearer") {
-        const keyDialog = page.getByRole("dialog");
-        await expect(keyDialog.getByRole("radio")).toHaveCount(0);
-        const input = keyDialog.getByLabel("API key or token", { exact: true });
+        const input = retryDialog.getByLabel("API key", { exact: true });
         await expect(input).toBeFocused();
         await input.fill("fixture-key");
-        await page.keyboard.press("Enter");
-      } else {
-        await expect(page.getByRole("alert")).toContainText("Couldn’t load tools. Try again.");
-        upstream.unavailable(false);
-        await page.getByRole("button", { name: "Retry", exact: true }).click();
+        await retryDialog.getByRole("button", { name: "Connect", exact: true }).click();
       }
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
@@ -185,39 +208,78 @@ for (const kind of ["bearer", "none"] as const) {
   });
 }
 
-test("real local OAuth success, cancellation, token failure and reconnect retain the binding", async ({ page }) => {
+test("real local OAuth popup cancellation removes new setup and reconnect retains its binding", async ({ page }) => {
   const upstream = await peer("oauth");
   try {
     const current = await agent(page);
-    await openAdd(page, current.id, upstream.url);
-    await page.getByRole("link", { name: "Cancel sign-in" }).click();
-    const restored = page.getByRole("dialog", { name: "Add custom connector", exact: true });
-    await expect(restored).toContainText("Sign-in was not completed. Try again.");
+    const firstWindow = page.waitForEvent("popup");
+    const dialog = await openAdd(page, current.id, upstream.url);
+    const cancelled = await firstWindow;
+    await cancelled.getByRole("link", { name: "Cancel sign-in" }).click();
+    await expect(dialog).toContainText("Sign-in was cancelled. You can try again.");
+    await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+    const approveWindow = page.waitForEvent("popup");
+    await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+    const approved = await approveWindow;
+    await approved.getByRole("link", { name: "Approve", exact: true }).click();
+    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
     const initial = await mounts(page, current.id);
     expect(initial).toHaveLength(1);
-    await restored.getByRole("button", { name: "Connect", exact: true }).click();
-    await page.getByRole("link", { name: "Approve", exact: true }).click();
-    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
     const serverId = initial[0]?.mcpServerId;
     const revoked = await page.request.delete(`/api/v1/agents/${current.id}/mcp-servers/${serverId}/authorization`, {
       headers: current.headers,
     });
     expect(revoked.ok()).toBeTruthy();
     await page.reload();
+    const retryWindow = page.waitForEvent("popup");
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
-    await page.getByRole("link", { name: "Cancel sign-in" }).click();
-    await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect(page.getByRole("alert")).toContainText("Sign-in was not completed. Try again.");
+    const retry = await retryWindow;
+    await retry.getByRole("link", { name: "Cancel sign-in" }).click();
+    await expect(page.getByText("Sign-in was cancelled. You can try again.")).toBeVisible();
+    expect(await mounts(page, current.id)).toHaveLength(1);
+    const failureWindow = page.waitForEvent("popup");
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     upstream.tokenFailure(true);
-    await page.getByRole("link", { name: "Approve", exact: true }).click();
-    await expect(page.getByRole("alert")).toContainText("Sign-in was not completed. Try again.");
+    await (await failureWindow).getByRole("link", { name: "Approve", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Couldn’t start sign-in. Try again.");
     upstream.tokenFailure(false);
+    const finalWindow = page.waitForEvent("popup");
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
-    await page.getByRole("link", { name: "Approve", exact: true }).click();
+    await (await finalWindow).getByRole("link", { name: "Approve", exact: true }).click();
     await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
     expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(serverId);
     expect(await mounts(page, current.id)).toHaveLength(1);
+  } finally {
+    await upstream.stop();
+  }
+});
+
+test("Discover retains search across a real OAuth cancellation and successful retry", async ({ page }) => {
+  const upstream = await peer("oauth");
+  try {
+    const current = await agent(page);
+    const serverId = await discoverPeer(page, current, upstream.url);
+    await page.goto(`/agents/${current.id}/mcp`);
+    await page.getByRole("button", { name: "Discover", exact: true }).click();
+    const discover = page.getByRole("dialog", { name: "Discover", exact: true });
+    await discover.getByLabel("Search connectors", { exact: true }).fill("Linear");
+    const cancellation = page.waitForEvent("popup");
+    await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
+    const popup = await cancellation;
+    await popup.getByRole("link", { name: "Cancel sign-in" }).click();
+    await expect(discover).toContainText("Sign-in was cancelled. You can try again.");
+    await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+    await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");
+    const success = page.waitForEvent("popup");
+    await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
+    await (await success).getByRole("link", { name: "Approve", exact: true }).click();
+    await expect(discover).toContainText("Connected");
+    await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");
+    expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(serverId);
+    await page.screenshot({ path: test.info().outputPath("discover-oauth-connected.png") });
+    await discover.getByRole("button", { name: "Close Discover", exact: true }).click();
+    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
+    await expect(page.locator('[data-ui="mcp-server-row"]')).not.toHaveClass(/outline-kumo-ring/);
   } finally {
     await upstream.stop();
   }
@@ -275,15 +337,24 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
       if (await respondDefinition(route, path)) return;
       const id = path.split("/")[4] ?? "";
       const list = fixtureEntries(id);
-      if (path.endsWith("/mcp-servers")) {
-        if (method !== "GET") list.push({ ...binding });
-        await route.fulfill({ json: method === "GET" ? { servers: list } : list[0] });
-        return;
-      }
+      if (await respondCollection(route, path, method, list)) return;
+      if (await respondRemoval(route, path, method, list)) return;
       const current = list[0];
       if (!current) throw new Error("Missing fixture binding");
       await respondBinding(route, current, path);
     });
+    async function respondCollection(route: Route, path: string, method: string, list: (typeof binding)[]) {
+      if (!path.endsWith("/mcp-servers")) return false;
+      if (method !== "GET") list.push({ ...binding });
+      await route.fulfill({ json: method === "GET" ? { servers: list } : list[0] });
+      return true;
+    }
+    async function respondRemoval(route: Route, path: string, method: string, list: (typeof binding)[]) {
+      if (method !== "DELETE" || !path.endsWith(serverId)) return false;
+      list.splice(0);
+      await route.fulfill({ status: 204 });
+      return true;
+    }
     function fixtureEntries(id: string) {
       const list = entries.get(id) ?? [];
       entries.set(id, list);
@@ -368,10 +439,10 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
         await expect(dialog.getByRole("radio")).toHaveCount(0);
         await input.fill("fixture-key");
         await page.keyboard.press("Enter");
-        await expect(dialog).toBeHidden();
+        if (source !== "discover") await expect(dialog).toBeHidden();
       }
       if (kind !== "oauth") await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
-      expect(entries.get(id)).toHaveLength(1);
+      expect(entries.get(id)).toHaveLength(kind === "oauth" && source === "discover" ? 0 : 1);
     }
     expect(writes.filter((path) => path === "/api/v1/mcp-servers")).toHaveLength(0);
     expect(writes.filter((path) => path.endsWith("/mcp-servers"))).toHaveLength(2);
@@ -431,3 +502,72 @@ for (const width of [320, 390, 768, 1440]) {
     }
   });
 }
+
+test("OAuth callback survives a provider isolating its browsing context", async ({ page }) => {
+  const upstream = await peer("oauth", true);
+  try {
+    const current = await agent(page);
+    const opening = page.waitForEvent("popup");
+    const dialog = await openAdd(page, current.id, upstream.url);
+    const popup = await opening;
+    await popup.getByRole("heading", { name: "Local consent fixture" }).waitFor();
+    // Let the closed-window monitor run while the provider applies its isolation policy.
+    await popup.waitForTimeout(1200);
+    await expect(dialog).toContainText("Complete sign-in in the authorization window.");
+    await popup.getByRole("link", { name: "Approve", exact: true }).click();
+    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
+  } finally {
+    await upstream.stop();
+  }
+});
+
+test("mobile Discover restores search after cancellation, browser Back, and successful consent", async ({ page }) => {
+  const upstream = await peer("oauth");
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const current = await agent(page);
+    const serverId = await discoverPeer(page, current, upstream.url);
+    await page.goto(`/agents/${current.id}/mcp`);
+    await page.getByRole("button", { name: "Discover", exact: true }).click();
+    const discover = page.getByRole("dialog", { name: "Discover", exact: true });
+    await discover.getByLabel("Search connectors", { exact: true }).fill("Linear");
+    await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
+    await page.getByRole("link", { name: "Cancel sign-in" }).click();
+    await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");
+    await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+    await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
+    await page.getByRole("heading", { name: "Local consent fixture" }).waitFor();
+    await page.goBack();
+    await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");
+    await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+    await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
+    await page.getByRole("link", { name: "Approve", exact: true }).click();
+    await expect(discover).toContainText("Connected");
+    await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");
+    expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(serverId);
+    await expectAccessible(page);
+    await expectNoPageOverflow(page);
+    await page.screenshot({ path: test.info().outputPath("discover-oauth-mobile-connected.png") });
+  } finally {
+    await upstream.stop();
+  }
+});
+
+test("explicit cancellation removes new setup and ignores a late callback", async ({ page }) => {
+  const upstream = await peer("oauth");
+  try {
+    const current = await agent(page);
+    const opening = page.waitForEvent("popup");
+    const dialog = await openAdd(page, current.id, upstream.url);
+    const popup = await opening;
+    const approve = await popup.getByRole("link", { name: "Approve", exact: true }).getAttribute("href");
+    if (!approve) throw new Error("Missing local callback");
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).first().click();
+    await expect(dialog).toContainText("Sign-in was cancelled. You can try again.");
+    await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+    await page.request.get(approve);
+    expect(await mounts(page, current.id)).toHaveLength(0);
+  } finally {
+    await upstream.stop();
+  }
+});

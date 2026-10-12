@@ -77,14 +77,20 @@ export function findAccountServer(entry: McpCatalogEntry, servers: readonly MCPS
  * A mount is matched by its effective URL first, so an Agent-level URL override still counts, and by
  * the definition's id second.
  */
-export type McpCatalogEntryState = "available" | "added";
+export type McpCatalogEntryState = "available" | "added" | "unconnected" | "disabled";
 
 export function catalogEntryState(
   entry: McpCatalogEntry,
   servers: readonly MCPServer[],
   mounted: readonly MCPAgentServer[],
 ): McpCatalogEntryState {
-  return findCatalogBinding(entry, servers, mounted) ? "added" : "available";
+  const binding = findCatalogBinding(entry, servers, mounted);
+  if (!binding) return "available";
+  if (!binding.enabled) return "disabled";
+  const auth = binding.authorization;
+  return auth?.status === "active" && auth.probeState === "succeeded" && (auth.toolsCount ?? 0) > 0
+    ? "added"
+    : "unconnected";
 }
 
 export function findCatalogBinding(

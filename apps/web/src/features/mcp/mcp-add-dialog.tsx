@@ -5,6 +5,7 @@ import * as m from "../../paraglide/messages.js";
 import { Button, Dialog, Field, Icon, KumoInputControl } from "../../ui/design-system.js";
 import { findCatalogEntryByUrl, localizedText } from "./catalog/mcp-catalog-model.js";
 import { useMcpAddConnection } from "./mcp-add-connection.js";
+import { McpOAuthControls } from "./mcp-oauth-controls.js";
 import "./mcp.css";
 
 export type McpAddProps = {
@@ -47,8 +48,9 @@ export function McpAddDialog(props: McpAddProps) {
       title={m.mcp_create_title()}
       className={`mcp-add-dialog mcp-add-size-${size} mcp-add-anchor-${anchor}`}
       busy={state.busy}
-      onClose={props.onClose}
+      onClose={() => void state.close()}
     >
+      <McpOAuthControls session={state.oauth} />
       <form
         className="mcp-add-layout"
         onSubmit={(event) => {
@@ -78,7 +80,7 @@ export function McpAddDialog(props: McpAddProps) {
           </div>
         </div>
         <footer className="mcp-add-footer">
-          <Button variant="ghost" disabled={state.busy} onClick={props.onClose}>
+          <Button variant="ghost" disabled={state.busy} onClick={() => void state.close()}>
             {m.common_cancel()}
           </Button>
           <Button

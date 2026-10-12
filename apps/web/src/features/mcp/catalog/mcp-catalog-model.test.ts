@@ -146,10 +146,10 @@ describe("per-Agent catalog state", () => {
     expect(catalogEntryState(catalogEntry(), [accountServer()], [other])).toBe("available");
   });
 
-  it("is added when mounted without an active authorization", () => {
+  it("offers connection when mounted without an active authorization", () => {
     const authorization = mount().authorization;
     const mounted = mount({ authorization: authorization && { ...authorization, status: "pending" } });
-    expect(catalogEntryState(catalogEntry(), [accountServer()], [mounted])).toBe("added");
+    expect(catalogEntryState(catalogEntry(), [accountServer()], [mounted])).toBe("unconnected");
   });
 
   it("is added when mounted with an active authorization", () => {

@@ -212,7 +212,10 @@ export function useStartMcpOAuth(agentId: string) {
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.startMcpOAuth>[2]) =>
       browserApi.startMcpOAuth(agentId, input.mcpServerId, bodyOf(input)),
-    onSuccess: invalidate,
+    // The authorization URL is ready; list refreshes must not hold the redirect.
+    onSuccess: () => {
+      void invalidate();
+    },
   });
 }
 

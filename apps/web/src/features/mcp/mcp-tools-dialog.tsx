@@ -327,7 +327,7 @@ function ToolList({
     <section
       ref={list}
       onScroll={onScroll}
-      className="mcp-tool-list border-t border-kumo-line focus-visible:outline-2 focus-visible:outline-kumo-ring"
+      className="mcp-tool-list border-t border-kumo-line focus-visible:outline-2 focus-visible:outline-kumo-focus"
       aria-label={m.mcp_tools_title()}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: The tool list must support keyboard scrolling inside the dialog.
       tabIndex={0}

@@ -258,5 +258,17 @@
   "mcp_add_key_error": "Invalid API key. Try again.",
   "mcp_add_sign_in_failed": "Couldn’t start sign-in. Try again.",
   "mcp_connect_failed": "Couldn’t connect. Try again.",
-  "mcp_connect_sign_in_failed": "Couldn’t start sign-in. Try again."
+  "mcp_connect_sign_in_failed": "Couldn’t start sign-in. Try again.",
+  "mcp_oauth_preparing": "Preparing sign-in…",
+  "mcp_oauth_waiting": "Complete sign-in in the authorization window.",
+  "mcp_oauth_checking": "Checking connection…",
+  "mcp_oauth_cancelled": "Sign-in was cancelled. You can try again.",
+  "mcp_oauth_timeout": "Sign-in has not completed. Try again when you’re ready.",
+  "mcp_oauth_window_blocked": "The authorization window did not open.",
+  "mcp_oauth_open_page": "Open authorization page",
+  "mcp_oauth_completed": "Authorization completed. You can close this window.",
+  "mcp_catalog_unconnected": "Not connected",
+  "mcp_catalog_connected": "Connected",
+  "mcp_setup_cleanup_failed": "Couldn’t finish cancelling setup. Try again.",
+  "mcp_oauth_window_detached": "If the authorization window was closed, cancel this attempt to try again."
 }

@@ -78,10 +78,24 @@ async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       await respondAgentCollection(route, method, entries, body);
       return;
     }
+    if (await respondRemoval(route, method, match[3], entries, match[2])) return;
     const entry = entries.find((value) => value.mcpServerId === match[2]);
     if (!entry) throw new Error("Missing binding fixture");
     await respond(route, agentId, entry, match[3] ?? "", body);
   });
+  async function respondRemoval(
+    route: Route,
+    method: string,
+    operation: string | undefined,
+    entries: MCPAgentServer[],
+    serverId: string | undefined,
+  ) {
+    if (method !== "DELETE" || operation !== "") return false;
+    const index = entries.findIndex((value) => value.mcpServerId === serverId);
+    if (index >= 0) entries.splice(index, 1);
+    await route.fulfill({ status: 204 });
+    return true;
+  }
   async function respondAgentCollection(
     route: Route,
     method: string,
@@ -119,22 +133,7 @@ async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       return;
     }
     if (operation === "/authorization") {
-      entry.authorization = {
-        kind: body?.kind as MCPAuthKind,
-        status: "active",
-        hasCredential: body?.kind !== "none",
-        scopes: null,
-        accessTokenExpiresAt: null,
-        authorizationServer: null,
-        probeState: "pending",
-        probedAt: null,
-        probeError: null,
-        toolsCount: null,
-        toolsTruncated: false,
-        failureCode: null,
-        revision: 1,
-      };
-      await route.fulfill({ json: entry });
+      await respondAuthorization(route, entry, body);
       return;
     }
     if (operation !== "/probe" || !entry.authorization) throw new Error(`Unexpected MCP operation: ${operation}`);
@@ -161,11 +160,29 @@ async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       },
     });
   }
+  async function respondAuthorization(route: Route, entry: MCPAgentServer, body: Record<string, unknown> | null) {
+    entry.authorization = {
+      kind: body?.kind as MCPAuthKind,
+      status: "active",
+      hasCredential: body?.kind !== "none",
+      scopes: null,
+      accessTokenExpiresAt: null,
+      authorizationServer: null,
+      probeState: "pending",
+      probedAt: null,
+      probeError: null,
+      toolsCount: null,
+      toolsTruncated: false,
+      failureCode: null,
+      revision: 1,
+    };
+    await route.fulfill({ json: entry });
+  }
   async function respondOAuth(route: Route, agentId: string, entry: MCPAgentServer) {
     if (failOAuth) {
       await route.fulfill({ status: 502, json: { message: "Private upstream detail", code: "MCP_OAUTH_FAILED" } });
     } else {
-      const returnURL = `/agents/${agentId}/mcp?mcp_oauth=error&server=${entry.mcpServerId}`;
+      const returnURL = `/agents/${agentId}/mcp?mcp_oauth=error&mcp_oauth_error=MCP_OAUTH_DENIED&server=${entry.mcpServerId}`;
       await route.fulfill({
         json: {
           authorizationUrl: `${baseURL}/mcp-consent-fixture?return=${encodeURIComponent(returnURL)}`,
@@ -446,7 +463,7 @@ test("OAuth cancellation restores Add custom and retries its existing binding", 
   const agentId = await createAgent(page, "MCP browser sign-in");
   const shared = server("oauth-service", "oauth");
   const fixture = await mcpFixture(page, [shared]);
-  await page.route("**/mcp-consent-fixture?*", async (route) => {
+  await page.context().route("**/mcp-consent-fixture?*", async (route) => {
     const target = new URL(route.request().url()).searchParams.get("return");
     if (!target) throw new Error("Missing consent return URL");
     await route.fulfill({
@@ -456,18 +473,23 @@ test("OAuth cancellation restores Add custom and retries its existing binding", 
   });
   const dialog = await openAdd(page, agentId);
   await dialog.getByRole("button", { name: "oauth-service", exact: true }).click();
+  const cancellation = page.waitForEvent("popup");
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
-  await page.getByRole("link", { name: "Cancel sign-in" }).click();
+  await (await cancellation).getByRole("link", { name: "Cancel sign-in" }).click();
   const restored = page.getByRole("dialog", { name: "Add custom connector", exact: true });
   await expect(restored.getByLabel("Connector URL", { exact: true })).toHaveValue(shared.url);
-  await expect(restored).toContainText("Sign-in was not completed. Try again.");
+  await expect(restored).toContainText("Sign-in was cancelled. You can try again.");
   await expect(page.getByText(/Authorization for oauth-service is not complete/)).toHaveCount(0);
   await expect(restored.getByLabel("API key", { exact: true })).toHaveCount(0);
+  await expect.poll(() => fixture.mounts.get(agentId)).toHaveLength(0);
+  const retry = page.waitForEvent("popup");
   await restored.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(page.getByRole("link", { name: "Cancel sign-in" })).toBeVisible();
+  const retried = await retry;
+  await expect(retried.getByRole("link", { name: "Cancel sign-in" })).toBeVisible();
   expect(fixture.mounts.get(agentId)).toHaveLength(1);
   expect(fixture.writes.filter((write) => write.path.endsWith("/authorization/oauth"))).toHaveLength(2);
-  expect(fixture.writes.filter((write) => write.path.endsWith("/mcp-servers"))).toHaveLength(1);
+  expect(fixture.writes.filter((write) => write.path.endsWith("/mcp-servers"))).toHaveLength(2);
+  await retried.close();
 });
 
 for (const width of [1440, 320]) {

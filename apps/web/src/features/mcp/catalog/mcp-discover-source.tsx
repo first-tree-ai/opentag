@@ -24,6 +24,9 @@ export function McpDiscoverSource({
   pendingEntryId,
   searchRef,
   onAdd,
+  connectedIds = [],
+  initialView,
+  onViewChange,
 }: {
   categories: readonly McpCatalogCategory[];
   entries: readonly McpCatalogEntry[];
@@ -33,10 +36,13 @@ export function McpDiscoverSource({
   pendingEntryId?: string;
   searchRef?: RefObject<HTMLInputElement | null>;
   onAdd: (entry: McpCatalogEntry) => void;
+  connectedIds?: string[];
+  initialView?: { query: string; categoryId: string };
+  onViewChange?: (view: { query: string; categoryId: string }) => void;
 }) {
   const locale = getLocale();
-  const [categoryId, setCategoryId] = useState("");
-  const [query, setQuery] = useState("");
+  const [categoryId, setCategoryId] = useState(initialView?.categoryId ?? "");
+  const [query, setQuery] = useState(initialView?.query ?? "");
   const searching = query.trim().length > 0;
   const visible = searching
     ? entries.filter((entry) => matchesCatalogEntry(entry, query, locale))
@@ -46,6 +52,7 @@ export function McpDiscoverSource({
   const chooseCategory = (id: string) => {
     setQuery("");
     setCategoryId(id);
+    onViewChange?.({ query: "", categoryId: id });
   };
   return (
     <>
@@ -55,7 +62,10 @@ export function McpDiscoverSource({
           id="mcp-discover-search"
           value={query}
           placeholder={m.mcp_discover_search_placeholder()}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            onViewChange?.({ query: event.target.value, categoryId });
+          }}
         />
       </Field>
       <fieldset className="mt-5 flex flex-wrap gap-1 border-0 p-0">
@@ -89,7 +99,7 @@ export function McpDiscoverSource({
             <McpCatalogCard
               key={entry.id}
               entry={entry}
-              state={catalogEntryState(entry, servers, mounted)}
+              state={connectedIds.includes(entry.id) ? "added" : catalogEntryState(entry, servers, mounted)}
               busy={busy}
               connecting={busy && entry.id === pendingEntryId}
               onAdd={onAdd}
@@ -121,8 +131,8 @@ export function McpCatalogCard({
   const locale = getLocale();
   const title = localizedText(entry.title, locale);
   const preview = isCatalogPreview(entry);
-  const added = state === "added";
-  const label = m.mcp_attach_action();
+  const added = state === "added" || state === "disabled";
+  const label = state === "unconnected" ? m.mcp_connect() : m.mcp_attach_action();
   return (
     <li className="mcp-catalog-card rounded-lg border border-kumo-line bg-kumo-base p-5">
       <div className="mcp-catalog-card-heading flex min-w-0 items-center gap-3">
@@ -148,7 +158,7 @@ export function McpCatalogCard({
         {added ? (
           <span className="inline-flex min-h-8 items-center gap-1.5 text-xs text-kumo-subtle">
             <Icon name="check" />
-            {m.mcp_catalog_added()}
+            {state === "disabled" ? m.mcp_catalog_added() : m.mcp_catalog_connected()}
           </span>
         ) : (
           <Button

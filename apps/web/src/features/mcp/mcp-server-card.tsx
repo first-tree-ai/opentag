@@ -42,7 +42,7 @@ export function McpServerCard({
     <li
       id={`mcp-server-${entry.mcpServerId}`}
       tabIndex={-1}
-      className={`mcp-server-row min-w-0 p-4 outline-offset-[-2px] ${highlighted ? "outline-2 outline-kumo-ring" : ""}`}
+      className={`mcp-server-row min-w-0 p-4 outline-none focus-visible:outline-2 focus-visible:outline-kumo-focus outline-offset-[-2px] ${highlighted ? "bg-kumo-tint" : ""}`}
       data-ui="mcp-server-row"
     >
       <div className="mcp-server-identity">

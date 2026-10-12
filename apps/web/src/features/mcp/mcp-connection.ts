@@ -6,8 +6,10 @@ import {
 } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
 import { connectionPreset } from "./mcp-connection-model.js";
-import { useProbeMcpServer, useSetMcpAuthorization, useStartMcpOAuth } from "./mcp-queries.js";
-import { type McpReturnContext, rememberMcpReturn } from "./mcp-return-context.js";
+import { useMcpOAuthSession } from "./mcp-oauth-session.js";
+import type { McpOAuthWindow } from "./mcp-oauth-window.js";
+import { useProbeMcpServer, useSetMcpAuthorization } from "./mcp-queries.js";
+import type { McpReturnContext } from "./mcp-return-context.js";
 
 export class McpConnectionError extends Error {
   constructor(readonly reason: "key" | "tools" | "empty") {
@@ -25,31 +27,34 @@ export type ConnectionAttempt = {
 /** The same Agent-scoped connection operation serves URL Add, Discover, and row Connect. */
 export function useMcpConnectionOperation(agentId: string) {
   const authorize = useSetMcpAuthorization(agentId);
-  const oauth = useStartMcpOAuth(agentId);
+  const oauth = useMcpOAuthSession(agentId);
   const probe = useProbeMcpServer(agentId);
-  const redirectToOAuth = async (
+  const run = async (
     attempt: ConnectionAttempt,
-    source: McpReturnContext["source"],
-    alive: () => boolean,
-  ) => {
-    const scopes = connectionPreset(attempt.binding.effective.url)?.oauthScopes;
-    const result = await oauth.mutateAsync({
-      mcpServerId: attempt.binding.mcpServerId,
-      ...(scopes?.length ? { scopes: [...scopes] } : {}),
-    });
-    if (alive()) {
-      rememberMcpReturn({ agentId, serverId: attempt.binding.mcpServerId, source });
-      window.location.assign(result.authorizationUrl);
-    }
-    return "redirect" as const;
-  };
-  return async (
-    attempt: ConnectionAttempt,
-    options: { token?: string; source: McpReturnContext["source"]; onTools?: () => void; isAlive: () => boolean },
-  ): Promise<"connected" | "key" | "redirect"> => {
+    options: {
+      token?: string;
+      source: McpReturnContext["source"];
+      onTools?: () => void;
+      isAlive: () => boolean;
+      oauthWindow?: McpOAuthWindow;
+      returnContext?: Partial<McpReturnContext>;
+    },
+  ): Promise<"connected" | "key" | "redirect" | "cancelled"> => {
     const alive = options.isAlive;
     if (!alive()) return "connected";
-    const startOAuth = () => redirectToOAuth(attempt, options.source, alive);
+    const startOAuth = async () => {
+      const result = await oauth.start(
+        { ...options.returnContext, agentId, serverId: attempt.binding.mcpServerId, source: options.source },
+        connectionPreset(attempt.binding.effective.url)?.oauthScopes,
+        options.oauthWindow,
+      );
+      if (result !== "authorized") return result;
+      if (!alive()) return "cancelled" as const;
+      options.onTools?.();
+      const checked = await probe.mutateAsync(attempt.binding.mcpServerId);
+      if (probeRequiresOAuth(attempt, checked)) throw new McpConnectionError("tools");
+      return "connected" as const;
+    };
     if (requiresOAuth(attempt)) return startOAuth();
     if (requiresConnectionKey(attempt.kind, attempt.binding, options.token)) return "key";
     if (shouldAuthorize(attempt, options.token)) {
@@ -62,6 +67,7 @@ export function useMcpConnectionOperation(agentId: string) {
     if (probeRequiresOAuth(attempt, result)) return startOAuth();
     return "connected";
   };
+  return { run, oauth };
 }
 
 export function requiresConnectionKey(

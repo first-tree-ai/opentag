@@ -2,9 +2,11 @@
 export type McpReturnContext = {
   agentId: string;
   serverId: string;
-  source: "edit" | "tools" | "authorize" | "add";
+  source: "edit" | "tools" | "authorize" | "add" | "discover";
   query?: string;
   scrollTop?: number;
+  categoryId?: string;
+  newBinding?: boolean;
 };
 const KEY = "opentag:mcp:oauth-return";
 const MAX_AGE = 30 * 60 * 1000;
@@ -18,6 +20,8 @@ export function rememberMcpReturn(context: McpReturnContext): void {
         source: context.source,
         query: context.query?.slice(0, 1000),
         scrollTop: context.scrollTop,
+        categoryId: context.categoryId,
+        newBinding: context.newBinding,
         savedAt: Date.now(),
       }),
     );
@@ -41,13 +45,15 @@ export function consumeMcpReturn(agentId: string, serverId?: string): McpReturnC
       typeof item.savedAt !== "number" ||
       Date.now() - item.savedAt > MAX_AGE ||
       item.savedAt > Date.now() ||
-      !["edit", "tools", "authorize", "add"].includes(String(item.source))
+      !["edit", "tools", "authorize", "add", "discover"].includes(String(item.source))
     )
       return undefined;
     return {
       agentId,
       serverId,
       source: item.source as McpReturnContext["source"],
+      ...(typeof item.categoryId === "string" ? { categoryId: item.categoryId.slice(0, 100) } : {}),
+      ...(item.newBinding === true ? { newBinding: true } : {}),
       ...(typeof item.query === "string" ? { query: item.query.slice(0, 1000) } : {}),
       ...(typeof item.scrollTop === "number" && Number.isFinite(item.scrollTop) && item.scrollTop >= 0
         ? { scrollTop: item.scrollTop }
@@ -55,6 +61,20 @@ export function consumeMcpReturn(agentId: string, serverId?: string): McpReturnC
     };
   } catch {
     console.warn("Could not restore the MCP view after authorization.");
+    return undefined;
+  }
+}
+
+/** A browser Back from a provider without a callback still restores a pending Discover journey. */
+export function consumePendingMcpSetupReturn(agentId: string): McpReturnContext | undefined {
+  try {
+    const stored = window.sessionStorage.getItem(KEY);
+    if (!stored) return undefined;
+    const item = JSON.parse(stored) as Partial<McpReturnContext>;
+    if (item.source !== "discover" && item.source !== "add") return undefined;
+    return consumeMcpReturn(agentId, item.serverId);
+  } catch {
+    console.warn("Could not restore the pending MCP discovery view.");
     return undefined;
   }
 }

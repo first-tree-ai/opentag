@@ -11,7 +11,7 @@ export type DiscoverProps = {
   agentName: string;
   mounted: MCPAgentServer[];
   onClose: () => void;
-  onAdded: (entry: MCPAgentServer, catalog: McpCatalogEntry) => void;
+  onAdded: (entry: MCPAgentServer, catalog: McpCatalogEntry, server?: MCPServer) => void;
 };
 
 function catalogCreateInput(entry: McpCatalogEntry) {
@@ -60,7 +60,7 @@ export function useMcpDiscoverState({ agentId, mounted, onAdded }: DiscoverProps
           mounted.find((current) => current.mcpServerId === resolved?.id) ?? (await attach.mutateAsync(resolved.id));
         bindings.current.set(entry.id, binding);
       }
-      onAdded(binding, resolved ? { ...entry, defaultAuthKind: resolved.defaultAuthKind } : entry);
+      onAdded(binding, entry, resolved ?? servers.find((server) => server.id === binding.mcpServerId));
     } catch (cause) {
       setError(actionError(cause, resolved ? m.mcp_attach_failed() : m.mcp_create_failed()));
     } finally {

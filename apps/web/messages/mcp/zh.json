@@ -266,5 +266,7 @@
   "mcp_add_no_tools": "此服务暂无可用工具。",
   "mcp_add_choose_existing": "多个服务使用此地址，请选择已添加过的服务。",
   "mcp_add_key_error": "API 密钥无效，请重试。",
-  "mcp_add_sign_in_failed": "无法开始登录，请检查服务商的配置说明。"
+  "mcp_add_sign_in_failed": "无法开始登录，请检查服务商的配置说明。",
+  "mcp_connect_failed": "无法连接，请重试。",
+  "mcp_connect_sign_in_failed": "无法启动登录，请重试。"
 }

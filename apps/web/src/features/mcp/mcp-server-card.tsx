@@ -16,6 +16,7 @@ export function McpServerCard({
   probing,
   toggling,
   error,
+  connectionError,
   highlighted = false,
   connecting = false,
 }: {
@@ -27,6 +28,7 @@ export function McpServerCard({
   probing: boolean;
   toggling: boolean;
   error?: string;
+  connectionError?: string;
   highlighted?: boolean;
   connecting?: boolean;
 }) {
@@ -88,7 +90,13 @@ export function McpServerCard({
           />
         </div>
         <div className="mcp-server-actions flex min-w-0 items-center justify-end gap-3" aria-live="polite">
-          <ToolStatus entry={entry} agentName={agentName} pending={pending} connecting={connecting} error={error} />
+          <ToolStatus
+            entry={entry}
+            pending={pending}
+            connecting={connecting}
+            error={error}
+            connectionError={connectionError}
+          />
           {entry.enabled && !authorized ? (
             <Button
               size="compact"
@@ -100,11 +108,11 @@ export function McpServerCard({
               {entry.authorization ? m.mcp_reconnect() : m.mcp_connect()}
             </Button>
           ) : null}
-          {entry.enabled && authorized && entry.authorization?.probeState === "failed" ? (
+          {entry.enabled && authorized && (entry.authorization?.probeState === "failed" || connectionError) ? (
             <Button
               className="px-1 text-kumo-link"
               aria-label={m.mcp_retry()}
-              disabled={pending}
+              disabled={connecting || probing}
               size="compact"
               variant="ghost"
               onClick={onProbe}
@@ -119,33 +127,31 @@ export function McpServerCard({
 }
 function ToolStatus({
   entry,
-  agentName,
   pending,
   error,
+  connectionError,
   connecting,
 }: {
   entry: MCPAgentServer;
-  agentName: string;
   pending: boolean;
   error?: string;
+  connectionError?: string;
   connecting: boolean;
 }) {
+  if (!entry.enabled)
+    return <span className="mcp-server-status text-sm text-kumo-subtle">{m.mcp_mount_disabled()}</span>;
+  if (connectionError)
+    return (
+      <span role="alert" className="mcp-server-status text-sm text-kumo-danger">
+        {connectionError}
+      </span>
+    );
   if (error) return <McpRowError key={error} label={m.mcp_row_action_failed()} error={error} defaultOpen />;
   if (connecting)
     return (
       <span className="mcp-server-status flex items-center gap-2 text-sm text-kumo-subtle">
         <Loader size="sm" />
         {m.mcp_connecting()}
-      </span>
-    );
-  if (!entry.enabled)
-    return (
-      <span
-        className="mcp-server-status truncate text-sm text-kumo-subtle"
-        title={m.mcp_disabled_for({ agent: agentName })}
-      >
-        <span className="mcp-server-status-full">{m.mcp_disabled_for({ agent: agentName })}</span>
-        <span className="mcp-server-status-short">{m.mcp_mount_disabled()}</span>
       </span>
     );
   if (entry.authorization?.status !== "active")

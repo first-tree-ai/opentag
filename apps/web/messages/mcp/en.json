@@ -266,5 +266,7 @@
   "mcp_add_no_tools": "This server has no available tools.",
   "mcp_add_choose_existing": "More than one server uses this URL. Select an existing server.",
   "mcp_add_key_error": "Invalid API key. Try again.",
-  "mcp_add_sign_in_failed": "Couldn’t start sign-in. Check the service’s setup instructions."
+  "mcp_add_sign_in_failed": "Couldn’t start sign-in. Check the service’s setup instructions.",
+  "mcp_connect_failed": "Couldn’t connect. Try again.",
+  "mcp_connect_sign_in_failed": "Couldn’t start sign-in. Try again."
 }

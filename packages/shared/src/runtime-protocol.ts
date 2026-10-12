@@ -90,8 +90,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
 } as const;
 
 export const RUNTIME_CLIENT_CAPABILITY_OFFERS = RUNTIME_SERVER_CAPABILITY_OFFERS;
-export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [RUNTIME_CAPABILITY.contextTreeSettings];
-export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [RUNTIME_CAPABILITY.contextTreeSettings];
+export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [];
+export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [];
 
 export const RUNTIME_MAX_FRAME_BYTES = 64 * 1024;
 export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;
@@ -566,13 +566,6 @@ export function negotiateRuntimeCapabilities(
     if (minimum <= maximum) negotiated[name] = maximum;
   }
   return negotiated;
-}
-
-export function missingRuntimeCapabilities(
-  required: readonly string[],
-  negotiated: RuntimeNegotiatedCapabilities,
-): string[] {
-  return required.filter((name) => negotiated[name] === undefined);
 }
 
 export function runtimeNegotiatedCapabilitiesEqual(

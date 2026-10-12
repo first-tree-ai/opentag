@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Collapsible, Field, Icon, KumoInputControl, Radio } from "../../ui/design-system.js";
-import { type AuthDraft, type HeaderMode, type HeaderRow, newHeader, validHeaders } from "./mcp-form-model.js";
+import { type AuthDraft, type HeaderRow, newHeader } from "./mcp-form-model.js";
 import "./mcp.css";
 
 export function McpFooter({
@@ -91,56 +91,21 @@ export function McpHeaders({ rows, onChange }: { rows: HeaderRow[]; onChange: (r
     </div>
   );
 }
-export function McpHeaderMode({ value, onChange }: { value: HeaderMode; onChange: (mode: HeaderMode) => void }) {
-  return (
-    <fieldset className="mcp-radio">
-      <legend>{m.mcp_edit_advanced()}</legend>
-      <Radio.Group value={value} onValueChange={(value) => onChange(value as HeaderMode)}>
-        <Radio.Item value="inherit" label={m.mcp_headers_inherit()} />
-        <Radio.Item value="custom" label={m.mcp_headers_custom()} />
-        <Radio.Item value="none" label={m.mcp_edit_empty_extra_headers()} />
-      </Radio.Group>
-    </fieldset>
-  );
-}
-export function McpTokenSettings({
-  header,
-  prefix,
-  onHeader,
-  onPrefix,
-}: {
-  header: string;
-  prefix: string;
-  onHeader: (value: string) => void;
-  onPrefix: (value: string) => void;
-}) {
-  return (
-    <div className="mcp-token-fields">
-      <Field htmlFor="mcp-auth-header" label={m.mcp_edit_auth_header_label()}>
-        <KumoInputControl id="mcp-auth-header" value={header} onChange={(event) => onHeader(event.target.value)} />
-      </Field>
-      <Field htmlFor="mcp-auth-scheme" label={m.mcp_edit_auth_scheme_label()} hint={m.mcp_edit_auth_scheme_help()}>
-        <KumoInputControl id="mcp-auth-scheme" value={prefix} onChange={(event) => onPrefix(event.target.value)} />
-      </Field>
-    </div>
-  );
-}
 export function McpAuthFields({
   draft,
   onChange,
-  existing = false,
   label = m.mcp_auth_label(),
   variant = "setup",
-  connectionSettings = true,
+  fixedMethod = false,
 }: {
   draft: AuthDraft;
   onChange: (draft: AuthDraft) => void;
-  existing?: boolean;
   label?: string;
   variant?: "setup" | "settings";
-  connectionSettings?: boolean;
+  fixedMethod?: boolean;
 }) {
   const help = authMethodHelp(draft.kind, variant);
+  if (fixedMethod) return <McpAuthMethodDetails draft={draft} onChange={onChange} help={help} variant={variant} />;
   const choiceClass = variant === "settings" ? "mcp-auth-choice" : undefined;
   return (
     <>
@@ -166,33 +131,6 @@ export function McpAuthFields({
         {variant === "setup" ? <p className="mt-3 text-xs leading-relaxed text-kumo-subtle">{help}</p> : null}
       </div>
       <McpAuthMethodDetails draft={draft} onChange={onChange} help={help} variant={variant} />
-      {connectionSettings ? (
-        <McpDisclosure label={m.mcp_advanced()}>
-          <div className="grid gap-4">
-            {draft.kind === "bearer" ? (
-              <McpTokenSettings
-                header={draft.authHeader}
-                prefix={draft.authScheme}
-                onHeader={(authHeader) => onChange({ ...draft, authHeader })}
-                onPrefix={(authScheme) => onChange({ ...draft, authScheme })}
-              />
-            ) : null}
-            {existing ? (
-              <McpHeaderMode value={draft.headerMode} onChange={(headerMode) => onChange({ ...draft, headerMode })} />
-            ) : (
-              <span className="text-sm font-medium">{m.mcp_edit_advanced()}</span>
-            )}
-            {!existing || draft.headerMode === "custom" ? (
-              <>
-                <McpHeaders rows={draft.headers} onChange={(headers) => onChange({ ...draft, headers })} />
-                {!validHeaders(draft.headers, draft.authHeader) ? (
-                  <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p>
-                ) : null}
-              </>
-            ) : null}
-          </div>
-        </McpDisclosure>
-      ) : null}
     </>
   );
 }

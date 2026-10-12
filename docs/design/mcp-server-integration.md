@@ -264,20 +264,20 @@ Each Agent may override four fields independently. `NULL` means inherit; any pre
 | Override with nothing | `extra_headers_override = '{}'` | This Agent sends **no** extra headers |
 | Override with a set | `extra_headers_override = '{...}'` | Use this Agent's set |
 
-"Restore inheritance" and "override with nothing" are therefore separate actions in both surfaces
-(`--clear-extra-headers` versus `--empty-extra-headers`; "use the shared headers" versus "send no
-extra headers"). Collapsing them would leave a user unable to drop a shared `x-workspace-id` for one
-Agent without deleting it for everyone.
+"Restore inheritance" and "override with nothing" remain separate API and CLI actions
+(`--clear-extra-headers` versus `--empty-extra-headers`). The GUI directly edits the effective header
+list; deleting all rows writes an explicit empty map for this Agent. It does not expose inheritance
+selectors or restore controls.
 
 The other three fields need no such distinction, but they do need an **explicit** clear: an empty
 string is a legitimate value for `auth_scheme`, so "clear" can never be spelled as an empty value.
 
-Editing scope is a user choice:
+The API and CLI retain both editing scopes; GUI Settings writes only Agent overrides:
 
 | Scope | Writes to | Affects |
 | --- | --- | --- |
-| This Agent (the default) | `agent_mcp_servers.*_override` | Only this Agent |
-| Shared definition | `mcp_servers.*` | Every Agent that mounts it, named in the dialog before the user confirms |
+| This Agent | `agent_mcp_servers.*_override` | Only this Agent |
+| Shared definition | `mcp_servers.*` | Agents inheriting the changed fields |
 
 Changing an Agent's overrides re-probes only that Agent. Changing the shared definition marks every
 mount's probe pending, and a background pass re-probes each one; the previous snapshot stays readable
@@ -961,15 +961,16 @@ does. A merged column would send a user to reauthorize a Server that was only sw
 Each row offers the enable/disable switch, authorize / reauthorize / revoke, view tools, re-probe,
 edit, and remove.
 
-- **Edit** opens on "this Agent only", which writes the override columns and affects nobody else.
-  Choosing "shared definition" shows a warning naming the Agents it will affect — the same set the
-  Server counts for `boundAgentCount`. Each field shows its current effective value and whether it is
-  inherited or overridden, because a user cannot otherwise tell what the Server is actually being
-  sent. `extra_headers` carries both actions: "use the shared headers" and "send no extra headers".
-- **Remove** offers "from this Agent only", which leaves the definition in the Account pool, and
-  "remove and delete the definition", which is disabled while another Agent still mounts it and names
-  that Agent. Without the second option a definition with no mounts could never be reclaimed, since
-  there is no Account-level page that lists it.
+- **Settings** displays the current Agent's connection address, authentication status, and tools.
+  Advanced settings is collapsed by default. Authentication header and token prefix appear only for
+  API-key/token authorization; extra headers are directly editable for all authorization methods.
+  Account-default selectors, restore controls, shared-editor links, and the Account-page MCP manager
+  are omitted. Generic setup guidance is omitted; the short empty-prefix hint is retained.
+  Only changed fields are written through the existing Agent binding API. Unedited inherited fields
+  continue following shared definitions; this UI change does not introduce connection snapshots or
+  alter API, CLI, authorization-header validation, or database behavior.
+- **Remove** disconnects this Agent and drops its credential. The shared definition remains available
+  to previously added server shortcuts and the CLI's definition-management commands.
 - **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
   context to the authorization server rather than fetching the URL.
 - **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
@@ -1084,13 +1085,62 @@ create → attach → authorize sequence used by the connection flow.
 
 ## The marketplace catalog
 
-The marketplace catalog is a curated set of remote Streamable HTTP Servers. The add flow's
-**Discover** entry is temporarily hidden, including from the Agent's empty state. Its internal
-source is retained for a future revision. The catalog continues to supply official service icons
-for existing connections and display data for the public catalog API.
+An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
+an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
+that an Agent can add from the independent **Discover services** directory and from its empty state.
+The page keeps one **Add server** action in its header alongside the independent directory action.
+Add server opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
+Discover, manual-configuration, or import source switch. The standalone directory owns its add state.
+The empty state starts directly with **Quick start**, without repeating
+the page introduction or Add server action in a separate onboarding panel. It offers Exa, Notion, Linear, and Airtable, using brand names
+and example tasks for web research, documents, tasks, and table records. Google Workspace services
+remain in Discover but are excluded from Quick start because their developer preview requires
+preview access and deployment configuration. Asana is not a Quick start substitute because its V2 MCP
+server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
+See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
+[Linear's MCP setup](https://linear.app/docs/mcp), and
+[Airtable's authentication guide](https://airtable.com/developers/agents/mcp/getting-started).
+Google Workspace cards are labeled **Limited access** and show preview-access and OAuth
+setup requirements before adding the service. All available cards use **Add**. Once mounted, a card
+shows a single non-interactive **✓ Added** status in the action position, regardless of authorization or probe status. Authentication methods and
+connection health belong to service setup and the Agent's management list, not catalog or quick-start
+cards. These are starting points, not popularity rankings.
 
-The page keeps one Add server action in its header; its empty state uses a compact, borderless icon
-and guidance. The action opens the same URL-and-shortcuts dialog for empty and populated Agents.
+Directory cards place the service name and description on the left, with **Add** or **Added** on the
+right rather than in a separate footer row. Limited-access labels sit beside the service name.
+On narrow screens, descriptions span the card width. Quick-start cards retain their task examples.
+
+Adding creates or reuses the Account definition and mounts it to this Agent. The directory closes as
+soon as the mount is confirmed, and the management list highlights the service without waiting for
+authorization or tools. OAuth services immediately navigate to the provider without another confirmation.
+Bearer services open the shared authentication dialog with the known method fixed and no connection
+settings; saving credentials closes it. Closing authentication leaves the mount on the list with
+**Not connected** and **Connect**. Anonymous mounts already authorized by the server trigger an
+immediate tool probe on the page; they do not wait for the periodic background worker or rewrite
+their authorization.
+
+Pending tool probes poll every second for their first 30 seconds, then return to the ordinary
+30-second live cadence. The budget follows each mount in its query cache and uses elapsed time,
+so failed reads cannot leave a page polling every second indefinitely. Newly pending mounts
+receive their own fast-poll window; settled or disabled mounts stop using it.
+
+Create and attach errors remain in the directory, preserving its search and category. Confirmed
+definitions are retained for retries. After mounting, connection startup errors and probe retries
+belong to the existing list; credential errors remain in the shared authentication form. There is no
+separate setup, connection-progress, or connection-result view. OAuth uses the existing return context
+and completion handling, including authentication errors returned by the provider.
+
+The current management layout is preserved: service identity opens settings, the list shows connection
+status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.
+An empty tool result is inspected in the existing tool browser. Authentication preserves the binding's
+effective settings and extra-header inheritance; catalog scopes are supplied only for its exact endpoint.
+Account definitions retain their chosen default authentication kind when reused. Catalog defaults apply
+to newly created definitions.
+
+UI validation captures use an isolated local MCP/OAuth fixture deployment: [desktop](assets/mcp-discover/desktop.png),
+[320px](assets/mcp-discover/mobile-320.png), [390px](assets/mcp-discover/mobile-390.png), and
+[768px](assets/mcp-discover/tablet-768.png). They show the shipped directory layout with disposable
+test connections, rather than third-party account data.
 
 The catalog is committed repository data in the `@opentag/mcp-presets` workspace, not a service:
 
@@ -1170,6 +1220,46 @@ deliberate exception to the rule that user-facing copy goes through Paraglide. T
 own chrome — the source label, the search field, the method labels, and the installed states — stays
 in `messages/mcp/{en,zh}.json`. `web-ui-contract.md` records the same exception from the web side, so
 the catalog's copy is not "fixed" into the message catalog as an apparent omission.
+
+Card descriptions use an action and its object, in one short sentence. Prefer one or two core
+actions over feature lists, jargon, promotional claims, or changing app counts. Aim for no more
+than 45 characters in English and 20 in Chinese, including punctuation; these are editorial
+budgets, not rendering limits. Allow natural wrapping on narrow screens without truncating the
+meaning. Review both locales in Discover and Quick start. Descriptions summarize documented MCP
+capabilities within the preset's configured scopes; they do not promise every feature of the
+provider's product or establish successful OpenTag authorization.
+
+The description review on 2026-10-10 used the following provider documentation. These references
+record provenance for maintainers without adding links or explanatory copy to the cards.
+
+| Entries | Official capability reference |
+| --- | --- |
+| Notion | [Notion MCP](https://www.notion.com/help/notion-mcp) |
+| Exa | [Exa MCP tools](https://exa.ai/docs/get-started/exa-mcp) |
+| Linear | [Linear MCP server](https://linear.app/docs/mcp) |
+| Sentry | [Sentry MCP server](https://mcp.sentry.dev/) |
+| Atlassian | [Atlassian Rovo MCP server](https://support.atlassian.com/atlassian-ai-gateway/docs/use-atlassian-rovo-mcp-server/) |
+| Gmail | [Gmail MCP server](https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server) |
+| Google Drive | [Drive MCP server](https://developers.google.com/workspace/drive/api/guides/configure-mcp-server) |
+| Google Docs | [Docs MCP server](https://developers.google.com/workspace/docs/api/guides/configure-mcp-server) |
+| Google Sheets | [Sheets MCP server](https://developers.google.com/workspace/sheets/api/guides/configure-mcp-server) |
+| Google Slides | [Slides MCP server](https://developers.google.com/workspace/slides/api/guides/configure-mcp-server) |
+| Google Calendar | [Calendar MCP server](https://developers.google.com/workspace/calendar/api/guides/configure-mcp-server); the preset requests read and free/busy scopes, so copy describes viewing events and availability |
+| Google Chat | [Chat MCP server](https://developers.google.com/workspace/chat/api/guides/configure-mcp-server) |
+| People | [Workspace MCP tool reference](https://developers.google.com/workspace/guides/configure-mcp-servers) |
+| Microsoft 365 | [Release Communications MCP server](https://learn.microsoft.com/en-us/microsoft-365/admin/manage/mrc-mcp?view=o365-worldwide); this endpoint exposes roadmap and Azure update information |
+| Asana | [Asana MCP tools](https://developers.asana.com/docs/mcp-tools-reference) |
+| monday.com | [Platform MCP tools](https://developer.monday.com/api-reference/docs/platform-mcp-tools) |
+| HubSpot | [Remote HubSpot MCP server](https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server) |
+| Figma | [Figma MCP tools](https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/) |
+| Canva | [Canva MCP tools](https://www.canva.dev/docs/apps/mcp/tools/) |
+| Tavily | [Tavily MCP server](https://docs.tavily.com/documentation/mcp) |
+| Firecrawl | [Firecrawl MCP server](https://docs.firecrawl.dev/mcp-server) |
+| Zapier | [Zapier MCP](https://docs.zapier.com/mcp/home) |
+| Airtable | [Airtable MCP server](https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server) |
+| Supabase | [Supabase MCP tools](https://supabase.com/docs/guides/ai-tools/mcp) |
+| Amplitude | [Amplitude MCP server](https://amplitude.com/docs/amplitude-ai/amplitude-mcp) |
+| Stripe | [Stripe MCP tools](https://docs.stripe.com/mcp) |
 
 ## Verification
 

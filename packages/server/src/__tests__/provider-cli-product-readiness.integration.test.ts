@@ -20,6 +20,7 @@ async function registered(registry: ConnectionRegistry) {
   const runtimeSocket = socket();
   await registry.register(
     {
+      clientVersion: "0.1.1",
       active: true,
       installationId,
       instanceId,

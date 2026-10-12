@@ -284,6 +284,7 @@ async function localScope() {
   const registry = new ConnectionRegistry();
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       installationId: randomUUID(),
       instanceId,

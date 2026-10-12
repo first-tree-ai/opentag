@@ -44,16 +44,12 @@ describe("rebaseSettingsDraft", () => {
     const next = entry({ ...previous, updatedAt: "2026-10-10T08:00:00.000Z" });
     const rebased = rebaseSettingsDraft(previous, draft, next);
     expect(rebased.headers).toEqual(draft.headers);
-    expect(rebased.headerMode).toBe("custom");
   });
 
-  it("keeps an explicit switch from empty headers to custom headers during a live update", () => {
-    const previous = entry({
-      effective: { ...entry().effective, extraHeaders: {} },
-      overridden: { ...entry().overridden, extraHeaders: true },
-    });
-    const draft = { ...settingsDraft(previous), headerMode: "custom" as const };
-    expect(rebaseSettingsDraft(previous, draft, entry({ ...previous, enabled: false })).headerMode).toBe("custom");
+  it("keeps a deleted header list during a live update", () => {
+    const previous = entry();
+    const draft = { ...settingsDraft(previous), headers: [] };
+    expect(rebaseSettingsDraft(previous, draft, entry({ ...previous, enabled: false })).headers).toEqual([]);
   });
 
   it("follows confirmed header changes when the header draft is untouched", () => {
@@ -63,7 +59,6 @@ describe("rebaseSettingsDraft", () => {
       overridden: { ...previous.overridden, extraHeaders: true },
     });
     const rebased = rebaseSettingsDraft(previous, settingsDraft(previous), next);
-    expect(rebased.headerMode).toBe("custom");
     expect(rebased.headers.map(({ name, value }) => ({ name, value }))).toEqual([{ name: "x-new", value: "saved" }]);
   });
 });

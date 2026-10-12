@@ -8,7 +8,6 @@ import {
   ComputerRegisterResultV2FrameSchema,
   HeartbeatResultV1FrameSchema,
   HeartbeatResultV2FrameSchema,
-  missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
@@ -231,8 +230,6 @@ describe("runtime protocol", () => {
     );
     expect(negotiated["future.optionalFeature"]).toBe(3);
     expect(negotiated["server.unknownFeature"]).toBeUndefined();
-    expect(missingRuntimeCapabilities(["runtime.imDelivery"], negotiated)).toEqual([]);
-    expect(missingRuntimeCapabilities(["future.requiredFeature"], negotiated)).toEqual(["future.requiredFeature"]);
     expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(2);
     expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(2);
@@ -565,11 +562,6 @@ describe("runtime protocol refinements", () => {
     expect(negotiated).toEqual({ "alpha.shared": 2, "gamma.pinned": 2, "zeta.shared": 3 });
     expect(Object.keys(negotiated)).toEqual(["alpha.shared", "gamma.pinned", "zeta.shared"]);
     expect(negotiateRuntimeCapabilities({}, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});
-    expect(missingRuntimeCapabilities([], negotiated)).toEqual([]);
-    expect(missingRuntimeCapabilities(["beta.disjoint", "alpha.shared", "theta.localOnly"], negotiated)).toEqual([
-      "beta.disjoint",
-      "theta.localOnly",
-    ]);
   });
 
   it("compares negotiated capabilities by content regardless of key order", () => {

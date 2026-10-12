@@ -6,6 +6,7 @@ import { rememberMcpReturn } from "./mcp-return-context.js";
 import {
   AGENT_ID,
   authorization,
+  detail,
   entry,
   openAdd,
   openDetails,
@@ -133,15 +134,14 @@ describe("MCP daily use", () => {
     vi.mocked(browserApi.agentMcpServers).mockRejectedValue(new ApiError(503, "MCP unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("MCP unavailable")).toBeTruthy();
-    expect(screen.queryByText("No servers yet")).toBeNull();
+    expect(screen.queryByText("Quick start")).toBeNull();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
   it("shows an actionable empty state only after a successful read", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByRole("heading", { name: "No servers yet" })).toBeTruthy();
+    expect(await screen.findByText("Quick start")).toBeTruthy();
     expect(screen.getByText("Connect your Agent to external tools.")).toBeTruthy();
-    expect(screen.getByText("Add an MCP server to connect your Agent to its tools.")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Add server" })).toHaveLength(1);
     await openAdd();
     expect(screen.getByRole("dialog", { name: "Add server" })).toBeTruthy();
@@ -308,6 +308,35 @@ describe("MCP daily use", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("Couldn’t start the authorization. Try again.")).toBeTruthy();
     expect(screen.queryByText(/ARBITRARY/)).toBeNull();
+  });
+  it("restores a canceled URL Add sign-in to the new Add dialog without another write", async () => {
+    rememberMcpReturn({ agentId: AGENT_ID, serverId: SERVER_ID, source: "add" });
+    window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
+    const binding = entry({ authorization: null });
+    stub([binding]);
+    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(1).server] });
+    const create = vi.spyOn(browserApi, "createMcpServer");
+    const attach = vi.spyOn(browserApi, "attachMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const dialog = within(await screen.findByRole("dialog", { name: "Add server" }));
+    await waitFor(() =>
+      expect((dialog.getByLabelText("Server URL") as HTMLInputElement).value).toBe(binding.effective.url),
+    );
+    expect(dialog.getByText("Sign-in was not completed. Try again.")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: /authentication/i })).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
+    expect(window.location.search).toBe("");
+  });
+  it("keeps a canceled Discover sign-in in authentication rather than the URL Add flow", async () => {
+    rememberMcpReturn({ agentId: AGENT_ID, serverId: SERVER_ID, source: "authorize" });
+    window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
+    stub([entry({ authorization: null })]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    expect(await screen.findByRole("dialog", { name: "linear authentication" })).toBeTruthy();
+    expect(screen.getByText("Sign-in was not completed. Try again.")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Add server" })).toBeNull();
+    expect(screen.queryByLabelText("Server URL")).toBeNull();
   });
   it("returns to the saved tool search and scroll position after canceling reconnect", async () => {
     stub([entry({ authorization: { ...authorization(), status: "expired" } })]);

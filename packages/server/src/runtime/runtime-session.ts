@@ -6,7 +6,6 @@ import {
   ClientRuntimeFrameSchema,
   type ComputerRegisterFrame,
   type HeartbeatFrame,
-  missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   RUNTIME_CAPABILITY,
   RUNTIME_MAX_FRAME_BYTES,
@@ -356,24 +355,12 @@ export class RuntimeSession {
           RUNTIME_SERVER_CAPABILITY_OFFERS,
           frame.supportedCapabilities,
         );
-        const missing = [
-          ...missingRuntimeCapabilities(RUNTIME_REQUIRED_CLIENT_CAPABILITIES, negotiatedCapabilities),
-          ...missingRuntimeCapabilities(frame.requiredServerCapabilities, negotiatedCapabilities),
-        ];
-        if (missing.length > 0) {
-          this.#fail(
-            "PROTOCOL_CAPABILITY_UNSUPPORTED",
-            "One or more required runtime capabilities are unavailable",
-            4400,
-            frame.requestId,
-          );
-          return;
-        }
         connectionId = randomUUID();
       }
       await this.#registry.register(
         {
           active: false,
+          clientVersion: frame.clientVersion,
           capabilities: frame.capabilities,
           capabilitiesUpdatedAt: this.#options.now().getTime(),
           computerId: authContext.computerId,
@@ -554,7 +541,7 @@ export class RuntimeSession {
     const scheduler = this.#businessScheduler;
     const authContext = this.#authContext;
     if (!business || !scheduler || !authContext || !this.#installationId || !this.#computerId || !this.#instanceId) {
-      this.#fail("PROTOCOL_ERROR", "The runtime business frame type is unknown", 4400, requestId);
+      this.#logger?.warn({ requestId }, "Runtime business handler is unavailable");
       return;
     }
     let frame: RuntimeServerBusinessFrame | undefined;
@@ -566,7 +553,7 @@ export class RuntimeSession {
       frame = undefined;
     }
     if (!frame || !key) {
-      this.#fail("PROTOCOL_ERROR", "The runtime business frame is invalid", 4400, requestId);
+      this.#logger?.warn({ requestId }, "Incompatible runtime business frame rejected");
       return;
     }
     const context: RuntimeBusinessContext = {
@@ -633,10 +620,15 @@ export class RuntimeSession {
   #sendBusinessResult(result: unknown): void {
     if (result === undefined) return;
     if (Array.isArray(result)) {
-      for (const frame of result) this.#send(frame);
+      for (const frame of result) this.#sendBusinessResult(frame);
       return;
     }
-    this.#send(result);
+    if (!this.#computerId || !this.#instanceId) return;
+    if (!this.#registry.allowsBusiness(this.#computerId, this.#instanceId, result)) {
+      this.#logger?.warn({}, "Runtime business response blocked while awaiting upgrade");
+      return;
+    }
+    this.#send(result, true);
   }
 
   async #onClose(code?: number): Promise<void> {
@@ -655,16 +647,18 @@ export class RuntimeSession {
     }
   }
 
-  #send(frame: unknown): void {
+  #send(frame: unknown, business = false): void {
     let serialized: string;
     try {
       serialized = JSON.stringify(this.#outboundFrame(frame));
     } catch {
-      this.#fail("INTERNAL_ERROR", "The runtime response could not be serialized", 1011);
+      if (business) this.#logger?.warn({}, "Unserializable runtime business response rejected");
+      else this.#fail("INTERNAL_ERROR", "The runtime response could not be serialized", 1011);
       return;
     }
     if (runtimeFrameByteLength(serialized) > RUNTIME_MAX_FRAME_BYTES) {
-      this.#fail("INTERNAL_ERROR", "The runtime response is too large", 1011);
+      if (business) this.#logger?.warn({}, "Oversized runtime business response rejected");
+      else this.#fail("INTERNAL_ERROR", "The runtime response is too large", 1011);
       return;
     }
     if (this.#socket.readyState === WebSocket.OPEN) this.#socket.send(serialized);

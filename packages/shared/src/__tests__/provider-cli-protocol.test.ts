@@ -4,7 +4,6 @@ import {
   ClientRuntimeBusinessFrameSchema,
   IM_CLI_PROVIDERS,
   ImCliProviderSchema,
-  missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   ProviderCliArtifactStatusFrameSchema,
   ProviderCliCancelFrameSchema,
@@ -69,14 +68,11 @@ describe("provider CLI reconcile protocol", () => {
       )[RUNTIME_CAPABILITY.providerCliReconcile],
     ).toBe(1);
     expect(
-      missingRuntimeCapabilities(
-        [RUNTIME_CAPABILITY.providerCliReconcile],
-        negotiateRuntimeCapabilities(
-          { [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 1 } },
-          RUNTIME_SERVER_CAPABILITY_OFFERS,
-        ),
-      ),
-    ).toEqual([RUNTIME_CAPABILITY.providerCliReconcile]);
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 1 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      )[RUNTIME_CAPABILITY.providerCliReconcile],
+    ).toBeUndefined();
   });
 
   it("negotiates the setup prewarm capability independently of active-Integration reconcile", () => {
@@ -94,14 +90,11 @@ describe("provider CLI reconcile protocol", () => {
       ],
     ).toBe(1);
     expect(
-      missingRuntimeCapabilities(
-        [RUNTIME_CAPABILITY.providerCliPrewarm],
-        negotiateRuntimeCapabilities(
-          { [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 1 } },
-          RUNTIME_SERVER_CAPABILITY_OFFERS,
-        ),
-      ),
-    ).toEqual([RUNTIME_CAPABILITY.providerCliPrewarm]);
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 1 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      )[RUNTIME_CAPABILITY.providerCliPrewarm],
+    ).toBeUndefined();
   });
 
   it("accepts a secret-free prewarm of both official CLIs in canonical order", () => {

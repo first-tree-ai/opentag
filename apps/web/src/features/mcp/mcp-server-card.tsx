@@ -17,6 +17,7 @@ export function McpServerCard({
   toggling,
   error,
   highlighted = false,
+  connecting = false,
 }: {
   entry: MCPAgentServer;
   agentName: string;
@@ -27,6 +28,7 @@ export function McpServerCard({
   toggling: boolean;
   error?: string;
   highlighted?: boolean;
+  connecting?: boolean;
 }) {
   const catalogEntry = findCatalogEntryByUrl(entry.effective.url, MCP_CATALOG_ENTRIES);
   const authorized = entry.authorization?.status === "active";
@@ -43,6 +45,7 @@ export function McpServerCard({
           className="mcp-server-logo"
           tabIndex={-1}
           variant="ghost"
+          disabled={connecting}
           aria-label={m.mcp_open_details({ server: entry.name })}
           onClick={() => onAction("edit")}
         >
@@ -54,6 +57,7 @@ export function McpServerCard({
               id={`mcp-server-${entry.mcpServerId}-details`}
               className="mcp-server-name"
               variant="ghost"
+              disabled={connecting}
               title={entry.name}
               onClick={() => onAction("edit")}
             >
@@ -75,7 +79,7 @@ export function McpServerCard({
                 <Switch
                   aria-label={m.mcp_toggle_label({ agent: agentName, name: entry.name })}
                   checked={entry.enabled}
-                  disabled={toggling}
+                  disabled={toggling || connecting}
                   transitioning={toggling}
                   onCheckedChange={onToggle}
                 />
@@ -84,12 +88,13 @@ export function McpServerCard({
           />
         </div>
         <div className="mcp-server-actions flex min-w-0 items-center justify-end gap-3" aria-live="polite">
-          <ToolStatus entry={entry} agentName={agentName} pending={pending} error={error} />
+          <ToolStatus entry={entry} agentName={agentName} pending={pending} connecting={connecting} error={error} />
           {entry.enabled && !authorized ? (
             <Button
               size="compact"
               className="px-1 text-kumo-link"
               variant="ghost"
+              disabled={connecting}
               onClick={() => onAction("authorize")}
             >
               {entry.authorization ? m.mcp_reconnect() : m.mcp_connect()}
@@ -117,13 +122,22 @@ function ToolStatus({
   agentName,
   pending,
   error,
+  connecting,
 }: {
   entry: MCPAgentServer;
   agentName: string;
   pending: boolean;
   error?: string;
+  connecting: boolean;
 }) {
   if (error) return <McpRowError key={error} label={m.mcp_row_action_failed()} error={error} defaultOpen />;
+  if (connecting)
+    return (
+      <span className="mcp-server-status flex items-center gap-2 text-sm text-kumo-subtle">
+        <Loader size="sm" />
+        {m.mcp_connecting()}
+      </span>
+    );
   if (!entry.enabled)
     return (
       <span

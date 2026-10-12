@@ -68,13 +68,6 @@ export class RuntimeSendError extends Error {
   }
 }
 
-export class RuntimeProtocolFallbackError extends Error {
-  constructor() {
-    super("The Server explicitly requires runtime protocol v1");
-    this.name = "RuntimeProtocolFallbackError";
-  }
-}
-
 export function abortError(): RuntimeSendError {
   return new RuntimeSendError("aborted", "The runtime operation was aborted");
 }

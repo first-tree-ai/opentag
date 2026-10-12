@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   computeDirectInputHash,
+  computeLegacyRuntimeSnapshotHashes,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeSnapshotHashes,
   computeTurnResultHash,
@@ -13,8 +14,10 @@ import {
   type SessionReconcileRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
+import { ClientRuntime } from "../runtime/client-runtime.js";
+import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
 import { agentRuntimePaths, deriveRuntimeKey, sessionBindingPath, snapshotPath } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
@@ -23,6 +26,184 @@ const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("SessionBindingStore", () => {
+  it.each([
+    "same revision",
+    "migrated Codex",
+    "migrated Claude",
+    "changed input",
+    "corrupt hash",
+    "missing snapshot",
+    "missing snapshot directory",
+    "unresolved",
+    "looser network",
+  ] as const)("continues only an authentic idle 0.1.0 binding: %s", async (scenario) => {
+    const fixture = await bindingFixture();
+    const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const binding = JSON.parse(await readFile(path, "utf8"));
+    const provider = scenario === "migrated Claude" ? "claude-code" : "codex";
+    const old: EffectiveRuntimeSnapshot = {
+      ...fixture.runtime,
+      provider,
+      execution: { approvalPolicy: "never", networkAccess: scenario !== "looser network" },
+    };
+    const oldHashes = computeLegacyRuntimeSnapshotHashes(old);
+    Object.assign(binding, {
+      provider,
+      sessionConfigHash: oldHashes.sessionConfigHash,
+      lastEffectiveSnapshotHash: oldHashes.effectiveSnapshotHash,
+      runtimeBinding: { providerId: provider, schemaVersion: 1, payload: { threadId: "original-thread" } },
+    });
+    if (scenario === "corrupt hash") binding.sessionConfigHash = "0".repeat(64);
+    if (scenario === "unresolved")
+      binding.unresolvedTurn = {
+        requestId: randomUUID(),
+        deliveryId: "original-delivery",
+        inputHash: "a".repeat(64),
+        turnId: "original-turn",
+        phase: "accepted",
+      };
+    await writeFile(snapshotPath(fixture.home, "agent-1", oldHashes.effectiveSnapshotHash), JSON.stringify(old));
+    await writeFile(path, JSON.stringify(binding));
+    const missingSnapshot = new Map([
+      ["missing snapshot", snapshotPath(fixture.home, "agent-1", oldHashes.effectiveSnapshotHash)],
+      ["missing snapshot directory", agentRuntimePaths(fixture.home, "agent-1").snapshots],
+    ]).get(scenario);
+    if (missingSnapshot) await rm(missingSnapshot, { recursive: true });
+    const revisionSequence = scenario === "same revision" ? 1 : 2;
+    const next: EffectiveRuntimeSnapshot = {
+      ...old,
+      selfConfigurationEnabled: false,
+      revision: {
+        agent: { sequence: revisionSequence, id: "new-agent-hash" },
+        session: { sequence: revisionSequence, id: "new-session-hash" },
+      },
+      execution: {
+        approvalPolicy: "on-request",
+        networkAccess: ["migrated Claude", "looser network"].includes(scenario),
+        allowCommands: [],
+      },
+    };
+    if (scenario === "changed input") next.instructions = { ...next.instructions, agent: "different" };
+    const request = { ...fixture.reconcile, requestId: randomUUID(), runtime: next };
+    const hashes = computeRuntimeSnapshotHashes(next);
+    if (!["same revision", "migrated Codex", "migrated Claude"].includes(scenario)) {
+      const before = await readFile(path, "utf8");
+      await expect(fixture.store.validatePreparation(request, hashes)).rejects.toThrow();
+      await expect(fixture.store.prepare(request, hashes)).rejects.toThrow();
+      expect(await readFile(path, "utf8")).toBe(before);
+      return;
+    }
+    await fixture.store.validatePreparation(request, hashes);
+    const prepared = await fixture.store.prepare(request, hashes);
+    expect(prepared.binding.runtimeBinding).toEqual(binding.runtimeBinding);
+    expect(prepared.binding.recentRecordedInputs).toEqual(binding.recentRecordedInputs);
+    expect(prepared.binding.lastEffectiveSnapshotHash).toBe(hashes.effectiveSnapshotHash);
+    expect(await fixture.store.prepare(request, hashes)).toEqual(prepared);
+    expect(
+      JSON.parse(await readFile(snapshotPath(fixture.home, "agent-1", oldHashes.effectiveSnapshotHash), "utf8")),
+    ).toEqual(old);
+  });
+
+  it.each(["accepted", "reporting"] as const)(
+    "settles an old disk-only %s Turn after upgrade before applying the migrated snapshot",
+    async (phase) => {
+      const fixture = await bindingFixture();
+      const old = { ...fixture.runtime, execution: { approvalPolicy: "never" as const, networkAccess: true } };
+      const hashes = computeLegacyRuntimeSnapshotHashes(old);
+      const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+      const report = turnReport(delivery(old, 99), "old-turn");
+      const binding = {
+        ...JSON.parse(await readFile(path, "utf8")),
+        sessionConfigHash: hashes.sessionConfigHash,
+        lastEffectiveSnapshotHash: hashes.effectiveSnapshotHash,
+        runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "original-thread" } },
+        unresolvedTurn: {
+          requestId: randomUUID(),
+          deliveryId: report.deliveryId,
+          inputHash: "a".repeat(64),
+          turnId: report.turnId,
+          phase,
+          ...(phase === "reporting" ? { report, resultHash: report.resultHash } : {}),
+        },
+      };
+      await writeFile(path, JSON.stringify(binding));
+      await writeFile(snapshotPath(fixture.home, "agent-1", hashes.effectiveSnapshotHash), JSON.stringify(old));
+      // A fresh process has no in-memory recovery claim when the upgrade completes first.
+      const reconciler = new SessionReconciler({ installationId: fixture.computerId, preparation: fixture.workspace });
+      let acknowledge: () => void = () => {};
+      const ack = new Promise<void>((resolve) => {
+        acknowledge = resolve;
+      });
+      const submit = vi.fn(async (_report: TurnReportRequest, confirm: () => Promise<void> | void) => {
+        await ack;
+        await confirm();
+      });
+      const recovery = new MvpTurnReportRecovery({
+        bindingStore: fixture.store,
+        reconciler,
+        reportOwner: {
+          create: (input) => ({
+            type: "turn:report",
+            requestId: randomUUID(),
+            ...input,
+            resultHash: computeTurnResultHash(input),
+          }),
+          rearmTerminal: () => true,
+          submit,
+        },
+      });
+      const { runtime: _runtime, ...base } = fixture.reconcile;
+      let request: SessionReconcileRequest = { ...base, requestId: randomUUID(), desired: "stopped" };
+      let receive: (frame: unknown) => Promise<void> = async () => {};
+      const send = vi.fn(async (_frame: unknown) => {});
+      const client = new ClientRuntime(
+        {
+          installationId: fixture.computerId,
+          subscribeBusinessFrames: (handler: typeof receive) => {
+            receive = handler;
+            return () => {};
+          },
+          run: () => receive(request),
+          send,
+        } as never,
+        {
+          reconciler,
+          prepareReconcileResult: (input, result) => recovery.prepare(input, result),
+          onReconciled: (input, result) => recovery.afterReconciled(input, result),
+        },
+      );
+      await client.run();
+      expect(send.mock.calls[0]?.[0]).toMatchObject({ status: "stopped", retainedReports: [{ turnId: "old-turn" }] });
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledOnce());
+      expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({
+        lastEffectiveSnapshotHash: hashes.effectiveSnapshotHash,
+        runtimeBinding: binding.runtimeBinding,
+        unresolvedTurn: { phase: "reporting" },
+      });
+      acknowledge();
+      await vi.waitFor(async () =>
+        expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn).toBeUndefined(),
+      );
+      request = {
+        ...fixture.reconcile,
+        requestId: randomUUID(),
+        runtime: {
+          ...old,
+          selfConfigurationEnabled: false,
+          revision: { agent: { sequence: 2, id: "migrated-agent" }, session: { sequence: 2, id: "migrated-session" } },
+          execution: { approvalPolicy: "on-request", networkAccess: false, allowCommands: [] },
+        },
+      };
+      await client.run();
+      expect(send.mock.calls.at(-1)?.[0]).toMatchObject({ status: "ready" });
+      expect((await fixture.store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding.runtimeBinding);
+      expect((await fixture.store.read("agent-1", "session-1"))?.recentRecordedInputs).toHaveLength(1);
+      expect(submit.mock.calls.every(([report]) => report.resultHash === submit.mock.calls[0]?.[0].resultHash)).toBe(
+        true,
+      );
+    },
+  );
+
   it("covers custody duplicate, steer receipt, runtime binding, and result guard paths", async () => {
     expect(
       () =>
@@ -245,7 +426,7 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => fixture.homeIdentity,
     });
     await expect(cleanStore.prepare(fixture.reconcile, hashes)).rejects.toThrow(
-      "stored runtime snapshot hash conflicts",
+      "original Session snapshot identity cannot be verified",
     );
   });
 

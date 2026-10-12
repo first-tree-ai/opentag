@@ -1,11 +1,10 @@
-import { type MCPAgentServer, type MCPServer, MCPServerUrlSchema } from "@opentag/shared/browser";
+import { type MCPAgentServer, type MCPAuthKind, type MCPServer, MCPServerUrlSchema } from "@opentag/shared/browser";
 import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog, Field, Icon, KumoInputControl } from "../../ui/design-system.js";
 import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
-import { McpDefaultsDialog } from "./mcp-defaults-dialog.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
-import { McpDisclosure, McpHeaderMode, McpHeaders } from "./mcp-form.js";
+import { McpDisclosure, McpHeaders } from "./mcp-form.js";
 import {
   actionError,
   bindingPatch,
@@ -43,7 +42,7 @@ export function McpSettingsDialog({
   initialQuery?: string;
   initialScrollTop?: number;
 }) {
-  const detail = useMcpServerDetail(entry.mcpServerId);
+  const detail = useMcpServerDetail(entry.authorization ? undefined : entry.mcpServerId);
   const update = useUpdateMcpBinding(agentId);
   const [configuration, setConfiguration] = useState(() => ({ baseline: entry, draft: settingsDraft(entry) }));
   const { baseline, draft } = configuration;
@@ -54,9 +53,8 @@ export function McpSettingsDialog({
       draft: rebaseSettingsDraft(current.baseline, current.draft, entry),
     }));
   }, [entry]);
-  const [defaultsOpen, setDefaultsOpen] = useState(false);
-  const [defaults, setDefaults] = useState<MCPServer>();
-  const base = defaults ?? detail.data?.server;
+  const base = detail.data?.server;
+  const authKind = settingsAuthKind(entry, base);
   const [authentication, setAuthentication] = useState(initialAuthentication && !initialTools);
   const [authError, setAuthError] = useState(authenticationError);
   const [continueToAuth, setContinueToAuth] = useState(false);
@@ -116,9 +114,6 @@ export function McpSettingsDialog({
       inFlight.current = false;
     }
   };
-  const restore = (field: ConnectionField) => {
-    if (base) setDraft({ ...draft, [field]: base[field], cleared: [...new Set([...draft.cleared, field])] });
-  };
   const field = (key: ConnectionField, label: string, hint?: string) => (
     <div>
       <Field htmlFor={`mcp-edit-${key}`} label={label} hint={hint}>
@@ -127,9 +122,7 @@ export function McpSettingsDialog({
           value={draft[key]}
           aria-invalid={key === "url" && !validUrl}
           aria-describedby={key === "url" && !validUrl ? "mcp-url-error" : undefined}
-          onChange={(event) =>
-            setDraft({ ...draft, [key]: event.target.value, cleared: draft.cleared.filter((value) => value !== key) })
-          }
+          onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
         />
       </Field>
       {key === "url" && !validUrl ? (
@@ -137,19 +130,6 @@ export function McpSettingsDialog({
           {m.mcp_url_invalid()}
         </p>
       ) : null}
-      {!draft.cleared.includes(key) && (baseline.overridden[key] || draft[key] !== baseline.effective[key]) ? (
-        <Button
-          aria-label={m.mcp_edit_restore_field({ field: label })}
-          disabled={!base || detail.isError}
-          className="mt-1 px-0"
-          variant="ghost"
-          size="compact"
-          onClick={() => restore(key)}
-        >
-          {m.mcp_edit_restore()}
-        </Button>
-      ) : null}
-      {draft.cleared.includes(key) ? <p className="mt-1 text-xs text-kumo-subtle">{m.mcp_edit_restored()}</p> : null}
     </div>
   );
   const back = () => {
@@ -158,15 +138,6 @@ export function McpSettingsDialog({
     setAuthError(undefined);
     setAuthentication(false);
   };
-  if (defaultsOpen)
-    return (
-      <McpDefaultsDialog
-        serverId={entry.mcpServerId}
-        onClose={onClose}
-        onBack={() => setDefaultsOpen(false)}
-        onSaved={setDefaults}
-      />
-    );
   if (removing)
     return (
       <McpConfirmDialog
@@ -274,15 +245,12 @@ export function McpSettingsDialog({
                 }}
               />
               <SettingsAdvanced
+                authKind={authKind}
                 draft={draft}
                 setDraft={setDraft}
                 field={field}
                 open={advanced}
                 onOpenChange={setAdvanced}
-                onDefaults={() => {
-                  rememberScroll();
-                  setDefaultsOpen(true);
-                }}
               />
             </div>
           </fieldset>
@@ -339,45 +307,40 @@ export function McpSettingsDialog({
 }
 
 function SettingsAdvanced({
+  authKind,
   draft,
   setDraft,
   field,
   open,
   onOpenChange,
-  onDefaults,
 }: {
+  authKind: MCPAuthKind;
   draft: ReturnType<typeof settingsDraft>;
   setDraft: (draft: ReturnType<typeof settingsDraft>) => void;
   field: (key: ConnectionField, label: string, hint?: string) => ReactNode;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onDefaults: () => void;
 }) {
   return (
     <McpDisclosure label={m.mcp_settings_advanced()} bordered={false} open={open} onOpenChange={onOpenChange}>
       <div className="grid gap-4">
-        <p className="text-xs leading-relaxed text-kumo-subtle">{m.mcp_settings_advanced_help()}</p>
-        <div className="grid gap-3">
-          <p className="text-xs text-kumo-subtle">{m.mcp_settings_token_help()}</p>
-          <div className="mcp-token-fields">
-            {field("authHeader", m.mcp_edit_auth_header_label())}
-            {field("authScheme", m.mcp_edit_auth_scheme_label(), m.mcp_edit_auth_scheme_help())}
+        {authKind === "bearer" ? (
+          <div className="grid gap-3">
+            <p className="text-xs text-kumo-subtle">{m.mcp_settings_token_help()}</p>
+            <div className="mcp-token-fields">
+              {field("authHeader", m.mcp_edit_auth_header_label())}
+              {field("authScheme", m.mcp_edit_auth_scheme_label(), m.mcp_edit_auth_scheme_help())}
+            </div>
+            {!validTokenSettings(draft) ? <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p> : null}
           </div>
-        </div>
-        {!validTokenSettings(draft) ? <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p> : null}
-        <McpHeaderMode value={draft.headerMode} onChange={(headerMode) => setDraft({ ...draft, headerMode })} />
-        {draft.headerMode === "custom" ? (
-          <>
-            <McpHeaders rows={draft.headers} onChange={(headers) => setDraft({ ...draft, headers })} />
-            {!validHeaders(draft.headers, draft.authHeader) ? (
-              <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p>
-            ) : null}
-          </>
         ) : null}
-        <Button className="justify-self-start" variant="ghost" size="compact" onClick={onDefaults}>
-          {m.mcp_defaults_action()}
-          <Icon name="arrow-right" />
-        </Button>
+        <div className="grid gap-3">
+          <span className="text-sm font-medium">{m.mcp_edit_advanced()}</span>
+          <McpHeaders rows={draft.headers} onChange={(headers) => setDraft({ ...draft, headers })} />
+          {!validHeaders(draft.headers, draft.authHeader) ? (
+            <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p>
+          ) : null}
+        </div>
       </div>
     </McpDisclosure>
   );
@@ -463,10 +426,14 @@ function SettingsUrlWarning({ entry, url }: { entry: MCPAgentServer; url: string
   ) : null;
 }
 
+function settingsAuthKind(entry: MCPAgentServer, server?: MCPServer): MCPAuthKind {
+  return entry.authorization?.kind ?? server?.defaultAuthKind ?? "oauth";
+}
+
 function validSettingsDraft(draft: ReturnType<typeof settingsDraft>): boolean {
   return (
     MCPServerUrlSchema.safeParse(draft.url).success &&
     validTokenSettings(draft) &&
-    (draft.headerMode !== "custom" || validHeaders(draft.headers, draft.authHeader))
+    validHeaders(draft.headers, draft.authHeader)
   );
 }

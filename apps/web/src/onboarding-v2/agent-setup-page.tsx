@@ -1540,7 +1540,7 @@ function MessagingSetupSection({
 }
 
 function setupExitLabel(snapshot: AgentSetupSnapshot | undefined): string {
-  return snapshot?.stage === "messaging" && snapshot.messaging.kind === "not-configured"
+  return snapshot?.stage === "needs-messaging" && snapshot.messaging.kind === "not-configured"
     ? m.onboarding_v2_setup_later()
     : m.onboarding_v2_back_to_agent();
 }

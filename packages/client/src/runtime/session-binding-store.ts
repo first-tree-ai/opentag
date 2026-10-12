@@ -443,8 +443,9 @@ export class SessionBindingStore {
     const runtime = request.runtime;
     if (!runtime || current.unresolvedTurn || current.placementGeneration !== request.placementGeneration) return false;
     const path = snapshotPath(this.#home, request.agentId, current.lastEffectiveSnapshotHash);
-    if (!(await validatePrivateDirectory(this.#home, dirname(path)))) return false;
-    const stored = await readDurableJson(path, EffectiveRuntimeSnapshotSchema.parse);
+    const stored = (await validatePrivateDirectory(this.#home, dirname(path)))
+      ? await readDurableJson(path, EffectiveRuntimeSnapshotSchema.parse)
+      : undefined;
     if (!stored) {
       if (
         current.runtimeBinding &&

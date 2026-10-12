@@ -32,6 +32,8 @@ describe("SessionBindingStore", () => {
     "migrated Claude",
     "changed input",
     "corrupt hash",
+    "missing snapshot",
+    "missing snapshot directory",
     "unresolved",
     "looser network",
   ] as const)("continues only an authentic idle 0.1.0 binding: %s", async (scenario) => {
@@ -62,16 +64,22 @@ describe("SessionBindingStore", () => {
       };
     await writeFile(snapshotPath(fixture.home, "agent-1", oldHashes.effectiveSnapshotHash), JSON.stringify(old));
     await writeFile(path, JSON.stringify(binding));
+    const missingSnapshot = new Map([
+      ["missing snapshot", snapshotPath(fixture.home, "agent-1", oldHashes.effectiveSnapshotHash)],
+      ["missing snapshot directory", agentRuntimePaths(fixture.home, "agent-1").snapshots],
+    ]).get(scenario);
+    if (missingSnapshot) await rm(missingSnapshot, { recursive: true });
+    const revisionSequence = scenario === "same revision" ? 1 : 2;
     const next: EffectiveRuntimeSnapshot = {
       ...old,
       selfConfigurationEnabled: false,
       revision: {
-        agent: { sequence: scenario === "same revision" ? 1 : 2, id: "new-agent-hash" },
-        session: { sequence: scenario === "same revision" ? 1 : 2, id: "new-session-hash" },
+        agent: { sequence: revisionSequence, id: "new-agent-hash" },
+        session: { sequence: revisionSequence, id: "new-session-hash" },
       },
       execution: {
         approvalPolicy: "on-request",
-        networkAccess: provider === "claude-code" || scenario === "looser network",
+        networkAccess: ["migrated Claude", "looser network"].includes(scenario),
         allowCommands: [],
       },
     };

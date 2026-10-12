@@ -673,6 +673,7 @@ for (const returnMode of ["mobile", "blocked popup"] as const) {
 const discoverCopy = {
   en: {
     title: "Discover",
+    empty: "No connectors yet",
     close: "Close Discover",
     search: "Search connectors",
     add: "Add: Linear",
@@ -681,6 +682,7 @@ const discoverCopy = {
   },
   zh: {
     title: "发现",
+    empty: "暂无连接器",
     close: "关闭 发现",
     search: "搜索连接器",
     add: "添加: Linear",
@@ -736,6 +738,11 @@ for (const locale of ["en", "zh"] as const) {
         });
         await page.goto(`/agents/${current.id}/mcp`);
         const copy = discoverCopy[locale];
+        await expect(page.getByRole("heading", { name: copy.empty, exact: true })).toBeVisible();
+        await expect(page.locator('[data-ui="mcp-quick-start"]')).toHaveCount(0);
+        await expectNoPageOverflow(page);
+        await expectAccessible(page);
+        await page.screenshot({ path: test.info().outputPath(`empty-${locale}-${width}.png`) });
         await page.getByRole("button", { name: copy.title, exact: true }).click();
         const dialog = page.getByRole("dialog", { name: copy.title, exact: true });
         await dialog.getByLabel(copy.search, { exact: true }).fill("Linear");

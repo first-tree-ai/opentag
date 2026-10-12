@@ -83,6 +83,12 @@ describe("RouterCloudModelCatalog", () => {
     expect(JSON.stringify(snapshot)).not.toContain("llm-router");
   });
 
+  it("caps a large native output limit at the issued platform budget", async () => {
+    expect(selectCloudModelExecutionProfile({ contextWindow: 258000, maxOutputTokens: 65536 })).toEqual({
+      contextWindow: 258000,
+      maxTokens: 8192,
+    });
+  });
   it("prefers the deployment default model when a Sonnet-first Router list offers it", async () => {
     const upstream = await startCatalogUpstream({
       kind: "json",
@@ -187,7 +193,7 @@ describe("RouterCloudModelCatalog", () => {
           { id: "router-no-caps" },
           { id: "router-bad-window", context_window: "258000", max_output_tokens: 8_192 },
           { id: "router-fractional", context_window: 258_000.5, max_output_tokens: 8_192 },
-          { id: "router-oversized-output", context_window: 258_000, max_output_tokens: 65_536 },
+          { id: "router-bad-output", context_window: 258_000, max_output_tokens: "65536" },
           { id: "router-zero", context_window: 0, max_output_tokens: 8_192 },
         ],
       },

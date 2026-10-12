@@ -117,6 +117,7 @@ export {
   type ServiceId,
   ServiceIdSchema,
 } from "./channel.js";
+export * from "./cloud-billing.js";
 export * from "./cloud-product.js";
 export * from "./cloud-runner.js";
 export {

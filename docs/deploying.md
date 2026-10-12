@@ -98,7 +98,7 @@ server container.
 | `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging; signs every Account session |
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
-| `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
+| `OPENTAG_AUTO_MIGRATE` | `true`, including [cloud billing releases](cloud-billing.md); startup applies the public migrations |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
 | `GOOGLE_CLOUD_PROJECT` | Optional; forwards relayed Web App and CLI errors to Google Cloud Error Reporting, see [Client error reporting](./error-reporting.md) |
@@ -200,19 +200,37 @@ with the current compatible Server revision instead; see [Cloud Runner releases]
 Rolling back only reverts application code. It does not revert database migrations that a later revision applied, so a
 rollback across a destructive migration needs a deliberate database plan.
 
-One migration needs a data step before its code is rolled back: `0053_white_killmonger` adds `url_install` to the
-`skill_source` enum, and an older Server validates `Skill.source` against the three earlier values. Rolling the Server
-back while rows still carry `url_install` makes every Skill read for the affected Agents fail validation, so run this
-first — it preserves the Skills and reports them as web uploads, which is the closest older representation:
+Two migrations need a data compatibility check before their code is rolled back: `0053_white_killmonger` adds
+`url_install` to the `skill_source` enum, and `0055_first_angel` adds `preset`. A Server predating both additions validates
+`Skill.source` against only `web_upload`, `cli_upload`, and `agent_upload`. Rolling back while rows carry a source the
+target Server does not accept makes Skill reads for the affected Agents fail validation, even though both migrations
+only expand the database enum.
+
+Check the target revision's `SkillSourceSchema` and audit the current rows before choosing a data mapping:
 
 ```sql
-update agent_skills set source = 'web_upload' where source = 'url_install';
+select source, count(*) from agent_skills where source in ('url_install', 'preset') group by source;
 ```
 
-Re-running the newer Server after that statement is safe; nothing recreates the value automatically, so a Skill installed
-from a URL after the rollback is simply a web upload again. The alternative, if the enum value must survive a rollback
-window, is to stage the change: deploy this migration alone, then deploy the code that writes `url_install` in the next
-release.
+Back up the affected rows, including their IDs and original sources, before changing them. Pause Skill installations
+until the rollback completes so unsupported values cannot be written again between the data step and the code rollout.
+For a rollback to a Server that accepts neither new source, run this first — it preserves the Skills and their archives
+but reports them as web uploads, the closest older representation:
+
+```sql
+update agent_skills set source = 'web_upload' where source in ('url_install', 'preset');
+```
+
+If the target already accepts `url_install` but not `preset`, map only `preset`; do not rewrite sources the target
+supports. Re-run the audit and require zero rows with unsupported sources before switching the Server revision.
+
+This mapping loses the original source labels. Re-deploying the newer Server does not restore them automatically;
+restoration needs the backup, and new URL or preset installations can write those values again. Until restoration, the
+preset catalog treats mapped preset Skills as user uploads: an identical archive reports `installed`, but a changed
+archive reports `name_conflict` and refuses updates. Reinstalling the same-named preset does not repair the source label;
+restore the original source from the backup, or delete that Skill and reinstall it. If the original sources must remain
+in the live database, roll back only to a Server that accepts them. Deploying the enum migrations alone does not make
+older application validators compatible.
 
 ## Verifying a deployment
 

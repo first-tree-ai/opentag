@@ -139,13 +139,14 @@ describe("MCP daily use", () => {
     vi.mocked(browserApi.agentMcpServers).mockRejectedValue(new ApiError(503, "MCP unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("MCP unavailable")).toBeTruthy();
-    expect(screen.queryByText("Quick start")).toBeNull();
+    expect(screen.queryByText("No connectors yet")).toBeNull();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
   it("shows an actionable empty state only after a successful read", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("Quick start")).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 2, name: "No connectors yet" })).toBeTruthy();
+    expect(screen.getByText("Add a connector to give your Agent access to its tools.")).toBeTruthy();
     expect(screen.getByText("Connect your Agent to external tools.")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Add custom" })).toHaveLength(1);
     await openAdd();

@@ -7,6 +7,7 @@ import { SKILL_ERROR_CODES } from "./skill.js";
 export const ErrorCategorySchema = z.enum(["credential", "deterministic", "validation", "transient", "rate_limit"]);
 
 export const ErrorCodeSchema = z.enum([
+  "CLOUD_BILLING_UNAVAILABLE",
   "AUTH_CODE_CONSUMED",
   "AUTH_CODE_EXPIRED",
   "AUTH_DEV_USER_UNAVAILABLE",

@@ -121,7 +121,6 @@ export function McpCatalogCard({
   state = "available",
   busy,
   onAdd,
-  example,
   connecting = false,
   pendingAction,
 }: {
@@ -129,7 +128,6 @@ export function McpCatalogCard({
   state?: McpCatalogEntryState;
   busy: boolean;
   onAdd: (entry: McpCatalogEntry) => void;
-  example?: string;
   connecting?: boolean;
   pendingAction?: "add" | "connect";
 }) {
@@ -162,11 +160,6 @@ export function McpCatalogCard({
       <p className="mcp-catalog-card-description text-sm leading-relaxed text-kumo-subtle">
         {localizedText(entry.description, locale)}
       </p>
-      {example ? (
-        <p className="mcp-quick-example rounded-md bg-kumo-tint p-3 text-xs leading-relaxed text-kumo-subtle">
-          {example}
-        </p>
-      ) : null}
       <div className="mcp-catalog-card-actions mt-auto flex flex-wrap items-center justify-end gap-3 pt-2">
         {added ? (
           <span className="inline-flex min-h-8 items-center gap-1.5 text-xs text-kumo-subtle">

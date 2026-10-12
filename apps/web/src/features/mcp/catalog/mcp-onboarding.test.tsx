@@ -7,18 +7,19 @@ import { AGENT_ID, stub, wrap } from "../mcp-test-fixtures.js";
 afterEach(() => vi.restoreAllMocks());
 
 describe("MCP onboarding", () => {
-  it("offers the four office starting points with a brand-only Exa title", async () => {
+  it("keeps connector choices in Discover rather than on the empty page", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await screen.findByText("Quick start");
-    for (const title of ["Exa", "Notion", "Linear", "Airtable"]) expect(screen.getByText(title)).toBeTruthy();
-    expect(screen.queryByText("Google Drive")).toBeNull();
-    expect(screen.queryByText("Gmail")).toBeNull();
-    expect(screen.queryByText("Limited access")).toBeNull();
-    expect(screen.queryByText("Preview access required")).toBeNull();
-    expect(screen.queryByText("No API key needed")).toBeNull();
-    expect(screen.queryByText("Authorize on the service’s website")).toBeNull();
-    expect(screen.getByRole("button", { name: "Discover" })).toBeTruthy();
+    await screen.findByRole("heading", { level: 2, name: "No connectors yet" });
+    expect(screen.queryByText("Quick start")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Browse all connectors" })).toBeNull();
+    for (const title of ["Exa", "Notion", "Linear", "Airtable"]) expect(screen.queryByText(title)).toBeNull();
+    const discover = screen.getByRole("button", { name: "Discover" });
+    await waitFor(() => expect(discover.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(discover);
+    const dialog = within(await screen.findByRole("dialog", { name: "Discover" }));
+    for (const title of ["Exa", "Notion", "Linear", "Airtable"])
+      expect(await dialog.findByRole("button", { name: `Add: ${title}` })).toBeTruthy();
   });
 
   it.each(["Google Drive", "Gmail"])("shows %s requirements before creating or authorizing", async (title) => {

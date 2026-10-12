@@ -66,11 +66,19 @@ import {
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
+  CLOUD_BILLING_CHECKOUT_PATH,
+  CLOUD_BILLING_PATH,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
+  CLOUD_USAGE_PATH,
   type CloudAvailability,
   CloudAvailabilitySchema,
+  CloudBillingSummarySchema,
+  type CloudCreditCheckoutRequest,
+  CloudCreditCheckoutResponseSchema,
   type CloudModelOptions,
   CloudModelOptionsSchema,
+  CloudUsageSummarySchema,
+  type CloudUsageWindowDays,
   COMPUTER_ACCESS_CAPABILITY_HEADER,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
@@ -284,6 +292,22 @@ export class BrowserApi {
     readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
     readonly diagnosticReporter: DiagnosticReporter = new ConsoleDiagnosticReporter(),
   ) {}
+
+  cloudUsage(windowDays: CloudUsageWindowDays) {
+    return this.request(`${CLOUD_USAGE_PATH}?windowDays=${windowDays}`, CloudUsageSummarySchema);
+  }
+
+  cloudBilling() {
+    return this.request(CLOUD_BILLING_PATH, CloudBillingSummarySchema);
+  }
+
+  cloudCreditCheckout(input: CloudCreditCheckoutRequest) {
+    return this.request(CLOUD_BILLING_CHECKOUT_PATH, CloudCreditCheckoutResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
 
   me(): Promise<MeResponse> {
     return this.request("/api/v1/me", MeResponseSchema);

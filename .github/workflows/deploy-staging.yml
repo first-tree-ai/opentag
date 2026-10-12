@@ -200,6 +200,15 @@ jobs:
             exit 1
           }
 
+      - name: Verify rollout safety before deploying the image
+        if: steps.gate.outputs.deploy == 'true'
+        env:
+          SERVER_REVISION: ${{ steps.target.outputs.revision }}
+        run: >-
+          node scripts/runner/deploy.mjs preflight
+          --release "$RUNNER_TEMP/runner-target.json"
+          --server-revision "$SERVER_REVISION"
+
       - name: Deploy the commit image to CapRover
         if: steps.gate.outputs.deploy == 'true'
         uses: caprover/deploy-from-github@058a3e0d8fb21bfc0ce207b79b1fc757d765a009 # v2.0.0

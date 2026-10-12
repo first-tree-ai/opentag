@@ -90,6 +90,7 @@ export const imMessageDeliveries = pgTable(
     attention: imDeliveryAttention("attention").notNull(),
     state: imDeliveryState("state").notNull().default("pending"),
     placementGeneration: bigint("placement_generation", { mode: "number" }).notNull(),
+    executionOrigin: text("execution_origin").$type<"local" | "cloud">(),
     dispatchRequestId: uuid("dispatch_request_id"),
     dispatchInputHash: text("dispatch_input_hash"),
     dispatchPayload: jsonb("dispatch_payload").$type<DirectImMessageDeliveryRequest | RuntimeImSteerRequest>(),

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "yaml";
 import {
+  assertBillingEnvironment,
   assertRunnerEnvironment,
   assertServerImage,
   caproverLogin,
@@ -31,6 +34,25 @@ const OLD_DIGEST = `sha256:${"0".repeat(64)}`;
 const RELEASE_SHA = "a".repeat(40);
 const SERVER_SHA = "c".repeat(40);
 const PASSWORD = "fixture-password";
+const BILLING_SHA = "b".repeat(40);
+
+function billingDefinition(overrides = {}) {
+  const definition = appDefinition({
+    serviceUpdateOverride: JSON.stringify({
+      UpdateConfig: { Order: "stop-first", Parallelism: 1, FailureAction: "pause" },
+      RollbackConfig: { Order: "stop-first", Parallelism: 1 },
+      TaskTemplate: { ContainerSpec: { StopGracePeriod: 630_000_000_000 } },
+    }),
+    ...overrides,
+  });
+  definition.envVars.push(
+    ...["OPENTAG_CLOUD_BILLING_ENABLED", "OPENTAG_CLOUD_MODEL_ENABLED", "OPENTAG_AUTO_MIGRATE"].map((key) => ({
+      key,
+      value: "true",
+    })),
+  );
+  return definition;
+}
 
 const release = parseReleaseRecord(
   formatReleaseRecord({
@@ -928,4 +950,200 @@ test("readyz deadline counts request time as well as sleep time", async () => {
   );
   assert.equal(probes, 1);
   assert.equal(time, 30);
+});
+
+test("billing configuration rejects overlapping processes, insufficient drain time and overridden build identity", () => {
+  const validate = (definition, billingRevision = BILLING_SHA) =>
+    assertBillingEnvironment({ definition, envVars: readEnvVars(definition), billingRevision });
+  validate(billingDefinition());
+  assert.throws(() => validate(billingDefinition({ instanceCount: 2 })), /one replica/);
+  assert.throws(() => validate(billingDefinition({ serviceUpdateOverride: "{}" })), /stop-first/);
+  const shortDrain = billingDefinition();
+  const override = JSON.parse(shortDrain.serviceUpdateOverride);
+  override.TaskTemplate.ContainerSpec.StopGracePeriod = 30_000_000_000;
+  shortDrain.serviceUpdateOverride = JSON.stringify(override);
+  assert.throws(() => validate(shortDrain), /drain requests/);
+  const overridden = billingDefinition();
+  overridden.envVars.push({ key: "OPENTAG_BILLING_REVISION", value: BILLING_SHA });
+  assert.throws(() => validate(overridden), /come from the image/);
+  const disabled = billingDefinition();
+  disabled.envVars.find(({ key }) => key === "OPENTAG_CLOUD_BILLING_ENABLED").value = "false";
+  assert.equal(validate(disabled), 0);
+  assert.throws(
+    () => assertBillingEnvironment({ definition: billingDefinition(), envVars: readEnvVars(billingDefinition()) }),
+    /pinned billing revision/,
+  );
+});
+
+test("a bundled billing package does not enable billing during preflight, checks or Runner activation", async () => {
+  for (const flag of [undefined, "false"]) {
+    for (const mode of ["preflight", "check", "apply"]) {
+      const definition = appDefinition();
+      if (flag) definition.envVars.push({ key: "OPENTAG_CLOUD_BILLING_ENABLED", value: flag });
+      const fake = caproverFake({ definition });
+      const result = await runDeploy(
+        deployDeps(fake, {
+          mode,
+          billingRevision: BILLING_SHA,
+          fetchImpl: async (url, options) => {
+            assert.ok(!url.endsWith("/cloud-readyz"), "Disabled billing must not be a readiness gate");
+            return fake.fetchImpl(url, options);
+          },
+        }),
+      );
+      assert.equal(result.mode, mode);
+      assert.equal(fake.updates().length, mode === "apply" ? 1 : 0);
+      if (mode === "apply") {
+        const environment = fake.state.definition.envVars;
+        assert.equal(environment.find(({ key }) => key === "OPENTAG_CLOUD_BILLING_ENABLED")?.value, flag);
+      }
+    }
+  }
+});
+
+function cloudFake({ status = 200, revision = BILLING_SHA, malformed = false } = {}) {
+  const fake = caproverFake({ definition: billingDefinition() });
+  let probes = 0;
+  const fetchImpl = async (url, options) => {
+    if (!url.endsWith("/cloud-readyz")) return fake.fetchImpl(url, options);
+    probes += 1;
+    const ready = await fake.fetchImpl(url.replace("/cloud-readyz", "/readyz"), options);
+    return {
+      ...ready,
+      status,
+      json: async () => {
+        if (malformed) throw new SyntaxError("invalid JSON");
+        return { status: status === 200 ? "ready" : "not_ready", billing: { revision } };
+      },
+    };
+  };
+  return { ...fake, fetchImpl, probes: () => probes };
+}
+
+test("cloud activation verifies billing before mutation and after the Runner update", async () => {
+  const fake = cloudFake();
+  const result = await runDeploy(deployDeps(fake, { mode: "apply", billingRevision: BILLING_SHA }));
+  assert.equal(result.updated, true);
+  assert.equal(fake.updates().length, 1);
+  assert.equal(fake.probes(), 2);
+});
+
+test("billing failures and mismatched revisions never authorize Runner activation", async () => {
+  for (const settings of [{ status: 503 }, { revision: "d".repeat(40) }, { malformed: true }]) {
+    const fake = cloudFake(settings);
+    await assert.rejects(
+      runDeploy(
+        deployDeps(fake, {
+          mode: "apply",
+          billingRevision: BILLING_SHA,
+          deadlineMs: 30,
+          intervalMs: 10,
+        }),
+      ),
+      /did not prove/,
+    );
+    assert.equal(fake.updates().length, 0);
+  }
+});
+
+test("cloud check mode requires billing readiness and remains read-only", async () => {
+  const good = cloudFake();
+  await runDeploy(deployDeps(good, { billingRevision: BILLING_SHA }));
+  assert.equal(good.updates().length, 0);
+  const bad = cloudFake({ status: 503 });
+  await assert.rejects(runDeploy(deployDeps(bad, { billingRevision: BILLING_SHA })), /gate failed/);
+  assert.equal(bad.updates().length, 0);
+});
+
+test("healthy billing cannot mask failed application readiness or a different Server revision", async () => {
+  for (const response of [
+    { status: 503, headers: headerMap({ "x-opentag-revision": SERVER_SHA }) },
+    { status: 200, headers: headerMap({ "x-opentag-revision": RELEASE_SHA }) },
+  ]) {
+    const fake = cloudFake();
+    await assert.rejects(
+      runDeploy(
+        deployDeps(fake, {
+          billingRevision: BILLING_SHA,
+          fetchImpl: (url, options) => (url.endsWith("/readyz") ? response : fake.fetchImpl(url, options)),
+        }),
+      ),
+      /gate failed/,
+    );
+    assert.equal(fake.probes(), 0);
+    assert.equal(fake.updates().length, 0);
+  }
+});
+
+test("preflight checks rollout safety without requiring the new image or probing readiness", async () => {
+  const definition = billingDefinition();
+  definition.versions[0].deployedImageName = `ghcr.io/first-tree-ai/opentag:${RELEASE_SHA}`;
+  const fake = caproverFake({ definition });
+  const result = await runDeploy(
+    deployDeps(fake, {
+      mode: "preflight",
+      billingRevision: BILLING_SHA,
+      fetchImpl: (url, options) => {
+        assert.ok(!url.endsWith("/readyz") && !url.endsWith("/cloud-readyz"));
+        return fake.fetchImpl(url, options);
+      },
+    }),
+  );
+  assert.equal(result.mode, "preflight");
+  assert.equal(fake.updates().length, 0);
+  assert.equal(
+    parseDeployArgv(["preflight", "--release", "r.json", "--server-revision", SERVER_SHA]).mode,
+    "preflight",
+  );
+});
+
+test("preflight rejects unsafe billing configuration and an ongoing image build", async () => {
+  for (const [settings, message] of [
+    [{ definition: billingDefinition({ instanceCount: 2 }) }, /one replica/],
+    [{ definition: billingDefinition({ serviceUpdateOverride: "{}" }) }, /stop-first/],
+    [{ definition: billingDefinition(), isBuilding: true }, /ongoing app build/],
+  ]) {
+    const fake = caproverFake(settings);
+    await assert.rejects(runDeploy(deployDeps(fake, { mode: "preflight", billingRevision: BILLING_SHA })), message);
+    assert.equal(fake.updates().length, 0);
+  }
+});
+
+test("staging gates image deployment on the read-only safety preflight", () => {
+  const workflow = parse(readFileSync(new URL("../../.github/workflows/deploy-staging.yml", import.meta.url), "utf8"));
+  const steps = workflow.jobs.staging.steps;
+  const preflight = steps.findIndex((step) => step.run?.includes("scripts/runner/deploy.mjs preflight"));
+  const deploy = steps.findIndex((step) => step.uses?.startsWith("caprover/deploy-from-github@"));
+  const apply = steps.findIndex((step) => step.run?.includes("scripts/runner/deploy.mjs apply"));
+  assert.ok(preflight >= 0 && preflight < deploy && deploy < apply);
+  assert.equal(steps[preflight].if, steps[deploy].if);
+  assert.equal(steps[preflight]["continue-on-error"], undefined);
+});
+
+test("cloud rollout waits beyond five minutes so a full request can drain", async () => {
+  const fake = cloudFake();
+  let time = 0;
+  let probes = 0;
+  const result = await runDeploy(
+    deployDeps(fake, {
+      mode: "apply",
+      billingRevision: BILLING_SHA,
+      now: () => time,
+      sleep: async (ms) => {
+        time += ms;
+      },
+      fetchImpl: async (url, options) => {
+        const response = await fake.fetchImpl(url, options);
+        if (url.endsWith("/cloud-readyz") && ++probes === 1) {
+          assert.equal(fake.updates().length, 0);
+          time += 500_000;
+          return { ...response, status: 503 };
+        }
+        return response;
+      },
+    }),
+  );
+  assert.equal(result.updated, true);
+  assert.equal(time, 505_000);
+  assert.equal(fake.updates().length, 1);
 });

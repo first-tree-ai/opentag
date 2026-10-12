@@ -48,3 +48,6 @@ Thumbs.db
 
 # Short-lived credentials written by google-github-actions/auth; never build inputs.
 gha-creds-*.json
+
+# Private package checkout used only by the trusted cloud image build.
+.cloud-billing/

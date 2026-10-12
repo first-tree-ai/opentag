@@ -61,7 +61,7 @@ describe("MCP daily use", () => {
   it("does not turn a disabled connection into an authorization error", async () => {
     stub([entry({ enabled: false, authorization: null, snapshot: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("Disabled for Reviewer · Settings kept")).toBeTruthy();
+    expect(await screen.findByText("Disabled")).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Allow Reviewer to use linear" }).getAttribute("aria-checked")).toBe(
       "false",
     );
@@ -115,13 +115,11 @@ describe("MCP daily use", () => {
     expect(await screen.findByText("MCP_PROBE_FAILED: upstream limit")).toBeTruthy();
     fireEvent.click(errorDetails);
     fireEvent.click(retry);
-    expect(await screen.findByText("Try later")).toBeTruthy();
+    expect(await screen.findByText("Couldn’t connect. Try again.")).toBeTruthy();
     expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
-    expect(
-      screen.getByRole("button", { name: /^Action failed/, description: "View error details" }).textContent,
-    ).toContain("Action failed");
+    expect(screen.getByRole("alert").textContent).toContain("Couldn’t connect.");
   });
   it("shows a real pending probe even before its first timestamp", async () => {
     stub([entry({ snapshot: null, authorization: { ...authorization(), probeState: "pending", probedAt: null } })]);
@@ -328,15 +326,15 @@ describe("MCP daily use", () => {
     expect(attach).not.toHaveBeenCalled();
     expect(window.location.search).toBe("");
   });
-  it("keeps a canceled Discover sign-in in authentication rather than the URL Add flow", async () => {
+  it("returns canceled Discover sign-in to a retryable list without an authentication chooser", async () => {
     rememberMcpReturn({ agentId: AGENT_ID, serverId: SERVER_ID, source: "authorize" });
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByRole("dialog", { name: "linear authentication" })).toBeTruthy();
-    expect(screen.getByText("Sign-in was not completed. Try again.")).toBeTruthy();
-    expect(screen.queryByRole("dialog", { name: "Add server" })).toBeNull();
-    expect(screen.queryByLabelText("Server URL")).toBeNull();
+    expect(await screen.findByText("Sign-in was not completed. Try again.")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect" })).toBeTruthy();
   });
   it("returns to the saved tool search and scroll position after canceling reconnect", async () => {
     stub([entry({ authorization: { ...authorization(), status: "expired" } })]);

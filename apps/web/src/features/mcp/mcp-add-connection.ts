@@ -1,29 +1,26 @@
-import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
-import {
-  MCP_AUTH_REJECTION_SUMMARY,
-  MCP_ERROR_CODES,
-  type MCPAgentServer,
-  type MCPAuthKind,
-  type MCPServer,
-  MCPServerUrlSchema,
-} from "@opentag/shared/browser";
+import { type MCPAgentServer, type MCPAuthKind, type MCPServer, MCPServerUrlSchema } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { comparableUrl } from "./catalog/mcp-catalog-model.js";
 import type { McpAddProps } from "./mcp-add-dialog.js";
-import { suggestServerName } from "./mcp-form-model.js";
 import {
-  useAttachMcpServer,
-  useCreateMcpServer,
-  useMcpServers,
-  useProbeMcpServer,
-  useSetMcpAuthorization,
-  useStartMcpOAuth,
-} from "./mcp-queries.js";
-import { rememberMcpReturn } from "./mcp-return-context.js";
+  connectionFailure,
+  McpConnectionError,
+  requiresConnectionKey,
+  useMcpConnectionOperation,
+} from "./mcp-connection.js";
+import { allowsOAuthDiscovery, connectionAuthKind, connectionPreset } from "./mcp-connection-model.js";
+import { suggestServerName } from "./mcp-form-model.js";
+import { useAttachMcpServer, useCreateMcpServer, useMcpServers } from "./mcp-queries.js";
 
-type Attempt = { url: string; kind?: MCPAuthKind; server?: MCPServer; binding?: MCPAgentServer };
+type Attempt = {
+  url: string;
+  kind?: MCPAuthKind;
+  server?: MCPServer;
+  binding?: MCPAgentServer;
+  allowOAuthDiscovery?: boolean;
+};
 export function useMcpAddConnection(props: McpAddProps) {
   const account = useMcpServers();
   const [openingServers, setOpeningServers] = useState<MCPServer[]>();
@@ -36,9 +33,7 @@ export function useMcpAddConnection(props: McpAddProps) {
   );
   const create = useCreateMcpServer(props.agentId);
   const attach = useAttachMcpServer(props.agentId);
-  const authorize = useSetMcpAuthorization(props.agentId);
-  const oauth = useStartMcpOAuth(props.agentId);
-  const probe = useProbeMcpServer(props.agentId);
+  const operation = useMcpConnectionOperation(props.agentId);
   const [url, setUrl] = useState("");
   const [selectedId, setSelectedId] = useState<string>();
   const [key, setKey] = useState("");
@@ -65,7 +60,7 @@ export function useMcpAddConnection(props: McpAddProps) {
     const value = binding?.effective.url ?? server.url;
     setUrl(value);
     setSelectedId(server.id);
-    attempt.current = { url: value, server, binding, kind: binding?.authorization?.kind ?? server.defaultAuthKind };
+    attempt.current = { url: value, server, binding, kind: connectionAuthKind(value, binding, server) };
   }, [account.data, props.initialServerId, props.mounted]);
   const isAdded = (id: string) => {
     const binding = openingMounted.current.find((entry) => entry.mcpServerId === id);
@@ -91,7 +86,7 @@ export function useMcpAddConnection(props: McpAddProps) {
       url: value.trim(),
       server,
       binding,
-      kind: binding?.authorization?.kind ?? server?.defaultAuthKind,
+      kind: server ? connectionAuthKind(value, binding, server) : undefined,
     };
   };
   const choose = (server: MCPServer) => {
@@ -129,41 +124,6 @@ export function useMcpAddConnection(props: McpAddProps) {
       return binding;
     }
   }
-  async function startOAuth(current: Attempt) {
-    if (!current.server) return;
-    const preset = MCP_CATALOG_ENTRIES.find((entry) => comparableUrl(entry.url) === comparableUrl(current.url));
-    const result = await oauth.mutateAsync({
-      mcpServerId: current.server.id,
-      ...(preset?.oauthScopes?.length ? { scopes: [...preset.oauthScopes] } : {}),
-    });
-    if (!alive.current) return;
-    rememberMcpReturn({ agentId: props.agentId, serverId: current.server.id, source: "add" });
-    window.location.assign(result.authorizationUrl);
-  }
-  async function loadTools(current: Attempt) {
-    const binding = current.binding;
-    if (!binding) return;
-    setPhase("tools");
-    const result = await probe.mutateAsync(binding.mcpServerId);
-    if (!alive.current) return;
-    if (result.probeState !== "succeeded") {
-      // The existing probe contract retains this bounded, credential-free auth rejection summary.
-      // It is evidence to try OAuth discovery, never evidence to request an API key.
-      if (result.probeError === `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`) {
-        if (current.kind === "bearer") {
-          setNeedsKey(true);
-          throw new Error("key");
-        }
-        current.kind = "oauth";
-        setPhase("connecting");
-        await startOAuth(current);
-        return;
-      }
-      throw new Error("tools");
-    }
-    if (!result.toolsCount) throw new Error("empty");
-    props.onAdded(binding);
-  }
   function prepareAttempt(current: Attempt) {
     if (!current.server) {
       const match = uniqueServer(current.url, account.data?.servers ?? servers);
@@ -173,31 +133,30 @@ export function useMcpAddConnection(props: McpAddProps) {
       }
     }
     current.binding ??= props.mounted.find((entry) => entry.mcpServerId === current.server?.id);
-    const preset = MCP_CATALOG_ENTRIES.find((entry) => comparableUrl(entry.url) === comparableUrl(current.url));
-    current.kind ??=
-      current.binding?.authorization?.kind ?? current.server?.defaultAuthKind ?? preset?.defaultAuthKind ?? "none";
+    current.kind ??= connectionAuthKind(current.url, current.binding, current.server);
+    current.allowOAuthDiscovery ??= allowsOAuthDiscovery(current.url, current.kind);
   }
   function requireKey(current: Attempt, focusKey: () => void) {
-    if (current.kind !== "bearer" || key.trim() || current.binding?.authorization?.status === "active") return false;
+    if (!requiresConnectionKey(current.kind, current.binding, key)) return false;
     setNeedsKey(true);
     requestAnimationFrame(focusKey);
     return true;
   }
   async function authorizeConnection(current: Attempt) {
-    if (!current.server || !current.binding) return;
-    if (current.kind === "oauth") {
-      if (current.binding.authorization?.status === "active") await loadTools(current);
-      else await startOAuth(current);
-      return;
-    }
-    if (key.trim() || current.binding.authorization?.status !== "active") {
-      current.binding = await authorize.mutateAsync({
-        mcpServerId: current.server.id,
-        kind: current.kind ?? "none",
-        ...(current.kind === "bearer" ? { bearerKey: key } : {}),
+    if (!current.binding || !current.kind) return;
+    const pending = { binding: current.binding, kind: current.kind, allowOAuthDiscovery: current.allowOAuthDiscovery };
+    try {
+      const result = await operation(pending, {
+        token: key,
+        source: "add",
+        onTools: () => setPhase("tools"),
+        isAlive: () => alive.current,
       });
+      if (alive.current && result === "connected") props.onAdded(pending.binding);
+    } finally {
+      current.binding = pending.binding;
+      current.kind = pending.kind;
     }
-    await loadTools(current);
   }
   async function runConnection(current: Attempt, focusKey: () => void) {
     prepareAttempt(current);
@@ -211,6 +170,11 @@ export function useMcpAddConnection(props: McpAddProps) {
     current.binding = await resolveBinding(current);
     if (alive.current) await authorizeConnection(current);
   }
+  function reportFailure(cause: unknown) {
+    if (!alive.current) return;
+    if (cause instanceof McpConnectionError && cause.reason === "key") setNeedsKey(true);
+    setError(connectionError(cause, attempt.current.kind));
+  }
   async function connect(focusKey: () => void) {
     if (inFlight.current || !url.trim() || !account.data) return;
     if (!validUrl) {
@@ -223,7 +187,7 @@ export function useMcpAddConnection(props: McpAddProps) {
     try {
       await runConnection(attempt.current, focusKey);
     } catch (cause) {
-      if (alive.current) setError(connectionError(cause, attempt.current.kind));
+      reportFailure(cause);
     } finally {
       inFlight.current = false;
       if (alive.current) setPhase("idle");
@@ -255,14 +219,8 @@ export function useMcpAddConnection(props: McpAddProps) {
 }
 
 function connectionError(cause: unknown, kind?: MCPAuthKind): string {
-  if (cause instanceof Error) {
-    if (cause.message === "ambiguous") return m.mcp_add_choose_existing();
-    if (cause.message === "tools") return m.mcp_add_tools_failed();
-    if (cause.message === "empty") return m.mcp_add_no_tools();
-    if (cause.message === "key") return m.mcp_add_key_error();
-  }
-  if (kind === "oauth") return m.mcp_add_sign_in_failed();
-  return m.mcp_add_connection_error();
+  if (cause instanceof Error && cause.message === "ambiguous") return m.mcp_add_choose_existing();
+  return connectionFailure(cause, kind);
 }
 
 function uniqueServer(url: string, servers: readonly MCPServer[]): MCPServer | undefined {
@@ -271,7 +229,7 @@ function uniqueServer(url: string, servers: readonly MCPServer[]): MCPServer | u
   return matches[0];
 }
 function newServerInput(current: Attempt, servers: readonly MCPServer[]) {
-  const preset = MCP_CATALOG_ENTRIES.find((entry) => comparableUrl(entry.url) === comparableUrl(current.url));
+  const preset = connectionPreset(current.url);
   const input = {
     name:
       preset && !servers.some((server) => server.name === preset.name)
@@ -280,7 +238,8 @@ function newServerInput(current: Attempt, servers: readonly MCPServer[]) {
     url: current.url,
     defaultAuthKind: current.kind ?? ("none" as const),
     ...(preset?.authHeader ? { authHeader: preset.authHeader } : {}),
-    ...(preset?.authScheme ? { authScheme: preset.authScheme } : {}),
+    ...(preset?.authScheme !== undefined ? { authScheme: preset.authScheme } : {}),
+    ...(preset?.extraHeaders ? { extraHeaders: preset.extraHeaders } : {}),
   };
   return input;
 }

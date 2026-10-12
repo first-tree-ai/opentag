@@ -1075,8 +1075,10 @@ an endpoint. The marketplace catalog closes that gap: a curated set of remote St
 that an Agent can add from the independent **Discover services** directory and from its empty state.
 The existing **Add server** picker retains its Discover, Account pool, import, and manual sources.
 Removing its Discover source is a separate change; the standalone directory owns only its add state.
-The empty state starts directly with **Quick start**, without repeating the page introduction in
-a separate onboarding banner. It offers Exa, Notion, Linear, and Airtable, using brand names
+The page keeps one **Add server** action in its header alongside the independent directory action.
+For an Agent with no mounted Servers, Add server opens its Discover source directly; otherwise it
+keeps the Account/URL source. The empty state starts directly with **Quick start**, without repeating
+the page introduction or Add server action in a separate onboarding panel. It offers Exa, Notion, Linear, and Airtable, using brand names
 and example tasks for web research, documents, tasks, and table records. Google Workspace services
 remain in Discover but are excluded from Quick start because their developer preview requires
 preview access and deployment configuration. Asana is not a Quick start substitute because its V2 MCP

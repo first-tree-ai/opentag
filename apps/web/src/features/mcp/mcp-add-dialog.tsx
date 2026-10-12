@@ -27,7 +27,7 @@ import type { MCPImportServer } from "./mcp-import-model.js";
 import { McpImportPanel, useMcpImport } from "./mcp-import-panel.js";
 import { useAttachMcpServer, useCreateMcpServer, useMcpServers } from "./mcp-queries.js";
 
-/** Which source the picker opens on. The empty state lands on the catalog; the header lands on URL. */
+/** The page action opens Discover for an empty Agent and the default source otherwise. */
 export type AddSource = "existing" | "discover" | "import" | "manual";
 
 /**

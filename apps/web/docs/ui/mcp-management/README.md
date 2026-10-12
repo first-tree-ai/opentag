@@ -1,5 +1,24 @@
 # MCP management UI validation
 
+## Empty state refinement (2026-10-12)
+
+The page describes its purpose as connecting the Agent to external tools. The empty state uses the existing
+connection icon at 32px, an 18px heading and concise guidance directly on the page background. One Add server
+action remains in the page header. It opens Discover directly for an Agent with no mounted Servers and
+keeps the Account/URL source for an Agent with existing mounts.
+
+- [Desktop empty state (1440 × 900)](empty-desktop.png)
+- [English empty state (320 × 640)](empty-320.png)
+- [Chinese empty state (320 × 640)](empty-zh-320.png)
+
+These screenshots use the production React components and theme in a disposable built preview with synthetic
+in-memory API responses. They do not claim live storage or provider validation. Browser checks confirmed the
+single add action opens its dialog, Discover remains reachable, and the 320px document has no horizontal
+overflow. This follow-up checked 320px and 1440px; intermediate widths and axe scans were not repeated.
+No reusable block, theme value or CSS exception was added.
+
+## Existing management journeys
+
 The MCP list opens server details from the service identity and keeps the Agent enable switch independent.
 Details group Authentication, Tools, Advanced settings and Server information in that order. Authentication and
 Tools replace the current dialog and return to their source; destructive confirmations replace it as well.

@@ -7,7 +7,7 @@ import { withLocaleAsync } from "../../__tests__/support/with-locale.js";
 import { ApiError, browserApi } from "../../api.js";
 import { McpAddDialog } from "./mcp-add-dialog.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, detail, entry, newAddress, openAdd, stub, wrap } from "./mcp-test-fixtures.js";
+import { AGENT_ID, detail, entry, newAddress, openAdd, openExisting, stub, wrap } from "./mcp-test-fixtures.js";
 
 /**
  * The manual configuration source: the entry for a Server whose address, name, and authorization the
@@ -79,15 +79,15 @@ const expectNothingWritten = (writes: ReturnType<typeof stubManualWrites>) => {
 };
 
 describe("MCP manual configuration source", () => {
-  it("offers the manual source beside the three existing ones", async () => {
-    stub([]);
+  it("keeps the account source selected for an Agent with mounts and offers the manual source", async () => {
+    stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
     await openAdd();
     await screen.findByRole("button", { name: MANUAL_SOURCE });
     for (const name of ["Discover", EXISTING_SOURCE, "Import configuration", MANUAL_SOURCE]) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
-    // The page header opens on the Account pool, so the manual source starts unpressed.
+    // An Agent with mounts keeps the Account pool as the default source.
     expect(screen.getByRole("button", { name: EXISTING_SOURCE }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: MANUAL_SOURCE }).getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(screen.getByRole("button", { name: MANUAL_SOURCE }));
@@ -161,7 +161,7 @@ describe("MCP manual configuration source", () => {
     stub([]);
     vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(1).server] });
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
+    await openExisting();
     fireEvent.click(await screen.findByRole("button", { name: /linear.*https/ }));
     expect(screen.getByText(/Authorize separately for Reviewer/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));

@@ -4,7 +4,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../../api.js";
 import { McpPage } from "../mcp-page.js";
-import { AGENT_ID, entry, stub, wrap } from "../mcp-test-fixtures.js";
+import { AGENT_ID, entry, openAdd, stub, wrap } from "../mcp-test-fixtures.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
 
 /**
@@ -264,8 +264,9 @@ describe("Discover to Agent management", () => {
     await openDiscover();
     expect(screen.queryByRole("button", { name: "Use an existing Server" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close Discover services" }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Add server" })[0] as HTMLElement);
-    expect(await screen.findByRole("button", { name: "Discover" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Add server" })).toHaveLength(1);
+    await openAdd();
+    expect((await screen.findByRole("button", { name: "Discover" })).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Use an existing Server" })).toBeTruthy();
   });
 

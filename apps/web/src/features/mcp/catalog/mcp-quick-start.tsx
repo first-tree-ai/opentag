@@ -4,13 +4,7 @@ import { Button, Icon, Text } from "../../../ui/design-system.js";
 import { McpCatalogCard } from "./mcp-discover-source.js";
 
 /** A small, task-oriented starting point; the catalog remains the source of connection details. */
-export function McpQuickStart({
-  onDiscover,
-  onAdd,
-}: {
-  onDiscover: (entry?: McpCatalogEntry) => void;
-  onAdd: () => void;
-}) {
+export function McpQuickStart({ onDiscover }: { onDiscover: (entry?: McpCatalogEntry) => void }) {
   const examples = [
     { id: "exa", example: m.mcp_quick_example_exa() },
     { id: "notion", example: m.mcp_quick_example_notion() },
@@ -37,12 +31,6 @@ export function McpQuickStart({
         <Button variant="ghost" className="mt-4" onClick={() => onDiscover()}>
           {m.mcp_quick_browse()}
           <Icon name="arrow-right" />
-        </Button>
-      </div>
-      <div className="flex flex-wrap items-center gap-2 border-t border-kumo-line pt-4 text-xs text-kumo-subtle">
-        <span>{m.mcp_quick_custom()}</span>
-        <Button variant="ghost" size="compact" onClick={onAdd}>
-          {m.mcp_create_action()}
         </Button>
       </div>
     </div>

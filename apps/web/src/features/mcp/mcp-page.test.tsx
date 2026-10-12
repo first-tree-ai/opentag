@@ -7,6 +7,7 @@ import {
   AGENT_ID,
   authorization,
   entry,
+  openAdd,
   openDetails,
   openRemove,
   openTools,
@@ -139,7 +140,10 @@ describe("MCP daily use", () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("Quick start")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Add server" }).length).toBeGreaterThan(0);
+    expect(screen.getByText("Connect your Agent to external tools.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Add server" })).toHaveLength(1);
+    await openAdd();
+    expect((await screen.findByRole("button", { name: "Discover" })).getAttribute("aria-pressed")).toBe("true");
   });
   it("shows tool truncation only as a disclosure in the tool browser", async () => {
     stub([entry({ authorization: { ...authorization(), toolsCount: 200, toolsTruncated: true } })]);

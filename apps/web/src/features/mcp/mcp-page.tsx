@@ -121,7 +121,12 @@ export function McpPage({ agentId }: { agentId: string }) {
           <Icon name="integrations" />
           {m.mcp_discover_action()}
         </Button>
-        <Button ref={addTrigger} variant="secondary" disabled={addDisabled} onClick={() => setPanel({ kind: "add" })}>
+        <Button
+          ref={addTrigger}
+          variant="secondary"
+          disabled={addDisabled}
+          onClick={() => setPanel({ kind: "add", source: servers.length ? undefined : "discover" })}
+        >
           <Icon name="plus" />
           {m.mcp_create_action()}
         </Button>
@@ -178,10 +183,7 @@ export function McpPage({ agentId }: { agentId: string }) {
           ))}
         </ul>
       ) : !mounted.isError ? (
-        <McpQuickStart
-          onDiscover={(entry) => setPanel({ kind: "discover", entry })}
-          onAdd={() => setPanel({ kind: "add" })}
-        />
+        <McpQuickStart onDiscover={(entry) => setPanel({ kind: "discover", entry })} />
       ) : null}
       {removed ? (
         <p role="status" className="text-sm text-kumo-subtle">

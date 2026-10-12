@@ -60,7 +60,7 @@ function sameConfiguration(
 ): previous is ConnectionAttempt {
   return Boolean(
     previous &&
-      previous.binding.effective.url === binding.effective.url &&
+      JSON.stringify(previous.binding.effective) === JSON.stringify(binding.effective) &&
       previous.binding.authorization?.kind === binding.authorization?.kind &&
       previous.binding.authorization?.revision === binding.authorization?.revision,
   );

@@ -3,7 +3,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, authorization, detail, entry, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
+import { AGENT_ID, authorization, detail, entry, openDetails, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
 
 const rejection = `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`;
 const ready = {
@@ -189,5 +189,33 @@ describe("ordinary MCP Connect", () => {
       finish({ ...ready, probeState: "failed", probeError: rejection, toolsCount: null });
     });
     expect(oauth).not.toHaveBeenCalled();
+  });
+  it("probes the saved headers after settings change instead of retaining a failed discovery hint", async () => {
+    let binding = entry({
+      effective: { ...entry().effective, url: "https://unknown.test/mcp" },
+      authorization: { ...authorization(), kind: "none", probeState: "failed", probeError: rejection },
+    });
+    stub([binding]);
+    vi.mocked(browserApi.agentMcpServers).mockImplementation(async () => ({ servers: [binding] }));
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(502, "unsupported"));
+    const probe = vi
+      .spyOn(browserApi, "probeMcpServer")
+      .mockResolvedValueOnce({ ...ready, probeState: "failed", probeError: rejection, toolsCount: null })
+      .mockResolvedValue(ready);
+    vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation(async () => {
+      binding = { ...binding, effective: { ...binding.effective, extraHeaders: { "x-workspace-id": "updated" } } };
+      return binding;
+    });
+    wrap(<McpPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await screen.findByText("Couldn’t start sign-in. Try again.");
+    await openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
+    fireEvent.change(screen.getByLabelText("Header value"), { target: { value: "updated" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    expect(oauth).toHaveBeenCalledTimes(1);
   });
 });

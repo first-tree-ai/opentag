@@ -1,24 +1,43 @@
 # Connector management UI validation
 
-The current UI uses Connectors, Add custom, and Discover. Existing screenshots record the UI before this rename; the MCP protocol and page URL remain unchanged.
+The current UI uses Connectors, Add custom, and Discover. Earlier screenshots record the UI before this rename; the MCP protocol and page URL remain unchanged.
 
 ## Empty state refinement (2026-10-12)
 
 The page describes its purpose as connecting the Agent to external tools. The empty state uses the existing
-connection icon at 32px, an 18px heading and concise guidance directly on the page background. One Add custom
-action remains in the page header. It opens the same URL-and-shortcuts dialog for an Agent with no
-mounted Servers and an Agent with existing mounts.
+connection icon at 32px, an 18px heading and concise guidance directly on the page background, matching Skills.
+Discover and Add custom remain in the page header; connector choices appear only in Discover, with no
+Quick start cards or duplicate browse action on the management page. Add custom opens the same
+URL-and-shortcuts dialog for an Agent with no mounted Servers and an Agent with existing mounts.
 
 - [Desktop empty state (1440 × 900)](empty-desktop.png)
 - [English empty state (320 × 640)](empty-320.png)
 - [Chinese empty state (320 × 640)](empty-zh-320.png)
 
-These screenshots use the production React components and theme in a disposable built preview with synthetic
-in-memory API responses. They do not claim live storage or provider validation. Browser checks confirmed the
-single add action opens its dialog and the 320px document has no horizontal overflow. The
+These historical screenshots predate the separate Discover action and Connectors rename. They use the production
+React components and theme in a disposable built preview with synthetic in-memory API responses.
+They do not claim live storage or provider validation. Browser checks confirmed the Add server
+action opens its dialog and the 320px document has no horizontal overflow. The
 [Add-flow validation](../mcp-add-server/README.md) covers the current URL entry and server shortcuts.
 This empty-state follow-up checked 320px and 1440px; intermediate widths and axe scans were not repeated.
 No reusable block, theme value or CSS exception was added.
+
+## Restored empty state validation (2026-10-12)
+
+After the standalone directory replaced the original empty state with Quick start cards, the page
+again uses the compact icon, heading, and guidance shared with Skills. The two header actions remain.
+Connector and i18n unit tests passed: 346 tests across 24 files. Repository checks, workspace build,
+and workspace typecheck passed.
+
+A disposable production-component preview with synthetic empty API responses was checked in Chromium
+at 320, 390, 768, and 1440px in English and Chinese, with no horizontal document overflow. Discover
+opened its searchable directory; page unit tests also verified that Add custom opens its URL dialog.
+This preview does not validate live server connections or third-party authorization. Earlier
+screenshots above remain historical.
+
+- [Restored desktop empty state (1440 × 900)](restored-empty-desktop.png)
+- [Restored English empty state (320 × 640)](restored-empty-320.png)
+- [Restored Chinese empty state (320 × 640)](restored-empty-zh-320.png)
 
 ## Existing management journeys
 

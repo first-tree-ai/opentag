@@ -1094,28 +1094,26 @@ create → attach → authorize sequence used by the connection flow.
 
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
-that an Agent can add from the independent **Discover** directory and from its empty state.
+that an Agent can add from the independent **Discover** directory.
 The page keeps one **Add custom** action in its header alongside the independent directory action.
 Add custom opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
 Discover, manual-configuration, or import source switch. The standalone directory owns its add state.
-The empty state starts directly with **Quick start**, without repeating
-the page introduction or Add custom action in a separate onboarding panel. It offers Exa, Notion, Linear, and Airtable, using brand names
-and example tasks for web research, documents, tasks, and table records. Google Workspace services
-remain in Discover but are excluded from Quick start because their developer preview requires
-preview access and deployment configuration. Asana is not a Quick start substitute because its V2 MCP
-server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
+The empty state matches Skills: a centered 32px connection icon, the heading **No connectors yet**,
+and concise guidance directly on the page background. Connector choices stay in Discover; there are
+no recommendation cards, example tasks, or duplicate browse actions on the management page.
+Asana's V2 MCP server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
 See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
 [Linear's MCP setup](https://linear.app/docs/mcp), and
 [Airtable's authentication guide](https://airtable.com/developers/agents/mcp/getting-started).
 Google Workspace cards are labeled **Limited access** and show preview-access and OAuth
 setup requirements before adding the service. All available cards use **Add**. Once mounted, a card
 shows a single non-interactive **✓ Added** status in the action position, regardless of authorization or probe status. Authentication methods and
-connection health belong to service setup and the Agent's management list, not catalog or quick-start
-cards. These are starting points, not popularity rankings.
+connection health belong to service setup and the Agent's management list, not catalog
+cards. The directory is not a popularity ranking.
 
 Directory cards place the service name and description on the left, with **Add** or **Added** on the
 right rather than in a separate footer row. Limited-access labels sit beside the service name.
-On narrow screens, descriptions span the card width. Quick-start cards retain their task examples.
+On narrow screens, descriptions span the card width.
 
 Adding creates or reuses the Account definition and mounts it to this Agent. The directory closes as
 soon as the mount is confirmed, and the management list highlights the service without waiting for
@@ -1244,7 +1242,7 @@ Card descriptions use an action and its object, in one short sentence. Prefer on
 actions over feature lists, jargon, promotional claims, or changing app counts. Aim for no more
 than 45 characters in English and 20 in Chinese, including punctuation; these are editorial
 budgets, not rendering limits. Allow natural wrapping on narrow screens without truncating the
-meaning. Review both locales in Discover and Quick start. Descriptions summarize documented MCP
+meaning. Review both locales in Discover. Descriptions summarize documented MCP
 capabilities within the preset's configured scopes; they do not promise every feature of the
 provider's product or establish successful OpenTag authorization.
 

@@ -613,8 +613,7 @@
   max-height: calc(100dvh - 3rem);
   overflow-wrap: anywhere;
 }
-.mcp-catalog-grid,
-.mcp-quick-grid {
+.mcp-catalog-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
@@ -654,11 +653,6 @@
   margin-top: 0;
   padding-top: 0;
   flex-wrap: nowrap;
-}
-@container content (max-width: 38rem) {
-  .mcp-quick-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 @media (max-width: 600px) {
   .mcp-discover-dialog {

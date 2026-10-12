@@ -205,10 +205,6 @@
   border-color: var(--color-kumo-focus);
   background: var(--color-kumo-tint);
 }
-.mcp-add-tag[aria-pressed="true"] .mcp-add-server-name,
-.mcp-add-server-row[aria-pressed="true"] .mcp-add-server-name {
-  font-weight: 600;
-}
 .mcp-add-tag {
   width: 100%;
 }
@@ -223,6 +219,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.mcp-add-tag[aria-pressed="true"] .mcp-add-server-name,
+.mcp-add-server-row[aria-pressed="true"] .mcp-add-server-name {
+  font-weight: 600;
 }
 .mcp-add-results {
   display: flex;

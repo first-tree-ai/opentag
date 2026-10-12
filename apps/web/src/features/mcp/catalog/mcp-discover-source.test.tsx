@@ -247,7 +247,7 @@ describe("Discover inside the add flow", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await screen.findByRole("heading", { name: "No servers yet" });
     expect(screen.getAllByRole("button", { name: "Add server" })).toHaveLength(1);
-    await openDiscover();
+    await openAdd();
     expect((await screen.findByRole("button", { name: "Discover" })).getAttribute("aria-pressed")).toBe("true");
     expect(await screen.findByText("Alpha")).toBeTruthy();
   });

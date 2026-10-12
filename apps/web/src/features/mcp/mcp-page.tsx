@@ -91,7 +91,7 @@ export function McpPage({ agentId }: { agentId: string }) {
           ref={addTrigger}
           variant="secondary"
           disabled={mounted.isPending || mounted.isError}
-          onClick={() => setPanel({ kind: "add" })}
+          onClick={() => setPanel({ kind: "add", source: servers.length ? undefined : "discover" })}
         >
           <Icon name="plus" />
           {m.mcp_create_action()}

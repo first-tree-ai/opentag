@@ -9,6 +9,7 @@ import {
   newAddress,
   openAdd,
   openDetails,
+  openExisting,
   SERVER_ID,
   stub,
   wrap,
@@ -51,7 +52,7 @@ describe("MCP unified add journey", () => {
   it("validates URLs before continuing and immutable names before creating", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
+    await openExisting();
     fireEvent.change(await screen.findByLabelText("MCP URL"), {
       target: { value: "https://user:secret@example.com/mcp" },
     });
@@ -68,7 +69,7 @@ describe("MCP unified add journey", () => {
       servers: [{ ...detail(1).server, defaultAuthKind: "bearer" }],
     });
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
+    await openExisting();
     const search = await screen.findByLabelText("Search this account or paste an MCP URL");
     fireEvent.change(search, { target: { value: "linear" } });
     fireEvent.submit(search.closest("form") as HTMLFormElement);
@@ -86,7 +87,7 @@ describe("MCP unified add journey", () => {
     stub([]);
     vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(1).server] });
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
+    await openExisting();
     fireEvent.change(await screen.findByLabelText("Search this account or paste an MCP URL"), {
       target: { value: detail(1).server.url },
     });
@@ -99,7 +100,7 @@ describe("MCP unified add journey", () => {
     vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(1).server] });
     const attach = vi.spyOn(browserApi, "attachMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
+    await openExisting();
     expect(await screen.findByText("Added to Reviewer")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "View" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -170,7 +171,7 @@ describe("MCP unified add journey", () => {
     vi.spyOn(browserApi, "attachMcpServer").mockResolvedValue(entry());
     const auth = vi.spyOn(browserApi, "setMcpAuthorization").mockResolvedValue(entry());
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
+    await openExisting();
     fireEvent.click(await screen.findByRole("button", { name: /linear.*https/ }));
     expect(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Add server" }).hasAttribute("disabled"),

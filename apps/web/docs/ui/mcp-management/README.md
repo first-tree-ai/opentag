@@ -4,7 +4,8 @@
 
 The page describes its purpose as connecting the Agent to external tools. The empty state uses the existing
 connection icon at 32px, an 18px heading and concise guidance directly on the page background. One Add server
-action remains in the page header; Discover is available inside that dialog.
+action remains in the page header. It opens Discover directly for an Agent with no mounted Servers and
+keeps the Account/URL source for an Agent with existing mounts.
 
 - [Desktop empty state (1440 × 900)](empty-desktop.png)
 - [English empty state (320 × 640)](empty-320.png)

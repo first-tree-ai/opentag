@@ -907,13 +907,14 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_EXPIRED");
   });
 
-  it.each(["pending", "accepted", "tampered"] as const)(
+  it.each(["pending", "accepted", "accepted after upgrade", "tampered"] as const)(
     "keeps legacy %s work behind the upgrade gate without new runtime snapshots",
     async (scenario) => {
       const fixture = await workerFixture(unit);
       await fixture.registry.register(
         {
-          clientVersion: "0.1.0",
+          clientVersion: scenario === "accepted after upgrade" ? "0.1.1" : "0.1.0",
+          negotiatedCapabilities: { "runtime.sessionReconcile": 1 },
           computerId: fixture.computerId,
           installationId: randomUUID(),
           instanceId: fixture.instanceId,
@@ -958,7 +959,7 @@ describe("ImDeliveryWorker database workflow", () => {
       }).runOnce();
       expect(assembler.assembleForSession).not.toHaveBeenCalled();
       expect(domain.requestDelivery).not.toHaveBeenCalled();
-      if (scenario === "accepted") {
+      if (scenario === "accepted" || scenario === "accepted after upgrade") {
         expect(domain.requestReconcile).toHaveBeenCalledWith(
           fixture.computerId,
           fixture.instanceId,
@@ -1022,8 +1023,8 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: legacy.registry,
       onDiagnostic: legacyDiagnostic,
     }).runOnce();
-    expect(legacyDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
-    expect(legacyAssembler).toHaveBeenCalledWith(legacy.sessionId);
+    expect(legacyDiagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
+    expect(legacyAssembler).not.toHaveBeenCalled();
 
     const invalid = await workerFixture(unit);
     await unit.database

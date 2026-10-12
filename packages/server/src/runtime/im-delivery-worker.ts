@@ -1161,10 +1161,7 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
       return;
     }
-    const upgrading = !this.#registry.allowsBusiness(row.computer.id, instanceId);
-    const recovery = await this.#resolveRecoveryRuntime(row, deliveryId, !upgrading);
-    if ("invalid" in recovery) return;
-    if (!upgrading && row.agent.status === "active" && !recovery.runtime) return;
+    if (!(await this.#validateRecoveryPayload(row, deliveryId))) return;
     try {
       await this.#domain.requestReconcile(row.computer.id, instanceId, {
         type: "session:reconcile",
@@ -1173,8 +1170,8 @@ export class ImDeliveryWorker {
         sessionId: row.session.id,
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,
-        desired: !upgrading && row.agent.status === "active" ? "ready" : "stopped",
-        ...(!upgrading && recovery.runtime ? { runtime: recovery.runtime } : {}),
+        // Accepted work must settle before applying any snapshot, including after an upgrade.
+        desired: "stopped",
       });
       setActiveSpanAttributes(outcomeAttrs("recovered"));
     } catch {
@@ -1182,11 +1179,8 @@ export class ImDeliveryWorker {
     }
   }
 
-  /**
-   * The Local recovery runtime: a pinned dispatch payload is validated exactly, a legacy row may
-   * fall back to the assembled snapshot only while the Agent is still active.
-   */
-  async #resolveRecoveryRuntime(
+  /** Verify the original dispatch identity without preparing new business or rewriting old hashes. */
+  async #validateRecoveryPayload(
     row: {
       delivery: typeof imMessageDeliveries.$inferSelect;
       session: typeof sessions.$inferSelect;
@@ -1194,13 +1188,8 @@ export class ImDeliveryWorker {
       placement: typeof sessionPlacements.$inferSelect;
     },
     deliveryId: string,
-    includeRuntime = true,
-  ): Promise<{ invalid: true } | { runtime: EffectiveRuntimeSnapshot | undefined }> {
-    if (row.delivery.dispatchPayload === null) {
-      if (!includeRuntime || row.agent.status !== "active") return { runtime: undefined };
-      this.#onDiagnostic("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
-      return { runtime: await this.#assembleRuntime(deliveryId, row.session.id, "recovery") };
-    }
+  ): Promise<boolean> {
+    if (row.delivery.dispatchPayload === null) return true;
     const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
     let pinnedInputHash = pinned.success ? computeDirectInputHash(pinned.data) : undefined;
     if (pinned.success && pinnedInputHash !== row.delivery.dispatchInputHash) {
@@ -1222,9 +1211,9 @@ export class ImDeliveryWorker {
       pinnedInputHash !== row.delivery.inputHash
     ) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
-      return { invalid: true };
+      return false;
     }
-    return { runtime: row.agent.status === "active" ? pinned.data.runtime : undefined };
+    return true;
   }
 
   async #assembleRuntime(

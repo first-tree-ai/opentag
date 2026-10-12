@@ -61,22 +61,6 @@ describe("MCP settings navigation", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("gives account defaults distinct Back and Close actions", async () => {
-    stub([entry()]);
-    await openSettings();
-    fireEvent.change(address(), { target: { value: "https://draft.example.com/mcp" } });
-    click("Advanced settings");
-    click("Edit account defaults");
-    await screen.findByLabelText("Description");
-    click("Back");
-    expect(address().value).toBe("https://draft.example.com/mcp");
-    expect(screen.getByRole("button", { name: "Advanced settings" }).getAttribute("aria-expanded")).toBe("true");
-    click("Edit account defaults");
-    await screen.findByLabelText("Description");
-    click("Close linear account defaults");
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  });
-
   it("keeps drafts when canceling removal and only removes after confirmation", async () => {
     stub([entry()]);
     const detach = vi.spyOn(browserApi, "detachMcpServer").mockResolvedValue(undefined);

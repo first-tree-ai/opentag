@@ -264,20 +264,20 @@ Each Agent may override four fields independently. `NULL` means inherit; any pre
 | Override with nothing | `extra_headers_override = '{}'` | This Agent sends **no** extra headers |
 | Override with a set | `extra_headers_override = '{...}'` | Use this Agent's set |
 
-"Restore inheritance" and "override with nothing" are therefore separate actions in both surfaces
-(`--clear-extra-headers` versus `--empty-extra-headers`; "use the shared headers" versus "send no
-extra headers"). Collapsing them would leave a user unable to drop a shared `x-workspace-id` for one
-Agent without deleting it for everyone.
+"Restore inheritance" and "override with nothing" remain separate API and CLI actions
+(`--clear-extra-headers` versus `--empty-extra-headers`). The GUI directly edits the effective header
+list; deleting all rows writes an explicit empty map for this Agent. It does not expose inheritance
+selectors or restore controls.
 
 The other three fields need no such distinction, but they do need an **explicit** clear: an empty
 string is a legitimate value for `auth_scheme`, so "clear" can never be spelled as an empty value.
 
-Editing scope is a user choice:
+The API and CLI retain both editing scopes; GUI Settings writes only Agent overrides:
 
 | Scope | Writes to | Affects |
 | --- | --- | --- |
-| This Agent (the default) | `agent_mcp_servers.*_override` | Only this Agent |
-| Shared definition | `mcp_servers.*` | Every Agent that mounts it, named in the dialog before the user confirms |
+| This Agent | `agent_mcp_servers.*_override` | Only this Agent |
+| Shared definition | `mcp_servers.*` | Agents inheriting the changed fields |
 
 Changing an Agent's overrides re-probes only that Agent. Changing the shared definition marks every
 mount's probe pending, and a background pass re-probes each one; the previous snapshot stays readable
@@ -961,15 +961,16 @@ does. A merged column would send a user to reauthorize a Server that was only sw
 Each row offers the enable/disable switch, authorize / reauthorize / revoke, view tools, re-probe,
 edit, and remove.
 
-- **Edit** opens on "this Agent only", which writes the override columns and affects nobody else.
-  Choosing "shared definition" shows a warning naming the Agents it will affect — the same set the
-  Server counts for `boundAgentCount`. Each field shows its current effective value and whether it is
-  inherited or overridden, because a user cannot otherwise tell what the Server is actually being
-  sent. `extra_headers` carries both actions: "use the shared headers" and "send no extra headers".
-- **Remove** offers "from this Agent only", which leaves the definition in the Account pool, and
-  "remove and delete the definition", which is disabled while another Agent still mounts it and names
-  that Agent. Without the second option a definition with no mounts could never be reclaimed, since
-  there is no Account-level page that lists it.
+- **Settings** displays the current Agent's connection address, authentication status, and tools.
+  Advanced settings is collapsed by default. Authentication header and token prefix appear only for
+  API-key/token authorization; extra headers are directly editable for all authorization methods.
+  Account-default selectors, restore controls, shared-editor links, and the Account-page MCP manager
+  are omitted. Generic setup guidance is omitted; the short empty-prefix hint is retained.
+  Only changed fields are written through the existing Agent binding API. Unedited inherited fields
+  continue following shared definitions; this UI change does not introduce connection snapshots or
+  alter API, CLI, authorization-header validation, or database behavior.
+- **Remove** disconnects this Agent and drops its credential. The shared definition remains available
+  to previously added server shortcuts and the CLI's definition-management commands.
 - **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
   context to the authorization server rather than fetching the URL.
 - **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's

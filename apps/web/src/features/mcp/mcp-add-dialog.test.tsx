@@ -22,7 +22,6 @@ describe("MCP existing authentication settings", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDetails();
     fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
-    fireEvent.click(await screen.findByRole("radio", { name: "Custom headers" }));
     fireEvent.change(screen.getByLabelText("Header name"), { target: { value: "x-team" } });
     fireEvent.change(screen.getByLabelText("Header value"), { target: { value: "design" } });
     fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));

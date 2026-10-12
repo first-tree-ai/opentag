@@ -10,7 +10,6 @@ import {
 import { ApiError } from "../../api.js";
 
 export type HeaderRow = { id: string; name: string; value: string };
-export type HeaderMode = "inherit" | "custom" | "none";
 let nextHeader = 0;
 export const newHeader = (): HeaderRow => ({ id: `mcp-header-${nextHeader++}`, name: "", value: "" });
 export const headerRows = (headers: Record<string, string>): HeaderRow[] =>
@@ -64,7 +63,6 @@ export type AuthDraft = {
   token: string;
   authHeader: string;
   authScheme: string;
-  headerMode: HeaderMode;
   headers: HeaderRow[];
 };
 export function authDraft(config: MCPEffectiveConfig = defaultConnection, kind: MCPAuthKind = "oauth"): AuthDraft {
@@ -73,35 +71,13 @@ export function authDraft(config: MCPEffectiveConfig = defaultConnection, kind: 
     token: "",
     authHeader: config.authHeader,
     authScheme: config.authScheme,
-    headerMode: "inherit",
     headers: headerRows(config.extraHeaders),
   };
 }
-export function authBindingPatch(draft: AuthDraft, config: MCPEffectiveConfig): UpdateMCPBindingRequest {
-  return {
-    ...(draft.kind === "bearer" && draft.authHeader !== config.authHeader ? { authHeader: draft.authHeader } : {}),
-    ...(draft.kind === "bearer" && draft.authScheme !== config.authScheme ? { authScheme: draft.authScheme } : {}),
-    ...(draft.headerMode === "none" ? { emptyExtraHeaders: true } : {}),
-    ...(draft.headerMode === "custom" ? { extraHeaders: headersFromRows(draft.headers) } : {}),
-  };
-}
 export type ConnectionField = "url" | "authHeader" | "authScheme";
-export type SettingsDraft = Pick<MCPEffectiveConfig, ConnectionField> & {
-  headers: HeaderRow[];
-  headerMode: HeaderMode;
-  cleared: ConnectionField[];
-};
-export function connectionHeaderMode(entry: MCPAgentServer): HeaderMode {
-  if (!entry.overridden.extraHeaders) return "inherit";
-  return Object.keys(entry.effective.extraHeaders).length ? "custom" : "none";
-}
+export type SettingsDraft = Pick<MCPEffectiveConfig, ConnectionField> & { headers: HeaderRow[] };
 export function settingsDraft(entry: MCPAgentServer): SettingsDraft {
-  return {
-    ...entry.effective,
-    headers: headerRows(entry.effective.extraHeaders),
-    headerMode: connectionHeaderMode(entry),
-    cleared: [],
-  };
+  return { ...entry.effective, headers: headerRows(entry.effective.extraHeaders) };
 }
 /** Follow confirmed writes without losing fields the user is still editing in Settings. */
 export function rebaseSettingsDraft(
@@ -111,7 +87,6 @@ export function rebaseSettingsDraft(
 ): SettingsDraft {
   const previousHeaders = Object.entries(previous.effective.extraHeaders);
   const headersEdited =
-    draft.headerMode !== connectionHeaderMode(previous) ||
     draft.headers.length !== previousHeaders.length ||
     draft.headers.some(
       (row, index) => row.name !== previousHeaders[index]?.[0] || row.value !== previousHeaders[index]?.[1],
@@ -119,44 +94,19 @@ export function rebaseSettingsDraft(
   const fresh = settingsDraft(next);
   return {
     ...fresh,
-    url: draft.cleared.includes("url") || draft.url !== previous.effective.url ? draft.url : fresh.url,
-    authHeader:
-      draft.cleared.includes("authHeader") || draft.authHeader !== previous.effective.authHeader
-        ? draft.authHeader
-        : fresh.authHeader,
-    authScheme:
-      draft.cleared.includes("authScheme") || draft.authScheme !== previous.effective.authScheme
-        ? draft.authScheme
-        : fresh.authScheme,
+    url: draft.url !== previous.effective.url ? draft.url : fresh.url,
+    authHeader: draft.authHeader !== previous.effective.authHeader ? draft.authHeader : fresh.authHeader,
+    authScheme: draft.authScheme !== previous.effective.authScheme ? draft.authScheme : fresh.authScheme,
     headers: headersEdited ? draft.headers : fresh.headers,
-    headerMode: headersEdited ? draft.headerMode : fresh.headerMode,
-    cleared: draft.cleared,
   };
 }
 export function bindingPatch(entry: MCPAgentServer, draft: SettingsDraft): UpdateMCPBindingRequest {
-  const patch = extraHeadersPatch(entry, draft);
-  const clearKeys = { url: "clearUrl", authHeader: "clearAuthHeader", authScheme: "clearAuthScheme" } as const;
+  const headers = headersFromRows(draft.headers);
+  const patch: UpdateMCPBindingRequest =
+    headersKey(headers) !== headersKey(entry.effective.extraHeaders) ? { extraHeaders: headers } : {};
   for (const field of ["url", "authHeader", "authScheme"] as const) {
-    if (draft.cleared.includes(field)) {
-      if (entry.overridden[field]) patch[clearKeys[field]] = true;
-    } else if (draft[field] !== entry.effective[field]) patch[field] = draft[field];
+    if (draft[field] !== entry.effective[field]) patch[field] = draft[field];
   }
-  return patch;
-}
-function extraHeadersPatch(entry: MCPAgentServer, draft: SettingsDraft): UpdateMCPBindingRequest {
-  const patch: UpdateMCPBindingRequest = {};
-  if (draft.headerMode === "inherit" && entry.overridden.extraHeaders) patch.clearExtraHeaders = true;
-  if (
-    draft.headerMode === "none" &&
-    (!entry.overridden.extraHeaders || Object.keys(entry.effective.extraHeaders).length > 0)
-  )
-    patch.emptyExtraHeaders = true;
-  if (
-    draft.headerMode === "custom" &&
-    (!entry.overridden.extraHeaders ||
-      headersKey(headersFromRows(draft.headers)) !== headersKey(entry.effective.extraHeaders))
-  )
-    patch.extraHeaders = headersFromRows(draft.headers);
   return patch;
 }
 

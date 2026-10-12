@@ -3,7 +3,7 @@ import type { MCPAgentServer } from "@opentag/shared/browser";
 import { useRef, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
 import { useMcpAuthorization } from "../mcp-authorize-dialog.js";
-import { actionError, authDraft, connectionHeaderMode } from "../mcp-form-model.js";
+import { actionError, authDraft } from "../mcp-form-model.js";
 import { useProbeMcpServer } from "../mcp-queries.js";
 import { rememberMcpReturn } from "../mcp-return-context.js";
 import { comparableUrl } from "./mcp-catalog-model.js";
@@ -26,11 +26,10 @@ export function useMcpCatalogConnection(agentId: string) {
         return;
       }
       const kind = binding.authorization?.kind ?? catalog.defaultAuthKind;
-      const draft = { ...authDraft(binding.effective, kind), headerMode: connectionHeaderMode(binding) };
+      const draft = authDraft(binding.effective, kind);
       const scopes =
         comparableUrl(binding.effective.url) === comparableUrl(catalog.url) ? catalog.oauthScopes : undefined;
       await authorize(binding, draft, scopes, {
-        connectionSettings: false,
         onBeforeOAuth: () => rememberMcpReturn({ agentId, serverId: binding.mcpServerId, source: "authorize" }),
       });
     } catch (cause) {

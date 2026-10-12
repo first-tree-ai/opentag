@@ -200,18 +200,6 @@ describe("RuntimeConnection", () => {
             }),
           ),
       },
-      {
-        name: "missing capability",
-        expectedCategory: "capability_incompatibility",
-        respond: (socket, frame) => {
-          const { "runtime.imDelivery": _omitted, ...supportedCapabilities } = RUNTIME_SERVER_CAPABILITY_OFFERS;
-          completeAuth(socket, frame, {
-            ...welcome(),
-            requiredClientCapabilities: ["runtime.imDelivery"],
-            supportedCapabilities,
-          });
-        },
-      },
     ];
     for (const scenario of scenarios) {
       const server = await runtimeServer();
@@ -540,7 +528,9 @@ describe("RuntimeConnection", () => {
     const parserRunning = parserConnection.run();
     const parserConnectionId = await registerControlled(parserConnection, parserSocket);
     parserSocket.receive({ type: "unknown:business", connectionId: parserConnectionId });
-    await expect(parserRunning).rejects.toThrow("invalid runtime frame");
+    expect(parserConnection.state).toBe("registered");
+    parserConnection.stop();
+    await parserRunning;
 
     const orderedSocket = new ControlledWebSocket();
     const orderedConnection = controlledConnection(orderedSocket, { trace: 2 });
@@ -1219,7 +1209,7 @@ describe("RuntimeConnection", () => {
       machineToken: "machine-token",
     });
 
-    await expect(connection.run()).rejects.toThrow("Update the Server: required Context Tree support is unavailable");
+    await expect(connection.run()).rejects.toThrow("v2 is not supported");
     expect(authVersions).toEqual([RUNTIME_PROTOCOL_V2]);
   });
 

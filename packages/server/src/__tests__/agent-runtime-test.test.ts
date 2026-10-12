@@ -209,6 +209,7 @@ describe("Agent Runtime test owner", () => {
     const instanceId = randomUUID();
     await failingRegistry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -572,6 +573,7 @@ async function registerComputer(
   const frames: unknown[] = [];
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       installationId,
       instanceId,

@@ -811,7 +811,7 @@ describe("background and WebSocket tracing", () => {
       displayName: "test",
       platform: "linux",
       arch: "x64",
-      clientVersion: "0.0.1",
+      clientVersion: "0.1.1",
     };
     socket.send(JSON.stringify(registration));
     const registered = await frames.next();
@@ -881,6 +881,8 @@ describe("background and WebSocket tracing", () => {
     const frames: unknown[] = [];
     await registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: { "runtime.imDelivery": 1, "runtime.sessionReconcile": 1 },
         computerId,
         installationId: computerId,
         instanceId,
@@ -991,6 +993,8 @@ describe("background and WebSocket tracing", () => {
     const failingInstanceId = randomUUID();
     await failingRegistry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: { "runtime.imDelivery": 1, "runtime.sessionReconcile": 1 },
         computerId: failingComputerId,
         installationId: failingComputerId,
         instanceId: failingInstanceId,
@@ -1014,7 +1018,7 @@ describe("background and WebSocket tracing", () => {
     for (const [error, expectedCode] of typedRegistryFailures) {
       const request = runtimeReconcileRequest(randomUUID());
       const typedFailureOwner = new RuntimeDomainOwner(
-        { send: vi.fn().mockRejectedValue(error) } as never,
+        { assertBusinessAllowed: vi.fn(), send: vi.fn().mockRejectedValue(error) } as never,
         custody as never,
       );
       typedFailureRequests.push({ expectedCode, requestId: request.requestId });

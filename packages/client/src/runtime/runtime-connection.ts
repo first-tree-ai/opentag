@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentRuntimeProvider,
   IM_CLI_PROVIDERS,
-  missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
@@ -41,7 +40,6 @@ import {
   isAbortError,
   RuntimeConnectionError,
   type RuntimeConnectionErrorCategory,
-  RuntimeProtocolFallbackError,
   RuntimeSendError,
   runtimeConnectionCloseError,
   runtimeConnectionErrorCategory,
@@ -376,13 +374,6 @@ export class RuntimeConnection {
           });
         } catch (error) {
           if (this.#stopped || isAbortError(error)) break;
-          if (error instanceof RuntimeProtocolFallbackError && this.#protocolVersion === RUNTIME_PROTOCOL_V2) {
-            throw new RuntimeConnectionError(
-              "Update the Server: required Context Tree support is unavailable",
-              true,
-              "protocol",
-            );
-          }
           if (error instanceof RuntimeConnectionError && error.fatal) {
             this.#logger.error(
               protocolRejectionFields(attempt, this.#state, error.message, error.category),
@@ -654,8 +645,10 @@ export class RuntimeConnection {
             if (businessFrame) {
               armSilence();
               this.#dispatchBusinessFrame(businessFrame);
-              return;
+            } else {
+              this.#logger.warn({ type: envelope.data.type }, "Incompatible runtime business frame rejected");
             }
+            return;
           }
           failProtocol("The server sent an invalid runtime frame", "Invalid server frame");
           return;
@@ -692,19 +685,6 @@ export class RuntimeConnection {
               this.#supportedCapabilities,
               frame.supportedCapabilities,
             );
-            const missing = [
-              ...missingRuntimeCapabilities(frame.requiredClientCapabilities, expectedNegotiatedCapabilities),
-              ...missingRuntimeCapabilities(RUNTIME_REQUIRED_SERVER_CAPABILITIES, expectedNegotiatedCapabilities),
-            ];
-            if (missing.length > 0) {
-              failProtocol(
-                `Required runtime capabilities are unavailable: ${[...new Set(missing)].sort().join(", ")}`,
-                "Required capability unavailable",
-                true,
-                "capability_incompatibility",
-              );
-              return;
-            }
           }
           welcome = frame;
           this.#setState("registering");
@@ -822,16 +802,6 @@ export class RuntimeConnection {
           return;
         }
         if (frame.type === "error") {
-          if (
-            this.#state === "authenticating" &&
-            protocolVersion === RUNTIME_PROTOCOL_V2 &&
-            frame.code === "PROTOCOL_VERSION_UNSUPPORTED" &&
-            frame.requestId === authRequestId
-          ) {
-            socket.close(4400, "Retrying runtime protocol v1");
-            finish(new RuntimeProtocolFallbackError());
-            return;
-          }
           const category = runtimeConnectionErrorCategory(
             frame.code,
             frame.code !== "INTERNAL_ERROR" && frame.code !== "SERVICE_UNAVAILABLE",

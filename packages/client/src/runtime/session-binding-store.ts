@@ -1,9 +1,11 @@
 import { dirname } from "node:path";
 import {
+  computeLegacyRuntimeSnapshotHashes,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
   EffectiveRuntimeSnapshotSchema,
+  LegacyRuntimeSnapshotSchema,
   type RuntimeImSteerRequest,
   RuntimeRequestIdSchema,
   RuntimeSha256Schema,
@@ -127,6 +129,14 @@ export class SessionBindingStore {
     return this.#readBinding(sessionBindingPath(this.#home, agentId, sessionId));
   }
 
+  async validatePreparation(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<void> {
+    const current = await this.read(request.agentId, request.sessionId);
+    if (!current) return;
+    this.#validateIdentity(current, request);
+    assertSettledBindingChange(current, request, hashes);
+    this.#assertRevision(current, request, hashes, await this.#canContinueLegacy(current, request));
+  }
+
   prepare(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
     return this.#withSessionLock(request.sessionId, async () => {
       const runtime = request.runtime;
@@ -137,34 +147,12 @@ export class SessionBindingStore {
       const bindingPath = sessionBindingPath(this.#home, request.agentId, request.sessionId);
       const current = await this.#readBinding(bindingPath);
       if (current) this.#validateIdentity(current, request);
+      if (current) assertSettledBindingChange(current, request, hashes);
       if (current?.unresolvedTurn) {
-        if (
-          current.placementGeneration !== request.placementGeneration ||
-          current.lastEffectiveSnapshotHash !== hashes.effectiveSnapshotHash
-        ) {
-          throw new SessionBindingConflictError("recovery_required", "An unresolved turn fences binding changes");
-        }
         return { binding: current, unresolvedTurn: current.unresolvedTurn };
       }
-      if (current && request.placementGeneration < current.placementGeneration) {
-        throw new SessionBindingConflictError("stale", "The placement generation is stale");
-      }
-      if (
-        current &&
-        request.placementGeneration === current.placementGeneration &&
-        runtime.revision.session.sequence < current.appliedSessionRevisionSequence
-      ) {
-        throw new SessionBindingConflictError("stale", "The Session runtime revision is stale");
-      }
-      if (
-        current &&
-        request.placementGeneration === current.placementGeneration &&
-        runtime.revision.session.sequence === current.appliedSessionRevisionSequence &&
-        (runtime.revision.session.id !== current.appliedSessionRevisionId ||
-          hashes.sessionConfigHash !== current.sessionConfigHash)
-      ) {
-        throw new SessionBindingConflictError("conflict", "The Session runtime revision conflicts with the binding");
-      }
+      const legacyContinuation = current !== undefined && (await this.#canContinueLegacy(current, request));
+      if (current) this.#assertRevision(current, request, hashes, legacyContinuation);
 
       const snapshot = EffectiveRuntimeSnapshotSchema.parse(runtime);
       const storedSnapshot = snapshotPath(this.#home, request.agentId, hashes.effectiveSnapshotHash);
@@ -185,9 +173,7 @@ export class SessionBindingStore {
         placementGeneration: request.placementGeneration,
         provider: runtime.provider,
         providerHomeIdentity: this.#artifactIdentity(runtime.provider),
-        ...(current && current.lastEffectiveSnapshotHash === hashes.effectiveSnapshotHash && current.runtimeBinding
-          ? { runtimeBinding: current.runtimeBinding }
-          : {}),
+        ...retainedRuntimeBinding(current, hashes.effectiveSnapshotHash, legacyContinuation),
         appliedSessionRevisionSequence: runtime.revision.session.sequence,
         appliedSessionRevisionId: runtime.revision.session.id,
         sessionConfigHash: hashes.sessionConfigHash,
@@ -427,6 +413,61 @@ export class SessionBindingStore {
       await this.#writeBinding(path, updated);
       return updated;
     });
+  }
+
+  #assertRevision(
+    current: LocalSessionBinding,
+    request: SessionReconcileRequest,
+    hashes: RuntimeSnapshotHashes,
+    legacyContinuation: boolean,
+  ): void {
+    const runtime = request.runtime;
+    if (request.placementGeneration < current.placementGeneration) {
+      throw new SessionBindingConflictError("stale", "The placement generation is stale");
+    }
+    if (!runtime || request.placementGeneration !== current.placementGeneration) return;
+    if (runtime.revision.session.sequence < current.appliedSessionRevisionSequence) {
+      throw new SessionBindingConflictError("stale", "The Session runtime revision is stale");
+    }
+    if (
+      !legacyContinuation &&
+      runtime.revision.session.sequence === current.appliedSessionRevisionSequence &&
+      (runtime.revision.session.id !== current.appliedSessionRevisionId ||
+        hashes.sessionConfigHash !== current.sessionConfigHash)
+    ) {
+      throw new SessionBindingConflictError("conflict", "The Session runtime revision conflicts with the binding");
+    }
+  }
+
+  async #canContinueLegacy(current: LocalSessionBinding, request: SessionReconcileRequest): Promise<boolean> {
+    const runtime = request.runtime;
+    if (
+      !runtime ||
+      current.unresolvedTurn ||
+      current.placementGeneration !== request.placementGeneration ||
+      current.appliedSessionRevisionSequence !== runtime.revision.session.sequence
+    )
+      return false;
+    const path = snapshotPath(this.#home, request.agentId, current.lastEffectiveSnapshotHash);
+    if (!(await validatePrivateDirectory(this.#home, dirname(path)))) return false;
+    const old = await readDurableJson(path, (value) => LegacyRuntimeSnapshotSchema.safeParse(value).data);
+    if (!old) return false;
+    const hashes = computeLegacyRuntimeSnapshotHashes(old);
+    if (
+      hashes.effectiveSnapshotHash !== current.lastEffectiveSnapshotHash ||
+      hashes.sessionConfigHash !== current.sessionConfigHash ||
+      old.revision.session.id !== current.appliedSessionRevisionId ||
+      old.agentId !== current.agentId ||
+      old.provider !== current.provider ||
+      old.workspace.workspaceId !== current.workspaceId ||
+      old.revision.agent.sequence !== runtime.revision.agent.sequence
+    )
+      return false;
+    // Only the known schema/hash additions and approval tightening may differ at one revision.
+    const { selfConfigurationEnabled: _selfConfiguration, ...unchanged } = runtime;
+    const { allowCommands: _commands, ...execution } = unchanged.execution;
+    const candidate = { ...unchanged, revision: old.revision, execution: { ...execution, approvalPolicy: "never" } };
+    return computeLegacyRuntimeSnapshotHashes(candidate).effectiveSnapshotHash === hashes.effectiveSnapshotHash;
   }
 
   async #requireBinding(agentId: string, sessionId: string): Promise<LocalSessionBinding> {
@@ -792,4 +833,23 @@ function isSequence(value: unknown): value is number {
 function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
   const accepted = new Set(allowed);
   return Object.keys(value).every((key) => accepted.has(key));
+}
+
+function retainedRuntimeBinding(current: LocalSessionBinding | undefined, hash: string, legacy: boolean) {
+  if (!current?.runtimeBinding) return {};
+  return current.lastEffectiveSnapshotHash === hash || legacy ? { runtimeBinding: current.runtimeBinding } : {};
+}
+
+function assertSettledBindingChange(
+  current: LocalSessionBinding,
+  request: SessionReconcileRequest,
+  hashes: RuntimeSnapshotHashes,
+): void {
+  if (
+    current.unresolvedTurn &&
+    (current.placementGeneration !== request.placementGeneration ||
+      current.lastEffectiveSnapshotHash !== hashes.effectiveSnapshotHash)
+  ) {
+    throw new SessionBindingConflictError("recovery_required", "An unresolved turn fences binding changes");
+  }
 }

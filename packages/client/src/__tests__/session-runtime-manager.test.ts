@@ -1273,6 +1273,7 @@ describe("SessionRuntimeManager", () => {
     });
     let saveCalls = 0;
     const bindingStore = {
+      validatePreparation: store.validatePreparation.bind(store),
       saveRuntimeBinding: async (...args: Parameters<SessionBindingStore["saveRuntimeBinding"]>) => {
         const binding = await store.saveRuntimeBinding(...args);
         saveCalls += 1;

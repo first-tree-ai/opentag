@@ -174,6 +174,13 @@ export const EffectiveRuntimeSnapshotSchema = z
   })
   .strict();
 
+/** Frozen 0.1.0 persisted shape; never used to authorize new work. */
+export const LegacyRuntimeSnapshotSchema = EffectiveRuntimeSnapshotSchema.omit({
+  selfConfigurationEnabled: true,
+}).extend({
+  execution: z.object({ approvalPolicy: z.literal("never"), networkAccess: z.boolean() }).strict(),
+});
+
 export const InputRejectReasonSchema = z.enum([
   "invalid_input",
   "target_mismatch",
@@ -1339,8 +1346,51 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
   };
 }
 
+/** Hash layout from published v0.1.0 (2f37f05c); preserve saved identities during upgrade. */
+export function computeLegacyRuntimeSnapshotHashes(input: unknown): RuntimeSnapshotHashes {
+  const snapshot = LegacyRuntimeSnapshotSchema.parse(input);
+  const agentConfigHash = hashTuple([
+    1,
+    snapshot.agentId,
+    snapshot.provider,
+    snapshot.revision.agent.sequence,
+    snapshot.revision.agent.id,
+    snapshot.instructions.platform,
+    snapshot.instructions.agent,
+    snapshot.workspace.workspaceId,
+    snapshot.workspace.mode,
+    snapshot.workspace.sharing,
+    normalizeContextTrees(snapshot.contextTrees),
+  ]);
+  const sessionConfigHash = hashTuple([
+    1,
+    snapshot.revision.session.sequence,
+    snapshot.revision.session.id,
+    snapshot.model ?? null,
+    snapshot.reasoningEffort ?? null,
+    snapshot.instructions.session ?? null,
+    snapshot.execution.approvalPolicy,
+    snapshot.execution.networkAccess,
+    snapshot.budget?.maxDurationMs ?? null,
+  ]);
+  return {
+    agentConfigHash,
+    sessionConfigHash,
+    effectiveSnapshotHash: hashTuple([1, agentConfigHash, sessionConfigHash]),
+  };
+}
+
+export function computeLegacyDirectInputHash(input: unknown): string {
+  const frame = DirectImMessageDeliveryRequestSchema.parse(input);
+  return directInputHash(frame, computeLegacyRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash);
+}
+
 export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): string {
   const frame = DirectImMessageDeliveryRequestSchema.parse(input);
+  return directInputHash(frame, computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash);
+}
+
+function directInputHash(frame: DirectImMessageDeliveryRequest, effectiveSnapshotHash: string): string {
   const payload = [
     1,
     frame.imMessageId,
@@ -1354,7 +1404,7 @@ export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): s
     frame.content.history ?? [],
     frame.content.historyTruncated ?? false,
     frame.content.resources ?? [],
-    computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash,
+    effectiveSnapshotHash,
     frame.deadlineAt ?? null,
   ];
   return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);

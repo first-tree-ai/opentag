@@ -247,6 +247,13 @@ describe("RuntimeDomainOwner", () => {
     const failingSocket = socketFixture([], new Error("send failed"));
     await fixture.registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId: fixture.computerId,
         installationId: fixture.context.installationId,
         instanceId: fixture.instanceId,
@@ -270,6 +277,7 @@ describe("RuntimeDomainOwner", () => {
     const release = vi.spyOn(custody, "releaseDeliveryDispatch");
     const owner = new RuntimeDomainOwner(
       {
+        assertBusinessAllowed: vi.fn(),
         send: vi.fn(() => {
           throw new Error("sync send failed");
         }),
@@ -393,6 +401,13 @@ describe("RuntimeDomainOwner", () => {
     const unsupportedSocket = socketFixture([]);
     await unsupportedRegistry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId: fixture.computerId,
         installationId: fixture.context.installationId,
         instanceId: fixture.instanceId,
@@ -696,6 +711,13 @@ describe("RuntimeDomainOwner", () => {
     const nextSocket = socketFixture([]);
     await fixture.registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId: fixture.computerId,
         installationId: fixture.context.installationId,
         instanceId: nextInstanceId,
@@ -953,6 +975,13 @@ describe("RuntimeDomainOwner", () => {
     const frames: unknown[] = [];
     await registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId,
         installationId: computerId,
         instanceId,
@@ -985,6 +1014,13 @@ describe("RuntimeDomainOwner", () => {
     const frames: unknown[] = [];
     await registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId,
         installationId: computerId,
         instanceId,
@@ -1081,11 +1117,18 @@ async function ownerFixture(requestTimeoutMs = 1_000, options: Partial<RuntimeDo
   const frames: unknown[] = [];
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       installationId: computerId,
       instanceId,
       lastHeartbeatAt: 1,
-      negotiatedCapabilities: { [RUNTIME_CAPABILITY.imCredentialGrant]: 2 },
+      negotiatedCapabilities: {
+        "runtime.sessionReconcile": 1,
+        "runtime.imDelivery": 2,
+        "runtime.imSteer": 2,
+        "runtime.sessionCollaboration": 3,
+        [RUNTIME_CAPABILITY.imCredentialGrant]: 2,
+      },
       socket: socketFixture(frames),
     },
     async () => undefined,
@@ -1105,6 +1148,13 @@ async function replaceRuntimeInstance(fixture: Awaited<ReturnType<typeof ownerFi
   const frames: unknown[] = [];
   await fixture.registry.register(
     {
+      clientVersion: "0.1.1",
+      negotiatedCapabilities: {
+        "runtime.sessionReconcile": 1,
+        "runtime.imDelivery": 2,
+        "runtime.imSteer": 2,
+        "runtime.sessionCollaboration": 3,
+      },
       computerId: fixture.computerId,
       installationId: fixture.context.installationId,
       instanceId,

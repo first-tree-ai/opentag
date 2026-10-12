@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   computeDirectInputHash,
+  computeLegacyRuntimeSnapshotHashes,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeSnapshotHashes,
   computeTurnResultHash,
@@ -23,6 +24,60 @@ const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("SessionBindingStore", () => {
+  it.each(["valid", "changed input", "corrupt hash", "unresolved"] as const)(
+    "continues only an authentic idle 0.1.0 binding: %s",
+    async (scenario) => {
+      const fixture = await bindingFixture();
+      const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+      const binding = JSON.parse(await readFile(path, "utf8"));
+      const oldHashes = computeLegacyRuntimeSnapshotHashes(fixture.runtime);
+      Object.assign(binding, {
+        sessionConfigHash: oldHashes.sessionConfigHash,
+        lastEffectiveSnapshotHash: oldHashes.effectiveSnapshotHash,
+        runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "original-thread" } },
+      });
+      if (scenario === "corrupt hash") binding.sessionConfigHash = "0".repeat(64);
+      if (scenario === "unresolved")
+        binding.unresolvedTurn = {
+          requestId: randomUUID(),
+          deliveryId: "original-delivery",
+          inputHash: "a".repeat(64),
+          turnId: "original-turn",
+          phase: "accepted",
+        };
+      await writeFile(
+        snapshotPath(fixture.home, "agent-1", oldHashes.effectiveSnapshotHash),
+        JSON.stringify(fixture.runtime),
+      );
+      await writeFile(path, JSON.stringify(binding));
+      const next: EffectiveRuntimeSnapshot = {
+        ...fixture.runtime,
+        selfConfigurationEnabled: false,
+        revision: { agent: { sequence: 1, id: "new-agent-hash" }, session: { sequence: 1, id: "new-session-hash" } },
+        execution: { ...fixture.runtime.execution, approvalPolicy: "on-request", allowCommands: [] },
+      };
+      if (scenario === "changed input") next.instructions = { ...next.instructions, agent: "different" };
+      const request = { ...fixture.reconcile, requestId: randomUUID(), runtime: next };
+      const hashes = computeRuntimeSnapshotHashes(next);
+      if (scenario !== "valid") {
+        const before = await readFile(path, "utf8");
+        await expect(fixture.store.validatePreparation(request, hashes)).rejects.toThrow();
+        await expect(fixture.store.prepare(request, hashes)).rejects.toThrow();
+        expect(await readFile(path, "utf8")).toBe(before);
+        return;
+      }
+      await fixture.store.validatePreparation(request, hashes);
+      const prepared = await fixture.store.prepare(request, hashes);
+      expect(prepared.binding.runtimeBinding).toEqual(binding.runtimeBinding);
+      expect(prepared.binding.recentRecordedInputs).toEqual(binding.recentRecordedInputs);
+      expect(prepared.binding.lastEffectiveSnapshotHash).toBe(hashes.effectiveSnapshotHash);
+      expect(await fixture.store.prepare(request, hashes)).toEqual(prepared);
+      expect(
+        JSON.parse(await readFile(snapshotPath(fixture.home, "agent-1", oldHashes.effectiveSnapshotHash), "utf8")),
+      ).toEqual(fixture.runtime);
+    },
+  );
+
   it("covers custody duplicate, steer receipt, runtime binding, and result guard paths", async () => {
     expect(
       () =>

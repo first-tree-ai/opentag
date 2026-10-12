@@ -159,6 +159,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return this.#providers.validateConfiguration(snapshot);
   }
 
+  validateSession(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<void> {
+    return this.#bindingStore.validatePreparation(request, hashes);
+  }
+
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void> {
     return this.#workspace.prepareAgent(snapshot, hashes);
   }

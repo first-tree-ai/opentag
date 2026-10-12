@@ -112,6 +112,7 @@ async function fixture(options: {
   if (options.negotiateMcpGateway) negotiatedCapabilities[RUNTIME_CAPABILITY.mcpGateway] = 1;
   await registry.register(
     {
+      clientVersion: "0.1.1",
       active: true,
       computerId: COMPUTER,
       connectionId,

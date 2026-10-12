@@ -6,6 +6,7 @@ import {
   type IntegrationCredentialExecutionReason,
   type IntegrationCredentialExecutionStatus,
   type ProviderCliArtifactPublicReason,
+  parseSemVer,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
@@ -14,11 +15,15 @@ import {
   RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS,
   RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS,
   type RuntimeClientCapabilities,
+  RuntimeCredentialServerFrameSchema,
   type RuntimeImCliReadinessCollection,
+  RuntimeImCredentialGrantResultSchema,
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
   runtimeFrameByteLength,
+  SessionReconcileRequestSchema,
+  TurnReportResultSchema,
 } from "@opentag/shared";
 import WebSocket from "ws";
 import type { ServiceLogger } from "../observability/service-logger.js";
@@ -67,6 +72,7 @@ export interface RuntimeControlIdentity {
 }
 
 export interface RuntimeConnectionEntry {
+  clientVersion?: string;
   active?: boolean;
   capabilities?: RuntimeClientCapabilities;
   capabilitiesUpdatedAt?: number;
@@ -427,6 +433,17 @@ export class ConnectionRegistry {
     return current;
   }
 
+  allowsBusiness(computerId: string, instanceId: string, frame?: unknown): boolean {
+    const entry = this.#currentWritable(computerId, instanceId);
+    return entry !== undefined && allowsRuntimeBusiness(entry, frame);
+  }
+
+  assertBusinessAllowed(computerId: string, instanceId: string, frame?: unknown): void {
+    if (!this.allowsBusiness(computerId, instanceId, frame)) {
+      throw new RuntimeRegistrySendError("unavailable", "The Client must upgrade before starting this business");
+    }
+  }
+
   async send(computerId: string, instanceId: string, frame: unknown, expectedConnectionId?: string): Promise<void> {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
@@ -441,6 +458,7 @@ export class ConnectionRegistry {
     if (current.socket.readyState !== WebSocket.OPEN) {
       throw new RuntimeRegistrySendError("unavailable", "The Computer runtime socket is unavailable");
     }
+    this.assertBusinessAllowed(computerId, instanceId, frame);
     let outbound = frame;
     if ((current.protocolVersion ?? RUNTIME_PROTOCOL_V1) === RUNTIME_PROTOCOL_V2) {
       try {
@@ -637,4 +655,33 @@ function withConnectionId(frame: unknown, connectionId?: string): unknown {
     throw new Error("The runtime frame carries a stale connection fence");
   }
   return { ...record, connectionId };
+}
+
+const BUSINESS_CAPABILITY: Readonly<Record<string, string>> = {
+  "session:reconcile": RUNTIME_CAPABILITY.sessionReconcile,
+  "im:deliver": RUNTIME_CAPABILITY.imDelivery,
+  "im:steer": RUNTIME_CAPABILITY.imSteer,
+  "session:message:deliver": RUNTIME_CAPABILITY.sessionCollaboration,
+  "context-tree:operation": RUNTIME_CAPABILITY.contextTreeSettings,
+  "agent-runtime:test": RUNTIME_CAPABILITY.agentRuntimeTest,
+  "agent-runtime:options": RUNTIME_CAPABILITY.agentRuntimeOptions,
+  "provider-cli:prewarm": RUNTIME_CAPABILITY.providerCliPrewarm,
+  "provider-cli:requirement": RUNTIME_CAPABILITY.providerCliReconcile,
+};
+
+/** This transition admits the verified next format, never an arbitrary future version. */
+export function allowsRuntimeBusiness(entry: RuntimeConnectionEntry, frame?: unknown): boolean {
+  if (entry.control?.kind === "cloud") return true;
+  const version = entry.clientVersion ? parseSemVer(entry.clientVersion) : undefined;
+  if (version?.major === 0 && version.minor === 1 && version.patch === 1) {
+    if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") return true;
+    const required = BUSINESS_CAPABILITY[frame.type];
+    return required === undefined || entry.negotiatedCapabilities?.[required] !== undefined;
+  }
+  // Settlement handlers still verify the original execution/custody and current authorization.
+  if (TurnReportResultSchema.safeParse(frame).success || RuntimeImCredentialGrantResultSchema.safeParse(frame).success)
+    return true;
+  if (RuntimeCredentialServerFrameSchema.safeParse(frame).success) return true;
+  const recovery = SessionReconcileRequestSchema.safeParse(frame);
+  return recovery.success && recovery.data.desired === "stopped" && recovery.data.runtime === undefined;
 }

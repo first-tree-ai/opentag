@@ -299,6 +299,7 @@ export class RuntimeDomainOwner {
     });
     let operation: Promise<SessionReconcileResult>;
     try {
+      this.#registry.assertBusinessAllowed(computerId, instanceId, request);
       const hash = computeReconcilePayloadHash(request);
       const preparation = this.#options.prepareReconcile;
       if (!preparation) {
@@ -386,6 +387,7 @@ export class RuntimeDomainOwner {
     request: RuntimeImSteerRequest,
     onDispatched?: () => void,
   ): Promise<RuntimeImSteerResult> {
+    this.#registry.assertBusinessAllowed(computerId, instanceId, request);
     const inputHash = computeRuntimeImSteerInputHash(request);
     const semanticHash = computeRuntimeImMessageSemanticHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
@@ -564,6 +566,7 @@ export class RuntimeDomainOwner {
         onDispatched,
       ) as Promise<ImMessageDeliveryResult>;
     }
+    this.#registry.assertBusinessAllowed(computerId, instanceId, request);
     const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched);
     const owner = { computerId, hash: requestHash, instanceId, promise };
     this.#startingDeliveries.set(request.requestId, owner);
@@ -844,6 +847,7 @@ export class RuntimeDomainOwner {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
     }
+    this.#registry.assertBusinessAllowed(computerId, instanceId, request);
     if (this.#pending.size >= this.#options.maxPendingRequests) {
       throw new RuntimeDomainRequestError("capacity", "The runtime request owner is full");
     }
@@ -891,36 +895,41 @@ export class RuntimeDomainOwner {
     const pending = createPendingRequest(kind, base, inputHash, semanticHash);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request);
-    onDispatched?.();
-    void dispatch.catch((error: unknown) => {
-      if (this.#pending.get(request.requestId) !== pending) return;
-      this.#pending.delete(request.requestId);
-      clearTimeout(timer);
-      try {
-        this.#logger?.warn(
-          {
-            code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
-            computerId,
-            instanceId,
-            requestId: request.requestId,
-          },
-          "Runtime domain request failed",
+    void dispatch
+      .then(() => onDispatched?.())
+      .catch((error: unknown) => {
+        if (this.#pending.get(request.requestId) !== pending) return;
+        this.#pending.delete(request.requestId);
+        clearTimeout(timer);
+        try {
+          this.#logger?.warn(
+            {
+              code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
+              computerId,
+              instanceId,
+              requestId: request.requestId,
+            },
+            "Runtime domain request failed",
+          );
+        } catch {
+          // Logging must never replace the request failure.
+        }
+        if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
+        if (pending.kind === "steer") {
+          void this.#custody
+            .releaseSteerDispatch(pending.request, pending.inputHash, "deferred")
+            .catch(() => undefined);
+        } else if (pending.kind === "delivery") {
+          void this.#custody
+            .releaseDeliveryDispatch(pending.request, pending.inputHash, "retry")
+            .catch(() => undefined);
+        }
+        pending.reject(
+          error instanceof Error
+            ? error
+            : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
         );
-      } catch {
-        // Logging must never replace the request failure.
-      }
-      if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
-      if (pending.kind === "steer") {
-        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
-      } else if (pending.kind === "delivery") {
-        void this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "retry").catch(() => undefined);
-      }
-      pending.reject(
-        error instanceof Error
-          ? error
-          : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
-      );
-    });
+      });
     return promise;
   }
 

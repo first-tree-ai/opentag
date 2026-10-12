@@ -255,12 +255,13 @@ describe("packSkillDirectory", () => {
     await withArchiveError(() => packSkillDirectory(skill), "unpacked_too_large");
   });
 
+  // Real 17 MiB pure-JavaScript gzip is CPU-heavy under concurrent coverage instrumentation.
   it("enforces the archive-size ceiling on incompressible content", async () => {
     const root = await temporaryRoot();
     const skill = await writeSkill(root);
     await writeFile(join(skill, "random.bin"), randomBytes(17 * 1024 * 1024));
     await withArchiveError(() => packSkillDirectory(skill), "archive_too_large");
-  });
+  }, 20_000);
 });
 
 describe("extractSkillArchive", () => {

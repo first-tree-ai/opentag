@@ -288,10 +288,10 @@
   "mcp_add_no_results": "没有匹配的服务。",
   "mcp_add_already_added": "已添加",
   "mcp_add_load_failed": "无法加载服务。",
-  "mcp_add_connection_error": "连接失败，请检查地址后重试。",
+  "mcp_add_connection_error": "连接失败，请重试。",
   "mcp_add_tools_failed": "无法加载工具，请重试。",
   "mcp_add_no_tools": "此服务暂无可用工具。",
-  "mcp_add_choose_existing": "多个服务使用此地址，请选择已添加过的服务。",
+  "mcp_add_choose_existing": "请选择使用此地址的已添加服务。",
   "mcp_add_key_error": "API 密钥无效，请重试。",
-  "mcp_add_sign_in_failed": "无法开始登录，请检查服务商的配置说明。"
+  "mcp_add_sign_in_failed": "无法开始登录，请重试。"
 }

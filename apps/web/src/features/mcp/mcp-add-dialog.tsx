@@ -27,10 +27,17 @@ export function serverTitle(server: MCPServer): string {
 export function McpAddDialog(props: McpAddProps) {
   const state = useMcpAddConnection(props);
   const keyRef = useRef<HTMLInputElement>(null);
+  // Reserve shortcut space while the pool is unknown, then keep the opening size through retries.
+  const [compact] = useState(() => state.account.data?.servers.length === 0);
   const connectLabel =
     state.phase === "tools" ? m.mcp_add_loading_tools() : state.busy ? m.mcp_add_connecting() : m.mcp_connect();
   return (
-    <Dialog title={m.mcp_create_title()} className="mcp-add-dialog" busy={state.busy} onClose={props.onClose}>
+    <Dialog
+      title={m.mcp_create_title()}
+      className={`mcp-add-dialog${compact ? " mcp-add-dialog-compact" : ""}`}
+      busy={state.busy}
+      onClose={props.onClose}
+    >
       <form
         className="mcp-add-layout"
         onSubmit={(event) => {
@@ -50,32 +57,14 @@ export function McpAddDialog(props: McpAddProps) {
               autoComplete="off"
               spellCheck={false}
               aria-invalid={state.urlInvalid}
-              aria-describedby="mcp-add-url-error"
+              aria-describedby={state.needsKey ? undefined : "mcp-add-feedback"}
               onChange={(event) => state.changeUrl(event.target.value)}
               onBlur={state.validateUrl}
             />
           </Field>
-          <p id="mcp-add-url-error" className="mcp-add-field-error text-sm text-kumo-danger" aria-live="polite">
-            {state.urlInvalid ? m.mcp_add_url_error() : ""}
-          </p>
           <div className="mcp-add-secondary">
             <AddSecondary state={state} keyRef={keyRef} />
           </div>
-        </div>
-        <div className="mcp-add-feedback" aria-live="polite">
-          {state.error ? (
-            <p role="alert" className="text-sm text-kumo-danger">
-              {state.error}
-            </p>
-          ) : null}
-          {state.account.isError && !state.account.data ? (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-kumo-subtle">{m.mcp_add_load_failed()}</span>
-              <Button variant="ghost" size="compact" disabled={state.busy} onClick={() => void state.account.refetch()}>
-                {m.mcp_retry()}
-              </Button>
-            </div>
-          ) : null}
         </div>
         <footer className="mcp-add-footer">
           <Button variant="ghost" disabled={state.busy} onClick={props.onClose}>
@@ -98,16 +87,42 @@ export function McpAddDialog(props: McpAddProps) {
 
 type AddState = ReturnType<typeof useMcpAddConnection>;
 function AddSecondary({ state, keyRef }: { state: AddState; keyRef: RefObject<HTMLInputElement | null> }) {
-  if (state.needsKey) return <AddKeyField state={state} keyRef={keyRef} />;
-  if (state.account.isPending)
-    return (
-      <div className="mcp-add-skeleton" aria-label={m.mcp_add_loading()} role="status">
-        <span />
-        <span />
-        <span />
-      </div>
-    );
-  return state.servers.length ? <ServicePicker state={state} /> : null;
+  return (
+    <>
+      {state.needsKey ? <AddKeyField state={state} keyRef={keyRef} /> : null}
+      <AddFeedback state={state} />
+      {state.needsKey ? null : state.account.isPending ? (
+        <div className="mcp-add-skeleton" aria-label={m.mcp_add_loading()} role="status">
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+      ) : state.servers.length ? (
+        <ServicePicker state={state} />
+      ) : null}
+    </>
+  );
+}
+function AddFeedback({ state }: { state: AddState }) {
+  const error = state.urlInvalid ? m.mcp_add_url_error() : state.error;
+  const loadFailed = state.account.isError && !state.account.data;
+  return (
+    <div id="mcp-add-feedback" className="mcp-add-feedback" aria-live="polite">
+      {loadFailed ? (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-kumo-subtle">{m.mcp_add_load_failed()}</span>
+          <Button variant="ghost" size="compact" disabled={state.busy} onClick={() => void state.account.refetch()}>
+            {m.mcp_retry()}
+          </Button>
+        </div>
+      ) : error ? (
+        <p role="alert" className="text-sm text-kumo-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 function AddKeyField({ state, keyRef }: { state: AddState; keyRef: RefObject<HTMLInputElement | null> }) {
   const [keyVisible, setKeyVisible] = useState(false);
@@ -125,6 +140,7 @@ function AddKeyField({ state, keyRef }: { state: AddState; keyRef: RefObject<HTM
           value={state.key}
           disabled={state.busy}
           autoComplete="off"
+          aria-describedby="mcp-add-feedback"
           onChange={(event) => state.changeKey(event.target.value)}
         />
         <Button
@@ -257,11 +273,13 @@ function ServerChoice({
     >
       <McpServiceIcon src={preset?.iconIsOfficial ? preset.iconUrl : undefined} size={24} />
       <span className="mcp-add-server-copy">
-        <span>{serverTitle(server)}</span>
+        <span className="mcp-add-server-name" title={expanded ? undefined : serverTitle(server)}>
+          {serverTitle(server)}
+        </span>
         {expanded ? <span className="text-xs text-kumo-subtle">{server.url}</span> : null}
       </span>
       {added ? (
-        <span className="text-xs text-kumo-subtle">{m.mcp_add_already_added()}</span>
+        <span className="mcp-add-added text-xs text-kumo-subtle">{m.mcp_add_already_added()}</span>
       ) : (
         <span className="inline-flex size-3.5 shrink-0" aria-hidden="true">
           <Icon name="check" className={selected ? "size-3.5" : "size-3.5 invisible"} />

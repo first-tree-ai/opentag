@@ -55,6 +55,7 @@ async function mcpFixture(page: Page, servers: MCPServer[] = []) {
   const mounts = new Map<string, MCPAgentServer[]>();
   const writes: { path: string; body: Record<string, unknown> }[] = [];
   let failProbe = false;
+  let failOAuth = false;
   let releasePool: () => void = () => {};
   let poolGate: Promise<void> | undefined;
   let releaseProbe: () => void = () => {};
@@ -114,13 +115,7 @@ async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     body: Record<string, unknown> | null,
   ) {
     if (operation === "/authorization/oauth") {
-      const returnURL = `/agents/${agentId}/mcp?mcp_oauth=error&server=${entry.mcpServerId}`;
-      await route.fulfill({
-        json: {
-          authorizationUrl: `${baseURL}/mcp-consent-fixture?return=${encodeURIComponent(returnURL)}`,
-          expiresAt: "2099-01-01T00:00:00.000Z",
-        },
-      });
+      await respondOAuth(route, agentId, entry);
       return;
     }
     if (operation === "/authorization") {
@@ -166,12 +161,28 @@ async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       },
     });
   }
+  async function respondOAuth(route: Route, agentId: string, entry: MCPAgentServer) {
+    if (failOAuth) {
+      await route.fulfill({ status: 502, json: { message: "Private upstream detail", code: "MCP_OAUTH_FAILED" } });
+    } else {
+      const returnURL = `/agents/${agentId}/mcp?mcp_oauth=error&server=${entry.mcpServerId}`;
+      await route.fulfill({
+        json: {
+          authorizationUrl: `${baseURL}/mcp-consent-fixture?return=${encodeURIComponent(returnURL)}`,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        },
+      });
+    }
+  }
   return {
     servers,
     mounts,
     writes,
     failProbe: (value: boolean) => {
       failProbe = value;
+    },
+    failOAuth: () => {
+      failOAuth = true;
     },
     holdPool: () => {
       poolGate = new Promise((resolve) => {
@@ -201,6 +212,31 @@ async function geometry(dialog: Locator) {
     dialog.getByLabel("Server URL", { exact: true }).boundingBox(),
     dialog.locator("footer").boundingBox(),
   ]);
+}
+
+/** Visibility alone passes for partially clipped elements; check every clipping ancestor as well. */
+async function expectUnclipped(locator: Locator) {
+  await expect(locator).toBeVisible();
+  const clipped = await locator.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const problems: string[] = [];
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      const bounds = parent.getBoundingClientRect();
+      if (
+        /auto|scroll|hidden|clip/.test(style.overflowY) &&
+        (box.top < bounds.top - 1 || box.bottom > bounds.bottom + 1)
+      )
+        problems.push(`${parent.className}: vertical clipping`);
+      if (
+        /auto|scroll|hidden|clip/.test(style.overflowX) &&
+        (box.left < bounds.left - 1 || box.right > bounds.right + 1)
+      )
+        problems.push(`${parent.className}: horizontal clipping`);
+    }
+    return problems;
+  });
+  expect(clipped, "the whole element must be visible").toEqual([]);
 }
 
 test("Add server accepts only a URL and retries tools without another create or bind", async ({ page }) => {
@@ -281,6 +317,29 @@ test("another Agent reuses the server and supplies its own API key", async ({ pa
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
+test("an empty server pool stays stable while loading and reopens compactly", async ({ page }) => {
+  const agentId = await createAgent(page, "MCP first use layout");
+  const fixture = await mcpFixture(page);
+  fixture.holdPool();
+  const dialog = await openAdd(page, agentId);
+  await expect(dialog.getByRole("status", { name: "Loading servers" })).toBeVisible();
+  const loading = await geometry(dialog);
+  fixture.releasePool();
+  await expect(dialog.getByRole("status", { name: "Loading servers" })).toHaveCount(0);
+  expect(await geometry(dialog)).toEqual(loading);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Add server", exact: true }).first().click();
+  const reopened = await geometry(dialog);
+  expect(reopened[0]?.height).toBeLessThan(loading[0]?.height ?? 0);
+  await expect(dialog).not.toContainText("Previously added servers");
+  await dialog.getByLabel("Server URL", { exact: true }).fill("example.com");
+  await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("Enter a complete server URL.");
+  await expectUnclipped(dialog.getByRole("alert"));
+  expect(await geometry(dialog)).toEqual(reopened);
+  expect(fixture.writes).toHaveLength(0);
+});
+
 for (const { width, height } of [
   { width: 1440, height: 720 },
   { width: 320, height: 720 },
@@ -302,6 +361,11 @@ for (const { width, height } of [
     await expect(dialog.getByRole("status", { name: "Loading servers" })).toBeVisible();
     const initial = await geometry(dialog);
     fixture.releasePool();
+    const shortcuts = dialog.locator(".mcp-add-tag");
+    await expect(shortcuts).toHaveCount(4);
+    for (const shortcut of await shortcuts.all()) await expectUnclipped(shortcut);
+    expect(await geometry(dialog)).toEqual(initial);
+    await page.screenshot({ path: test.info().outputPath(`mcp-shortcuts-${width}-${height}.png`) });
     await dialog.getByRole("button", { name: "View all (8)" }).click();
     const expanded = await geometry(dialog);
     expect(expanded.slice(1, 3)).toEqual(initial.slice(1, 3));
@@ -366,4 +430,65 @@ test("OAuth cancellation restores Add server and retries its existing binding", 
   expect(fixture.mounts.get(agentId)).toHaveLength(1);
   expect(fixture.writes.filter((write) => write.path.endsWith("/authorization/oauth"))).toHaveLength(2);
   expect(fixture.writes.filter((write) => write.path.endsWith("/mcp-servers"))).toHaveLength(1);
+});
+
+for (const width of [1440, 320]) {
+  test(`sign-in errors stay with the URL and leave saved shortcuts fully visible at ${width}px`, async ({ page }) => {
+    const agentId = await createAgent(page, "MCP sign-in feedback");
+    const figma = { ...server("figma", "oauth"), url: "https://mcp.figma.com/mcp" };
+    const fixture = await mcpFixture(page, [figma, { ...server("monday"), url: "https://mcp.monday.com/mcp" }]);
+    fixture.failOAuth();
+    await page.setViewportSize({ width, height: 720 });
+    const dialog = await openAdd(page, agentId);
+    const shortcut = dialog.getByRole("button", { name: "Figma", exact: true });
+    await shortcut.click();
+    const initial = await geometry(dialog);
+    await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+    const error = dialog.getByRole("alert");
+    await expect(error).toHaveText("Couldn’t start sign-in. Try again.");
+    await expect(dialog.getByLabel("Server URL", { exact: true })).toHaveValue(figma.url);
+    await expect(dialog).not.toContainText("Private upstream detail");
+    expect(await geometry(dialog)).toEqual(initial);
+    await expectUnclipped(error);
+    for (const tag of await dialog.locator(".mcp-add-tag").all()) await expectUnclipped(tag);
+    const [inputBounds, errorBounds, tagsBounds] = await Promise.all([
+      dialog.getByLabel("Server URL", { exact: true }).boundingBox(),
+      error.boundingBox(),
+      dialog.locator(".mcp-add-servers-heading").boundingBox(),
+    ]);
+    if (!inputBounds || !errorBounds || !tagsBounds) throw new Error("Missing connection feedback layout");
+    expect(errorBounds.y).toBeGreaterThanOrEqual(inputBounds.y + inputBounds.height);
+    expect(errorBounds.y + errorBounds.height).toBeLessThan(tagsBounds.y);
+    await expectAccessible(page);
+    await page.screenshot({ path: test.info().outputPath(`mcp-sign-in-error-${width}.png`) });
+    await dialog.getByLabel("Server URL", { exact: true }).fill("https://changed.example.com/mcp");
+    await expect(error).toHaveCount(0);
+    expect(await geometry(dialog)).toEqual(initial);
+  });
+}
+
+test("long saved server names and Added labels fit in two complete rows", async ({ page }) => {
+  const agentId = await createAgent(page, "MCP long server names");
+  const fixture = await mcpFixture(
+    page,
+    Array.from({ length: 6 }, (_, i) => server(`team-${i}-with-an-extremely-long-service-name`)),
+  );
+  const saved = fixture.servers[0];
+  if (!saved) throw new Error("Missing saved server fixture");
+  fixture.mounts.set(agentId, [{ ...binding(saved), enabled: false }]);
+  await page.setViewportSize({ width: 320, height: 480 });
+  const dialog = await openAdd(page, agentId);
+  const tags = dialog.locator(".mcp-add-tag");
+  await expect(tags).toHaveCount(4);
+  await expect(dialog.getByRole("button", { name: `${saved.name} Added`, exact: true })).toBeDisabled();
+  await expectUnclipped(dialog.locator(".mcp-add-added"));
+  const boxes = [];
+  for (const tag of await tags.all()) {
+    await expectUnclipped(tag);
+    boxes.push(await tag.boundingBox());
+  }
+  expect(new Set(boxes.map((box) => box?.y)).size).toBe(2);
+  await expectUnclipped(dialog.getByRole("button", { name: "View all (6)" }));
+  await expectNoPageOverflow(page);
+  await page.screenshot({ path: test.info().outputPath("mcp-long-shortcuts-320.png") });
 });

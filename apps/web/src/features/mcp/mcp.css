@@ -94,17 +94,20 @@
 .mcp-add-dialog {
   width: calc(100vw - 2rem);
   max-width: 27.5rem;
-  height: min(22rem, calc(100dvh - 2rem));
+  height: min(26rem, calc(100dvh - 2rem));
   max-height: calc(100dvh - 2rem);
-  top: max(1rem, calc((100dvh - 27.5rem) / 2));
+  top: max(1rem, calc((100dvh - 30rem) / 2));
   display: flex;
   flex-direction: column;
   overflow: hidden;
   transition-property: opacity;
   overflow-wrap: anywhere;
 }
+.mcp-add-dialog-compact {
+  height: min(22rem, calc(100dvh - 2rem));
+}
 .mcp-add-dialog:has(.mcp-add-servers-heading [aria-expanded="true"]) {
-  height: min(27.5rem, calc(100dvh - 2rem));
+  height: min(30rem, calc(100dvh - 2rem));
 }
 .mcp-add-dialog[data-starting-style],
 .mcp-add-dialog[data-ending-style] {
@@ -129,17 +132,16 @@
   margin: -0.25rem;
   padding: 0.25rem;
 }
-.mcp-add-field-error {
-  min-height: 1.25rem;
-  flex-shrink: 0;
-  margin-top: 0.25rem;
-}
 .mcp-add-secondary {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
   padding-top: 0.25rem;
+}
+.mcp-add-secondary:has(#mcp-add-key) {
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 .mcp-add-servers-heading {
   display: flex;
@@ -158,9 +160,8 @@
   padding-top: 0.5rem;
 }
 .mcp-add-tags {
-  display: flex;
-  flex-wrap: wrap;
-  align-content: start;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.5rem;
 }
 .mcp-add-tag,
@@ -179,11 +180,23 @@
   border-color: var(--color-kumo-focus);
   background: var(--color-kumo-tint);
 }
+.mcp-add-tag {
+  width: 100%;
+}
 .mcp-add-server-copy {
   display: grid;
   gap: 0.125rem;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.mcp-add-tag .mcp-add-server-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-add-added {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .mcp-add-results {
   display: grid;
@@ -200,8 +213,6 @@
 .mcp-add-feedback {
   flex-shrink: 0;
   height: 2.5rem;
-  padding-top: 0.25rem;
-  overflow-y: auto;
 }
 .mcp-add-footer {
   display: flex;
@@ -218,13 +229,12 @@
   white-space: nowrap;
 }
 .mcp-add-skeleton {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.5rem;
-  flex-wrap: wrap;
   padding-top: 2.5rem;
 }
 .mcp-add-skeleton span {
-  width: 5.5rem;
   height: 2.5rem;
   border-radius: 0.5rem;
   background: var(--color-kumo-tint);

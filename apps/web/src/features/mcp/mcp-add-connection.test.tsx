@@ -132,7 +132,7 @@ describe("URL and server shortcuts", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await newAddress("https://shared.example.com/mcp");
     connect();
-    await screen.findByText("More than one server uses this URL. Select an existing server.");
+    await screen.findByText("Choose an existing server for this URL.");
     fireEvent.click(screen.getByRole("button", { name: "View all (6)" }));
     fireEvent.click(screen.getByRole("button", { name: /service-0.*https/ }));
     expect(screen.getByRole("button", { name: "service-0" }).getAttribute("aria-pressed")).toBe("true");

@@ -152,6 +152,7 @@ async function main() {
       OPENTAG_DATABASE_URL: databaseURL.toString(),
       OPENTAG_AUTO_MIGRATE: "true",
       OPENTAG_ENV: "dev",
+      OPENTAG_MCP_ALLOW_LOOPBACK: "true",
       OPENTAG_HOST: "127.0.0.1",
       OPENTAG_PORT: String(port),
       OPENTAG_PUBLIC_URL: baseURL,

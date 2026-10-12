@@ -258,7 +258,7 @@ describe("Discover catalog surface", () => {
 });
 
 describe("Discover to Agent management", () => {
-  it("keeps the existing Add server sources alongside the independent directory", async () => {
+  it("keeps the URL Add dialog separate from the independent directory", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
@@ -266,8 +266,11 @@ describe("Discover to Agent management", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close Discover services" }));
     expect(screen.getAllByRole("button", { name: "Add server" })).toHaveLength(1);
     await openAdd();
-    expect((await screen.findByRole("button", { name: "Discover" })).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "Use an existing Server" })).toBeTruthy();
+    expect(await screen.findByLabelText("Server URL")).toBeTruthy();
+    for (const name of ["Discover", "Use an existing Server", "Import configuration", "Configure manually"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    expect(screen.queryByLabelText("Search services")).toBeNull();
   });
 
   it.each(["Alpha", "Delta"])("starts %s OAuth directly and puts startup failures on the list", async (title) => {

@@ -163,14 +163,9 @@ export async function openAdd() {
   fireEvent.click(buttons[0] as HTMLButtonElement);
   await screen.findByRole("dialog");
 }
-export async function openExisting() {
-  await openAdd();
-  fireEvent.click(await screen.findByRole("button", { name: "Use an existing Server" }));
-}
 export async function newAddress(url = "https://mcp.example.com/mcp") {
-  await openExisting();
-  fireEvent.change(await screen.findByLabelText("MCP URL"), { target: { value: url } });
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  await openAdd();
+  fireEvent.change(await screen.findByLabelText("Server URL"), { target: { value: url } });
 }
 
 export function authorization() {

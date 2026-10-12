@@ -987,32 +987,46 @@ edit, and remove.
   discovery offers **Retry** in the tool footer, with the same pending guard; a partial list alone
   does not promote that action.
 
-The "new Server" wizard asks for the definition first and the authorization method second, so
-`default_auth_kind` is never presented as a statement about the Server.
+### Adding a Server
 
-### Adding a Server by hand
+The MCP list page keeps its existing layout and actions. **Add server** opens one compact dialog:
+**Server URL**, optional **Previously added servers** shortcuts, and **Cancel / Connect**. There is
+no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
+manual configuration, and configuration import remain implementation capabilities rather than entry
+points in this dialog.
 
-The MCP page header offers **Discover services** next to **Add server**. Discover opens a
-separate directory with search, an initial **All** category, and a two-column card grid (one column
-on mobile). **Add server** retains **Discover**, the Account pool under **Use an existing Server**,
-**Import configuration**, and **Configure manually**. Where the Account pool and the paste
-readers start from something the user already has, **Configure manually** is the home for a Server
-typed from nothing: it shows the new Server's fields — address, name, authentication method, and the
-advanced connection settings — straight away, so a user who knows the address but has neither an
-Account entry nor a configuration fragment to paste does not have to work out that pasting an
-address into a search field was the way in. It reuses the wizard's own validation and its
-create → attach → authorize sequence, and the copy that rejects an address, a name, or a header is
-the copy the configuration step shows. The source switch stays visible above it, because switching
-sources is how a user leaves a form that has no step behind it to go back to.
+The four most recently created Account definitions appear as shortcuts. Selecting one highlights it
+and fills its URL without making a request. **View all** replaces the shortcut area with search and
+selection; choosing a result collapses it and keeps the chosen shortcut visible. Editing the URL
+clears the selection and its credential draft. Complete HTTP(S) endpoint URLs are required; only
+outer whitespace is trimmed, and configuration snippets, commands, multiple addresses, userinfo,
+and fragments are refused. One matching definition is reused; ambiguous matches require explicit
+selection. Service names are suggested automatically, with collision handling.
 
-**Use an existing Server** keeps a shortcut of its own: its field searches the Account pool, and
-pasting an MCP address the Account does not hold still continues to the configuration step. The
-shortcut predates the manual source and is kept beside it rather than folded into it, so neither
-entry loses a capability it had.
+Connect reuses the existing create, attach, authorization, OAuth, and probe APIs. Saved configuration
+and exact preset matches provide authentication defaults; Bearer defaults reveal an API-key field
+only after Connect, and OAuth defaults start provider sign-in directly. An unknown endpoint starts
+with an anonymous probe; an explicit authentication rejection permits an OAuth attempt through the
+existing discovery flow. The transport retains the shared `MCP_AUTH_REJECTION_SUMMARY` in probe errors,
+prefixed by `MCP_UPSTREAM_ERROR`; Add matches that contract to distinguish HTTP 401/403 rejections
+from other failures. It never infers an API key from a rejection. Tool failures and empty tool
+sets keep the dialog open with concise feedback. Retries retain confirmed definitions and bindings,
+while switching addresses discards that attempt. OAuth stores only Agent/Server identifiers and the
+return view; cancellation restores this same dialog against its existing binding. Credentials remain
+strictly per Agent.
+
+The dialog is 440px wide and 352px high, bounded by the viewport with 16px margins. View all explicitly
+expands its height to 440px while keeping the header and URL field in place; choosing a server restores
+the compact height. Search results and constrained content scroll independently. Loading, API-key
+entry, errors, and changing button labels do not change the compact geometry. The opening server list
+is retained during background refreshes. Loading skeletons replace only the shortcut area, icons and
+selection marks reserve their dimensions, validation has a reserved line, and connection feedback
+has a fixed area above the footer. Only opacity transitions are used, with reduced-motion support.
 
 ### Importing a Server from another client's configuration
 
-The paste readers of **Import configuration** accept a configuration instead of a URL. They read the
+The retained configuration-import readers accept a configuration instead of a URL. This capability
+has no entry point in the current Add server dialog. The readers support the
 shapes other clients write: OpenCode's `mcp` map with `"type": "remote"`, the `mcpServers` map of the
 Claude-family clients, VS Code's `servers` map with `"type": "http"` or `"sse"`, the TOML
 `[mcp_servers.<name>]` tables other clients use, the YAML spelling of any of those, and the
@@ -1022,7 +1036,7 @@ routinely carry both.
 
 Parsing happens in the browser, never on the Server: a paste may carry a live credential, and the
 text itself is not sent anywhere. Only the values the user confirms travel, through the same
-create → attach → authorize sequence the manual wizard uses.
+create → attach → authorize sequence used by the connection flow.
 
 - **Only remote Servers are importable.** `stdio`, `local`, `command`, and `npx` entries are listed
   by name and reported as a category OpenTag does not support. An entry that declares a `command` is
@@ -1073,11 +1087,10 @@ create → attach → authorize sequence the manual wizard uses.
 An Agent with no Server mounted has an empty tool surface and no way in unless its user already knows
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
 that an Agent can add from the independent **Discover services** directory and from its empty state.
-The existing **Add server** picker retains its Discover, Account pool, import, and manual sources.
-Removing its Discover source is a separate change; the standalone directory owns only its add state.
 The page keeps one **Add server** action in its header alongside the independent directory action.
-For an Agent with no mounted Servers, Add server opens its Discover source directly; otherwise it
-keeps the Account/URL source. The empty state starts directly with **Quick start**, without repeating
+Add server opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
+Discover, manual-configuration, or import source switch. The standalone directory owns its add state.
+The empty state starts directly with **Quick start**, without repeating
 the page introduction or Add server action in a separate onboarding panel. It offers Exa, Notion, Linear, and Airtable, using brand names
 and example tasks for web research, documents, tasks, and table records. Google Workspace services
 remain in Discover but are excluded from Quick start because their developer preview requires
@@ -1149,17 +1162,14 @@ and category rules, the icon, and the gates to run — is a first-party Skill at
 `skills/mcp-catalog-entry`. It is a contributor bundle rather than a shipped preset: an operator
 uploads it explicitly, and the Presets catalog never offers it.
 
-Adding from a card is a prefill of the chain this page already documents, not a new API. The entry's
-URL is matched against the Account's definitions, and an existing definition is mounted rather than
-duplicated; otherwise the entry itself is the create payload. `default_auth_kind` remains a prefill
-for the new authorization, never a statement about the Server. Anonymous and OAuth entries complete
-from the card, with OAuth navigating to the authorization server; a bearer entry stops to collect the
-key.
+The current Add server flow uses an exact catalog endpoint match to supply authentication defaults
+and a suggested name. Account definitions are reused before creating another definition.
+`default_auth_kind` remains a prefill for the new authorization, never a statement about the Server.
 
 An entry's `oauthScopes`, when present, travel as the OAuth start request's explicit scopes, so the
 provider's consent screen is asked for exactly the scopes the catalog author recorded. An entry that
-declares none leaves scope selection to the flow's own discovery rules, and a manual, imported, or
-re-authorization flow always does — only a card has a catalog entry to consult. Google's entries
+declares none leaves scope selection to the flow's own discovery rules. The Add server flow consults
+scopes only for an exact endpoint match. Google's entries
 carry Google's recommended per-product subsets, which deliberately exclude restricted scopes such as
 `https://mail.google.com/`.
 

@@ -263,6 +263,8 @@ test("Discover retains search across a real OAuth cancellation and successful re
     await page.getByRole("button", { name: "Discover", exact: true }).click();
     const discover = page.getByRole("dialog", { name: "Discover", exact: true });
     await discover.getByLabel("Search connectors", { exact: true }).fill("Linear");
+    await expectAccessible(page);
+    await page.screenshot({ path: test.info().outputPath("discover-add-icon-desktop.png") });
     const cancellation = page.waitForEvent("popup");
     await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
     const popup = await cancellation;
@@ -531,6 +533,8 @@ test("mobile Discover restores search after cancellation, browser Back, and succ
     await page.getByRole("button", { name: "Discover", exact: true }).click();
     const discover = page.getByRole("dialog", { name: "Discover", exact: true });
     await discover.getByLabel("Search connectors", { exact: true }).fill("Linear");
+    await expectAccessible(page);
+    await page.screenshot({ path: test.info().outputPath("discover-add-icon-mobile.png") });
     await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
     await page.getByRole("link", { name: "Cancel sign-in" }).click();
     await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");

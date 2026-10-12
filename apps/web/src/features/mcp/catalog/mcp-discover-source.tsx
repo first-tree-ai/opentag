@@ -133,6 +133,14 @@ export function McpCatalogCard({
   const preview = isCatalogPreview(entry);
   const added = state === "added" || state === "disabled";
   const label = state === "unconnected" ? m.mcp_connect() : m.mcp_attach_action();
+  const addButtonProps =
+    state === "unconnected"
+      ? {}
+      : {
+          shape: "square" as const,
+          variant: "ghost" as const,
+          className: "text-kumo-link hover:bg-(--brand-soft) disabled:text-kumo-subtle",
+        };
   return (
     <li className="mcp-catalog-card rounded-lg border border-kumo-line bg-kumo-base p-5">
       <div className="mcp-catalog-card-heading flex min-w-0 items-center gap-3">
@@ -162,13 +170,15 @@ export function McpCatalogCard({
           </span>
         ) : (
           <Button
+            {...addButtonProps}
             aria-label={`${label}: ${title}`}
+            title={`${label}: ${title}`}
             disabled={busy}
             loading={connecting}
             size="compact"
             onClick={() => onAdd(entry)}
           >
-            {label}
+            {state === "unconnected" ? label : <Icon name="plus" className="size-5" />}
           </Button>
         )}
       </div>

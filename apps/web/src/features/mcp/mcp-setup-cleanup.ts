@@ -5,5 +5,8 @@ export async function discardMcpSetup(agentId: string, serverId: string, detach:
   const current = (await browserApi.agentMcpServers(agentId)).servers.find((entry) => entry.mcpServerId === serverId);
   const auth = current?.authorization;
   const keepCredential = auth?.hasCredential && auth.status === "active" && auth.probeState !== "failed";
-  if (current && !keepCredential) await detach(serverId);
+  if (!current) return true;
+  if (keepCredential) return false;
+  await detach(serverId);
+  return true;
 }

@@ -22,6 +22,7 @@ export function McpDiscoverSource({
   mounted,
   busy,
   pendingEntryId,
+  pendingAction,
   searchRef,
   onAdd,
   connectedIds = [],
@@ -34,6 +35,7 @@ export function McpDiscoverSource({
   mounted: readonly MCPAgentServer[];
   busy: boolean;
   pendingEntryId?: string;
+  pendingAction?: "add" | "connect";
   searchRef?: RefObject<HTMLInputElement | null>;
   onAdd: (entry: McpCatalogEntry) => void;
   connectedIds?: string[];
@@ -102,6 +104,7 @@ export function McpDiscoverSource({
               state={connectedIds.includes(entry.id) ? "added" : catalogEntryState(entry, servers, mounted)}
               busy={busy}
               connecting={busy && entry.id === pendingEntryId}
+              pendingAction={entry.id === pendingEntryId ? pendingAction : undefined}
               onAdd={onAdd}
             />
           ))}
@@ -120,6 +123,7 @@ export function McpCatalogCard({
   onAdd,
   example,
   connecting = false,
+  pendingAction,
 }: {
   entry: McpCatalogEntry;
   state?: McpCatalogEntryState;
@@ -127,20 +131,21 @@ export function McpCatalogCard({
   onAdd: (entry: McpCatalogEntry) => void;
   example?: string;
   connecting?: boolean;
+  pendingAction?: "add" | "connect";
 }) {
   const locale = getLocale();
   const title = localizedText(entry.title, locale);
   const preview = isCatalogPreview(entry);
   const added = state === "added" || state === "disabled";
-  const label = state === "unconnected" ? m.mcp_connect() : m.mcp_attach_action();
-  const addButtonProps =
-    state === "unconnected"
-      ? {}
-      : {
-          shape: "square" as const,
-          variant: "ghost" as const,
-          className: "text-kumo-link hover:bg-(--brand-soft) disabled:text-kumo-subtle",
-        };
+  const reconnect = pendingAction ? pendingAction === "connect" : state === "unconnected";
+  const label = reconnect ? m.mcp_connect() : m.mcp_attach_action();
+  const addButtonProps = reconnect
+    ? {}
+    : {
+        shape: "square" as const,
+        variant: "ghost" as const,
+        className: "text-kumo-link hover:bg-(--brand-soft) disabled:text-kumo-subtle",
+      };
   return (
     <li className="mcp-catalog-card rounded-lg border border-kumo-line bg-kumo-base p-5">
       <div className="mcp-catalog-card-heading flex min-w-0 items-center gap-3">
@@ -172,13 +177,12 @@ export function McpCatalogCard({
           <Button
             {...addButtonProps}
             aria-label={`${label}: ${title}`}
-            title={`${label}: ${title}`}
             disabled={busy}
             loading={connecting}
             size="compact"
             onClick={() => onAdd(entry)}
           >
-            {state === "unconnected" ? label : <Icon name="plus" className="size-5" />}
+            {reconnect ? label : <Icon name="plus" className="size-5" />}
           </Button>
         )}
       </div>

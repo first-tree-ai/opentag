@@ -153,13 +153,13 @@ function DiscoverCatalog({
       hidden={Boolean(preview) || Boolean(state.keySetup) || state.account.isPending || state.account.isError}
     >
       {state.error && !state.keySetup ? (
-        <div className="mb-4">
+        <div role="alert" className="mb-4">
           <Banner variant="error">{state.error}</Banner>
         </div>
       ) : null}
-      <McpOAuthControls session={state.oauth} />
+      <McpOAuthControls session={state.oauth} className="mb-4" />
       {state.notice ? (
-        <p role="status" className="text-sm text-kumo-subtle">
+        <p role="status" className="mb-4 text-sm text-kumo-subtle">
           {state.notice}
         </p>
       ) : null}
@@ -172,6 +172,7 @@ function DiscoverCatalog({
         mounted={props.mounted}
         busy={state.busy}
         pendingEntryId={state.pendingEntryId}
+        pendingAction={state.pendingAction}
         searchRef={searchRef}
         onAdd={openEntry}
         connectedIds={state.connectedIds}

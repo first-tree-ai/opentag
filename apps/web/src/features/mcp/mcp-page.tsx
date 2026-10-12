@@ -65,6 +65,20 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const restored = useRef(false);
   const [panel, setPanel] = useState<Panel>({ kind: "none" });
   const [highlight, setHighlight] = useState(outcome?.outcome.kind === "success" ? outcome.mcpServerId : undefined);
+  const pendingFocus = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const id = pendingFocus.current;
+    if (panel.kind !== "none" || !id || !servers.some((entry) => entry.mcpServerId === id)) return;
+    const row = document.getElementById(`mcp-server-${id}`);
+    if (!row) return;
+    const frame = requestAnimationFrame(() => {
+      if (pendingFocus.current !== id || !row.isConnected) return;
+      row.scrollIntoView({ block: "nearest" });
+      row.focus({ preventScroll: true });
+      pendingFocus.current = undefined;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [panel, servers]);
   useEffect(() => {
     if (!highlight) return;
     const timer = window.setTimeout(() => setHighlight(undefined), 2500);
@@ -124,13 +138,9 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     });
   };
   const locate = (id: string) => {
+    pendingFocus.current = id;
     close();
     setHighlight(id);
-    requestAnimationFrame(() => {
-      const row = document.getElementById(`mcp-server-${id}`);
-      row?.scrollIntoView({ block: "nearest" });
-      row?.focus({ preventScroll: true });
-    });
   };
   const connect = async (entry: MCPAgentServer, token?: string, definition?: MCPServer) => {
     if (entry.mcpServerId === outcome?.mcpServerId) setReturnedFailure(false);

@@ -2,9 +2,10 @@ import * as m from "../../paraglide/messages.js";
 import { Button } from "../../ui/design-system.js";
 import type { McpOAuthSession } from "./mcp-oauth-session.js";
 
-export function McpOAuthControls({ session }: { session: McpOAuthSession }) {
+export function McpOAuthControls({ session, className = "" }: { session: McpOAuthSession; className?: string }) {
+  if (!session.phase && !session.notice) return null;
   return (
-    <div className="grid gap-2" aria-live="polite">
+    <div className={`grid gap-2 ${className}`} aria-live="polite">
       {session.detached && session.phase === "waiting" ? (
         <p className="text-sm text-kumo-subtle">{m.mcp_oauth_window_detached()}</p>
       ) : null}

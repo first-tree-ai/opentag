@@ -50,7 +50,7 @@ export function McpAddDialog(props: McpAddProps) {
       busy={state.busy}
       onClose={() => void state.close()}
     >
-      <McpOAuthControls session={state.oauth} />
+      <McpOAuthControls session={state.oauth} className="mb-4" />
       <form
         className="mcp-add-layout"
         onSubmit={(event) => {

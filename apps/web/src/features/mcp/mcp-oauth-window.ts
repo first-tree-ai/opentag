@@ -25,7 +25,24 @@ export function prepareMcpOAuthWindow(label: string): McpOAuthWindow {
     popup = mobile ? null : window.open("", "_blank", "popup,width=560,height=720");
     if (popup) {
       popup.document.title = label;
+      popup.document.documentElement.lang = document.documentElement.lang;
+      const style = getComputedStyle(document.querySelector(".ui-dialog") ?? document.body);
+      Object.assign(popup.document.body.style, {
+        margin: "0",
+        minHeight: "100vh",
+        display: "grid",
+        placeItems: "center",
+        padding: "24px",
+        boxSizing: "border-box",
+        fontFamily: style.fontFamily,
+        fontSize: "14px",
+        lineHeight: "1.5",
+        color: style.color,
+        backgroundColor: style.backgroundColor,
+      });
       const heading = popup.document.createElement("p");
+      heading.setAttribute("role", "status");
+      heading.style.margin = "0";
       heading.textContent = label;
       popup.document.body.replaceChildren(heading);
     }

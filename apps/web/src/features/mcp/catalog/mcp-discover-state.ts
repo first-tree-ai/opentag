@@ -22,6 +22,7 @@ export type DiscoverProps = {
   initialOutcome?: "cancelled" | "failed";
 };
 type Setup = { catalog: McpCatalogEntry; binding: MCPAgentServer; server?: MCPServer; temporary: boolean };
+const catalogAction = (binding?: MCPAgentServer): "add" | "connect" => (binding ? "connect" : "add");
 
 /** Keep Discover mounted until the user finishes, and never detach a pre-existing connection. */
 export function useMcpDiscoverState(props: DiscoverProps) {
@@ -40,6 +41,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
   const [pendingEntryId, setPendingEntryId] = useState<string>();
+  const [pendingAction, setPendingAction] = useState<"add" | "connect">();
   const [keySetup, setKeySetup] = useState<Setup>();
   const [connectedIds, setConnectedIds] = useState<string[]>([]);
   const created = useRef(new Map<string, MCPServer>());
@@ -139,6 +141,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     setBusy(true);
     setChecking(false);
     setPendingEntryId(catalog.id);
+    setPendingAction(catalogAction(knownBinding));
     setError(undefined);
     setNotice(undefined);
     let setup: Setup | undefined;
@@ -158,6 +161,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
         setBusy(false);
         setChecking(false);
         setPendingEntryId(undefined);
+        setPendingAction(undefined);
       }
     }
   }
@@ -192,6 +196,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     busy,
     checking,
     pendingEntryId,
+    pendingAction,
     keySetup,
     connectedIds,
     addFromCatalog,

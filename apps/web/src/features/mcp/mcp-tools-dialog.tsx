@@ -7,7 +7,6 @@ import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
 import { actionError } from "./mcp-form-model.js";
 import { useProbeMcpServer } from "./mcp-queries.js";
-import { rememberMcpReturn } from "./mcp-return-context.js";
 
 const sentences = new Intl.Segmenter(undefined, { granularity: "sentence" });
 
@@ -127,15 +126,13 @@ export function McpToolsDialog({
           setAuthError(undefined);
           setAuthentication(false);
         }}
-        onBeforeOAuth={() =>
-          rememberMcpReturn({
-            agentId,
-            serverId: entry.mcpServerId,
-            source: "tools",
-            query,
-            scrollTop: scrollTop.current,
-          })
-        }
+        returnContext={() => ({
+          agentId,
+          serverId: entry.mcpServerId,
+          source: "tools",
+          query,
+          scrollTop: scrollTop.current,
+        })}
       />
     );
   const connected = entry.authorization?.status === "active";

@@ -15,7 +15,6 @@ import {
   validTokenSettings,
 } from "./mcp-form-model.js";
 import { useMcpServerDetail, useUpdateMcpBinding } from "./mcp-queries.js";
-import { rememberMcpReturn } from "./mcp-return-context.js";
 import { McpConfirmDialog } from "./mcp-server-dialogs.js";
 import { McpToolsDialog } from "./mcp-tools-dialog.js";
 
@@ -196,7 +195,7 @@ export function McpSettingsDialog({
         onBack={back}
         onAuthorized={back}
         initialError={authError}
-        onBeforeOAuth={() => rememberMcpReturn({ agentId, serverId: entry.mcpServerId, source: "edit" })}
+        returnContext={() => ({ agentId, serverId: entry.mcpServerId, source: "edit" })}
       />
     );
   return (

@@ -14,6 +14,7 @@ import { McpOAuthControls } from "./mcp-oauth-controls.js";
 import { useMcpOAuthSession } from "./mcp-oauth-session.js";
 import { canRevoke } from "./mcp-page-model.js";
 import { useMcpServerDetail, useSetMcpAuthorization } from "./mcp-queries.js";
+import type { McpReturnContext } from "./mcp-return-context.js";
 import { McpConfirmDialog } from "./mcp-server-dialogs.js";
 
 export function validAuth(draft: AuthDraft): boolean {
@@ -41,11 +42,15 @@ export function useMcpAuthorization(agentId: string) {
     entry: MCPAgentServer,
     draft: AuthDraft,
     oauthScopes?: readonly string[],
-    options?: { onBeforeOAuth?: () => void },
+    options?: { returnContext?: () => McpReturnContext },
   ) => {
     if (draft.kind === "oauth") {
-      options?.onBeforeOAuth?.();
-      return await oauth.start({ agentId, serverId: entry.mcpServerId, source: "edit" }, oauthScopes);
+      const context: McpReturnContext = options?.returnContext?.() ?? {
+        agentId,
+        serverId: entry.mcpServerId,
+        source: "edit",
+      };
+      return await oauth.start(context, oauthScopes);
     }
     return authorize.mutateAsync({
       mcpServerId: entry.mcpServerId,
@@ -62,7 +67,7 @@ export function McpAuthorizeDialog({
   onClose,
   onBack,
   onAuthorized,
-  onBeforeOAuth,
+  returnContext,
   initialError,
   presetAuthKind,
 }: {
@@ -72,7 +77,7 @@ export function McpAuthorizeDialog({
   onClose: () => void;
   onBack?: () => void;
   onAuthorized: () => void;
-  onBeforeOAuth?: () => void;
+  returnContext?: () => McpReturnContext;
   initialError?: string;
   presetAuthKind?: MCPAuthKind;
 }) {
@@ -100,7 +105,7 @@ export function McpAuthorizeDialog({
     setBusy(true);
     setError(undefined);
     try {
-      const result = await authorize.run(entry, draft, undefined, { onBeforeOAuth });
+      const result = await authorize.run(entry, draft, undefined, { returnContext });
       if (draft.kind !== "oauth" || result === "authorized") onAuthorized();
     } catch (cause) {
       setError(actionError(cause, m.mcp_authorize_failed()));
@@ -148,7 +153,7 @@ export function McpAuthorizeDialog({
       onClose={onClose}
       onBack={onBack}
     >
-      <McpOAuthControls session={authorize.oauth} />
+      <McpOAuthControls session={authorize.oauth} className="mb-4" />
       <form
         onSubmit={(event) => {
           event.preventDefault();

@@ -793,6 +793,30 @@ export const GOOGLE_WORKSPACE_MCP_ORIGINS = [
 
 /** Whether an MCP endpoint URL is one of the Google Workspace origins above. */
 export function isGoogleWorkspaceMcpEndpoint(url: string): boolean {
+  return isAllowedMcpOrigin(url, GOOGLE_WORKSPACE_MCP_ORIGINS);
+}
+
+/**
+ * The Canva remote MCP origin whose OAuth flow may use this deployment's pre-registered Canva
+ * client. The same exact-origin rule as Google applies: a Server that merely names Canva's
+ * authorization server must not receive a credential issued to this deployment's Canva client.
+ */
+export const CANVA_MCP_ORIGIN = "https://mcp.canva.com";
+
+/** Canva's authorization server, the issuer `mcp.canva.com` names in its protected resource metadata. */
+export const CANVA_MCP_AUTHORIZATION_SERVER = "https://mcp.canva.com";
+
+/** Whether an MCP endpoint URL is on the Canva MCP origin. */
+export function isCanvaMcpEndpoint(url: string): boolean {
+  return isAllowedMcpOrigin(url, [CANVA_MCP_ORIGIN]);
+}
+
+/**
+ * Whether `url` is on one of `origins` exactly: HTTPS, default port, no userinfo, and no subdomain or
+ * suffix tolerance. Shared by every deployment-client allowlist, so each one refuses the same near
+ * misses.
+ */
+function isAllowedMcpOrigin(url: string, origins: readonly string[]): boolean {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -805,5 +829,5 @@ export function isGoogleWorkspaceMcpEndpoint(url: string): boolean {
   if (parsed.username.length > 0 || parsed.password.length > 0) return false;
   // `new URL` elides a default port, so this refuses only a genuinely non-default one.
   if (parsed.port.length > 0) return false;
-  return (GOOGLE_WORKSPACE_MCP_ORIGINS as readonly string[]).includes(parsed.origin);
+  return origins.includes(parsed.origin);
 }

@@ -472,6 +472,33 @@ Server's effective origin is one of the eight Google endpoints and the issuer ca
 Google's — a Server that merely names Google as its authorization server cannot borrow it. Unsetting
 the variables takes effect immediately and leaves nothing to clean up.
 
+#### The deployment Canva client
+
+Canva's authorization server (`https://mcp.canva.com`) supports a client metadata document and
+dynamic registration, so Canva works without configuration. A deployment that wants Canva to use a
+fixed OAuth client configures `OPENTAG_MCP_CANVA_CLIENT_ID` and `OPENTAG_MCP_CANVA_CLIENT_SECRET` —
+both together or neither; a half-configured pair fails startup. When neither is set, Canva keeps the
+automatic resolution described above (client metadata document, then dynamic registration).
+Operator setup:
+
+- Create the Canva integration and register
+  `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as its redirect URL. For the hosted
+  deployment this is `https://app.opentag.build/api/v1/mcp-servers/oauth/callback`.
+- Allow the scopes that `https://mcp.canva.com/.well-known/oauth-protected-resource/mcp` advertises
+  in `scopes_supported`; the flow requests them when the challenge names no scope.
+- The client authenticates at Canva's token endpoint with `client_secret_basic`.
+
+The client follows the same rules as the Google client: it is resolved from configuration and never
+stored, and it is offered only when the Server's effective origin is exactly `https://mcp.canva.com`
+and the discovered issuer is exactly `https://mcp.canva.com`. It takes precedence over a
+`preregistered` row, the client metadata document, and dynamic registration.
+
+A refresh token is bound to the client that obtained it. When the pair is configured on a deployment
+that already has Canva authorizations from the client metadata document, the next refresh of each
+one presents the fixed client, Canva answers `invalid_client`, and the authorization is revoked. Each
+affected user authorizes Canva once more. Unsetting the pair has the same one-time effect in the
+other direction.
+
 ### The authorization round trip
 
 - PKCE `S256`; the verifier is encrypted and the challenge travels.

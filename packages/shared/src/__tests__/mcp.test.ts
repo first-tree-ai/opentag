@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  CANVA_MCP_AUTHORIZATION_SERVER,
   GOOGLE_WORKSPACE_MCP_ORIGINS,
+  isCanvaMcpEndpoint,
   isGoogleWorkspaceMcpEndpoint,
   MCP_TOOL_DESCRIPTION_MAX_BYTES,
   MCP_TOOL_INPUT_SCHEMA_MAX_BYTES,
@@ -175,5 +177,43 @@ describe("isGoogleWorkspaceMcpEndpoint", () => {
     expect(isGoogleWorkspaceMcpEndpoint("")).toBe(false);
     expect(isGoogleWorkspaceMcpEndpoint("/mcp/v1")).toBe(false);
     expect(isGoogleWorkspaceMcpEndpoint("not a url")).toBe(false);
+  });
+});
+
+/**
+ * The deployment's Canva client is offered only to Canva's own MCP origin, by the same exact-origin
+ * rule as the Google allowlist.
+ */
+describe("isCanvaMcpEndpoint", () => {
+  it("accepts the Canva MCP endpoint at its documented URL and any path on that origin", () => {
+    expect(isCanvaMcpEndpoint("https://mcp.canva.com/mcp")).toBe(true);
+    expect(isCanvaMcpEndpoint("https://mcp.canva.com/")).toBe(true);
+    expect(isCanvaMcpEndpoint("https://mcp.canva.com:443/mcp")).toBe(true);
+    expect(isCanvaMcpEndpoint("https://MCP.CANVA.COM/mcp")).toBe(true);
+  });
+
+  it("names the endpoint's own origin as the authorization server", () => {
+    expect(isCanvaMcpEndpoint(CANVA_MCP_AUTHORIZATION_SERVER)).toBe(true);
+  });
+
+  it("refuses a lookalike, suffixed, or sibling host", () => {
+    for (const url of [
+      "https://mcp.canva.com.evil.example/mcp",
+      "https://evilmcp.canva.com/mcp",
+      "https://canva.com/mcp",
+      "https://www.canva.com/mcp",
+      "https://api.canva.com/mcp",
+      "https://mcp.example.com/mcp",
+    ]) {
+      expect(isCanvaMcpEndpoint(url)).toBe(false);
+    }
+  });
+
+  it("refuses a non-HTTPS scheme, a non-default port, any userinfo, and a non-URL", () => {
+    expect(isCanvaMcpEndpoint("http://mcp.canva.com/mcp")).toBe(false);
+    expect(isCanvaMcpEndpoint("https://mcp.canva.com:8443/mcp")).toBe(false);
+    expect(isCanvaMcpEndpoint("https://user:secret@mcp.canva.com/mcp")).toBe(false);
+    expect(isCanvaMcpEndpoint("")).toBe(false);
+    expect(isCanvaMcpEndpoint("not a url")).toBe(false);
   });
 });

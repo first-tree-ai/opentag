@@ -1024,6 +1024,12 @@ export async function startServer(): Promise<void> {
        * reach beyond the Google-hosted endpoints.
        */
       googleMcpClient: config.mcpGoogleOAuth,
+      /*
+       * The deployment's pre-registered Canva client, present only when the
+       * OPENTAG_MCP_CANVA_CLIENT_* pair is configured. The same origin and issuer checks apply, and
+       * without it Canva keeps its automatic client resolution (CIMD, then dynamic registration).
+       */
+      canvaMcpClient: config.mcpCanvaOAuth,
     });
     const mcpRefreshWorker = new McpRefreshWorker({
       authorization: mcpAuthorization,

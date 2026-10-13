@@ -308,7 +308,7 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Everything ready");
     await chooseOption("Connected messaging app", "Slack");
-    expect(await screen.findByText("Tag @OpenTag in Slack to put it to work.")).toBeTruthy();
+    expect(await screen.findByText("Message this Bot in Slack to put it to work.")).toBeTruthy();
     expect(screen.getByText("1 changed")).toBeTruthy();
   });
 });

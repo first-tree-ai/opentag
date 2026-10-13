@@ -555,7 +555,7 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
     // Provider identity reaches the done screen from the snapshot, not from page state.
-    expect(screen.getByText("Tag @OpenTag in Slack to put it to work.")).toBeTruthy();
+    expect(screen.getByText("Message this Bot in Slack to put it to work.")).toBeTruthy();
     expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
     expect(onReady).toHaveBeenCalledTimes(1);
   });
@@ -707,7 +707,7 @@ describe("preparation review regressions", () => {
 
     expect(
       screen.getByText(
-        "In Slack, add OpenTag to a channel and send it a message, or message it directly, to finish the connection check.",
+        "In Slack, add this Bot to a channel and send it a message, or message it directly, to finish the connection check.",
       ),
     ).toBeTruthy();
   });

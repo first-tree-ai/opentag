@@ -142,7 +142,9 @@ describe("custom Slack App flow", () => {
     expect(test.save).toHaveBeenCalledTimes(1);
     test.read.mockResolvedValue(bound());
     complete();
-    expect(await screen.findByText(/Configuration saved.*verify the Request URL/)).toBeTruthy();
+    expect(
+      await screen.findByText(/Configuration saved.*Event Subscriptions.*Request URL is Verified.*Save Changes/),
+    ).toBeTruthy();
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
     expect(screen.queryByText("Slack connected. The Agent can receive messages.")).toBeNull();
     expect(

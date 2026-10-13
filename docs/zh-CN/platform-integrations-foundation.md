@@ -2,6 +2,8 @@
 
 [English](../platform-integrations-foundation.md)
 
+> Last synced with: 2026-10-13
+
 OpenTag 自己管理 GitHub App、Slack 与飞书凭证。Server 组合集成管理、执行授权、短期凭证能力和平台代理；可信 Runner 向原生 CLI 进程提供 execution-local handle。
 
 ## 身份与存储
@@ -24,7 +26,7 @@ GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一�
 
 按 `.env.example` 完整配置 GitHub App，OAuth 回调必须准确匹配 `OPENTAG_PUBLIC_URL` 下的回调路径。Account 页面连接或重新授权 GitHub；Agent 集成页面选择仓库、角色、权限、发布模式、Tree 分支与所有者设定的任务委托。Server 执行 CSRF、PKCE、App 身份校验、webhook 签名验证和维护 worker；未配置 App 时界面显示不可用。仓库发现每个 installation 最多列出十页（1000 个仓库），未能完整列出的 installation 在 `truncatedInstallations` 中显式标注。绑定写入对请求的每个绑定执行 GitHub 实时准入验证，超出单次验证可覆盖页数的配置会被拒绝；委托的 IM 绑定必须是当前 Account 持有的有效绑定，在同一事务中校验。管理路由将 GitHub 上游失败映射为有界的公开错误码。
 
-账户的 GitHub 区块和 Agent 仓库页在没有安装记录时提供安装链接。已登录账户通过服务端跳转到当前部署所配置的 GitHub App，无需新增设置页面或 App slug 配置。安装在新标签页中打开；完成后刷新原有区块以发现仓库。打开安装链接本身不会授予仓库或 Agent 访问权限。
+账户的 GitHub 区块和 Agent 仓库页在连接有效时提供安装和刷新操作，已有个人、组织或暂停安装记录时也会保留。已登录账户通过服务端跳转到当前部署所配置的 GitHub App，无需新增设置页面或 App slug 配置。安装在新标签页中打开；完成后刷新原有区块以发现仓库。打开安装链接本身不会授予仓库或 Agent 访问权限。
 
 
 运行期协商 `runtime.runtimeCredential` 与 `runtime.providerProxy`。开启 execution 绑定 Account、Agent revision、已接受任务来源、Session placement、当前 Computer 连接，以及 Cloud Sandbox generation。猜到 Session ID 或来自无关 IM 发送者都不足以取得权限。签发、续期、每次请求和长流均重新核验。

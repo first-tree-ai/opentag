@@ -358,7 +358,62 @@ describe("GitHubIntegrationSettings states", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh installations" }));
     expect(await screen.findByText("octocat")).toBeTruthy();
     expect(screen.queryByText("No installations found.")).toBeNull();
+    expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh installations" })).toBeTruthy();
   });
+
+  it.each([
+    { accountType: "User", suspended: false },
+    { accountType: "Organization", suspended: false },
+    { accountType: "Organization", suspended: true },
+  ] as const)(
+    "keeps installation and refresh available for an existing $accountType installation (suspended=$suspended)",
+    async ({ accountType, suspended }) => {
+      vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));
+      const existing = {
+        installationId: "55123456",
+        accountLogin: "octocat",
+        accountType,
+        repositorySelection: "selected" as const,
+        suspended,
+      };
+      const discover = vi.spyOn(browserApi, "githubRepositories").mockResolvedValue({
+        installations: [existing],
+        repositories: [],
+        nextCursor: null,
+      });
+      const save = vi.spyOn(browserApi, "updateGitHubBindings");
+      render(<GitHubIntegrationSettings />);
+
+      expect(await screen.findByText(suspended ? "octocat (suspended)" : "octocat")).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Install GitHub App" }).getAttribute("href")).toBe(
+        "/api/v1/integrations/github/installation",
+      );
+
+      discover.mockResolvedValue({
+        installations: [
+          existing,
+          {
+            ...existing,
+            installationId: "55123457",
+            accountLogin: "another-org",
+            accountType: "Organization",
+            suspended: false,
+          },
+        ],
+        repositories: [],
+        nextCursor: null,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Refresh installations" }));
+
+      expect(await screen.findByText("another-org")).toBeTruthy();
+      expect(screen.getByText(suspended ? "octocat (suspended)" : "octocat")).toBeTruthy();
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Refresh installations" })).toBeTruthy();
+      expect(save).not.toHaveBeenCalled();
+    },
+  );
 
   it("marks a suspended installation instead of presenting it as usable", async () => {
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection()));

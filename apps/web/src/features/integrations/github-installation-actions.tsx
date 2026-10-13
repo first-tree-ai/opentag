@@ -2,7 +2,7 @@ import { GITHUB_INTEGRATION_INSTALLATION_PATH } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
 import { Button, buttonClassName, Text } from "../../ui/design-system.js";
 
-/** Shared by the existing Account and Agent GitHub empty states. */
+/** Shared by the existing Account and Agent GitHub installation sections. */
 export function GitHubInstallationActions({ busy, onRefresh }: { busy: boolean; onRefresh: () => void }) {
   return (
     <div className="grid gap-2">

@@ -602,34 +602,33 @@ function InstallationSummary({
   onRefresh: () => void;
   repositories: GitHubDiscoveredRepository[];
 }) {
-  if (installations.length === 0) {
-    return (
-      <div className="grid gap-2">
+  return (
+    <div className="grid gap-2">
+      {installations.length === 0 ? (
         <Text as="p" data-ui="agent-github-no-installations" variant="secondary">
           {m.integrations_github_no_installations()}
         </Text>
-        <GitHubInstallationActions busy={busy} onRefresh={onRefresh} />
-      </div>
-    );
-  }
-  return (
-    <ul className="flex flex-wrap gap-2" data-ui="agent-github-installations">
-      {installations.map((installation) => {
-        const count = repositories.filter((entry) => entry.installationId === installation.installationId).length;
-        return (
-          <li key={installation.installationId}>
-            <Badge variant={installation.suspended ? "warning" : "neutral"}>
-              {installation.suspended
-                ? m.integrations_github_installation_suspended({ account: installation.accountLogin })
-                : m.integrations_agent_github_installation_label({
-                    account: installation.accountLogin,
-                  })}
-              {` · ${String(count)}`}
-            </Badge>
-          </li>
-        );
-      })}
-    </ul>
+      ) : (
+        <ul className="flex flex-wrap gap-2" data-ui="agent-github-installations">
+          {installations.map((installation) => {
+            const count = repositories.filter((entry) => entry.installationId === installation.installationId).length;
+            return (
+              <li key={installation.installationId}>
+                <Badge variant={installation.suspended ? "warning" : "neutral"}>
+                  {installation.suspended
+                    ? m.integrations_github_installation_suspended({ account: installation.accountLogin })
+                    : m.integrations_agent_github_installation_label({
+                        account: installation.accountLogin,
+                      })}
+                  {` · ${String(count)}`}
+                </Badge>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <GitHubInstallationActions busy={busy} onRefresh={onRefresh} />
+    </div>
   );
 }
 

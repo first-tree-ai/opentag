@@ -347,26 +347,26 @@ function ConnectionDetails({
         description={m.integrations_github_installations_description()}
         label={m.integrations_github_installations_title()}
       >
-        {installations.length === 0 ? (
-          <div className="grid gap-2">
+        <div className="grid gap-2">
+          {installations.length === 0 ? (
             <Text as="p" data-ui="account-github-no-installations" variant="secondary">
               {m.integrations_github_no_installations()}
             </Text>
-            {connection.status === "active" ? <GitHubInstallationActions busy={busy} onRefresh={onRefresh} /> : null}
-          </div>
-        ) : (
-          <ul className="flex flex-wrap justify-end gap-2" data-ui="account-github-installations">
-            {installations.map((entry) => (
-              <li key={entry.installationId}>
-                <Badge variant={entry.suspended ? "secondary" : "neutral"}>
-                  {entry.suspended
-                    ? m.integrations_github_installation_suspended({ account: entry.accountLogin })
-                    : entry.accountLogin}
-                </Badge>
-              </li>
-            ))}
-          </ul>
-        )}
+          ) : (
+            <ul className="flex flex-wrap justify-end gap-2" data-ui="account-github-installations">
+              {installations.map((entry) => (
+                <li key={entry.installationId}>
+                  <Badge variant={entry.suspended ? "secondary" : "neutral"}>
+                    {entry.suspended
+                      ? m.integrations_github_installation_suspended({ account: entry.accountLogin })
+                      : entry.accountLogin}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          )}
+          {connection.status === "active" ? <GitHubInstallationActions busy={busy} onRefresh={onRefresh} /> : null}
+        </div>
       </SettingsRow>
 
       <SettingsRow

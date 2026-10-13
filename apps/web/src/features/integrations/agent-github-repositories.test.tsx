@@ -558,8 +558,49 @@ describe("AgentGitHubRepositories states", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh installations" }));
     expect(await screen.findByText(repository.fullName)).toBeTruthy();
     expect(screen.queryByText("No installations found.")).toBeNull();
+    expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh installations" })).toBeTruthy();
     expect(save).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { accountType: "User", suspended: false },
+    { accountType: "Organization", suspended: false },
+    { accountType: "Organization", suspended: true },
+  ] as const)(
+    "keeps installation and refresh available for an existing $accountType installation (suspended=$suspended)",
+    async ({ accountType, suspended }) => {
+      stubCommon(activeConnection());
+      stubDiscovery();
+      const existing = { ...installation, accountType, suspended };
+      const discover = vi.mocked(browserApi.githubRepositories).mockResolvedValue({
+        installations: [existing],
+        repositories: [],
+        nextCursor: null,
+      });
+      const save = vi.spyOn(browserApi, "updateGitHubBindings");
+      render(<AgentGitHubRepositories agentId={AGENT_ID} />);
+
+      expect(await screen.findByText("No repositories are available through the connected account.")).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Install GitHub App" }).getAttribute("href")).toBe(
+        "/api/v1/integrations/github/installation",
+      );
+
+      discover.mockResolvedValue({
+        installations: [existing, { ...installation, installationId: "55123457", accountLogin: "another-org" }],
+        repositories: [{ ...repository, installationId: "55123457", fullName: "another-org/repo" }],
+        nextCursor: null,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Refresh installations" }));
+
+      expect(await screen.findByText("another-org/repo")).toBeTruthy();
+      expect(screen.getByText(suspended ? /octocat \(suspended\)/ : /Installation: octocat/)).toBeTruthy();
+      expect(discover).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Refresh installations" })).toBeTruthy();
+      expect(save).not.toHaveBeenCalled();
+    },
+  );
 
   it("marks a suspended installation instead of presenting it as usable", async () => {
     stubCommon(activeConnection());

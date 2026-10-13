@@ -9,7 +9,6 @@ export * from "./computers.js";
 export * from "./feishu-inbound-receipts.js";
 export * from "./github-connections.js";
 export * from "./im-bindings.js";
-export * from "./im-failure-reactions.js";
 export * from "./im-messages.js";
 export * from "./mcp.js";
 export * from "./runtime-approvals.js";

@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { imBindings, imFailureReactions, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
-import { ImFailureReactionStore } from "../services/im/im-failure-reaction-store.js";
-import { ImFailureReactionWorker } from "../services/im/im-failure-reaction-worker.js";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
+import { runImDeliveryExpiry } from "../runtime/im-delivery-janitor.js";
+import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { createFailureReactionFixture } from "./support/failure-reaction-fixture.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -20,19 +20,12 @@ beforeEach(async () => {
   clock = new Date();
 });
 const fixture = () => createFailureReactionFixture(db.database, () => clock);
-async function target() {
-  const [row] = await db.database.select().from(imFailureReactions);
-  if (!row) throw new Error("missing reaction target");
-  return row;
-}
-
-describe("durable message failure reactions", () => {
+describe("best-effort message failure reactions", () => {
   it("adds a failure marker once and removes it when a later revision of that message succeeds", async () => {
     const h = await fixture(),
       failed = await h.delivery();
     await h.report(failed.frame, "failed");
-    await h.worker.runOnce();
-    await h.worker.runOnce();
+    await h.reactions.sync(failed.frame.deliveryId);
     expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true]);
     clock = new Date(clock.getTime() + 1_000);
     const retry = await h.delivery();
@@ -40,12 +33,9 @@ describe("durable message failure reactions", () => {
       .update(imMessages)
       .set({ externalMessageId: failed.request.imMessageId, providerRevisionKey: "2", operation: "edited" })
       .where(eq(imMessages.id, retry.request.imMessageId));
-    await h.worker.runOnce();
-    expect((await target()).desired).toBe(true);
     await h.report(retry.frame, "completed");
-    await h.worker.runOnce();
+    await h.reactions.sync(failed.frame.deliveryId);
     expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true, false]);
-    expect(await target()).toMatchObject({ desired: false, applied: false });
   });
 
   it("does not clear a failed message when a different message succeeds", async () => {
@@ -54,7 +44,7 @@ describe("durable message failure reactions", () => {
       other = await h.delivery();
     await h.report(failed.frame, "failed");
     await h.report(other.frame, "completed");
-    await h.worker.runOnce();
+    await h.reactions.sync(failed.frame.deliveryId);
     expect(h.setFailureReaction).toHaveBeenCalledExactlyOnceWith({
       channelId: "C1",
       externalMessageId: failed.request.imMessageId,
@@ -81,15 +71,15 @@ describe("durable message failure reactions", () => {
         acceptedAt: null,
       })
       .where(eq(imMessageDeliveries.id, original.id));
-    await h.worker.runOnce();
+    await h.reactions.sync(delivery.frame.deliveryId);
     await db.database
       .update(imMessageDeliveries)
       .set({ ...original, reason: null })
       .where(eq(imMessageDeliveries.id, original.id));
-    await h.worker.runOnce();
-    expect((await target()).desired).toBe(true);
+    await h.reactions.sync(delivery.frame.deliveryId);
+    expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true]);
     await h.report(delivery.frame, "completed");
-    await h.worker.runOnce();
+    await h.reactions.sync(delivery.frame.deliveryId);
     expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true, false]);
   });
 
@@ -108,7 +98,7 @@ describe("durable message failure reactions", () => {
         acceptedAt: null,
       })
       .where(eq(imMessageDeliveries.id, child.frame.deliveryId));
-    await h.worker.runOnce();
+    await h.reactions.sync(child.frame.deliveryId);
     await db.database
       .update(imMessageDeliveries)
       .set({
@@ -120,16 +110,22 @@ describe("durable message failure reactions", () => {
       })
       .where(eq(imMessageDeliveries.id, child.frame.deliveryId));
     await h.report(root.frame, "completed");
-    await h.worker.runOnce();
-    expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true, false]);
+    await h.reactions.sync(root.frame.deliveryId);
+    expect(
+      h.setFailureReaction.mock.calls
+        .filter(([input]) => input.externalMessageId === child.request.imMessageId)
+        .map(([input]) => input.failed),
+    ).toEqual([true, false]);
   });
 
   it.each(["completed", "cancelled"] as const)("does not mark a %s Turn as failed", async (outcome) => {
     const h = await fixture(),
       delivery = await h.delivery();
     await h.report(delivery.frame, outcome);
-    await h.worker.runOnce();
-    expect(h.setFailureReaction).not.toHaveBeenCalled();
+    await h.reactions.sync(delivery.frame.deliveryId);
+    if (outcome === "completed")
+      expect(h.setFailureReaction).toHaveBeenCalledWith(expect.objectContaining({ failed: false }));
+    else expect(h.setFailureReaction).not.toHaveBeenCalled();
   });
 
   it("ignores pending transient failures and cancelled queue entries", async () => {
@@ -146,12 +142,12 @@ describe("durable message failure reactions", () => {
         lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE",
       })
       .where(eq(imMessageDeliveries.id, delivery.frame.deliveryId));
-    await h.worker.runOnce();
+    await h.reactions.sync(delivery.frame.deliveryId);
     await db.database
       .update(imMessageDeliveries)
       .set({ state: "expired", reason: "cancelled" })
       .where(eq(imMessageDeliveries.id, delivery.frame.deliveryId));
-    await h.worker.runOnce();
+    await h.reactions.sync(delivery.frame.deliveryId);
     expect(h.setFailureReaction).not.toHaveBeenCalled();
   });
 
@@ -164,7 +160,7 @@ describe("durable message failure reactions", () => {
         .update(imMessageDeliveries)
         .set({ state, inputHash: null, turnId: null, reportOwnerInstanceId: null, acceptedAt: null, reason: "ttl" })
         .where(eq(imMessageDeliveries.id, delivery.frame.deliveryId));
-      await h.worker.runOnce();
+      await h.reactions.sync(delivery.frame.deliveryId);
       expect(h.setFailureReaction).toHaveBeenCalledOnce();
     },
   );
@@ -195,90 +191,73 @@ describe("durable message failure reactions", () => {
     });
     await h.report(observer.frame, "failed");
     await h.report(ambient.frame, "failed");
-    await h.worker.runOnce();
+    await h.reactions.sync(observer.frame.deliveryId);
+    await h.reactions.sync(ambient.frame.deliveryId);
     expect(h.setFailureReaction).not.toHaveBeenCalled();
   });
 
-  it("retries lost removal responses after a worker restart without leaking diagnostics", async () => {
+  it("logs reaction failures without failing processing and clears on a later success", async () => {
     const h = await fixture(),
       delivery = await h.delivery();
     await h.report(delivery.frame, "failed");
-    await h.worker.runOnce();
-    await h.report(delivery.frame, "completed");
     h.setFailureReaction.mockRejectedValueOnce(new Error("unit-secret body"));
-    await h.worker.runOnce();
-    expect((await target()).applied).toBeNull();
-    clock = new Date(clock.getTime() + 2_001);
-    const restarted = new ImFailureReactionWorker({
-      store: new ImFailureReactionStore(db.database, () => clock),
-      resolveAdapter: async () => h.adapter,
-      logger: { warn: h.warn },
-    });
-    await restarted.runOnce();
-    expect((await target()).applied).toBe(false);
-    expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true, false, false]);
+    await expect(h.reactions.sync(delivery.frame.deliveryId)).resolves.toBeUndefined();
+    await h.report(delivery.frame, "completed");
+    await h.reactions.sync(delivery.frame.deliveryId);
+    expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true, false]);
     expect(JSON.stringify(h.warn.mock.calls)).not.toContain("unit-secret");
   });
 
-  it("reconciles a success that arrives while an add is in flight", async () => {
+  it("notifies the reaction updater after a valid Turn report is recorded", async () => {
     const h = await fixture(),
-      delivery = await h.delivery();
-    await h.report(delivery.frame, "failed");
-    await h.store.reconcile();
-    const claim = await h.store.claim();
-    if (!claim) throw new Error("missing claim");
-    await h.report(delivery.frame, "completed");
-    await h.store.reconcile();
-    expect(await h.store.ownsClaim(claim)).toBe(false);
-    await h.store.settle(claim);
-    expect(await target()).toMatchObject({ desired: false, applied: null });
-    await h.worker.runOnce();
-    expect(h.setFailureReaction).toHaveBeenCalledExactlyOnceWith({
-      channelId: "C1",
-      externalMessageId: delivery.request.imMessageId,
-      failed: false,
-    });
+      { frame } = await h.delivery(),
+      onDeliverySettled = vi.fn();
+    const { sequence: _sequence, phase: _phase, ...fields } = frame;
+    const report: TurnReportRequest = {
+      ...fields,
+      type: "turn:report",
+      outcome: "completed",
+      executionEffects: "completed",
+      traceSummary: { lastSequence: 1, droppedEvents: 0 },
+      resultHash: "0".repeat(64),
+    };
+    report.resultHash = computeTurnResultHash(report);
+    const custody = new PostgresRuntimeCustodyStore(db.database, { now: () => clock, onDeliverySettled });
+    expect(await custody.recordTurn(report, h.context)).toBe("recorded");
+    expect(onDeliverySettled).toHaveBeenCalledExactlyOnceWith(frame.deliveryId);
+    onDeliverySettled.mockClear();
+    expect(await custody.recordTurn({ ...report, placementGeneration: 2 }, h.context)).toBe("stale_generation");
+    expect(onDeliverySettled).not.toHaveBeenCalled();
   });
 
-  it("reclaims abandoned provider writes after their lease expires", async () => {
+  it("notifies the existing expiry path only for messages actually expired", async () => {
     const h = await fixture(),
-      delivery = await h.delivery();
-    await h.report(delivery.frame, "failed");
-    await h.store.reconcile();
-    const first = await h.store.claim();
-    expect(first).toBeDefined();
-    expect(await h.store.claim()).toBeUndefined();
-    clock = new Date(clock.getTime() + 30_001);
-    const next = await h.store.claim();
-    expect(next?.claimId).not.toBe(first?.claimId);
-    if (first) await h.store.settle(first);
-    expect((await target()).claimId).toBe(next?.claimId);
-  });
-
-  it("revalidates credentials and ignores disabled bindings", async () => {
-    const h = await fixture(),
-      delivery = await h.delivery();
-    await h.report(delivery.frame, "failed");
-    await h.store.reconcile();
-    const claim = await h.store.claim();
-    if (!claim) throw new Error("missing claim");
-    await db.database.update(imBindings).set({ credentialGeneration: 2 }).where(eq(imBindings.id, h.binding.id));
-    expect(await h.store.ownsClaim(claim)).toBe(false);
-    await h.store.settle(claim, 0);
-    await h.worker.runOnce();
-    expect((await target()).credentialGeneration).toBe(2);
+      delivery = await h.delivery(),
+      onDeliverySettled = vi.fn();
     await db.database
-      .update(imBindings)
+      .update(imMessageDeliveries)
       .set({
-        status: "disabled",
-        disabledAt: clock,
-        credentialSchemaVersion: null,
-        encryptedCredential: null,
-        grantedCapabilities: [],
-        slackInstallationId: null,
+        state: "pending",
+        inputHash: null,
+        turnId: null,
+        reportOwnerInstanceId: null,
+        acceptedAt: null,
+        expiresAt: clock,
       })
-      .where(eq(imBindings.id, h.binding.id));
-    await db.database.update(imFailureReactions).set({ applied: null, claimId: randomUUID(), claimExpiresAt: clock });
-    expect(await h.store.claim()).toBeUndefined();
+      .where(eq(imMessageDeliveries.id, delivery.frame.deliveryId));
+    await runImDeliveryExpiry(
+      db.database,
+      {
+        clock: () => clock,
+        expiryBatchSize: 10,
+        retentionBatchSize: 10,
+        imMessagesRetentionMs: 1,
+        imMessageDeliveriesRetentionMs: 1,
+        slackWebhookReceiptsRetentionMs: 1,
+        feishuInboundReceiptsRetentionMs: 1,
+      },
+      onDeliverySettled,
+    );
+    expect(onDeliverySettled).toHaveBeenCalledExactlyOnceWith(delivery.frame.deliveryId);
   });
 });

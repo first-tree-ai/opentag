@@ -122,6 +122,7 @@ export class ImDeliveryWorker {
   readonly #afterClaimRowLocked?: () => Promise<void>;
   readonly #beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
   readonly #onDiagnostic: (code: string) => void;
+  readonly #onDeliverySettled?: (deliveryId: string) => void;
   readonly #supervisor?: BackgroundFailureSupervisor;
   readonly #clock: () => Date;
   readonly #now: () => number;
@@ -150,6 +151,7 @@ export class ImDeliveryWorker {
     this.#afterClaimRowLocked = input.afterClaimRowLocked;
     this.#beforeDeliveryAdmission = input.beforeDeliveryAdmission;
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
+    this.#onDeliverySettled = input.onDeliverySettled;
     this.#supervisor = input.supervisor;
     this.#clock = input.now ?? (() => new Date());
     this.#now = () => this.#clock().getTime();
@@ -197,7 +199,8 @@ export class ImDeliveryWorker {
     });
     const schedulers = createImDeliveryMaintenanceSchedulers({
       expiryRun: async () => {
-        await runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock });
+        const options = { ...this.#janitorConfig, clock: this.#clock };
+        await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled);
         await this.#cloudCoordinator.reconcileStoppedWork();
       },
       retentionRun: () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
@@ -1268,12 +1271,15 @@ export class ImDeliveryWorker {
       "im.delivery.id": deliveryId,
     });
     const rejected = await rejectInvalidImDelivery(this.#database, deliveryId, error, claimToken);
-    if (rejected) this.#onDiagnostic(error.code);
+    if (rejected) {
+      this.#onDiagnostic(error.code);
+      this.#onDeliverySettled?.(deliveryId);
+    }
   }
 
   async #reject(deliveryId: string, reason: string, claimToken?: string): Promise<void> {
     setActiveSpanAttributes(outcomeAttrs("terminal_rejected", reason));
-    await this.#database
+    const [rejected] = await this.#database
       .update(imMessageDeliveries)
       .set({
         state: "terminal_rejected",
@@ -1290,7 +1296,9 @@ export class ImDeliveryWorker {
           eq(imMessageDeliveries.state, "pending"),
           ...(claimToken ? [eq(imMessageDeliveries.lastErrorCode, claimToken)] : []),
         ),
-      );
+      )
+      .returning({ id: imMessageDeliveries.id });
+    if (rejected) this.#onDeliverySettled?.(deliveryId);
   }
 
   #maintainClaimLease(deliveryId: string, claimToken: string): ClaimLease {

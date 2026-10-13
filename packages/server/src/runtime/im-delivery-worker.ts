@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  computeDirectInputHash,
-  computeLegacyDirectInputHash,
   computeRuntimeImSteerInputHash,
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
@@ -68,6 +66,7 @@ import {
   runImDeliveryJanitor,
   runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
+import { matchPinnedDirectInputHash } from "./im-delivery-pinned-hash.js";
 import { ImDeliveryReadyWakeup, isCloudReadinessRetry, readySessionClaimGuard } from "./im-delivery-ready-wakeup.js";
 import type {
   CloudSessionAllocationPort,
@@ -1199,17 +1198,9 @@ export class ImDeliveryWorker {
   ): Promise<boolean> {
     if (row.delivery.dispatchPayload === null) return true;
     const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
-    let pinnedInputHash = pinned.success ? computeDirectInputHash(pinned.data) : undefined;
-    if (pinned.success && pinnedInputHash !== row.delivery.dispatchInputHash) {
-      for (const layout of ["0.1.0", "self-configuration"] as const) {
-        try {
-          pinnedInputHash = computeLegacyDirectInputHash(pinned.data, layout);
-        } catch {
-          pinnedInputHash = undefined;
-        }
-        if (pinnedInputHash === row.delivery.dispatchInputHash) break;
-      }
-    }
+    const pinnedInputHash = pinned.success
+      ? matchPinnedDirectInputHash(pinned.data, row.delivery.dispatchInputHash)
+      : undefined;
     if (
       !pinned.success ||
       pinned.data.deliveryId !== row.delivery.id ||

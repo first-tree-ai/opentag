@@ -1,6 +1,4 @@
-import type { McpOAuthIdentity } from "./mcp-oauth-identity.js";
 import { type McpOAuthOutcomeRead, readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
-import { renderMcpOAuthPreparation } from "./mcp-oauth-preparation.js";
 
 const KEY = "opentag:mcp:oauth-window";
 const MAX_AGE = 10 * 60 * 1000;
@@ -20,27 +18,17 @@ export function closeMcpOAuthWindow(popup?: Window | null): void {
 }
 
 /** Reserve during the click, before any asynchronous creation or discovery loses user activation. */
-export function prepareMcpOAuthWindow(identity?: McpOAuthIdentity): McpOAuthWindow {
+export function prepareMcpOAuthWindow(): McpOAuthWindow {
   const mobile = window.matchMedia("(max-width: 640px)").matches;
   let popup: Window | null = null;
   try {
-    popup = mobile ? null : window.open("", "_blank", oauthWindowFeatures());
-    if (popup) renderMcpOAuthPreparation(popup, identity);
+    popup = mobile ? null : window.open("", "_blank");
   } catch {
     closeMcpOAuthWindow(popup);
     popup = null;
     console.warn("Could not prepare the MCP authorization window.");
   }
   return { popup, mobile };
-}
-
-function oauthWindowFeatures(): string {
-  const frame = Math.max(0, window.outerHeight - window.innerHeight);
-  const width = Math.min(560, Math.max(320, (window.screen.availWidth || 592) - 32));
-  const height = Math.min(720, Math.max(320, (window.screen.availHeight || 752 + frame) - frame - 32));
-  const left = Math.round(window.screenX + ((window.outerWidth || window.innerWidth) - width) / 2);
-  const top = Math.round(window.screenY + ((window.outerHeight || window.innerHeight) - height) / 2);
-  return `popup,width=${width},height=${height},left=${left},top=${top}`;
 }
 
 /** BroadcastChannel survives providers severing window.opener with COOP; no credential crosses it. */

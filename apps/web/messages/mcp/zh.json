@@ -269,5 +269,9 @@
   "mcp_oauth_window_detached": "如果授权窗口已关闭，可以取消本次授权后重试。",
   "mcp_oauth_connect_title": "连接 {server}",
   "mcp_oauth_window_title": "连接器授权",
-  "mcp_oauth_opening": "正在打开授权页面…"
+  "mcp_oauth_opening": "正在打开授权页面…",
+  "mcp_catalog_waiting": "等待授权…",
+  "mcp_catalog_page_blocked": "授权页未打开",
+  "mcp_catalog_open_page": "打开",
+  "mcp_catalog_network_error": "网络异常"
 }

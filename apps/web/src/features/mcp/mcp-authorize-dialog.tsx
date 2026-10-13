@@ -11,7 +11,6 @@ import { McpDialogTitle } from "./mcp-dialog-title.js";
 import { McpAuthFields } from "./mcp-form.js";
 import { type AuthDraft, actionError, authDraft } from "./mcp-form-model.js";
 import { McpOAuthControls } from "./mcp-oauth-controls.js";
-import { mcpOAuthIdentity } from "./mcp-oauth-identity.js";
 import { useMcpOAuthSession } from "./mcp-oauth-session.js";
 import { canRevoke } from "./mcp-page-model.js";
 import { useMcpServerDetail, useSetMcpAuthorization } from "./mcp-queries.js";
@@ -51,7 +50,7 @@ export function useMcpAuthorization(agentId: string) {
         serverId: entry.mcpServerId,
         source: "edit",
       };
-      return await oauth.start(context, oauthScopes, undefined, mcpOAuthIdentity(entry.effective.url, entry.name));
+      return await oauth.start(context, oauthScopes);
     }
     return authorize.mutateAsync({
       mcpServerId: entry.mcpServerId,

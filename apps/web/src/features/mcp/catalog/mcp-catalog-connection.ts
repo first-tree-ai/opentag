@@ -8,7 +8,6 @@ import {
   useMcpConnectionOperation,
 } from "../mcp-connection.js";
 import { allowsOAuthDiscovery, connectionAuthKind } from "../mcp-connection-model.js";
-import { mcpOAuthIdentity } from "../mcp-oauth-identity.js";
 import { closeMcpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
 
 /** Runs on the page so closing Discover cannot interrupt a connection or hide its error. */
@@ -28,9 +27,7 @@ export function useMcpCatalogConnection(agentId: string) {
   const connect = async (binding: MCPAgentServer, token?: string, definition?: MCPServer) => {
     if (inFlight.current || !binding.enabled) return "busy" as const;
     const oauthWindow =
-      connectionAuthKind(binding.effective.url, binding, definition) === "oauth"
-        ? prepareMcpOAuthWindow(mcpOAuthIdentity(binding.effective.url, binding.name))
-        : undefined;
+      connectionAuthKind(binding.effective.url, binding, definition) === "oauth" ? prepareMcpOAuthWindow() : undefined;
     inFlight.current = true;
     setConnectingId(binding.mcpServerId);
     setFailure(undefined);

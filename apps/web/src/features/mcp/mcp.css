@@ -650,6 +650,17 @@
 .mcp-catalog-grid .mcp-catalog-card-description {
   grid-column: 1;
   grid-row: 2;
+  position: relative;
+}
+.mcp-catalog-description-reserve {
+  visibility: hidden;
+}
+.mcp-catalog-feedback {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mcp-catalog-grid .mcp-catalog-card-actions {
   grid-column: 2;
@@ -658,6 +669,8 @@
   margin-top: 0;
   padding-top: 0;
   flex-wrap: nowrap;
+  min-width: 6.5rem;
+  gap: 0.25rem;
 }
 @media (max-width: 600px) {
   .mcp-discover-dialog {

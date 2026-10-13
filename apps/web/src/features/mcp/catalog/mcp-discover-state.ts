@@ -1,4 +1,4 @@
-import type { McpCatalogEntry } from "@opentag/mcp-presets";
+import { MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
 import { CreateMCPServerRequestSchema, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
@@ -6,12 +6,12 @@ import * as m from "../../../paraglide/messages.js";
 import { connectionFailure, useMcpConnectionOperation } from "../mcp-connection.js";
 import { allowsOAuthDiscovery, connectionAuthKind } from "../mcp-connection-model.js";
 import { actionError } from "../mcp-form-model.js";
-import { mcpOAuthIdentity } from "../mcp-oauth-identity.js";
 import { closeMcpOAuthWindow, type McpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
 import { useAttachMcpServer, useCreateMcpServer, useDetachMcpServer, useMcpServers } from "../mcp-queries.js";
 import type { McpReturnContext } from "../mcp-return-context.js";
 import { discardMcpSetup } from "../mcp-setup-cleanup.js";
-import { findAccountServer, findCatalogBinding } from "./mcp-catalog-model.js";
+import { catalogFailure, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
+import { findAccountServer, findCatalogBinding, findCatalogEntryByUrl } from "./mcp-catalog-model.js";
 
 export type DiscoverProps = {
   agentId: string;
@@ -45,6 +45,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
   const [pendingAction, setPendingAction] = useState<"add" | "connect">();
   const [keySetup, setKeySetup] = useState<Setup>();
   const [connectedIds, setConnectedIds] = useState<string[]>([]);
+  const [failure, setFailure] = useState<McpCatalogFeedback>();
   const created = useRef(new Map<string, MCPServer>());
   const inFlight = useRef(false);
   const alive = useRef(true);
@@ -66,6 +67,14 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     const context = props.initialContext;
     if (!context || restoreStarted.current || account.isPending) return;
     restoreStarted.current = true;
+    const catalog = findCatalogEntryByUrl(
+      servers.find((server) => server.id === context.serverId)?.url ?? "",
+      MCP_CATALOG_ENTRIES,
+    );
+    if (props.initialOutcome === "failed" && catalog) {
+      setFailure({ entryId: catalog.id, phase: "error", label: m.mcp_connection_failed() });
+      setError(undefined);
+    }
     if (!context.newBinding) return;
     setBusy(true);
     void (async () => {
@@ -76,7 +85,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     })()
       .catch((cause) => setError(actionError(cause, m.mcp_setup_cleanup_failed())))
       .finally(() => setBusy(false));
-  }, [props.initialContext, props.agentId, account.isPending, detach]);
+  }, [props.initialContext, props.initialOutcome, props.agentId, account.isPending, detach, servers]);
   async function discard(setup: Setup) {
     if (setup.temporary)
       await discardMcpSetup(props.agentId, setup.binding.mcpServerId, (id) => detach.mutateAsync(id));
@@ -124,6 +133,8 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     else if (result === "cancelled") {
       await discard(setup);
       setKeySetup(undefined);
+      if (operation.oauth.interruption.current === "timeout")
+        setFailure({ entryId: setup.catalog.id, phase: "error", label: m.mcp_authorization_incomplete() });
     } else if (result === "connected") {
       setKeySetup(undefined);
       setConnectedIds((ids) => [...new Set([...ids, setup.catalog.id])]);
@@ -137,7 +148,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     const knownBinding = findCatalogBinding(catalog, servers, props.mounted);
     const knownServer = findAccountServer(catalog, servers);
     const kind = connectionAuthKind(knownBinding?.effective.url ?? catalog.url, knownBinding, knownServer);
-    const prepared = kind === "oauth" ? prepareMcpOAuthWindow(mcpOAuthIdentity(catalog.url)) : undefined;
+    const prepared = kind === "oauth" ? prepareMcpOAuthWindow() : undefined;
     preparedWindow.current = prepared;
     setBusy(true);
     setChecking(false);
@@ -145,6 +156,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     setPendingAction(catalogAction(knownBinding));
     setError(undefined);
     setNotice(undefined);
+    setFailure(undefined);
     let setup: Setup | undefined;
     try {
       setup = keySetup?.catalog.id === catalog.id ? keySetup : await resolveSetup(catalog);
@@ -167,13 +179,19 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     }
   }
   async function reportFailure(cause: unknown, catalog: McpCatalogEntry, setup?: Setup, token?: string) {
-    setError(setup ? connectionFailure(cause, catalog.defaultAuthKind) : actionError(cause, m.mcp_create_failed()));
+    if (token) setError(connectionFailure(cause, catalog.defaultAuthKind));
+    else
+      setFailure({
+        entryId: catalog.id,
+        phase: "error",
+        label: catalogFailure(cause),
+      });
     if (!setup || token) return;
     try {
       await discard(setup);
       setKeySetup(undefined);
-    } catch (cleanupError) {
-      setError(actionError(cleanupError, m.mcp_setup_cleanup_failed()));
+    } catch {
+      setFailure({ entryId: catalog.id, phase: "error", label: m.mcp_setup_cleanup_failed() });
     }
   }
   async function cancelKey() {
@@ -189,6 +207,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       setBusy(false);
     }
   }
+  const feedback = discoverFeedback(failure, busy ? pendingEntryId : undefined, checking, operation.oauth);
   return {
     account,
     servers,
@@ -200,9 +219,33 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     pendingAction,
     keySetup,
     connectedIds,
+    feedback,
     addFromCatalog,
     cancelKey,
     oauth: operation.oauth,
     view,
+  };
+}
+
+function discoverFeedback(
+  failure: McpCatalogFeedback | undefined,
+  entryId: string | undefined,
+  checking: boolean,
+  oauth: ReturnType<typeof useMcpConnectionOperation>["oauth"],
+): McpCatalogFeedback | undefined {
+  if (!entryId) return failure;
+  const phase = oauth.blocked ? "blocked" : (oauth.phase ?? (checking ? "checking" : "preparing"));
+  const labels = {
+    preparing: m.mcp_connecting(),
+    waiting: m.mcp_catalog_waiting(),
+    checking: m.mcp_oauth_checking(),
+    blocked: m.mcp_catalog_page_blocked(),
+  };
+  return {
+    entryId,
+    phase,
+    label: labels[phase],
+    onCancel: oauth.phase && oauth.phase !== "checking" ? oauth.cancel : undefined,
+    onOpen: () => void oauth.openFallback(),
   };
 }

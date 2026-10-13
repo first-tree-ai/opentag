@@ -6,7 +6,6 @@ import {
 } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
 import { connectionPreset } from "./mcp-connection-model.js";
-import { mcpOAuthIdentity } from "./mcp-oauth-identity.js";
 import { useMcpOAuthSession } from "./mcp-oauth-session.js";
 import type { McpOAuthWindow } from "./mcp-oauth-window.js";
 import { useProbeMcpServer, useSetMcpAuthorization } from "./mcp-queries.js";
@@ -48,7 +47,6 @@ export function useMcpConnectionOperation(agentId: string) {
         { ...options.returnContext, agentId, serverId: attempt.binding.mcpServerId, source: options.source },
         connectionPreset(attempt.binding.effective.url)?.oauthScopes,
         options.oauthWindow,
-        mcpOAuthIdentity(attempt.binding.effective.url, attempt.binding.name),
       );
       if (result !== "authorized") return result;
       if (!alive()) return "cancelled" as const;

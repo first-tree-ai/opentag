@@ -269,5 +269,9 @@
   "mcp_oauth_window_detached": "If the authorization window was closed, cancel this attempt to try again.",
   "mcp_oauth_connect_title": "Connect {server}",
   "mcp_oauth_window_title": "Connector authorization",
-  "mcp_oauth_opening": "Opening authorization page…"
+  "mcp_oauth_opening": "Opening authorization page…",
+  "mcp_catalog_waiting": "Waiting for authorization…",
+  "mcp_catalog_page_blocked": "Authorization page did not open",
+  "mcp_catalog_open_page": "Open",
+  "mcp_catalog_network_error": "Network error"
 }

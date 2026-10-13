@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, KumoInputControl, Loader } from "../../../ui/design-system.js";
 import { actionError } from "../mcp-form-model.js";
-import { McpOAuthControls } from "../mcp-oauth-controls.js";
 import { isCatalogPreview, localizedText } from "./mcp-catalog-model.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
 import { type DiscoverProps, useMcpDiscoverState } from "./mcp-discover-state.js";
@@ -157,14 +156,6 @@ function DiscoverCatalog({
           <Banner variant="error">{state.error}</Banner>
         </div>
       ) : null}
-      <McpOAuthControls session={state.oauth} className="mb-4" />
-      {state.notice ? (
-        <p role="status" className="mb-4 text-sm text-kumo-subtle">
-          {state.notice}
-        </p>
-      ) : null}
-      {state.busy && !state.oauth.phase && !state.checking ? <p role="status">{m.mcp_connecting()}</p> : null}
-      {state.checking ? <p role="status">{m.mcp_oauth_checking()}</p> : null}
       <McpDiscoverSource
         categories={MCP_CATALOG_CATEGORIES}
         entries={MCP_CATALOG_ENTRIES}
@@ -176,6 +167,7 @@ function DiscoverCatalog({
         searchRef={searchRef}
         onAdd={openEntry}
         connectedIds={state.connectedIds}
+        feedback={state.feedback}
         initialView={state.view.current}
         onViewChange={(view) => {
           state.view.current = { ...state.view.current, ...view };

@@ -3,8 +3,9 @@ import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { type RefObject, useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Field, Icon, KumoInputControl } from "../../../ui/design-system.js";
+import { Button, Field, KumoInputControl } from "../../../ui/design-system.js";
 import { McpServiceIcon } from "../mcp-service-icon.js";
+import { McpCatalogActions, McpCatalogDescription, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
 import {
   catalogEntryState,
   entriesInCategory,
@@ -28,6 +29,7 @@ export function McpDiscoverSource({
   connectedIds = [],
   initialView,
   onViewChange,
+  feedback,
 }: {
   categories: readonly McpCatalogCategory[];
   entries: readonly McpCatalogEntry[];
@@ -41,6 +43,7 @@ export function McpDiscoverSource({
   connectedIds?: string[];
   initialView?: { query: string; categoryId: string };
   onViewChange?: (view: { query: string; categoryId: string }) => void;
+  feedback?: McpCatalogFeedback;
 }) {
   const locale = getLocale();
   const [categoryId, setCategoryId] = useState(initialView?.categoryId ?? "");
@@ -63,6 +66,7 @@ export function McpDiscoverSource({
           ref={searchRef}
           id="mcp-discover-search"
           value={query}
+          disabled={busy}
           placeholder={m.mcp_discover_search_placeholder()}
           onChange={(event) => {
             setQuery(event.target.value);
@@ -74,6 +78,7 @@ export function McpDiscoverSource({
         <legend className="sr-only">{m.mcp_discover_categories()}</legend>
         <Button
           aria-pressed={!searching && !categoryId}
+          disabled={busy}
           size="compact"
           variant={!searching && !categoryId ? "secondary" : "ghost"}
           onClick={() => chooseCategory("")}
@@ -86,6 +91,7 @@ export function McpDiscoverSource({
             <Button
               key={category.id}
               aria-pressed={active}
+              disabled={busy}
               size="compact"
               variant={active ? "secondary" : "ghost"}
               onClick={() => chooseCategory(category.id)}
@@ -106,6 +112,7 @@ export function McpDiscoverSource({
               connecting={busy && entry.id === pendingEntryId}
               pendingAction={entry.id === pendingEntryId ? pendingAction : undefined}
               onAdd={onAdd}
+              feedback={entry.id === feedback?.entryId ? feedback : undefined}
             />
           ))}
         </ul>
@@ -123,6 +130,7 @@ export function McpCatalogCard({
   onAdd,
   connecting = false,
   pendingAction,
+  feedback,
 }: {
   entry: McpCatalogEntry;
   state?: McpCatalogEntryState;
@@ -130,20 +138,11 @@ export function McpCatalogCard({
   onAdd: (entry: McpCatalogEntry) => void;
   connecting?: boolean;
   pendingAction?: "add" | "connect";
+  feedback?: McpCatalogFeedback;
 }) {
   const locale = getLocale();
   const title = localizedText(entry.title, locale);
   const preview = isCatalogPreview(entry);
-  const added = state === "added" || state === "disabled";
-  const reconnect = pendingAction ? pendingAction === "connect" : state === "unconnected";
-  const label = reconnect ? m.mcp_connect() : m.mcp_attach_action();
-  const addButtonProps = reconnect
-    ? {}
-    : {
-        shape: "square" as const,
-        variant: "ghost" as const,
-        className: "text-kumo-link hover:bg-(--brand-soft) disabled:text-kumo-subtle",
-      };
   return (
     <li className="mcp-catalog-card rounded-lg border border-kumo-line bg-kumo-base p-5">
       <div className="mcp-catalog-card-heading flex min-w-0 items-center gap-3">
@@ -157,27 +156,17 @@ export function McpCatalogCard({
           ) : null}
         </div>
       </div>
-      <p className="mcp-catalog-card-description text-sm leading-relaxed text-kumo-subtle">
-        {localizedText(entry.description, locale)}
-      </p>
+      <McpCatalogDescription description={localizedText(entry.description, locale)} feedback={feedback} />
       <div className="mcp-catalog-card-actions mt-auto flex flex-wrap items-center justify-end gap-3 pt-2">
-        {added ? (
-          <span className="inline-flex min-h-8 items-center gap-1.5 text-xs text-kumo-subtle">
-            <Icon name="check" />
-            {state === "disabled" ? m.mcp_catalog_added() : m.mcp_catalog_connected()}
-          </span>
-        ) : (
-          <Button
-            {...addButtonProps}
-            aria-label={`${label}: ${title}`}
-            disabled={busy}
-            loading={connecting}
-            size="compact"
-            onClick={() => onAdd(entry)}
-          >
-            {reconnect ? label : <Icon name="plus" className="size-5" />}
-          </Button>
-        )}
+        <McpCatalogActions
+          title={title}
+          state={state}
+          busy={busy}
+          connecting={connecting}
+          pendingAction={pendingAction}
+          feedback={feedback}
+          onAdd={() => onAdd(entry)}
+        />
       </div>
     </li>
   );

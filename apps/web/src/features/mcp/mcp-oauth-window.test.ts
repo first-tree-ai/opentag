@@ -16,13 +16,9 @@ afterEach(() => {
 it("reserves before discovery and accepts only the matching server's callback", async () => {
   const browser = fakeMcpOAuthBrowser();
   try {
-    const prepared = prepareMcpOAuthWindow({ name: "Notion" });
-    expect(browser.open).toHaveBeenCalledTimes(1);
-    expect(browser.popup.document.title).toBe("Connect Notion · OpenTag");
-    expect(browser.popup.document.body.textContent).toBe("Connect NotionOpening authorization page…");
-    expect(browser.popup.document.querySelector('[role="status"]')?.textContent).toContain(
-      "Opening authorization page…",
-    );
+    const prepared = prepareMcpOAuthWindow();
+    expect(browser.open).toHaveBeenCalledWith("", "_blank");
+    expect(browser.popup.document.body.textContent).toBe("");
     const abort = new AbortController();
     if (!prepared.popup) throw new Error("Missing test window");
     const pending = waitMcpOAuthWindow(
@@ -42,59 +38,12 @@ it("reserves before discovery and accepts only the matching server's callback", 
     browser.restore();
   }
 });
-it("carries the theme and font styles into an isolated preparation document", () => {
+it("uses same-tab authorization on mobile without opening a window", () => {
   const browser = fakeMcpOAuthBrowser();
-  const stylesheet = document.createElement("link");
-  stylesheet.rel = "stylesheet";
-  stylesheet.href = "/assets/theme.css";
-  const inline = document.createElement("style");
-  inline.textContent = ":root { --brand: purple; }";
-  document.head.append(stylesheet, inline);
+  vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
   try {
-    prepareMcpOAuthWindow({ name: "Notion" });
-    expect(browser.popup.document.head.querySelector<HTMLLinkElement>('link[rel="stylesheet"]')?.href).toBe(
-      stylesheet.href,
-    );
-    expect(browser.popup.document.head.textContent).toContain(inline.textContent);
-    expect(browser.popup.document.body.textContent).not.toContain("Discover");
-  } finally {
-    stylesheet.remove();
-    inline.remove();
-    browser.restore();
-  }
-});
-it("fits the requested window within the screen and centers it on the current browser", () => {
-  const browser = fakeMcpOAuthBrowser();
-  vi.spyOn(window.screen, "availWidth", "get").mockReturnValue(640);
-  vi.spyOn(window.screen, "availHeight", "get").mockReturnValue(600);
-  try {
-    prepareMcpOAuthWindow();
-    const features = Object.fromEntries(
-      String(browser.open.mock.calls[0]?.[2])
-        .split(",")
-        .filter((part) => part.includes("="))
-        .map((part) => part.split("=")),
-    );
-    expect(Number(features.width)).toBeLessThanOrEqual(560);
-    expect(Number(features.height)).toBeLessThanOrEqual(720);
-    expect(Number(features.height) + Math.max(0, window.outerHeight - window.innerHeight) + 32).toBeLessThanOrEqual(
-      600,
-    );
-    expect(Number(features.left)).toBe(Math.round(window.screenX + (window.outerWidth - Number(features.width)) / 2));
-  } finally {
-    browser.restore();
-  }
-});
-it("keeps the shared service-icon fallback when the provider artwork fails", () => {
-  const browser = fakeMcpOAuthBrowser();
-  try {
-    prepareMcpOAuthWindow({ name: "Notion", iconUrl: "/missing-notion.png" });
-    const image = browser.popup.document.querySelector("img");
-    expect(image).not.toBeNull();
-    image?.dispatchEvent(new Event("error"));
-    expect(browser.popup.document.querySelector("img")).toBeNull();
-    expect(browser.popup.document.querySelector("main > span svg")).not.toBeNull();
-    expect(browser.popup.document.querySelector("h1")?.textContent).toBe("Connect Notion");
+    expect(prepareMcpOAuthWindow()).toEqual({ popup: null, mobile: true });
+    expect(browser.open).not.toHaveBeenCalled();
   } finally {
     browser.restore();
   }

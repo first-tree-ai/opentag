@@ -106,10 +106,11 @@ test("mobile keeps a long connector card's height stable while preparing authori
   const height = (await card.boundingBox())?.height;
   if (!height) throw new Error("Missing mobile card geometry");
   await card.getByRole("button", { name: "Add: Google Calendar", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Requirements met — add connector", exact: true }).click();
   await expect(card.getByRole("button", { name: "Cancel: Google Calendar", exact: true })).toBeEnabled();
   await expectHeight(card, height);
   await expectNoPageOverflow(page);
+  await card.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: test.info().outputPath("discover-mobile-320-preparing.png") });
   await card.getByRole("button", { name: "Cancel: Google Calendar", exact: true }).click();
   fixture.releaseOAuth();
   await expect(card.getByRole("button", { name: "Add: Google Calendar", exact: true })).toBeEnabled();

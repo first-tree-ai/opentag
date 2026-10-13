@@ -105,8 +105,3 @@ export function findCatalogBinding(
     (definition ? mounted.find((candidate) => candidate.mcpServerId === definition.id) : undefined)
   );
 }
-
-/** Google Workspace MCP endpoints require access to the developer preview. */
-export function isCatalogPreview(entry: McpCatalogEntry): boolean {
-  return entry.category === "google-workspace";
-}

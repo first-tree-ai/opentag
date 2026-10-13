@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { browserApi } from "../../../api.js";
+import { ApiError, browserApi } from "../../../api.js";
 import { McpPage } from "../mcp-page.js";
 import { AGENT_ID, stub, wrap } from "../mcp-test-fixtures.js";
 
@@ -22,10 +22,9 @@ describe("MCP onboarding", () => {
       expect(await dialog.findByRole("button", { name: `Add: ${title}` })).toBeTruthy();
   });
 
-  it.each(["Google Drive", "Gmail"])("shows %s requirements before creating or authorizing", async (title) => {
+  it.each(["Google Drive", "Gmail"])("starts adding %s directly and retains the search on failure", async (title) => {
     stub([]);
-    const create = vi.spyOn(browserApi, "createMcpServer");
-    const oauth = vi.spyOn(browserApi, "startMcpOAuth");
+    const create = vi.spyOn(browserApi, "createMcpServer").mockRejectedValue(new ApiError(503, "Fixture unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
     const discover = await screen.findByRole("button", { name: "Discover" });
     await waitFor(() => expect(discover.hasAttribute("disabled")).toBe(false));
@@ -35,12 +34,9 @@ describe("MCP onboarding", () => {
     fireEvent.change(search, { target: { value: title } });
     fireEvent.click(await screen.findByRole("button", { name: `Add: ${title}` }));
     const dialog = within(await screen.findByRole("dialog"));
-    const requirements = await dialog.findByText(/Your Google Cloud project must have preview access/);
-    await waitFor(() => expect(document.activeElement).toBe(requirements));
-    expect(create).not.toHaveBeenCalled();
-    expect(oauth).not.toHaveBeenCalled();
-    fireEvent.click(dialog.getByRole("button", { name: "Back" }));
-    await waitFor(() => expect(document.activeElement).toBe(search));
+    await dialog.findByText("Connection failed");
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(dialog.getByRole("button", { name: `Reconnect: ${title}` })).toBeTruthy();
     expect((search as HTMLInputElement).value).toBe(title);
     expect(dialog.queryByRole("button", { name: "Add: Linear" })).toBeNull();
   });

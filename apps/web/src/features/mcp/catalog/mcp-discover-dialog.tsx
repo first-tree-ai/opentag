@@ -3,22 +3,18 @@ import { useEffect, useRef, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, KumoInputControl, Loader } from "../../../ui/design-system.js";
 import { actionError } from "../mcp-form-model.js";
-import { isCatalogPreview, localizedText } from "./mcp-catalog-model.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
 import { type DiscoverProps, useMcpDiscoverState } from "./mcp-discover-state.js";
 
 export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCatalogEntry }) {
   const searchRef = useRef<HTMLInputElement>(null);
-  const requirementsRef = useRef<HTMLParagraphElement>(null);
-  const [preview, setPreview] = useState<McpCatalogEntry>();
   const state = useMcpDiscoverState(props);
   useEffect(() => {
-    if (!preview && !state.account.isPending && !state.account.isError) searchRef.current?.focus();
-  }, [preview, state.account.isPending, state.account.isError]);
+    if (!state.account.isPending && !state.account.isError) searchRef.current?.focus();
+  }, [state.account.isPending, state.account.isError]);
   const openEntry = (entry: McpCatalogEntry) => {
     if (state.busy) return;
-    if (isCatalogPreview(entry)) setPreview(entry);
-    else void state.addFromCatalog(entry);
+    void state.addFromCatalog(entry);
   };
   const started = useRef(false);
   useEffect(() => {
@@ -26,15 +22,14 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
     started.current = true;
     openEntry(props.initialEntry);
   });
-  const back = () => setPreview(undefined);
   return (
     <Dialog
-      initialFocusRef={preview ? requirementsRef : searchRef}
+      initialFocusRef={searchRef}
       busy={state.busy}
       onClose={state.keySetup ? () => void state.cancelKey() : props.onClose}
-      onBack={preview ? back : state.keySetup ? () => void state.cancelKey() : undefined}
-      title={discoverTitle(preview, state)}
-      className={preview ? "mcp-form-dialog" : "mcp-discover-dialog"}
+      onBack={state.keySetup ? () => void state.cancelKey() : undefined}
+      title={discoverTitle(state)}
+      className="mcp-discover-dialog"
     >
       {state.account.isPending ? <Loader /> : null}
       {state.account.isError ? (
@@ -45,38 +40,14 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
           </Button>
         </div>
       ) : null}
-      <DiscoverCatalog state={state} props={props} preview={preview} openEntry={openEntry} searchRef={searchRef} />
+      <DiscoverCatalog state={state} props={props} openEntry={openEntry} searchRef={searchRef} />
       <DiscoverKeyForm state={state} />
-      {preview ? (
-        <div className="grid gap-5">
-          <p ref={requirementsRef} tabIndex={-1} className="text-sm leading-relaxed text-kumo-subtle outline-none">
-            {m.mcp_preview_description()}
-          </p>
-          <a
-            className="text-sm underline underline-offset-4"
-            href="https://developers.google.com/workspace/drive/api/guides/configure-mcp-server"
-            target="_blank"
-            rel="noreferrer"
-          >
-            {m.mcp_preview_guide()}
-          </a>
-          <Button
-            onClick={() => {
-              setPreview(undefined);
-              void state.addFromCatalog(preview);
-            }}
-          >
-            {m.mcp_preview_continue()}
-          </Button>
-        </div>
-      ) : null}
     </Dialog>
   );
 }
 
 type DiscoverState = ReturnType<typeof useMcpDiscoverState>;
-function discoverTitle(preview: McpCatalogEntry | undefined, state: DiscoverState) {
-  if (preview) return `${localizedText(preview.title)} · ${m.mcp_catalog_limited_access()}`;
+function discoverTitle(state: DiscoverState) {
   if (state.keySetup) return m.mcp_authentication_title({ server: state.keySetup.binding.name });
   return m.mcp_discover_action();
 }
@@ -121,13 +92,11 @@ function DiscoverKeyForm({ state }: { state: DiscoverState }) {
 function DiscoverCatalog({
   state,
   props,
-  preview,
   openEntry,
   searchRef,
 }: {
   state: DiscoverState;
   props: DiscoverProps;
-  preview?: McpCatalogEntry;
   openEntry: (entry: McpCatalogEntry) => void;
   searchRef: import("react").RefObject<HTMLInputElement | null>;
 }) {
@@ -149,7 +118,7 @@ function DiscoverCatalog({
       onScroll={(event) => {
         state.view.current.scrollTop = event.currentTarget.scrollTop;
       }}
-      hidden={Boolean(preview) || Boolean(state.keySetup) || state.account.isPending || state.account.isError}
+      hidden={Boolean(state.keySetup) || state.account.isPending || state.account.isError}
     >
       {state.error && !state.keySetup ? (
         <div role="alert" className="mb-4">

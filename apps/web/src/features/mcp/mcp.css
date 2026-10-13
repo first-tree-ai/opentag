@@ -685,8 +685,25 @@
   .mcp-catalog-grid .mcp-catalog-card-description {
     grid-column: 1 / -1;
   }
+  .mcp-catalog-grid .mcp-catalog-card-heading {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr);
+  }
+  .mcp-catalog-card-copy {
+    display: contents;
+  }
+  .mcp-catalog-card-title {
+    grid-column: 2;
+    grid-row: 1;
+    padding-right: 6rem;
+  }
+  .mcp-catalog-cancel-loader {
+    display: none;
+  }
   .mcp-catalog-grid .mcp-catalog-card-actions {
     grid-row: 1;
     align-self: start;
+    min-width: 5rem;
   }
 }

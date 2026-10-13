@@ -56,7 +56,7 @@ export function McpCatalogFeedbackActions({ feedback, title }: { feedback: McpCa
       onClick={feedback.onCancel}
       disabled={!feedback.onCancel}
     >
-      <span aria-hidden="true">
+      <span aria-hidden="true" className="mcp-catalog-cancel-loader">
         <Loader size="sm" className="text-kumo-link" />
       </span>
       {m.common_cancel()}

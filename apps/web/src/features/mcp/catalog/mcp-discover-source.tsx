@@ -9,7 +9,6 @@ import { McpCatalogActions, McpCatalogDescription, type McpCatalogFeedback } fro
 import {
   catalogEntryState,
   entriesInCategory,
-  isCatalogPreview,
   localizedText,
   type McpCatalogEntryState,
   matchesCatalogEntry,
@@ -142,18 +141,12 @@ export function McpCatalogCard({
 }) {
   const locale = getLocale();
   const title = localizedText(entry.title, locale);
-  const preview = isCatalogPreview(entry);
   return (
     <li className="mcp-catalog-card rounded-lg border border-kumo-line bg-kumo-base p-5">
       <div className="mcp-catalog-card-heading flex min-w-0 items-center gap-3">
         <McpServiceIcon src={entry.iconIsOfficial ? entry.iconUrl : undefined} size={32} />
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <strong className="text-sm font-medium">{title}</strong>
-          {preview ? (
-            <span className="rounded border border-kumo-line px-2 py-0.5 text-xs text-kumo-subtle">
-              {m.mcp_catalog_limited_access()}
-            </span>
-          ) : null}
+        <div className="mcp-catalog-card-copy flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <strong className="mcp-catalog-card-title text-sm font-medium">{title}</strong>
         </div>
       </div>
       <McpCatalogDescription description={localizedText(entry.description, locale)} feedback={feedback} />

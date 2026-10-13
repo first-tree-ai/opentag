@@ -299,7 +299,7 @@ test("Discover retains search across a real OAuth cancellation and successful re
     await discover.getByRole("button", { name: "Add: Linear", exact: true }).click();
     const popup = await cancellation;
     await popup.getByRole("link", { name: "Cancel sign-in" }).click();
-    await expect(discover).toContainText("Sign-in was cancelled. You can try again.");
+    await expect(discover.getByRole("button", { name: "Add: Linear", exact: true })).toBeEnabled();
     await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
     await expect(discover.getByLabel("Search connectors", { exact: true })).toHaveValue("Linear");
     const success = page.waitForEvent("popup");
@@ -447,6 +447,11 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
         },
       });
     }
+    const oauthFailureCopy = {
+      add: "Couldn’t start sign-in. Try again.",
+      discover: "Connection failed",
+      list: "Couldn’t start sign-in. Try again.",
+    };
     for (const [id, source] of [
       [first.id, "add"],
       [second.id, "discover"],
@@ -462,7 +467,7 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
         await page.getByRole("button", { name: "Add: Linear", exact: true }).click();
       } else await page.getByRole("button", { name: "Connect", exact: true }).click();
       if (kind === "oauth") {
-        await expect(page.getByText("Couldn’t start sign-in. Try again.")).toBeVisible();
+        await expect(page.getByText(oauthFailureCopy[source])).toBeVisible();
         await expect(page.getByRole("radio")).toHaveCount(0);
       } else if (kind === "bearer") {
         const dialog = page.getByRole("dialog");
@@ -623,6 +628,16 @@ test("changing Add custom input still cancels the setup it created", async ({ pa
   }
 });
 
+async function approveToolsAuthorization(page: Page, blocked: boolean) {
+  let consent = page;
+  if (blocked) {
+    const reopened = page.waitForEvent("popup");
+    await page.getByRole("button", { name: "Open authorization page", exact: true }).click();
+    consent = await reopened;
+  }
+  await consent.getByRole("link", { name: "Approve", exact: true }).click();
+}
+
 for (const returnMode of ["mobile", "blocked popup"] as const) {
   test(`Tools OAuth restores search and scroll with ${returnMode}`, async ({ page }) => {
     const upstream = await peer("oauth", false, 20);
@@ -666,7 +681,15 @@ for (const returnMode of ["mobile", "blocked popup"] as const) {
       const scrollTop = await toolList.evaluate((element) => element.scrollTop);
       if (returnMode === "blocked popup")
         await page.evaluate(() => {
-          window.open = () => null;
+          const open = window.open;
+          let blocked = true;
+          window.open = (...args) => {
+            if (blocked) {
+              blocked = false;
+              return null;
+            }
+            return open.apply(window, args);
+          };
         });
       const reconnect = page.getByRole("dialog").getByRole("button", { name: "Reconnect", exact: true });
       await expect(reconnect).toBeVisible();
@@ -675,9 +698,7 @@ for (const returnMode of ["mobile", "blocked popup"] as const) {
         page.getByRole("dialog").getByRole("heading", { name: "Authentication", exact: true }),
       ).toBeVisible();
       await reconnect.click();
-      if (returnMode === "blocked popup")
-        await page.getByRole("button", { name: "Open authorization page", exact: true }).click();
-      await page.getByRole("link", { name: "Approve", exact: true }).click();
+      await approveToolsAuthorization(page, returnMode === "blocked popup");
       await expect(page.getByRole("textbox", { name: "Search tools", exact: true })).toHaveValue("fixture");
       await expect.poll(() => toolList.evaluate((element) => element.scrollTop)).toBe(scrollTop);
     } finally {
@@ -693,10 +714,10 @@ const discoverCopy = {
     close: "Close Discover",
     search: "Search connectors",
     add: "Add: Linear",
-    preparing: "Preparing sign-in…",
-    popupTitle: "Connect Linear",
-    opening: "Opening authorization page…",
-    failed: "Couldn’t start sign-in. Try again.",
+    preparing: "Connecting…",
+    cancel: "Cancel: Linear",
+    reconnect: "Reconnect: Linear",
+    failed: "Connection failed",
   },
   zh: {
     title: "发现",
@@ -704,10 +725,10 @@ const discoverCopy = {
     close: "关闭 发现",
     search: "搜索连接器",
     add: "添加: Linear",
-    preparing: "正在准备授权…",
-    popupTitle: "连接 Linear",
-    opening: "正在打开授权页面…",
-    failed: "无法启动登录，请重试。",
+    preparing: "正在连接…",
+    cancel: "取消: Linear",
+    reconnect: "重新连接: Linear",
+    failed: "连接失败",
   },
 } as const;
 
@@ -767,7 +788,7 @@ for (const locale of ["en", "zh"] as const) {
         const box = await add.boundingBox();
         if (!box) throw new Error("Missing add control");
         expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(width < 768 ? 44 : 24);
-        const addColors = await expectAddContrast(add);
+        await expectAddContrast(add);
         await add.hover();
         await expectAddContrast(add);
         await add.focus();
@@ -786,44 +807,27 @@ for (const locale of ["en", "zh"] as const) {
         await expectNoPageOverflow(page);
         await expectAccessible(page);
         await dialog.screenshot({ path: test.info().outputPath(`discover-${locale}-${width}-ready.png`) });
+        const card = dialog.getByRole("listitem").filter({ has: page.getByText("Linear", { exact: true }) });
+        const height = (await card.boundingBox())?.height;
         const opening = width > 640 ? page.waitForEvent("popup") : undefined;
         await add.click();
-        await expect(dialog.getByText(copy.preparing, { exact: true })).toBeVisible();
-        await expect(add).toBeDisabled();
+        await expect(card.getByRole("status")).toHaveText(copy.preparing);
+        await expect(card.getByRole("button", { name: copy.cancel, exact: true })).toBeEnabled();
+        await expect(dialog.getByLabel(copy.search, { exact: true })).toBeDisabled();
+        await expect.poll(async () => (await card.boundingBox())?.height).toBe(height);
         await expectWithinViewport(dialog);
         await expectAccessible(page);
         await dialog.screenshot({ path: test.info().outputPath(`discover-${locale}-${width}-preparing.png`) });
         if (opening) {
           const popup = await opening;
           await page.context().unroute("**/api/v1/mcp-servers");
-          await expect(popup).toHaveTitle(`${copy.popupTitle} · OpenTag`);
-          await expect(popup.getByRole("heading", { name: copy.popupTitle, exact: true })).toBeVisible();
-          await expect(popup.getByRole("status")).toHaveText(copy.opening);
-          await expect(popup.getByText("Discover", { exact: false })).toHaveCount(0);
-          await expect
-            .poll(() => popup.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth))
-            .toBeGreaterThan(0);
-          await expect(popup.getByRole("heading", { name: copy.popupTitle, exact: true })).toHaveCSS(
-            "font-size",
-            "18px",
-          );
-          await expect(popup.locator("main")).toHaveCSS("align-items", "center");
-          await expect(popup.locator('div[role="status"]')).toHaveCSS("display", "flex");
-          await expect(popup.locator('div[role="status"] svg')).toHaveCSS("color", addColors.foreground);
-          await expect
-            .poll(() =>
-              popup.evaluate(() =>
-                Array.from(document.fonts).some((font) => font.family === "Manrope" && font.status === "loaded"),
-              ),
-            )
-            .toBe(true);
-          await expectAccessible(popup);
-          await expectNoPageOverflow(popup);
-          await popup.screenshot({ path: test.info().outputPath(`authorization-${locale}-${width}-preparing.png`) });
+          expect(popup.url()).toBe("about:blank");
+          await expect(popup.locator("body")).toBeEmpty();
         }
         release();
-        await expect(dialog.getByRole("alert")).toContainText(copy.failed);
-        await expect(add).toBeEnabled();
+        await expect(card.getByRole("alert")).toHaveText(copy.failed);
+        await expect(card.getByRole("button", { name: copy.reconnect, exact: true })).toBeEnabled();
+        await expect.poll(async () => (await card.boundingBox())?.height).toBe(height);
         await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
         await expect(dialog.getByLabel(copy.search, { exact: true })).toHaveValue("Linear");
         await expectAccessible(page);

@@ -21,8 +21,7 @@ export function McpDiscoverSource({
   servers,
   mounted,
   busy,
-  pendingEntryId,
-  pendingAction,
+  pending = {},
   searchRef,
   onAdd,
   connectedIds = [],
@@ -35,14 +34,13 @@ export function McpDiscoverSource({
   servers: readonly MCPServer[];
   mounted: readonly MCPAgentServer[];
   busy: boolean;
-  pendingEntryId?: string;
-  pendingAction?: "add" | "connect";
+  pending?: Record<string, { action: "add" | "connect" }>;
   searchRef?: RefObject<HTMLInputElement | null>;
   onAdd: (entry: McpCatalogEntry) => void;
   connectedIds?: string[];
   initialView?: { query: string; categoryId: string };
   onViewChange?: (view: { query: string; categoryId: string }) => void;
-  feedback?: McpCatalogFeedback;
+  feedback?: Record<string, McpCatalogFeedback>;
 }) {
   const locale = getLocale();
   const [categoryId, setCategoryId] = useState(initialView?.categoryId ?? "");
@@ -107,11 +105,11 @@ export function McpDiscoverSource({
               key={entry.id}
               entry={entry}
               state={connectedIds.includes(entry.id) ? "added" : catalogEntryState(entry, servers, mounted)}
-              busy={busy}
-              connecting={busy && entry.id === pendingEntryId}
-              pendingAction={entry.id === pendingEntryId ? pendingAction : undefined}
+              busy={busy || Boolean(pending[entry.id])}
+              connecting={Boolean(pending[entry.id])}
+              pendingAction={pending[entry.id]?.action}
               onAdd={onAdd}
-              feedback={entry.id === feedback?.entryId ? feedback : undefined}
+              feedback={feedback?.[entry.id]}
             />
           ))}
         </ul>

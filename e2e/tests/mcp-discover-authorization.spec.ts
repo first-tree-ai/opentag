@@ -108,6 +108,8 @@ test("mobile keeps a long connector card's height stable while preparing authori
   await card.getByRole("button", { name: "Add: Google Calendar", exact: true }).click();
   await expect(card.getByRole("button", { name: "Cancel: Google Calendar", exact: true })).toBeEnabled();
   await expectHeight(card, height);
+  await expect(dialog.getByLabel("Search connectors")).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Add: Gmail", exact: true })).toBeDisabled();
   await expectNoPageOverflow(page);
   await card.scrollIntoViewIfNeeded();
   await page.screenshot({ path: test.info().outputPath("discover-mobile-320-preparing.png") });
@@ -170,3 +172,51 @@ test("blocked authorization opens a normal tab from its card and preserves Disco
   await tab.getByRole("link", { name: "Finish authorization" }).click();
   await expect(card).toContainText("Connected");
 });
+
+for (const finishFirst of ["cancel", "success"] as const) {
+  test(`Discover isolates concurrent authorization and filtering (${finishFirst})`, async ({ page }) => {
+    const agentId = await createAgent(page, "Parallel Discover");
+    const fixture = await mcpFixture(page);
+    fixture.allowOAuth();
+    fixture.holdProbe();
+    await consentFixture(page);
+    const { dialog, card: airtable } = await openDiscover(page, agentId);
+    const search = dialog.getByLabel("Search connectors");
+    const firstPopup = page.waitForEvent("popup");
+    await airtable.getByRole("button", { name: "Add: Airtable", exact: true }).click();
+    const first = await firstPopup;
+    await expect(airtable.getByRole("status")).toHaveText("Waiting for authorization…");
+    await search.fill("Google Calendar");
+    const calendar = dialog.getByRole("listitem").filter({ has: page.getByText("Google Calendar", { exact: true }) });
+    const secondPopup = page.waitForEvent("popup");
+    await calendar.getByRole("button", { name: "Add: Google Calendar", exact: true }).click();
+    const second = await secondPopup;
+    await expect(calendar.getByRole("status")).toHaveText("Waiting for authorization…");
+    const calendarId = fixture.servers.find((server) => server.name === "google-calendar")?.id;
+    if (!calendarId) throw new Error("Missing calendar definition");
+    fixture.completeOAuth(agentId, calendarId);
+    await second.getByRole("link", { name: "Finish authorization" }).click();
+    await expect(calendar.getByRole("status")).toHaveText("Checking connection…");
+    await search.fill("Airtable");
+    await expect(airtable.getByRole("status")).toHaveText("Waiting for authorization…");
+    if (finishFirst === "cancel") {
+      await airtable.getByRole("button", { name: "Cancel: Airtable", exact: true }).click();
+      await expect(airtable.getByRole("button", { name: "Add: Airtable", exact: true })).toBeEnabled();
+      expect(fixture.mounts.get(agentId)?.map((entry) => entry.mcpServerId)).toEqual([calendarId]);
+    } else {
+      const airtableId = fixture.servers.find((server) => server.id !== calendarId)?.id;
+      if (!airtableId) throw new Error("Missing Airtable definition");
+      fixture.completeOAuth(agentId, airtableId);
+      await first.getByRole("link", { name: "Finish authorization" }).click();
+      await expect(airtable.getByRole("status")).toHaveText("Checking connection…");
+    }
+    fixture.releaseProbe();
+    await search.fill("Google Calendar");
+    await expect(calendar).toContainText("Connected");
+    await dialog.getByRole("button", { name: "Business & Data", exact: true }).click();
+    if (finishFirst === "success") await expect(airtable).toContainText("Connected");
+    else await expect(airtable.getByRole("button", { name: "Add: Airtable", exact: true })).toBeEnabled();
+    await expectAccessible(page);
+    await expectNoPageOverflow(page);
+  });
+}

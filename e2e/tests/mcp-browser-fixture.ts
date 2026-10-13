@@ -209,8 +209,10 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       failOAuth = false;
       oauthSuccess = true;
     },
-    completeOAuth: (agentId: string) => {
-      const entry = mounts.get(agentId)?.[0];
+    completeOAuth: (agentId: string, serverId?: string) => {
+      const entry = serverId
+        ? mounts.get(agentId)?.find((item) => item.mcpServerId === serverId)
+        : mounts.get(agentId)?.[0];
       if (!entry) throw new Error("Missing OAuth binding fixture");
       entry.authorization = {
         kind: "oauth",

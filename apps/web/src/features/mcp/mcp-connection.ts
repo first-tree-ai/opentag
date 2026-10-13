@@ -6,7 +6,7 @@ import {
 } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
 import { connectionPreset } from "./mcp-connection-model.js";
-import { useMcpOAuthSession } from "./mcp-oauth-session.js";
+import { type McpOAuthSession, useMcpOAuthSession } from "./mcp-oauth-session.js";
 import type { McpOAuthWindow } from "./mcp-oauth-window.js";
 import { useProbeMcpServer, useSetMcpAuthorization } from "./mcp-queries.js";
 import type { McpReturnContext } from "./mcp-return-context.js";
@@ -32,6 +32,7 @@ export function useMcpConnectionOperation(agentId: string) {
   const run = async (
     attempt: ConnectionAttempt,
     options: {
+      oauthSession?: McpOAuthSession;
       token?: string;
       source: McpReturnContext["source"];
       onTools?: () => void;
@@ -40,10 +41,11 @@ export function useMcpConnectionOperation(agentId: string) {
       returnContext?: Partial<McpReturnContext>;
     },
   ): Promise<"connected" | "key" | "redirect" | "cancelled"> => {
+    const session = options.oauthSession ?? oauth;
     const alive = options.isAlive;
     if (!alive()) return "connected";
     const startOAuth = async () => {
-      const result = await oauth.start(
+      const result = await session.start(
         { ...options.returnContext, agentId, serverId: attempt.binding.mcpServerId, source: options.source },
         connectionPreset(attempt.binding.effective.url)?.oauthScopes,
         options.oauthWindow,

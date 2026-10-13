@@ -813,7 +813,7 @@ for (const locale of ["en", "zh"] as const) {
         await add.click();
         await expect(card.getByRole("status")).toHaveText(copy.preparing);
         await expect(card.getByRole("button", { name: copy.cancel, exact: true })).toBeEnabled();
-        await expect(dialog.getByLabel(copy.search, { exact: true })).toBeDisabled();
+        await expect(dialog.getByLabel(copy.search, { exact: true })).toBeEnabled({ enabled: width > 640 });
         await expect.poll(async () => (await card.boundingBox())?.height).toBe(height);
         await expectWithinViewport(dialog);
         await expectAccessible(page);

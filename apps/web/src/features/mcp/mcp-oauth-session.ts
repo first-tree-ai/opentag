@@ -1,5 +1,5 @@
 import { MCP_ERROR_CODES } from "@opentag/shared/browser";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import {
@@ -11,33 +11,74 @@ import {
 import { useStartMcpOAuth } from "./mcp-queries.js";
 import { consumeMcpReturn, type McpReturnContext, rememberMcpReturn } from "./mcp-return-context.js";
 
-export function useMcpOAuthSession(agentId: string) {
+/** Sessions survive card filtering and remain isolated until the owning dialog unmounts. */
+export function useMcpOAuthSessions(agentId: string) {
   const mutation = useStartMcpOAuth(agentId);
-  const controller = useRef<AbortController | undefined>(undefined);
-  const fallback = useRef<
-    | {
-        url: string;
-        context: McpReturnContext;
-        finish: (result: "redirect" | "cancelled" | "authorized") => void;
-        mobile: boolean;
-        signal: AbortSignal;
-        fail: (cause: unknown) => void;
-        clear: () => void;
-      }
-    | undefined
-  >(undefined);
-  const [phase, setPhase] = useState<"preparing" | "waiting" | "checking">();
-  const [detached, setDetached] = useState(false);
-  const [blocked, setBlocked] = useState(false);
-  const [notice, setNotice] = useState<string>();
-  const interruption = useRef<"cancelled" | "timeout" | undefined>(undefined);
-  useEffect(
-    () => () => {
-      controller.current?.abort();
-      fallback.current?.finish("cancelled");
-    },
-    [],
-  );
+  const mutationRef = useRef(mutation);
+  mutationRef.current = mutation;
+  const [, refresh] = useReducer((version: number) => version + 1, 0);
+  const sessions = useRef(new Map<string, McpOAuthSession>());
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      for (const session of sessions.current.values()) session.dispose();
+    };
+  }, []);
+  return (key: string) => {
+    let session = sessions.current.get(key);
+    if (!session) {
+      session = createMcpOAuthSession(
+        (input) => mutationRef.current.mutateAsync(input),
+        () => {
+          if (mounted.current) refresh();
+        },
+      );
+      sessions.current.set(key, session);
+    }
+    return session;
+  };
+}
+
+export function useMcpOAuthSession(agentId: string) {
+  return useMcpOAuthSessions(agentId)("default");
+}
+
+function createMcpOAuthSession(mutate: ReturnType<typeof useStartMcpOAuth>["mutateAsync"], refresh: () => void) {
+  const controller: { current: AbortController | undefined } = { current: undefined };
+  const fallback: {
+    current:
+      | {
+          url: string;
+          context: McpReturnContext;
+          finish: (result: "redirect" | "cancelled" | "authorized") => void;
+          mobile: boolean;
+          signal: AbortSignal;
+          fail: (cause: unknown) => void;
+          clear: () => void;
+        }
+      | undefined;
+  } = { current: undefined };
+  const state: {
+    phase?: "preparing" | "waiting" | "checking";
+    detached: boolean;
+    blocked: boolean;
+    notice?: string;
+  } = { detached: false, blocked: false };
+  const update = (patch: Partial<typeof state>) => {
+    Object.assign(state, patch);
+    refresh();
+  };
+  const setPhase = (phase: typeof state.phase) => update({ phase });
+  const setDetached = (detached: boolean) => update({ detached });
+  const setBlocked = (blocked: boolean) => update({ blocked });
+  const setNotice = (notice: string | undefined) => update({ notice });
+  const interruption: { current: "cancelled" | "timeout" | undefined } = { current: undefined };
+  const dispose = () => {
+    controller.current?.abort();
+    fallback.current?.finish("cancelled");
+  };
   const cancel = () => {
     interruption.current = "cancelled";
     setNotice(m.mcp_oauth_cancelled());
@@ -53,7 +94,7 @@ export function useMcpOAuthSession(agentId: string) {
     interruption.current = undefined;
     setPhase("preparing");
     try {
-      const result = await mutation.mutateAsync({
+      const result = await mutate({
         mcpServerId: context.serverId,
         ...(scopes?.length ? { scopes: [...scopes] } : {}),
       });
@@ -157,9 +198,27 @@ export function useMcpOAuthSession(agentId: string) {
   function setInterruption(value: "cancelled" | "timeout") {
     interruption.current = value;
   }
-  return { start, cancel, openFallback, phase, blocked, detached, notice, interruption };
+  return {
+    start,
+    cancel,
+    openFallback,
+    dispose,
+    interruption,
+    get phase() {
+      return state.phase;
+    },
+    get blocked() {
+      return state.blocked;
+    },
+    get detached() {
+      return state.detached;
+    },
+    get notice() {
+      return state.notice;
+    },
+  };
 }
-export type McpOAuthSession = ReturnType<typeof useMcpOAuthSession>;
+export type McpOAuthSession = ReturnType<typeof createMcpOAuthSession>;
 
 function oauthInterruption(returned: Awaited<ReturnType<typeof waitMcpOAuthWindow>>): string | undefined {
   if (returned === "timeout") return m.mcp_oauth_timeout();

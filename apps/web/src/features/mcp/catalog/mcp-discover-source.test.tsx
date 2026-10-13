@@ -646,8 +646,8 @@ describe("Discover authorization window", () => {
       await screen.findByText("Waiting for authorization…");
       const pendingCard = screen.getByText("Alpha").closest("li") as HTMLElement;
       expect(within(pendingCard).getByRole("status").textContent).toBe("Waiting for authorization…");
-      expect(screen.getByLabelText("Search connectors").hasAttribute("disabled")).toBe(true);
-      expect(screen.getByRole("button", { name: "Engineering" }).hasAttribute("disabled")).toBe(true);
+      expect(screen.getByLabelText("Search connectors").hasAttribute("disabled")).toBe(false);
+      expect(screen.getByRole("button", { name: "Engineering" }).hasAttribute("disabled")).toBe(false);
       expect(browser.open).toHaveBeenCalledTimes(1);
       expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
       mounts[0] = mountFor(serverFor("alpha"), summary("active"));

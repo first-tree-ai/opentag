@@ -13,7 +13,7 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
     if (!state.account.isPending && !state.account.isError) searchRef.current?.focus();
   }, [state.account.isPending, state.account.isError]);
   const openEntry = (entry: McpCatalogEntry) => {
-    if (state.busy) return;
+    if (state.catalogBusy) return;
     void state.addFromCatalog(entry);
   };
   const started = useRef(false);
@@ -25,7 +25,7 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
   return (
     <Dialog
       initialFocusRef={searchRef}
-      busy={state.busy}
+      busy={state.keySetup ? state.keyBusy : state.busy}
       onClose={state.keySetup ? () => void state.cancelKey() : props.onClose}
       onBack={state.keySetup ? () => void state.cancelKey() : undefined}
       title={discoverTitle(state)}
@@ -75,15 +75,15 @@ function DiscoverKeyForm({ state }: { state: DiscoverState }) {
           type="password"
           autoComplete="off"
           value={token}
-          disabled={state.busy}
+          disabled={state.keyBusy}
           onChange={(event) => setToken(event.target.value)}
         />
       </Field>
       {state.error ? <Banner variant="error">{state.error}</Banner> : null}
-      <Button type="submit" disabled={state.busy || !token.trim()} loading={state.busy}>
+      <Button type="submit" disabled={state.keyBusy || !token.trim()} loading={state.keyBusy}>
         {m.mcp_connect()}
       </Button>
-      <Button variant="ghost" disabled={state.busy} onClick={() => void state.cancelKey()}>
+      <Button variant="ghost" disabled={state.keyBusy} onClick={() => void state.cancelKey()}>
         {m.common_cancel()}
       </Button>
     </form>
@@ -130,9 +130,8 @@ function DiscoverCatalog({
         entries={MCP_CATALOG_ENTRIES}
         servers={state.servers}
         mounted={props.mounted}
-        busy={state.busy}
-        pendingEntryId={state.pendingEntryId}
-        pendingAction={state.pendingAction}
+        busy={state.catalogBusy}
+        pending={state.pending}
         searchRef={searchRef}
         onAdd={openEntry}
         connectedIds={state.connectedIds}

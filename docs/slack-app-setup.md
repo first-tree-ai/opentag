@@ -148,6 +148,11 @@ Slack App**, including on servers without first-party Slack OAuth.
 1. Choose **Use your own Slack App**, then **Create App in Slack**. Select the intended workspace. The creation link
    prefills one complete Manifest: eighteen bot scopes, seven bot events, this Agent's Events Request URL, writable
    Messages tab and the existing Interactivity endpoint for local approvals. Create the App and install it in that workspace.
+   The Bot uses the Agent name within [Slack's naming rules](https://docs.slack.dev/reference/app-manifest/): lowercase
+   letters, digits, `.`, `_` and `-`, up to 80 characters. The form shows the exact prefilled `@name`; other characters
+   become `-`, and names without usable characters or the reserved `slackbot` name fall back to `opentag-<short Agent ID>`.
+   Existing Apps are not renamed. If creation stalls, check **Your Apps** before retrying. If the App already exists,
+   finish **OAuth & Permissions → Install to workspace**. If Slack asks you to wait, retry later without creating a copy.
 2. Copy **Bot User OAuth Token** from **OAuth & Permissions** and **Signing Secret** from **Basic Information → App
    Credentials** into OpenTag. These are the only two inputs; no App ID or policy selection is needed.
 3. Choose **Save and verify in Slack** once. OpenTag checks `auth.test`, actual `x-oauth-scopes` and `bots.info` to identify
@@ -160,7 +165,10 @@ Slack App**, including on servers without first-party Slack OAuth.
 
 The full Manifest is for a new App. For an existing App, add the displayed URL/events without overwriting its other
 settings; reinstall if scopes changed. Credential updates accept only changed fields, preserve blank fields and require
-at least one change. They preserve App, Team, Bot User and Bot ID, binding identity, history and Agent `receiveMode`.
+at least one change. **Update credentials** is directly available in the App dialog; expand **Change Signing Secret?**
+only when needed. After saving, send a Bot DM. An unchanged, saved Events URL needs no repeat verification or Save Changes;
+connection help remains available if the Bot does not reply. Updates preserve App, Team, Bot User and Bot ID, binding
+identity, history and Agent `receiveMode`.
 A stale generation or different identity is rejected. Failed validation retains the form for correction; an uncertain
 save reads current state before any retry and never automatically posts twice. Closing, success or changing Agent clears
 credential inputs. Neither management response returns saved credentials.

@@ -2,8 +2,9 @@
 
 [简体中文](../zh-CN/design/custom-slack-app.md)
 
-Recorded on 2026-10-13. Product source: `06f548b2d017a76865001c58ed45f53ce525c360`;
-implementation base: `75e97ca88bec2c69749347a8674489386c10768a`. Subsequent documentation commits do not change product code.
+Initial acceptance recorded on 2026-10-13 at product source `06f548b2d017a76865001c58ed45f53ce525c360`;
+implementation base: `75e97ca88bec2c69749347a8674489386c10768a`. The current design also includes Web-only onboarding
+refinements following staging QA; the dated acceptance evidence below remains a historical snapshot.
 See [Slack setup](../slack-app-setup.md) for the capability contract and operating instructions.
 
 ## Design and user flow
@@ -19,6 +20,14 @@ The user opens the prefilled Slack creation link, chooses the Team, creates and 
 confirms **Verified → Save Changes** in Slack Event Subscriptions and sends the Bot a DM. No second manifest paste,
 manual App/Team/Bot ID entry, or final confirmation page is required. Existing Apps can repair their URLs/events from
 collapsed help without replacing their other configuration.
+
+The new App's Bot name follows the Agent name within Slack's naming rules, with its exact prefilled `@name` visible
+before opening Slack. Existing Apps keep their current names. Creation recovery stays in collapsed help: check Your Apps
+first, finish installation for an App already created, or wait before retrying a rate-limited creation. No automatic
+creation retry is introduced. Credential updates are directly available in the App dialog and show only the Token by
+default; expand the Secret field when changing it. A connection that has received a real message verifies updated
+credentials with another DM, without repeating an unchanged Events URL setup. The saved status and identity/runtime
+readiness checks remain unchanged.
 
 ```mermaid
 sequenceDiagram
@@ -36,7 +45,7 @@ sequenceDiagram
     U->>W: Use your own Slack App
     W->>S: GET configuration
     S-->>W: Trusted Events URL and current binding expectation
-    W-->>U: Prefilled Slack creation link
+    W-->>U: Prefilled Bot name and Slack creation link
     U->>L: Choose Team, create and install App
     L-->>U: Copy Bot Token and Signing Secret
     U->>W: Fill two credentials and save once

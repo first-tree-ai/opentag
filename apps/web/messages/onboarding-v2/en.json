@@ -2,7 +2,7 @@
   "$schema": "https://inlang.com/schema/inlang-message-format",
   "onboarding_v2_agent_name_charset_error": "Use lowercase letters, numbers and hyphens only, starting with a letter or number.",
   "onboarding_v2_agent_name_empty_error": "Your agent needs a name.",
-  "onboarding_v2_agent_name_hint": "The name you'll @mention in your messaging app.",
+  "onboarding_v2_agent_name_hint": "Choose a name you can recognize.",
   "onboarding_v2_agent_name_label": "Agent name",
   "onboarding_v2_agent_name_too_long_error": "Keep the name to 64 characters or fewer.",
   "onboarding_v2_agent_runtime_footnote": "More runtimes coming soon.",

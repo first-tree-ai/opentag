@@ -25,11 +25,20 @@ describe("new Slack App creation configuration", () => {
     expect(JSON.stringify(manifest)).not.toMatch(/signingSecret|botAccessToken|client_secret/);
   });
 
-  it("uses a valid unique-looking Bot name and bounds App names without splitting Unicode", () => {
+  it.each([
+    ["slack-staging-a-1013", "slack-staging-a-1013"],
+    ["QA Agent", "qa-agent"],
+    ["研发助理", `opentag-${agentId.slice(0, 8)}`],
+    ["slackbot", `opentag-${agentId.slice(0, 8)}`],
+  ])("uses the Agent name for its Bot within Slack's rules: %s", (name, expected) => {
+    expect(slackAppManifest(agentId, name, eventsUrl).features.bot_user.display_name).toBe(expected);
+  });
+
+  it("bounds Bot names and App names without splitting Unicode", () => {
     const manifest = slackAppManifest(agentId, "🧑‍💻".repeat(50), eventsUrl);
     expect([...manifest.display_information.name]).toHaveLength(35);
     expect(manifest.features.bot_user.display_name).toMatch(/^[a-z0-9_.-]{1,80}$/);
-    expect(manifest.features.bot_user.display_name).toContain(agentId.slice(0, 8));
+    expect(slackAppManifest(agentId, "a".repeat(90), eventsUrl).features.bot_user.display_name).toBe("a".repeat(80));
   });
 
   it("targets the identified App and Team in the Bot conversation link", () => {

@@ -9,7 +9,12 @@ import { ApiError, browserApi } from "../api.js";
 import * as m from "../paraglide/messages.js";
 import { Banner, Button, buttonClassName, Collapsible, Dialog, Input, InputArea } from "../ui/design-system.js";
 import { messagingProviderLabel } from "./provider-label.js";
-import { slackAppCreateUrl, slackAppManifest, slackBotConversationUrl } from "./slack-app-manifest.js";
+import {
+  slackAppCreateUrl,
+  slackAppManifest,
+  slackBotConversationUrl,
+  slackBotDisplayName,
+} from "./slack-app-manifest.js";
 import { slackConfigurationMessage } from "./slack-configuration.js";
 
 interface Props {
@@ -27,7 +32,6 @@ export function SlackCustomApp(props: Props) {
 function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }: Props) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<SlackConfigurationView>();
-  const [secretOpen, setSecretOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const saving = useRef(false);
@@ -57,14 +61,12 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
   function start() {
     if (!view) return;
     setError(undefined);
-    setSecretOpen(false);
     setEditing(view.allowedIntent === "create" || view.binding?.reauthorizationRequired ? view : undefined);
     setOpen(true);
   }
-  function update(showSecret: boolean) {
+  function update() {
     if (view?.allowedIntent !== "reauthorize") return;
     setError(undefined);
-    setSecretOpen(showSecret);
     setEditing(view);
   }
   async function resumeAfterLostResponse(input: SaveSlackConfigurationRequest): Promise<boolean> {
@@ -131,14 +133,7 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
               />
             ) : null}
             {editing ? (
-              <SlackCredentialForm
-                agentId={agentId}
-                view={editing}
-                busy={busy}
-                showSecret={secretOpen}
-                onSave={save}
-                onCancel={close}
-              />
+              <SlackCredentialForm agentId={agentId} view={editing} busy={busy} onSave={save} onCancel={close} />
             ) : (
               <SlackAppStatus view={view} onUpdate={update} onOAuth={onOAuth} onClose={close} />
             )}
@@ -214,14 +209,12 @@ function SlackCredentialForm({
   agentId,
   view,
   busy,
-  showSecret,
   onSave,
   onCancel,
 }: {
   agentId: string;
   view: SlackConfigurationView;
   busy: boolean;
-  showSecret: boolean;
   onSave: (input: SaveSlackConfigurationRequest) => Promise<void>;
   onCancel: () => void;
 }) {
@@ -264,7 +257,7 @@ function SlackCredentialForm({
         />
         <span className="text-sm text-kumo-subtle">{m.im_slack_token_help()}</span>
       </label>
-      <Collapsible.Root defaultOpen={create || showSecret}>
+      <Collapsible.Root defaultOpen={create}>
         {!create ? (
           <Collapsible.Trigger render={<Button variant="ghost" type="button" />}>
             {m.im_slack_change_secret()}
@@ -329,6 +322,7 @@ function credentialRequest(
 
 function SlackAppCreation({ agentId, view }: { agentId: string; view: SlackConfigurationView }) {
   const [fallback, setFallback] = useState<string>();
+  const provider = messagingProviderLabel("slack");
   async function copy() {
     const text = JSON.stringify(slackAppManifest(agentId, view.agentDisplayName, view.eventsUrl), null, 2);
     try {
@@ -346,14 +340,21 @@ function SlackAppCreation({ agentId, view }: { agentId: string; view: SlackConfi
         rel="noreferrer"
         href={slackAppCreateUrl(agentId, view.agentDisplayName, view.eventsUrl)}
       >
-        {m.im_slack_create_app({ provider: messagingProviderLabel("slack") })}
+        {m.im_slack_create_app({ provider })}
       </a>
+      <p className="break-all text-sm">
+        {m.im_slack_bot_name({ provider, name: slackBotDisplayName(agentId, view.agentDisplayName) })}
+      </p>
       <p className="text-sm text-kumo-subtle">{m.im_slack_create_instructions()}</p>
       <Collapsible.Root>
         <Collapsible.Trigger render={<Button variant="ghost" type="button" />}>
           {m.im_slack_create_help()}
         </Collapsible.Trigger>
         <Collapsible.Panel className="grid gap-3 pt-3">
+          <p className="text-sm text-kumo-subtle">{m.im_slack_create_recovery({ provider })}</p>
+          <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer">
+            {m.im_slack_your_apps({ provider })}
+          </a>
           <Button type="button" variant="ghost" onClick={() => void copy()}>
             {m.im_slack_copy_manifest()}
           </Button>
@@ -379,7 +380,7 @@ function SlackAppStatus({
   onClose,
 }: {
   view: SlackConfigurationView;
-  onUpdate: (showSecret: boolean) => void;
+  onUpdate: () => void;
   onOAuth?: () => void;
   onClose: () => void;
 }) {
@@ -393,7 +394,7 @@ function SlackAppStatus({
       <span className="text-sm text-kumo-subtle">{identity.teamId}</span>
       <Banner role="status" variant="secondary" description={slackSetupStatus(view)} />
       <div className="flex flex-wrap gap-3">
-        {pending ? (
+        {pending && !view.binding?.lastInboundAt ? (
           <a className={buttonClassName({ variant: "secondary" })} href={appSettings} target="_blank" rel="noreferrer">
             {m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })}
           </a>
@@ -406,6 +407,9 @@ function SlackAppStatus({
         >
           {m.im_slack_open_dm()}
         </a>
+        <Button variant="secondary" onClick={onUpdate}>
+          {m.im_slack_update_credentials()}
+        </Button>
         <Button variant="ghost" onClick={onClose}>
           {m.im_slack_close()}
         </Button>
@@ -425,9 +429,6 @@ function SlackAppStatus({
           <a href={appSettings} target="_blank" rel="noreferrer">
             {m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })}
           </a>
-          <Button variant="secondary" onClick={() => onUpdate(pending)}>
-            {m.im_slack_update_credentials()}
-          </Button>
           {onOAuth ? (
             <Button variant="ghost" onClick={onOAuth}>
               {m.im_slack_explicit_oauth()}
@@ -444,6 +445,7 @@ function slackSetupStatus(view: SlackConfigurationView): string {
     return view.handoff?.handoffReady
       ? m.im_slack_ready({ provider: messagingProviderLabel("slack") })
       : m.im_slack_preparing_agent({ provider: messagingProviderLabel("slack") });
+  if (view.binding?.lastInboundAt) return m.im_slack_verify_updated_credentials();
   return view.binding?.lastRuntimeObservationAt
     ? m.im_slack_waiting_message({ provider: messagingProviderLabel("slack") })
     : m.im_slack_verify_instructions();

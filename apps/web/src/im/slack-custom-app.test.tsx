@@ -110,10 +110,26 @@ describe("custom Slack App flow", () => {
     expect(link.closest("details")).toBeNull();
     const manifest = JSON.parse(new URL(link.href).searchParams.get("manifest_json") ?? "{}");
     expect(manifest.settings.event_subscriptions.request_url).toBe(unbound().eventsUrl);
+    expect(manifest.features.bot_user.display_name).toBe("qa-agent");
+    expect(screen.getByText("Slack Bot: @qa-agent")).toBeTruthy();
     expect(screen.getByLabelText("Bot User OAuth Token")).toBeTruthy();
     expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
     expect(screen.queryByLabelText("Slack App ID")).toBeNull();
     expect(screen.queryByText("Bot message policy")).toBeNull();
+  });
+
+  it("keeps creation recovery in collapsed help and links to existing Apps before retrying", async () => {
+    fixture();
+    await openCreate();
+    expect(screen.queryByRole("link", { name: "Open your Slack Apps" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Trouble creating or installing the App?" }));
+    expect(screen.getByRole("link", { name: "Open your Slack Apps" })).toHaveProperty(
+      "href",
+      "https://api.slack.com/apps",
+    );
+    expect(
+      screen.getByText(/check Your Apps first.*OAuth & Permissions.*retry later without creating another copy/),
+    ).toBeTruthy();
   });
 
   it("commits once, clears credentials, and retains pending identity after saving", async () => {
@@ -204,8 +220,8 @@ describe("custom Slack App flow", () => {
     const view = bound();
     const test = fixture(view);
     fireEvent.click(await screen.findByRole("button", { name: "Continue Slack setup" }));
-    fireEvent.click(screen.getByText("Existing App or connection help"));
     fireEvent.click(screen.getByRole("button", { name: "Update credentials" }));
+    if (field === "secret") fireEvent.click(screen.getByRole("button", { name: "Change Signing Secret?" }));
     fireEvent.change(screen.getByLabelText(field === "token" ? "Bot User OAuth Token" : "Signing Secret"), {
       target: { value: "new-value" },
     });
@@ -217,6 +233,29 @@ describe("custom Slack App flow", () => {
         [field === "token" ? "botAccessToken" : "signingSecret"]: "new-value",
       }),
     );
+  });
+
+  it("verifies updated credentials by DM without repeating saved Slack settings or reporting ready early", async () => {
+    const view = bound();
+    if (!view.binding) throw new Error("missing fixture");
+    view.binding.lastInboundAt = "2026-10-12T00:01:00.000Z";
+    const test = fixture(view);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue Slack setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Update credentials" }));
+    expect(screen.queryByLabelText("Signing Secret")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Bot User OAuth Token"), { target: { value: "private-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update credentials" }));
+    expect(await screen.findByText(/Send the Bot a direct message to verify the updated credentials/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Bot conversation" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open Slack App settings" })).toBeNull();
+    expect(screen.queryByText("Slack connected. The Agent can receive messages.")).toBeNull();
+    expect(test.save).toHaveBeenCalledWith(agentId, {
+      intent: "reauthorize",
+      expectedMessaging: view.expectedMessaging,
+      botAccessToken: "private-token",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Existing App or connection help" }));
+    expect(screen.getByRole("link", { name: "Open Slack App settings" })).toBeTruthy();
   });
 
   it("does not call a URL challenge ready; requires identity closure and runtime handoff", async () => {

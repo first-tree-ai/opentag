@@ -2,8 +2,9 @@
 
 [English](../../design/custom-slack-app.md)
 
-记录日期：2026-10-13。产品源码：`06f548b2d017a76865001c58ed45f53ce525c360`；实施基线：
-`75e97ca88bec2c69749347a8674489386c10768a`。后续文档提交不改变产品源码。
+初次验收记录日期：2026-10-13，产品源码：`06f548b2d017a76865001c58ed45f53ce525c360`；实施基线：
+`75e97ca88bec2c69749347a8674489386c10768a`。当前方案也包含 staging QA 后的 Web 引导修正；下文注明日期的
+验收证据仍是历史快照。
 完整权限合同与操作说明见 [Slack 配置](../slack-app-setup.md)。
 
 ## 方案与产品流程
@@ -16,6 +17,11 @@ Agent 可在没有 Computer 和消息应用时创建；连接消息应用仍沿�
 完整 Manifest 预填现有 18 项 scopes、7 项 events、Agent 专属 Events URL、可写 Messages tab 和既有 Interactivity 回调。
 保存后在 Slack Event Subscriptions 确认 **Verified → Save Changes**，直接私聊 Bot。不需再次粘贴 Manifest、
 填写 App/Team/Bot ID 或点击最终确认。已有 App 通过折叠帮助补齐事件与 URL，保留其他配置。
+
+新 App 的 Bot 名称按 Slack 规则使用 Agent 名称，进入 Slack 前显示实际预填的 `@名称`，已有 App 保持原名。
+创建异常仍放在折叠帮助中：先查 Your Apps，已有 App 就完成安装；被限流则等待后再试，不引入自动创建重试。
+App 对话框直接提供更新凭证，默认只显示 Token，修改 Secret 时再展开。已收到过真实消息的连接，在更新凭证后
+直接发 DM 验证，无需重复配置未改变的 Events URL。已保存状态与身份、runtime 就绪判定保持不变。
 
 ```mermaid
 sequenceDiagram
@@ -33,7 +39,7 @@ sequenceDiagram
     U->>W: 使用自建 Slack App
     W->>S: GET configuration
     S-->>W: 可信专属 Events URL 与当前绑定预期
-    W-->>U: Slack 预填创建链接
+    W-->>U: 预填 Bot 名称与 Slack 创建链接
     U->>L: 选择 Team、创建并安装 App
     L-->>U: 复制 Bot Token 与 Signing Secret
     U->>W: 填两项并保存一次

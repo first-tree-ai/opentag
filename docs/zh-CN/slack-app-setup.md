@@ -130,6 +130,10 @@ manifest、轮换 installation 凭证代际、要求重新安装或授权、重�
 1. 选择**使用自建 Slack App**，再点击**在 Slack 创建 App**并选择目标工作区。链接一次预填完整 Manifest：
    十八项 bot scopes、七项 bot events、当前 Agent 的 Events Request URL、可写 Messages 页，以及现有本地审批
    Interactivity 回调。创建 App 并安装到该工作区。
+   Bot 按 [Slack 命名规则](https://docs.slack.dev/reference/app-manifest/) 使用 Agent 名称：小写字母、数字、`.`、`_`、`-`，
+   最长 80 字符。表单显示实际预填的 `@名称`；其他字符转换为 `-`，没有可用字符或名称为保留名 `slackbot` 时，
+   回退为 `opentag-<Agent 短 ID>`。不自动重命名已有 App。创建卡住时先查 **Your Apps**；已有 App 就进入
+   **OAuth & Permissions → Install to workspace** 完成安装。Slack 提示操作过快时稍后重试，避免重复创建。
 2. 从 **OAuth & Permissions** 复制 **Bot User OAuth Token**，从 **Basic Information → App Credentials** 复制
    **Signing Secret**，粘贴回 OpenTag。只填写这两个字段，不填写 App ID 或 Bot 消息策略。
 3. 点击一次**保存并前往 Slack 验证**。OpenTag 通过 `auth.test`、实际 `x-oauth-scopes` 和 `bots.info` 核验
@@ -140,7 +144,9 @@ manifest、轮换 installation 凭证代际、要求重新安装或授权、重�
    Signing Secret；匹配的签名真实事件闭合身份，runtime handoff 也完成后才显示就绪。保存凭证或打开 Slack 不代表就绪。
 
 完整 Manifest 只用于新 App。已有 App 按页面补充 URL/events，不覆盖其余设置；权限变化后重新安装。
-更新凭证只填写变化的字段，空白保留原值，至少修改一项。更新保持 App、Team、Bot User、Bot ID、绑定身份、
+更新凭证只填写变化的字段，空白保留原值，至少修改一项。App 对话框直接提供**更新凭证**，只在需要时展开
+**需要更换 Signing Secret？**。保存后给 Bot 发私信；未改动、已保存的 Events URL 不必重复验证或 Save Changes，
+没有回复时再打开连接排查。更新保持 App、Team、Bot User、Bot ID、绑定身份、
 历史和 Agent `receiveMode`；旧代际或不同身份会被拒绝。确定性失败保留输入供修正；保存结果不确定时先读取当前状态，
 不自动重复提交。关闭、成功或切换 Agent 都清除表单凭证。管理响应不返回已存凭证。
 

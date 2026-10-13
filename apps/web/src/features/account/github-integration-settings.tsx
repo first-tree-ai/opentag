@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Badge, Banner, Button, SettingsList, SettingsRow, StatusIndicator, Text } from "../../ui/design-system.js";
+import { GitHubInstallationActions } from "../integrations/github-installation-actions.js";
 import {
   type GitHubOAuthOutcome,
   githubOAuthOutcomeMessage,
@@ -152,6 +153,7 @@ export function GitHubIntegrationSettings() {
         busyLabel={busyLabel}
         onConnect={connect}
         onDisconnect={disconnect}
+        onRefresh={() => void run(load)}
         onRetry={() => void load()}
         view={view}
       />
@@ -188,6 +190,7 @@ function AccountGitHubBody({
   busyLabel,
   onConnect,
   onDisconnect,
+  onRefresh,
   onRetry,
   view,
 }: {
@@ -195,6 +198,7 @@ function AccountGitHubBody({
   busyLabel: string | undefined;
   onConnect: (intent: "create" | "reauthorize" | "replace") => void;
   onDisconnect: () => void;
+  onRefresh: () => void;
   onRetry: () => void;
   view: View;
 }) {
@@ -268,6 +272,7 @@ function AccountGitHubBody({
       connection={view.connection}
       installations={view.kind === "active" ? view.installations : []}
       onDisconnect={onDisconnect}
+      onRefresh={onRefresh}
       onReauthorize={() => onConnect("reauthorize")}
       onReplace={() => onConnect("replace")}
     />
@@ -290,6 +295,7 @@ function ConnectionDetails({
   connection,
   installations,
   onDisconnect,
+  onRefresh,
   onReauthorize,
   onReplace,
 }: {
@@ -298,6 +304,7 @@ function ConnectionDetails({
   connection: GitHubConnectionStatus;
   installations: GitHubDiscoveredInstallation[];
   onDisconnect: () => void;
+  onRefresh: () => void;
   onReauthorize: () => void;
   onReplace: () => void;
 }) {
@@ -341,9 +348,12 @@ function ConnectionDetails({
         label={m.integrations_github_installations_title()}
       >
         {installations.length === 0 ? (
-          <Text as="span" data-ui="account-github-no-installations" variant="secondary">
-            {m.integrations_github_no_installations()}
-          </Text>
+          <div className="grid gap-2">
+            <Text as="p" data-ui="account-github-no-installations" variant="secondary">
+              {m.integrations_github_no_installations()}
+            </Text>
+            {connection.status === "active" ? <GitHubInstallationActions busy={busy} onRefresh={onRefresh} /> : null}
+          </div>
         ) : (
           <ul className="flex flex-wrap justify-end gap-2" data-ui="account-github-installations">
             {installations.map((entry) => (

@@ -16,6 +16,7 @@ import {
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_BINDINGS_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
+  GITHUB_INTEGRATION_INSTALLATION_PATH,
   GITHUB_INTEGRATION_PATH,
   GITHUB_INTEGRATION_REPOSITORIES_PATH,
   GITHUB_OAUTH_CALLBACK_PATH,
@@ -36,6 +37,7 @@ import { GitHubManagementService } from "../services/github/github-management-se
 import { GitHubOAuthService } from "../services/github/github-oauth-service.js";
 import { GitHubConnectionRecheckStore } from "../services/github/github-recheck-store.js";
 import { GitHubWebhookService } from "../services/github/github-webhook.js";
+import { GitHubInstallationTokenError } from "../services/github/installation-token-client.js";
 import { GitHubRepositoryAdmissionService } from "../services/github/repository-admission.js";
 import { GitHubCredentialCipher } from "../services/github-credential-material.js";
 import { signedInBrowser } from "./signed-in-browser.js";
@@ -135,7 +137,14 @@ function buildManagement(api: ReturnType<typeof stubGitHubApi>) {
   });
 }
 
-async function appFixture(options: { withManagement?: boolean; withWebhook?: boolean } = {}) {
+async function appFixture(
+  options: {
+    withManagement?: boolean;
+    withWebhook?: boolean;
+    withBrowser?: boolean;
+    installation?: { installationUrl: () => Promise<string> };
+  } = {},
+) {
   const owner = await createAccount(unit, "owner@example.com");
   const other = await createAccount(unit, "other@example.com");
   const api = stubGitHubApi();
@@ -148,8 +157,15 @@ async function appFixture(options: { withManagement?: boolean; withWebhook?: boo
     ? new GitHubWebhookService({ webhookSecret: "webhook-secret", recheckStore, now: () => NOW })
     : undefined;
   const app = createApp({
+    ...(options.withBrowser
+      ? {
+          betterAuth: signedInBrowser(owner.id),
+          browserAuth: { publicOrigin: PUBLIC_ORIGIN, secureCookies: true, sessionTtlSeconds: 3_600 },
+        }
+      : {}),
     authService: authService({ owner, other }),
     githubIntegrations: {
+      ...(options.installation ? { installation: options.installation } : {}),
       availability,
       publicOrigin: PUBLIC_ORIGIN,
       secureCookies: true,
@@ -303,6 +319,55 @@ function bindingDocument(agentId: string, overrides: Partial<GitHubRepositoryBin
 }
 
 describe("GitHub integration availability and authentication", () => {
+  it("opens the configured App install page for a signed-in Account without changing its connection", async () => {
+    const installationUrl = vi.fn(async () => "https://github.com/apps/opentag-staging/installations/new");
+    const { app, management, owner } = await appFixture({
+      withManagement: true,
+      withBrowser: true,
+      installation: { installationUrl },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `${GITHUB_INTEGRATION_INSTALLATION_PATH}?url=https://attacker.example`,
+      headers: { cookie: "opentag.session_token=browser-session" },
+    });
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://github.com/apps/opentag-staging/installations/new");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(installationUrl).toHaveBeenCalledOnce();
+    expect((await management?.getOverview(owner.id))?.connection).toBeNull();
+  });
+
+  it("keeps the install route unavailable when no App is configured", async () => {
+    const { app } = await appFixture();
+    const response = await app.inject({
+      method: "GET",
+      url: GITHUB_INTEGRATION_INSTALLATION_PATH,
+      headers: ownerHeaders(),
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe("GITHUB_INTEGRATION_UNAVAILABLE");
+  });
+
+  it.each([
+    [new Error("upstream-secret-must-not-leak"), 503, "GITHUB_UPSTREAM_UNAVAILABLE"],
+    [new GitHubInstallationTokenError("GITHUB_API_RATE_LIMITED", "bounded"), 429, "GITHUB_RATE_LIMITED"],
+  ] as const)("bounds installation lookup failures", async (error, status, code) => {
+    const installationUrl = vi.fn(async () => {
+      throw error;
+    });
+    const { app } = await appFixture({ withManagement: true, installation: { installationUrl } });
+    const response = await app.inject({
+      method: "GET",
+      url: GITHUB_INTEGRATION_INSTALLATION_PATH,
+      headers: ownerHeaders(),
+    });
+    expect(response.statusCode).toBe(status);
+    expect(response.json().error.code).toBe(code);
+    expect(response.body).not.toContain("upstream-secret");
+    expect(response.headers.location).toBeUndefined();
+  });
+
   it("serves explicit unavailable availability with a null connection, never a 404 or a demo", async () => {
     const { app } = await appFixture();
     const response = await app.inject({ method: "GET", url: GITHUB_INTEGRATION_PATH, headers: ownerHeaders() });
@@ -330,6 +395,7 @@ describe("GitHub integration availability and authentication", () => {
     const { app, api } = await appFixture({ withManagement: true });
     for (const request of [
       { method: "GET" as const, url: GITHUB_INTEGRATION_PATH },
+      { method: "GET" as const, url: GITHUB_INTEGRATION_INSTALLATION_PATH },
       { method: "GET" as const, url: GITHUB_INTEGRATION_REPOSITORIES_PATH },
       {
         method: "POST" as const,

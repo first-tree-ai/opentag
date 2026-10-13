@@ -545,6 +545,20 @@ describe("AgentGitHubRepositories states", () => {
 
     expect(await screen.findByText("No installations found.")).toBeTruthy();
     expect(screen.getByText("No repositories are available through the connected account.")).toBeTruthy();
+    const install = screen.getByRole("link", { name: "Install GitHub App" });
+    expect(install.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
+    expect(install.getAttribute("target")).toBe("_blank");
+
+    vi.mocked(browserApi.githubRepositories).mockResolvedValue({
+      installations: [installation],
+      repositories: [repository],
+      nextCursor: null,
+    });
+    const save = vi.spyOn(browserApi, "updateGitHubBindings");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh installations" }));
+    expect(await screen.findByText(repository.fullName)).toBeTruthy();
+    expect(screen.queryByText("No installations found.")).toBeNull();
+    expect(save).not.toHaveBeenCalled();
   });
 
   it("marks a suspended installation instead of presenting it as usable", async () => {

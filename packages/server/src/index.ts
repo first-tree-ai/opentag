@@ -81,6 +81,7 @@ import { CloudUsageService } from "./services/cloud-usage.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
+import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
@@ -261,6 +262,10 @@ async function createCloudModelRuntime(
       modelService: service,
     }),
   };
+}
+
+function githubInstallationOptions(config: ServerConfig) {
+  return config.githubApp ? { installation: new GitHubInstallationTokenClient(config.githubApp) } : {};
 }
 
 function optionalCloudUsage(config: ServerConfig, cloudUsage: CloudUsageService) {
@@ -1217,6 +1222,7 @@ export async function startServer(): Promise<void> {
           }),
       },
       githubIntegrations: {
+        ...githubInstallationOptions(config),
         availability: config.githubApp
           ? ({ available: true, githubHost: "github.com", appId: config.githubApp.appId } as const)
           : ({ available: false, githubHost: "github.com", appId: null } as const),

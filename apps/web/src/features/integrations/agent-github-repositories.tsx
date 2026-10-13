@@ -27,6 +27,7 @@ import {
   KumoSelectControl,
   Text,
 } from "../../ui/design-system.js";
+import { GitHubInstallationActions } from "./github-installation-actions.js";
 import { type GitHubOAuthOutcome, githubOAuthOutcomeMessage, readGitHubOAuthOutcome } from "./github-oauth-outcome.js";
 
 /**
@@ -402,6 +403,11 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
           imBindingId={imBindingId}
           loadingMore={loadingMore}
           onLoadMore={() => void loadMore()}
+          onRefresh={() => {
+            if (busy) return;
+            setBusy(true);
+            void load().finally(() => setBusy(false));
+          }}
           onSave={() => void save()}
           onToggleRepository={toggleRepository}
           onUpdateDraft={updateDraft}
@@ -517,6 +523,7 @@ function ReadyRepositories({
   imBindingId,
   loadingMore,
   onLoadMore,
+  onRefresh,
   onSave,
   onToggleRepository,
   onUpdateDraft,
@@ -530,6 +537,7 @@ function ReadyRepositories({
   imBindingId: string | undefined;
   loadingMore: boolean;
   onLoadMore: () => void;
+  onRefresh: () => void;
   onSave: () => void;
   onToggleRepository: (repository: GitHubDiscoveredRepository, selected: boolean) => void;
   onUpdateDraft: (repositoryId: string, update: (draft: Draft) => Draft) => void;
@@ -539,7 +547,12 @@ function ReadyRepositories({
 }) {
   return (
     <>
-      <InstallationSummary installations={view.installations} repositories={view.repositories} />
+      <InstallationSummary
+        busy={busy}
+        installations={view.installations}
+        onRefresh={onRefresh}
+        repositories={view.repositories}
+      />
       {view.truncated ? (
         <Banner role="status" title={m.integrations_agent_github_discovery_truncated()} variant="alert" />
       ) : null}
@@ -579,17 +592,24 @@ function ReadyRepositories({
 }
 
 function InstallationSummary({
+  busy,
   installations,
+  onRefresh,
   repositories,
 }: {
+  busy: boolean;
   installations: GitHubDiscoveredInstallation[];
+  onRefresh: () => void;
   repositories: GitHubDiscoveredRepository[];
 }) {
   if (installations.length === 0) {
     return (
-      <Text as="p" data-ui="agent-github-no-installations" variant="secondary">
-        {m.integrations_github_no_installations()}
-      </Text>
+      <div className="grid gap-2">
+        <Text as="p" data-ui="agent-github-no-installations" variant="secondary">
+          {m.integrations_github_no_installations()}
+        </Text>
+        <GitHubInstallationActions busy={busy} onRefresh={onRefresh} />
+      </div>
     );
   }
   return (

@@ -142,6 +142,7 @@ describe("GitHubIntegrationSettings", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Use a different account" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Install GitHub App" })).toBeNull();
   });
 
   it("disconnects through the API and reloads the resulting state", async () => {
@@ -336,6 +337,27 @@ describe("GitHubIntegrationSettings states", () => {
     expect(await screen.findByText("No installations found.")).toBeTruthy();
     expect(screen.getByText("No repositories are enabled for Agents.")).toBeTruthy();
     expect(screen.getByText("Repositories (0)")).toBeTruthy();
+    const install = screen.getByRole("link", { name: "Install GitHub App" });
+    expect(install.getAttribute("href")).toBe("/api/v1/integrations/github/installation");
+    expect(install.getAttribute("target")).toBe("_blank");
+    expect(install.getAttribute("rel")).toContain("noopener");
+
+    vi.mocked(browserApi.githubRepositories).mockResolvedValue({
+      installations: [
+        {
+          installationId: "55123456",
+          accountLogin: "octocat",
+          accountType: "User",
+          repositorySelection: "selected",
+          suspended: false,
+        },
+      ],
+      repositories: [],
+      nextCursor: null,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh installations" }));
+    expect(await screen.findByText("octocat")).toBeTruthy();
+    expect(screen.queryByText("No installations found.")).toBeNull();
   });
 
   it("marks a suspended installation instead of presenting it as usable", async () => {

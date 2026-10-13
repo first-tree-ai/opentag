@@ -100,6 +100,33 @@ function captureError(action: () => unknown): unknown {
 }
 
 describe("GitHubInstallationTokenClient", () => {
+  it.each(["opentag-staging", "opentag-production", "self-hosted-app"])(
+    "resolves %s from the authenticated App without minting a token",
+    async (slug) => {
+      const { calls, fetchStub } = stubFetch(() => jsonResponse({ id: Number(APP_ID), slug }, 200));
+      expect(await makeClient(fetchStub).installationUrl()).toBe(`https://github.com/apps/${slug}/installations/new`);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe("https://api.github.com/app");
+      expect(calls[0]?.init.method).toBe("GET");
+      expect(calls[0]?.init.body).toBeUndefined();
+      expect(bearerJwt(calls[0] as FetchCall).verifies).toBe(true);
+    },
+  );
+
+  it.each([
+    null,
+    { id: 999, slug: "other-app" },
+    { id: Number(APP_ID), slug: "../other" },
+    { id: Number(APP_ID), slug: "app?redirect=evil" },
+    { id: Number(APP_ID), slug: "" },
+    { id: Number(APP_ID), slug: "a".repeat(101) },
+  ])("rejects mismatched or unsafe App metadata: %j", async (metadata) => {
+    const { fetchStub } = stubFetch(() => jsonResponse(metadata, 200));
+    await expect(makeClient(fetchStub).installationUrl()).rejects.toMatchObject({
+      code: "GITHUB_API_RESPONSE_INVALID",
+    });
+  });
+
   it("mints a token scoped to exactly one repository with read permissions", async () => {
     const { calls, client } = successClient();
 

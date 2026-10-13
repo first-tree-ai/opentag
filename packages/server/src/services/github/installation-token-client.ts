@@ -50,7 +50,7 @@ type RequestDeadline = {
 };
 
 type SendOptions = {
-  method: "POST" | "DELETE";
+  method: "GET" | "POST" | "DELETE";
   path: string;
   authorization: string;
   body?: string;
@@ -70,7 +70,8 @@ function invalidResponseError(message: string): GitHubInstallationTokenError {
 }
 
 function assertSuccessStatus(response: Response, method: SendOptions["method"]): void {
-  if (response.status !== (method === "POST" ? 201 : 204)) {
+  const expected = method === "GET" ? 200 : method === "POST" ? 201 : 204;
+  if (response.status !== expected) {
     throw invalidResponseError("The GitHub API returned an unexpected success status");
   }
 }
@@ -299,6 +300,30 @@ export class GitHubInstallationTokenClient {
     this.#privateKey = parsePrivateKey(options.privateKey);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? (() => new Date());
+  }
+
+  /** Resolve the configured App's public install page without issuing an installation token. */
+  async installationUrl(signal?: AbortSignal): Promise<string> {
+    const payload = await this.#send({
+      method: "GET",
+      path: "/app",
+      authorization: `Bearer ${this.#createJwt()}`,
+      signal,
+    });
+    if (typeof payload !== "object" || payload === null) {
+      throw invalidResponseError("The GitHub App metadata is malformed");
+    }
+    const { id, slug } = payload as Record<string, unknown>;
+    if (
+      !Number.isSafeInteger(id) ||
+      String(id) !== this.#appId ||
+      typeof slug !== "string" ||
+      slug.length > 100 ||
+      !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(slug)
+    ) {
+      throw invalidResponseError("The GitHub App metadata does not match the configured App");
+    }
+    return `https://github.com/apps/${slug}/installations/new`;
   }
 
   async mint(input: MintGitHubInstallationTokenInput): Promise<MintedGitHubInstallationToken> {

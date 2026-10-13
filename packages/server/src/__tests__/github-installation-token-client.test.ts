@@ -13,6 +13,7 @@ const PRIVATE_KEY_PKCS1 = privateKey.export({ type: "pkcs1", format: "pem" }).to
 const NOW = new Date("2026-09-16T12:00:00.000Z");
 const NOW_SECONDS = Math.floor(NOW.getTime() / 1_000);
 const APP_ID = "123456";
+const CLIENT_ID = "Iv1.unit-test-client";
 const INSTALLATION_ID = "789";
 const REPOSITORY_ID = "456";
 const TOKEN = "ghs_unit_test_token";
@@ -52,6 +53,7 @@ function mintPayload(overrides: Record<string, unknown> = {}): Record<string, un
 function makeClient(fetchStub: typeof fetch, privateKeyPem = PRIVATE_KEY_PKCS8): GitHubInstallationTokenClient {
   return new GitHubInstallationTokenClient({
     appId: APP_ID,
+    clientId: CLIENT_ID,
     privateKey: privateKeyPem,
     fetch: fetchStub,
     now: () => new Date(NOW.getTime()),
@@ -103,7 +105,9 @@ describe("GitHubInstallationTokenClient", () => {
   it.each(["opentag-staging", "opentag-production", "self-hosted-app"])(
     "resolves %s from the authenticated App without minting a token",
     async (slug) => {
-      const { calls, fetchStub } = stubFetch(() => jsonResponse({ id: Number(APP_ID), slug }, 200));
+      const { calls, fetchStub } = stubFetch(() =>
+        jsonResponse({ id: Number(APP_ID), client_id: CLIENT_ID, slug }, 200),
+      );
       expect(await makeClient(fetchStub).installationUrl()).toBe(`https://github.com/apps/${slug}/installations/new`);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.url).toBe("https://api.github.com/app");
@@ -115,17 +119,50 @@ describe("GitHubInstallationTokenClient", () => {
 
   it.each([
     null,
-    { id: 999, slug: "other-app" },
-    { id: Number(APP_ID), slug: "../other" },
-    { id: Number(APP_ID), slug: "app?redirect=evil" },
-    { id: Number(APP_ID), slug: "" },
-    { id: Number(APP_ID), slug: "a".repeat(101) },
+    { id: 999, client_id: CLIENT_ID, slug: "other-app" },
+    { id: Number(APP_ID), client_id: CLIENT_ID, slug: "../other" },
+    { id: Number(APP_ID), client_id: CLIENT_ID, slug: "app?redirect=evil" },
+    { id: Number(APP_ID), client_id: CLIENT_ID, slug: "" },
+    { id: Number(APP_ID), client_id: CLIENT_ID, slug: "a".repeat(101) },
   ])("rejects mismatched or unsafe App metadata: %j", async (metadata) => {
     const { fetchStub } = stubFetch(() => jsonResponse(metadata, 200));
     await expect(makeClient(fetchStub).installationUrl()).rejects.toMatchObject({
       code: "GITHUB_API_RESPONSE_INVALID",
     });
   });
+
+  it.each([undefined, null, 123, "", "Iv1.other-app", CLIENT_ID.toLowerCase(), ` ${CLIENT_ID}`])(
+    "rejects missing, malformed, or mismatched OAuth client metadata: %j",
+    async (clientId) => {
+      const { calls, fetchStub } = stubFetch(() =>
+        jsonResponse({ id: Number(APP_ID), client_id: clientId, slug: "opentag-staging" }, 200),
+      );
+      await expect(makeClient(fetchStub).installationUrl()).rejects.toMatchObject({
+        code: "GITHUB_API_RESPONSE_INVALID",
+      });
+      expect(calls).toHaveLength(1);
+    },
+  );
+
+  it.each([undefined, null, 123, "", " ", ` ${CLIENT_ID}`, `${CLIENT_ID} `, "a".repeat(256)])(
+    "rejects invalid OAuth client configuration before a request: %j",
+    (clientId) => {
+      const { calls, fetchStub } = stubFetch(() => jsonResponse({}));
+      const error = captureError(
+        () =>
+          new GitHubInstallationTokenClient({
+            appId: APP_ID,
+            clientId: clientId as string,
+            privateKey: PRIVATE_KEY_PKCS8,
+            fetch: fetchStub,
+          }),
+      );
+      expect(error).toBeInstanceOf(GitHubInstallationTokenError);
+      expect((error as GitHubInstallationTokenError).code).toBe("GITHUB_APP_CONFIG_INVALID");
+      expect((error as Error).message).not.toContain(CLIENT_ID);
+      expect(calls).toHaveLength(0);
+    },
+  );
 
   it("mints a token scoped to exactly one repository with read permissions", async () => {
     const { calls, client } = successClient();
@@ -246,7 +283,7 @@ describe("GitHubInstallationTokenClient", () => {
       },
     ];
     for (const { options, leaked } of cases) {
-      const error = captureError(() => new GitHubInstallationTokenClient(options));
+      const error = captureError(() => new GitHubInstallationTokenClient({ clientId: CLIENT_ID, ...options }));
       expect(error).toBeInstanceOf(GitHubInstallationTokenError);
       expect((error as GitHubInstallationTokenError).code).toBe("GITHUB_APP_CONFIG_INVALID");
       expect((error as Error).message).not.toContain(leaked);

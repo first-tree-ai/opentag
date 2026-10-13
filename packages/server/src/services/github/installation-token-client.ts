@@ -288,6 +288,7 @@ function classifyHttpError(response: Response, nowSeconds: number): GitHubInstal
 
 export class GitHubInstallationTokenClient {
   readonly #appId: string;
+  readonly #clientId: string;
   readonly #privateKey: KeyObject;
   readonly #fetch: typeof fetch;
   readonly #now: () => Date;
@@ -296,7 +297,16 @@ export class GitHubInstallationTokenClient {
     if (typeof options.appId !== "string" || !DECIMAL_ID_PATTERN.test(options.appId)) {
       throw configError("The GitHub App ID must be a positive decimal identifier");
     }
+    if (
+      typeof options.clientId !== "string" ||
+      options.clientId.length === 0 ||
+      options.clientId.length > 255 ||
+      options.clientId.trim() !== options.clientId
+    ) {
+      throw configError("The GitHub App OAuth client ID must be a nonempty identifier");
+    }
     this.#appId = options.appId;
+    this.#clientId = options.clientId;
     this.#privateKey = parsePrivateKey(options.privateKey);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? (() => new Date());
@@ -313,10 +323,11 @@ export class GitHubInstallationTokenClient {
     if (typeof payload !== "object" || payload === null) {
       throw invalidResponseError("The GitHub App metadata is malformed");
     }
-    const { id, slug } = payload as Record<string, unknown>;
+    const { id, slug, client_id: clientId } = payload as Record<string, unknown>;
     if (
       !Number.isSafeInteger(id) ||
       String(id) !== this.#appId ||
+      clientId !== this.#clientId ||
       typeof slug !== "string" ||
       slug.length > 100 ||
       !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(slug)

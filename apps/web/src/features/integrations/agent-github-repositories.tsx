@@ -27,6 +27,7 @@ import {
   KumoSelectControl,
   Text,
 } from "../../ui/design-system.js";
+import { useGitHubActionFocus } from "./github-action-focus.js";
 import { GitHubInstallationActions } from "./github-installation-actions.js";
 import { type GitHubOAuthOutcome, githubOAuthOutcomeMessage, readGitHubOAuthOutcome } from "./github-oauth-outcome.js";
 
@@ -270,32 +271,39 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [workspaceAgents, setWorkspaceAgents] = useState<{ id: string; displayName: string }[]>([]);
   const [imBindingId, setImBindingId] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [action, setAction] = useState<"authorize" | "save" | "refresh" | "load-more" | null>(null);
+  const busy = action !== null;
+  const { resultRef, captureFocus } = useGitHubActionFocus(busy);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
+
+  const applyLoaded = useCallback((loaded: AgentGitHubLoaded) => {
+    setAgent(loaded.agent);
+    setView(loaded.view);
+    setWorkspaceAgents(loaded.workspaceAgents);
+    setImBindingId(loaded.imBindingId);
+    setDrafts(loaded.drafts);
+  }, []);
 
   const load = useCallback(async () => {
     setError(undefined);
     try {
       const loaded = await resolveAgentGitHub(agentId);
-      setAgent(loaded.agent);
-      setView(loaded.view);
-      setWorkspaceAgents(loaded.workspaceAgents);
-      setImBindingId(loaded.imBindingId);
-      setDrafts(loaded.drafts);
+      applyLoaded(loaded);
     } catch (cause) {
       setView({ kind: "error", message: errorMessage(cause, m.integrations_github_error_generic()) });
     }
-  }, [agentId]);
+  }, [agentId, applyLoaded]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   async function loadMore(): Promise<void> {
-    if (view.kind !== "ready" || view.nextCursor === null || loadingMore) return;
-    setLoadingMore(true);
+    if (view.kind !== "ready" || view.nextCursor === null || busy) return;
+    captureFocus();
+    setAction("load-more");
+    setMessage(m.integrations_agent_github_loading_more());
     setError(undefined);
     try {
       const page = await browserApi.githubRepositories(view.nextCursor);
@@ -306,10 +314,39 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
         nextCursor: page.nextCursor,
         truncated: view.truncated || (page.truncatedInstallations?.length ?? 0) > 0,
       });
+      setMessage(
+        m.integrations_agent_github_loaded_more({ count: String(view.repositories.length + page.repositories.length) }),
+      );
     } catch (cause) {
+      setMessage(undefined);
       setError(errorMessage(cause, m.integrations_github_error_generic()));
     } finally {
-      setLoadingMore(false);
+      setAction(null);
+    }
+  }
+
+  async function refresh(): Promise<void> {
+    if (busy) return;
+    captureFocus();
+    setAction("refresh");
+    setError(undefined);
+    setMessage(m.integrations_github_refreshing());
+    try {
+      const loaded = await resolveAgentGitHub(agentId);
+      applyLoaded(loaded);
+      setMessage(
+        loaded.view.kind === "ready"
+          ? m.integrations_agent_github_refreshed({
+              installations: String(loaded.view.installations.length),
+              repositories: String(loaded.view.repositories.length),
+            })
+          : m.integrations_github_connection_changed(),
+      );
+    } catch (cause) {
+      setMessage(undefined);
+      setError(errorMessage(cause, m.integrations_github_error_generic()));
+    } finally {
+      setAction(null);
     }
   }
 
@@ -329,7 +366,8 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
 
   async function save(): Promise<void> {
     if (view.kind !== "ready" || busy) return;
-    setBusy(true);
+    captureFocus();
+    setAction("save");
     setMessage(undefined);
     setError(undefined);
     try {
@@ -349,20 +387,22 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
     } catch (cause) {
       setError(errorMessage(cause, m.integrations_agent_github_error()));
     } finally {
-      setBusy(false);
+      setAction(null);
     }
   }
 
   function connect(intent: "create" | "reauthorize" | "replace"): void {
     if (busy) return;
-    setBusy(true);
+    captureFocus();
+    setAction("authorize");
+    setMessage(undefined);
     setError(undefined);
     void browserApi
       .startGitHubAuthorization({ intent, returnSurface: "agent-integrations", agentId })
       .then((started) => window.location.assign(started.authorizationUrl))
       .catch((cause) => {
         setError(errorMessage(cause, m.integrations_github_error_generic()));
-        setBusy(false);
+        setAction(null);
       });
   }
 
@@ -393,7 +433,7 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
         />
       ) : null}
 
-      <AgentGitHubNotice busy={busy} onConnect={connect} onRetry={() => void load()} view={view} />
+      <AgentGitHubNotice busy={busy} onConnect={connect} onRetry={() => void refresh()} view={view} />
 
       {view.kind === "ready" ? (
         <ReadyRepositories
@@ -401,13 +441,11 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
           busy={busy}
           drafts={drafts}
           imBindingId={imBindingId}
-          loadingMore={loadingMore}
+          loadingMore={action === "load-more"}
+          refreshing={action === "refresh"}
+          saving={action === "save"}
           onLoadMore={() => void loadMore()}
-          onRefresh={() => {
-            if (busy) return;
-            setBusy(true);
-            void load().finally(() => setBusy(false));
-          }}
+          onRefresh={() => void refresh()}
           onSave={() => void save()}
           onToggleRepository={toggleRepository}
           onUpdateDraft={updateDraft}
@@ -417,11 +455,17 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
         />
       ) : null}
 
-      {message ? (
-        <p className="text-sm text-kumo-success" data-ui="agent-github-message" role="status">
-          {message}
-        </p>
-      ) : null}
+      <p
+        className="text-sm text-kumo-subtle"
+        data-ui="agent-github-message"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        ref={resultRef}
+        tabIndex={-1}
+      >
+        {message}
+      </p>
       {error ? (
         <p className="text-sm text-kumo-danger" data-ui="agent-github-action-error" role="alert">
           {error}
@@ -471,7 +515,7 @@ function AgentGitHubNotice({
           {view.message}
         </Text>
         <div>
-          <Button onClick={onRetry} type="button" variant="secondary">
+          <Button disabled={busy} onClick={onRetry} type="button" variant="secondary">
             {m.common_try_again()}
           </Button>
         </div>
@@ -522,6 +566,8 @@ function ReadyRepositories({
   drafts,
   imBindingId,
   loadingMore,
+  refreshing,
+  saving,
   onLoadMore,
   onRefresh,
   onSave,
@@ -536,6 +582,8 @@ function ReadyRepositories({
   drafts: Draft[];
   imBindingId: string | undefined;
   loadingMore: boolean;
+  refreshing: boolean;
+  saving: boolean;
   onLoadMore: () => void;
   onRefresh: () => void;
   onSave: () => void;
@@ -549,6 +597,7 @@ function ReadyRepositories({
     <>
       <InstallationSummary
         busy={busy}
+        refreshing={refreshing}
         installations={view.installations}
         onRefresh={onRefresh}
         repositories={view.repositories}
@@ -579,12 +628,12 @@ function ReadyRepositories({
       )}
       <div className="flex flex-wrap items-center gap-3">
         {view.nextCursor === null ? null : (
-          <Button disabled={loadingMore} onClick={onLoadMore} type="button" variant="secondary">
+          <Button disabled={busy} onClick={onLoadMore} type="button" variant="secondary">
             {loadingMore ? m.integrations_agent_github_loading_more() : m.integrations_agent_github_load_more()}
           </Button>
         )}
         <Button disabled={busy || saveDisabled} onClick={onSave} type="button">
-          {busy ? m.integrations_agent_github_saving() : m.integrations_agent_github_save()}
+          {saving ? m.integrations_agent_github_saving() : m.integrations_agent_github_save()}
         </Button>
       </div>
     </>
@@ -593,11 +642,13 @@ function ReadyRepositories({
 
 function InstallationSummary({
   busy,
+  refreshing,
   installations,
   onRefresh,
   repositories,
 }: {
   busy: boolean;
+  refreshing: boolean;
   installations: GitHubDiscoveredInstallation[];
   onRefresh: () => void;
   repositories: GitHubDiscoveredRepository[];
@@ -627,7 +678,7 @@ function InstallationSummary({
           })}
         </ul>
       )}
-      <GitHubInstallationActions busy={busy} onRefresh={onRefresh} />
+      <GitHubInstallationActions busy={busy} refreshing={refreshing} onRefresh={onRefresh} />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Badge, Banner, Button, SettingsList, SettingsRow, StatusIndicator, Text } from "../../ui/design-system.js";
+import { useGitHubActionFocus } from "../integrations/github-action-focus.js";
 import { GitHubInstallationActions } from "../integrations/github-installation-actions.js";
 import {
   type GitHubOAuthOutcome,
@@ -75,7 +76,10 @@ function statusLabel(status: GitHubConnectionStatus["status"]): string {
 export function GitHubIntegrationSettings() {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [outcome, setOutcome] = useState<GitHubOAuthOutcome | undefined>(() => readGitHubOAuthOutcome());
-  const [busy, setBusy] = useState(false);
+  const [action, setAction] = useState<"authorize" | "disconnect" | "refresh" | null>(null);
+  const busy = action !== null;
+  const refreshing = action === "refresh";
+  const { resultRef, captureFocus } = useGitHubActionFocus(busy);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
 
@@ -92,22 +96,24 @@ export function GitHubIntegrationSettings() {
     void load();
   }, [load]);
 
-  async function run(action: () => Promise<void>): Promise<void> {
+  async function run(kind: Exclude<typeof action, null>, perform: () => Promise<void>): Promise<void> {
     if (busy) return;
-    setBusy(true);
+    captureFocus();
+    setAction(kind);
     setMessage(undefined);
     setError(undefined);
     try {
-      await action();
+      await perform();
     } catch (cause) {
+      setMessage(undefined);
       setError(actionErrorMessage(cause));
     } finally {
-      setBusy(false);
+      setAction(null);
     }
   }
 
   function connect(intent: "create" | "reauthorize" | "replace"): void {
-    void run(async () => {
+    void run("authorize", async () => {
       const started = await browserApi.startGitHubAuthorization({
         intent,
         returnSurface: "account-integrations",
@@ -118,7 +124,7 @@ export function GitHubIntegrationSettings() {
   }
 
   function disconnect(): void {
-    void run(async () => {
+    void run("disconnect", async () => {
       await browserApi.disconnectGitHub();
       setOutcome(undefined);
       setMessage(m.integrations_github_disconnected_message());
@@ -126,7 +132,20 @@ export function GitHubIntegrationSettings() {
     });
   }
 
-  const busyLabel = busy ? m.integrations_github_working() : undefined;
+  function refresh(): void {
+    void run("refresh", async () => {
+      setMessage(m.integrations_github_refreshing());
+      const next = await resolveAccountGitHubView();
+      setView(next);
+      setMessage(
+        next.kind === "active"
+          ? m.integrations_github_refreshed({ count: String(next.installations.length) })
+          : m.integrations_github_connection_changed(),
+      );
+    });
+  }
+
+  const busyLabel = action === "authorize" ? m.integrations_github_working() : undefined;
 
   return (
     <section className="grid gap-4" aria-labelledby="account-github-title" data-ui="account-github">
@@ -150,19 +169,26 @@ export function GitHubIntegrationSettings() {
 
       <AccountGitHubBody
         busy={busy}
+        refreshing={refreshing}
         busyLabel={busyLabel}
         onConnect={connect}
         onDisconnect={disconnect}
-        onRefresh={() => void run(load)}
-        onRetry={() => void load()}
+        onRefresh={refresh}
+        onRetry={refresh}
         view={view}
       />
 
-      {message ? (
-        <p className="text-sm text-kumo-success" data-ui="account-github-message" role="status">
-          {message}
-        </p>
-      ) : null}
+      <p
+        className="text-sm text-kumo-subtle"
+        data-ui="account-github-message"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        ref={resultRef}
+        tabIndex={-1}
+      >
+        {message}
+      </p>
       {error ? (
         <p className="text-sm text-kumo-danger" data-ui="account-github-action-error" role="alert">
           {error}
@@ -187,6 +213,7 @@ async function resolveAccountGitHubView(): Promise<View> {
 /** Everything below the Account GitHub heading: one mutually exclusive connection state. */
 function AccountGitHubBody({
   busy,
+  refreshing,
   busyLabel,
   onConnect,
   onDisconnect,
@@ -195,6 +222,7 @@ function AccountGitHubBody({
   view,
 }: {
   busy: boolean;
+  refreshing: boolean;
   busyLabel: string | undefined;
   onConnect: (intent: "create" | "reauthorize" | "replace") => void;
   onDisconnect: () => void;
@@ -268,6 +296,7 @@ function AccountGitHubBody({
   return (
     <ConnectionDetails
       busy={busy}
+      refreshing={refreshing}
       busyLabel={busyLabel}
       connection={view.connection}
       installations={view.kind === "active" ? view.installations : []}
@@ -291,6 +320,7 @@ function ConnectionLabel({ status }: { status: GitHubConnectionStatus["status"] 
 
 function ConnectionDetails({
   busy,
+  refreshing,
   busyLabel,
   connection,
   installations,
@@ -300,6 +330,7 @@ function ConnectionDetails({
   onReplace,
 }: {
   busy: boolean;
+  refreshing: boolean;
   busyLabel: string | undefined;
   connection: GitHubConnectionStatus;
   installations: GitHubDiscoveredInstallation[];
@@ -365,7 +396,9 @@ function ConnectionDetails({
               ))}
             </ul>
           )}
-          {connection.status === "active" ? <GitHubInstallationActions busy={busy} onRefresh={onRefresh} /> : null}
+          {connection.status === "active" ? (
+            <GitHubInstallationActions busy={busy} refreshing={refreshing} onRefresh={onRefresh} />
+          ) : null}
         </div>
       </SettingsRow>
 

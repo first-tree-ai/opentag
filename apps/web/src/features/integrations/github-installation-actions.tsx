@@ -3,7 +3,15 @@ import * as m from "../../paraglide/messages.js";
 import { Button, buttonClassName, Text } from "../../ui/design-system.js";
 
 /** Shared by the existing Account and Agent GitHub installation sections. */
-export function GitHubInstallationActions({ busy, onRefresh }: { busy: boolean; onRefresh: () => void }) {
+export function GitHubInstallationActions({
+  busy,
+  refreshing,
+  onRefresh,
+}: {
+  busy: boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
   return (
     <div className="grid gap-2">
       <Text as="p" variant="secondary">
@@ -18,8 +26,17 @@ export function GitHubInstallationActions({ busy, onRefresh }: { busy: boolean; 
         >
           {m.integrations_github_install()}
         </a>
-        <Button disabled={busy} onClick={onRefresh} variant="ghost">
-          {busy ? m.integrations_github_working() : m.integrations_github_refresh()}
+        {/* Keep keyboard focus while the parent fences duplicate requests. */}
+        <Button
+          aria-disabled={busy}
+          aria-busy={refreshing}
+          className="aria-disabled:opacity-50"
+          onClick={() => {
+            if (!busy) onRefresh();
+          }}
+          variant="ghost"
+        >
+          {refreshing ? m.integrations_github_refreshing() : m.integrations_github_refresh()}
         </Button>
       </div>
     </div>

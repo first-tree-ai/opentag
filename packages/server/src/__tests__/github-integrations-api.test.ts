@@ -10,7 +10,7 @@
  * verification on the webhook.
  */
 
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import type { GitHubIntegrationAvailability } from "@opentag/shared";
 import {
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
@@ -37,7 +37,10 @@ import { GitHubManagementService } from "../services/github/github-management-se
 import { GitHubOAuthService } from "../services/github/github-oauth-service.js";
 import { GitHubConnectionRecheckStore } from "../services/github/github-recheck-store.js";
 import { GitHubWebhookService } from "../services/github/github-webhook.js";
-import { GitHubInstallationTokenError } from "../services/github/installation-token-client.js";
+import {
+  GitHubInstallationTokenClient,
+  GitHubInstallationTokenError,
+} from "../services/github/installation-token-client.js";
 import { GitHubRepositoryAdmissionService } from "../services/github/repository-admission.js";
 import { GitHubCredentialCipher } from "../services/github-credential-material.js";
 import { signedInBrowser } from "./signed-in-browser.js";
@@ -348,6 +351,41 @@ describe("GitHub integration availability and authentication", () => {
     expect(response.statusCode).toBe(503);
     expect(response.json().error.code).toBe("GITHUB_INTEGRATION_UNAVAILABLE");
   });
+
+  it.each([undefined, "Iv1.other-app"])(
+    "refuses to redirect when authenticated App OAuth metadata is %j",
+    async (clientId) => {
+      const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2_048 });
+      const fetchApp = vi.fn<typeof fetch>(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id: Number(GITHUB_TEST_APP_ID),
+              slug: "opentag-staging",
+              client_id: clientId,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      );
+      const installation = new GitHubInstallationTokenClient({
+        appId: GITHUB_TEST_APP_ID,
+        clientId: "Iv1.configured-app",
+        privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+        fetch: fetchApp,
+      });
+      const { app } = await appFixture({ withManagement: true, installation });
+      const response = await app.inject({
+        method: "GET",
+        url: GITHUB_INTEGRATION_INSTALLATION_PATH,
+        headers: ownerHeaders(),
+      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json().error.code).toBe("GITHUB_UPSTREAM_UNAVAILABLE");
+      expect(response.headers.location).toBeUndefined();
+      expect(response.body).not.toContain("Iv1.");
+      expect(fetchApp).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     [new Error("upstream-secret-must-not-leak"), 503, "GITHUB_UPSTREAM_UNAVAILABLE"],

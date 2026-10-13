@@ -53,6 +53,7 @@ export type MintedGitHubInstallationToken = {
 
 export type GitHubInstallationTokenClientOptions = {
   appId: string;
+  clientId: string;
   privateKey: string;
   fetch?: typeof fetch;
   now?: () => Date;

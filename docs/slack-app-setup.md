@@ -153,8 +153,9 @@ Slack App**, including on servers without first-party Slack OAuth.
 3. Choose **Save and verify in Slack** once. OpenTag checks `auth.test`, actual `x-oauth-scopes` and `bots.info` to identify
    the App, Team, Bot User and Bot. It then atomically saves the existing encrypted installation and default route under
    the expected binding/generation. No configuration-method field, Bot policy field, table or migration is added.
-4. Return to Slack's App settings and verify the Events Request URL, then choose **Open Bot conversation** and send a
-   direct message. A URL challenge only verifies the Signing Secret. A matching signed event closes identity; runtime
+4. In Slack's **Event Subscriptions**, choose **Retry** if the Request URL is not verified. Once **Verified** appears,
+   choose **Save Changes**, then **Open Bot conversation** in OpenTag and send a direct message. Already verified and
+   saved settings need no repeat verification. A URL challenge only verifies the Signing Secret. A matching signed event closes identity; runtime
    handoff must also succeed before the page reports ready. Saving credentials or opening Slack alone never reports ready.
 
 The full Manifest is for a new App. For an existing App, add the displayed URL/events without overwriting its other

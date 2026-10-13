@@ -114,7 +114,7 @@
   "im_slack_unavailable": "{provider} 当前不可用。请检查连接后重试。",
   "im_slack_update_credentials": "更新凭证",
   "im_slack_update_help": "只填写发生变化的凭证，至少一项。留空保留原值；App、工作区和 Bot 身份必须保持一致。",
-  "im_slack_verify_instructions": "配置已保存。请在原 App 的 App Manifest 中验证 Request URL，然后打开 Bot 私聊并发送一条消息。",
+  "im_slack_verify_instructions": "配置已保存。请在原 App 的 Event Subscriptions 中确认 Request URL 为 Verified，再点击 Save Changes。然后打开 Bot 私聊并发送一条消息。",
   "im_slack_waiting_message": "已收到 {provider} 回调。请给 Bot 发一条私信，验证身份。",
   "im_slack_workspace_already_connected": "这个 {provider} App 已连接其他 Agent。请为当前 Agent 创建另一个 App，可以继续使用同一工作区。",
   "im_status_unavailable": "暂时无法获取消息状态",

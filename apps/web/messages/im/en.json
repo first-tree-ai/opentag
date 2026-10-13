@@ -114,7 +114,7 @@
   "im_slack_unavailable": "{provider} is unavailable right now. Check the connection and try again.",
   "im_slack_update_credentials": "Update credentials",
   "im_slack_update_help": "Enter only credentials that changed, at least one. Blank fields keep their saved values. App, workspace and Bot must stay the same.",
-  "im_slack_verify_instructions": "Configuration saved. In this App’s App Manifest, verify the Request URL. Then open the Bot conversation and send a message.",
+  "im_slack_verify_instructions": "Configuration saved. In this App’s Event Subscriptions, confirm the Request URL is Verified and choose Save Changes. Then open the Bot conversation and send a message.",
   "im_slack_waiting_message": "{provider} callback received. Send the Bot a direct message to verify its identity.",
   "im_slack_workspace_already_connected": "This {provider} App is already connected to another Agent. Create another App for this Agent; you can use the same workspace.",
   "im_status_unavailable": "Messaging status is temporarily unavailable",

@@ -7,13 +7,6 @@
 两种方式复用现有 Agent installation、加密凭证和 default route。创建 Agent 不强制绑定消息应用；
 可以选择**稍后配置**，再从消息设置连接。
 
-当前 Slack App/Team/Bot 安装。一个 Slack workspace 通过一等 OAuth 为一个
-OpenTag Agent 安装公开分发的 **@OpenTag** Bot。installation 归该 Agent 所有；V1 入站只使用其已配置的 **default** Agent
-route，否则失败关闭。
-
-已认证的 Agent 管理流程发起 OAuth，callback 创建或更新该 Agent 的 Slack installation，并设置该 Agent 的 default route。
-内部 subagent 在 Slack 中保持不可见。不再提供客户自有 Slack App、手动 token 或 Change App 路径。
-
 当前 Slack App/Team installation 绝不会被静默共享或转移给另一个 Agent。不同 Agent 声称同一 App/Team 时返回
 `SLACK_APP_TEAM_ALREADY_BOUND`，且不得产生副作用；原 owner 可以重新授权同一 installation。transfer 必须显式先
 remove/uninstall，使旧 row 保留历史 Agent owner 并进入 disabled，再由新 Agent 创建新的 current row。URL verification 与
@@ -142,7 +135,8 @@ manifest、轮换 installation 凭证代际、要求重新安装或授权、重�
 3. 点击一次**保存并前往 Slack 验证**。OpenTag 通过 `auth.test`、实际 `x-oauth-scopes` 和 `bots.info` 核验
    App、Team、Bot User、Bot，再按预期 binding/generation 原子写入现有加密 installation 和 default route。
    不新增配置方式字段、Bot 策略字段、表、列或迁移。
-4. 回到 Slack App 设置验证 Events Request URL，再点击**打开 Bot 对话**发送私聊。URL challenge 只证明
+4. 在 Slack 的 **Event Subscriptions** 中，若 Request URL 尚未验证，点击 **Retry**。显示 **Verified** 后点击
+   **Save Changes**，再回 OpenTag 点击**打开 Bot 私聊**并发送消息。已验证且保存的设置无需重复验证。URL challenge 只证明
    Signing Secret；匹配的签名真实事件闭合身份，runtime handoff 也完成后才显示就绪。保存凭证或打开 Slack 不代表就绪。
 
 完整 Manifest 只用于新 App。已有 App 按页面补充 URL/events，不覆盖其余设置；权限变化后重新安装。

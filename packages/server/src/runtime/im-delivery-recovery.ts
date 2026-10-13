@@ -1,4 +1,4 @@
-import { and, asc, eq, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { DatabaseTransaction } from "../db/client.js";
 import { agents, computers, imBindings, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
 import { type SessionService, SessionServiceError } from "../services/sessions/session-service.js";
@@ -37,9 +37,9 @@ export async function requeueSteeredDeliveries(
   targetDeliveryId: string,
   now: Date,
   sessionService: SessionEnsurer,
-): Promise<string[]> {
+): Promise<{ recoveredIds: string[]; terminalizedIds: string[] }> {
   const candidates = await readSteeredCandidates(transaction, targetDeliveryId);
-  if (candidates.length === 0) return [];
+  if (candidates.length === 0) return { recoveredIds: [], terminalizedIds: [] };
   const routes = await resolveRecoveryRoutes(transaction, candidates, now, sessionService);
   const recoveredIds: string[] = [];
   for (const [index, candidate] of candidates.entries()) {
@@ -54,7 +54,16 @@ export async function requeueSteeredDeliveries(
     );
     if (recoveredId) recoveredIds.push(recoveredId);
   }
-  return recoveredIds;
+  const rejected =
+    recoveredIds.length === 0
+      ? []
+      : await transaction
+          .select({ id: imMessageDeliveries.id })
+          .from(imMessageDeliveries)
+          .where(
+            and(inArray(imMessageDeliveries.id, recoveredIds), eq(imMessageDeliveries.state, "terminal_rejected")),
+          );
+  return { recoveredIds, terminalizedIds: rejected.map(({ id }) => id) };
 }
 
 async function readSteeredCandidates(transaction: DatabaseTransaction, targetDeliveryId: string): Promise<Candidate[]> {

@@ -49,10 +49,12 @@ export interface ImDeliveryJanitorInput {
 export async function runImDeliverySteerRecovery(
   database: DatabaseClient,
   options: Pick<ImDeliveryJanitorOptions, "clock" | "expiryBatchSize">,
+  onDeliverySettled?: (deliveryId: string) => void,
 ): Promise<void> {
   const now = options.clock();
   const sessionService = new SessionService(database);
-  await database.transaction(async (transaction) => {
+  const terminalizedIds = await database.transaction(async (transaction) => {
+    const terminalizedIds: string[] = [];
     const targets = (await transaction.execute(sql`
       select target.id as target_id
       from im_message_deliveries as target
@@ -88,9 +90,12 @@ export async function runImDeliverySteerRecovery(
       for update of target skip locked
     `)) as Array<{ target_id: string }>;
     for (const target of targets) {
-      await requeueSteeredDeliveries(transaction, target.target_id, now, sessionService);
+      const recovered = await requeueSteeredDeliveries(transaction, target.target_id, now, sessionService);
+      terminalizedIds.push(...recovered.terminalizedIds);
     }
+    return terminalizedIds;
   });
+  for (const deliveryId of terminalizedIds) onDeliverySettled?.(deliveryId);
 }
 
 export function resolveImDeliveryJanitorConfig(input: ImDeliveryJanitorInput): ImDeliveryJanitorConfig {
@@ -225,7 +230,7 @@ export async function runImDeliveryExpiry(
   options: ImDeliveryJanitorOptions,
   onDeliverySettled?: (deliveryId: string) => void,
 ): Promise<void> {
-  await runImDeliverySteerRecovery(database, options);
+  await runImDeliverySteerRecovery(database, options, onDeliverySettled);
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
   // A pending row has exactly one bounded deadline. Local rows expire at the ingress deadline.

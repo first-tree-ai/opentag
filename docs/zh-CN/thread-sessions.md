@@ -20,6 +20,8 @@ Agent 会在 managed context 中收到 provider 原生消息引用，以及针�
 
 OpenTag 会单独在直接发给 Agent 的人类消息上，用机器人自己的错误表情标记终态处理失败（Slack 使用 `warning`，飞书/Lark 使用 `CrossMark`），包括被拒绝或已过期的 delivery，以及结果为 failed 或 unknown 的 Turn report。待重试的消息、用户取消的消息和 observer copy 不会产生错误标记。重试期间保留标记；同一 provider 消息成功处理后移除标记，包括之后编辑的版本，其他消息成功不会清除它。现有的终态 delivery 和 Turn report 路径会尽力更新表情，且只移除当前机器人的错误表情。表情 API 失败时会记录日志，不另设持久化重试队列。Agent 能够回复时，仍应说明失败原因和恢复步骤。
 
+每个服务端实例最多同时执行两个表情更新任务，调用 provider 前会释放数据库连接。根 Turn 失败时，其 steered 消息会重新进入队列；如果恢复过程拒绝某条子消息，则为该消息添加自己的错误标记。根 Turn 成功后，也会清除其 steered 消息上已有的错误标记。
+
 可信 direct 连续性只来自：当前事件直接寻址 Agent、active Thread Session 过去已有 direct 入站 delivery，或 provider 提供可靠根消息标识且该入站根消息曾 direct 投递给同一 Agent 的 Channel Session。仅仅创建或唤醒 Thread Session 不会把 ambient 消息变成 direct。结束 Thread Session 后，ambient 流量和旧 root 证据都不能复活它；新的当前 direct 事件仍可创建新的 active Session。
 
 Slack 使用 `thread_ts` 同时作为稳定 thread key 和根消息标识。飞书使用 `thread_id` 作为 thread key；只有 provider 提供 `root_id` 时才使用它，绝不把 `parent_id` 猜测成根消息。同一规范化 thread 中更早的入站事件若携带可靠 root，后续事件可以复用该事实建立连续性。

@@ -492,6 +492,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult["status"] | undefined> {
+    const terminalizedIds: string[] = [];
     const status = await this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, report.deliveryId);
       if (!scope) return undefined;
@@ -512,11 +513,13 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .where(eq(imMessageDeliveries.id, report.deliveryId));
       await finishSlackWorkingTurn(transaction, report.deliveryId, this.#now());
       if (report.outcome !== "completed") {
-        await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now(), this.#sessions);
+        const recovered = await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now(), this.#sessions);
+        terminalizedIds.push(...recovered.terminalizedIds);
       }
       return "recorded" as const;
     });
     if (status === "recorded" || status === "already_recorded") this.#onDeliverySettled?.(report.deliveryId);
+    for (const deliveryId of terminalizedIds) this.#onDeliverySettled?.(deliveryId);
     return status;
   }
 

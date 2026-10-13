@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
 import { runImDeliveryExpiry } from "../runtime/im-delivery-janitor.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import { ImFailureReactions } from "../services/im/im-failure-reactions.js";
 import { createFailureReactionFixture } from "./support/failure-reaction-fixture.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -259,5 +260,169 @@ describe("best-effort message failure reactions", () => {
       onDeliverySettled,
     );
     expect(onDeliverySettled).toHaveBeenCalledExactlyOnceWith(delivery.frame.deliveryId);
+  });
+
+  it("limits an expiry burst to two reaction calls and coalesces repeat notifications", async () => {
+    const h = await fixture();
+    const deliveries = await Promise.all(Array.from({ length: 8 }, () => h.delivery()));
+    for (const { frame } of deliveries) {
+      await db.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "pending",
+          inputHash: null,
+          turnId: null,
+          reportOwnerInstanceId: null,
+          acceptedAt: null,
+          expiresAt: clock,
+        })
+        .where(eq(imMessageDeliveries.id, frame.deliveryId));
+    }
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let active = 0,
+      peak = 0;
+    h.setFailureReaction.mockImplementation(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      try {
+        await gate;
+      } finally {
+        active -= 1;
+      }
+    });
+    const transaction = vi.fn(() => {
+      throw new Error("Reaction updates must not open a transaction");
+    });
+    const database = new Proxy(db.database, {
+      get(target, property) {
+        return property === "transaction" ? transaction : Reflect.get(target, property);
+      },
+    });
+    const reactions = new ImFailureReactions({
+      database,
+      resolveAdapter: async () => h.adapter,
+      logger: { warn: h.warn },
+    });
+    try {
+      await runImDeliveryExpiry(
+        db.database,
+        {
+          clock: () => clock,
+          expiryBatchSize: 100,
+          retentionBatchSize: 100,
+          imMessagesRetentionMs: 1,
+          imMessageDeliveriesRetentionMs: 1,
+          slackWebhookReceiptsRetentionMs: 1,
+          feishuInboundReceiptsRetentionMs: 1,
+        },
+        (id) => reactions.notify(id),
+      );
+      await expect.poll(() => active).toBe(2);
+      const jobs = deliveries.flatMap(({ frame }) => [
+        reactions.sync(frame.deliveryId),
+        reactions.sync(frame.deliveryId),
+      ]);
+      expect(transaction).not.toHaveBeenCalled();
+      release();
+      await Promise.all(jobs);
+      expect(peak).toBe(2);
+      expect(h.setFailureReaction).toHaveBeenCalledTimes(deliveries.length);
+    } finally {
+      release();
+      await reactions.close();
+    }
+  });
+
+  it("repairs a delayed failure write after another replica has applied a newer success", async () => {
+    const h = await fixture(),
+      delivery = await h.delivery();
+    await h.report(delivery.frame, "failed");
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let applied: boolean | undefined;
+    h.setFailureReaction.mockImplementation(async ({ failed }) => {
+      if (failed) await gate;
+      applied = failed;
+    });
+    const replica = new ImFailureReactions({
+      database: db.database,
+      resolveAdapter: async () => h.adapter,
+      logger: { warn: h.warn },
+    });
+    const first = h.reactions.sync(delivery.frame.deliveryId);
+    try {
+      await expect.poll(() => h.setFailureReaction.mock.calls.length).toBe(1);
+      await h.report(delivery.frame, "completed");
+      await replica.sync(delivery.frame.deliveryId);
+      expect(applied).toBe(false);
+      release();
+      await first;
+      expect(applied).toBe(false);
+      expect(h.setFailureReaction.mock.calls.map(([input]) => input.failed)).toEqual([true, false, false]);
+    } finally {
+      release();
+      await first;
+      await replica.close();
+    }
+  });
+
+  it("keeps steered target updates independent when one provider call fails", async () => {
+    const h = await fixture(),
+      child = await h.delivery(),
+      root = await h.delivery();
+    await db.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "steered",
+        inputHash: "a".repeat(64),
+        turnId: null,
+        reportOwnerInstanceId: null,
+        acceptedAt: null,
+        steerTargetDeliveryId: root.frame.deliveryId,
+        steeredAt: clock,
+      })
+      .where(eq(imMessageDeliveries.id, child.frame.deliveryId));
+    await h.report(root.frame, "completed");
+    h.setFailureReaction.mockRejectedValueOnce(new Error("provider failure"));
+    await h.reactions.sync(root.frame.deliveryId);
+    expect(h.setFailureReaction).toHaveBeenCalledTimes(2);
+    expect(h.warn).toHaveBeenCalledOnce();
+  });
+
+  it("drops queued notifications and waits for active provider calls during shutdown", async () => {
+    const h = await fixture();
+    const deliveries = await Promise.all(Array.from({ length: 4 }, () => h.delivery()));
+    for (const { frame } of deliveries) await h.report(frame, "failed");
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    h.setFailureReaction.mockImplementation(async () => {
+      await gate;
+    });
+    const jobs = deliveries.map(({ frame }) => h.reactions.sync(frame.deliveryId));
+    try {
+      await expect.poll(() => h.setFailureReaction.mock.calls.length).toBe(2);
+      let closed = false;
+      const closing = h.reactions.close().then(() => {
+        closed = true;
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      release();
+      await closing;
+      await Promise.all(jobs);
+      h.reactions.notify(deliveries[0]?.frame.deliveryId ?? "closed");
+      expect(h.setFailureReaction).toHaveBeenCalledTimes(2);
+      expect(h.warn).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await h.reactions.close();
+    }
   });
 });

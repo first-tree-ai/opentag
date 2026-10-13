@@ -111,7 +111,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Disconnect Slack" })).toBeTruthy();
   });
 
-  it.each([false, true])("offers official recovery only when OAuth is available (%s)", async (available) => {
+  it.each([false, true, undefined])("offers official recovery unless OAuth is unavailable (%s)", async (available) => {
     installApi({ bound: true, provider: "slack", slackOAuthAvailable: available });
     const binding = await browserApi.imBinding(agentId);
     if (!binding) throw new Error("Missing Slack fixture");
@@ -144,7 +144,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "More Slack settings" }));
     fireEvent.click(screen.getByText("Existing App or connection help"));
-    expect(Boolean(screen.queryByRole("button", { name: /^Reauthorize with OpenTag App/ }))).toBe(available);
+    expect(Boolean(screen.queryByRole("button", { name: /^Reauthorize with OpenTag App/ }))).toBe(available !== false);
     expect(screen.getByRole("button", { name: "Update credentials" })).toBeTruthy();
   });
 

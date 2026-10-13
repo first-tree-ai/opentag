@@ -36,6 +36,14 @@ const spareComputer: AccountComputerSummary = {
   displayName: "Spare",
 };
 
+const cloudComputer: AccountComputerSummary = {
+  ...cachedComputer,
+  computerId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  kind: "cloud",
+  displayName: "Cloud",
+  platform: "linux",
+};
+
 const disconnectedComputer: AccountComputerSummary = {
   ...cachedComputer,
   connectionStatus: "disconnected",
@@ -165,5 +173,45 @@ describe("AgentComputerChoice over a cached inventory", () => {
 
     await waitFor(() => expect(rebind).toHaveBeenCalledWith(AGENT_ID, COMPUTER_ID));
     expect(rebind).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the sole Local Computer even when the Account also has a Cloud Computer", async () => {
+    const release = heldRead();
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+    renderOverCachedInventory();
+    await act(async () => release([cloudComputer, cachedComputer]));
+
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(AGENT_ID, COMPUTER_ID));
+    expect(rebind).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Cloud")).toBeNull();
+  });
+
+  it("offers only Local Computers when there is a choice", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({
+      computers: [cloudComputer, { ...cachedComputer, kind: "local" }, spareComputer],
+    });
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+    renderOverCachedInventory();
+
+    const useSpare = await screen.findByRole("button", { name: "Use this computer: Spare" });
+    expect(screen.queryByText("Cloud")).toBeNull();
+    expect(screen.getAllByRole("button", { name: /Use this computer:/ })).toHaveLength(2);
+    expect(rebind).not.toHaveBeenCalled();
+    fireEvent.click(useSpare);
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(AGENT_ID, OTHER_COMPUTER_ID));
+  });
+
+  it("offers Local enrolment and never auto-binds when only a Cloud Computer exists", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [cloudComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockReturnValue(new Promise(() => undefined));
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+    renderOverCachedInventory();
+
+    expect(
+      await screen.findByText("Paste this command into your coding assistant on the computer you’re connecting."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Cloud")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
+    expect(rebind).not.toHaveBeenCalled();
   });
 });

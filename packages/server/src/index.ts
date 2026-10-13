@@ -84,8 +84,7 @@ import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
-import { ImFailureReactionStore } from "./services/im/im-failure-reaction-store.js";
-import { ImFailureReactionWorker } from "./services/im/im-failure-reaction-worker.js";
+import { ImFailureReactions } from "./services/im/im-failure-reactions.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { SlackWorkingStore } from "./services/im/slack-working-store.js";
 import { SlackWorkingWorker, slackWorkingCredentialResolver } from "./services/im/slack-working-worker.js";
@@ -592,7 +591,9 @@ export async function startServer(): Promise<void> {
           },
         })
       : undefined;
-    const custody = new PostgresRuntimeCustodyStore(database);
+    let imFailureReactions: ImFailureReactions | undefined;
+    const onDeliverySettled = (deliveryId: string) => imFailureReactions?.notify(deliveryId);
+    const custody = new PostgresRuntimeCustodyStore(database, { onDeliverySettled });
     let cloudSessionOwner: CloudSessionCollaborationOwner | undefined;
     let imDeliveryWorker: ImDeliveryWorker | undefined;
     const cloudSessionWork = new CloudSessionWorkTracker();
@@ -922,8 +923,8 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
-    const imFailureReactionWorker = new ImFailureReactionWorker({
-      store: new ImFailureReactionStore(database),
+    imFailureReactions = new ImFailureReactions({
+      database,
       resolveAdapter: resolveImAdapter,
       logger: serviceLogger("im-failure-reactions"),
     });
@@ -1045,6 +1046,7 @@ export async function startServer(): Promise<void> {
       domain: domainOwner,
       ...workerCloudOptions(cloudDeliveryOwner, cloudAllocationPortFor(cloudRunnerRuntime, sandboxService)),
       logger: imDeliveryLogger,
+      onDeliverySettled,
       onMetric: (metric) => imDeliveryLogger.info({ metric }, "IM delivery worker metric"),
       registry,
       onDiagnostic: reportDiagnostic,
@@ -1245,7 +1247,6 @@ export async function startServer(): Promise<void> {
     approvalOwner.start();
     imDeliveryWorker.start();
     slackWorkingWorker.start();
-    imFailureReactionWorker.start();
     scheduleScheduler.start();
     sandboxIdleReclaimer?.start();
     github?.worker.start();
@@ -1269,7 +1270,6 @@ export async function startServer(): Promise<void> {
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
       await slackWorkingWorker.stop();
-      await imFailureReactionWorker.stop();
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();

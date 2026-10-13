@@ -305,11 +305,6 @@
       "idx": 60,
       "tag": "0060_cloud_billing",
       "sha256": "018448538305599eca1e725843a6cfacffba2597defd63549b4733ca9ce4d032"
-    },
-    {
-      "idx": 61,
-      "tag": "0061_im_failure_reactions",
-      "sha256": "840885d418e9d7ef0ed48becaaf53b8c01e7f69525baf116d658933b84d5172a"
     }
   ]
 }

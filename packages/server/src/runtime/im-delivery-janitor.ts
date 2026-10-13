@@ -220,7 +220,11 @@ export interface ImDeliveryJanitorOptions {
   feishuInboundReceiptsRetentionMs: number;
 }
 
-export async function runImDeliveryExpiry(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
+export async function runImDeliveryExpiry(
+  database: DatabaseClient,
+  options: ImDeliveryJanitorOptions,
+  onDeliverySettled?: (deliveryId: string) => void,
+): Promise<void> {
   await runImDeliverySteerRecovery(database, options);
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
@@ -231,7 +235,7 @@ export async function runImDeliveryExpiry(database: DatabaseClient, options: ImD
   // Accepted-unreported custody is never pending and is never expired. A missing placement or
   // Computer row fails conservative. The guard precedes the batch limit so a dispatched Cloud
   // backlog cannot starve Local expiry.
-  await database.execute(sql`
+  const expired = (await database.execute(sql`
     with expired as (
       select delivery.id
       from im_message_deliveries as delivery
@@ -265,7 +269,9 @@ export async function runImDeliveryExpiry(database: DatabaseClient, options: ImD
     set state = 'expired', reason = 'ttl'
     from expired
     where delivery.id = expired.id
-  `);
+    returning delivery.id
+  `)) as Array<{ id: string }>;
+  for (const delivery of expired) onDeliverySettled?.(delivery.id);
 }
 
 export async function runImDeliveryRetention(

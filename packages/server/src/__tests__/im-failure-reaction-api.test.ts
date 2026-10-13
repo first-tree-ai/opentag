@@ -1,8 +1,4 @@
-import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { FailureReactionTarget } from "../services/im/im-failure-reaction-store.js";
-import { ImFailureReactionWorker } from "../services/im/im-failure-reaction-worker.js";
-import { FailureReactionError } from "../services/im-bindings/failure-reaction-error.js";
 import { setFeishuFailureReaction } from "../services/im-bindings/feishu/failure-reaction.js";
 import { DefaultSlackApiClient } from "../services/im-bindings/slack/default-api-client.js";
 
@@ -114,22 +110,6 @@ describe("Slack failure reaction API", () => {
       }),
     ).resolves.toBeUndefined();
   });
-  it("preserves Slack Retry-After", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(null, {
-        status: 429,
-        headers: { "retry-after": "90" },
-      }),
-    );
-    await expect(
-      new DefaultSlackApiClient(undefined, fetchImpl).setFailureReaction({
-        token: "unit-secret",
-        channelId: "C1",
-        externalMessageId: "2.2",
-        failed: false,
-      }),
-    ).rejects.toMatchObject({ retryAfterMs: 90_000 });
-  });
   it("does not confirm an API-level failure or expose provider bodies", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -142,55 +122,5 @@ describe("Slack failure reaction API", () => {
         failed: false,
       }),
     ).rejects.toThrow("SLACK_FAILURE_REACTION_UNAVAILABLE");
-  });
-});
-
-describe("reaction worker cooldown", () => {
-  it("pauses further provider calls until Retry-After and coalesces concurrent passes", async () => {
-    let now = Date.now();
-    const target: FailureReactionTarget = {
-      id: randomUUID(),
-      bindingId: randomUUID(),
-      channelId: "C1",
-      externalMessageId: "2.2",
-      credentialGeneration: 1,
-      desired: false,
-      applied: null,
-      revision: 1,
-      failures: 0,
-      nextAttemptAt: new Date(now),
-      claimId: randomUUID(),
-      claimExpiresAt: new Date(now + 30_000),
-    };
-    const store = {
-      reconcile: vi.fn(async () => undefined),
-      claim: vi.fn<() => Promise<FailureReactionTarget | undefined>>(async () => target),
-      ownsClaim: vi.fn(async () => true),
-      settle: vi.fn(async () => undefined),
-    };
-    const setFailureReaction = vi.fn(async () => undefined).mockRejectedValueOnce(new FailureReactionError(90_000));
-    const adapter = {
-      provider: "slack" as const,
-      normalizeInbound: vi.fn(),
-      validateBinding: vi.fn(),
-      fetchResource: vi.fn(),
-      setFailureReaction,
-    };
-    const worker = new ImFailureReactionWorker({
-      store,
-      resolveAdapter: async () => adapter,
-      logger: { warn: vi.fn() },
-      now: () => now,
-    });
-    await Promise.all([worker.runOnce(), worker.runOnce()]);
-    expect(setFailureReaction).toHaveBeenCalledOnce();
-    expect(store.settle).toHaveBeenCalledWith(target, 90_000);
-    now += 89_000;
-    await worker.runOnce();
-    expect(setFailureReaction).toHaveBeenCalledOnce();
-    now += 1_001;
-    store.claim.mockResolvedValueOnce(target).mockResolvedValueOnce(undefined);
-    await worker.runOnce();
-    expect(setFailureReaction).toHaveBeenCalledTimes(2);
   });
 });

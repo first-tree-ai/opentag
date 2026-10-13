@@ -18,7 +18,7 @@ Agent 会在 managed context 中收到 provider 原生消息引用，以及针�
 
 可见 Session 在开始耗时用户任务的工作之前，先通过 provider CLI 在原始用户消息上添加一个表示“已收到，正在处理”的 emoji reaction（例如飞书 OnIt 或 provider 的等价表情）；不得使用点赞、对勾等表示认可或完成的 reaction。仅在重复确认或 observer delivery 两种情况下跳过。当消息同时投递到两个 scope 时，仅由 Thread owner 确认，Channel observer copy 从不对该消息做确认。Internal Session 不在 IM 中确认。
 
-OpenTag 会单独在直接发给 Agent 的人类消息上，用机器人自己的错误表情标记终态处理失败（Slack 使用 `warning`，飞书/Lark 使用 `CrossMark`），包括被拒绝或已过期的 delivery，以及结果为 failed 或 unknown 的 Turn report。待重试的消息、用户取消的消息和 observer copy 不会产生错误标记。重试期间保留标记；同一 provider 消息成功处理后移除标记，包括之后编辑的版本，其他消息成功不会清除它。持久化的服务端 worker 会在重启后继续重试 provider 请求和清理操作，且只移除当前机器人的错误表情。Agent 能够回复时，仍应说明失败原因和恢复步骤。
+OpenTag 会单独在直接发给 Agent 的人类消息上，用机器人自己的错误表情标记终态处理失败（Slack 使用 `warning`，飞书/Lark 使用 `CrossMark`），包括被拒绝或已过期的 delivery，以及结果为 failed 或 unknown 的 Turn report。待重试的消息、用户取消的消息和 observer copy 不会产生错误标记。重试期间保留标记；同一 provider 消息成功处理后移除标记，包括之后编辑的版本，其他消息成功不会清除它。现有的终态 delivery 和 Turn report 路径会尽力更新表情，且只移除当前机器人的错误表情。表情 API 失败时会记录日志，不另设持久化重试队列。Agent 能够回复时，仍应说明失败原因和恢复步骤。
 
 可信 direct 连续性只来自：当前事件直接寻址 Agent、active Thread Session 过去已有 direct 入站 delivery，或 provider 提供可靠根消息标识且该入站根消息曾 direct 投递给同一 Agent 的 Channel Session。仅仅创建或唤醒 Thread Session 不会把 ambient 消息变成 direct。结束 Thread Session 后，ambient 流量和旧 root 证据都不能复活它；新的当前 direct 事件仍可创建新的 active Session。
 

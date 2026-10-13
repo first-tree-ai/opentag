@@ -84,6 +84,7 @@ export interface ImDeliveryWorkerInput {
   afterClaimRowLocked?: () => Promise<void>;
   beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
   onDiagnostic?: (code: string) => void;
+  onDeliverySettled?: (deliveryId: string) => void;
   supervisor?: BackgroundFailureSupervisor;
   now?: () => Date;
   operationTimeoutMs?: number;

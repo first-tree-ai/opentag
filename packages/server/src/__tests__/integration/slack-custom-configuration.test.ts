@@ -297,7 +297,7 @@ describe("custom Slack App configuration", () => {
       database: value.database,
       imBindings: value.bindings,
       beforeConfigurationTransaction: async () => {
-        await value.service.configureOAuth(value.userId, value.first.id, {
+        await value.service.configure(value.userId, value.first.id, {
           intent: "reauthorize",
           expectedBinding: { id: first.imBindingId, credentialGeneration: first.credentialGeneration },
           appId: "A2",

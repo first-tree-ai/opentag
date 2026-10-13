@@ -119,6 +119,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   updateGitHubBindings: [{ expectedAuthorizationVersion: "1", bindings: [] }],
   disconnectGitHub: [],
   mcpServers: [],
+  mcpCatalogEndpoints: [],
   mcpServer: [ID],
   createMcpServer: [{ name: "linear", url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" }],
   updateMcpServer: [ID, { expectedRevision: 1, description: "Issue tracking" }],

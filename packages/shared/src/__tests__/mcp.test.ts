@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
-  CANVA_MCP_AUTHORIZATION_SERVER,
+  CANVA_DEVELOPER_PORTAL_MCP_URL,
   GOOGLE_WORKSPACE_MCP_ORIGINS,
-  isCanvaMcpEndpoint,
+  isCanvaDeveloperPortalMcpEndpoint,
   isGoogleWorkspaceMcpEndpoint,
+  MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
   MCP_TOOL_DESCRIPTION_MAX_BYTES,
   MCP_TOOL_INPUT_SCHEMA_MAX_BYTES,
   MCP_TOOL_NAME_MAX_BYTES,
   MCP_TOOL_SNAPSHOT_DESCRIPTION_MAX_BYTES,
+  MCPCatalogEndpointsResponseSchema,
   MCPToolSnapshotSchema,
   probedServerDescription,
 } from "../mcp.js";
@@ -181,39 +183,54 @@ describe("isGoogleWorkspaceMcpEndpoint", () => {
 });
 
 /**
- * The deployment's Canva client is offered only to Canva's own MCP origin, by the same exact-origin
- * rule as the Google allowlist.
+ * The deployment's Canva client is a Developer Portal client, so it is offered only to Canva's
+ * Developer Portal MCP origin, by the same exact-origin rule as the Google allowlist. The waitlist
+ * endpoint at `mcp.canva.com` belongs to a different authorization server and is refused.
  */
-describe("isCanvaMcpEndpoint", () => {
-  it("accepts the Canva MCP endpoint at its documented URL and any path on that origin", () => {
-    expect(isCanvaMcpEndpoint("https://mcp.canva.com/mcp")).toBe(true);
-    expect(isCanvaMcpEndpoint("https://mcp.canva.com/")).toBe(true);
-    expect(isCanvaMcpEndpoint("https://mcp.canva.com:443/mcp")).toBe(true);
-    expect(isCanvaMcpEndpoint("https://MCP.CANVA.COM/mcp")).toBe(true);
+describe("isCanvaDeveloperPortalMcpEndpoint", () => {
+  it("accepts the Developer Portal endpoint at its documented URL and any path on that origin", () => {
+    expect(isCanvaDeveloperPortalMcpEndpoint(CANVA_DEVELOPER_PORTAL_MCP_URL)).toBe(true);
+    expect(isCanvaDeveloperPortalMcpEndpoint("https://api.canva.com/")).toBe(true);
+    expect(isCanvaDeveloperPortalMcpEndpoint("https://api.canva.com:443/connect/v1/mcp")).toBe(true);
+    expect(isCanvaDeveloperPortalMcpEndpoint("https://API.CANVA.COM/connect/v1/mcp")).toBe(true);
   });
 
-  it("names the endpoint's own origin as the authorization server", () => {
-    expect(isCanvaMcpEndpoint(CANVA_MCP_AUTHORIZATION_SERVER)).toBe(true);
-  });
-
-  it("refuses a lookalike, suffixed, or sibling host", () => {
+  it("refuses the waitlist endpoint and every lookalike, suffixed, or sibling host", () => {
     for (const url of [
-      "https://mcp.canva.com.evil.example/mcp",
-      "https://evilmcp.canva.com/mcp",
-      "https://canva.com/mcp",
-      "https://www.canva.com/mcp",
-      "https://api.canva.com/mcp",
+      "https://mcp.canva.com/mcp",
+      "https://www.canva.com/connect/v1/mcp",
+      "https://api.canva.com.evil.example/connect/v1/mcp",
+      "https://evilapi.canva.com/connect/v1/mcp",
+      "https://canva.com/connect/v1/mcp",
       "https://mcp.example.com/mcp",
     ]) {
-      expect(isCanvaMcpEndpoint(url)).toBe(false);
+      expect(isCanvaDeveloperPortalMcpEndpoint(url)).toBe(false);
     }
   });
 
   it("refuses a non-HTTPS scheme, a non-default port, any userinfo, and a non-URL", () => {
-    expect(isCanvaMcpEndpoint("http://mcp.canva.com/mcp")).toBe(false);
-    expect(isCanvaMcpEndpoint("https://mcp.canva.com:8443/mcp")).toBe(false);
-    expect(isCanvaMcpEndpoint("https://user:secret@mcp.canva.com/mcp")).toBe(false);
-    expect(isCanvaMcpEndpoint("")).toBe(false);
-    expect(isCanvaMcpEndpoint("not a url")).toBe(false);
+    expect(isCanvaDeveloperPortalMcpEndpoint("http://api.canva.com/connect/v1/mcp")).toBe(false);
+    expect(isCanvaDeveloperPortalMcpEndpoint("https://api.canva.com:8443/connect/v1/mcp")).toBe(false);
+    expect(isCanvaDeveloperPortalMcpEndpoint("https://user:secret@api.canva.com/connect/v1/mcp")).toBe(false);
+    expect(isCanvaDeveloperPortalMcpEndpoint("")).toBe(false);
+    expect(isCanvaDeveloperPortalMcpEndpoint("not a url")).toBe(false);
+  });
+});
+
+describe("MCP catalog deployment endpoints", () => {
+  it("replaces only the Canva entry, with the Developer Portal endpoint", () => {
+    expect(MCP_CATALOG_DEPLOYMENT_ENDPOINTS).toEqual({ canva: CANVA_DEVELOPER_PORTAL_MCP_URL });
+  });
+
+  it("accepts an empty list and refuses unknown keys or a malformed URL", () => {
+    expect(MCPCatalogEndpointsResponseSchema.parse({ endpoints: [] })).toEqual({ endpoints: [] });
+    expect(
+      MCPCatalogEndpointsResponseSchema.safeParse({ endpoints: [{ catalogId: "canva", url: "not a url" }] }).success,
+    ).toBe(false);
+    expect(
+      MCPCatalogEndpointsResponseSchema.safeParse({
+        endpoints: [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL, secret: "x" }],
+      }).success,
+    ).toBe(false);
   });
 });

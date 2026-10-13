@@ -1,10 +1,14 @@
 import { MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPAuthKind, MCPServer } from "@opentag/shared/browser";
-import { comparableUrl } from "./catalog/mcp-catalog-model.js";
+import { catalogEntryUrls, comparableUrl } from "./catalog/mcp-catalog-model.js";
 
-/** Authentication and consent scopes require the actual endpoint, not its brand or icon match. */
+/**
+ * Authentication and consent scopes require the actual endpoint, not its brand or icon match. An
+ * entry's deployment-client endpoint is its actual endpoint too.
+ */
 export function connectionPreset(url: string): McpCatalogEntry | undefined {
-  return MCP_CATALOG_ENTRIES.find((entry) => comparableUrl(entry.url) === comparableUrl(url));
+  const target = comparableUrl(url);
+  return MCP_CATALOG_ENTRIES.find((entry) => catalogEntryUrls(entry).some((known) => comparableUrl(known) === target));
 }
 
 export function connectionAuthKind(url: string, binding?: MCPAgentServer, server?: MCPServer): MCPAuthKind {

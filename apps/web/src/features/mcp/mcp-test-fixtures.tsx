@@ -125,6 +125,7 @@ export function stub(servers: MCPAgentServer[], detailValue: MCPServerDetail = d
   vi.spyOn(browserApi, "mcpServer").mockResolvedValue(detailValue);
   vi.spyOn(browserApi, "availableMcpServers").mockResolvedValue({ servers: [] });
   vi.spyOn(browserApi, "mcpServers").mockResolvedValue({ servers: [] });
+  vi.spyOn(browserApi, "mcpCatalogEndpoints").mockResolvedValue({ endpoints: [] });
 }
 
 export function wrap(children: ReactNode): RenderResult {

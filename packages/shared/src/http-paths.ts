@@ -106,6 +106,8 @@ export const AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE = `${AGENT_MCP_AUTHORIZATION
 export const AGENT_MCP_PROBE_TEMPLATE = `${AGENT_MCP_SERVER_TEMPLATE}/probe`;
 /** A public static document describing this deployment as an OAuth client (CIMD). */
 export const MCP_CLIENT_METADATA_PATH = "/oauth/client-metadata.json";
+/** The catalog endpoints this deployment replaces because it configured a client for them. */
+export const MCP_CATALOG_ENDPOINTS_PATH = `${API_V1_PREFIX}/mcp-catalog/endpoints`;
 /*
  * Agent Skills. A Skill is owned by exactly one Agent, so every Account- and Computer-scoped path is
  * addressed under an Agent. The runtime path is session-proof authenticated and takes the Skill name
@@ -187,6 +189,7 @@ export const HTTP_PATHS = {
   mcpServers: MCP_SERVERS_PATH,
   mcpOAuthCallback: MCP_OAUTH_CALLBACK_PATH,
   mcpClientMetadata: MCP_CLIENT_METADATA_PATH,
+  mcpCatalogEndpoints: MCP_CATALOG_ENDPOINTS_PATH,
   publicSkills: PUBLIC_SKILLS_PATH,
   publicMcpServers: PUBLIC_MCP_SERVERS_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,

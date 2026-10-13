@@ -1,4 +1,4 @@
-import { MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpCatalogEntry } from "@opentag/mcp-presets";
 import { CreateMCPServerRequestSchema, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
@@ -11,6 +11,7 @@ import { closeMcpOAuthWindow, type McpOAuthWindow, prepareMcpOAuthWindow } from 
 import { useAttachMcpServer, useCreateMcpServer, useDetachMcpServer, useMcpServers } from "../mcp-queries.js";
 import type { McpReturnContext } from "../mcp-return-context.js";
 import { discardMcpSetup } from "../mcp-setup-cleanup.js";
+import { useMcpCatalogEntries } from "./mcp-catalog-entries.js";
 import { catalogFailure, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
 import { findAccountServer, findCatalogBinding, findCatalogEntryByUrl } from "./mcp-catalog-model.js";
 
@@ -31,6 +32,9 @@ const catalogAction = (binding?: MCPAgentServer): "add" | "connect" => (binding 
 export function useMcpDiscoverState(props: DiscoverProps) {
   const account = useMcpServers();
   const servers = account.data?.servers ?? [];
+  const servedCatalog = useMcpCatalogEntries();
+  // A card may still change its endpoint until the deployment's catalog endpoints have loaded.
+  const loading = account.isPending || servedCatalog.isPending;
   const create = useCreateMcpServer(props.agentId);
   const attach = useAttachMcpServer(props.agentId);
   const detach = useDetachMcpServer(props.agentId);
@@ -86,7 +90,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     restoreStarted.current = true;
     const catalog = findCatalogEntryByUrl(
       servers.find((server) => server.id === context.serverId)?.url ?? "",
-      MCP_CATALOG_ENTRIES,
+      servedCatalog.entries,
     );
     if (props.initialOutcome === "failed" && catalog) {
       setFailure({ entryId: catalog.id, phase: "error", label: m.mcp_connection_failed() });
@@ -102,7 +106,16 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     })()
       .catch((cause) => setError(actionError(cause, m.mcp_setup_cleanup_failed())))
       .finally(() => setRestoring(false));
-  }, [props.initialContext, props.initialOutcome, props.agentId, account.isPending, detach, servers, setFailure]);
+  }, [
+    props.initialContext,
+    props.initialOutcome,
+    props.agentId,
+    account.isPending,
+    servedCatalog.entries,
+    detach,
+    servers,
+    setFailure,
+  ]);
   async function discard(setup: Setup) {
     if (setup.temporary)
       await discardMcpSetup(props.agentId, setup.binding.mcpServerId, (id) => detach.mutateAsync(id));
@@ -254,6 +267,8 @@ export function useMcpDiscoverState(props: DiscoverProps) {
   }
   return {
     account,
+    catalog: servedCatalog,
+    loading,
     servers,
     error,
     notice,

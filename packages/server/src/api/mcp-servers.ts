@@ -23,9 +23,11 @@ import {
   ListAgentMCPServersResponseSchema,
   ListAvailableMCPServersResponseSchema,
   ListMCPServersResponseSchema,
+  MCP_CATALOG_ENDPOINTS_PATH,
   MCP_OAUTH_CALLBACK_PATH,
   MCP_SERVER_BY_ID_TEMPLATE,
   MCP_SERVERS_PATH,
+  MCPCatalogEndpointsResponseSchema,
   MCPProbeResponseSchema,
   MCPServerDetailSchema,
   MCPServerSchema,
@@ -70,6 +72,16 @@ export function registerMcpServerRoutes(
   const { authorization, flows, servers } = options;
 
   // ------------------------------------------------------------ Account pool
+
+  /*
+   * The catalog endpoints this deployment replaces. The Web App reads it before it creates a Server
+   * from a catalog card, so a provider whose deployment client needs another endpoint gets that one.
+   * Only the catalog ID and the endpoint are returned, never client material.
+   */
+  app.get(MCP_CATALOG_ENDPOINTS_PATH, { preHandler }, async (_request, reply) => {
+    const response = MCPCatalogEndpointsResponseSchema.parse({ endpoints: flows.catalogEndpoints() });
+    return reply.header("Cache-Control", "no-store").code(200).send(response);
+  });
 
   app.get(MCP_SERVERS_PATH, { preHandler }, async (request, reply) => {
     const response = ListMCPServersResponseSchema.parse({

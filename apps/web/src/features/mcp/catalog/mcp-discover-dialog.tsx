@@ -1,4 +1,4 @@
-import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogEntry } from "@opentag/mcp-presets";
+import { MCP_CATALOG_CATEGORIES, type McpCatalogEntry } from "@opentag/mcp-presets";
 import { useEffect, useRef, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, KumoInputControl, Loader } from "../../../ui/design-system.js";
@@ -14,9 +14,11 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
   };
   const started = useRef(false);
   useEffect(() => {
-    if (!props.initialEntry || state.account.isPending || state.account.isError || started.current) return;
+    if (!props.initialEntry || state.loading || state.account.isError || started.current) return;
     started.current = true;
-    openEntry(props.initialEntry);
+    // The entry as this deployment serves it, so a replaced endpoint applies here too.
+    const initialId = props.initialEntry.id;
+    openEntry(state.catalog.entries.find((entry) => entry.id === initialId) ?? props.initialEntry);
   });
   return (
     <Dialog
@@ -26,7 +28,7 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
       title={discoverTitle(state)}
       className="mcp-discover-dialog"
     >
-      {state.account.isPending ? <Loader /> : null}
+      {state.loading ? <Loader /> : null}
       {state.account.isError ? (
         <div className="grid gap-3">
           <Banner variant="error">{actionError(state.account.error, m.common_request_failed())}</Banner>
@@ -97,21 +99,20 @@ function DiscoverCatalog({
   useEffect(() => {
     const scroller = catalogRef.current?.closest<HTMLElement>(".ui-dialog");
     if (!scroller) return;
-    if (!state.account.isPending && props.initialContext?.scrollTop)
-      scroller.scrollTop = props.initialContext.scrollTop;
+    if (!state.loading && props.initialContext?.scrollTop) scroller.scrollTop = props.initialContext.scrollTop;
     const save = () => {
       state.view.current.scrollTop = scroller.scrollTop;
     };
     scroller.addEventListener("scroll", save);
     return () => scroller.removeEventListener("scroll", save);
-  }, [props.initialContext, state.account.isPending, state.view]);
+  }, [props.initialContext, state.loading, state.view]);
   return (
     <div
       ref={catalogRef}
       onScroll={(event) => {
         state.view.current.scrollTop = event.currentTarget.scrollTop;
       }}
-      hidden={Boolean(state.keySetup) || state.account.isPending || state.account.isError}
+      hidden={Boolean(state.keySetup) || state.loading || state.account.isError}
     >
       {state.error && !state.keySetup ? (
         <div role="alert" className="mb-4">
@@ -120,7 +121,7 @@ function DiscoverCatalog({
       ) : null}
       <McpDiscoverSource
         categories={MCP_CATALOG_CATEGORIES}
-        entries={MCP_CATALOG_ENTRIES}
+        entries={state.catalog.entries}
         servers={state.servers}
         mounted={props.mounted}
         busy={state.catalogBusy}

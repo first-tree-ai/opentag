@@ -2,6 +2,7 @@ import type {
   ListAgentMCPServersResponse,
   ListAvailableMCPServersResponse,
   MCPAgentServer,
+  MCPCatalogEndpointsResponse,
   MCPServer,
   MCPServerDetail,
 } from "@opentag/shared/browser";
@@ -24,6 +25,19 @@ export function useMcpServers() {
     ...liveResourceQueryOptions,
     queryKey: queryKeys.mcp.servers(),
     queryFn: (): Promise<{ servers: MCPServer[] }> => browserApi.mcpServers(),
+  });
+}
+
+/**
+ * The catalog endpoints this deployment replaces. They change only when the deployment's
+ * configuration changes, which needs a restart, so the read is not polled.
+ */
+const CATALOG_ENDPOINTS_STALE_TIME_MS = 5 * 60_000;
+export function useMcpCatalogEndpoints() {
+  return useQuery({
+    queryKey: queryKeys.mcp.catalogEndpoints(),
+    queryFn: (): Promise<MCPCatalogEndpointsResponse> => browserApi.mcpCatalogEndpoints(),
+    staleTime: CATALOG_ENDPOINTS_STALE_TIME_MS,
   });
 }
 

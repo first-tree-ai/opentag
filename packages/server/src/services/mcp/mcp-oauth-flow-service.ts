@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
-  CANVA_MCP_AUTHORIZATION_SERVER,
+  CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
   GOOGLE_WORKSPACE_MCP_AUTHORIZATION_SERVER,
-  isCanvaMcpEndpoint,
+  isCanvaDeveloperPortalMcpEndpoint,
   isGoogleWorkspaceMcpEndpoint,
+  MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
+  type MCPCatalogEndpoint,
 } from "@opentag/shared";
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
@@ -58,10 +60,10 @@ export interface McpOAuthFlowServiceOptions {
    */
   googleMcpClient?: { clientId: string; clientSecret: string };
   /**
-   * The deployment's pre-registered Canva OAuth client, present only when the
-   * `OPENTAG_MCP_CANVA_CLIENT_*` pair is configured. It is offered only to the Canva MCP endpoint
-   * that resolves Canva's authorization server, ahead of CIMD and dynamic registration; without it
-   * Canva keeps that automatic resolution.
+   * The deployment's Canva Developer Portal OAuth client, present only when the
+   * `OPENTAG_MCP_CANVA_CLIENT_*` pair is configured. It is offered only to the Developer Portal MCP
+   * endpoint that resolves `https://www.canva.com`. The waitlist endpoint at `mcp.canva.com` keeps its
+   * automatic resolution either way.
    */
   canvaMcpClient?: { clientId: string; clientSecret: string };
   now?: () => Date;
@@ -78,6 +80,8 @@ interface DeploymentOAuthClient {
   clientId: string;
   clientSecret: string;
   authorizationParams?: Record<string, string>;
+  /** The catalog entry whose endpoint this client requires, when it differs from the shipped one. */
+  catalogId?: string;
 }
 
 function deploymentOAuthClients(options: McpOAuthFlowServiceOptions): readonly DeploymentOAuthClient[] {
@@ -93,9 +97,10 @@ function deploymentOAuthClients(options: McpOAuthFlowServiceOptions): readonly D
   }
   if (options.canvaMcpClient) {
     clients.push({
-      matchesEndpoint: isCanvaMcpEndpoint,
-      issuer: CANVA_MCP_AUTHORIZATION_SERVER,
+      matchesEndpoint: isCanvaDeveloperPortalMcpEndpoint,
+      issuer: CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER,
       ...options.canvaMcpClient,
+      catalogId: "canva",
     });
   }
   return clients;
@@ -121,6 +126,17 @@ export class McpOAuthFlowService {
     this.#now = options.now ?? (() => new Date());
     this.#oauth = options.oauth;
     this.#servers = options.servers;
+  }
+
+  /**
+   * The catalog entries whose endpoint this deployment replaces, because a configured client requires
+   * a different endpoint than the one the catalog ships. No client material is returned.
+   */
+  catalogEndpoints(): MCPCatalogEndpoint[] {
+    return this.#deploymentClients.flatMap((client) => {
+      const url = client.catalogId === undefined ? undefined : MCP_CATALOG_DEPLOYMENT_ENDPOINTS[client.catalogId];
+      return client.catalogId === undefined || url === undefined ? [] : [{ catalogId: client.catalogId, url }];
+    });
   }
 
   /**
@@ -916,11 +932,6 @@ export class McpOAuthFlowService {
     /*
      * A deployment client is resolved the same way `start` resolved it — same origin, same issuer —
      * so the callback and every refresh present the client the authorization request named.
-     *
-     * Configuring one changes the client for credentials issued before it existed: a Canva
-     * authorization obtained through CIMD then refreshes under the deployment client, Canva answers
-     * `invalid_client`, and the row is revoked so the user authorizes once more. That one-time
-     * re-authorization is the accepted cost of switching an existing deployment to a fixed client.
      */
     const deployment = this.#deploymentClient(effectiveUrl, metadata.issuer);
     if (deployment) return deployment;

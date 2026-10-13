@@ -288,8 +288,9 @@ function validateMcpGoogleClientPair(
 }
 
 /**
- * The MCP Canva client follows the same rule as the Google one: a half-configured pair fails
- * startup, while an absent pair keeps Canva on its automatic client resolution (CIMD, then DCR).
+ * The MCP Canva client is a Canva Developer Portal client. It follows the same rule as the Google
+ * one: a half-configured pair fails startup, while an absent pair keeps the catalog's Canva card on
+ * the waitlist endpoint and its automatic client resolution (CIMD, then DCR).
  */
 function validateMcpCanvaClientPair(
   value: {
@@ -307,7 +308,8 @@ function validateMcpCanvaClientPair(
 
 /**
  * The resolved MCP Canva client, spread into the config: absent unless both variables are set, in
- * which case the flow offers it to the Canva MCP endpoint whose discovery resolves Canva.
+ * which case the flow offers it to Canva's Developer Portal MCP endpoint, and the catalog's Canva
+ * card creates its Server on that endpoint.
  */
 function resolveMcpCanvaOAuth(parsed: {
   OPENTAG_MCP_CANVA_CLIENT_ID?: string | undefined;
@@ -885,10 +887,11 @@ export interface ServerConfig {
    */
   mcpGoogleOAuth?: { clientId: string; clientSecret: string };
   /**
-   * The deployment's pre-registered Canva MCP OAuth client, present only when both variables are
-   * configured together. The flow offers it only to the Canva MCP endpoint that resolves Canva's
-   * authorization server; without it, Canva keeps its automatic client resolution. The secret stays
-   * inside the flow service; it is never logged or returned.
+   * The deployment's Canva Developer Portal MCP OAuth client, present only when both variables are
+   * configured together. The flow offers it only to the Developer Portal MCP endpoint that resolves
+   * `https://www.canva.com`; without it, the catalog's Canva card keeps the waitlist endpoint and its
+   * automatic client resolution. The secret stays inside the flow service; it is never logged or
+   * returned.
    */
   mcpCanvaOAuth?: { clientId: string; clientSecret: string };
   port: number;

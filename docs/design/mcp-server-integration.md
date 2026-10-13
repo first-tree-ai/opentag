@@ -474,30 +474,40 @@ the variables takes effect immediately and leaves nothing to clean up.
 
 #### The deployment Canva client
 
-Canva's authorization server (`https://mcp.canva.com`) supports a client metadata document and
-dynamic registration, so Canva works without configuration. A deployment that wants Canva to use a
-fixed OAuth client configures `OPENTAG_MCP_CANVA_CLIENT_ID` and `OPENTAG_MCP_CANVA_CLIENT_SECRET` —
-both together or neither; a half-configured pair fails startup. When neither is set, Canva keeps the
-automatic resolution described above (client metadata document, then dynamic registration).
-Operator setup:
+Canva serves two MCP endpoints, and they are not interchangeable:
 
-- Create the Canva integration and register
-  `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as its redirect URL. For the hosted
+| Endpoint | Authorization server | Client |
+| --- | --- | --- |
+| `https://mcp.canva.com/mcp` | `https://mcp.canva.com` | Waitlist client: a client metadata document or dynamic registration, no secret |
+| `https://api.canva.com/connect/v1/mcp` | `https://www.canva.com` | Developer Portal client: a client ID, a client secret, and redirect URLs the integration manages |
+
+The catalog ships the waitlist endpoint, which works without configuration through the automatic
+resolution above. A deployment that wants Canva to use its own Developer Portal client configures
+`OPENTAG_MCP_CANVA_CLIENT_ID` and `OPENTAG_MCP_CANVA_CLIENT_SECRET` — both together or neither; a
+half-configured pair fails startup. Operator setup:
+
+- In the Canva Developer Portal, create an app, turn on **Canva MCP** under the integration
+  methods, copy the client ID, and generate a client secret.
+- Add `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as a redirect URL. For the hosted
   deployment this is `https://app.opentag.build/api/v1/mcp-servers/oauth/callback`.
-- Allow the scopes that `https://mcp.canva.com/.well-known/oauth-protected-resource/mcp` advertises
-  in `scopes_supported`; the flow requests them when the challenge names no scope.
-- The client authenticates at Canva's token endpoint with `client_secret_basic`.
+- The flow requests the scopes that the endpoint's protected resource metadata advertises in
+  `scopes_supported`, and authenticates at Canva's token endpoint with `client_secret_basic`.
 
 The client follows the same rules as the Google client: it is resolved from configuration and never
-stored, and it is offered only when the Server's effective origin is exactly `https://mcp.canva.com`
-and the discovered issuer is exactly `https://mcp.canva.com`. It takes precedence over a
-`preregistered` row, the client metadata document, and dynamic registration.
+stored, and it is offered only when the Server's effective origin is exactly `https://api.canva.com`
+and the discovered issuer is exactly `https://www.canva.com`. The waitlist endpoint never receives
+it, so authorizations on that endpoint keep their client whether or not the pair is configured.
 
-A refresh token is bound to the client that obtained it. When the pair is configured on a deployment
-that already has Canva authorizations from the client metadata document, the next refresh of each
-one presents the fixed client, Canva answers `invalid_client`, and the authorization is revoked. Each
-affected user authorizes Canva once more. Unsetting the pair has the same one-time effect in the
-other direction.
+The catalog follows the configuration. `GET /api/v1/mcp-catalog/endpoints` returns the catalog
+entries whose endpoint the deployment replaces — `{ "catalogId": "canva", "url":
+"https://api.canva.com/connect/v1/mcp" }` when the pair is configured, and nothing otherwise — and
+never returns client material. The Web App reads it before Discover offers a card, so the Canva card
+creates its Server on the Developer Portal endpoint only when the deployment has the client for it.
+The Web App accepts only the replacement that `MCP_CATALOG_DEPLOYMENT_ENDPOINTS` names for that
+entry, and it recognizes both Canva endpoints as Canva for icons, titles, and the OAuth default. If
+the read fails, the catalog stays as shipped. A Server that an Account already created on the
+waitlist endpoint stays there; adding Canva from Discover after the pair is configured creates a new
+Server on the Developer Portal endpoint.
 
 ### The authorization round trip
 

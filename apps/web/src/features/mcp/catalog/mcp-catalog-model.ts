@@ -1,5 +1,10 @@
 import type { McpCatalogEntry, McpCatalogLocalizedText } from "@opentag/mcp-presets";
-import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
+import {
+  MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
+  type MCPAgentServer,
+  type MCPCatalogEndpoint,
+  type MCPServer,
+} from "@opentag/shared/browser";
 import { getLocale, type Locale } from "../../../i18n/locale.js";
 
 /**
@@ -25,11 +30,41 @@ export function comparableUrl(value: string): string {
   }
 }
 
+/**
+ * Every endpoint that identifies an entry: the shipped one, and the one a deployment client may
+ * require instead. A Server created on either endpoint is the same service to the reader.
+ */
+export function catalogEntryUrls(entry: McpCatalogEntry): string[] {
+  const deployment = MCP_CATALOG_DEPLOYMENT_ENDPOINTS[entry.id];
+  return deployment === undefined ? [entry.url] : [entry.url, deployment];
+}
+
 /** Match a known endpoint, allowing connection-specific query parameters and a trailing slash. */
 export function findCatalogEntryByUrl(value: string, entries: readonly McpCatalogEntry[]): McpCatalogEntry | undefined {
   const target = catalogEndpoint(value);
   if (!target) return undefined;
-  return entries.find((entry) => catalogEndpoint(entry.url) === target);
+  return entries.find((entry) => catalogEntryUrls(entry).some((url) => catalogEndpoint(url) === target));
+}
+
+/**
+ * The catalog as this deployment serves it. An entry whose endpoint the deployment replaces names
+ * the replacement, so a card creates its Server where the deployment's client works.
+ *
+ * Only the replacement the shared contract names for that entry is accepted: a response that names
+ * any other endpoint leaves the entry as shipped, so this read can never point a card at an
+ * arbitrary URL.
+ */
+export function resolveCatalogEntries(
+  entries: readonly McpCatalogEntry[],
+  endpoints: readonly MCPCatalogEndpoint[],
+): readonly McpCatalogEntry[] {
+  if (endpoints.length === 0) return entries;
+  const replaced = new Map(endpoints.map((endpoint) => [endpoint.catalogId, endpoint.url]));
+  return entries.map((entry) => {
+    const url = replaced.get(entry.id);
+    if (url === undefined || url !== MCP_CATALOG_DEPLOYMENT_ENDPOINTS[entry.id]) return entry;
+    return { ...entry, url };
+  });
 }
 
 function catalogEndpoint(value: string): string | undefined {

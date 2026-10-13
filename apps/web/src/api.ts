@@ -146,8 +146,11 @@ import {
   ListTaskRepliesResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
+  MCP_CATALOG_ENDPOINTS_PATH,
   type MCPAgentServer,
   MCPAgentServerSchema,
+  type MCPCatalogEndpointsResponse,
+  MCPCatalogEndpointsResponseSchema,
   type MCPProbeResponse,
   MCPProbeResponseSchema,
   type MCPServer,
@@ -758,6 +761,11 @@ export class BrowserApi {
    */
   mcpServers(): Promise<ListMCPServersResponse> {
     return this.request(mcpServersPath(), ListMCPServersResponseSchema);
+  }
+
+  /** The catalog endpoints this deployment replaces because it configured a client for them. */
+  mcpCatalogEndpoints(): Promise<MCPCatalogEndpointsResponse> {
+    return this.request(MCP_CATALOG_ENDPOINTS_PATH, MCPCatalogEndpointsResponseSchema);
   }
 
   mcpServer(mcpServerId: string): Promise<MCPServerDetail> {

@@ -1025,9 +1025,10 @@ export async function startServer(): Promise<void> {
        */
       googleMcpClient: config.mcpGoogleOAuth,
       /*
-       * The deployment's pre-registered Canva client, present only when the
-       * OPENTAG_MCP_CANVA_CLIENT_* pair is configured. The same origin and issuer checks apply, and
-       * without it Canva keeps its automatic client resolution (CIMD, then dynamic registration).
+       * The deployment's Canva Developer Portal client, present only when the
+       * OPENTAG_MCP_CANVA_CLIENT_* pair is configured. The flow offers it only to the Developer
+       * Portal endpoint that resolves Canva's issuer, and it also makes the catalog's Canva card
+       * create its Server on that endpoint.
        */
       canvaMcpClient: config.mcpCanvaOAuth,
     });

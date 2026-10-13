@@ -797,19 +797,52 @@ export function isGoogleWorkspaceMcpEndpoint(url: string): boolean {
 }
 
 /**
- * The Canva remote MCP origin whose OAuth flow may use this deployment's pre-registered Canva
- * client. The same exact-origin rule as Google applies: a Server that merely names Canva's
- * authorization server must not receive a credential issued to this deployment's Canva client.
+ * Canva's Developer Portal MCP endpoint. Canva serves two MCP endpoints, and they are not
+ * interchangeable:
+ *
+ * - `https://mcp.canva.com/mcp` serves waitlist clients. Its authorization server is
+ *   `https://mcp.canva.com`, which accepts a client metadata document and dynamic registration.
+ *   The catalog uses it by default.
+ * - `https://api.canva.com/connect/v1/mcp` serves Developer Portal clients, which have a client ID,
+ *   a client secret, and redirect URLs that the integration manages. Its authorization server is
+ *   `https://www.canva.com`, which offers no registration mechanism.
+ *
+ * The deployment's Canva client is a Developer Portal client, so it is bound to this endpoint only.
  */
-export const CANVA_MCP_ORIGIN = "https://mcp.canva.com";
+export const CANVA_DEVELOPER_PORTAL_MCP_URL = "https://api.canva.com/connect/v1/mcp";
 
-/** Canva's authorization server, the issuer `mcp.canva.com` names in its protected resource metadata. */
-export const CANVA_MCP_AUTHORIZATION_SERVER = "https://mcp.canva.com";
+/** The authorization server that the Developer Portal endpoint names in its protected resource metadata. */
+export const CANVA_DEVELOPER_PORTAL_AUTHORIZATION_SERVER = "https://www.canva.com";
 
-/** Whether an MCP endpoint URL is on the Canva MCP origin. */
-export function isCanvaMcpEndpoint(url: string): boolean {
-  return isAllowedMcpOrigin(url, [CANVA_MCP_ORIGIN]);
+/** Whether an MCP endpoint URL is on the Canva Developer Portal MCP origin. */
+export function isCanvaDeveloperPortalMcpEndpoint(url: string): boolean {
+  return isAllowedMcpOrigin(url, [new URL(CANVA_DEVELOPER_PORTAL_MCP_URL).origin]);
 }
+
+/**
+ * The catalog entries whose endpoint a deployment client replaces, keyed by catalog entry ID.
+ *
+ * A catalog entry names the endpoint that works without configuration. When the deployment has its
+ * own client for that provider, the provider may require a different endpoint for it, and the Web App
+ * creates the Server on this one instead. Both endpoints identify the same catalog entry.
+ */
+export const MCP_CATALOG_DEPLOYMENT_ENDPOINTS: Readonly<Record<string, string>> = {
+  canva: CANVA_DEVELOPER_PORTAL_MCP_URL,
+};
+
+/** One catalog entry whose endpoint this deployment replaces, because it configured a client for it. */
+export const MCPCatalogEndpointSchema = z
+  .object({
+    catalogId: z.string().min(1).max(64),
+    url: z.string().url(),
+  })
+  .strict();
+
+/** The catalog endpoints this deployment replaces. An empty list keeps every catalog entry as shipped. */
+export const MCPCatalogEndpointsResponseSchema = z.object({ endpoints: z.array(MCPCatalogEndpointSchema) }).strict();
+
+export type MCPCatalogEndpoint = z.infer<typeof MCPCatalogEndpointSchema>;
+export type MCPCatalogEndpointsResponse = z.infer<typeof MCPCatalogEndpointsResponseSchema>;
 
 /**
  * Whether `url` is on one of `origins` exactly: HTTPS, default port, no userinfo, and no subdomain or

@@ -49,6 +49,7 @@ export interface ImDeliveryJanitorInput {
 export async function runImDeliverySteerRecovery(
   database: DatabaseClient,
   options: Pick<ImDeliveryJanitorOptions, "clock" | "expiryBatchSize">,
+  onDeliverySettled?: (deliveryId: string) => void,
 ): Promise<void> {
   const now = options.clock();
   const sessionService = new SessionService(database);
@@ -70,11 +71,11 @@ export async function runImDeliverySteerRecovery(
     limit ${options.expiryBatchSize}
   `)) as Array<{ target_id: string }>;
   for (const candidate of candidates) {
-    await database.transaction(async (transaction) => {
+    const terminalizedIds = await database.transaction(async (transaction) => {
       const lockedSessions = await lockSteeredRecoverySessions(transaction, [candidate.target_id], {
         skipLocked: true,
       });
-      if (lockedSessions.length === 0) return;
+      if (lockedSessions.length === 0) return [];
       const [target] = (await transaction.execute(sql`
         select target.id as target_id
         from im_message_deliveries as target
@@ -86,8 +87,11 @@ export async function runImDeliverySteerRecovery(
           and ${eligible}
         for update of target skip locked
       `)) as Array<{ target_id: string }>;
-      if (target) await requeueSteeredDeliveries(transaction, target.target_id, now, sessionService);
+      if (!target) return [];
+      const recovered = await requeueSteeredDeliveries(transaction, target.target_id, now, sessionService);
+      return recovered.terminalizedIds;
     });
+    for (const deliveryId of terminalizedIds) onDeliverySettled?.(deliveryId);
   }
 }
 
@@ -223,7 +227,7 @@ export async function runImDeliveryExpiry(
   options: ImDeliveryJanitorOptions,
   onDeliverySettled?: (deliveryId: string) => void,
 ): Promise<void> {
-  await runImDeliverySteerRecovery(database, options);
+  await runImDeliverySteerRecovery(database, options, onDeliverySettled);
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
   // A pending row has exactly one bounded deadline. Local rows expire at the ingress deadline.

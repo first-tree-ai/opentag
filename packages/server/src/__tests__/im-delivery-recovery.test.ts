@@ -309,6 +309,40 @@ describe("steered delivery recovery", () => {
     await expect(store.recordTurn(turnReport(fixture), fixture.context)).resolves.toBe("recorded");
     expect([...(await deliveryRows(unit, fixture)).values()].every((row) => row.state === "pending")).toBe(true);
   });
+
+  it("notifies terminalized children after the root report commits and their root link is cleared", async () => {
+    const fixture = await seedFixture(unit),
+      settled = vi.fn();
+    await unit.database.update(agents).set({ computerId: null }).where(eq(agents.id, fixture.agentId));
+    const store = new PostgresRuntimeCustodyStore(unit.database, { now: () => NOW, onDeliverySettled: settled });
+    expect(await store.recordTurn(turnReport(fixture), fixture.context)).toBe("recorded");
+    expect(settled.mock.calls.map(([id]) => id)).toEqual(
+      expect.arrayContaining([fixture.rootDeliveryId, ...fixture.children.map(({ deliveryId }) => deliveryId)]),
+    );
+    for (const row of (await deliveryRows(unit, fixture)).values()) {
+      expect(row).toMatchObject({ state: "terminal_rejected", steerTargetDeliveryId: null });
+    }
+    settled.mockClear();
+    expect(await store.recordTurn(turnReport(fixture), fixture.context)).toBe("already_recorded");
+    expect(settled).toHaveBeenCalledExactlyOnceWith(fixture.rootDeliveryId);
+  });
+
+  it("notifies children terminalized by the janitor and does not repeat them on later sweeps", async () => {
+    const fixture = await seedFixture(unit),
+      settled = vi.fn();
+    await unit.database.update(agents).set({ computerId: null }).where(eq(agents.id, fixture.agentId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ reportedAt: NOW, turnReport: turnReport(fixture), resultHash: turnReport(fixture).resultHash })
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 }, settled);
+    expect(settled.mock.calls.map(([id]) => id).sort()).toEqual(
+      fixture.children.map(({ deliveryId }) => deliveryId).sort(),
+    );
+    settled.mockClear();
+    await runImDeliverySteerRecovery(unit.database, { clock: () => NOW, expiryBatchSize: 10 }, settled);
+    expect(settled).not.toHaveBeenCalled();
+  });
 });
 
 type ChildFixture = {
@@ -510,9 +544,10 @@ async function recover(
   fixture: Fixture,
   sessionService: ReturnType<typeof fakeSessionService>,
 ) {
-  return unitDatabase.database.transaction((transaction) =>
+  const result = await unitDatabase.database.transaction((transaction) =>
     requeueSteeredDeliveries(transaction, fixture.rootDeliveryId, fixture.now, sessionService as never),
   );
+  return result.recoveredIds;
 }
 
 async function deliveryRows(unitDatabase: UnitDatabase, fixture: Fixture) {

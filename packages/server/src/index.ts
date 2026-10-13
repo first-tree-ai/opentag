@@ -1303,6 +1303,7 @@ export async function startServer(): Promise<void> {
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
       await slackWorkingWorker.stop();
+      await imFailureReactions?.close();
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();

@@ -56,15 +56,19 @@ describe("MCP daily use", () => {
     await openTools();
     expect(await screen.findByText("No tools available")).toBeTruthy();
   });
-  it.each(["pending", "expired", "revoked", "error"] as const)(
-    "shows an authorization action for %s",
-    async (status) => {
-      stub([entry({ authorization: { ...authorization(), status } })]);
-      wrap(<McpPage agentId={AGENT_ID} />);
-      expect(await screen.findByRole("button", { name: "Reconnect" })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
-    },
-  );
+  it.each([
+    ["pending", "Authorization incomplete"],
+    ["expired", "Authorization expired"],
+    ["revoked", "Authorization revoked"],
+    ["error", "Authorization issue"],
+  ] as const)("shows an authorization action for %s", async (status, reason) => {
+    stub([entry({ authorization: { ...authorization(), status } })]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    expect(await screen.findByRole("button", { name: "Reconnect" })).toBeTruthy();
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(screen.queryByText("Not connected")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
+  });
   it("does not turn a disabled connection into an authorization error", async () => {
     stub([entry({ enabled: false, authorization: null, snapshot: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
@@ -102,7 +106,7 @@ describe("MCP daily use", () => {
       }),
     ).toBeTruthy();
   });
-  it("offers Retry for a probe failure without asking for credentials", async () => {
+  it("offers Reconnect for a probe failure without asking for credentials", async () => {
     stub([
       entry({
         snapshot: null,
@@ -115,16 +119,17 @@ describe("MCP daily use", () => {
     ]);
     const probe = vi.spyOn(browserApi, "probeMcpServer").mockRejectedValue(new ApiError(502, "Try later"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    const retry = await screen.findByRole("button", { name: "Retry" });
+    const reconnect = await screen.findByRole("button", { name: "Reconnect" });
     expect(screen.queryByText("MCP_PROBE_FAILED: upstream limit")).toBeNull();
     const errorDetails = screen.getByRole("button", { name: /^Connection failed/, description: "View error details" });
     fireEvent.click(errorDetails);
     expect(await screen.findByText("MCP_PROBE_FAILED: upstream limit")).toBeTruthy();
     fireEvent.click(errorDetails);
-    fireEvent.click(retry);
+    fireEvent.click(reconnect);
     expect(await screen.findByText("Couldn’t connect. Try again.")).toBeTruthy();
     expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
-    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
     expect(screen.getByRole("alert").textContent).toContain("Couldn’t connect.");
   });
@@ -159,7 +164,7 @@ describe("MCP daily use", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     await screen.findByRole("button", { name: "linear" });
     expect(screen.queryByText(/\d+ tools loaded/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Tool list incomplete" })).toBeNull();
     await openTools();
     const dialog = await screen.findByRole("dialog");

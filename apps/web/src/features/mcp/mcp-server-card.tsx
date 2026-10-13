@@ -1,5 +1,5 @@
 import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
-import type { MCPAgentServer } from "@opentag/shared/browser";
+import type { MCPAgentServer, MCPAuthorizationStatus } from "@opentag/shared/browser";
 import { useId } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, Info, Loader, Popover, Switch, Text, Tooltip } from "../../ui/design-system.js";
@@ -114,13 +114,13 @@ export function McpServerCard({
           {entry.enabled && authorized && (entry.authorization?.probeState === "failed" || connectionError) ? (
             <Button
               className="px-1 text-kumo-link"
-              aria-label={m.mcp_retry()}
+              aria-label={m.mcp_reconnect()}
               disabled={connecting || probing}
               size="compact"
               variant="ghost"
               onClick={onProbe}
             >
-              {m.mcp_retry()}
+              {m.mcp_reconnect()}
             </Button>
           ) : null}
         </div>
@@ -157,11 +157,12 @@ function ToolStatus({
         {m.mcp_connecting()}
       </span>
     );
-  if (entry.authorization?.status !== "active")
+  if (!entry.authorization) return null;
+  if (entry.authorization.status !== "active")
     return (
       <span className="mcp-server-auth-status mcp-server-status flex items-center gap-2 text-sm text-kumo-subtle">
         <Info aria-hidden className="size-4 shrink-0 text-kumo-warning" />
-        {m.mcp_not_connected()}
+        {authorizationReason(entry.authorization.status)}
       </span>
     );
   if (pending)
@@ -191,6 +192,18 @@ function ToolStatus({
       {m.mcp_connected()}
     </span>
   );
+}
+function authorizationReason(status: Exclude<MCPAuthorizationStatus, "active">): string {
+  switch (status) {
+    case "expired":
+      return m.mcp_authorization_expired();
+    case "revoked":
+      return m.mcp_authorization_revoked();
+    case "pending":
+      return m.mcp_authorization_incomplete();
+    case "error":
+      return m.mcp_authorization_issue();
+  }
 }
 function McpRowError({ label, error, defaultOpen = false }: { label: string; error: string; defaultOpen?: boolean }) {
   const hintId = useId();

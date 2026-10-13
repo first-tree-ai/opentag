@@ -52,6 +52,7 @@ describe("ordinary MCP Connect", () => {
     vi.spyOn(browserApi, "probeMcpServer").mockResolvedValue(ready);
     wrap(<McpPage agentId={AGENT_ID} />);
     const button = await screen.findByRole("button", { name: "Connect" });
+    expect(screen.queryByText("Not connected")).toBeNull();
     fireEvent.click(button);
     await waitFor(() => expect(authorize).toHaveBeenCalledTimes(1));
     fireEvent.click(button);
@@ -102,7 +103,7 @@ describe("ordinary MCP Connect", () => {
     stub([entry({ authorization: { ...authorization(), probeState: "failed", probeError: rejection } })]);
     const probe = vi.spyOn(browserApi, "probeMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect" }));
     await screen.findByRole("dialog");
     expect(keyInput().value).toBe("");
     expect(probe).not.toHaveBeenCalled();
@@ -128,9 +129,9 @@ describe("ordinary MCP Connect", () => {
       .mockResolvedValue({ ...ready, probeState: "failed", probeError: rejection, toolsCount: null });
     const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(502, "unsupported"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect" }));
     await screen.findByText("Couldn’t start sign-in. Try again.");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
     expect(probe).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -143,9 +144,9 @@ describe("ordinary MCP Connect", () => {
       .mockResolvedValueOnce({ ...ready, toolsCount: 0 })
       .mockResolvedValue(ready);
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect" }));
     await screen.findByText("This connector has no available tools.");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     await waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByText("This connector has no available tools.")).toBeNull());
   });
@@ -182,7 +183,7 @@ describe("ordinary MCP Connect", () => {
     );
     const oauth = vi.spyOn(browserApi, "startMcpOAuth");
     const view = wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect" }));
     await waitFor(() => expect(probe).toHaveBeenCalled());
     view.unmount();
     await act(async () => {
@@ -207,14 +208,14 @@ describe("ordinary MCP Connect", () => {
       return binding;
     });
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect" }));
     await screen.findByText("Couldn’t start sign-in. Try again.");
     await openDetails();
     fireEvent.click(screen.getByRole("button", { name: "Advanced settings" }));
     fireEvent.change(screen.getByLabelText("Header value"), { target: { value: "updated" } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     await waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
     expect(oauth).toHaveBeenCalledTimes(1);
   });

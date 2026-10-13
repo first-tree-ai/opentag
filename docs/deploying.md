@@ -55,6 +55,31 @@ The workflow declares a `staging` GitHub Environment so deployments appear in th
 later be given protection rules. Repository secrets remain readable from that job; moving the three secrets into the
 Environment instead also works and scopes them to Staging.
 
+## Deploy failure alerts
+
+The `Deploy Failure Alert` workflow sends one Feishu card when a run of `npm Publish`, `Deploy Staging`, or
+`Deploy Runner` ends as `failure`, `timed_out`, or `startup_failure`. Cancelled runs, skipped runs, and pull request runs
+do not send an alert. The card shows the environment (Production or Staging) in its title and color, the deploy phase,
+the failed job and step, the commit, and a link to the run.
+
+The alert does not watch `Docker`. When the Server image build fails, `Deploy Staging` fails while it waits for that
+image, and its alert names the failed Docker run as the cause. Thus one failure sends one alert.
+
+| Secret | Value | Required |
+| --- | --- | --- |
+| `FEISHU_DEPLOY_WEBHOOK_URL` | Webhook URL of a Feishu custom bot, `https://open.feishu.cn/open-apis/bot/v2/hook/...` | Yes |
+| `FEISHU_DEPLOY_WEBHOOK_SECRET` | Signing key, when the bot uses signature verification | No |
+
+If the bot uses keyword verification, use the keyword `部署失败`. Do not use an IP allowlist, because GitHub-hosted
+runners do not have fixed addresses. If the webhook URL is not set, the workflow logs a warning and sends nothing.
+
+To test the webhook, run `Deploy Failure Alert` manually from `main` with the id of any run of a watched workflow. The
+card has a `【演练】` (rehearsal) prefix, so nobody takes it for a real failure.
+
+`workflow_run` matches workflows by name, and GitHub stops a `workflow_run` chain after three levels. The alert of
+`Deploy Staging` is already at the third level (`CI` → `npm Publish` → `Deploy Staging` → alert). If you rename a watched
+workflow or add another `workflow_run` level before `Deploy Staging`, update the alert workflow too.
+
 ## CapRover App prerequisites
 
 The workflow only changes which image the App runs. Everything below is CapRover-side configuration that has to exist

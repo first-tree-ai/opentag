@@ -1,4 +1,6 @@
 name: Deploy Runner
+# The deploy failure alert reads the channel and mode from this title; keep the `·` layout.
+run-name: Deploy Runner · ${{ inputs.channel }} · ${{ inputs.version }} · ${{ inputs.mode }}
 
 on:
   workflow_dispatch:

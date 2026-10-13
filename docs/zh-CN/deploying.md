@@ -52,6 +52,30 @@ Production Server 沿用现有运维部署流程。手动 **Deploy Runner** work
 Workflow 声明了 `staging` 这个 GitHub Environment，使部署出现在仓库的 Deployments 视图中，之后也可以为它加上保护规则。
 Repository secrets 在该 job 中依然可读；把这三个 secret 改放到该 Environment 下同样可行，并能把它们限定在 Staging。
 
+## 部署失败告警
+
+当 `npm Publish`、`Deploy Staging` 或 `Deploy Runner` 的一次运行以 `failure`、`timed_out` 或 `startup_failure` 结束时，
+`Deploy Failure Alert` workflow 会发送一张飞书卡片。被取消、被跳过的运行以及 pull request 运行不会告警。卡片的标题和
+颜色区分环境（生产或预发），并列出部署阶段、失败的 job 与 step、commit，以及运行链接。
+
+告警不监听 `Docker`。Server 镜像构建失败时，`Deploy Staging` 会在等待该镜像时失败，它的告警会把失败的 Docker 运行
+标为根因。因此一次故障只发一条告警。
+
+| Secret | 值 | 是否必填 |
+| --- | --- | --- |
+| `FEISHU_DEPLOY_WEBHOOK_URL` | 飞书自定义机器人的 webhook URL，`https://open.feishu.cn/open-apis/bot/v2/hook/...` | 是 |
+| `FEISHU_DEPLOY_WEBHOOK_SECRET` | 机器人开启签名校验时的签名密钥 | 否 |
+
+如果机器人使用关键词校验，请使用关键词 `部署失败`。不要使用 IP 白名单，因为 GitHub 托管的 runner 没有固定地址。未配置
+webhook URL 时，workflow 只记录一条 warning，不发送消息。
+
+要测试 webhook，请在 `main` 上手动运行 `Deploy Failure Alert`，并填入任一被监听 workflow 的运行 id。卡片会带
+`【演练】` 前缀，避免被误认为真实故障。
+
+`workflow_run` 按名称匹配 workflow，并且 GitHub 在三层之后会停止 `workflow_run` 链。`Deploy Staging` 的告警已经处在
+第三层（`CI` → `npm Publish` → `Deploy Staging` → 告警）。重命名被监听的 workflow，或在 `Deploy Staging` 之前再加一层
+`workflow_run` 时，也要同步更新告警 workflow。
+
 ## CapRover App 前置条件
 
 Workflow 只改变 App 运行哪个镜像。以下都是首次部署前必须在 CapRover 侧完成的配置。

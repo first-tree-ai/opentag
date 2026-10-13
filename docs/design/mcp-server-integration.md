@@ -975,7 +975,7 @@ edit, and remove.
   continue following shared definitions; this UI change does not introduce connection snapshots or
   alter API, CLI, authorization-header validation, or database behavior.
 - **Remove** disconnects this Agent and drops its credential. The shared definition remains available
-  to previously added server shortcuts and the CLI's definition-management commands.
+  to the configured-connector list and the CLI's definition-management commands.
 - **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
   context to the authorization server rather than fetching the URL.
 - **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
@@ -998,15 +998,17 @@ edit, and remove.
 The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
 **Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
 **发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
-**Connector URL**, optional **Previously added connectors** shortcuts, and **Cancel / Connect**. There is
+**Connector URL**, an optional **Choose a configured connector (N)** disclosure, and **Cancel / Connect**. There is
 no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
 manual configuration, and configuration import remain implementation capabilities rather than entry
 points in this dialog.
 
-The four most recently created Account definitions appear as shortcuts. Selecting one highlights it
-and fills its URL without making a request. **View all** replaces the shortcut area with search and
-selection; choosing a result collapses it and keeps the chosen shortcut visible. Editing the URL
-clears the selection and its credential draft. Complete HTTP(S) endpoint URLs are required; only
+Configured Account definitions that are not already mounted on this Agent are available through a
+single collapsed disclosure. Opening it shows every available definition in a bounded, scrollable
+list, with a name and URL on each row. There is no search, recent shortcut grid, or View all action.
+Selecting a row fills the URL, collapses the list, and returns focus to the disclosure without making
+a request. Its label becomes **Selected: {name} · Change**, and opening it again shows the selected row.
+Editing the URL clears the selection and its credential draft. Complete HTTP(S) endpoint URLs are required; only
 outer whitespace is trimmed, and configuration snippets, commands, multiple addresses, userinfo,
 and fragments are refused. One matching definition is reused; ambiguous matches require explicit
 selection. Service names are suggested automatically, with collision handling.
@@ -1023,13 +1025,17 @@ while switching addresses discards that attempt. OAuth stores only Agent/Server 
 return view; cancellation restores this same dialog against its existing binding. Credentials remain
 strictly per Agent.
 
-The dialog is 440px wide and 352px high, bounded by the viewport with 16px margins. View all explicitly
-expands its height to 440px while keeping the header and URL field in place; choosing a server restores
-the compact height. Search results and constrained content scroll independently. Loading, API-key
-entry, errors, and changing button labels do not change the compact geometry. The opening server list
-is retained during background refreshes. Loading skeletons replace only the shortcut area, icons and
-selection marks reserve their dimensions, validation has a reserved line, and connection feedback
-has a fixed area above the footer. Only opacity transitions are used, with reduced-motion support.
+The dialog is 440px wide and bounded by the viewport with 16px margins. URL-only entry uses 256px;
+the collapsed configured-connector disclosure uses 288px regardless of the number of choices.
+Opening the list expands downward to 480px while keeping the header and URL field in place;
+selection restores the compact height. API-key entry replaces the picker and uses 336px on desktop
+or 352px at widths up to 600px; the collapsed disclosure uses 304px on those narrow viewports.
+Loading and errors retain their current step's geometry. Available
+choices exclude the bindings present when the dialog opened, so an in-progress binding does not
+remove a choice during error recovery. Validation and connection feedback share a reserved line
+below the URL, or below the key when it is present. Explicit steps animate height over 160ms,
+with reduced-motion support. The list and constrained content can scroll while the footer remains
+visible.
 
 ### Importing a Server from another client's configuration
 
@@ -1096,7 +1102,7 @@ An Agent with no Server mounted has an empty tool surface and no way in unless i
 an endpoint. The marketplace catalog closes that gap: a curated set of remote Streamable HTTP Servers
 that an Agent can add from the independent **Discover** directory.
 The page keeps one **Add custom** action in its header alongside the independent directory action.
-Add custom opens the URL-and-shortcuts dialog for empty and populated Agents alike; it has no
+Add custom opens the URL-and-configured-connectors dialog for empty and populated Agents alike; it has no
 Discover, manual-configuration, or import source switch. The standalone directory owns its add state.
 The empty state matches Skills: a centered 32px connection icon, the heading **No connectors yet**,
 and concise guidance directly on the page background. Connector choices stay in Discover; there are

@@ -3,10 +3,16 @@ import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./
 import { expect, smokeTest as test } from "./fixtures.js";
 import { binding, createAgent, mcpFixture, server } from "./mcp-browser-fixture.js";
 
-async function openAdd(page: Page, agentId: string) {
+async function openAdd(page: Page, agentId: string, locale = "en") {
   await page.goto(`/agents/${agentId}/mcp`);
-  await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
-  const dialog = page.getByRole("dialog", { name: "Add custom connector", exact: true });
+  await page
+    .getByRole("button", { name: locale === "zh" ? "自定义" : "Add custom", exact: true })
+    .first()
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: locale === "zh" ? "添加自定义连接器" : "Add custom connector",
+    exact: true,
+  });
   await expect(dialog).toBeVisible();
   return dialog;
 }
@@ -102,7 +108,8 @@ test("another Agent reuses the server and supplies its own API key", async ({ pa
   ]) {
     if (!agentId || !key) throw new Error("Missing Agent fixture");
     const dialog = await openAdd(page, agentId);
-    await dialog.getByRole("button", { name: "documents", exact: true }).click();
+    await dialog.getByRole("button", { name: "Choose a configured connector (1)", exact: true }).click();
+    await dialog.getByRole("button", { name: /documents.*https/ }).click();
     await expect(dialog.getByLabel("API key", { exact: true })).toHaveCount(0);
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     const input = dialog.getByLabel("API key", { exact: true });
@@ -118,8 +125,8 @@ test("another Agent reuses the server and supplies its own API key", async ({ pa
   }
   expect(fixture.servers).toHaveLength(1);
   const dialog = await openAdd(page, second);
-  await expect(dialog.locator(".mcp-add-tag")).toHaveCount(0);
-  await expect(dialog).not.toContainText("Or choose a connector");
+  await expect(dialog.locator(".mcp-add-picker-trigger")).toHaveCount(0);
+  await expect(dialog).not.toContainText("Choose a configured connector");
   expect((await dialog.boundingBox())?.height).toBeLessThanOrEqual(280);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
@@ -141,7 +148,7 @@ test("an empty server pool opens at the same compact size on first use and reope
   await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
   const reopened = await geometry(dialog);
   expect(reopened).toEqual(initial);
-  await expect(dialog).not.toContainText("Or choose a connector");
+  await expect(dialog).not.toContainText("Choose a configured connector");
   await dialog.getByLabel("Connector URL", { exact: true }).fill("example.com");
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(dialog.getByRole("alert")).toHaveText("Enter a complete connector URL.");
@@ -157,7 +164,7 @@ for (const { width, height } of [
   { width: 390, height: 844 },
   { width: 768, height: 900 },
 ]) {
-  test(`Add custom stays stable through loading, search, selection and authentication at ${width}x${height}`, async ({
+  test(`Add custom stays stable through loading, expansion, selection and authentication at ${width}x${height}`, async ({
     page,
   }) => {
     const agentId = await createAgent(page, "MCP layout review");
@@ -173,20 +180,16 @@ for (const { width, height } of [
     await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "Add custom connector", exact: true });
     const initial = await geometry(dialog);
-    expect(
-      await dialog.locator(".mcp-add-servers-heading > span").evaluate((heading) => {
-        const text = document.createRange();
-        text.selectNodeContents(heading);
-        return text.getClientRects().length;
-      }),
-      "the existing-server hint should stay on one line",
-    ).toBe(1);
-    const shortcuts = dialog.locator(".mcp-add-tag:visible");
-    await expect(shortcuts).toHaveCount(width <= 600 ? 2 : 4);
-    for (const shortcut of await shortcuts.all()) await expectUnclipped(shortcut);
+    const picker = dialog.getByRole("button", { name: "Choose a configured connector (8)", exact: true });
+    await expect(picker).toHaveAttribute("aria-expanded", "false");
+    await expect(dialog.locator(".mcp-add-server-row")).toHaveCount(0);
+    await expect(dialog.getByRole("textbox")).toHaveCount(1);
+    await expect(dialog.getByRole("button", { name: "Advanced settings" })).toHaveCount(0);
+    await expectUnclipped(picker);
     expect(await geometry(dialog)).toEqual(initial);
-    await page.screenshot({ path: test.info().outputPath(`mcp-shortcuts-${width}-${height}.png`) });
-    await dialog.getByRole("button", { name: "View all (8)" }).click();
+    expect(initial[0]?.height).toBeLessThanOrEqual(width <= 600 ? 304 : 288);
+    await page.screenshot({ path: test.info().outputPath(`mcp-collapsed-${width}-${height}.png`) });
+    await picker.click();
     const expanded = await geometry(dialog);
     expect(expanded.slice(1, 3)).toEqual(initial.slice(1, 3));
     expect(expanded[0]).toMatchObject({ x: initial[0]?.x, y: initial[0]?.y, width: initial[0]?.width });
@@ -208,13 +211,15 @@ for (const { width, height } of [
     await expectWithinViewport(dialog);
     await rows.first().scrollIntoViewIfNeeded();
     await expectUnclipped(rows.first());
-    await page.screenshot({ path: test.info().outputPath(`mcp-all-${width}-${height}.png`) });
-    await dialog.getByRole("textbox", { name: "Search connectors" }).fill("service-7");
+    await expect(dialog.getByRole("textbox")).toHaveCount(1);
+    await expectAccessible(page);
+    await page.screenshot({ path: test.info().outputPath(`mcp-configured-${width}-${height}.png`) });
     await dialog.getByRole("button", { name: /service-7.*https/ }).click();
-    await expect(dialog.getByRole("button", { name: "service-7", exact: true })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    const selected = dialog.getByRole("button", { name: "Selected: service-7 · Change", exact: true });
+    await expect(selected).toHaveAttribute("aria-expanded", "false");
+    await expect(selected).toBeFocused();
+    await expect(dialog.getByLabel("Connector URL", { exact: true })).toHaveValue("https://service-7.example.com/mcp");
+    await expect(dialog.locator(".mcp-add-server-row")).toHaveCount(0);
     await expect.poll(() => geometry(dialog)).toEqual(initial);
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(dialog.getByLabel("API key", { exact: true })).toBeFocused();
@@ -260,7 +265,8 @@ test("OAuth cancellation restores Add custom and retries its existing binding", 
     });
   });
   const dialog = await openAdd(page, agentId);
-  await dialog.getByRole("button", { name: "oauth-service", exact: true }).click();
+  await dialog.getByRole("button", { name: "Choose a configured connector (1)", exact: true }).click();
+  await dialog.getByRole("button", { name: /oauth-service.*https/ }).click();
   const cancellation = page.waitForEvent("popup");
   await dialog.getByRole("button", { name: "Connect", exact: true }).click();
   await (await cancellation).getByRole("link", { name: "Cancel sign-in" }).click();
@@ -281,15 +287,15 @@ test("OAuth cancellation restores Add custom and retries its existing binding", 
 });
 
 for (const width of [1440, 320]) {
-  test(`sign-in errors stay with the URL and leave saved shortcuts fully visible at ${width}px`, async ({ page }) => {
+  test(`sign-in errors stay with the URL and leave the connector picker visible at ${width}px`, async ({ page }) => {
     const agentId = await createAgent(page, "MCP sign-in feedback");
     const figma = { ...server("figma", "oauth"), url: "https://mcp.figma.com/mcp" };
     const fixture = await mcpFixture(page, [figma, { ...server("monday"), url: "https://mcp.monday.com/mcp" }]);
     fixture.failOAuth();
     await page.setViewportSize({ width, height: 720 });
     const dialog = await openAdd(page, agentId);
-    const shortcut = dialog.getByRole("button", { name: "Figma", exact: true });
-    await shortcut.click();
+    await dialog.getByRole("button", { name: "Choose a configured connector (2)", exact: true }).click();
+    await dialog.getByRole("button", { name: /Figma.*https/ }).click();
     const initial = await geometry(dialog);
     await dialog.getByRole("button", { name: "Connect", exact: true }).click();
     const error = dialog.getByRole("alert");
@@ -298,11 +304,11 @@ for (const width of [1440, 320]) {
     await expect(dialog).not.toContainText("Private upstream detail");
     expect(await geometry(dialog)).toEqual(initial);
     await expectUnclipped(error);
-    for (const tag of await dialog.locator(".mcp-add-tag").all()) await expectUnclipped(tag);
+    await expectUnclipped(dialog.getByRole("button", { name: "Selected: Figma · Change", exact: true }));
     const [inputBounds, errorBounds, tagsBounds] = await Promise.all([
       dialog.getByLabel("Connector URL", { exact: true }).boundingBox(),
       error.boundingBox(),
-      dialog.locator(".mcp-add-servers-heading").boundingBox(),
+      dialog.locator(".mcp-add-picker-trigger").boundingBox(),
     ]);
     if (!inputBounds || !errorBounds || !tagsBounds) throw new Error("Missing connection feedback layout");
     expect(errorBounds.y).toBeGreaterThanOrEqual(inputBounds.y + inputBounds.height);
@@ -315,7 +321,7 @@ for (const width of [1440, 320]) {
   });
 }
 
-test("long existing server names fit in two complete rows and mounted services are excluded", async ({ page }) => {
+test("long configured connector names wrap without clipping and mounted services are excluded", async ({ page }) => {
   const agentId = await createAgent(page, "MCP long server names");
   const fixture = await mcpFixture(
     page,
@@ -326,22 +332,29 @@ test("long existing server names fit in two complete rows and mounted services a
   fixture.mounts.set(agentId, [{ ...binding(saved), enabled: false }]);
   await page.setViewportSize({ width: 320, height: 480 });
   const dialog = await openAdd(page, agentId);
-  const tags = dialog.locator(".mcp-add-tag:visible");
-  await expect(tags).toHaveCount(2);
-  await expect(dialog.getByRole("button", { name: saved.name, exact: true })).toHaveCount(0);
-  await expect(tags.locator("svg, img")).toHaveCount(0);
-  const boxes = [];
-  for (const tag of await tags.all()) {
-    await expectUnclipped(tag);
-    boxes.push(await tag.boundingBox());
-  }
-  expect(new Set(boxes.map((box) => box?.y)).size).toBe(2);
-  await expectUnclipped(dialog.getByRole("button", { name: "View all (5)" }));
+  const picker = dialog.getByRole("button", { name: "Choose a configured connector (5)", exact: true });
+  await expectUnclipped(picker);
+  await picker.click();
+  const rows = dialog.locator(".mcp-add-server-row");
+  await expect(rows).toHaveCount(5);
+  await expect(dialog.getByRole("button", { name: new RegExp(saved.name) })).toHaveCount(0);
+  await expect(rows.locator("svg, img")).toHaveCount(0);
+  await rows.last().scrollIntoViewIfNeeded();
+  await expectUnclipped(rows.last());
+  await rows.first().scrollIntoViewIfNeeded();
+  await expectUnclipped(rows.first());
+  const choice = rows.first();
+  await choice.click();
+  const selected = dialog.getByRole("button", { name: /Selected: team-.*Change/ });
+  await expectUnclipped(selected);
+  await expect(dialog.locator(".mcp-add-server-row")).toHaveCount(0);
   await expectNoPageOverflow(page);
-  await page.screenshot({ path: test.info().outputPath("mcp-long-shortcuts-320.png") });
+  await expectAccessible(page);
+  await page.screenshot({ path: test.info().outputPath("mcp-long-selected-320.png") });
+  expect(fixture.writes).toHaveLength(0);
 });
 
-test("saved service shortcuts align consistently and keep recognizable names readable", async ({ page }) => {
+test("configured connectors keep recognizable names readable and selection can be changed", async ({ page }) => {
   const agentId = await createAgent(page, "MCP saved services");
   const saved = [
     { ...server("exa"), url: "https://mcp.exa.ai/mcp" },
@@ -354,34 +367,46 @@ test("saved service shortcuts align consistently and keep recognizable names rea
   const alreadyAdded = saved[0];
   if (!alreadyAdded) throw new Error("Missing saved service fixture");
   fixture.mounts.set(agentId, [{ ...binding(alreadyAdded), enabled: false }]);
-  for (const width of [1440, 320]) {
+  for (const { width, locale } of [
+    { width: 1440, locale: "en" },
+    { width: 320, locale: "en" },
+    { width: 320, locale: "zh" },
+  ]) {
     await page.setViewportSize({ width, height: 720 });
-    const dialog = await openAdd(page, agentId);
-    const tags = dialog.locator(".mcp-add-tag:visible");
-    await expect(tags).toHaveCount(width === 320 ? 2 : 4);
-    const viewAll = dialog.getByRole("button", { name: "View all (4)" });
-    if (width === 320) await expect(viewAll).toBeVisible();
-    else await expect(viewAll).toBeHidden();
-    const bounds = [];
-    for (const tag of await tags.all()) {
-      await expectUnclipped(tag);
-      expect(await tag.locator(".mcp-add-server-name").evaluate((name) => name.scrollWidth <= name.clientWidth)).toBe(
-        true,
-      );
-      bounds.push(await tag.boundingBox());
+    if (locale === "zh") await page.addInitScript(() => localStorage.setItem("PARAGLIDE_LOCALE", "zh"));
+    const dialog = await openAdd(page, agentId, locale);
+    const initial = await dialog.boundingBox();
+    const picker = dialog.getByRole("button", {
+      name: locale === "zh" ? "选择已配置的连接器（4）" : "Choose a configured connector (4)",
+      exact: true,
+    });
+    await expectUnclipped(picker);
+    await dialog.screenshot({ path: test.info().outputPath(`mcp-picker-${locale}-${width}.png`) });
+    await picker.click();
+    const rows = dialog.locator(".mcp-add-server-row");
+    await expect(rows).toHaveCount(4);
+    await expect(rows.locator("svg, img")).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: /Exa.*https/ })).toHaveCount(0);
+    for (const row of await rows.all()) {
+      await row.scrollIntoViewIfNeeded();
+      await expectUnclipped(row);
     }
-    expect(new Set(bounds.map((box) => box?.width)).size).toBe(1);
-    expect(new Set(bounds.map((box) => box?.height)).size).toBe(1);
-    await expect(dialog.getByRole("button", { name: "Exa", exact: true })).toHaveCount(0);
-    await expect(tags.locator("svg, img")).toHaveCount(0);
-    const choice = tags.first();
-    const beforeSelection = await geometry(dialog);
-    await choice.click();
-    await expect(choice).toHaveAttribute("aria-pressed", "true");
-    expect(await geometry(dialog)).toEqual(beforeSelection);
-    await page.screenshot({ path: test.info().outputPath(`mcp-saved-services-${width}.png`) });
-    await dialog.screenshot({ path: test.info().outputPath(`mcp-picker-${width}.png`) });
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await rows.first().scrollIntoViewIfNeeded();
+    await dialog.screenshot({ path: test.info().outputPath(`mcp-configured-services-${locale}-${width}.png`) });
+    await dialog.getByRole("button", { name: /Figma.*https/ }).click();
+    const selected = dialog.getByRole("button", {
+      name: locale === "zh" ? "已选择：Figma · 更换" : "Selected: Figma · Change",
+      exact: true,
+    });
+    await expect(selected).toBeFocused();
+    await expect.poll(() => dialog.boundingBox()).toEqual(initial);
+    await selected.click();
+    await expect(dialog.getByRole("button", { name: /Figma.*https/ })).toHaveAttribute("aria-pressed", "true");
+    await dialog.getByRole("button", { name: /monday.com.*https/ }).click();
+    await expect(dialog.getByLabel(locale === "zh" ? "连接器地址" : "Connector URL", { exact: true })).toHaveValue(
+      "https://mcp.monday.com/mcp",
+    );
+    await dialog.getByRole("button", { name: locale === "zh" ? "取消" : "Cancel", exact: true }).click();
   }
   expect(fixture.writes).toHaveLength(0);
 });

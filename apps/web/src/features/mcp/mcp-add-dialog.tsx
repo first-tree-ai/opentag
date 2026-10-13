@@ -27,18 +27,11 @@ export function serverTitle(server: MCPServer): string {
 export function McpAddDialog(props: McpAddProps) {
   const state = useMcpAddConnection(props);
   const keyRef = useRef<HTMLInputElement>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   // Keep the picker stable when an in-progress connection creates a binding or live queries refresh.
   const [mountedIds] = useState(() => new Set(props.mounted.map((entry) => entry.mcpServerId)));
   const servers = state.servers.filter((server) => !mountedIds.has(server.id));
-  const size = state.needsKey
-    ? "key"
-    : servers.length > 2
-      ? "multiple"
-      : servers.length === 2
-        ? "pair"
-        : servers.length
-          ? "single"
-          : "url";
+  const size = state.needsKey ? "key" : pickerOpen && servers.length ? "picker" : servers.length ? "single" : "url";
   // The page preloads the pool; explicit steps can resize downward without moving the opening anchor.
   const [anchor] = useState(size);
   const connectLabel =
@@ -76,7 +69,13 @@ export function McpAddDialog(props: McpAddProps) {
             />
           </Field>
           <div className="mcp-add-secondary">
-            <AddSecondary state={state} servers={servers} keyRef={keyRef} />
+            <AddSecondary
+              state={state}
+              servers={servers}
+              keyRef={keyRef}
+              pickerOpen={pickerOpen}
+              setPickerOpen={setPickerOpen}
+            />
           </div>
         </div>
         <footer className="mcp-add-footer">
@@ -103,10 +102,14 @@ function AddSecondary({
   state,
   servers,
   keyRef,
+  pickerOpen,
+  setPickerOpen,
 }: {
   state: AddState;
   servers: readonly MCPServer[];
   keyRef: RefObject<HTMLInputElement | null>;
+  pickerOpen: boolean;
+  setPickerOpen: (open: boolean) => void;
 }) {
   return (
     <>
@@ -115,12 +118,9 @@ function AddSecondary({
       {state.needsKey ? null : state.account.isPending ? (
         <div className="mcp-add-skeleton" aria-label={m.mcp_add_loading()} role="status">
           <span />
-          <span />
-          <span />
-          <span />
         </div>
       ) : servers.length ? (
-        <ServicePicker state={state} servers={servers} />
+        <ServicePicker state={state} servers={servers} open={pickerOpen} onOpenChange={setPickerOpen} />
       ) : null}
     </>
   );
@@ -180,90 +180,59 @@ function AddKeyField({ state, keyRef }: { state: AddState; keyRef: RefObject<HTM
     </Field>
   );
 }
-function ServicePicker({ state, servers }: { state: AddState; servers: readonly MCPServer[] }) {
-  const [allOpen, setAllOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const searchRef = useRef<HTMLInputElement>(null);
-  const recent = servers.slice(0, 4);
+function ServicePicker({
+  state,
+  servers,
+  open,
+  onOpenChange,
+}: {
+  state: AddState;
+  servers: readonly MCPServer[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const selected = servers.find((server) => server.id === state.selectedId);
-  const shortcuts =
-    selected && !recent.slice(0, 2).includes(selected)
-      ? [selected, ...recent.filter((server) => server.id !== selected.id).slice(0, 3)]
-      : recent;
-  const filtered = servers.filter((server) =>
-    `${serverTitle(server)} ${server.url}`.toLowerCase().includes(search.trim().toLowerCase()),
-  );
   const choose = (server: MCPServer) => {
     state.choose(server);
-    setAllOpen(false);
-    setSearch("");
+    onOpenChange(false);
+    triggerRef.current?.focus();
   };
   return (
     <>
-      <div className="mcp-add-servers-heading">
-        <span className="text-xs text-kumo-subtle">{m.mcp_add_previous()}</span>
-        {servers.length > 2 || allOpen ? (
-          <Button
-            variant="ghost"
-            size="compact"
-            className={servers.length <= 4 && !allOpen ? "mcp-add-mobile-all" : undefined}
-            disabled={state.busy}
-            aria-expanded={allOpen}
-            aria-controls="mcp-add-server-choices"
-            onClick={() => {
-              setAllOpen(!allOpen);
-              setSearch("");
-              if (!allOpen) requestAnimationFrame(() => searchRef.current?.focus());
-            }}
-          >
-            {allOpen ? m.mcp_add_show_recent() : m.mcp_add_view_all({ count: servers.length })}
-          </Button>
-        ) : null}
-      </div>
-      <div id="mcp-add-server-choices" className="mcp-add-choices">
-        {allOpen ? (
-          <>
-            <KumoInputControl
-              ref={searchRef}
-              className="w-full shrink-0"
-              aria-label={m.mcp_account_search()}
-              placeholder={m.mcp_account_search()}
-              value={search}
-              disabled={state.busy}
-              onChange={(event) => setSearch(event.target.value)}
+      <Button
+        ref={triggerRef}
+        variant="ghost"
+        size="compact"
+        className="mcp-add-picker-trigger"
+        disabled={state.busy}
+        aria-expanded={open}
+        aria-controls={open ? "mcp-add-server-choices" : undefined}
+        onClick={() => onOpenChange(!open)}
+      >
+        <Icon name={open ? "chevron-down" : "chevron-right"} className="size-3.5 shrink-0" />
+        <span
+          className={`mcp-add-picker-label${selected ? " mcp-add-picker-selected" : ""}`}
+          title={selected ? m.mcp_add_selected({ name: serverTitle(selected) }) : undefined}
+        >
+          {selected
+            ? m.mcp_add_selected({ name: serverTitle(selected) })
+            : m.mcp_add_choose_configured({ count: servers.length })}
+        </span>
+      </Button>
+      {open ? (
+        <div id="mcp-add-server-choices" className="mcp-add-results">
+          {servers.map((server) => (
+            <ServerChoice
+              key={server.id}
+              server={server}
+              selected={server.id === state.selectedId}
+              busy={state.busy}
+              onChoose={choose}
             />
-            <div className="mcp-add-results">
-              {filtered.map((server) => (
-                <ServerChoice
-                  key={server.id}
-                  server={server}
-                  selected={server.id === state.selectedId}
-                  busy={state.busy}
-                  expanded
-                  onChoose={choose}
-                />
-              ))}
-              {!filtered.length ? (
-                <p className="text-sm text-kumo-subtle" role="status">
-                  {m.mcp_add_no_results()}
-                </p>
-              ) : null}
-            </div>
-          </>
-        ) : (
-          <div className="mcp-add-tags">
-            {shortcuts.map((server) => (
-              <ServerChoice
-                key={server.id}
-                server={server}
-                selected={server.id === state.selectedId}
-                busy={state.busy}
-                onChoose={choose}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+          ))}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -272,29 +241,25 @@ function ServerChoice({
   server,
   selected,
   busy,
-  expanded = false,
   onChoose,
 }: {
   server: MCPServer;
   selected: boolean;
   busy: boolean;
-  expanded?: boolean;
   onChoose: (server: MCPServer) => void;
 }) {
   return (
     <Button
-      variant="secondary"
+      variant="ghost"
       size="compact"
-      className={expanded ? "mcp-add-server-row" : "mcp-add-tag"}
+      className="mcp-add-server-row"
       disabled={busy}
       aria-pressed={selected}
       onClick={() => onChoose(server)}
     >
       <span className="mcp-add-server-copy">
-        <span className="mcp-add-server-name" title={expanded ? undefined : serverTitle(server)}>
-          {serverTitle(server)}
-        </span>
-        {expanded ? <span className="text-xs text-kumo-subtle">{server.url}</span> : null}
+        <span className="mcp-add-server-name">{serverTitle(server)}</span>
+        <span className="text-xs text-kumo-subtle">{server.url}</span>
       </span>
     </Button>
   );

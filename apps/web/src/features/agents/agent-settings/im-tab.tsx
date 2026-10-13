@@ -152,7 +152,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 onAgentChanged={onAgentChanged}
                                 busy={feishuSetup.loading || slackConfiguration.loading}
                                 feishuBusy={feishuSetup.loading}
-                                onSlack={() => void connectSlack("reauthorize")}
+                                onSlack={agent.slackOAuthAvailable ? () => void connectSlack("reauthorize") : undefined}
                                 onFeishu={(intent, target) => {
                                   activeFeishuTriggerRef.current = target;
                                   void connectFeishu(intent);
@@ -300,7 +300,7 @@ function MessagingAppActions({
   onAgentChanged: () => void;
   busy: boolean;
   feishuBusy: boolean;
-  onSlack: () => void;
+  onSlack?: () => void;
   onFeishu: (intent: "reauthorize" | "replace", target: HTMLButtonElement) => void;
 }) {
   if (binding.provider === "slack")

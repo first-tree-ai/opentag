@@ -1,6 +1,6 @@
 import type { SlackConfigurationView } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
 import { SlackCustomApp } from "./slack-custom-app.js";
@@ -9,6 +9,7 @@ const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const bindingId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
 const clients: QueryClient[] = [];
 afterEach(() => {
+  vi.useRealTimers();
   for (const client of clients.splice(0)) client.clear();
   vi.restoreAllMocks();
 });
@@ -225,8 +226,11 @@ describe("custom Slack App flow", () => {
     const test = fixture(view);
     fireEvent.click(await screen.findByRole("button", { name: "Continue Slack setup" }));
     expect(
-      await screen.findByText("Slack callback received. Send the Bot a direct message to verify its identity."),
+      await screen.findByText(
+        "Slack callback received. Confirm Save Changes in Event Subscriptions, then send the Bot a direct message to verify its identity.",
+      ),
     ).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Slack App settings" })).toBeTruthy();
     const verified = {
       ...view,
       identityClosure: { status: "verified" as const, verifiedAt: "2026-10-12T00:02:00.000Z" },
@@ -249,5 +253,23 @@ describe("custom Slack App flow", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: "Update permissions" }));
     expect(test.onOAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("polls pending setup until ready, then stops requesting unchanged configuration", async () => {
+    const test = fixture(bound());
+    const entry = await screen.findByRole("button", { name: "Continue Slack setup" });
+    vi.useFakeTimers();
+    fireEvent.click(entry);
+    test.read.mockResolvedValue({
+      ...bound(),
+      identityClosure: { status: "verified", verifiedAt: "2026-10-12T00:02:00.000Z" },
+      handoff: { bindingState: "active", handoffReady: true },
+    });
+    await act(() => vi.advanceTimersByTimeAsync(2_100));
+    expect(screen.getByText("Slack connected. The Agent can receive messages.")).toBeTruthy();
+    const requests = test.read.mock.calls.length;
+    expect(requests).toBeGreaterThan(1);
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    expect(test.read).toHaveBeenCalledTimes(requests);
   });
 });

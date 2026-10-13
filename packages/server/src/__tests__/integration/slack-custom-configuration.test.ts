@@ -287,6 +287,35 @@ describe("custom Slack App configuration", () => {
     });
   });
 
+  it("rejects a partial update if official OAuth replaces the App during Token inspection", async () => {
+    const value = await fixture();
+    const first = await value.service.configureToken(value.userId, value.first.id, createInput());
+    const expected = await updateInput(value);
+    const staleWriter = new SlackConfigurationService({
+      api: value.api,
+      cipher: value.cipher,
+      database: value.database,
+      imBindings: value.bindings,
+      beforeConfigurationTransaction: async () => {
+        await value.service.configureOAuth(value.userId, value.first.id, {
+          intent: "reauthorize",
+          expectedBinding: { id: first.imBindingId, credentialGeneration: first.credentialGeneration },
+          appId: "A2",
+          botAccessToken: "xoxb-second",
+          signingSecret: "official-secret",
+        });
+      },
+    });
+    await expect(
+      staleWriter.configureToken(value.userId, value.first.id, { ...expected, signingSecret: "stale-secret" }),
+    ).rejects.toMatchObject({ code: "SLACK_CONFIGURATION_CONFLICT" });
+    expect(await readSlackConfigurationMaterial(value.database, value.cipher, value.first.id)).toMatchObject({
+      appId: "A2",
+      botAccessToken: "xoxb-second",
+      signingSecret: "official-secret",
+    });
+  });
+
   it("derives recovery from current official Secret without storing provenance", async () => {
     const value = await fixture();
     await value.service.configureToken(value.userId, value.first.id, createInput());

@@ -99,6 +99,7 @@ export class SlackConfigurationService {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const installation = await this.#inspect(input.botAccessToken);
     this.#validateInstallation(input.appId, installation);
+    this.#validateScopes(installation);
     return this.#activate(callerUserId, agentId, input, installation);
   }
 
@@ -220,7 +221,6 @@ export class SlackConfigurationService {
         signingSecret,
       },
       installation,
-      previous,
     );
   }
 
@@ -247,7 +247,6 @@ export class SlackConfigurationService {
     agentId: string,
     input: SlackOAuthActivationInput,
     installation: SlackInstallationInspection,
-    previous?: SlackInstallationIngress,
   ): Promise<SlackConfigurationResult> {
     // Profile enrichment must never prevent a valid installation from connecting.
     let profile: SlackBindingActivation["profile"];
@@ -288,19 +287,6 @@ export class SlackConfigurationService {
         );
       }
       this.#validateIntent(input, configuredCurrent);
-      if (
-        previous &&
-        (!configuredCurrent ||
-          configuredCurrent.externalAppId !== previous.appId ||
-          configuredCurrent.externalTeamId !== previous.teamId ||
-          configuredCurrent.externalBotId !== previous.botUserId)
-      ) {
-        throw new SlackConfigurationServiceError(
-          "SLACK_CONFIGURATION_CONFLICT",
-          409,
-          "The Slack installation identity changed",
-        );
-      }
 
       const activation: SlackBindingActivation = {
         intent: input.intent,
@@ -381,7 +367,6 @@ export class SlackConfigurationService {
         "credential",
       );
     }
-    this.#validateScopes(installation);
   }
 
   #validateScopes(installation: SlackInstallationInspection): void {

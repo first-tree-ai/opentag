@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { browserApi } from "../api.js";
 import { App } from "../app.js";
 import { agentId, computerId, installApi, json, resetWebAppState } from "./support/app-fixtures.js";
 import { withLocaleAsync } from "./support/with-locale.js";
@@ -108,6 +109,43 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("button", { name: "Disconnect Slack" })).toBeTruthy();
+  });
+
+  it.each([false, true])("offers official recovery only when OAuth is available (%s)", async (available) => {
+    installApi({ bound: true, provider: "slack", slackOAuthAvailable: available });
+    const binding = await browserApi.imBinding(agentId);
+    if (!binding) throw new Error("Missing Slack fixture");
+    vi.spyOn(browserApi, "slackConfiguration").mockResolvedValue({
+      agentDisplayName: "Reviewer",
+      eventsUrl: "https://opentag.example/events",
+      allowedIntent: "reauthorize",
+      blockedReason: null,
+      expectedMessaging: { kind: "bound", provider: "slack", bindingId: binding.id, credentialGeneration: 1 },
+      preferredRecovery: "credentials",
+      binding: {
+        ...binding,
+        identity: {
+          provider: "slack",
+          appId: "A1",
+          teamId: "T1",
+          botUserId: "U1",
+          enterpriseId: null,
+          appIdEvidence: "configured",
+        },
+        credentialGeneration: 1,
+        grantedCapabilities: [],
+        reauthorizationRequired: false,
+        lastErrorCode: null,
+      },
+      identityClosure: { status: "verified", verifiedAt: "2026-08-20T00:00:00.000Z" },
+      handoff: { bindingState: "active", handoffReady: true },
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "More Slack settings" }));
+    fireEvent.click(screen.getByText("Existing App or connection help"));
+    expect(Boolean(screen.queryByRole("button", { name: /^Reauthorize with OpenTag App/ }))).toBe(available);
+    expect(screen.getByRole("button", { name: "Update credentials" })).toBeTruthy();
   });
 
   it("spaces a brand name correctly when the page itself renders in Chinese", async () => {

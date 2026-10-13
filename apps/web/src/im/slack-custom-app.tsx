@@ -43,7 +43,7 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
     queryKey: ["slack-configuration", agentId, bindingId],
     queryFn: () => browserApi.slackConfiguration(agentId),
     retry: false,
-    refetchInterval: open && !editing ? 2_000 : false,
+    refetchInterval: (query) => (open && !editing && query.state.data?.handoff?.handoffReady === false ? 2_000 : false),
     refetchIntervalInBackground: false,
   });
   const view = configuration.data;
@@ -386,7 +386,6 @@ function SlackAppStatus({
   const identity = view.binding?.identity;
   if (identity?.provider !== "slack") return null;
   const appSettings = `https://api.slack.com/apps/${encodeURIComponent(identity.appId)}/event-subscriptions`;
-  const callbackSeen = Boolean(view.binding?.lastRuntimeObservationAt);
   const pending = view.identityClosure?.status === "pending";
   return (
     <>
@@ -394,7 +393,7 @@ function SlackAppStatus({
       <span className="text-sm text-kumo-subtle">{identity.teamId}</span>
       <Banner role="status" variant="secondary" description={slackSetupStatus(view)} />
       <div className="flex flex-wrap gap-3">
-        {pending && !callbackSeen ? (
+        {pending ? (
           <a className={buttonClassName({ variant: "secondary" })} href={appSettings} target="_blank" rel="noreferrer">
             {m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })}
           </a>

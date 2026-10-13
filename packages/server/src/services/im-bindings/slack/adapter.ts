@@ -70,6 +70,12 @@ export interface SlackOAuthAccessResult {
 }
 
 export interface SlackApiClient {
+  setFailureReaction?(input: {
+    token: string;
+    channelId: string;
+    externalMessageId: string;
+    failed: boolean;
+  }): Promise<void>;
   botProfile?(token: string, botUserId: string): Promise<BotProfile>;
   botInfo?(token: string, botId: string): Promise<{ id: string; userId: string; appId: string; deleted: boolean }>;
   authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }>;
@@ -232,6 +238,11 @@ export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
       throw new Error("SLACK_BINDING_IDENTITY_MISMATCH");
     }
     return { externalAppId: this.#appId, externalTeamId: identity.teamId, externalBotId: identity.botUserId };
+  }
+
+  async setFailureReaction(input: { channelId: string; externalMessageId: string; failed: boolean }): Promise<void> {
+    if (!this.#api.setFailureReaction) throw new Error("SLACK_FAILURE_REACTION_UNSUPPORTED");
+    await this.#api.setFailureReaction({ ...input, token: this.#token });
   }
 
   normalizeInbound(

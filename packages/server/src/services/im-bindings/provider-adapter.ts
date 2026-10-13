@@ -25,4 +25,6 @@ export interface ImProviderAdapter<TVerifiedEnvelope> {
   validateBinding(input: unknown): Promise<VerifiedBotIdentity>;
   normalizeInbound(input: TVerifiedEnvelope): NormalizedInboundImEvent[];
   fetchResource(input: ProviderResourceInput): Promise<ReadableResource>;
+  /** Idempotently project the bot's failure marker without changing another participant's reactions. */
+  setFailureReaction?(input: { channelId: string; externalMessageId: string; failed: boolean }): Promise<void>;
 }

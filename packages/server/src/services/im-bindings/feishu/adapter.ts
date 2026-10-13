@@ -23,6 +23,7 @@ import type {
   ReadableResource,
   VerifiedBotIdentity,
 } from "../provider-adapter.js";
+import { setFeishuFailureReaction } from "./failure-reaction.js";
 import { feishuMessageContent } from "./message-content.js";
 
 interface FeishuRawEnvelope {
@@ -515,6 +516,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   readonly #appId: string;
   readonly #channel: FeishuChannel | undefined;
   readonly #client: Client;
+  readonly #reactionClient: (signal: AbortSignal) => Client;
   readonly #http: FeishuHttpCapability;
   readonly #scopeList: () => Promise<FeishuScopeListResponse>;
   readonly #teamId: string | null;
@@ -548,6 +550,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       httpInstance: createFeishuHttpInstance(),
     };
     this.#client = new Client(clientOptions);
+    this.#reactionClient = (signal) => new Client({ ...clientOptions, httpInstance: createFeishuHttpInstance(signal) });
     this.#scopeList = input.scopeList ?? (() => this.#client.application.v6.scope.list({}));
     this.#http =
       input.http ??
@@ -569,6 +572,20 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
             domain,
             onCardAction: input.onCardAction,
           }));
+  }
+
+  async setFailureReaction(input: { channelId: string; externalMessageId: string; failed: boolean }): Promise<void> {
+    await this.#policy.run(
+      "feishu.message.failure-reaction",
+      (signal) =>
+        setFeishuFailureReaction(
+          this.#reactionClient(signal).im.v1.messageReaction,
+          this.#appId,
+          input.externalMessageId,
+          input.failed,
+        ),
+      { circuitKey: "feishu:message-reactions", maxAttempts: 1, timeoutMs: 8_000 },
+    );
   }
 
   get channel(): FeishuChannel {

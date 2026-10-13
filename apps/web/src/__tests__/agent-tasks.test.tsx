@@ -79,20 +79,12 @@ describe("OpenTag Web App Shell", () => {
     },
   );
 
-  it("keeps Skills and Integrations reachable from the object navigation", async () => {
-    installApi({
-      internalNavigationVisibility: { integrations: true },
-      internalToolsOffered: true,
-    });
+  it("keeps Skills reachable while omitting retired Agent repository navigation", async () => {
+    installApi({ internalNavigationVisibility: { integrations: true }, internalToolsOffered: true });
     window.history.replaceState({}, "", `/agents/${agentId}/skills`);
     render(<App />);
-
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
-    fireEvent.click(await screen.findByRole("link", { name: "Integrations" }));
-    // The real GitHub repository surface now owns this route; the demo table is gone.
-    expect(await screen.findByRole("heading", { name: "GitHub repositories" })).toBeTruthy();
-    expect(screen.getByText("GitHub integration unavailable")).toBeTruthy();
-    expect(window.location.pathname).toBe(`/agents/${agentId}/integrations`);
+    expect(screen.queryByRole("link", { name: "Integrations" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   });
 

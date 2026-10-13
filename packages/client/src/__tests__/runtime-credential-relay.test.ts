@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import { RuntimeCredentialEnvironmentManager } from "../runtime/runtime-credential-environment-manager.js";
-import { runtimeProxyErrorReason } from "../runtime/runtime-credential-frames.js";
+import { parseRuntimeCredentialServerFrame, runtimeProxyErrorReason } from "../runtime/runtime-credential-frames.js";
 import {
   RuntimeCredentialRelay,
   RuntimeCredentialRelayError,
@@ -187,7 +187,7 @@ function succeededGrant(
         ? { provider: "feishu", appId: "cli-app", teamBrand: "feishu" }
         : provider === "slack"
           ? { provider: "slack", teamId: "T1", botUserId: "U1" }
-          : { provider: "github", connectionId: "connection-1", repositories: [] },
+          : { provider: "github", connectionId: "connection-1", authority: "user-task" },
   };
 }
 
@@ -201,7 +201,7 @@ function cliMetadata(provider: "github" | "slack" | "feishu"): Record<string, un
     };
   }
   if (provider === "slack") return { provider: "slack", teamId: "T1", botUserId: "U1" };
-  return { provider: "github", connectionId: "connection-1", repositories: [] };
+  return { provider: "github", connectionId: "connection-1", authority: "user-task" };
 }
 
 function openResultFrame(
@@ -817,17 +817,7 @@ describe("runtime proxy material", () => {
         return {
           provider: "github",
           connectionId: "connection",
-          repositories: [
-            {
-              repositoryId: "1",
-              fullName: "owner/repository",
-              role: "context_tree",
-              access: "write",
-              publish: "pull_request",
-              branch: "refs/heads/master",
-              workBranchPrefix: "refs/heads/opentag/11111111-1111-4111-8111-111111111111/context_tree/",
-            },
-          ],
+          authority: "user-task",
         };
       },
       connectProxyUrl: "http://127.0.0.1:1234",
@@ -847,14 +837,35 @@ describe("runtime proxy material", () => {
       slackApiHost: "https://127.0.0.1:5678",
     });
     expect(environment.GH_TOKEN).toBe("otrh_github");
-    expect(JSON.parse(environment.OPENTAG_GITHUB_REPOSITORIES ?? "[]")).toEqual([
-      expect.objectContaining({
-        fullName: "owner/repository",
-        branch: "refs/heads/master",
-        publish: "pull_request",
-        workBranchPrefix: expect.stringContaining("/context_tree/"),
-      }),
-    ]);
+    expect(environment.GH_CONFIG_DIR).toBe("/exec/gh-config");
+    expect(environment.OPENTAG_GITHUB_REPOSITORIES).toBeUndefined();
+    const denied = buildRuntimeProxyEnvironment({
+      adapterCaCertPath: "/exec/loopback-ca.pem",
+      cliMetadata: (provider) => {
+        if (provider === "feishu") return { provider: "feishu", appId: "cli-app", teamBrand: "feishu" };
+        return {
+          provider: "github",
+          connectionId: "connection",
+          authority: "user-task",
+        };
+      },
+      connectProxyUrl: "http://127.0.0.1:1234",
+      handles: new Map(),
+      layout: {
+        adapterCaCertPath: "/exec/loopback-ca.pem",
+        executionDir: "/exec",
+        gitConfigPath: "/exec/gitconfig",
+        gitCredentialHelperPath: "/exec/git-credential-helper.sh",
+        larkConfigDir: "/exec/lark-config",
+        slackConfigDir: "/exec/slack-config",
+      },
+      slackApiHost: "https://127.0.0.1:5678",
+    });
+    expect(denied.GH_TOKEN).toBeUndefined();
+    expect(denied.GH_CONFIG_DIR).toBe("/exec/gh-config");
+    expect(denied.GIT_CONFIG_VALUE_0).toBe("");
+    expect(denied.GIT_CONFIG_GLOBAL).toBe("/exec/gitconfig");
+    expect(denied[RUNTIME_PROXY_PROVIDER_URL_KEY]).toBe("http://127.0.0.1:1234");
     expect(environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("otrh_feishu");
     expect(environment.SLACK_BOT_TOKEN).toBe("otrh_slack");
     expect(environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toBe("http://127.0.0.1:1234");
@@ -974,3 +985,24 @@ function runWithInput(
     child.stdin.end(input);
   });
 }
+
+it("discards old Server GitHub assignments while keeping valid IM execution and the upgrade channel usable", () => {
+  const providers = [
+    {
+      provider: "github",
+      bindingId: "legacy-connection",
+      cli: { provider: "github", connectionId: "legacy-connection", repositories: [{ fullName: "private/legacy" }] },
+    },
+    { provider: "slack", bindingId: "slack", cli: { provider: "slack", teamId: "T1", botUserId: "B1" } },
+  ];
+  const frame = parseRuntimeCredentialServerFrame({
+    type: "runtime:execution:result",
+    requestId: randomUUID(),
+    executionId: EXECUTION_ID,
+    status: "succeeded",
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+    providers,
+  });
+  expect(frame).toMatchObject({ status: "succeeded", providers: [providers[1]] });
+  expect(JSON.stringify(frame)).not.toContain("private/legacy");
+});

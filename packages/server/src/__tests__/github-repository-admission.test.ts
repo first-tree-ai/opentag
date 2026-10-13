@@ -1,162 +1,105 @@
-/*
- * GitHub repository admission verification: the hard total page budget one verification may walk.
- *
- * A bindings write or recheck re-verifies every bound repository against live GitHub state. The
- * verification walks at most ten repository pages per installation and a hard total across all
- * installations; configurations that cannot be verified inside the budget are rejected with a
- * controlled error — never silently half-verified, and never granted an unbounded upstream walk.
- */
-
-import { randomUUID } from "node:crypto";
-import type { GitHubRepositoryBinding } from "@opentag/shared";
-import { describe, expect, it } from "vitest";
-import { hashGitHubRepositoryBindings } from "../services/github/bindings-proof.js";
-import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "../services/github/errors.js";
+import { describe, expect, it, vi } from "vitest";
+import type {
+  GitHubApiClient,
+  GitHubInstallationRepository,
+  GitHubUserInstallation,
+} from "../services/github/github-api-client.js";
 import { GitHubRepositoryAdmissionService } from "../services/github/repository-admission.js";
-import {
-  GITHUB_TEST_APP_ID,
-  installation,
-  installationsPage,
-  repositoriesPage,
-  repository,
-  stubGitHubApi,
-} from "./support/github-fixtures.js";
 
-const NOW = new Date("2026-09-16T00:00:00.000Z");
-
-function serviceFor(api: ReturnType<typeof stubGitHubApi>) {
-  return new GitHubRepositoryAdmissionService({ api: api.asClient(), appId: GITHUB_TEST_APP_ID, now: () => NOW });
+function fixture() {
+  const repository: GitHubInstallationRepository = {
+    repositoryId: "100001",
+    fullName: "acme/requested",
+    private: true,
+    defaultBranch: "main",
+    permissions: { pull: true, push: true, admin: false },
+  };
+  const installation: GitHubUserInstallation = {
+    installationId: "77",
+    appId: "88",
+    accountLogin: "acme",
+    accountType: "Organization",
+    repositorySelection: "selected",
+    suspended: false,
+    permissions: { contents: "write", pull_requests: "write" },
+  };
+  const getRepository = vi.fn(async () => repository);
+  const repositoryInstallation = vi.fn(async () => installation);
+  const listInstallationRepositories = vi.fn();
+  const assertUserInstallationAccess = vi.fn(async () => undefined);
+  const service = new GitHubRepositoryAdmissionService({
+    appId: "88",
+    api: { getRepository, listInstallationRepositories, assertUserInstallationAccess } as unknown as GitHubApiClient,
+    installations: { repositoryInstallation },
+  });
+  return {
+    service,
+    repository,
+    installation,
+    getRepository,
+    repositoryInstallation,
+    listInstallationRepositories,
+    assertUserInstallationAccess,
+  };
 }
-
-/** Bindings spanning `count` distinct installations, one repository scope each. */
-function spanningBindings(count: number): GitHubRepositoryBinding[] {
-  return Array.from({ length: count }, (_, index) => ({
-    bindingId: randomUUID(),
-    installationId: String(1_000 + index),
-    repositoryId: "111",
-    fullNameDisplay: "octocat/hello-world",
-    agentScopes: [{ agentId: randomUUID(), role: "code" as const, access: "read" as const }],
-  }));
-}
-
-function installationsOf(count: number) {
-  return installationsPage(
-    Array.from({ length: count }, (_, index) => installation({ installationId: String(1_000 + index) })),
+const request = { accessToken: "user-secret", fullName: "acme/requested", access: "read" as const };
+describe("GitHub per-target admission", () => {
+  it("resolves the explicit repository without walking or storing a repository catalog", async () => {
+    const f = fixture();
+    expect(await f.service.resolveRepository(request)).toEqual({
+      installationId: "77",
+      repositoryId: "100001",
+      fullName: request.fullName,
+      defaultBranch: "main",
+    });
+    expect(f.getRepository).toHaveBeenCalledWith(request);
+    expect(f.repositoryInstallation).toHaveBeenCalledWith(request.fullName, undefined);
+    expect(f.listInstallationRepositories).not.toHaveBeenCalled();
+    expect(f.assertUserInstallationAccess).toHaveBeenCalledWith({
+      accessToken: request.accessToken,
+      installationId: "77",
+    });
+  });
+  it.each(["contents", "pull_requests"] as const)(
+    "rejects an installation lacking %s write permission",
+    async (permission) => {
+      const f = fixture();
+      f.installation.permissions[permission] = "read";
+      await expect(
+        f.service.resolveRepository({ ...request, access: "write", publish: "pull_request" }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+    },
   );
-}
-
-describe("GitHubRepositoryAdmissionService selection and per-user permission enforcement", () => {
-  it("discovers from the installation-level selection and enforces per-user repository rights", async () => {
-    const api = stubGitHubApi();
-    api.listUserInstallations.mockResolvedValue(installationsPage([installation({ repositorySelection: "selected" })]));
-    // The repositories page carries no selection of its own: the installation object is the
-    // only source of truth for all-vs-selected, and each repository carries the exact user's
-    // boolean grants.
-    api.listInstallationRepositories.mockResolvedValue(
-      repositoriesPage(
-        [
-          repository({ repositoryId: "111", permissions: { admin: false, pull: true, push: true } }),
-          repository({ repositoryId: "222", permissions: { admin: false, pull: true, push: false } }),
-        ],
-        2,
-      ),
-    );
-    const service = serviceFor(api);
-
-    const discovery = await service.discoverRepositories({ accessToken: "ghu_token" });
-    expect(discovery.installations).toEqual([
-      {
-        installationId: "55123456",
-        accountLogin: "octocat",
-        accountType: "Organization",
-        repositorySelection: "selected",
-        suspended: false,
-      },
-    ]);
-    expect(discovery.repositories.map((entry) => [entry.repositoryId, entry.permissions])).toEqual([
-      ["111", { pull: true, push: true }],
-      ["222", { pull: true, push: false }],
-    ]);
-
-    const bindingFor = (repositoryId: string, access: "read" | "write"): GitHubRepositoryBinding => ({
-      bindingId: randomUUID(),
-      installationId: "55123456",
-      repositoryId,
-      fullNameDisplay: "octocat/hello-world",
-      agentScopes: [
-        {
-          agentId: randomUUID(),
-          role: "code" as const,
-          access,
-          ...(access === "write" ? { publish: "direct" as const } : {}),
-        },
-      ],
-    });
-
-    // Read on the pull-only repository and write on the push repository are both attested.
-    const admitted = [bindingFor("222", "read"), bindingFor("111", "write")];
-    const proof = await service.verifyAdmission({
-      accessToken: "ghu_token",
-      connectionId: randomUUID(),
-      authorizationVersion: 1n,
-      githubUserId: "42",
-      bindings: admitted,
-    });
-    expect(proof.bindingsHash).toBe(hashGitHubRepositoryBindings(admitted));
-
-    // Write on the pull-only repository is denied on the connected user's own grants.
-    await expect(
-      service.verifyAdmission({
-        accessToken: "ghu_token",
-        connectionId: randomUUID(),
-        authorizationVersion: 1n,
-        githubUserId: "42",
-        bindings: [bindingFor("222", "write")],
-      }),
-    ).rejects.toMatchObject({
-      code: GITHUB_CONNECTION_ERROR_CODES.ADMISSION_PERMISSION_INSUFFICIENT,
+  it("checks the user's own access even when the App has write permission", async () => {
+    const f = fixture();
+    f.repository.permissions.push = false;
+    await expect(f.service.resolveRepository({ ...request, access: "write" })).rejects.toMatchObject({
       statusCode: 403,
     });
+    expect(f.repositoryInstallation).not.toHaveBeenCalled();
+    expect(await f.service.resolveRepository(request)).toHaveProperty("repositoryId", "100001");
+  });
+  it("rejects removed user access, suspension and repository identity changes", async () => {
+    const f = fixture();
+    f.repository.permissions = { pull: false, push: false, admin: false };
+    await expect(f.service.resolveRepository(request)).rejects.toMatchObject({ statusCode: 403 });
+    f.repository.permissions.pull = true;
+    f.installation.suspended = true;
+    await expect(f.service.resolveRepository(request)).rejects.toMatchObject({ statusCode: 409 });
+    f.installation.suspended = false;
+    f.repository.fullName = "other/redirected";
+    await expect(f.service.resolveRepository(request)).rejects.toMatchObject({ statusCode: 403 });
+  });
+  it("propagates removal and transport failure without falling back to App authority", async () => {
+    const f = fixture();
+    f.getRepository.mockRejectedValue(new Error("denied"));
+    await expect(f.service.resolveRepository(request)).rejects.toThrow("denied");
+    expect(f.repositoryInstallation).not.toHaveBeenCalled();
   });
 });
 
-describe("GitHubRepositoryAdmissionService verification budget", () => {
-  it("verifies a configuration inside the hard total page budget", async () => {
-    const api = stubGitHubApi();
-    api.listUserInstallations.mockResolvedValue(installationsOf(6));
-    // Each installation lists far more repositories than one page holds, forcing full-depth walks.
-    api.listInstallationRepositories.mockResolvedValue(repositoriesPage([repository({ repositoryId: "111" })], 10_000));
-    const bindings = spanningBindings(6);
-    const proof = await serviceFor(api).verifyAdmission({
-      accessToken: "ghu_token",
-      connectionId: randomUUID(),
-      authorizationVersion: 1n,
-      githubUserId: "42",
-      bindings,
-    });
-    expect(proof.bindingsHash).toBe(hashGitHubRepositoryBindings(bindings));
-    // Six installations at the ten-page per-installation bound: inside the total budget.
-    expect(api.listInstallationRepositories).toHaveBeenCalledTimes(60);
-  });
-
-  it("rejects a configuration that exceeds the hard total page budget instead of walking past it", async () => {
-    const api = stubGitHubApi();
-    api.listUserInstallations.mockResolvedValue(installationsOf(8));
-    api.listInstallationRepositories.mockResolvedValue(repositoriesPage([repository({ repositoryId: "111" })], 10_000));
-    const attempt = serviceFor(api).verifyAdmission({
-      accessToken: "ghu_token",
-      connectionId: randomUUID(),
-      authorizationVersion: 1n,
-      githubUserId: "42",
-      bindings: spanningBindings(8),
-    });
-    await expect(attempt).rejects.toMatchObject({
-      code: GITHUB_CONNECTION_ERROR_CODES.INPUT_INVALID,
-      statusCode: 400,
-    });
-    await expect(attempt).rejects.toBeInstanceOf(GitHubConnectionServiceError);
-    // The budget is hard: six full installations (60) plus the partial seventh (4), and not one
-    // page more — the eighth installation is never opened.
-    expect(api.listInstallationRepositories).toHaveBeenCalledTimes(64);
-  });
+it("denies a user token that cannot reach this App's exact installation", async () => {
+  const f = fixture();
+  f.assertUserInstallationAccess.mockRejectedValue(new Error("wrong App or inaccessible installation"));
+  await expect(f.service.resolveRepository(request)).rejects.toThrow("wrong App or inaccessible installation");
 });

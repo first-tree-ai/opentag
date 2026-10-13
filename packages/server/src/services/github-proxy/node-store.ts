@@ -1,5 +1,6 @@
 interface NodeRecord {
   repositoryId: string;
+  fullName: string;
   number?: number;
   scopeHash: string;
   expiresAt: number;
@@ -20,11 +21,24 @@ export class GitHubNodeStore {
     }
     return row;
   }
-  remember(executionId: string, scopeHash: string, id: string, repositoryId: string, number?: number): void {
+  remember(
+    executionId: string,
+    scopeHash: string,
+    id: string,
+    repositoryId: string,
+    number?: number,
+    fullName = "",
+  ): void {
     if (!/^[A-Za-z0-9_=-]{1,256}$/.test(id)) return;
     for (const [key, row] of this.#nodes) if (row.expiresAt <= this.now()) this.#nodes.delete(key);
     if (this.#nodes.size >= this.maximum) this.#nodes.delete(this.#nodes.keys().next().value as string);
-    this.#nodes.set(`${executionId}:${id}`, { repositoryId, scopeHash, number, expiresAt: this.now() + 300_000 });
+    this.#nodes.set(`${executionId}:${id}`, {
+      repositoryId,
+      fullName,
+      scopeHash,
+      number,
+      expiresAt: this.now() + 300_000,
+    });
   }
   forget(executionId: string): void {
     for (const key of this.#nodes.keys()) if (key.startsWith(`${executionId}:`)) this.#nodes.delete(key);

@@ -101,6 +101,7 @@ export async function publishExecutionMaterial(
     slackConfigDir: "/tmp/opentag/slack",
   };
   const environment = buildRuntimeProxyEnvironment({
+    executionId: relay.executionId,
     adapterCaCertPath: layout.adapterCaCertPath,
     cliMetadata: (provider) => relay.cliMetadataFor(provider),
     connectProxyUrl: `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`,

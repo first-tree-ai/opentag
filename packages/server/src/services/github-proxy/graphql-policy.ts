@@ -205,7 +205,9 @@ interface PolicyWalk {
 /** Mature GraphQL AST parsing plus domain/target checks; aliases and fragments never bypass field policy. */
 export function planGitHubGraphql(
   request: GitHubGraphqlRequest,
-  repositories: readonly GitHubGraphqlRepository[],
+  repositories:
+    | readonly GitHubGraphqlRepository[]
+    | ((target: { fullName?: string; nodeId?: string; repositoryId?: string }) => GitHubGraphqlRepository | undefined),
   resolveNode: (id: string) => string | undefined,
 ): GitHubGraphqlPlan {
   if (Buffer.byteLength(JSON.stringify(request)) > 262144) throw new GitHubGraphqlPolicyError();
@@ -245,8 +247,8 @@ export function planGitHubGraphql(
   const args = argumentsOf(target, walk.variables);
   const repository =
     target.name.value === "repository"
-      ? repositories.find((item) => item.fullName.toLowerCase() === `${args.owner}/${args.name}`.toLowerCase())
-      : repositories.find((item) => item.repositoryId === resolveNode(String(args.id)));
+      ? lookupRepository(repositories, { fullName: `${args.owner}/${args.name}` })
+      : lookupRepository(repositories, { nodeId: String(args.id), repositoryId: resolveNode(String(args.id)) });
   if (!repository) throw new GitHubGraphqlPolicyError();
   validateSelection(target.selectionSet, walk, 0, ReadFields, 1, true);
   return { repository, operation: "read" };
@@ -254,7 +256,9 @@ export function planGitHubGraphql(
 
 function mutationPlan(
   field: FieldNode,
-  repositories: readonly GitHubGraphqlRepository[],
+  repositories:
+    | readonly GitHubGraphqlRepository[]
+    | ((target: { fullName?: string; nodeId?: string; repositoryId?: string }) => GitHubGraphqlRepository | undefined),
   resolveNode: (id: string) => string | undefined,
   walk: PolicyWalk,
 ): GitHubGraphqlPlan {
@@ -267,10 +271,11 @@ function mutationPlan(
   if (Object.keys(values).some((key) => !allowed.has(key))) throw new GitHubGraphqlPolicyError();
   const repository =
     name === "createPullRequest"
-      ? repositories.find((item) => item.nodeId === values.repositoryId)
-      : repositories.find(
-          (item) => item.repositoryId === resolveNode(String(values.pullRequestId ?? values.subjectId)),
-        );
+      ? lookupRepository(repositories, { nodeId: String(values.repositoryId) })
+      : lookupRepository(repositories, {
+          nodeId: String(values.pullRequestId ?? values.subjectId),
+          repositoryId: resolveNode(String(values.pullRequestId ?? values.subjectId)),
+        });
   if (!repository) throw new GitHubGraphqlPolicyError();
   validateSelection(
     field.selectionSet,
@@ -479,4 +484,20 @@ function connectionWidth(args: Record<string, unknown>): number {
     }
   }
   return Math.max(Number(args.first ?? 1), Number(args.last ?? 1));
+}
+
+function lookupRepository(
+  repositories:
+    | readonly GitHubGraphqlRepository[]
+    | ((target: { fullName?: string; nodeId?: string; repositoryId?: string }) => GitHubGraphqlRepository | undefined),
+  target: { fullName?: string; nodeId?: string; repositoryId?: string },
+) {
+  if (typeof repositories === "function") return repositories(target);
+  return repositories.find((item) =>
+    target.fullName
+      ? item.fullName.toLowerCase() === target.fullName.toLowerCase()
+      : target.repositoryId
+        ? item.repositoryId === target.repositoryId
+        : item.nodeId === target.nodeId,
+  );
 }

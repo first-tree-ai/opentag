@@ -66,6 +66,7 @@ export interface EnsureChatSessionInTransactionInput {
 }
 
 export interface CreateInternalSessionWithMessageInput {
+  userTaskSource?: import("./session-cli-proof-service.js").SessionCliSourceContext["userTaskSource"];
   creatorSessionId: string;
   creatorInstallationId: string;
   creatorConnectionInstanceId: string;
@@ -77,6 +78,7 @@ export interface CreateInternalSessionWithMessageInput {
 }
 
 export interface AuthorizeAndRecordSessionMessageInput {
+  userTaskSource?: import("./session-cli-proof-service.js").SessionCliSourceContext["userTaskSource"];
   messageId: string;
   sourceSessionId: string;
   sourceInstallationId: string;
@@ -368,6 +370,7 @@ export class SessionService {
         .values({
           id: input.messageId,
           sourceSessionId: input.creatorSessionId,
+          userTaskSource: input.userTaskSource ?? null,
           targetSessionId: created.id,
           content: input.initialMessage,
           contentHash,
@@ -469,6 +472,7 @@ export class SessionService {
           .values({
             id: input.messageId,
             sourceSessionId: input.sourceSessionId,
+            userTaskSource: input.userTaskSource ?? null,
             targetSessionId: input.targetSessionId,
             content: input.content,
             contentHash: hashSessionMessage(input.content),

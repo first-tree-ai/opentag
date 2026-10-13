@@ -32,9 +32,7 @@ Local 使用绑定 Computer；CLI 修改与运行准备共用串行队列。
 操作指纹包含请求别名，发布去重仍按规范化仓库身份进行。持久化发布意图防止响应丢失导致重复发布；
 不确定的发布必须先解决，不能自动重试。
 
-Cloud 精确选择请求仓库当前的 `context_tree` binding，校验准入、分支和真实 Tree head，
-完成后复查同一 binding 及授权和凭证版本。允许多个 Tree 授权，但每个 Agent/仓库/角色授权仍须唯一，
-包括跨连接情形。现有分支和发布策略保持权威。
+Local 和 Cloud 的连接设置统一由 Server 使用账户当前 GitHub 连接、按目标实时准入、仓库默认分支和固定版本 Tree 校验器验证，提交前复查连接及凭据版本。无需 Agent 仓库 binding。alias/仓库选择只表示工作用途，不是 GitHub 白名单。Local 准备及 Cloud 执行仅使用当次执行的代理环境，不回退宿主机 GitHub 凭据。
 
 ## Local 准备
 
@@ -50,7 +48,7 @@ connect OWNER/REPO --as ALIAS --project-path WORKSPACE --json
 上游连接存储没有跨进程锁，因此 CLI 修改串行执行，同一准备任务由并发 Session 共用。
 五秒启动预算包含排队和初始化。超时保留已完成结果，未完成别名标记 `PREPARING`，后台继续。
 健康结果缓存保留，失败别名遵守一分钟重试冷却。provider 或完整连接集合变化使缓存失效。
-受管执行在使用缓存前仍检查当前仓库授权。
+受管执行在使用缓存前仍检查当前执行代理；仓库权限由 Server 按实际请求实时核验。
 
 每次准备只安装一次 provider skills，不按树重复。Claude 使用项目 skills，Codex 使用账户 HOME
 下的 `.agents/skills`，与自定义 `CODEX_HOME` 无关；Pi 显式接收 `--skill` 路径。

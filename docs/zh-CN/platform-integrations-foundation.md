@@ -8,9 +8,9 @@ OpenTag 自己管理 GitHub App、Slack 与飞书凭证。Server 组合集成管
 
 ## 身份与存储
 
-GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一个当前连接，已撤销和已替换连接保留非敏感历史。唯一新增的 `github_connections` 表保存加密的用户 access/refresh 凭证、一个进行中的 OAuth 流程，以及有上限的仓库和 Agent 配置。Slack、飞书复用现有 IM 表。
+GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一个当前连接，已撤销和已替换连接保留非敏感历史。唯一新增的 `github_connections` 表保存加密的用户 access/refresh 凭证、一个进行中的 OAuth 流程，以及保留的历史仓库 JSON。旧字段只用于存储兼容，新业务不查询、不修改，DTO 不返回。Slack、飞书复用现有 IM 表。
 
-用户凭证只用于控制面的仓库准入证明，Git 与仓库操作使用 App installation access token（IAT）。IAT 客户端只请求单个仓库与明确权限，校验实际令牌范围并支持撤销。调用者必须先确认 Account、Agent、仓库和执行权限；管理响应与 Sandbox 都不能收到真实平台令牌。仓库名仅用于展示，授权使用稳定 repository/installation ID。Code 与 Context Tree 使用不同角色和发布策略，Tree 必须指定完整分支 ref。配置写入重新核验 Agent 所有权与预期授权版本。
+用户凭证只用于控制面的仓库准入证明，Git 与仓库操作使用 App installation access token（IAT）。IAT 客户端只请求单个仓库与明确权限，校验实际令牌范围并支持撤销。调用者必须先确认 Account、Agent、仓库和执行权限；管理响应与 Sandbox 都不能收到真实平台令牌。仓库名仅用于展示，授权使用稳定 repository/installation ID。每次请求按实际 Git URL、REST 路径或已验证 GraphQL node 定位目标；Server 用用户令牌证明用户/App 权限交集，再用 App JWT 解析对应安装并固定稳定 ID。读写权限、暂停状态、连接版本和执行存活都实时复查，不遍历完整仓库目录。代码写入保留 Session 任务分支和 PR 约束；Context Tree 工作目标表示用途，其默认分支仍走现有 Tree 校验发布路径。
 
 授权版本与凭证代次不同：范围变更、断开连接和权限丢失使运行期授权失效；正常用户令牌刷新只推进凭证代次。刷新和 OAuth 完成均比较捕获的身份与版本，晚到响应不能恢复已断开的连接。刷新结果不确定时需要重新授权，不能自动重复消费 refresh token。本地凭证信封认证失败不属于结果不确定：请求从未发送到 GitHub，刷新 claim 原样释放，凭证保留待后续重试。定期复查发现 access token 已过期时按 transient 推迟，由刷新流程负责过期恢复，预期的 401 不会清除仍可恢复的 refresh 凭证。在 access token 过期之时或之后返回的凭证失效响应同样按 transient 推迟。刷新成功同时推进复查代次（不推进授权版本），针对旧凭证得出的判定永远不能落到新凭证上，运行期授权保持有效。
 
@@ -24,16 +24,15 @@ GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一�
 
 ## 管理与执行
 
-按 `.env.example` 完整配置 GitHub App，OAuth 回调必须准确匹配 `OPENTAG_PUBLIC_URL` 下的回调路径。Account 页面连接或重新授权 GitHub；Agent 集成页面选择仓库、角色、权限、发布模式、Tree 分支与所有者设定的任务委托。Server 执行 CSRF、PKCE、App 身份校验、webhook 签名验证和维护 worker；未配置 App 时界面显示不可用。仓库发现每个 installation 最多列出十页（1000 个仓库），未能完整列出的 installation 在 `truncatedInstallations` 中显式标注。绑定写入对请求的每个绑定执行 GitHub 实时准入验证，超出单次验证可覆盖页数的配置会被拒绝；委托的 IM 绑定必须是当前 Account 持有的有效绑定，在同一事务中校验。管理路由将 GitHub 上游失败映射为有界的公开错误码。
+按 `.env.example` 配置 GitHub App，OAuth 回调匹配 `OPENTAG_PUBLIC_URL`。现有 Account 页面管理连接、重新授权、切换账户和断开。仓库选择由 GitHub App 安装流程管理；OpenTag 不再提供 Agent 仓库分配、仓库级委托或额外账户白名单。旧绑定接口返回 HTTP 410，历史 JSON 不变。仓库发现只服务于 Account 的安装和刷新展示，不承担执行鉴权。
 
-账户的 GitHub 区块和 Agent 仓库页在连接有效时提供安装和刷新操作，已有个人、组织或暂停安装记录时也会保留。服务端通过 GitHub 查询配置的 App，要求返回的 App ID 和 OAuth Client ID 与部署配置一致，并验证 App slug 安全；元数据缺失或不匹配时拒绝跳转。已登录账户因此会安装当前部署所配置的 GitHub App，无需新增设置页面或 App slug 配置。安装在新标签页中打开；完成后刷新原有区块以发现仓库。打开安装链接本身不会授予仓库或 Agent 访问权限。
+已接受的人类 IM 任务沿用渠道准入，使用所属账户的连接；Server 派发的用户配置定时任务也可使用。协作必须从已接受任务追溯用户来源：Session CLI 在既有 Session proof 之外提交非秘密 execution ID，Server 核验执行存活及隔离后记录准确来源。旧协作消息若来源不明，以及 Bot、自主请求、裸 Session 和连接探测，不获得 GitHub 权限。运行元数据和提示词不再包含仓库目录。
 
-刷新保留操作控件的焦点，通过常驻实时状态区播报发现的安装与仓库数量。连接变化导致控件消失时，如果用户没有移到其他位置，焦点会移到结果区。刷新失败会保留原列表供重试。Agent 刷新、分页、授权和保存互斥；只有真实的仓库授权写入才显示保存状态。分页完成及重试也会保留合理的焦点位置。刷新不会写入仓库授权。
+Local 独立协商 `runtime.githubUserTask: 1`，Cloud Runner 通过 `githubUserTaskVersion: 1` 显式加入。旧端仍可登录、使用 IM、恢复连接和升级，但不获得新版 GitHub provider。发布顺序为 Server 先行；用户令牌常规轮换不撤销未变更的任务权限。
 
-Agent 仓库发现会协调本地草稿与最新已保存配置：未修改的授权采用服务端变化，已编辑字段、待添加发送者文本、新勾选和明确取消勾选会在刷新及分页后保留。后续分页会初始化所发现的已有 Agent 授权。刷新页之外的已编辑仓库仍显示；被勾选的草稿须重新发现且权限及安装状态有效后才能保存。取消勾选再勾选会恢复已输入字段。已移除的委托目标仍可由用户移除，不会直接从编辑器消失。保存请求期间的新编辑会保留，旧 Agent 的请求结果不能覆盖当前 Agent 的编辑器。GitHub 身份变化时，未保存草稿会保持隔离，须由所有者明确放弃后才能切换；刷新不会自动把草稿转移到另一身份。草稿保留仅限当前已挂载的编辑器，不写入浏览器存储。
+现有账户 GitHub 区块在连接有效时提供安装和刷新操作，已有个人、组织或暂停安装记录时也会保留。服务端通过 GitHub 查询配置的 App，要求返回的 App ID 和 OAuth Client ID 与部署配置一致，并验证 App slug 安全；元数据缺失或不匹配时拒绝跳转。已登录账户因此会安装当前部署所配置的 GitHub App，无需新增设置页面或 App slug 配置。安装在新标签页中打开；完成后刷新原有区块以发现仓库。打开安装链接本身不会授予仓库或 Agent 访问权限。
 
-保存只修改已编辑的授权，保留额外角色及其他 Agent 的授权。绑定 ID 始终对应同一 installation 与仓库组合；切换 installation 会创建新的绑定身份。多个新绑定的变更检查使用不同的比较占位 ID，且不会把这些占位 ID 持久化。
-
+Account 刷新保留焦点、播报安装/仓库数量与错误，并支持重试；不会写入任何仓库配置。已有安装时继续保留安装和刷新入口。
 
 运行期协商 `runtime.runtimeCredential` 与 `runtime.providerProxy`。开启 execution 绑定 Account、Agent revision、已接受任务来源、Session placement、当前 Computer 连接，以及 Cloud Sandbox generation。猜到 Session ID 或来自无关 IM 发送者都不足以取得权限。签发、续期、每次请求和长流均重新核验。
 
@@ -51,7 +50,7 @@ Git smart HTTP 在可信 Server 网关终止，读取来自有资源上限的临
 
 Code 写入使用 `refs/heads/opentag/<session-id>/code/`；Tree direct 只能写配置分支，Tree PR 使用 `refs/heads/opentag/<session-id>/context_tree/`。Code 读取覆盖所选仓库的全部分支；Tree-only 读取只暴露配置分支和本 Session 工作分支。快照注入不把远端 ref 模式匹配当作权威：远端返回的每个 ref 在抓取前都按已授权的确切 ref 与 Session 任务前缀在本地重新过滤。发布 Tree commit 或创建/更新其 PR 时，在 Agent 容器外用固定版本 `@first-tree-ai/context-tree` 验证实际提交 SHA。拒绝 gitlink 和任意软链接，仅允许工具生成的根目录 `CLAUDE.md -> AGENTS.md`。
 
-托管 Context Tree 准备使用当前 execution 环境，返回缓存的 ready 状态前也必须确认具有 `context_tree` 仓库授权。设置页的 connect/create 还需要可信管理环境；当前设置帧没有已接受的任务来源，不会自行创建这项授权。代理模式缺少该环境时明确返回需要认证，不会使用主机已有 Git 凭证；Local legacy 设置保持可用。Cloud 主机必须提供 Runner 侧的可信 Context Tree 环境，因为命令容器内的 loopback 地址不能直接在 Runner 上使用。
+托管 Tree 准备即使使用缓存也要求当次执行代理，实际仓库请求由 Server 实时鉴权。Local/Cloud 的连接设置使用账户认证后的 Server 校验、单仓库只读 IAT 和固定版本 Tree verifier。创建仓库保留现有能力边界；缺少托管传输时不使用宿主机 GitHub 凭据。Cloud 主机提供 Runner 侧可信代理，因为容器 loopback 地址不能在 Runner 复用。
 
 **资源限制。** 读取快照与发布暂存使用有固定默认值上限的 Server 工作区：最多 4 个并发读取快照和 4 个并发发布，每次操作 120 秒预算，各自 512 MiB 工作区上限。receive-pack 请求的 pack 数据最多 64 MiB；upload-pack 请求体最多 1 MiB，流式响应最多 512 MiB。暂存后的对象校验覆盖整个暂存仓库——已注入历史加收到的 pack——而非仅针对传入 pack：对象总数上限 100 000，单个对象上限 64 MiB，未压缩对象总大小上限 512 MiB；`git fsck --strict` 同样覆盖包含注入历史在内的整个暂存仓库。已注入历史超出这些总量的仓库无法通过该网关发布。这是有边界暂存设计有意为之的当前约束，对注入历史、传入 pack 与接收对象一致适用。
 
@@ -59,7 +58,7 @@ GitHub 代理解析 REST 路由与 GraphQL AST，处理 alias、fragment、varia
 
 ## 部署、持久化与恢复
 
-`createPlatformRuntime` 是 Server 装配入口，Server 镜像包含 Git 和固定版本 Tree verifier。PostgreSQL 是唯一持久化的集成状态：GitHub 连接与 IM 凭证在 Server 重建后由数据库恢复。不存在 Server 本地控制卷、文件写入账本或持久来源记录——重建 Server 不需要恢复任何集成专用磁盘。短期 capability、ticket、IAT lease、URL handle 与 execution 状态只存在于有界 Server 内存，随进程结束；重启后 Runner 依据当前数据库事实重新鉴权。重启本身不会撤销已签发的平台令牌：installation token 只是不再被使用，并按 GitHub 自身规则过期。
+`createPlatformRuntime` 是 Server 装配入口，Server 镜像包含 Git 和固定版本 Tree verifier。PostgreSQL 是唯一持久化的集成状态：GitHub 连接与 IM 凭证在 Server 重建后由数据库恢复。不存在 Server 本地控制卷、文件写入账本或独立来源账本——重建 Server 不需要恢复任何集成专用磁盘。短期 capability、ticket、IAT lease、URL handle 与 execution 状态只存在于有界 Server 内存，随进程结束；重启后 Runner 依据当前数据库事实重新鉴权。重启本身不会撤销已签发的平台令牌：installation token 只是不再被使用，并按 GitHub 自身规则过期。
 
 Git 读取快照、发布暂存与 Tree 验证工作目录是私有、有上限的临时工作目录。启用 GitHub 传输时，网关首次使用时才在操作系统临时目录下懒创建一个独占 `mkdtemp` 根目录，校验其属主与权限，并在关闭或构造部分失败时删除。这些临时工作区只是验证手段，永远不是权威状态；未启用 GitHub 集成时不写任何文件，临时目录也绝不挂载到 Sandbox。
 

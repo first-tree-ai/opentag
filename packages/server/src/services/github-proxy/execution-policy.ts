@@ -1,18 +1,33 @@
-import { GitBranchRefSchema, type GitHubAgentScope } from "@opentag/shared";
+import { GitBranchRefSchema } from "@opentag/shared";
 import type { RuntimeProxyAuthorization } from "../../runtime-credentials/credential-broker.js";
 import { GitPublicationError } from "./git-packets.js";
 import type { GitPublicationScope } from "./git-publication.js";
 
 export interface GitHubExecutionRepository {
+  recheck?: (signal: AbortSignal) => Promise<void>;
   installationId: string;
   repositoryId: string;
   fullName: string;
-  scopes: GitHubAgentScope[];
-  /** Includes every configured Tree ref, including other Agents' Tree grants. */
+  scopes: {
+    role: "code" | "context_tree";
+    access: "read" | "write";
+    publish?: "direct" | "pull_request";
+    branch?: string;
+  }[];
+  /** Canonical refs of the Account's configured Tree working targets. */
   protectedTreeRefs: string[];
 }
+export interface GitHubExecutionTarget {
+  fullName: string;
+  access: "read" | "write";
+  publish?: "direct" | "pull_request";
+}
 export interface GitHubExecutionPolicy {
-  resolve(authorization: RuntimeProxyAuthorization, signal: AbortSignal): Promise<GitHubExecutionRepository[]>;
+  resolve(
+    authorization: RuntimeProxyAuthorization,
+    signal: AbortSignal,
+    target: GitHubExecutionTarget,
+  ): Promise<GitHubExecutionRepository[]>;
 }
 
 export function taskBranchPrefix(sessionId: string, role: "code" | "context_tree"): string {

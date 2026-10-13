@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GitHubAgentScope } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../runtime-credentials/provider-proxy-adapter.js";
@@ -20,6 +19,7 @@ import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
 import { GitHubProviderAdapter } from "../services/github-proxy/github-provider-adapter.js";
 import { GitHubIatLeases } from "../services/github-proxy/iat-leases.js";
 import type { VerifiedTreeHead } from "../services/github-proxy/verified-tree-head.js";
+import type { GitHubAgentScope } from "./support/legacy-github-fixtures.js";
 
 let root: string, sessionId: string, executionId: string, bindingId: string;
 let workspace: GitWorkspace, adapter: GitHubProviderAdapter, repository: GitHubExecutionRepository;
@@ -45,7 +45,7 @@ beforeEach(async () => {
     installationId: "456",
     repositoryId: "123",
     fullName: "owner/repository",
-    scopes: [{ agentId: randomUUID(), role: "code", access: "write", publish: "pull_request" }],
+    scopes: [{ role: "code", access: "write", publish: "pull_request" }],
     protectedTreeRefs: ["refs/heads/master"],
   };
   writeBehavior = "ok";
@@ -61,8 +61,8 @@ beforeEach(async () => {
     authorizationRevision: "github:1",
     credentialGeneration: "2",
     accountId: randomUUID(),
-    agentId: repository.scopes[0]?.agentId ?? randomUUID(),
-    cli: { provider: "github" as const, connectionId: bindingId, repositories: [] },
+    agentId: randomUUID(),
+    cli: { provider: "github" as const, connectionId: bindingId, authority: "user-task" },
     resolveMaterial: async () => {
       throw new Error("No user material may reach execution");
     },
@@ -392,7 +392,6 @@ describe("production GitHub provider adapter", () => {
   });
   it("pins Tree PR head and base while excluding the Tree from a code write grant", () => {
     repository.scopes.push({
-      agentId: authorization.agentId,
       role: "context_tree",
       access: "write",
       publish: "pull_request",

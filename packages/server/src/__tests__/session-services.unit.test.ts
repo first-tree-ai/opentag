@@ -1385,6 +1385,7 @@ describe("SessionCollaborationService response mapping", () => {
         id: "message",
         sourceSessionId: "source",
         scheduledOrigin: null,
+        userTaskSource: null,
         targetSessionId: "target",
         content: "hello",
         contentHash: "a".repeat(64),

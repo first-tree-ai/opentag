@@ -10,6 +10,7 @@
  */
 
 import { createPrivateKey, type KeyObject, sign as rsaSign } from "node:crypto";
+import { parseGitHubInstallation } from "./github-api-client.js";
 
 import {
   type GitHubInstallationTokenClientOptions,
@@ -335,6 +336,22 @@ export class GitHubInstallationTokenClient {
       throw invalidResponseError("The GitHub App metadata does not match the configured App");
     }
     return `https://github.com/apps/${slug}/installations/new`;
+  }
+
+  /** App JWT lookup proves the configured App is installed on this exact repository. */
+  async repositoryInstallation(fullName: string, signal?: AbortSignal) {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fullName) || fullName.includes(".."))
+      throw requestError("Invalid repository name");
+    const installation = parseGitHubInstallation(
+      await this.#send({
+        method: "GET",
+        path: `/repos/${fullName}/installation`,
+        authorization: `Bearer ${this.#createJwt()}`,
+        signal,
+      }),
+    );
+    if (installation.appId !== this.#appId) throw invalidResponseError("The installation belongs to another App");
+    return installation;
   }
 
   async mint(input: MintGitHubInstallationTokenInput): Promise<MintedGitHubInstallationToken> {

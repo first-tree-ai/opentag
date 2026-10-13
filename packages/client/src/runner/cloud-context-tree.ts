@@ -4,7 +4,7 @@ import type { ContextTreeConnection } from "@opentag/shared";
 import {
   type ContextTreeExecFile,
   type ContextTreePackage,
-  managedRepositoryAllowed,
+  hasManagedGitHubTransport,
   resolveContextTreePackage,
   runContextTreeCli,
 } from "../runtime/context-tree.js";
@@ -24,7 +24,7 @@ import {
  * stays disposable. The record stores linkage only; proxy credentials and Git helper config stay
  * in the per-execution environment.
  *
- * Every Turn re-evaluates the current snapshot selection and execution grant. Revoked grants are detached locally without
+ * Every Turn re-evaluates the current snapshot selection and execution transport. Removed working targets are detached locally without
  * network preparation; a failed connect/sync is reported `stale` with the preserved
  * in-workspace checkout still addressable through the pinned CLI; nothing is forced, reset or
  * discarded, and drafts of an unselected or rebinding tree stay on disk. A killed first clone can
@@ -79,7 +79,7 @@ export interface CloudContextTreePreparationInput {
   readonly contextTrees: readonly ContextTreeConnection[];
   /**
    * The CURRENT per-execution proxy manifest environment (GitHub handle, `GIT_CONFIG_*`,
-   * `OPENTAG_GITHUB_REPOSITORIES` grant metadata, proxy routing keys). It is the only credential
+   * execution-local handles and proxy routing keys). It is the only credential
    * source the CLI children receive; there is no ambient-environment fallback.
    */
   readonly environment: Readonly<Record<string, string>>;
@@ -159,7 +159,7 @@ async function prepare(
   await mkdir(treeHome, { mode: 0o700, recursive: true });
   await mkdir(treeTmp, { mode: 0o700, recursive: true });
   const runCli: RunCli = (args, network) => run(contextTreePackage, args, network);
-  const allowed = input.contextTrees.filter((entry) => managedRepositoryAllowed(input.environment, entry.repository));
+  const allowed = hasManagedGitHubTransport(input.environment) ? input.contextTrees : [];
   // Reconcile even when no trees remain authorized, before any agent-facing shim can exist.
   const reconciliation = await reconcileContextTreeConnections(runCli, workspace, allowed);
   if (reconciliation.failureCode) return failedPreparation(input.contextTrees, reconciliation.failureCode);
@@ -191,7 +191,7 @@ async function prepareConnection(
   treeHome: string,
   connection: ContextTreeConnection,
 ): Promise<CloudContextTreeResult> {
-  if (!managedRepositoryAllowed(input.environment, connection.repository))
+  if (!hasManagedGitHubTransport(input.environment))
     return { ...connection, status: "unavailable", reason: "GITHUB_PERMISSION" };
   if (input.signal?.aborted) return { ...connection, status: "unavailable", reason: "TIMEOUT" };
   try {

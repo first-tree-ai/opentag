@@ -522,6 +522,7 @@ export class RuntimeCredentialEnvironmentManager {
     adapter: RuntimeProxyLoopbackAdapter,
   ): Promise<ActiveProxyExecution> {
     const environment = buildRuntimeProxyEnvironment({
+      executionId: relay.executionId,
       adapterCaCertPath: adapter.caCertPath,
       cliMetadata: (provider) => relay.cliMetadataFor(provider),
       connectProxyUrl: adapter.connectProxyUrl,

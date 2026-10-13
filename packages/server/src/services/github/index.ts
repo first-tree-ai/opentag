@@ -1,11 +1,4 @@
 export {
-  createGitHubRepositoryAdmissionProof,
-  GITHUB_ADMISSION_PROOF_MAX_AGE_MS,
-  type GitHubRepositoryAdmissionProof,
-  hashGitHubRepositoryBindings,
-  verifyGitHubRepositoryAdmissionProof,
-} from "./bindings-proof.js";
-export {
   createGitHubIntegration,
   type GitHubIntegrationComposition,
   type GitHubIntegrationConfig,
@@ -36,7 +29,6 @@ export {
   type GitHubUserInstallationsPage,
   type GitHubUserTokenMaterial,
 } from "./github-api-client.js";
-export { GitHubBindingsService, type GitHubBindingsServiceOptions } from "./github-bindings-service.js";
 export {
   type ClaimedGitHubOAuthFlow,
   type GitHubAuthorizationCompletion,
@@ -54,8 +46,6 @@ export {
 export {
   GitHubManagementService,
   type GitHubManagementServiceOptions,
-  type GitHubRuntimeAgentBindings,
-  type GitHubRuntimeAgentRepositoryScope,
   type GitHubRuntimeUserCredential,
 } from "./github-management-service.js";
 export {
@@ -89,7 +79,6 @@ export { generateOAuthState, sha256Hex } from "./hashes.js";
 export {
   type GitHubBindingRequirement,
   GitHubRepositoryAdmissionService,
-  requiredBindingAdmission,
 } from "./repository-admission.js";
 export { type GitHubConnectionRow, toGitHubConnectionStatus } from "./rows.js";
 export {

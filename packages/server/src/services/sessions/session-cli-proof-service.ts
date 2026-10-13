@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { RUNTIME_CAPABILITY, type SessionReconcileRequest } from "@opentag/shared";
+import { RUNTIME_CAPABILITY, type RuntimeExecutionSource, type SessionReconcileRequest } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -15,6 +15,7 @@ import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { cloudInstanceIdFor } from "../sandboxes/cloud-runtime-fence.js";
 
 export interface SessionCliSourceContext {
+  userTaskSource?: { sessionId: string; source: RuntimeExecutionSource };
   agentId: string;
   computerId: string;
   connectionInstanceId: string;
@@ -97,18 +98,29 @@ export class SessionCliProofService {
   readonly #registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">;
   readonly #cloud: SessionCliCloudProofAuthority | undefined;
   readonly #tokenKey: Buffer;
+  readonly #executionLive: ((executionId: string) => Promise<boolean>) | undefined;
+  readonly #executions:
+    | Pick<import("../../runtime-credentials/execution-registry.js").RuntimeExecutionRegistry, "get">
+    | undefined;
   readonly #now: () => Date;
 
   constructor(
     database: DatabaseClient,
     registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">,
     tokenKey: Uint8Array,
-    options: { now?: () => Date; cloud?: SessionCliCloudProofAuthority } = {},
+    options: {
+      now?: () => Date;
+      executionLive?: (executionId: string) => Promise<boolean>;
+      cloud?: SessionCliCloudProofAuthority;
+      executions?: Pick<import("../../runtime-credentials/execution-registry.js").RuntimeExecutionRegistry, "get">;
+    } = {},
   ) {
     if (tokenKey.byteLength !== 32) throw new Error("The Session CLI proof key must contain exactly 32 bytes");
     this.#database = database;
     this.#registry = registry;
     this.#cloud = options.cloud;
+    this.#executions = options.executions;
+    this.#executionLive = options.executionLive;
     this.#tokenKey = createHmac("sha256", tokenKey).update("opentag/session-cli-proof/v1", "utf8").digest();
     this.#now = options.now ?? (() => new Date());
   }
@@ -359,7 +371,7 @@ export class SessionCliProofService {
     await this.#database.delete(sessionCliProofs).where(eq(sessionCliProofs.connectionInstanceId, connectionId));
   }
 
-  async authenticate(token: string): Promise<SessionCliSourceContext> {
+  async authenticate(token: string, executionId?: string): Promise<SessionCliSourceContext> {
     if (!token || token.length > 4096) throw invalidProof();
     const [row] = await this.#database
       .select({
@@ -408,8 +420,24 @@ export class SessionCliProofService {
     ) {
       throw invalidProof();
     }
+    const execution = executionId ? this.#executions?.get(executionId) : undefined;
+    const userTaskSource =
+      execution &&
+      execution.purpose === "execution" &&
+      execution.sessionId === row.sessionId &&
+      execution.agentId === row.agentId &&
+      (await this.#executionLive?.(execution.executionId)) === true &&
+      execution.computerId === row.computerId &&
+      execution.placementGeneration === row.placementGeneration &&
+      execution.instanceId ===
+        (row.computerKind === "cloud"
+          ? this.#cloud?.connection(row.connectionInstanceId)?.instanceId
+          : row.connectionInstanceId)
+        ? { sessionId: execution.sessionId, source: execution.source }
+        : undefined;
     return {
       agentId: row.agentId,
+      ...(userTaskSource ? { userTaskSource } : {}),
       computerId: row.computerId,
       connectionInstanceId: row.connectionInstanceId,
       ...(row.creatorSessionId ? { creatorSessionId: row.creatorSessionId } : {}),

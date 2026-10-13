@@ -139,6 +139,7 @@ export async function createPlatformRuntime(options: {
     ...(options.logger ? { logger: options.logger } : {}),
   });
   const unsubscribe = executions.onClose(({ executionId }) => {
+    policy?.forgetExecution(executionId);
     void github
       ?.closeExecution(executionId)
       .catch(() => options.logger?.warn({ code: "iat_revoke_failed" }, "GitHub credential cleanup failed"));

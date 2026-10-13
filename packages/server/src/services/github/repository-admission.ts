@@ -1,28 +1,18 @@
-/*
- * Authoritative GitHub user-admission verification and repository discovery.
- *
- * Every answer here comes from the live GitHub API through the connected user's UAT: which
- * installations of the configured App the user can reach, what permission set each installation
- * grants, and whether the user personally can read or push each exact repository ID. Nothing is
- * trusted from a query parameter, a stored display name, or a caller-supplied proof — the only
- * output of a successful verification is the typed `GitHubRepositoryAdmissionProof` the bindings
- * write path requires, minted here and bound to the exact requested bindings.
- */
+/* Live user/App admission for exact targets; bounded discovery is display-only. */
 
 import {
   GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS,
   type GitHubDiscoveredInstallation,
   type GitHubDiscoveredRepository,
-  type GitHubRepositoryBinding,
   type GitHubRepositoryDiscoveryPage,
 } from "@opentag/shared";
-import { createGitHubRepositoryAdmissionProof, type GitHubRepositoryAdmissionProof } from "./bindings-proof.js";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "./errors.js";
 import {
   GITHUB_INSTALLATION_REPOSITORIES_PER_PAGE,
   type GitHubApiClient,
   type GitHubUserInstallation,
 } from "./github-api-client.js";
+import type { GitHubInstallationTokenClient } from "./installation-token-client.js";
 
 /** Discovery returns at most five upstream installation pages (500 installations) per call. */
 const MAX_INSTALLATION_PAGES = Math.ceil(GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS / 100);
@@ -33,7 +23,6 @@ const MAX_REPOSITORY_PAGES_PER_INSTALLATION = 10;
  * hard: a configuration that cannot be verified inside it is rejected with a controlled error —
  * never silently half-verified, and never granted an unbounded upstream walk.
  */
-const MAX_TOTAL_REPOSITORY_PAGES_PER_VERIFICATION = 64;
 
 const PERMISSION_LEVELS: Readonly<Record<string, number>> = { read: 1, write: 2 };
 
@@ -50,23 +39,6 @@ export interface GitHubBindingRequirement {
   contents: "read" | "write";
   pullRequestsWrite: boolean;
   userAccess: "read" | "write";
-}
-
-/**
- * Maps one binding's Agent scopes to the exact rights GitHub must attest: contents read or write,
- * pull-request write when any write scope publishes via PR, and the connected user's own read or
- * write access to the repository.
- */
-export function requiredBindingAdmission(binding: GitHubRepositoryBinding): GitHubBindingRequirement {
-  let write = false;
-  let pullRequestsWrite = false;
-  for (const scope of binding.agentScopes) {
-    if (scope.access === "write") {
-      write = true;
-      if (scope.publish === "pull_request") pullRequestsWrite = true;
-    }
-  }
-  return { contents: write ? "write" : "read", pullRequestsWrite, userAccess: write ? "write" : "read" };
 }
 
 function encodeCursor(cursor: DiscoveryCursor): string {
@@ -113,12 +85,17 @@ function toDiscoveredInstallation(installation: GitHubUserInstallation): GitHubD
 export class GitHubRepositoryAdmissionService {
   readonly #api: GitHubApiClient;
   readonly #appId: string;
-  readonly #now: () => Date;
+  readonly #installations: Pick<GitHubInstallationTokenClient, "repositoryInstallation"> | undefined;
 
-  constructor(options: { api: GitHubApiClient; appId: string; now?: () => Date }) {
+  constructor(options: {
+    api: GitHubApiClient;
+    appId: string;
+    now?: () => Date;
+    installations?: Pick<GitHubInstallationTokenClient, "repositoryInstallation">;
+  }) {
     this.#api = options.api;
+    this.#installations = options.installations;
     this.#appId = options.appId;
-    this.#now = options.now ?? (() => new Date());
   }
 
   /**
@@ -175,120 +152,47 @@ export class GitHubRepositoryAdmissionService {
     };
   }
 
-  /**
-   * Authoritative admission for a bindings write: every requested binding is verified against live
-   * GitHub state — configured App identity, installation presence/permission set, suspension, exact
-   * repository ID reachability, and the connected user's own read/write rights. The returned proof
-   * is the only object the bindings CAS accepts, and it is bound to the exact requested bindings.
-   */
-  async verifyAdmission(input: {
+  /** No catalog or saved allowlist: authorize only the actual target and operation. */
+  async resolveRepository(input: {
     accessToken: string;
-    connectionId: string;
-    authorizationVersion: bigint;
-    githubUserId: string;
-    bindings: GitHubRepositoryBinding[];
-    signal?: AbortSignal;
-  }): Promise<GitHubRepositoryAdmissionProof> {
-    const installations = await this.#listVerifiedInstallations(input.accessToken, input.signal);
-    const byInstallationId = new Map(installations.map((installation) => [installation.installationId, installation]));
-    let repositoryPagesRead = 0;
-    const repositoriesByInstallation = new Map<
-      string,
-      Map<string, Awaited<ReturnType<GitHubApiClient["listInstallationRepositories"]>>["repositories"][number]>
-    >();
-    for (const binding of input.bindings) {
-      const installation = byInstallationId.get(binding.installationId);
-      if (!installation) {
-        throw new GitHubConnectionServiceError(
-          GITHUB_CONNECTION_ERROR_CODES.ADMISSION_INSTALLATION_MISSING,
-          409,
-          "A requested installation is not accessible to the connected GitHub user",
-        );
-      }
-      const requirement = requiredBindingAdmission(binding);
-      this.#assertInstallationPermissions(installation, requirement);
-      let repositories = repositoriesByInstallation.get(binding.installationId);
-      if (!repositories) {
-        const remainingBudget = MAX_TOTAL_REPOSITORY_PAGES_PER_VERIFICATION - repositoryPagesRead;
-        if (remainingBudget < 1) {
-          throw new GitHubConnectionServiceError(
-            GITHUB_CONNECTION_ERROR_CODES.INPUT_INVALID,
-            400,
-            "The requested bindings span more GitHub repository pages than one admission verification can cover",
-          );
-        }
-        const listed = await this.#listReachableRepositories(
-          input.accessToken,
-          installation.installationId,
-          Math.min(MAX_REPOSITORY_PAGES_PER_INSTALLATION, remainingBudget),
-          input.signal,
-        );
-        repositoryPagesRead += listed.pagesRead;
-        repositories = listed.repositories;
-        repositoriesByInstallation.set(binding.installationId, repositories);
-      }
-      const repository = repositories.get(binding.repositoryId);
-      if (!repository) {
-        throw new GitHubConnectionServiceError(
-          GITHUB_CONNECTION_ERROR_CODES.ADMISSION_REPOSITORY_MISSING,
-          409,
-          "A requested repository is not accessible to the connected GitHub user through its installation",
-        );
-      }
-      this.#assertUserRepositoryPermission(repository.permissions, requirement.userAccess);
-    }
-    return createGitHubRepositoryAdmissionProof({
-      connectionId: input.connectionId,
-      authorizationVersion: input.authorizationVersion,
-      githubUserId: input.githubUserId,
-      bindings: input.bindings,
-      verifiedAt: this.#now(),
-    });
-  }
-
-  /**
-   * Re-verifies one exact repository admission right now, for the Server-side runtime broker: the
-   * installation must belong to the configured App, grant the permission set the role needs, and
-   * the connected user must personally hold the requested access. Throws on failure; never logs
-   * the token it verifies with.
-   */
-  async verifyCurrentRepositoryAdmission(input: {
-    accessToken: string;
-    installationId: string;
-    repositoryId: string;
+    fullName: string;
     access: "read" | "write";
     publish?: "direct" | "pull_request";
     signal?: AbortSignal;
-  }): Promise<void> {
-    const installations = await this.#listVerifiedInstallations(input.accessToken, input.signal);
-    const installation = installations.find((entry) => entry.installationId === input.installationId);
-    if (!installation) {
-      throw new GitHubConnectionServiceError(
-        GITHUB_CONNECTION_ERROR_CODES.ADMISSION_INSTALLATION_MISSING,
-        409,
-        "The installation is not accessible to the connected GitHub user",
-      );
-    }
-    this.#assertInstallationPermissions(installation, {
-      contents: input.access,
-      pullRequestsWrite: input.access === "write" && input.publish === "pull_request",
-      userAccess: input.access,
-    });
-    const { repositories } = await this.#listReachableRepositories(
-      input.accessToken,
-      installation.installationId,
-      MAX_REPOSITORY_PAGES_PER_INSTALLATION,
-      input.signal,
-    );
-    const repository = repositories.get(input.repositoryId);
-    if (!repository) {
+  }) {
+    if (!this.#installations) throw new Error("GitHub target admission is unavailable");
+    const repository = await this.#api.getRepository(input);
+    if (repository.fullName.toLowerCase() !== input.fullName.toLowerCase()) {
       throw new GitHubConnectionServiceError(
         GITHUB_CONNECTION_ERROR_CODES.ADMISSION_REPOSITORY_MISSING,
-        409,
-        "The repository is not accessible to the connected GitHub user through its installation",
+        403,
+        "Repository identity changed",
       );
     }
     this.#assertUserRepositoryPermission(repository.permissions, input.access);
+    const installation = await this.#installations.repositoryInstallation(repository.fullName, input.signal);
+    if (installation.appId !== this.#appId)
+      throw new GitHubConnectionServiceError(
+        GITHUB_CONNECTION_ERROR_CODES.APP_IDENTITY_MISMATCH,
+        502,
+        "The installation belongs to another App",
+      );
+    await this.#api.assertUserInstallationAccess({
+      accessToken: input.accessToken,
+      installationId: installation.installationId,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    this.#assertInstallationPermissions(installation, {
+      contents: input.access,
+      userAccess: input.access,
+      pullRequestsWrite: input.access === "write" && input.publish === "pull_request",
+    });
+    return {
+      installationId: installation.installationId,
+      repositoryId: repository.repositoryId,
+      fullName: repository.fullName,
+      defaultBranch: repository.defaultBranch,
+    };
   }
 
   /**
@@ -323,40 +227,6 @@ export class GitHubRepositoryAdmissionService {
     return installations;
   }
 
-  /** Lists up to `maxPages` of one installation's reachable repositories, reporting the actual walk depth. */
-  async #listReachableRepositories(
-    accessToken: string,
-    installationId: string,
-    maxPages: number,
-    signal?: AbortSignal,
-  ): Promise<{
-    repositories: Map<
-      string,
-      Awaited<ReturnType<GitHubApiClient["listInstallationRepositories"]>>["repositories"][number]
-    >;
-    pagesRead: number;
-  }> {
-    const repositories = new Map<
-      string,
-      Awaited<ReturnType<GitHubApiClient["listInstallationRepositories"]>>["repositories"][number]
-    >();
-    let pagesRead = 0;
-    for (let page = 1; page <= maxPages; page += 1) {
-      const result = await this.#api.listInstallationRepositories({
-        accessToken,
-        installationId,
-        page,
-        ...(signal ? { signal } : {}),
-      });
-      pagesRead += 1;
-      for (const repository of result.repositories) {
-        repositories.set(repository.repositoryId, repository);
-      }
-      if (repositories.size >= result.totalCount || result.repositories.length === 0) break;
-    }
-    return { repositories, pagesRead };
-  }
-
   #assertInstallationPermissions(installation: GitHubUserInstallation, requirement: GitHubBindingRequirement): void {
     if (installation.suspended) {
       throw new GitHubConnectionServiceError(
@@ -370,7 +240,7 @@ export class GitHubRepositoryAdmissionService {
       throw new GitHubConnectionServiceError(
         GITHUB_CONNECTION_ERROR_CODES.ADMISSION_PERMISSION_INSUFFICIENT,
         403,
-        "The GitHub App installation does not grant the repository contents access a binding requires",
+        "The GitHub App installation does not grant the requested repository contents access",
       );
     }
     if (requirement.pullRequestsWrite) {
@@ -379,7 +249,7 @@ export class GitHubRepositoryAdmissionService {
         throw new GitHubConnectionServiceError(
           GITHUB_CONNECTION_ERROR_CODES.ADMISSION_PERMISSION_INSUFFICIENT,
           403,
-          "The GitHub App installation does not grant the pull request write access a binding requires",
+          "The GitHub App installation does not grant the requested pull request write access",
         );
       }
     }
@@ -395,7 +265,7 @@ export class GitHubRepositoryAdmissionService {
       throw new GitHubConnectionServiceError(
         GITHUB_CONNECTION_ERROR_CODES.ADMISSION_PERMISSION_INSUFFICIENT,
         403,
-        "The connected GitHub user does not personally hold the repository access a binding requires",
+        "The connected GitHub user does not personally hold the requested repository access",
       );
     }
   }

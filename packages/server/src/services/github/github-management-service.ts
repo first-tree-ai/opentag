@@ -1,29 +1,12 @@
-/*
- * The Account-facing GitHub management facade and the Server-internal credential broker.
- *
- * HTTP surface (via api/github-integrations.ts): overview, authorization start/callback, paginated
- * repository discovery, bindings update with a fresh authoritative admission proof, disconnect.
- * Nothing client-supplied is ever trusted as proof — discovery and admission always go to GitHub
- * with the connected user's UAT, and the configured deployment App is the only App a flow uses.
- *
- * Server-internal surface (for the runtime workstream, never exposed over HTTP):
- *   - getCurrentUserCredential(connectionId): the decrypted current UAT pair with its fencing
- *     versions, for Server-side verification and token maintenance. Returns null unless the row is
- *     active; the caller must re-check fencing before relying on it.
- *   - verifyCurrentRepositoryAdmission(...): live re-verification that the connected user still
- *     holds the requested access to one exact repository through one installation.
- * Both return raw credential material or throw controlled errors; neither logs secrets.
- */
+import { gitHubConnectionColumns } from "./rows.js";
+/* Account connection management and Server-only, per-target user/App admission. */
 
 import type {
-  GitHubAgentScope,
   GitHubConnectionStatus,
   GitHubIntegrationOverview,
   GitHubOAuthFlowIntent,
   GitHubOAuthReturnSurface,
-  GitHubRepositoryBinding,
   GitHubRepositoryDiscoveryPage,
-  UpdateGitHubConnectionBindingsRequest,
 } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
@@ -31,7 +14,6 @@ import { githubConnections } from "../../db/schema/index.js";
 import type { GitHubCredentialCipher } from "../github-credential-material.js";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "./errors.js";
 import { GITHUB_API_CLIENT_ERROR_CODES, GitHubApiClientError } from "./github-api-client.js";
-import type { GitHubBindingsService } from "./github-bindings-service.js";
 import type { GitHubConnectionService } from "./github-connection-service.js";
 import type { GitHubOAuthCallbackResult, GitHubOAuthService } from "./github-oauth-service.js";
 import type { GitHubRepositoryAdmissionService } from "./repository-admission.js";
@@ -40,7 +22,6 @@ export interface GitHubManagementServiceOptions {
   database: DatabaseClient;
   appId: string;
   connections: GitHubConnectionService;
-  bindings: GitHubBindingsService;
   oauth: GitHubOAuthService;
   admission: GitHubRepositoryAdmissionService;
   cipher: GitHubCredentialCipher;
@@ -60,30 +41,6 @@ export interface GitHubRuntimeUserCredential {
   credentialGeneration: bigint;
 }
 
-/** One Agent's repository scopes on an active connection, for Server-side runtime policy. */
-export interface GitHubRuntimeAgentRepositoryScope {
-  bindingId: string;
-  installationId: string;
-  repositoryId: string;
-  fullNameDisplay: string;
-  scopes: GitHubAgentScope[];
-}
-
-/**
- * Server-internal: an Agent's exact active repository scopes plus the row's fencing versions. The
- * runtime resolves the owner's `taskDelegation` and the repo/role/ref policy from this and must
- * re-check the versions before relying on it. Returns null unless the row is active; an Agent with
- * no scope on the connection yields an empty list, never a fabricated one.
- */
-export interface GitHubRuntimeAgentBindings {
-  connectionId: string;
-  accountId: string;
-  githubUserId: string;
-  authorizationVersion: bigint;
-  credentialGeneration: bigint;
-  repositories: GitHubRuntimeAgentRepositoryScope[];
-}
-
 /** Internal: the sealed current credential plus identity, read for decryption or exchange. */
 interface ActiveCredentialRow {
   connectionId: string;
@@ -91,7 +48,6 @@ interface ActiveCredentialRow {
   githubHost: string;
   appId: string;
   githubUserId: string;
-  bindings: GitHubRepositoryBinding[];
   authorizationVersion: bigint;
   credentialGeneration: bigint;
   accessExpiresAt: Date;
@@ -103,7 +59,6 @@ export class GitHubManagementService {
   readonly #database: DatabaseClient;
   readonly #appId: string;
   readonly #connections: GitHubConnectionService;
-  readonly #bindings: GitHubBindingsService;
   readonly #oauth: GitHubOAuthService;
   readonly #admission: GitHubRepositoryAdmissionService;
   readonly #cipher: GitHubCredentialCipher;
@@ -112,7 +67,6 @@ export class GitHubManagementService {
     this.#database = options.database;
     this.#appId = options.appId;
     this.#connections = options.connections;
-    this.#bindings = options.bindings;
     this.#oauth = options.oauth;
     this.#admission = options.admission;
     this.#cipher = options.cipher;
@@ -178,43 +132,6 @@ export class GitHubManagementService {
     }
   }
 
-  /**
-   * Updates the binding configuration: re-checks the observed authorization version, proves live
-   * admission for the exact requested bindings with the current UAT, then runs the guarded CAS
-   * write. The proof is minted here — a client can never supply or reuse one.
-   */
-  async updateBindings(
-    accountId: string,
-    input: UpdateGitHubConnectionBindingsRequest,
-  ): Promise<GitHubConnectionStatus> {
-    const current = await this.#requireActiveConnection(accountId);
-    const expected = parseVersion(input.expectedAuthorizationVersion);
-    if (current.authorizationVersion !== expected) {
-      throw new GitHubConnectionServiceError(
-        GITHUB_CONNECTION_ERROR_CODES.AUTHORIZATION_VERSION_CONFLICT,
-        409,
-        "The connection's authorization version no longer matches; re-read and retry",
-      );
-    }
-    const credential = await this.#openUserCredential(current.id);
-    const admissionProof = await this.#admission
-      .verifyAdmission({
-        accessToken: credential.accessToken,
-        connectionId: current.id,
-        authorizationVersion: expected,
-        githubUserId: current.githubUserId,
-        bindings: input.bindings,
-      })
-      .catch((error: unknown) => {
-        throw mapManagementApiFailure(error);
-      });
-    return this.#bindings.updateBindings(accountId, current.id, {
-      expectedAuthorizationVersion: expected,
-      bindings: input.bindings,
-      admissionProof,
-    });
-  }
-
   /** Revokes the current connection; returns its final status, or null when there is none. */
   async disconnect(accountId: string): Promise<GitHubConnectionStatus | null> {
     const current = await this.#connections.getCurrentConnection(accountId, "github.com", this.#appId);
@@ -249,66 +166,26 @@ export class GitHubManagementService {
     };
   }
 
-  /**
-   * Server-internal: one Agent's exact repository scopes on an active connection. Runtime policy
-   * reads the owner's task delegation and the repo/role/ref scope from here and re-checks the
-   * fencing versions before every use; null means the connection is not active.
-   */
-  async getAgentBindings(connectionId: string, agentId: string): Promise<GitHubRuntimeAgentBindings | null> {
-    const row = await this.#readActiveCredentialRow(connectionId);
-    if (row === null) return null;
-    const repositories: GitHubRuntimeAgentRepositoryScope[] = [];
-    for (const binding of row.bindings) {
-      const scopes = binding.agentScopes.filter((scope) => scope.agentId === agentId.toLowerCase());
-      if (scopes.length === 0) continue;
-      repositories.push({
-        bindingId: binding.bindingId,
-        installationId: binding.installationId,
-        repositoryId: binding.repositoryId,
-        fullNameDisplay: binding.fullNameDisplay,
-        scopes,
-      });
-    }
-    return {
-      connectionId: row.connectionId,
-      accountId: row.accountId,
-      githubUserId: row.githubUserId,
-      authorizationVersion: row.authorizationVersion,
-      credentialGeneration: row.credentialGeneration,
-      repositories,
-    };
-  }
-
-  /**
-   * Live re-verification that the connected user still holds `access` to one exact repository
-   * through one installation, with the current credential. Throws a controlled error when
-   * admission fails or the connection is no longer active; returns the fencing versions observed
-   * alongside the successful verification so the caller can detect a concurrent change.
-   */
-  async verifyCurrentRepositoryAdmission(input: {
+  async resolveRepository(input: {
     connectionId: string;
-    installationId: string;
-    repositoryId: string;
+    fullName: string;
     access: "read" | "write";
     publish?: "direct" | "pull_request";
-  }): Promise<{ authorizationVersion: bigint; credentialGeneration: bigint }> {
+    signal?: AbortSignal;
+  }) {
     const row = await this.#readActiveCredentialRow(input.connectionId);
-    if (row === null) {
+    if (!row || row.accessExpiresAt.getTime() <= Date.now())
       throw new GitHubConnectionServiceError(
-        GITHUB_CONNECTION_ERROR_CODES.CONNECTION_NOT_FOUND,
-        404,
-        "The GitHub connection was not found",
+        GITHUB_CONNECTION_ERROR_CODES.CONNECTION_STATE_INVALID,
+        403,
+        "GitHub authorization is unavailable",
       );
-    }
-    const credential = this.#decrypt(row);
-    await this.#admission.verifyCurrentRepositoryAdmission({
-      accessToken: credential.accessToken,
-      installationId: input.installationId,
-      repositoryId: input.repositoryId,
-      access: input.access,
-      ...(input.publish !== undefined ? { publish: input.publish } : {}),
-    });
-    return { authorizationVersion: row.authorizationVersion, credentialGeneration: row.credentialGeneration };
+    const target = await this.#admission.resolveRepository({ ...input, accessToken: this.#decrypt(row).accessToken });
+    return {
+      ...target,
+      authorizationVersion: row.authorizationVersion,
+      credentialGeneration: row.credentialGeneration,
+    };
   }
 
   async #requireActiveConnection(accountId: string): Promise<{
@@ -353,7 +230,7 @@ export class GitHubManagementService {
 
   async #readActiveCredentialRow(connectionId: string): Promise<ActiveCredentialRow | null> {
     const [row] = await this.#database
-      .select()
+      .select(gitHubConnectionColumns())
       .from(githubConnections)
       .where(and(eq(githubConnections.id, connectionId), eq(githubConnections.status, "active")))
       .limit(1);
@@ -373,7 +250,6 @@ export class GitHubManagementService {
       githubHost: row.githubHost,
       appId: row.appId,
       githubUserId: row.githubUserId,
-      bindings: row.repositoryBindings,
       authorizationVersion: row.authorizationVersion,
       credentialGeneration: row.credentialGeneration,
       accessExpiresAt: row.accessExpiresAt,

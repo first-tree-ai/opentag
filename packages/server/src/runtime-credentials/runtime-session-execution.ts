@@ -91,7 +91,14 @@ export async function openRuntimeSessionExecution(
   if (decision.status === "not_ready") return rejected("execution_not_ready");
   if (decision.status === "invalid") return rejected("execution_source_invalid");
   const purpose: RuntimeExecutionPurpose = decision.validation ? "validation" : "execution";
-  const candidates = await candidateProviders(deps, snapshot, decision.validation, frame.source, internal);
+  const candidates = await candidateProviders(
+    deps,
+    snapshot,
+    decision.validation,
+    frame.source,
+    internal,
+    context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.githubUserTask] === 1,
+  );
   const services = await describeSessionServices(deps, frame, context, snapshot);
   /*
    * An internal Cloud collaboration child can legitimately run with no provider and no platform
@@ -349,12 +356,14 @@ async function candidateProviders(
   validation: { provider: CandidateProvider; bindingId: string } | undefined,
   source: RuntimeExecutionSource,
   internal: boolean,
+  githubUserTask: boolean,
 ): Promise<{ provider: CandidateProvider; bindingId: string }[]> {
   if (validation) return [{ provider: validation.provider, bindingId: validation.bindingId }];
   const candidates: { provider: CandidateProvider; bindingId: string }[] = [];
   if (!internal) {
     candidates.push({ provider: snapshot.binding.provider, bindingId: snapshot.binding.id });
   }
+  if (!githubUserTask) return candidates;
   const admission = await deps.gitHubAdmission
     .admit({
       accountId: snapshot.computer.ownerAccountId,

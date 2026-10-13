@@ -1,18 +1,15 @@
 /*
- * Server-side Cloud Context Tree connect for Agents bound to a Cloud Computer, which has no
- * Runtime owner WebSocket. The repository must be one of this Agent's authorized `context_tree`
- * bindings; `VerifiedTreeHead` re-verifies the live remote head with the pinned CLI in a scrubbed
- * environment while admission and fencing versions are rechecked around it. Cloud create is a
- * deliberate `capability_missing` failure; Local Computers keep their own create path. The UAT is
- * used in memory only for one trusted Git transport and never persisted or inherited ambiently.
+ * Account-authorized verification of existing Context Tree targets for Local and Cloud settings.
+ * Live user/App admission fixes the requested repository and default branch; a single-repository
+ * read-only IAT authenticates the pinned verifier. Connection and target fences are checked around
+ * remote work. Cloud create remains unavailable; Local keeps its existing create capability boundary.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   type ContextTreeOperationResponse,
   ContextTreeRepositorySchema,
-  type GitHubAgentScope,
   type GitHubConnectionStatus,
-  type GitHubRepositoryBinding,
 } from "@opentag/shared";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "../github/errors.js";
 import { GITHUB_API_CLIENT_ERROR_CODES, GitHubApiClientError } from "../github/github-api-client.js";
@@ -20,6 +17,7 @@ import type { GitHubManagementService } from "../github/github-management-servic
 import { GitPublicationError } from "../github-proxy/git-packets.js";
 import { GitHubPublicationRemote, type PublicationRemote } from "../github-proxy/git-remote.js";
 import { GitWorkspace } from "../github-proxy/git-workspace.js";
+import type { GitHubIatLeases } from "../github-proxy/iat-leases.js";
 import { VerifiedTreeHead } from "../github-proxy/verified-tree-head.js";
 
 export interface CloudContextTreeOperationInput {
@@ -37,13 +35,11 @@ export interface CloudContextTreeOperationRunner {
 }
 
 /** Exactly the GitHub management facade surface Cloud connect uses. Server-internal; never HTTP. */
-export type CloudContextTreeGitHubManagement = Pick<
-  GitHubManagementService,
-  "getOverview" | "getCurrentUserCredential" | "verifyCurrentRepositoryAdmission"
->;
+export type CloudContextTreeGitHubManagement = Pick<GitHubManagementService, "getOverview" | "resolveRepository">;
 
 export interface CloudContextTreeOperationsOptions {
   management: CloudContextTreeGitHubManagement;
+  leases: Pick<GitHubIatLeases, "acquire">;
   /** Exact Computer kind lookup; `undefined` for unknown rows so Cloud is never mistaken for Local. */
   computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
   /** Ephemeral verification root owner; constructed when absent. Closed by `close()`. */
@@ -101,22 +97,6 @@ function assertFence(observed: Fencing, expected: Fencing): void {
   }
 }
 
-/** The Agent's authorized Context Tree binding for the requested repository on this connection, when one exists. */
-function agentContextTreeBinding(
-  connection: GitHubConnectionStatus,
-  agentId: string,
-  repository: string,
-): { binding: GitHubRepositoryBinding; scope: GitHubAgentScope } | undefined {
-  const id = agentId.toLowerCase();
-  for (const binding of connection.bindings) {
-    if (binding.fullNameDisplay.toLowerCase() !== repository.toLowerCase()) continue;
-    for (const scope of binding.agentScopes) {
-      if (scope.agentId.toLowerCase() === id && scope.role === "context_tree") return { binding, scope };
-    }
-  }
-  return undefined;
-}
-
 function parseRepository(raw: string): string {
   const parsed = ContextTreeRepositorySchema.safeParse(raw);
   if (!parsed.success) halt("failed");
@@ -124,6 +104,7 @@ function parseRepository(raw: string): string {
 }
 
 export class CloudContextTreeOperations implements CloudContextTreeOperationRunner {
+  readonly #leases: Pick<GitHubIatLeases, "acquire">;
   readonly #management: CloudContextTreeGitHubManagement;
   readonly #computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
   readonly #treeHeads: Pick<VerifiedTreeHead, "verify">;
@@ -137,6 +118,7 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
 
   constructor(options: CloudContextTreeOperationsOptions) {
     this.#management = options.management;
+    this.#leases = options.leases;
     this.#computerKind = options.computerKind;
     this.#workspace = options.workspace ?? new GitWorkspace();
     this.#treeHeads = options.treeHeads ?? new VerifiedTreeHead({ workspace: this.#workspace });
@@ -187,47 +169,57 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
   }
 
   /**
-   * Binds the Agent's authorized Tree, then verifies the live remote head with the canonical CLI;
+   * Resolves the requested working target, then verifies the live remote head with the canonical CLI;
    * `recheck` re-proves admission and the fencing versions around the remote read.
    */
   async #connect(input: CloudContextTreeOperationInput, signal: AbortSignal): Promise<ContextTreeOperationResponse> {
     const repository = parseRepository(input.repository);
     const connection = await this.#activeConnection(input.accountId);
-    const tree = agentContextTreeBinding(connection, input.agentId, repository);
-    if (!tree || tree.binding.fullNameDisplay.toLowerCase() !== repository.toLowerCase()) halt("permission_denied");
-    const branch = tree.scope.branch;
-    if (branch === undefined) halt("failed");
+    const target = await this.#management.resolveRepository({
+      connectionId: connection.id,
+      fullName: repository,
+      access: "read",
+      signal,
+    });
+    const branch = `refs/heads/${target.defaultBranch}`;
     const fence = connectionFence(connection);
-    const credential = await this.#management.getCurrentUserCredential(connection.id);
-    if (!credential || credential.accountId !== input.accountId) halt("authentication_required");
-    assertFence(credential, fence);
+    assertFence(target, fence);
     const recheck = async () => {
-      const observed = await this.#management.verifyCurrentRepositoryAdmission({
+      const observed = await this.#management.resolveRepository({
         connectionId: connection.id,
-        installationId: tree.binding.installationId,
-        repositoryId: tree.binding.repositoryId,
-        access: tree.scope.access,
-        ...(tree.scope.publish !== undefined ? { publish: tree.scope.publish } : {}),
+        fullName: repository,
+        access: "read",
+        signal,
       });
       assertFence(observed, fence);
+      if (
+        observed.repositoryId !== target.repositoryId ||
+        observed.installationId !== target.installationId ||
+        observed.defaultBranch !== target.defaultBranch
+      )
+        halt("stale_configuration");
     };
     signal.throwIfAborted();
-    await this.#treeHeads.verify({
-      repositoryId: tree.binding.repositoryId,
-      ref: branch,
-      remote: this.#remoteFactory(repository, credential.accessToken),
+    const lease = await this.#leases.acquire(randomUUID(), {
+      installationId: target.installationId,
+      repositoryId: target.repositoryId,
+      permissions: { contents: "read" },
       signal,
-      recheck,
     });
-    await this.#assertFinalFence(
-      input.accountId,
-      connection.id,
-      fence,
-      input.agentId,
-      tree.binding.repositoryId,
-      repository,
-    );
-    return { status: "completed", repository };
+    try {
+      await this.#treeHeads.verify({
+        repositoryId: target.repositoryId,
+        ref: branch,
+        remote: this.#remoteFactory(repository, lease.token),
+        signal,
+        recheck,
+      });
+      await recheck();
+      await this.#assertFinalFence(input.accountId, connection.id, fence);
+      return { status: "completed", repository };
+    } finally {
+      await lease.release();
+    }
   }
 
   /** The Account's current active connection; nothing else may authenticate these operations. */
@@ -239,20 +231,11 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
     return connection;
   }
 
-  /** After remote work, the same active connection and the Agent's exact Tree binding must hold. */
-  async #assertFinalFence(
-    accountId: string,
-    connectionId: string,
-    fence: Fencing,
-    agentId: string,
-    repositoryId: string,
-    repository: string,
-  ): Promise<void> {
+  /** After remote work, the same active connection and fencing versions must hold. */
+  async #assertFinalFence(accountId: string, connectionId: string, fence: Fencing): Promise<void> {
     const connection = await this.#activeConnection(accountId);
     if (connection.id !== connectionId) halt("stale_configuration");
     assertFence(connectionFence(connection), fence);
-    const tree = agentContextTreeBinding(connection, agentId, repository);
-    if (!tree || tree.binding.repositoryId !== repositoryId) halt("permission_denied");
   }
 
   #classify(error: unknown, signal: AbortSignal): ContextTreeOperationResponse {

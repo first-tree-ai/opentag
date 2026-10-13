@@ -129,7 +129,7 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "-c",
   'shell_environment_policy.inherit="all"',
   "-c",
-  'shell_environment_policy.filters={ PATH = "include", ZDOTDIR = "include", LANG = "include", LC_ALL = "include", OPENTAG_HOME = "include", OPENTAG_PROVIDER_ENV_FILE = "include", OPENTAG_SESSION_PROOF_FILE = "include" }',
+  'shell_environment_policy.filters={ PATH = "include", ZDOTDIR = "include", LANG = "include", LC_ALL = "include", OPENTAG_HOME = "include", OPENTAG_PROVIDER_ENV_FILE = "include", OPENTAG_SESSION_PROOF_FILE = "include", OPENTAG_EXECUTION_ID = "include" }',
 ] as const;
 const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",
@@ -1314,6 +1314,7 @@ export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process
     "OPENTAG_PROVIDER_ENV_FILE",
     "OPENTAG_HOME",
     "OPENTAG_SESSION_PROOF_FILE",
+    "OPENTAG_EXECUTION_ID",
     "PATH",
     "PATHEXT",
     "SHELL",

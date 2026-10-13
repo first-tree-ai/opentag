@@ -635,3 +635,36 @@ describe("GitHubInstallationTokenClient", () => {
     expect((error as Error).message).not.toContain("upstream detail");
   });
 });
+
+describe("GitHub App exact repository installation", () => {
+  const installation = {
+    id: 789,
+    app_id: Number(APP_ID),
+    account: { login: "owner", type: "Organization" },
+    repository_selection: "selected",
+    permissions: { contents: "read" },
+    suspended_at: null,
+  };
+  it("uses the App JWT endpoint without issuing or exposing an installation token", async () => {
+    const { fetchStub, calls } = stubFetch(() => jsonResponse(installation, 200));
+    expect(await makeClient(fetchStub).repositoryInstallation("owner/repo")).toMatchObject({
+      installationId: "789",
+      appId: APP_ID,
+      suspended: false,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      url: "https://api.github.com/repos/owner/repo/installation",
+      init: { method: "GET", redirect: "error" },
+    });
+    expect(calls[0]?.init.headers).toEqual(
+      expect.objectContaining({ authorization: expect.stringMatching(/^Bearer ey/) }),
+    );
+  });
+  it("rejects another App and does not follow removed/renamed repository redirects", async () => {
+    for (const response of [jsonResponse({ ...installation, app_id: 999 }, 200), jsonResponse({}, 301)]) {
+      const { fetchStub } = stubFetch(() => response);
+      await expect(makeClient(fetchStub).repositoryInstallation("owner/repo")).rejects.toThrow();
+    }
+  });
+});

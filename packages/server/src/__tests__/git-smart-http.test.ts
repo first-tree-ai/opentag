@@ -21,7 +21,7 @@ function repository(overrides: Partial<GitHubExecutionRepository> = {}): GitHubE
     installationId: "456",
     repositoryId: "123",
     fullName: "owner/repository",
-    scopes: [{ agentId: randomUUID(), role: "code", access: "write", publish: "pull_request" }],
+    scopes: [{ role: "code", access: "write", publish: "pull_request" }],
     protectedTreeRefs: ["refs/heads/master"],
     ...overrides,
   };
@@ -39,7 +39,7 @@ function authorization(overrides: Partial<RuntimeProxyAuthorization> = {}): Runt
     sessionId: SESSION_ID,
     accountId: randomUUID(),
     agentId: randomUUID(),
-    cli: { provider: "github", connectionId: "binding", repositories: [] },
+    cli: { provider: "github", connectionId: "binding", authority: "user-task" },
     resolveMaterial: async () => {
       throw new Error("No user material may reach execution");
     },
@@ -85,6 +85,7 @@ function harness(
       reads: { handle: readHandle } as unknown as Parameters<typeof handleGitSmartHttp>[0]["reads"],
       publication: { receive } as unknown as Parameters<typeof handleGitSmartHttp>[0]["publication"],
       metadata,
+      policy: { resolve: async () => repositories },
     },
     readHandle,
     receive,
@@ -127,7 +128,6 @@ describe("handleGitSmartHttp request parsing", () => {
       request({ method: "GET" }),
       authorization(),
       URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-      fake.repositories,
     );
     expect(response.status).toBe(200);
     expect(await collect(response.body)).toBe("read-body");
@@ -162,7 +162,6 @@ describe("handleGitSmartHttp request parsing", () => {
       request({ method: "GET" }),
       authorization(),
       URL_FOR("/OWNER/Repository.git/info/refs?service=git-upload-pack"),
-      fake.repositories,
     );
     expect(fake.readHandle).toHaveBeenCalledTimes(1);
   });
@@ -171,7 +170,6 @@ describe("handleGitSmartHttp request parsing", () => {
     const treeOnly = repository({
       scopes: [
         {
-          agentId: randomUUID(),
           role: "context_tree",
           access: "read",
           branch: "refs/heads/tree-topic",
@@ -184,7 +182,6 @@ describe("handleGitSmartHttp request parsing", () => {
       request({ method: "GET" }),
       authorization(),
       URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-      fake.repositories,
     );
     expect(fake.readHandle).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -196,7 +193,7 @@ describe("handleGitSmartHttp request parsing", () => {
 
   it("falls back to master when a Tree-only grant carries no branch at all", async () => {
     const treeOnly = repository({
-      scopes: [{ agentId: randomUUID(), role: "context_tree", access: "write", publish: "pull_request" }],
+      scopes: [{ role: "context_tree", access: "write", publish: "pull_request" }],
     });
     const fake = harness({ repositories: [treeOnly] });
     await handleGitSmartHttp(
@@ -204,7 +201,6 @@ describe("handleGitSmartHttp request parsing", () => {
       request({ method: "GET" }),
       authorization(),
       URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-      fake.repositories,
     );
     expect(fake.readHandle).toHaveBeenCalledWith(expect.objectContaining({ defaultRef: "refs/heads/master" }));
   });
@@ -216,7 +212,6 @@ describe("handleGitSmartHttp request parsing", () => {
       request({ method: "GET" }),
       authorization(),
       URL_FOR("/owner/repository.git/info/refs?service=git-receive-pack"),
-      fake.repositories,
     );
     expect(response.status).toBe(200);
     expect(fake.acquire).toHaveBeenCalledWith(
@@ -239,7 +234,6 @@ describe("handleGitSmartHttp publication", () => {
       request({ method: "POST", headers: {}, body: Buffer.from("pack") }),
       authorization(),
       URL_FOR("/owner/repository.git/git-receive-pack"),
-      fake.repositories,
     );
     expect(response).toEqual({
       status: 200,
@@ -270,7 +264,7 @@ describe("handleGitSmartHttp publication", () => {
 
   it("denies a receive-pack POST from a read-only grant before acquiring any lease", async () => {
     const readonly = repository({
-      scopes: [{ agentId: randomUUID(), role: "code", access: "read" }],
+      scopes: [{ role: "code", access: "read" }],
     });
     const fake = harness({ repositories: [readonly] });
     await expect(
@@ -279,7 +273,6 @@ describe("handleGitSmartHttp publication", () => {
         request({ method: "POST", headers: {} }),
         authorization(),
         URL_FOR("/owner/repository.git/git-receive-pack"),
-        fake.repositories,
       ),
     ).rejects.toThrow(/scope_denied/);
     expect(fake.acquire).not.toHaveBeenCalled();
@@ -287,7 +280,7 @@ describe("handleGitSmartHttp publication", () => {
   });
 
   it("denies the receive-pack advertisement too when the grant exposes no publication scope", async () => {
-    const readonly = repository({ scopes: [{ agentId: randomUUID(), role: "code", access: "read" }] });
+    const readonly = repository({ scopes: [{ role: "code", access: "read" }] });
     const fake = harness({ repositories: [readonly] });
     await expect(
       handleGitSmartHttp(
@@ -295,7 +288,6 @@ describe("handleGitSmartHttp publication", () => {
         request({ method: "GET" }),
         authorization(),
         URL_FOR("/owner/repository.git/info/refs?service=git-receive-pack"),
-        fake.repositories,
       ),
     ).rejects.toMatchObject({ code: "scope_denied" });
     expect(fake.acquire).not.toHaveBeenCalled();
@@ -310,7 +302,6 @@ describe("handleGitSmartHttp publication", () => {
         request({ method: "POST", headers: {} }),
         authorization(),
         URL_FOR("/owner/repository.git/git-receive-pack"),
-        fake.repositories,
       ),
     ).rejects.toMatchObject({ code: "remote_conflict" });
     expect(fake.release).toHaveBeenCalledTimes(1);
@@ -327,7 +318,7 @@ describe("handleGitSmartHttp rejections", () => {
   ])("rejects %s without acquiring a lease", async (_label, path) => {
     const fake = harness();
     await expect(
-      handleGitSmartHttp(fake.options, request({ method: "GET" }), authorization(), URL_FOR(path), fake.repositories),
+      handleGitSmartHttp(fake.options, request({ method: "GET" }), authorization(), URL_FOR(path)),
     ).rejects.toMatchObject({ code: "invalid_request" });
     expect(fake.acquire).not.toHaveBeenCalled();
   });
@@ -339,7 +330,12 @@ describe("handleGitSmartHttp rejections", () => {
       "/else/repository.git/git-receive-pack",
     ]) {
       await expect(
-        handleGitSmartHttp(fake.options, request({ method: "GET" }), authorization(), URL_FOR(path), fake.repositories),
+        handleGitSmartHttp(
+          fake.options,
+          request({ method: path.includes("info/refs") ? "GET" : "POST" }),
+          authorization(),
+          URL_FOR(path),
+        ),
       ).rejects.toMatchObject({ code: "scope_denied" });
     }
     expect(fake.acquire).not.toHaveBeenCalled();
@@ -353,7 +349,6 @@ describe("handleGitSmartHttp rejections", () => {
         request({ method: "GET" }),
         authorization(),
         URL_FOR("/owner/repository.git/info/refs?service=git-archive"),
-        fake.repositories,
       ),
     ).rejects.toMatchObject({ code: "invalid_request" });
     // The regex only admits the two real services, so this is the repository lookup failing first.
@@ -368,7 +363,6 @@ describe("handleGitSmartHttp rejections", () => {
         request({ method: "POST", headers: {} }),
         authorization(),
         URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-        fake.repositories,
       ),
     ).rejects.toMatchObject({ code: "invalid_request" });
     await expect(
@@ -377,7 +371,6 @@ describe("handleGitSmartHttp rejections", () => {
         request({ method: "GET" }),
         authorization(),
         URL_FOR("/owner/repository.git/git-upload-pack"),
-        fake.repositories,
       ),
     ).rejects.toMatchObject({ code: "invalid_request" });
     expect(fake.acquire).not.toHaveBeenCalled();
@@ -391,7 +384,6 @@ describe("handleGitSmartHttp rejections", () => {
         request({ method: "POST", headers: {} }),
         authorization(),
         URL_FOR("/owner/repository.git/git-upload-pack?service=git-upload-pack"),
-        fake.repositories,
       ),
     ).rejects.toMatchObject({ code: "invalid_request" });
     expect(fake.acquire).not.toHaveBeenCalled();
@@ -406,7 +398,6 @@ describe("handleGitSmartHttp rejections", () => {
           request({ method: "GET" }),
           authorization(),
           URL_FOR(`/owner/repository.git/info/refs${search}`),
-          fake.repositories,
         ),
       ).rejects.toMatchObject({ code: "invalid_request" });
     }
@@ -422,7 +413,6 @@ describe("handleGitSmartHttp rejections", () => {
           request({ method: "GET" }),
           authorization(),
           URL_FOR(`/else/repository.git/info/refs?service=${service}`),
-          fake.repositories,
         ),
       ).rejects.toMatchObject({ code: "scope_denied" });
     }
@@ -441,7 +431,6 @@ describe("handleGitSmartHttp rejections", () => {
           }),
         }),
         URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-        fake.repositories,
       ),
     ).rejects.toThrow("revoked");
     expect(fake.metadata).not.toHaveBeenCalled();
@@ -458,7 +447,6 @@ describe("handleGitSmartHttp rejections", () => {
         request({ method: "GET" }),
         authorization(),
         URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-        fake.repositories,
       ),
     ).rejects.toMatchObject({ code: "scope_denied" });
     expect(fake.readHandle).not.toHaveBeenCalled();
@@ -474,7 +462,6 @@ describe("handleGitSmartHttp rejections", () => {
         request({ method: "GET" }),
         authorization(),
         URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-        fake.repositories,
       ),
     ).rejects.toMatchObject({ code: "unavailable" });
     expect(fake.release).toHaveBeenCalledTimes(1);
@@ -491,7 +478,6 @@ describe("handleGitSmartHttp lease lifetime", () => {
       request({ method: "GET" }),
       authorization(),
       URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-      fake.repositories,
     );
     const iterator = response.body[Symbol.asyncIterator]();
     expect(Buffer.from((await iterator.next()).value as Uint8Array).toString()).toBe("first");
@@ -509,7 +495,6 @@ describe("handleGitSmartHttp lease lifetime", () => {
       { ...base, signal: controller.signal },
       authorization(),
       URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-      fake.repositories,
     );
     // The abort listener only exists once the generator has started, so pull one chunk first.
     const iterator = response.body[Symbol.asyncIterator]();
@@ -530,7 +515,6 @@ describe("handleGitSmartHttp lease lifetime", () => {
       { ...base, signal: controller.signal },
       authorization(),
       URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-      fake.repositories,
     );
     expect(await collect(response.body)).toBe("read-body");
     controller.abort();
@@ -548,7 +532,6 @@ describe("handleGitSmartHttp repository metadata binding", () => {
       request({ method: "GET" }),
       authorization(),
       URL_FOR("/owner/repository.git/info/refs?service=git-upload-pack"),
-      fake.repositories,
     );
     expect(fake.metadata).toHaveBeenCalledWith(
       expect.objectContaining({ repositoryId: "123" }),
@@ -569,7 +552,6 @@ describe("handleGitSmartHttp repository metadata binding", () => {
       request({ method: "POST", headers: {} }),
       authorization(),
       URL_FOR("/owner/repository.git/git-receive-pack"),
-      fake.repositories,
     );
     expect(seen).toBeDefined();
     expect(Object.getOwnPropertyNames(seen as object)).toEqual([]);
@@ -583,7 +565,6 @@ describe("handleGitSmartHttp repository metadata binding", () => {
       request({ method: "POST", headers: {} }),
       authorization({ recheck }),
       URL_FOR("/owner/repository.git/git-receive-pack"),
-      fake.repositories,
     );
     const revalidate = fake.receive.mock.calls[0]?.[0].revalidate as () => Promise<void>;
     await revalidate();
@@ -599,7 +580,6 @@ it("reports every rejection as a GitPublicationError with a bounded code", async
     request({ method: "GET" }),
     authorization(),
     URL_FOR("/owner/repository.git"),
-    fake.repositories,
   ).catch((cause: unknown) => cause);
   expect(error).toBeInstanceOf(GitPublicationError);
   expect((error as GitPublicationError).name).toBe("GitPublicationError");

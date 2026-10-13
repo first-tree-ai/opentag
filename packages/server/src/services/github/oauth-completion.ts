@@ -10,7 +10,7 @@ import type {
   GitHubOAuthCompletionProof,
 } from "./github-connection-service.js";
 import { oauthFlowIsExpired, parseOAuthFlowContext } from "./oauth-flow.js";
-import { type GitHubConnectionRow, toGitHubConnectionStatus } from "./rows.js";
+import { type GitHubConnectionRow, gitHubConnectionColumns, toGitHubConnectionStatus } from "./rows.js";
 
 const CLEARED_OAUTH_SLOT = {
   oauthStateHash: null,
@@ -79,7 +79,6 @@ export async function completeClaimedFlow(
       status: "active",
       githubUserId,
       githubLogin: proof.githubLogin,
-      repositoryBindings: [],
       credentialCiphertext: credential.ciphertext,
       credentialKeyId: credential.keyId,
       accessExpiresAt: credential.accessExpiresAt,
@@ -89,7 +88,7 @@ export async function completeClaimedFlow(
       nextRecheckAt: new Date(now.getTime() + recheckIntervalMs),
       lastVerifiedAt: now,
     })
-    .returning();
+    .returning(gitHubConnectionColumns());
   if (!created) throw new Error("The replacement GitHub connection insert returned no row");
   return { connection: toGitHubConnectionStatus(created), supersededConnectionId: row.id };
 }
@@ -177,7 +176,7 @@ async function activateConnectionRow(
       updatedAt: now,
     })
     .where(eq(githubConnections.id, row.id))
-    .returning();
+    .returning(gitHubConnectionColumns());
   if (!updated) throw new Error("The GitHub connection disappeared during activation");
   return updated;
 }

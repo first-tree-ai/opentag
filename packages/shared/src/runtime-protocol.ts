@@ -57,6 +57,7 @@ export const RUNTIME_CAPABILITY = {
   providerCliReconcile: "runtime.providerCliReconcile",
   providerProxy: "runtime.providerProxy",
   runtimeCredential: "runtime.runtimeCredential",
+  githubUserTask: "runtime.githubUserTask",
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
@@ -78,6 +79,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.providerProxy]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.runtimeCredential]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.githubUserTask]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: {
     min: RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
     max: RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,

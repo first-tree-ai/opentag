@@ -63,5 +63,6 @@ export function registerRuntimeSessionRoutes(app: FastifyInstance, options: Runt
 async function authenticate(request: FastifyRequest, proofs: RuntimeSessionRoutesOptions["proofs"]) {
   const header = request.headers[SESSION_CLI_PROOF_HEADER];
   if (typeof header !== "string") return proofs.authenticate("");
-  return proofs.authenticate(header);
+  const execution = request.headers["x-opentag-execution-id"];
+  return typeof execution === "string" ? proofs.authenticate(header, execution) : proofs.authenticate(header);
 }

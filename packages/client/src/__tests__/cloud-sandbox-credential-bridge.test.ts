@@ -81,7 +81,7 @@ class FakeControlConnection {
           {
             provider: "github",
             bindingId: "binding-github",
-            cli: { provider: "github", connectionId: "connection-1", repositories: [] },
+            cli: { provider: "github", connectionId: "connection-1", authority: "user-task" },
           },
           { provider: "slack", bindingId: "binding-slack", cli: { provider: "slack", teamId: "T1", botUserId: "U1" } },
         ],
@@ -105,7 +105,7 @@ class FakeControlConnection {
         credentialGeneration: "gen-1",
         cli:
           provider === "github"
-            ? { provider: "github", connectionId: "connection-1", repositories: [] }
+            ? { provider: "github", connectionId: "connection-1", authority: "user-task" }
             : { provider: "slack", teamId: "T1", botUserId: "U1" },
       } as RuntimeBusinessFrame;
     }

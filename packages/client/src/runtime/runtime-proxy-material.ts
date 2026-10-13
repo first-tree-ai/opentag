@@ -35,6 +35,7 @@ export interface RuntimeProxyExecutionLayout {
 
 export interface RuntimeProxyEnvironmentInput {
   readonly adapterCaCertPath: string;
+  readonly executionId?: string;
   readonly cliMetadata: (provider: RuntimeProxyProvider) => RuntimeProxyCliMetadata | undefined;
   readonly connectProxyUrl: string;
   readonly handles: ReadonlyMap<RuntimeProxyProvider, string>;
@@ -65,9 +66,20 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
   const environment: Record<string, string | undefined> = {
     // Scrub ambient platform credentials and agent-forwarding from CLI subprocesses.
     OPENTAG_GITHUB_REPOSITORIES: undefined,
+    OPENTAG_EXECUTION_ID: input.executionId,
     GH_ENTERPRISE_TOKEN: undefined,
     GITHUB_ENTERPRISE_TOKEN: undefined,
     GITHUB_TOKEN: undefined,
+    GH_TOKEN: undefined,
+    GH_CONFIG_DIR: join(input.layout.executionDir, "gh-config"),
+    GIT_CONFIG_PARAMETERS: undefined,
+    GIT_ASKPASS: undefined,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+    GIT_CONFIG_GLOBAL: input.layout.gitConfigPath,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
     GIT_SSH: undefined,
     GIT_SSH_COMMAND: undefined,
     SSH_AGENT_PID: undefined,
@@ -75,11 +87,8 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
   };
   const github = input.handles.get("github");
   if (github !== undefined) {
-    const cli = input.cliMetadata("github");
-    const repositories = cli?.provider === "github" ? cli.repositories : [];
     Object.assign(environment, {
       GH_TOKEN: github,
-      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify(repositories),
       GH_PROMPT_DISABLED: "1",
       GIT_CONFIG_COUNT: "2",
       GIT_CONFIG_KEY_0: "credential.helper",
@@ -119,14 +128,12 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
       SLACK_USER_TOKEN: undefined,
     } satisfies Record<string, string | undefined>);
   }
-  if (github !== undefined || slack !== undefined) {
-    // GitHub Git/gh and the Slack CLI (including its fixed-origin file handles) reach the
-    // execution adapter through these two scoped inputs. Nothing else reads them.
-    Object.assign(environment, {
-      [RUNTIME_PROXY_PROVIDER_URL_KEY]: input.connectProxyUrl,
-      [RUNTIME_PROXY_PROVIDER_CA_KEY]: input.adapterCaCertPath,
-    } satisfies Record<string, string>);
-  }
+  // GitHub Git/gh and the Slack CLI (including its fixed-origin file handles) reach the
+  // execution adapter through these two scoped inputs. Nothing else reads them.
+  Object.assign(environment, {
+    [RUNTIME_PROXY_PROVIDER_URL_KEY]: input.connectProxyUrl,
+    [RUNTIME_PROXY_PROVIDER_CA_KEY]: input.adapterCaCertPath,
+  } satisfies Record<string, string>);
   return environment;
 }
 
@@ -342,19 +349,19 @@ export class RuntimeProxyMaterialStore {
     // Provider CLIs opened from the stable env file get the standard routing variables there; the
     // manifest stays scoped so the Agent runtime environment never turns them global.
     const routing = providerRoutingEnvironment(input.environment);
+    if (routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined) {
+      await writeDurableFile(
+        layout.gitConfigPath,
+        renderRuntimeProxyGitConfig({
+          caCertPath: routing.SSL_CERT_FILE,
+          connectProxyUrl: routing.HTTPS_PROXY,
+        }),
+        0o600,
+      );
+    } else {
+      await writeDurableFile(layout.gitConfigPath, "", 0o600);
+    }
     if (github !== undefined) {
-      if (routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined) {
-        await writeDurableFile(
-          layout.gitConfigPath,
-          renderRuntimeProxyGitConfig({
-            caCertPath: routing.SSL_CERT_FILE,
-            connectProxyUrl: routing.HTTPS_PROXY,
-          }),
-          0o600,
-        );
-      } else {
-        await writeDurableFile(layout.gitConfigPath, "", 0o600);
-      }
       await writeDurableFile(layout.gitCredentialHelperPath, renderRuntimeProxyGitCredentialHelper(github), 0o700);
       await chmod(layout.gitCredentialHelperPath, 0o700);
     }

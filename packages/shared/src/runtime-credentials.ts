@@ -1,11 +1,5 @@
 import { z } from "zod";
 import { RuntimeExecutionServiceRequestSchema, RuntimeExecutionServiceSchema } from "./execution-services.js";
-import {
-  GitBranchRefSchema,
-  GitHubRepositoryAccessSchema,
-  GitHubRepositoryPublishModeSchema,
-  GitHubRepositoryRoleSchema,
-} from "./github-integration.js";
 import { MCP_GATEWAY_PATH } from "./mcp-gateway.js";
 import { runtimeByteString as byteString } from "./runtime-config.js";
 import { RuntimeImOutboxContextSchema, RuntimeOpaqueIdSchema } from "./runtime-domain.js";
@@ -37,7 +31,6 @@ export const PROVIDER_PROXY_MAX_STREAM_OPENS_PER_CONNECTION = 256;
 export const PROVIDER_PROXY_STREAM_REVALIDATE_INTERVAL_MS = 5_000;
 export const PROVIDER_PROXY_AUTH_TIMEOUT_MS = 5_000;
 export const PROVIDER_PROXY_MAX_FRAME_BYTES = PROVIDER_PROXY_CHUNK_MAX_BYTES + 4;
-export const RUNTIME_CLI_METADATA_MAX_REPOSITORIES = 100;
 
 /**
  * Reserved internal header carrying the pinned upstream host for GitHub proxy streams
@@ -140,28 +133,12 @@ export const RuntimeSlackCliMetadataSchema = z
   .strict();
 export type RuntimeSlackCliMetadata = z.infer<typeof RuntimeSlackCliMetadataSchema>;
 
-export const RuntimeGitHubCliRepositorySchema = z
-  .object({
-    repositoryId: z.string().min(1).max(128),
-    fullName: z.string().min(1).max(255),
-    role: GitHubRepositoryRoleSchema,
-    access: GitHubRepositoryAccessSchema,
-    branch: GitBranchRefSchema.optional(),
-    publish: GitHubRepositoryPublishModeSchema.optional(),
-    workBranchPrefix: z
-      .string()
-      .max(160)
-      .regex(/^refs\/heads\/opentag\/[0-9a-f-]{36}\/(?:code|context_tree)\/$/)
-      .optional(),
-  })
-  .strict();
-export type RuntimeGitHubCliRepository = z.infer<typeof RuntimeGitHubCliRepositorySchema>;
-
+/** GitHub targets are resolved by the Server per request; no repository directory is exposed. */
 export const RuntimeGitHubCliMetadataSchema = z
   .object({
     provider: z.literal("github"),
-    connectionId: z.string().min(1).max(128),
-    repositories: z.array(RuntimeGitHubCliRepositorySchema).max(RUNTIME_CLI_METADATA_MAX_REPOSITORIES),
+    connectionId: bindingId,
+    authority: z.literal("user-task"),
   })
   .strict();
 export type RuntimeGitHubCliMetadata = z.infer<typeof RuntimeGitHubCliMetadataSchema>;

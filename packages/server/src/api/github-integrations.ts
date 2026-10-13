@@ -31,7 +31,6 @@ import {
   GitHubRepositoryDiscoveryQuerySchema,
   StartGitHubAuthorizationRequestSchema,
   StartGitHubAuthorizationResponseSchema,
-  UpdateGitHubConnectionBindingsRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -197,12 +196,10 @@ export function registerGitHubIntegrationsRoutes(app: FastifyInstance, options: 
     return reply.code(200).send(GitHubRepositoryDiscoveryPageSchema.parse(page));
   });
 
-  app.put(GITHUB_INTEGRATION_BINDINGS_PATH, { preHandler }, async (request, reply) => {
-    if (!options.management) throw unavailable();
-    const input = parseRequest(UpdateGitHubConnectionBindingsRequestSchema, request.body ?? {});
-    const status = await options.management.updateBindings(authenticatedUserId(request), input);
-    return reply.code(200).send(GitHubConnectionStatusSchema.parse(status));
-  });
+  // Retired clients must not mutate the retained historical repository configuration.
+  app.put(GITHUB_INTEGRATION_BINDINGS_PATH, { preHandler }, async (_request, reply) =>
+    reply.code(410).send({ code: "GITHUB_REPOSITORY_CONFIGURATION_RETIRED" }),
+  );
 
   app.post(GITHUB_INTEGRATION_DISCONNECT_PATH, { preHandler }, async (request, reply) => {
     if (!options.management) throw unavailable();

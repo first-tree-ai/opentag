@@ -204,7 +204,8 @@ describe("createClientRuntime production composition", () => {
       ensureAgent.mockRestore();
     });
     const trustedEnvironment: Readonly<Record<string, string | undefined>> = {
-      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/context-tree", role: "context_tree" }]),
+      GH_TOKEN: "execution-local-handle",
+      OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234",
       HTTPS_PROXY: "http://127.0.0.1:43119",
     };
     const requestedSessions: string[] = [];
@@ -448,7 +449,7 @@ describe("createClientRuntime production composition", () => {
       sent.push(frame as Record<string, unknown>);
     });
     const managementEnvironments = vi.fn(() => ({
-      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/other", role: "context_tree" }]),
+      GH_TOKEN: "execution-local-handle",
       HTTPS_PROXY: "http://127.0.0.1:43119",
     }));
     const runtime = await createClientRuntime(connection, {

@@ -1,6 +1,5 @@
 import { Link, useRouter } from "@tanstack/react-router";
 import { useRef, useState } from "react";
-import { useInternalNavigationVisibility } from "../../internal/navigation-visibility.js";
 import * as m from "../../paraglide/messages.js";
 import { DropdownMenu, Icon, Sidebar } from "../../ui/design-system.js";
 import { AgentAvatar } from "../agents/agent-avatar.js";
@@ -9,7 +8,6 @@ import {
   agentContextTreeLink,
   agentDetailLink,
   agentInstructionsLink,
-  agentIntegrationsLink,
   agentMcpLink,
   agentSkillsLink,
   agentTasksLink,
@@ -24,7 +22,6 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
   const state = useAgentIdentityList(me.user.id);
   const agents = state.kind === "ready" ? state.value.agents : [];
   const agent = agents.find((candidate) => candidate.id === agentId);
-  const internal = useInternalNavigationVisibility();
   const items = [
     { section: "home", icon: "overview", label: m.shell_overview(), link: agentDetailLink(agentId) },
     { section: "tasks", icon: "tasks", label: m.shell_tasks(), link: agentTasksLink(agentId) },
@@ -46,16 +43,6 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
      */
     { section: "skills", icon: "skills", label: m.shell_skills(), link: agentSkillsLink(agentId) },
     { section: "mcp", icon: "connector", label: m.shell_mcp(), link: agentMcpLink(agentId) },
-    ...(internal.integrations
-      ? ([
-          {
-            section: "integrations",
-            icon: "integrations",
-            label: m.shell_integrations(),
-            link: agentIntegrationsLink(agentId),
-          },
-        ] as const)
-      : []),
     { section: "usage", icon: "usage", label: m.shell_usage(), link: agentUsageLink(agentId) },
   ] as const;
   return (
@@ -108,7 +95,6 @@ function agentSwitchLink(pathname: string, agentId: string) {
   if (pathname.includes("/context-tree")) return agentContextTreeLink(agentId);
   if (pathname.includes("/mcp")) return agentMcpLink(agentId);
   if (pathname.includes("/skills")) return agentSkillsLink(agentId);
-  if (pathname.includes("/integrations")) return agentIntegrationsLink(agentId);
   if (pathname.includes("/usage")) return agentUsageLink(agentId);
   return agentDetailLink(agentId);
 }

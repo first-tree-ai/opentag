@@ -64,7 +64,7 @@ function providerBodyInstructions(provider: ProviderOutboxProvider): readonly st
 
 /** Non-secret execution metadata is discovered without changing native CLI authentication. */
 export const GITHUB_NATIVE_CLI_INSTRUCTIONS =
-  "GitHub integration, when enabled, preconfigures native git and gh. Read OPENTAG_GITHUB_REPOSITORIES for granted repositories, role, branch, publish mode and workBranchPrefix. Create task branches under the supplied workBranchPrefix; Context Tree direct mode targets its configured branch. Authentication and renewal are automatic; do not run interactive login or replace managed credentials.";
+  "GitHub integration, when enabled, preconfigures native git and gh. Use the repository requested by the user; the Server checks current user and App permissions for each operation. Publish code through PRs from refs/heads/opentag/<sessionId>/code/ task branches. Context Tree operations use the configured working target. Authentication and renewal are automatic; do not run interactive login or replace managed credentials.";
 
 /** On-demand reads support both default Local credentials and the Cloud credential proxy. */
 function providerAttachmentInstructions(provider: ProviderOutboxProvider): readonly string[] {

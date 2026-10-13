@@ -1,0 +1,1 @@
+ALTER TABLE "session_messages" ADD COLUMN "user_task_source" jsonb;

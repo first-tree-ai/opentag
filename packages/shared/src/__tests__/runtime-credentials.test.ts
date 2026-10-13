@@ -6,7 +6,6 @@ import {
   PROVIDER_PROXY_CHUNK_MAX_BYTES,
   PROVIDER_PROXY_INITIAL_CREDIT_BYTES,
   PROVIDER_PROXY_MAX_STREAMS_PER_EXECUTION,
-  RUNTIME_CLI_METADATA_MAX_REPOSITORIES,
   RUNTIME_CREDENTIAL_CAPABILITY_REFRESH_AFTER_MS,
   RUNTIME_CREDENTIAL_CAPABILITY_TTL_MS,
   RUNTIME_CREDENTIAL_PROVIDERS,
@@ -79,20 +78,15 @@ describe("runtime credential control frames", () => {
         outboxContext: { provider: "slack", sessionKind: "thread", channelId: "C1", threadTs: "1.2" },
       }),
     ).toMatchObject({ provider: "slack" });
-    const repositories = Array.from({ length: RUNTIME_CLI_METADATA_MAX_REPOSITORIES }, (_, index) => ({
-      repositoryId: String(index + 1),
-      fullName: `acme/repo-${index + 1}`,
-      role: "code" as const,
-      access: "read" as const,
-    }));
     expect(
-      RuntimeGitHubCliMetadataSchema.parse({ provider: "github", connectionId: "c1", repositories }),
-    ).toMatchObject({ provider: "github" });
+      RuntimeGitHubCliMetadataSchema.parse({ provider: "github", connectionId: "c1", authority: "user-task" }),
+    ).toEqual({ provider: "github", connectionId: "c1", authority: "user-task" });
     expect(() =>
       RuntimeGitHubCliMetadataSchema.parse({
         provider: "github",
         connectionId: "c1",
-        repositories: [...repositories, repositories[0]],
+        authority: "user-task",
+        repositories: [],
       }),
     ).toThrow();
     expect(() =>
@@ -108,76 +102,6 @@ describe("runtime credential control frames", () => {
     ).toThrow();
     expect(() =>
       RuntimeProviderCliMetadataSchema.parse({ provider: "feishu", appId: "cli_a", teamBrand: "lark", token: "x" }),
-    ).toThrow();
-  });
-
-  it("round-trips the optional GitHub branch/publish/work-branch scope without stripping it", () => {
-    const sessionId = "5f7b6a52-9d4f-4b3f-9a6f-9a4b6b62f002";
-    const scoped = {
-      repositoryId: "1",
-      fullName: "acme/repo",
-      role: "context_tree" as const,
-      access: "write" as const,
-      branch: "refs/heads/master",
-      publish: "pull_request" as const,
-      workBranchPrefix: `refs/heads/opentag/${sessionId}/context_tree/`,
-    };
-    const metadata = RuntimeGitHubCliMetadataSchema.parse({
-      provider: "github",
-      connectionId: "c1",
-      repositories: [scoped],
-    });
-    expect(metadata.repositories[0]).toEqual(scoped);
-    // Existing callers that never sent scope fields keep the compact metadata.
-    expect(
-      RuntimeGitHubCliMetadataSchema.parse({
-        provider: "github",
-        connectionId: "c1",
-        repositories: [{ repositoryId: "1", fullName: "acme/repo", role: "code", access: "read" }],
-      }).repositories[0],
-    ).toEqual({ repositoryId: "1", fullName: "acme/repo", role: "code", access: "read" });
-    // The full wire results must carry the same exact scope, not a stripped copy.
-    expect(
-      RuntimeExecutionOpenResultSchema.safeParse({
-        type: "runtime:execution:result",
-        requestId,
-        status: "succeeded",
-        executionId,
-        expiresAt: "2026-09-17T00:00:00Z",
-        providers: [{ provider: "github", bindingId: "c1", cli: metadata }],
-      }).success,
-    ).toBe(true);
-    expect(
-      RuntimeCredentialResultSchema.safeParse({
-        type: "runtime:credential:result",
-        requestId,
-        status: "succeeded",
-        executionId,
-        grantId: executionId,
-        provider: "github",
-        bindingId: "c1",
-        opaqueToken: capability,
-        expiresAt: "2026-09-16T00:01:00Z",
-        refreshAfter: "2026-09-16T00:00:30Z",
-        scopeHash: "a".repeat(64),
-        authorizationRevision: "github:uat-1",
-        credentialGeneration: "9",
-        cli: metadata,
-      }).success,
-    ).toBe(true);
-    expect(() =>
-      RuntimeGitHubCliMetadataSchema.parse({
-        provider: "github",
-        connectionId: "c1",
-        repositories: [{ ...scoped, workBranchPrefix: "refs/heads/opentag/not-a-uuid/code/" }],
-      }),
-    ).toThrow();
-    expect(() =>
-      RuntimeGitHubCliMetadataSchema.parse({
-        provider: "github",
-        connectionId: "c1",
-        repositories: [{ repositoryId: "1", fullName: "acme/repo", role: "code", access: "read", token: "x" }],
-      }),
     ).toThrow();
   });
 
@@ -401,7 +325,7 @@ describe("runtime credential control frames", () => {
           cli: {
             provider: "github",
             connectionId: "c1",
-            repositories: [{ repositoryId: "1", fullName: "acme/repo", role: "code", access: "read" }],
+            authority: "user-task",
           },
         },
       ],

@@ -78,7 +78,11 @@ export async function runSessionCreate(
     maxDurationMs: options.maxDurationMs,
   });
   const runtime = await resolveSessionProofContext();
-  return requestWithRetryKey(input.messageId, () => runtime.api.createInternalSession(runtime.proof, input));
+  return requestWithRetryKey(input.messageId, () =>
+    process.env.OPENTAG_EXECUTION_ID
+      ? runtime.api.createInternalSession(runtime.proof, input, { executionId: process.env.OPENTAG_EXECUTION_ID })
+      : runtime.api.createInternalSession(runtime.proof, input),
+  );
 }
 
 export async function runSessionSend(
@@ -92,7 +96,11 @@ export async function runSessionSend(
     message,
   });
   const runtime = await resolveSessionProofContext();
-  return requestWithRetryKey(input.messageId, () => runtime.api.sendSessionMessage(runtime.proof, input));
+  return requestWithRetryKey(input.messageId, () =>
+    process.env.OPENTAG_EXECUTION_ID
+      ? runtime.api.sendSessionMessage(runtime.proof, input, { executionId: process.env.OPENTAG_EXECUTION_ID })
+      : runtime.api.sendSessionMessage(runtime.proof, input),
+  );
 }
 
 export async function requestWithRetryKey<T>(messageId: string, request: () => Promise<T>): Promise<T> {

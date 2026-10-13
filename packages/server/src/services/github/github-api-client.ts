@@ -217,7 +217,7 @@ function parsePermissions(value: unknown): Record<string, "read" | "write"> {
   return permissions;
 }
 
-function parseInstallation(value: unknown): GitHubUserInstallation {
+export function parseGitHubInstallation(value: unknown): GitHubUserInstallation {
   if (!isRecord(value)) throw invalidResponse("The GitHub API response installation is malformed");
   const account = value.account;
   if (!isRecord(account)) throw invalidResponse("The GitHub API response installation account is malformed");
@@ -384,6 +384,35 @@ export class GitHubApiClient {
     };
   }
 
+  /** Exact target lookup with the user token: GitHub enforces the user/App intersection. */
+  async getRepository(input: {
+    accessToken: string;
+    fullName: string;
+    signal?: AbortSignal;
+  }): Promise<GitHubInstallationRepository> {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.fullName) || input.fullName.includes(".."))
+      throw requestError("Invalid repository name");
+    return parseRepository(await this.#sendApi("GET", `/repos/${input.fullName}`, input.accessToken, input.signal));
+  }
+
+  /** Installation membership probe; no repository catalog is returned or traversed. */
+  async assertUserInstallationAccess(input: {
+    accessToken: string;
+    installationId: string;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    if (!DECIMAL_ID_PATTERN.test(input.installationId)) throw requestError("Invalid installation id");
+    const payload = await this.#sendApi(
+      "GET",
+      `/user/installations/${input.installationId}/repositories?per_page=1&page=1`,
+      input.accessToken,
+      input.signal,
+    );
+    if (!isRecord(payload) || !Array.isArray(payload.repositories) || payload.repositories.length > 1)
+      throw invalidResponse("Invalid installation membership response");
+    parseTotalCount(payload.total_count);
+  }
+
   /** One page of the authenticated user's installations of the App this token belongs to. */
   async listUserInstallations(input: {
     accessToken: string;
@@ -400,7 +429,7 @@ export class GitHubApiClient {
     if (!isRecord(payload)) throw invalidResponse("The GitHub API installations response is malformed");
     return {
       totalCount: parseTotalCount(payload.total_count),
-      installations: parsePageItems(payload.installations, "installations", parseInstallation),
+      installations: parsePageItems(payload.installations, "installations", parseGitHubInstallation),
     };
   }
 

@@ -25,7 +25,12 @@ import {
 import { generateOAuthState } from "./hashes.js";
 import { completeClaimedFlow, requireClaimedFlow, terminalClearingFields } from "./oauth-completion.js";
 import { claimOAuthFlowContext, newOAuthFlowContext, oauthFlowIsExpired, parseOAuthFlowContext } from "./oauth-flow.js";
-import { type GitHubConnectionRow, requireOwnedConnection, toGitHubConnectionStatus } from "./rows.js";
+import {
+  type GitHubConnectionRow,
+  gitHubConnectionColumns,
+  requireOwnedConnection,
+  toGitHubConnectionStatus,
+} from "./rows.js";
 import { GITHUB_OAUTH_FLOW_TTL_MS, GITHUB_RECHECK_INTERVAL_MS } from "./timing.js";
 
 const CURRENT_CONNECTION_STATES = ["pending", "active", "reauthorization_required"] as const;
@@ -109,7 +114,7 @@ export class GitHubConnectionService {
 
   async getConnectionStatus(accountId: string, connectionId: string): Promise<GitHubConnectionStatus> {
     const [row] = await this.database
-      .select()
+      .select(gitHubConnectionColumns())
       .from(githubConnections)
       .where(eq(githubConnections.id, connectionId))
       .limit(1);
@@ -122,7 +127,7 @@ export class GitHubConnectionService {
     appId: string,
   ): Promise<GitHubConnectionStatus | null> {
     const [row] = await this.database
-      .select()
+      .select(gitHubConnectionColumns())
       .from(githubConnections)
       .where(
         and(
@@ -186,7 +191,7 @@ export class GitHubConnectionService {
           oauthContextCiphertext: oauthSecret?.ciphertext ?? null,
           oauthContextKeyId: oauthSecret?.keyId ?? null,
         })
-        .returning();
+        .returning(gitHubConnectionColumns());
       if (!row) throw new Error("The GitHub connection insert returned no row");
       return { connection: toGitHubConnectionStatus(row), flow: flowHandle(row.id, context, state) };
     } catch (error) {
@@ -236,7 +241,7 @@ export class GitHubConnectionService {
     });
     return this.database.transaction(async (transaction) => {
       const [row] = await transaction
-        .select()
+        .select(gitHubConnectionColumns())
         .from(githubConnections)
         .where(eq(githubConnections.id, connectionId))
         .for("update");
@@ -272,7 +277,7 @@ export class GitHubConnectionService {
   async claimOAuthCallback(input: { stateHash: string; loginSessionHash: string }): Promise<ClaimedGitHubOAuthFlow> {
     return this.database.transaction(async (transaction) => {
       const [row] = await transaction
-        .select()
+        .select(gitHubConnectionColumns())
         .from(githubConnections)
         .where(eq(githubConnections.oauthStateHash, input.stateHash))
         .for("update");
@@ -347,7 +352,7 @@ export class GitHubConnectionService {
     const now = this.now();
     await this.database.transaction(async (transaction) => {
       const [row] = await transaction
-        .select()
+        .select(gitHubConnectionColumns())
         .from(githubConnections)
         .where(eq(githubConnections.id, fence.connectionId))
         .for("update");
@@ -394,7 +399,7 @@ export class GitHubConnectionService {
     }
     return this.database.transaction(async (transaction) => {
       const [row] = await transaction
-        .select()
+        .select(gitHubConnectionColumns())
         .from(githubConnections)
         .where(eq(githubConnections.id, proof.connectionId))
         .for("update");
@@ -413,7 +418,7 @@ export class GitHubConnectionService {
     const now = this.now();
     return this.database.transaction(async (transaction) => {
       const [row] = await transaction
-        .select()
+        .select(gitHubConnectionColumns())
         .from(githubConnections)
         .where(eq(githubConnections.id, connectionId))
         .for("update");
@@ -425,7 +430,7 @@ export class GitHubConnectionService {
         .update(githubConnections)
         .set(terminalClearingFields(ownedRow, now, "revoked"))
         .where(eq(githubConnections.id, ownedRow.id))
-        .returning();
+        .returning(gitHubConnectionColumns());
       if (!updated) throw new Error("The GitHub connection disappeared during disconnect");
       return toGitHubConnectionStatus(updated);
     });

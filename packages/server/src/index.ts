@@ -83,6 +83,7 @@ import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
+import { GitHubIatLeases } from "./services/github-proxy/iat-leases.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { SlackWorkingStore } from "./services/im/slack-working-store.js";
@@ -389,11 +390,17 @@ function createContextTreeServices(
   imBindings: ImBindingService,
   agents: AgentService,
   owner: ContextTreeOperationOwner,
+  githubApp: ServerConfig["githubApp"],
 ) {
   const computerKind = (computerId: string) => imBindings.computerKind(computerId);
-  const cloudContextTreeOperations = management
-    ? new CloudContextTreeOperations({ management, computerKind })
-    : undefined;
+  const cloudContextTreeOperations =
+    management && githubApp
+      ? new CloudContextTreeOperations({
+          management,
+          computerKind,
+          leases: new GitHubIatLeases(new GitHubInstallationTokenClient(githubApp)),
+        })
+      : undefined;
   return {
     cloudContextTreeOperations,
     contextTreeOperationService: new ContextTreeOperationService(agents, owner, {
@@ -778,12 +785,11 @@ export async function startServer(): Promise<void> {
     const sandboxService = new SandboxService(database, sessionService, { cloudIdentities });
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
-    const sessionCliProofService = new SessionCliProofService(
-      database,
-      registry,
-      config.encryptionKey,
-      sessionAuthority.proof,
-    );
+    const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey, {
+      ...sessionAuthority.proof,
+      executions: platformRuntime.credentials.owner.executionRegistry,
+      executionLive: (id) => platformRuntime.credentials.owner.isExecutionLive(id),
+    });
     const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
     const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
@@ -838,6 +844,7 @@ export async function startServer(): Promise<void> {
       imBindingService,
       agentService,
       contextTreeOperationOwner,
+      config.githubApp,
     );
     const agentRuntimeOptionsService = new AgentRuntimeOptionsService(
       agentService,

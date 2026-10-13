@@ -153,7 +153,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
   });
 
-  it("shows the unreleased Integrations page only when Internal Tools enables it", async () => {
+  it("keeps removed Agent repository assignment navigation absent even with Internal Tools", async () => {
     installApi({
       internalNavigationVisibility: { integrations: true },
       internalToolsOffered: true,
@@ -167,7 +167,7 @@ describe("OpenTag Web App Shell", () => {
         within(workspaceNavigation)
           .getAllByRole("link")
           .map((item) => item.textContent),
-      ).toEqual(["Overview", "Tasks", "Soul", "Memory", "Skills", "Connectors", "Integrations", "Usage"]),
+      ).toEqual(["Overview", "Tasks", "Soul", "Memory", "Skills", "Connectors", "Usage"]),
     );
   });
 

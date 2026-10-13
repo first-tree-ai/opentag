@@ -116,7 +116,6 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   githubIntegration: [],
   startGitHubAuthorization: [{ intent: "create", returnSurface: "account-integrations", agentId: null }],
   githubRepositories: [],
-  updateGitHubBindings: [{ expectedAuthorizationVersion: "1", bindings: [] }],
   disconnectGitHub: [],
   mcpServers: [],
   mcpServer: [ID],

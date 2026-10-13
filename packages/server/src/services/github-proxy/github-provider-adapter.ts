@@ -18,6 +18,7 @@ import {
   assertPullRequestRefs,
   type GitHubExecutionPolicy,
   type GitHubExecutionRepository,
+  type GitHubExecutionTarget,
   taskBranchPrefix,
 } from "./execution-policy.js";
 import { GitPublicationError } from "./git-packets.js";
@@ -86,7 +87,6 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       throw new GitPublicationError("scope_denied");
     if (authorization.purpose !== "execution") throw new GitPublicationError("scope_denied");
     const url = safeRequestUrl(request.path);
-    const repositories = await this.#options.policy.resolve(authorization, request.signal);
     const origin = request.headers["x-opentag-provider-origin"];
     if (origin === "github.com")
       return handleGitSmartHttp(
@@ -94,25 +94,28 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
         request,
         authorization,
         url,
-        repositories,
       );
     if (origin !== "api.github.com") throw new GitPublicationError("invalid_request");
     if (url.pathname === "/graphql" && !url.search && request.method === "POST")
-      return this.#graphql(request, authorization, repositories);
-    return this.#rest(request, authorization, url, repositories);
+      return this.#graphql(request, authorization);
+    return this.#rest(request, authorization, url);
   }
 
   async #rest(
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
     url: URL,
-    repositories: GitHubExecutionRepository[],
   ): Promise<ProviderProxyResponse> {
     const plan = planGitHubRest(request.method, url);
+    const write = plan.operation !== "read";
+    const repositories = await this.#options.policy.resolve(
+      authorization,
+      request.signal,
+      executionTarget(plan.fullName, write),
+    );
     const repository = findRepository(repositories, plan.fullName);
     if (plan.codeOnly && !repository.scopes.some((scope) => scope.role === "code"))
       throw new GitPublicationError("scope_denied");
-    const write = plan.operation !== "read";
     if (write && !repository.scopes.some((scope) => scope.access === "write" && scope.publish === "pull_request"))
       throw new GitPublicationError("scope_denied");
     const lease = await this.#options.leases.acquire(request.executionId, {
@@ -167,10 +170,26 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
   async #graphql(
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
-    repositories: GitHubExecutionRepository[],
   ): Promise<ProviderProxyResponse> {
     const body = GraphqlRequest.parse(await parseBody(request));
-    const node = (id: string) => this.#nodes.get(request.executionId, authorization.scopeHash, id);
+    const resolveNode = (id: string) => this.#nodes.get(request.executionId, authorization.scopeHash, id);
+    const planned = planGitHubGraphql(
+      body,
+      (target) => {
+        const node = target.nodeId ? resolveNode(target.nodeId) : undefined;
+        if (!target.fullName && node && !node.fullName) throw new GitPublicationError("scope_denied");
+        const fullName = target.fullName ?? node?.fullName;
+        return fullName
+          ? { repositoryId: node?.repositoryId ?? "pending", fullName, nodeId: target.nodeId ?? "" }
+          : undefined;
+      },
+      (id) => resolveNode(id)?.repositoryId,
+    );
+    const repositories = await this.#options.policy.resolve(authorization, request.signal, {
+      fullName: planned.repository.fullName,
+      access: planned.operation === "read" ? "read" : "write",
+      ...(planned.operation === "read" ? {} : { publish: "pull_request" as const }),
+    });
     const plan = planGitHubGraphql(
       body,
       repositories.map((repository) => ({
@@ -178,7 +197,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
         fullName: repository.fullName,
         nodeId: this.#repositoryNodeId(request.executionId, authorization.scopeHash, repository.repositoryId),
       })),
-      (id) => node(id)?.repositoryId,
+      (id) => resolveNode(id)?.repositoryId,
     );
     const repository = findRepository(repositories, plan.repository.fullName);
     const write = plan.operation !== "read";
@@ -248,11 +267,21 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       repository,
       token,
       metadata,
-      recheck: () => authorization.recheck(request.signal),
+      recheck: async () => {
+        await authorization.recheck(request.signal);
+        await repository.recheck?.(request.signal);
+      },
     };
     await context.recheck();
     if (typeof metadata.node_id === "string") {
-      this.#nodes.remember(request.executionId, authorization.scopeHash, metadata.node_id, repository.repositoryId);
+      this.#nodes.remember(
+        request.executionId,
+        authorization.scopeHash,
+        metadata.node_id,
+        repository.repositoryId,
+        undefined,
+        repository.fullName,
+      );
       this.#nodes.remember(
         request.executionId,
         authorization.scopeHash,
@@ -400,6 +429,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
         id,
         context.repository.repositoryId,
         number,
+        context.repository.fullName,
       );
     for (const child of Object.values(row)) if (child && typeof child === "object") this.#remember(context, child);
   }
@@ -468,4 +498,8 @@ function confirmedWriteResponse(path: string, status: number, value: unknown): b
     return fields.length > 0 && fields.every((field) => field !== null && typeof field === "object");
   }
   return typeof row.id === "number" || typeof row.node_id === "string";
+}
+
+function executionTarget(fullName: string, write: boolean): GitHubExecutionTarget {
+  return { fullName, access: write ? "write" : "read", ...(write ? { publish: "pull_request" as const } : {}) };
 }

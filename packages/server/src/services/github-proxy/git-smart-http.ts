@@ -6,7 +6,7 @@ import { GitHubPublicationRemote } from "./git-remote.js";
 import type { GitHubProviderAdapterOptions } from "./github-provider-adapter.js";
 
 export async function handleGitSmartHttp(
-  options: Pick<GitHubProviderAdapterOptions, "leases" | "reads" | "publication"> & {
+  options: Pick<GitHubProviderAdapterOptions, "leases" | "reads" | "publication" | "policy"> & {
     metadata(
       repository: GitHubExecutionRepository,
       token: string,
@@ -16,9 +16,14 @@ export async function handleGitSmartHttp(
   request: ProviderProxyRequest,
   authorization: RuntimeProxyAuthorization,
   url: URL,
-  repositories: GitHubExecutionRepository[],
 ): Promise<ProviderProxyResponse> {
-  const { repository, advertise, service } = parseGitRequest(request, url, repositories);
+  const { fullName, advertise, service } = parseGitRequest(request, url);
+  const repositories = await options.policy.resolve(authorization, request.signal, {
+    fullName,
+    access: service === "git-receive-pack" ? "write" : "read",
+  });
+  const repository = repositories.find((entry) => entry.fullName.toLowerCase() === fullName.toLowerCase());
+  if (!repository) throw new GitPublicationError("scope_denied");
   const scopes = publicationScopes(repository, authorization.sessionId);
   if (service === "git-receive-pack" && !scopes.length) throw new GitPublicationError("scope_denied");
   const lease = await options.leases.acquire(request.executionId, {
@@ -27,7 +32,10 @@ export async function handleGitSmartHttp(
     permissions: { contents: service === "git-receive-pack" && !advertise ? "write" : "read" },
     signal: request.signal,
   });
-  const recheck = () => authorization.recheck(request.signal);
+  const recheck = async () => {
+    await authorization.recheck(request.signal);
+    await repository.recheck?.(request.signal);
+  };
   try {
     await recheck();
     const metadata = await options.metadata(repository, lease.token, request.signal);
@@ -90,15 +98,11 @@ async function* releaseBody(
   }
 }
 
-function parseGitRequest(request: ProviderProxyRequest, url: URL, repositories: GitHubExecutionRepository[]) {
+function parseGitRequest(request: ProviderProxyRequest, url: URL) {
   const match = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/.exec(
     url.pathname,
   );
   if (!match) throw new GitPublicationError("invalid_request");
-  const repository = repositories.find(
-    (entry) => entry.fullName.toLowerCase() === `${match[1]}/${match[2]}`.toLowerCase(),
-  );
-  if (!repository) throw new GitPublicationError("scope_denied");
   const advertise = match[3] === "info/refs";
   const service = advertise ? url.searchParams.get("service") : match[3];
   if (
@@ -108,5 +112,5 @@ function parseGitRequest(request: ProviderProxyRequest, url: URL, repositories: 
       : request.method !== "POST" || !!url.search)
   )
     throw new GitPublicationError("invalid_request");
-  return { repository, advertise, service: service as "git-upload-pack" | "git-receive-pack" };
+  return { fullName: `${match[1]}/${match[2]}`, advertise, service: service as "git-upload-pack" | "git-receive-pack" };
 }

@@ -339,7 +339,6 @@ function ConnectionDetails({
   onReauthorize: () => void;
   onReplace: () => void;
 }) {
-  const boundRepositories = connection.bindings.length;
   return (
     <SettingsList>
       <SettingsRow
@@ -400,23 +399,6 @@ function ConnectionDetails({
             <GitHubInstallationActions busy={busy} refreshing={refreshing} onRefresh={onRefresh} />
           ) : null}
         </div>
-      </SettingsRow>
-
-      <SettingsRow
-        description={m.integrations_github_bound_repositories_description()}
-        label={m.integrations_github_bound_repositories_title({ count: String(boundRepositories) })}
-      >
-        {boundRepositories === 0 ? (
-          <Text as="span" data-ui="account-github-no-bindings" variant="secondary">
-            {m.integrations_github_no_bound_repositories()}
-          </Text>
-        ) : (
-          <ul className="grid justify-end gap-1 text-right" data-ui="account-github-bindings">
-            {connection.bindings.map((binding) => (
-              <li key={binding.bindingId}>{binding.fullNameDisplay}</li>
-            ))}
-          </ul>
-        )}
       </SettingsRow>
     </SettingsList>
   );

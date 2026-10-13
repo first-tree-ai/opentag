@@ -3,11 +3,19 @@ import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
 import { expect, smokeTest as test } from "./fixtures.js";
 import { createAgent, mcpFixture } from "./mcp-browser-fixture.js";
 
-async function openDiscover(page: Page, agentId: string, category = "Business & Data") {
+async function openDiscover(page: Page, agentId: string, category = "Data & Analytics") {
   await page.goto(`/agents/${agentId}/mcp`);
   await page.getByRole("button", { name: "Discover", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Discover", exact: true });
-  await dialog.getByRole("button", { name: category, exact: true }).click();
+  await expect(dialog.getByLabel("Search connectors")).toBeVisible();
+  await expect(dialog.locator('[data-ui="dialog-heading"]')).toBeFocused();
+  const categorySelect = dialog.getByRole("combobox", { name: "Categories", exact: true });
+  if (await categorySelect.isVisible()) {
+    await categorySelect.click();
+    await page.getByRole("option", { name: category, exact: true }).click();
+  } else {
+    await dialog.getByRole("button", { name: category, exact: true }).click();
+  }
   return { dialog, card: dialog.getByRole("listitem").filter({ has: page.getByText("Airtable", { exact: true }) }) };
 }
 
@@ -69,7 +77,7 @@ for (const width of [1440, 736]) {
     await expect(card).toContainText("Connected");
     await expect(card.locator(".mcp-catalog-card-description")).toHaveText(originalDescription);
     await expectHeight(card, height);
-    await expect(dialog.getByRole("button", { name: "Business & Data", exact: true })).toHaveAttribute(
+    await expect(dialog.getByRole("button", { name: "Data & Analytics", exact: true })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -100,7 +108,7 @@ test("mobile keeps a long connector card's height stable while preparing authori
   const agentId = await createAgent(page, "Discover mobile");
   const fixture = await mcpFixture(page);
   fixture.holdOAuth();
-  const { dialog } = await openDiscover(page, agentId, "Google Workspace");
+  const { dialog } = await openDiscover(page, agentId, "Communication");
   const card = dialog.getByRole("listitem").filter({ has: page.getByText("Google Calendar", { exact: true }) });
   await card.scrollIntoViewIfNeeded();
   const height = (await card.boundingBox())?.height;
@@ -213,7 +221,7 @@ for (const finishFirst of ["cancel", "success"] as const) {
     fixture.releaseProbe();
     await search.fill("Google Calendar");
     await expect(calendar).toContainText("Connected");
-    await dialog.getByRole("button", { name: "Business & Data", exact: true }).click();
+    await dialog.getByRole("button", { name: "Data & Analytics", exact: true }).click();
     if (finishFirst === "success") await expect(airtable).toContainText("Connected");
     else await expect(airtable.getByRole("button", { name: "Add: Airtable", exact: true })).toBeEnabled();
     await expectAccessible(page);

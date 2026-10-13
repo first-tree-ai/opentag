@@ -34,7 +34,7 @@
     zh: 搜索和编辑文档与知识库。
   url: https://mcp.notion.com/mcp
   defaultAuthKind: oauth
-  category: general
+  category: docs
   website: https://www.notion.com
   icon: notion.png
   iconIsOfficial: true
@@ -50,11 +50,11 @@
     zh: 查找网页资料。
   url: https://mcp.exa.ai/mcp
   defaultAuthKind: none
-  category: general
+  category: search
   website: https://exa.ai
   icon: exa.svg
   iconIsOfficial: true
-  order: 20
+  order: 10
 
 - id: linear
   name: linear
@@ -66,7 +66,7 @@
     zh: 查找和更新任务与项目。
   url: https://mcp.linear.app/mcp
   defaultAuthKind: oauth
-  category: engineering
+  category: projects
   website: https://linear.app
   icon: linear.svg
   iconIsOfficial: true
@@ -82,11 +82,11 @@
     zh: 排查错误和性能问题。
   url: https://mcp.sentry.dev/mcp
   defaultAuthKind: oauth
-  category: engineering
+  category: development
   website: https://sentry.io
   icon: sentry.svg
   iconIsOfficial: true
-  order: 20
+  order: 10
 
 - id: atlassian
   name: atlassian
@@ -98,11 +98,11 @@
     zh: 查找任务和团队文档。
   url: https://mcp.atlassian.com/v2/mcp?tools=all
   defaultAuthKind: oauth
-  category: engineering
+  category: projects
   website: https://www.atlassian.com
   icon: atlassian.svg
   iconIsOfficial: true
-  order: 30
+  order: 40
 
 - id: gmail
   name: gmail
@@ -117,7 +117,7 @@
   oauthScopes:
     - https://www.googleapis.com/auth/gmail.readonly
     - https://www.googleapis.com/auth/gmail.compose
-  category: google-workspace
+  category: communication
   website: https://workspace.google.com/products/gmail/
   icon: gmail.svg
   iconIsOfficial: true
@@ -136,7 +136,7 @@
   oauthScopes:
     - https://www.googleapis.com/auth/drive.readonly
     - https://www.googleapis.com/auth/drive.file
-  category: google-workspace
+  category: docs
   website: https://workspace.google.com/products/drive/
   icon: google-drive.svg
   iconIsOfficial: true
@@ -157,7 +157,7 @@
     - https://www.googleapis.com/auth/drive.file
     - https://www.googleapis.com/auth/documents.readonly
     - https://www.googleapis.com/auth/documents
-  category: google-workspace
+  category: docs
   website: https://workspace.google.com/products/docs/
   icon: google-docs.svg
   iconIsOfficial: true
@@ -178,11 +178,11 @@
     - https://www.googleapis.com/auth/drive.file
     - https://www.googleapis.com/auth/spreadsheets.readonly
     - https://www.googleapis.com/auth/spreadsheets
-  category: google-workspace
+  category: data
   website: https://workspace.google.com/products/sheets/
   icon: google-sheets.svg
   iconIsOfficial: true
-  order: 40
+  order: 10
 
 - id: google-slides
   name: google-slides
@@ -199,11 +199,11 @@
     - https://www.googleapis.com/auth/drive.file
     - https://www.googleapis.com/auth/presentations.readonly
     - https://www.googleapis.com/auth/presentations
-  category: google-workspace
+  category: docs
   website: https://workspace.google.com/products/slides/
   icon: google-slides.svg
   iconIsOfficial: true
-  order: 50
+  order: 40
 
 - id: google-calendar
   name: google-calendar
@@ -219,11 +219,11 @@
     - https://www.googleapis.com/auth/calendar.calendarlist.readonly
     - https://www.googleapis.com/auth/calendar.events.freebusy
     - https://www.googleapis.com/auth/calendar.events.readonly
-  category: google-workspace
+  category: communication
   website: https://workspace.google.com/products/calendar/
   icon: google-calendar.svg
   iconIsOfficial: true
-  order: 60
+  order: 30
 
 - id: google-chat
   name: google-chat
@@ -241,11 +241,11 @@
     - https://www.googleapis.com/auth/chat.messages.readonly
     - https://www.googleapis.com/auth/chat.messages.create
     - https://www.googleapis.com/auth/chat.users.readstate
-  category: google-workspace
+  category: communication
   website: https://workspace.google.com/products/chat/
   icon: google-chat.svg
   iconIsOfficial: true
-  order: 70
+  order: 20
 
 - id: google-people
   name: google-people
@@ -261,10 +261,10 @@
     - https://www.googleapis.com/auth/directory.readonly
     - https://www.googleapis.com/auth/userinfo.profile
     - https://www.googleapis.com/auth/contacts.readonly
-  category: google-workspace
+  category: communication
   website: https://developers.google.com/people
   icon: google-people.svg
-  order: 80
+  order: 40
 
 - id: microsoft-365
   name: microsoft-365
@@ -276,11 +276,11 @@
     zh: 查看产品路线图和 Azure 更新。
   url: https://www.microsoft.com/releasecommunications/mcp
   defaultAuthKind: none
-  category: productivity
+  category: development
   website: https://www.microsoft.com
   icon: microsoft-365.svg
   iconIsOfficial: true
-  order: 10
+  order: 30
 
 - id: asana
   name: asana
@@ -292,7 +292,7 @@
     zh: 查找和更新任务与项目。
   url: https://mcp.asana.com/v2/mcp
   defaultAuthKind: oauth
-  category: productivity
+  category: projects
   website: https://asana.com
   icon: asana.png
   iconIsOfficial: true
@@ -308,7 +308,7 @@
     zh: 查看和更新看板任务。
   url: https://mcp.monday.com/mcp
   defaultAuthKind: oauth
-  category: productivity
+  category: projects
   website: https://monday.com
   icon: monday.png
   iconIsOfficial: true
@@ -324,11 +324,11 @@
     zh: 查找和更新客户资料。
   url: https://mcp.hubspot.com
   defaultAuthKind: oauth
-  category: productivity
+  category: sales
   website: https://www.hubspot.com
   icon: hubspot.png
   iconIsOfficial: true
-  order: 40
+  order: 10
 
 - id: figma
   name: figma
@@ -376,7 +376,7 @@
   website: https://tavily.com
   icon: tavily.svg
   iconIsOfficial: true
-  order: 10
+  order: 20
 
 - id: firecrawl
   name: firecrawl
@@ -392,7 +392,7 @@
   website: https://www.firecrawl.dev
   icon: firecrawl.svg
   iconIsOfficial: true
-  order: 20
+  order: 30
 
 - id: zapier
   name: zapier
@@ -427,11 +427,11 @@
     zh: 查找和更新表格记录。
   url: https://mcp.airtable.com/mcp
   defaultAuthKind: oauth
-  category: business-data
+  category: data
   website: https://www.airtable.com
   icon: airtable.png
   iconIsOfficial: true
-  order: 10
+  order: 20
 
 - id: supabase
   name: supabase
@@ -443,7 +443,7 @@
     zh: 查询数据库和查看日志。
   url: https://mcp.supabase.com/mcp
   defaultAuthKind: oauth
-  category: business-data
+  category: development
   website: https://supabase.com
   icon: supabase.svg
   iconIsOfficial: true
@@ -459,7 +459,7 @@
     zh: 分析使用情况和转化数据。
   url: https://mcp.amplitude.com/mcp
   defaultAuthKind: oauth
-  category: business-data
+  category: data
   website: https://amplitude.com
   icon: amplitude.png
   iconIsOfficial: true
@@ -475,8 +475,8 @@
     zh: 查询支付和订阅信息。
   url: https://mcp.stripe.com
   defaultAuthKind: oauth
-  category: business-data
+  category: finance
   website: https://stripe.com
   icon: stripe.svg
   iconIsOfficial: true
-  order: 40
+  order: 10

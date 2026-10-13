@@ -579,6 +579,9 @@
   max-height: calc(100dvh - 3rem);
   overflow-wrap: anywhere;
 }
+.mcp-discover-category-select {
+  display: none;
+}
 .mcp-catalog-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -634,6 +637,12 @@
   gap: 0.25rem;
 }
 @media (max-width: 600px) {
+  .mcp-discover-category-select {
+    display: block;
+  }
+  .mcp-discover-category-tabs {
+    display: none;
+  }
   .mcp-discover-dialog {
     padding: 1.25rem;
     max-height: calc(100dvh - 2rem);

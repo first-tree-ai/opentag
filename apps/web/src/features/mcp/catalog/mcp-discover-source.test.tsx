@@ -21,6 +21,7 @@ const CATALOG = vi.hoisted(() => ({
   categories: [
     { id: "general", label: { en: "General", zh: "通用" }, order: 10 },
     { id: "engineering", label: { en: "Engineering", zh: "工程" }, order: 20 },
+    { id: "small", label: { en: "Small category", zh: "小分类" }, order: 30 },
   ],
   entries: [
     {
@@ -190,16 +191,24 @@ function nameForId(id: string): string {
   return "alpha";
 }
 
-async function discover(overrides: { servers?: MCPServer[]; mounted?: MCPAgentServer[] } = {}) {
+async function discover(
+  overrides: {
+    servers?: MCPServer[];
+    mounted?: MCPAgentServer[];
+    entries?: readonly McpCatalogEntry[];
+    initialView?: { query: string; categoryId: string };
+  } = {},
+) {
   const onAdd = vi.fn();
   wrap(
     <McpDiscoverSource
       categories={CATALOG.categories}
-      entries={entries}
+      entries={overrides.entries ?? entries}
       servers={overrides.servers ?? []}
       mounted={overrides.mounted ?? []}
       busy={false}
       onAdd={onAdd}
+      initialView={overrides.initialView}
     />,
   );
   await screen.findByLabelText("Search connectors");
@@ -221,12 +230,26 @@ function chooseCategory(name: string) {
 }
 
 describe("Discover catalog surface", () => {
-  it("starts with all entries and preserves the declared category order", async () => {
-    await discover();
-    const tabs = screen.getByRole("group", { name: "Categories" }).querySelectorAll("button");
-    expect([...tabs].map((tab) => tab.textContent)).toEqual(["All", "General", "Engineering"]);
+  it("hides small category navigation while retaining its entries in All and search", async () => {
+    const singleEntry = {
+      ...entries[0],
+      id: "solo",
+      name: "solo",
+      title: { en: "Solo", zh: "单项" },
+      category: "small",
+    } as McpCatalogEntry;
+    await discover({ entries: [...entries, singleEntry], initialView: { query: "", categoryId: "small" } });
+    const tabs = () => [...screen.getByRole("group", { name: "Categories" }).querySelectorAll("button")];
+    expect(tabs().map((tab) => tab.textContent)).toEqual(["All", "General", "Engineering"]);
     expect(screen.getByText("Alpha")).toBeTruthy();
     expect(screen.getByText("Beta")).toBeTruthy();
+    expect(screen.getByText("Solo")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "Solo" } });
+    expect(screen.getByText("Solo")).toBeTruthy();
+    expect(screen.queryByText("Alpha")).toBeNull();
+    expect(tabs().map((tab) => tab.textContent)).toEqual(["All", "General", "Engineering"]);
+    expect(screen.queryByRole("button", { name: "Small category" })).toBeNull();
   });
 
   it("switches category and keeps the cards' localized copy", async () => {

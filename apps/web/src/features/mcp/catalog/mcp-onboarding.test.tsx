@@ -30,6 +30,7 @@ describe("MCP onboarding", () => {
     await waitFor(() => expect(discover.hasAttribute("disabled")).toBe(false));
     fireEvent.click(discover);
     const search = await screen.findByLabelText("Search connectors");
+    search.focus();
     await waitFor(() => expect(document.activeElement).toBe(search));
     fireEvent.change(search, { target: { value: title } });
     fireEvent.click(await screen.findByRole("button", { name: `Add: ${title}` }));
@@ -41,7 +42,7 @@ describe("MCP onboarding", () => {
     expect(dialog.queryByRole("button", { name: "Add: Linear" })).toBeNull();
   });
 
-  it("focuses search after the account directory finishes loading", async () => {
+  it("focuses the dialog heading on open and preserves user focus after the directory loads", async () => {
     stub([]);
     let finish: (value: { servers: [] }) => void = () => {};
     vi.spyOn(browserApi, "mcpServers").mockImplementation(() => new Promise((resolve) => (finish = resolve)));
@@ -49,9 +50,15 @@ describe("MCP onboarding", () => {
     const discover = await screen.findByRole("button", { name: "Discover" });
     await waitFor(() => expect(discover.hasAttribute("disabled")).toBe(false));
     fireEvent.click(discover);
-    await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", { name: "Discover" });
+    const heading = within(dialog).getByRole("heading", { name: "Discover" });
+    await waitFor(() => expect(document.activeElement?.contains(heading)).toBe(true));
+    const close = within(dialog).getByRole("button", { name: "Close Discover" });
+    close.focus();
     finish({ servers: [] });
     const search = await screen.findByLabelText("Search connectors");
-    await waitFor(() => expect(document.activeElement).toBe(search));
+    expect(document.activeElement).toBe(close);
+    search.focus();
+    expect(document.activeElement).toBe(search);
   });
 });

@@ -48,17 +48,17 @@ describe("mcp preset catalog shape", () => {
     expect(byId.get("atlassian")).toMatchObject({
       url: "https://mcp.atlassian.com/v2/mcp?tools=all",
       defaultAuthKind: "oauth",
-      category: "engineering",
+      category: "projects",
     });
     expect(byId.get("airtable")).toMatchObject({
       url: "https://mcp.airtable.com/mcp",
       defaultAuthKind: "oauth",
-      category: "business-data",
+      category: "data",
     });
     expect(byId.get("amplitude")).toMatchObject({
       url: "https://mcp.amplitude.com/mcp",
       defaultAuthKind: "oauth",
-      category: "business-data",
+      category: "data",
     });
   });
 

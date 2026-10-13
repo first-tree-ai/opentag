@@ -1,9 +1,9 @@
 import type { McpCatalogCategory, McpCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
-import { type RefObject, useState } from "react";
+import { useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Field, KumoInputControl } from "../../../ui/design-system.js";
+import { Button, Field, KumoInputControl, Select } from "../../../ui/design-system.js";
 import { McpServiceIcon } from "../mcp-service-icon.js";
 import { McpCatalogActions, McpCatalogDescription, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
 import {
@@ -22,7 +22,6 @@ export function McpDiscoverSource({
   mounted,
   busy,
   pending = {},
-  searchRef,
   onAdd,
   connectedIds = [],
   initialView,
@@ -35,7 +34,6 @@ export function McpDiscoverSource({
   mounted: readonly MCPAgentServer[];
   busy: boolean;
   pending?: Record<string, { action: "add" | "connect" }>;
-  searchRef?: RefObject<HTMLInputElement | null>;
   onAdd: (entry: McpCatalogEntry) => void;
   connectedIds?: string[];
   initialView?: { query: string; categoryId: string };
@@ -43,7 +41,11 @@ export function McpDiscoverSource({
   feedback?: Record<string, McpCatalogFeedback>;
 }) {
   const locale = getLocale();
-  const [categoryId, setCategoryId] = useState(initialView?.categoryId ?? "");
+  // Navigation depends on the full directory, never on search results or connection status.
+  const shownCategories = categories.filter((category) => entriesInCategory(entries, category.id).length >= 2);
+  const [categoryId, setCategoryId] = useState(
+    () => shownCategories.find((category) => category.id === initialView?.categoryId)?.id ?? "",
+  );
   const [query, setQuery] = useState(initialView?.query ?? "");
   const searching = query.trim().length > 0;
   const visible = searching
@@ -60,7 +62,6 @@ export function McpDiscoverSource({
     <>
       <Field htmlFor="mcp-discover-search" label={m.mcp_discover_search()} hideLabel>
         <KumoInputControl
-          ref={searchRef}
           id="mcp-discover-search"
           value={query}
           disabled={busy}
@@ -71,7 +72,27 @@ export function McpDiscoverSource({
           }}
         />
       </Field>
-      <fieldset className="mt-5 flex flex-wrap gap-1 border-0 p-0">
+      <div className="mcp-discover-category-select mt-5">
+        <Select<string>
+          aria-label={m.mcp_discover_categories()}
+          className="w-full"
+          disabled={busy}
+          value={searching ? "" : categoryId}
+          itemToStringLabel={(id) => {
+            const category = shownCategories.find((category) => category.id === id);
+            return category ? localizedText(category.label, locale) : m.mcp_discover_all();
+          }}
+          onValueChange={(id) => chooseCategory(id ?? "")}
+        >
+          <Select.Option value="">{m.mcp_discover_all()}</Select.Option>
+          {shownCategories.map((category) => (
+            <Select.Option key={category.id} value={category.id}>
+              {localizedText(category.label, locale)}
+            </Select.Option>
+          ))}
+        </Select>
+      </div>
+      <fieldset className="mcp-discover-category-tabs mt-5 flex flex-wrap gap-1 border-0 p-0">
         <legend className="sr-only">{m.mcp_discover_categories()}</legend>
         <Button
           aria-pressed={!searching && !categoryId}
@@ -82,7 +103,7 @@ export function McpDiscoverSource({
         >
           {m.mcp_discover_all()}
         </Button>
-        {categories.map((category) => {
+        {shownCategories.map((category) => {
           const active = !searching && category.id === categoryId;
           return (
             <Button

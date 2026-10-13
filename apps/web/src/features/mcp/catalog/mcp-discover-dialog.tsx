@@ -7,11 +7,7 @@ import { McpDiscoverSource } from "./mcp-discover-source.js";
 import { type DiscoverProps, useMcpDiscoverState } from "./mcp-discover-state.js";
 
 export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCatalogEntry }) {
-  const searchRef = useRef<HTMLInputElement>(null);
   const state = useMcpDiscoverState(props);
-  useEffect(() => {
-    if (!state.account.isPending && !state.account.isError) searchRef.current?.focus();
-  }, [state.account.isPending, state.account.isError]);
   const openEntry = (entry: McpCatalogEntry) => {
     if (state.catalogBusy) return;
     void state.addFromCatalog(entry);
@@ -24,7 +20,6 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
   });
   return (
     <Dialog
-      initialFocusRef={searchRef}
       busy={state.keySetup ? state.keyBusy : state.busy}
       onClose={state.keySetup ? () => void state.cancelKey() : props.onClose}
       onBack={state.keySetup ? () => void state.cancelKey() : undefined}
@@ -40,7 +35,7 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
           </Button>
         </div>
       ) : null}
-      <DiscoverCatalog state={state} props={props} openEntry={openEntry} searchRef={searchRef} />
+      <DiscoverCatalog state={state} props={props} openEntry={openEntry} />
       <DiscoverKeyForm state={state} />
     </Dialog>
   );
@@ -93,12 +88,10 @@ function DiscoverCatalog({
   state,
   props,
   openEntry,
-  searchRef,
 }: {
   state: DiscoverState;
   props: DiscoverProps;
   openEntry: (entry: McpCatalogEntry) => void;
-  searchRef: import("react").RefObject<HTMLInputElement | null>;
 }) {
   const catalogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -132,7 +125,6 @@ function DiscoverCatalog({
         mounted={props.mounted}
         busy={state.catalogBusy}
         pending={state.pending}
-        searchRef={searchRef}
         onAdd={openEntry}
         connectedIds={state.connectedIds}
         feedback={state.feedback}

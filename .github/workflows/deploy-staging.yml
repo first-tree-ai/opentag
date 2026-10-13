@@ -204,6 +204,8 @@ jobs:
         if: steps.gate.outputs.deploy == 'true'
         env:
           SERVER_REVISION: ${{ steps.target.outputs.revision }}
+          # Billing gates follow the capability the published image carries, read from GHCR.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >-
           node scripts/runner/deploy.mjs preflight
           --release "$RUNNER_TEMP/runner-target.json"
@@ -233,6 +235,8 @@ jobs:
         if: steps.gate.outputs.deploy == 'true'
         env:
           SERVER_REVISION: ${{ steps.target.outputs.revision }}
+          # Billing gates follow the capability the published image carries, read from GHCR.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >-
           node scripts/runner/deploy.mjs apply
           --release "$RUNNER_TEMP/runner-target.json"

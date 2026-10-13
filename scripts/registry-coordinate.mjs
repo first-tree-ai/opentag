@@ -4,7 +4,7 @@ import { appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const MANIFEST_MEDIA_TYPES = [
+export const MANIFEST_MEDIA_TYPES = [
   "application/vnd.oci.image.index.v1+json",
   "application/vnd.oci.image.manifest.v1+json",
   "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -70,7 +70,7 @@ export function parseAuthenticateChallenge(header) {
   return { realm, service: parameters.get("service") ?? null, scope: parameters.get("scope") ?? null };
 }
 
-async function requestToken({ challenge, token, fetchImpl }) {
+export async function requestToken({ challenge, token, fetchImpl }) {
   const url = new URL(challenge.realm);
   if (challenge.service) {
     url.searchParams.set("service", challenge.service);

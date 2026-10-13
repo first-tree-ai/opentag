@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { readBillingRevision } from "../cloud-billing-pin.mjs";
+import { readImageBillingRevision } from "../image-billing.mjs";
 import {
   APP_DEFINITION_SAFELIST,
   assertBillingEnvironment,
@@ -35,6 +35,7 @@ import {
   CaproverUnreachableError,
   caproverLogin,
   deployedImageOf,
+  EXPECTED_SERVER_IMAGE_REPOSITORY,
   getAppBuildState,
   getAppDefinition,
   parseSecureOrigin,
@@ -106,7 +107,7 @@ async function readCaproverPassword({ secret, runCommand }) {
 }
 
 /**
- * Prove application readiness and, when pinned, billing readiness at the same Server revision.
+ * Prove application readiness and, when billing is active, billing readiness at the same Server revision.
  * Every probe is bounded and requires HTTP 200 and — when `requireRunner` — the exact Runner
  * target hash. Unreachable is a soft failure the bounded wait can retry, never a success.
  */
@@ -204,8 +205,18 @@ async function readState({ server, token, appName, fetchImpl, deadline = null, n
   return { definition, snapshot: snapshotAppDefinition(definition), envVars: readEnvVars(definition), isBuilding };
 }
 
-function activeBillingRevision(envVars, revision) {
-  return envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") === "true" ? revision : undefined;
+/**
+ * Billing is active only when the deployed image bundles it and the app enables it. An ordinary image
+ * runs with billing disabled even under a stale enable flag, so it is gated on application readiness
+ * alone; a source pin is never taken as proof that the image bundles billing.
+ */
+function activeBillingRevision(envVars, imageRevision) {
+  return envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") === "true" ? imageRevision : undefined;
+}
+
+/** Non-secret billing facts for the summary: what the image bundles, and whether billing is active. */
+function billingSummary(imageRevision, activeRevision) {
+  return { imageRevision: imageRevision ?? null, active: activeRevision !== undefined };
 }
 
 /** Every read-only gate a release must pass before a mutation is even considered. */
@@ -323,7 +334,7 @@ export async function waitForRunnerTarget({
   );
 }
 
-function buildSummary({ mode, app, release, serverRevision, runnerHash, extra }) {
+function buildSummary({ mode, app, release, serverRevision, runnerHash, billing, extra }) {
   return {
     mode,
     app,
@@ -332,6 +343,7 @@ function buildSummary({ mode, app, release, serverRevision, runnerHash, extra })
     serverRevision,
     targetRunner: { image: release.image, version: release.version },
     runnerTarget: runnerHash,
+    billing,
     ...extra,
   };
 }
@@ -401,6 +413,7 @@ export async function runDeploy({
   mode,
   release,
   serverRevision,
+  // The billing revision the Server image at `serverRevision` bundles; absent for an ordinary image.
   billingRevision: bundledBillingRevision,
   config,
   fetchImpl = fetch,
@@ -429,6 +442,7 @@ export async function runDeploy({
   // is the one most likely to find the API unreachable. It observes; it does not mutate.
   let initial = await observe("reading the app state");
   const billingRevision = activeBillingRevision(initial.envVars, bundledBillingRevision);
+  const billing = billingSummary(bundledBillingRevision, billingRevision);
   const cloudTimeout = assertBillingEnvironment({
     definition: initial.definition,
     envVars: initial.envVars,
@@ -436,7 +450,7 @@ export async function runDeploy({
   });
   if (mode === "preflight") {
     assertAppIdle(initial);
-    return buildSummary({ mode, app: config.app, release, serverRevision, runnerHash });
+    return buildSummary({ mode, app: config.app, release, serverRevision, runnerHash, billing });
   }
   // Stop-first replacement may drain a full cloud request before the next process becomes ready.
   const rolloutDeadlineMs = deadlineMs ?? Math.max(300_000, cloudTimeout + 60_000);
@@ -480,6 +494,7 @@ export async function runDeploy({
       release,
       serverRevision,
       runnerHash,
+      billing,
       extra: { currentRunner: current, alreadyAtTarget },
     });
   }
@@ -525,6 +540,7 @@ export async function runDeploy({
     release,
     serverRevision,
     runnerHash,
+    billing,
     extra: { previousRunner: current, updated: !alreadyAtTarget, active: true },
   });
 }
@@ -560,11 +576,19 @@ export function parseDeployArgv(argv) {
 async function main(argv) {
   const { mode, options } = parseDeployArgv(argv);
   const release = await readReleaseRecord(options.release, "release");
+  const serverRevision = options["server-revision"];
+  assertFullSha(serverRevision, "--server-revision");
+  // Read from the published image itself, the same immutable coordinate the app must be running.
+  const imageBillingRevision = await readImageBillingRevision({
+    image: EXPECTED_SERVER_IMAGE_REPOSITORY,
+    reference: serverRevision,
+    token: process.env.GITHUB_TOKEN,
+  });
   const summary = await runDeploy({
     mode,
     release,
-    serverRevision: options["server-revision"],
-    billingRevision: readBillingRevision({ serverRevision: options["server-revision"] }),
+    serverRevision,
+    billingRevision: imageBillingRevision ?? undefined,
     config: readDeployConfig(process.env),
   });
   console.log(JSON.stringify(summary));

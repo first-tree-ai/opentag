@@ -71,10 +71,11 @@ describe("account-wide cloud usage", () => {
     await screen.findByText("Model calls");
     expect(screen.queryByRole("alert")).toBeNull();
   });
-  it("explains disabled cloud billing without displaying local token data", async () => {
+  it("explains disabled cloud models without mentioning billing or displaying local token data", async () => {
     vi.spyOn(browserApi, "cloudUsage").mockResolvedValue({ enabled: false });
     mount();
-    expect(await screen.findByText("Cloud usage is available when cloud billing is enabled.")).toBeTruthy();
+    expect(await screen.findByText("Cloud usage is available when cloud models are enabled.")).toBeTruthy();
+    expect(screen.queryByText(/billing/i)).toBeNull();
     expect(screen.queryByText("Total tokens")).toBeNull();
   });
 });

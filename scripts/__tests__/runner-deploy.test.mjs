@@ -969,10 +969,36 @@ test("billing configuration rejects overlapping processes, insufficient drain ti
   const disabled = billingDefinition();
   disabled.envVars.find(({ key }) => key === "OPENTAG_CLOUD_BILLING_ENABLED").value = "false";
   assert.equal(validate(disabled), 0);
-  assert.throws(
-    () => assertBillingEnvironment({ definition: billingDefinition(), envVars: readEnvVars(billingDefinition()) }),
-    /pinned billing revision/,
-  );
+  // An ordinary image runs with billing disabled, so a stale flag needs no billing rollout settings.
+  const stale = billingDefinition({ instanceCount: 2, serviceUpdateOverride: "{}" });
+  assert.equal(assertBillingEnvironment({ definition: stale, envVars: readEnvVars(stale) }), 0);
+  for (const definition of [billingDefinition(), appDefinition()]) {
+    definition.envVars.push({ key: "OPENTAG_CLOUD_BILLING_CAPABILITY", value: "bundled" });
+    assert.throws(
+      () => assertBillingEnvironment({ definition, envVars: readEnvVars(definition) }),
+      /capability must come from the image/,
+    );
+  }
+});
+
+test("an ordinary image is gated on application readiness alone, even under a stale billing flag", async () => {
+  for (const mode of ["preflight", "check", "apply"]) {
+    // Two replicas and no stop-first override would fail every billing rollout gate.
+    const definition = billingDefinition({ instanceCount: 2, serviceUpdateOverride: "{}" });
+    const fake = caproverFake({ definition });
+    const result = await runDeploy(
+      deployDeps(fake, {
+        mode,
+        billingRevision: undefined,
+        fetchImpl: async (url, options) => {
+          assert.ok(!url.endsWith("/cloud-readyz"), "An ordinary image must not be gated on billing readiness");
+          return fake.fetchImpl(url, options);
+        },
+      }),
+    );
+    assert.deepEqual(result.billing, { imageRevision: null, active: false });
+    assert.equal(fake.updates().length, mode === "apply" ? 1 : 0);
+  }
 });
 
 test("a bundled billing package does not enable billing during preflight, checks or Runner activation", async () => {
@@ -1024,6 +1050,7 @@ test("cloud activation verifies billing before mutation and after the Runner upd
   const fake = cloudFake();
   const result = await runDeploy(deployDeps(fake, { mode: "apply", billingRevision: BILLING_SHA }));
   assert.equal(result.updated, true);
+  assert.deepEqual(result.billing, { imageRevision: BILLING_SHA, active: true });
   assert.equal(fake.updates().length, 1);
   assert.equal(fake.probes(), 2);
 });

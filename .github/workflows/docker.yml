@@ -49,22 +49,39 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/registry-coordinate.mjs --image "$IMAGE" --reference "$GITHUB_SHA"
 
-      - name: Read the pinned billing revision
+      - name: Choose the image target
         id: billing
         if: steps.commit.outputs.present != 'true'
         env:
           BILLING_READ_TOKEN: ${{ secrets.OPENTAG_BILLING_READ_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "$BILLING_READ_TOKEN" || {
-            echo 'Configure OPENTAG_BILLING_READ_TOKEN with read-only access to opentag-billing' >&2
+          # The read token is a build credential. Unset, empty or whitespace-only means billing is
+          # deliberately unavailable for this build: publish the ordinary image instead of failing.
+          if [ -z "${BILLING_READ_TOKEN//[[:space:]]/}" ]; then
+            echo "::notice::OPENTAG_BILLING_READ_TOKEN is not configured; building the ordinary image without cloud billing"
+            printf 'target=runtime\nrevision=\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BILLING_REVISION=$(node scripts/cloud-billing-pin.mjs)
+          printf 'target=cloud\nrevision=%s\n' "$BILLING_REVISION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the billing credential
+        if: steps.commit.outputs.present != 'true' && steps.billing.outputs.target == 'cloud'
+        env:
+          GH_TOKEN: ${{ secrets.OPENTAG_BILLING_READ_TOKEN }}
+          BILLING_REVISION: ${{ steps.billing.outputs.revision }}
+        run: |
+          # A supplied token requests a billing build, so an unusable one fails here with a clear
+          # cause instead of silently publishing an image without billing.
+          gh api "repos/first-tree-ai/opentag-billing/commits/$BILLING_REVISION" --jq .sha >/dev/null || {
+            echo "OPENTAG_BILLING_READ_TOKEN is set but cannot read first-tree-ai/opentag-billing at $BILLING_REVISION." >&2
+            echo 'Grant it read-only access to that repository, or clear the secret to build the ordinary image.' >&2
             exit 1
           }
-          BILLING_REVISION=$(node scripts/cloud-billing-pin.mjs)
-          printf 'revision=%s\n' "$BILLING_REVISION" >> "$GITHUB_OUTPUT"
 
       - name: Check out the private billing package
-        if: steps.commit.outputs.present != 'true'
+        if: steps.commit.outputs.present != 'true' && steps.billing.outputs.target == 'cloud'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: first-tree-ai/opentag-billing
@@ -104,8 +121,8 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          target: cloud
-          build-contexts: billing=.cloud-billing
+          target: ${{ steps.billing.outputs.target }}
+          build-contexts: ${{ steps.billing.outputs.target == 'cloud' && 'billing=.cloud-billing' || '' }}
           push: true
           build-args: |
             OPENTAG_BILLING_REVISION=${{ steps.billing.outputs.revision }}
@@ -116,13 +133,30 @@ jobs:
           annotations: ${{ steps.metadata.outputs.annotations }}
           provenance: mode=max
           sbom: true
-          cache-from: type=gha,scope=server-image
-          cache-to: type=gha,mode=max,scope=server-image
+          # One scope per target, so alternating builds do not evict each other's layer cache.
+          cache-from: type=gha,scope=${{ steps.billing.outputs.target == 'cloud' && 'server-image' || 'server-image-runtime' }}
+          cache-to: type=gha,mode=max,scope=${{ steps.billing.outputs.target == 'cloud' && 'server-image' || 'server-image-runtime' }}
+
+      - name: Read the published billing capability
+        id: capability
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REUSED: ${{ steps.commit.outputs.present }}
+          EXPECTED: ${{ steps.billing.outputs.revision || 'none' }}
+        run: |
+          # Read the capability back from the published image. A fresh build must carry exactly what
+          # was requested; a reused image keeps whatever it was built with, so it is reported as is.
+          if [ "$REUSED" = "true" ]; then
+            node scripts/image-billing.mjs --image "$IMAGE" --reference "$GITHUB_SHA"
+          else
+            node scripts/image-billing.mjs --image "$IMAGE" --reference "$GITHUB_SHA" --expect "$EXPECTED"
+          fi
 
       - name: Summarise the commit image
         env:
           REUSED: ${{ steps.commit.outputs.present }}
           DIGEST: ${{ steps.commit.outputs.present == 'true' && steps.commit.outputs.digest || steps.build.outputs.digest }}
+          BILLING_REVISION: ${{ steps.capability.outputs.billing_revision }}
         run: |
           # Tags are pointers; the digest is the only byte-for-byte pin.
           {
@@ -130,6 +164,11 @@ jobs:
             echo
             printf -- "- Digest: \`%s@%s\`\n" "$IMAGE" "$DIGEST"
             printf -- "- Commit coordinate: \`%s:%s\`\n" "$IMAGE" "$GITHUB_SHA"
+            if [ -n "$BILLING_REVISION" ]; then
+              printf -- "- Cloud billing: bundled at \`%s\`\n" "$BILLING_REVISION"
+            else
+              echo "- Cloud billing: not bundled (ordinary image)"
+            fi
             if [ "$REUSED" = "true" ]; then
               echo "- Reused the image already published for this revision; nothing was rebuilt."
             fi

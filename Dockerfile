@@ -100,6 +100,7 @@ RUN pnpm prune --prod
 FROM application AS cloud
 ARG OPENTAG_BILLING_REVISION
 ENV OPENTAG_BILLING_REVISION=${OPENTAG_BILLING_REVISION}
+ENV OPENTAG_CLOUD_BILLING_CAPABILITY=bundled
 LABEL org.opentag.billing.revision=${OPENTAG_BILLING_REVISION}
 USER root
 COPY --from=billing-prod-deps /module/node_modules /opt/opentag-cloud-billing/node_modules
@@ -112,4 +113,7 @@ RUN mkdir -p /opt/opentag-cloud-billing/node_modules/@opentag \
 USER opentag
 
 # The default image and pull-request builds remain independent of private source and credentials.
+# The image states that it has no billing, so a stale OPENTAG_CLOUD_BILLING_ENABLED=true cannot make
+# the Server look for a package this image never installed.
 FROM application AS runtime
+ENV OPENTAG_CLOUD_BILLING_CAPABILITY=absent

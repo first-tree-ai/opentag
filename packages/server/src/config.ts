@@ -952,6 +952,8 @@ export function serverEnvironmentSummary(config: ServerConfig) {
       identities: config.cloudIdentities.enabled,
       runner: config.cloudRunner.enabled,
       model: config.cloudModel.enabled,
+      billing: config.cloudBilling.enabled,
+      billingCapability: config.cloudBilling.capability,
     },
     environment: config.environment,
     packageName: config.channel.packageName,

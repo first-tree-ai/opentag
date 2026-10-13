@@ -235,12 +235,17 @@ export function assertRunnerEnvironment({ envVars, channel, publicUrl }) {
   }
 }
 
-/** Enforce single-replica cloud recovery and return the request timeout needed for rollout draining. */
+/**
+ * Enforce single-replica cloud recovery and return the request timeout needed for rollout draining.
+ *
+ * `billingRevision` is the billing revision the deployed image itself bundles. Billing is active only
+ * when the image bundles it and the app enables it; an ordinary image boots with billing disabled
+ * even under a stale enable flag, so it needs none of the billing rollout configuration.
+ */
 export function assertBillingEnvironment({ definition, envVars, billingRevision }) {
-  if (envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") !== "true") return 0;
-  if (!billingRevision) {
-    throw new Error("Billing deployments require the application's pinned billing revision");
-  }
+  if (envVars.has("OPENTAG_CLOUD_BILLING_CAPABILITY"))
+    throw new Error("The billing capability must come from the image");
+  if (envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") !== "true" || !billingRevision) return 0;
   for (const key of ["OPENTAG_CLOUD_MODEL_ENABLED", "OPENTAG_AUTO_MIGRATE"]) {
     if (envVars.get(key) !== "true") throw new Error(`${key} must remain enabled for cloud billing`);
   }

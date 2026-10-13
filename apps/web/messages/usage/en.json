@@ -12,7 +12,7 @@
   "usage_chart_description": "{tokens} Tokens used · {window}",
   "usage_chart_tooltip": "{tokens} Tokens",
   "usage_cloud_description": "Recorded model calls across all your cloud agents.",
-  "usage_cloud_disabled": "Cloud usage is available when cloud billing is enabled.",
+  "usage_cloud_disabled": "Cloud usage is available when cloud models are enabled.",
   "usage_cloud_loading": "Loading cloud usage…",
   "usage_cloud_partial": "Token data is available for {measured} of {requests} model calls. Totals and charts reflect reported data.",
   "usage_cloud_requests": "Model calls",

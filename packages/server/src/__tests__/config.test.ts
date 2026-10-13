@@ -755,7 +755,7 @@ describe("parseServerConfig", () => {
     expect(serverEnvironmentSummary(config)).toEqual({
       binName: "opentag-staging",
       channel: "staging",
-      cloud: { identities: false, runner: false, model: false },
+      cloud: { identities: false, runner: false, model: false, billing: false, billingCapability: "unspecified" },
       environment: "staging",
       packageName: "open-tag-staging",
       publicUrl: "https://dev.example.com",
@@ -782,7 +782,13 @@ describe("parseServerConfig", () => {
         OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-master-key-sentinel-9f1c0d",
       }),
     );
-    expect(summary.cloud).toEqual({ identities: true, runner: true, model: true });
+    expect(summary.cloud).toEqual({
+      identities: true,
+      runner: true,
+      model: true,
+      billing: false,
+      billingCapability: "unspecified",
+    });
     const serialized = JSON.stringify(summary);
     expect(serialized).not.toContain("opentag-test");
     expect(serialized).not.toContain("fixture-master-key-sentinel");

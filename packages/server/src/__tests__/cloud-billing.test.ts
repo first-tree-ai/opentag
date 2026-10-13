@@ -10,7 +10,7 @@ import { registerCloudModelProxyRoutes } from "../api/cloud-model-proxy.js";
 import { createApp } from "../app.js";
 import { BootstrapReadiness } from "../bootstrap-readiness.js";
 import type { CloudBilling } from "../cloud-billing.js";
-import { resolveCloudBillingConfig } from "../cloud-billing-config.js";
+import { isCloudBillingFlagIgnored, resolveCloudBillingConfig } from "../cloud-billing-config.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { loadCloudBilling } from "../services/cloud-billing-module.js";
 import { CloudCallStore } from "../services/cloud-call-store.js";
@@ -58,7 +58,7 @@ function accountApp(billing?: CloudBilling) {
 const headers = { authorization: "Bearer access" };
 describe("in-process cloud billing", () => {
   it("does not load the private package in public builds, and refuses missing or invalid enabled modules", async () => {
-    expect(resolveCloudBillingConfig({})).toEqual({ enabled: false });
+    expect(resolveCloudBillingConfig({})).toEqual({ enabled: false, requested: false, capability: "unspecified" });
     const options = {
       databaseUrl: "postgres://fixture",
       publicUrl: "https://app.example",
@@ -74,10 +74,31 @@ describe("in-process cloud billing", () => {
     load.mockResolvedValue({ createCloudBilling: vi.fn().mockResolvedValue(billing) });
     expect(await loadCloudBilling(true, options, load)).toBe(billing);
     expect(load).toHaveBeenLastCalledWith("@opentag/cloud-billing");
-    expect(resolveCloudBillingConfig({ OPENTAG_CLOUD_BILLING_ENABLED: "true" })).toEqual({ enabled: true });
+    expect(resolveCloudBillingConfig({ OPENTAG_CLOUD_BILLING_ENABLED: "true" })).toEqual({
+      enabled: true,
+      requested: true,
+      capability: "unspecified",
+    });
     await expect(loadCloudBilling(true, { ...options, environment: {} }, load)).rejects.toThrow(
       "Cloud billing requires cloud models",
     );
+  });
+  it("lets an image without billing ignore a stale enable flag, and keeps billing images explicit", () => {
+    const ordinary = { OPENTAG_CLOUD_BILLING_CAPABILITY: "absent" };
+    for (const flag of [undefined, "false", "true"]) {
+      const config = resolveCloudBillingConfig({ ...ordinary, OPENTAG_CLOUD_BILLING_ENABLED: flag });
+      expect(config.enabled).toBe(false);
+      expect(isCloudBillingFlagIgnored(config)).toBe(flag === "true");
+    }
+    const bundled = { OPENTAG_CLOUD_BILLING_CAPABILITY: "bundled" };
+    expect(resolveCloudBillingConfig({ ...bundled, OPENTAG_CLOUD_BILLING_ENABLED: "true" })).toEqual({
+      enabled: true,
+      requested: true,
+      capability: "bundled",
+    });
+    expect(resolveCloudBillingConfig({ ...bundled, OPENTAG_CLOUD_BILLING_ENABLED: "false" }).enabled).toBe(false);
+    expect(resolveCloudBillingConfig({ OPENTAG_CLOUD_BILLING_CAPABILITY: " " }).capability).toBe("unspecified");
+    expect(() => resolveCloudBillingConfig({ OPENTAG_CLOUD_BILLING_CAPABILITY: "maybe" })).toThrow();
   });
   it("checks module readiness while ordinary application readiness stays independent", async () => {
     const billing = moduleFixture();

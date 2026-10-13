@@ -11,6 +11,7 @@ import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { CloudBilling } from "./cloud-billing.js";
+import { isCloudBillingFlagIgnored } from "./cloud-billing-config.js";
 import { cloudAvailability } from "./cloud-product-config.js";
 import {
   cloudAppOptions,
@@ -472,6 +473,15 @@ function deploymentProof(config: ServerConfig) {
         ? { image: config.cloudRunner.image, version: config.cloudIdentities.runnerVersion }
         : undefined,
   };
+}
+
+/** An image without billing boots with billing off; a stale enable flag is reported, never fatal. */
+function reportIgnoredCloudBilling(config: ServerConfig, log: { warn(payload: object, message: string): void }) {
+  if (!isCloudBillingFlagIgnored(config.cloudBilling)) return;
+  log.warn(
+    { event: "cloud_billing_flag_ignored", capability: config.cloudBilling.capability },
+    "OPENTAG_CLOUD_BILLING_ENABLED=true is ignored: this image does not bundle cloud billing",
+  );
 }
 
 export async function startServer(): Promise<void> {
@@ -1251,6 +1261,7 @@ export async function startServer(): Promise<void> {
       await shutdownTelemetry();
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
+    reportIgnoredCloudBilling(config, app.log);
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");

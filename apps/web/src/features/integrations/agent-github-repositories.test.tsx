@@ -176,7 +176,7 @@ describe("AgentGitHubRepositories", () => {
     stubDiscovery();
     const update = vi
       .spyOn(browserApi, "updateGitHubBindings")
-      .mockResolvedValue({ ...connection, authorizationVersion: "3" } as never);
+      .mockImplementation(async (input) => ({ ...connection, authorizationVersion: "3", bindings: input.bindings }));
     render(<AgentGitHubRepositories agentId={AGENT_ID} />);
 
     expect(await screen.findByText("octocat/hello-world")).toBeTruthy();
@@ -993,7 +993,10 @@ describe("AgentGitHubRepositories scope editing", () => {
     const connection = activeConnection([heldBinding]);
     stubCommon(connection);
     stubDiscovery();
-    vi.spyOn(browserApi, "updateGitHubBindings").mockResolvedValue(connection as never);
+    vi.spyOn(browserApi, "updateGitHubBindings").mockImplementation(async (input) => ({
+      ...connection,
+      bindings: input.bindings,
+    }));
     render(<AgentGitHubRepositories agentId={AGENT_ID} />);
 
     fireEvent.click(await screen.findByRole("checkbox", { name: /Use with this Agent/ }));

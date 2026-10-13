@@ -5,6 +5,7 @@ export function useGitHubActionFocus(busy: boolean) {
   const resultRef = useRef<HTMLParagraphElement>(null);
   const trigger = useRef<HTMLElement | null>(null);
 
+  // An immediate action may batch away busy=true, so inspect the trigger after every commit.
   useEffect(() => {
     if (busy) return;
     const previous = trigger.current;
@@ -14,7 +15,7 @@ export function useGitHubActionFocus(busy: boolean) {
     if (active !== document.body && !(active === previous && previous.matches(":disabled"))) return;
     const target = previous.isConnected && !previous.matches(":disabled") ? previous : resultRef.current;
     target?.focus();
-  }, [busy]);
+  });
 
   function captureFocus() {
     const active = document.activeElement;

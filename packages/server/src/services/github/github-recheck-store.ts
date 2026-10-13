@@ -187,8 +187,7 @@ export class GitHubConnectionRecheckStore {
   }
 
   /**
-   * The full active snapshot a recheck worker needs after the due scan: bindings to re-verify and
-   * the sealed credential to verify with. Fencing versions travel with it so a commit can only
+   * The active identity and sealed credential a recheck worker needs after the due scan. Fencing versions travel with it so a commit can only
    * land on the exact row state the scan observed. Never logged.
    */
   async getActiveRecheckSnapshot(connectionId: string): Promise<GitHubActiveConnectionSnapshot | null> {

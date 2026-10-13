@@ -65,6 +65,9 @@ describe("AgentSetupPage for a Cloud-bound Agent", () => {
 
     expect(screen.getByRole("heading", { name: "Cloud environment" })).toBeTruthy();
     expect(screen.getByText("Hosted by OpenTag. The environment starts when your first task begins.")).toBeTruthy();
+    expect(screen.getAllByText(/environment starts/i)).toHaveLength(1);
+    expect(screen.queryByText(/Nothing to install/i)).toBeNull();
+    expect(screen.getByText("Continue to connect messaging.")).toBeTruthy();
     expect(screen.getByText("Ready")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
     expect(screen.queryByText(/Install/)).toBeNull();

@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { formatDateTime, initials } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
 import { Text } from "../ui/design-system.js";
+import { AgentAvatar } from "./agents/agent-avatar.js";
 import { TaskActivityTimeline } from "./task-activity-timeline.js";
 import { TaskAttachments } from "./task-attachments.js";
 import { TaskMessageBody } from "./task-message-body.js";
@@ -89,12 +90,11 @@ function TaskEntry({
       data-task-entry-id={entry.id}
     >
       {!compact ? (
-        <span
-          className="grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-strong"
-          aria-hidden="true"
-        >
-          {task.agent.displayName.charAt(0)}
-        </span>
+        <AgentAvatar
+          displayName={task.agent.displayName}
+          avatarPath={task.agent.avatarPath}
+          className="size-8 text-xs font-medium text-kumo-strong"
+        />
       ) : null}
       <div className="grid min-w-0 gap-2">
         {!compact ? (
@@ -271,12 +271,11 @@ function TaskCapturedReplyEntry({
       data-ui="task-message-agent"
       data-task-entry-id={entry.id}
     >
-      <span
-        className="grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-strong"
-        aria-hidden="true"
-      >
-        {task.agent.displayName.charAt(0)}
-      </span>
+      <AgentAvatar
+        displayName={task.agent.displayName}
+        avatarPath={task.agent.avatarPath}
+        className="size-8 text-xs font-medium text-kumo-strong"
+      />
       <div className="grid min-w-0 gap-2">
         <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
           <strong>{task.agent.displayName}</strong>

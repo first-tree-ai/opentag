@@ -1,3 +1,4 @@
+import type { AgentSummary } from "@opentag/shared/browser";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
@@ -5,6 +6,7 @@ import { forgetReboardReview, isReboardReviewFor } from "../../internal/reboard-
 import { AgentSetupSurface } from "../../onboarding-v2/page.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Loader, Text } from "../../ui/design-system.js";
+import { AgentAvatar } from "../agents/agent-avatar.js";
 import { agentDetailLink } from "../agents/agent-routes.js";
 import { Redirect } from "../navigation/redirect.js";
 import { useAccount } from "../session/session-context.js";
@@ -12,10 +14,7 @@ import { useAccount } from "../session/session-context.js";
 /** An exact setup target is a uuid; anything else can never name an Agent and fails closed. */
 const AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-interface ActiveAgentTarget {
-  displayName: string;
-  id: string;
-}
+type ActiveAgentTarget = Pick<AgentSummary, "displayName" | "id" | "avatarPath">;
 
 /**
  * How the canonical setup route resolves for this Account.
@@ -173,7 +172,9 @@ function TargetedAgentSetup({
           return;
         }
         const active = agents.flatMap((candidate) =>
-          candidate.status === "active" ? [{ displayName: candidate.displayName, id: candidate.id }] : [],
+          candidate.status === "active"
+            ? [{ displayName: candidate.displayName, id: candidate.id, avatarPath: candidate.avatarPath }]
+            : [],
         );
         setResolution(resolveTargets(agentId, active, existingAgentNames));
       },
@@ -253,11 +254,12 @@ function TargetedAgentSetup({
           {resolution.agents.map((agent) => (
             <li key={agent.id}>
               <Link
-                className="block ui-surface bg-kumo-base px-4 py-3 text-sm text-kumo-strong ring ring-kumo-line"
+                className="flex min-w-0 items-center gap-3 ui-surface bg-kumo-base px-4 py-3 text-sm text-kumo-strong ring ring-kumo-line"
                 search={{ agentId: agent.id, review }}
                 to="/agents/setup"
               >
-                {agent.displayName}
+                <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} className="size-8 text-xs" />
+                <span className="min-w-0 break-words">{agent.displayName}</span>
               </Link>
             </li>
           ))}

@@ -1200,15 +1200,11 @@ function CloudEnvironmentSection({ snapshot }: { readonly snapshot: AgentSetupSn
           title={component.displayName}
           tone={available ? "success" : "warning"}
         />
-        {available ? (
-          <p className={HINT} data-ui="agent-setup-cloud-ready-detail">
-            {m.onboarding_v2_cloud_ready_detail()}
-          </p>
-        ) : (
+        {!available ? (
           <p className={HINT} data-ui="agent-setup-cloud-blocked-detail" role="alert">
             {cloudUnavailableDetail(component.status)}
           </p>
-        )}
+        ) : null}
       </div>
     </section>
   );

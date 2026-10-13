@@ -22,6 +22,7 @@ import {
   Text,
 } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
+import { AgentAvatar } from "./agents/agent-avatar.js";
 import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
 import {
   liveRefreshErrors,
@@ -147,14 +148,23 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
                 label={m.tasks_filter_by_agent()}
                 options={[
                   { label: m.tasks_all_agents(), value: "all" },
-                  ...agents.map((agent) => ({ label: agent.displayName, value: agent.id })),
+                  ...agents.map((agent) => ({
+                    label: agent.displayName,
+                    value: agent.id,
+                    content: <TaskAgentFilterLabel agent={agent} label={agent.displayName} />,
+                  })),
                 ]}
                 renderValue={(value) =>
-                  value === "all"
-                    ? m.tasks_all_agents()
-                    : m.tasks_agent_filter_value({
+                  value === "all" ? (
+                    m.tasks_all_agents()
+                  ) : (
+                    <TaskAgentFilterLabel
+                      agent={agents.find((agent) => agent.id === value)}
+                      label={m.tasks_agent_filter_value({
                         agent: agents.find((agent) => agent.id === value)?.displayName ?? value,
-                      })
+                      })}
+                    />
+                  )
                 }
                 value={selectedAgentId}
                 onChange={setSelectedAgentId}
@@ -429,12 +439,11 @@ export function TaskDetailPage({
         >
           <TaskDetailFact label={m.tasks_agent_label()}>
             <span className="flex min-w-0 items-center gap-2">
-              <span
-                className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-strong"
-                aria-hidden="true"
-              >
-                {task.agent.displayName.charAt(0)}
-              </span>
+              <AgentAvatar
+                displayName={task.agent.displayName}
+                avatarPath={task.agent.avatarPath}
+                className="size-7 text-xs font-medium text-kumo-strong"
+              />
               <strong className="min-w-0 break-words">{task.agent.displayName}</strong>
             </span>
           </TaskDetailFact>
@@ -611,6 +620,17 @@ function TaskUnavailable({
   );
 }
 
+function TaskAgentFilterLabel({ agent, label }: { agent?: TaskSummary["agent"]; label: string }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-2">
+      {agent ? (
+        <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} className="size-5 text-xs" />
+      ) : null}
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
 function TaskSelect({
   label,
   options,
@@ -619,7 +639,7 @@ function TaskSelect({
   value,
 }: {
   label: string;
-  options: readonly { label: string; value: string }[];
+  options: readonly { label: string; value: string; content?: ReactNode }[];
   renderValue: (value: string) => ReactNode;
   onChange: (value: string) => void;
   value: string;
@@ -629,6 +649,7 @@ function TaskSelect({
       <Select
         aria-label={label}
         className="w-full"
+        items={options}
         renderValue={renderValue}
         size="sm"
         value={value}
@@ -638,7 +659,7 @@ function TaskSelect({
       >
         {options.map((option) => (
           <Select.Option key={option.value} value={option.value}>
-            {option.label}
+            {option.content ?? option.label}
           </Select.Option>
         ))}
       </Select>
@@ -751,12 +772,11 @@ function TaskRow({
       {showAgent ? (
         <Table.Cell className="col-span-2 row-start-3" data-label={m.tasks_agent_label()}>
           <span className="inline-flex min-w-0 items-center gap-2">
-            <span
-              className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-strong"
-              aria-hidden="true"
-            >
-              {task.agent.displayName.charAt(0)}
-            </span>
+            <AgentAvatar
+              displayName={task.agent.displayName}
+              avatarPath={task.agent.avatarPath}
+              className="size-7 text-xs font-medium text-kumo-strong"
+            />
             <span className="truncate">{task.agent.displayName}</span>
           </span>
         </Table.Cell>

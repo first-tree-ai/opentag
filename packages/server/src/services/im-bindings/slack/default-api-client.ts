@@ -4,6 +4,7 @@ import { z } from "zod";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { SlackThreadStatusError } from "../../im/slack-thread-status-error.js";
 import { type BotProfile, httpsAvatar } from "../bot-profile.js";
+import { FailureReactionError } from "../failure-reaction-error.js";
 import type { ProviderResourceInput, ReadableResource } from "../provider-adapter.js";
 import type { SlackApiClient, SlackInstallationInspection, SlackOAuthAccessResult } from "./adapter.js";
 
@@ -88,6 +89,37 @@ export class DefaultSlackApiClient implements SlackApiClient {
         : "upstream_unavailable";
       throw new SlackThreadStatusError(code);
     }
+  }
+
+  async setFailureReaction(input: {
+    token: string;
+    channelId: string;
+    externalMessageId: string;
+    failed: boolean;
+  }): Promise<void> {
+    const method = input.failed ? "reactions.add" : "reactions.remove";
+    const url = this.#policy.admitUrl(`https://slack.com/api/${method}`);
+    const result = await this.#policy.run(
+      `slack.${method}`,
+      async (signal) => {
+        const response = await this.#fetch(url.toString(), {
+          method: "POST",
+          redirect: "error",
+          signal,
+          headers: { authorization: `Bearer ${input.token}`, "content-type": "application/json" },
+          body: JSON.stringify({ channel: input.channelId, timestamp: input.externalMessageId, name: "warning" }),
+        });
+        if (response.status === 429) {
+          const seconds = Number(response.headers.get("retry-after"));
+          throw new FailureReactionError(Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds * 1_000) : 30_000);
+        }
+        if (!response.ok) throw new Error("SLACK_FAILURE_REACTION_UNAVAILABLE");
+        return z.object({ ok: z.boolean(), error: z.string().optional() }).parse(await response.json());
+      },
+      { circuitKey: `slack:${method}`, maxAttempts: 1, timeoutMs: 3_000 },
+    );
+    const alreadyApplied = result.error === (input.failed ? "already_reacted" : "no_reaction");
+    if (!result.ok && !alreadyApplied) throw new Error("SLACK_FAILURE_REACTION_UNAVAILABLE");
   }
 
   async botProfile(token: string, botUserId: string): Promise<BotProfile> {

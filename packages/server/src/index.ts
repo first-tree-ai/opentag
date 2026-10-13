@@ -84,6 +84,8 @@ import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
+import { ImFailureReactionStore } from "./services/im/im-failure-reaction-store.js";
+import { ImFailureReactionWorker } from "./services/im/im-failure-reaction-worker.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { SlackWorkingStore } from "./services/im/slack-working-store.js";
 import { SlackWorkingWorker, slackWorkingCredentialResolver } from "./services/im/slack-working-worker.js";
@@ -920,6 +922,11 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
+    const imFailureReactionWorker = new ImFailureReactionWorker({
+      store: new ImFailureReactionStore(database),
+      resolveAdapter: resolveImAdapter,
+      logger: serviceLogger("im-failure-reactions"),
+    });
     const imResourceService = new ImResourceService(database, resolveImAdapter, imCallPolicy);
     const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
@@ -1238,6 +1245,7 @@ export async function startServer(): Promise<void> {
     approvalOwner.start();
     imDeliveryWorker.start();
     slackWorkingWorker.start();
+    imFailureReactionWorker.start();
     scheduleScheduler.start();
     sandboxIdleReclaimer?.start();
     github?.worker.start();
@@ -1261,6 +1269,7 @@ export async function startServer(): Promise<void> {
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
       await slackWorkingWorker.stop();
+      await imFailureReactionWorker.stop();
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();

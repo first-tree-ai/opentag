@@ -1,6 +1,11 @@
 import type { McpCatalogEntry } from "@opentag/mcp-presets";
-import { CANVA_DEVELOPER_PORTAL_MCP_URL, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  CANVA_DEVELOPER_PORTAL_MCP_URL,
+  type MCPAgentServer,
+  type MCPAuthorizationSummary,
+  type MCPServer,
+} from "@opentag/shared/browser";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../../api.js";
 import { McpPage } from "../mcp-page.js";
@@ -37,6 +42,36 @@ vi.mock("@opentag/mcp-presets", () => ({
 }));
 
 const SERVER_ID = "55555555-5555-4555-8555-555555555555";
+const WAITLIST_URL = "https://mcp.canva.com/mcp";
+const PORTAL_REPLACEMENT = { endpoints: [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL }] };
+
+function connected(): MCPAuthorizationSummary {
+  return {
+    kind: "oauth",
+    status: "active",
+    hasCredential: true,
+    scopes: null,
+    accessTokenExpiresAt: null,
+    authorizationServer: null,
+    probeState: "succeeded",
+    probedAt: null,
+    probeError: null,
+    toolsCount: 3,
+    toolsTruncated: false,
+    failureCode: null,
+    revision: 1,
+  };
+}
+
+/** The Agent's mount of the Canva Server on `url`. */
+function canvaMount(url: string, authorization: MCPAuthorizationSummary | null): MCPAgentServer {
+  return entry({
+    mcpServerId: SERVER_ID,
+    name: "canva",
+    effective: { ...entry().effective, url },
+    authorization,
+  }) as MCPAgentServer;
+}
 const entries = CATALOG.entries as McpCatalogEntry[];
 
 beforeEach(() => {
@@ -137,5 +172,39 @@ describe("Discover with deployment catalog endpoints", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add: Canva" }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(create.mock.calls[0]?.[0]).toMatchObject({ url: CANVA_DEVELOPER_PORTAL_MCP_URL });
+  });
+
+  /*
+   * The production upgrade path: an Account that added Canva before the deployment configured its
+   * Canva client already has a Server named `canva` on the waitlist endpoint. Creating another one
+   * would collide on the Account's name constraint, and the existing one still works.
+   */
+  it("keeps an Agent's working waitlist Canva connection as connected after the replacement", async () => {
+    stub([canvaMount(WAITLIST_URL, connected())]);
+    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [server(WAITLIST_URL)] });
+    vi.mocked(browserApi.mcpCatalogEndpoints).mockResolvedValue(PORTAL_REPLACEMENT);
+    const { create } = stubCanvaWrites();
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const button = await screen.findByRole("button", { name: "Discover" });
+    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(button);
+    const dialog = await screen.findByRole("dialog", { name: "Discover" });
+    await within(dialog).findByText("Connected");
+    expect(within(dialog).queryByRole("button", { name: "Add: Canva" })).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("reuses an Account's waitlist Canva Server instead of creating a second one", async () => {
+    stub([]);
+    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [server(WAITLIST_URL)] });
+    vi.mocked(browserApi.mcpCatalogEndpoints).mockResolvedValue(PORTAL_REPLACEMENT);
+    const { create } = stubCanvaWrites();
+    const attach = vi.mocked(browserApi.attachMcpServer);
+    attach.mockImplementation(async () => canvaMount(WAITLIST_URL, null));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await addCanva();
+    await waitFor(() => expect(attach).toHaveBeenCalledTimes(1));
+    expect(attach.mock.calls[0]?.[1]).toMatchObject({ mcpServerId: SERVER_ID });
+    expect(create).not.toHaveBeenCalled();
   });
 });

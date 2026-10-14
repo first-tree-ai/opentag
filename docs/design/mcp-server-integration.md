@@ -505,9 +505,15 @@ never returns client material. The Web App reads it before Discover offers a car
 creates its Server on the Developer Portal endpoint only when the deployment has the client for it.
 The Web App accepts only the replacement that `MCP_CATALOG_DEPLOYMENT_ENDPOINTS` names for that
 entry, and it recognizes both Canva endpoints as Canva for icons, titles, and the OAuth default. If
-the read fails, the catalog stays as shipped. A Server that an Account already created on the
-waitlist endpoint stays there; adding Canva from Discover after the pair is configured creates a new
-Server on the Developer Portal endpoint.
+the read fails, the catalog stays as shipped.
+
+A served entry keeps its shipped endpoint as an identity, and the Account and mount joins accept
+every endpoint of the entry, preferred endpoint first. An Account that created its Canva Server on
+the waitlist endpoint before the pair was configured therefore keeps using that Server: the card
+still shows its connection, and adding Canva to another Agent mounts the same Server. Creating a
+second Server would collide with the Account's `unique(account_id, lower(name))` constraint, and the
+waitlist Server keeps working through its own client. Only an Account without a Canva Server gets a
+new one on the Developer Portal endpoint.
 
 ### The authorization round trip
 

@@ -7,6 +7,7 @@ import {
   comparableUrl,
   entriesInCategory,
   findAccountServer,
+  findCatalogBinding,
   findCatalogEntryByUrl,
   localizedText,
   matchesCatalogEntry,
@@ -210,17 +211,41 @@ describe("deployment catalog endpoints", () => {
     expect(resolveCatalogEntries(entries, [])).toBe(entries);
   });
 
-  it("replaces only the named entry's endpoint and keeps everything else", () => {
+  it("replaces only the named entry's endpoint and keeps its shipped identity", () => {
     const resolved = resolveCatalogEntries(
       [notion, canva],
       [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL }],
     );
     expect(resolved[0]).toBe(notion);
-    expect(resolved[1]).toEqual({ ...canva, url: CANVA_DEVELOPER_PORTAL_MCP_URL });
-    // The replaced entry still finds an Account definition on its new endpoint, and only there.
-    const portalServer = accountServer({ url: CANVA_DEVELOPER_PORTAL_MCP_URL });
-    expect(findAccountServer(resolved[1] as McpCatalogEntry, [portalServer])).toBe(portalServer);
-    expect(findAccountServer(resolved[1] as McpCatalogEntry, [accountServer({ url: canva.url })])).toBeUndefined();
+    expect(resolved[1]).toEqual({ ...canva, url: CANVA_DEVELOPER_PORTAL_MCP_URL, shippedUrl: canva.url });
+    // The preferred endpoint comes first, and the shipped one is never lost or repeated.
+    expect(catalogEntryUrls(resolved[1] as McpCatalogEntry)).toEqual([CANVA_DEVELOPER_PORTAL_MCP_URL, canva.url]);
+    expect(findCatalogEntryByUrl(canva.url, resolved)).toBe(resolved[1]);
+    expect(findCatalogEntryByUrl(CANVA_DEVELOPER_PORTAL_MCP_URL, resolved)).toBe(resolved[1]);
+  });
+
+  it("keeps an Account's waitlist Server serving the replaced entry", () => {
+    const served = resolveCatalogEntries([canva], [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL }])[0];
+    const waitlist = accountServer({ name: "canva", url: canva.url });
+    // Reusing it is what avoids a second Server named `canva`, which the Account's name constraint rejects.
+    expect(findAccountServer(served as McpCatalogEntry, [waitlist])).toBe(waitlist);
+    const portal = accountServer({ id: "22222222-2222-4222-8222-222222222222", url: CANVA_DEVELOPER_PORTAL_MCP_URL });
+    // When both exist, the preferred endpoint wins regardless of list order.
+    expect(findAccountServer(served as McpCatalogEntry, [waitlist, portal])).toBe(portal);
+  });
+
+  it("reports an Agent's working waitlist mount as added for the replaced entry", () => {
+    const served = resolveCatalogEntries([canva], [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL }])[0];
+    const waitlist = accountServer({ name: "canva", url: canva.url });
+    const working = mount({
+      mcpServerId: waitlist.id,
+      name: "canva",
+      effective: { ...mount().effective, url: canva.url },
+    });
+    expect(findCatalogBinding(served as McpCatalogEntry, [waitlist], [working])).toBe(working);
+    expect(catalogEntryState(served as McpCatalogEntry, [waitlist], [working])).toBe("added");
+    // The same holds when the Account list has not loaded and only the mount's URL is known.
+    expect(catalogEntryState(served as McpCatalogEntry, [], [working])).toBe("added");
   });
 
   it("refuses an endpoint the shared contract does not name for that entry", () => {

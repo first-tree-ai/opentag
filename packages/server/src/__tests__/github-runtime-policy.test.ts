@@ -136,10 +136,17 @@ describe("GitHub user-task authority", () => {
     f.connection.accessExpiresAt = new Date(0).toISOString();
     expect(await f.policy.admit(f.input())).toBeUndefined();
   });
-  it("admits a Server-scheduled task while refusing an untraceable Agent message", async () => {
+  it("requires user provenance for scheduled tasks and Agent messages", async () => {
     const f = fixture();
+    const root = f.execution.source;
     f.execution.source = { kind: "session-message", messageId: randomUUID() };
     f.setMessage({ scheduledOrigin: { scheduleId: randomUUID() }, sourceSessionId: null, userTaskSource: null });
+    expect(await f.policy.admit(f.input())).toBeUndefined();
+    f.setMessage({
+      scheduledOrigin: { scheduleId: randomUUID() },
+      sourceSessionId: null,
+      userTaskSource: { sessionId: SESSION, source: root },
+    });
     expect(await f.policy.admit(f.input())).toBeDefined();
     f.setMessage({ scheduledOrigin: null, sourceSessionId: randomUUID(), userTaskSource: null });
     expect(await f.policy.admit(f.input())).toBeUndefined();

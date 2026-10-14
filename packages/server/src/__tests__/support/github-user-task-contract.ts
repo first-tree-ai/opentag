@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { GitHubConnectionStatusSchema, type RuntimeExecutionSource } from "@opentag/shared";
+import { GitHubConnectionStatusSchema, type RuntimeExecutionSource, type RuntimeUserTaskSource } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../../db/client.js";
 import {
+  agentSchedules,
   agents,
   imBindings,
   imMessageDeliveries,
@@ -12,8 +13,11 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { DatabaseAgentOwnerResolver } from "../../services/agents/agent-self-service.js";
 import type { GitHubManagementService } from "../../services/github/github-management-service.js";
 import { GitHubRuntimePolicy } from "../../services/github-proxy/runtime-policy.js";
+import { ScheduleScheduler } from "../../services/schedules/scheduler.js";
+import { ScheduleService } from "../../services/schedules/service.js";
 
 /** Reused against embedded PostgreSQL and real PostgreSQL; no query-builder mocks. */
 export function githubUserTaskContract(database: () => DatabaseClient) {
@@ -29,7 +33,20 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       .values({ createdByUserId: account.id, name: "worker", displayName: "Worker", runtimeProvider: "codex" })
       .returning();
     if (!agent) throw new Error("Agent fixture missing");
-    const [binding] = await db.insert(imBindings).values({ agentId: agent.id, provider: "feishu" }).returning();
+    const [binding] = await db
+      .insert(imBindings)
+      .values({
+        agentId: agent.id,
+        provider: "feishu",
+        status: "active",
+        externalAppId: `app_${randomUUID()}`,
+        externalBotId: "ou_bot",
+        credentialSchemaVersion: 1,
+        credentialGeneration: 1,
+        encryptedCredential: "test-only",
+        activatedAt: new Date(),
+      })
+      .returning();
     if (!binding) throw new Error("Binding fixture missing");
     const [session] = await db
       .insert(sessions)
@@ -131,6 +148,61 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     return { db, policy, source, account, agent, message, delivery, session, target, admit, collaboration };
   }
 
+  async function schedules(f: Awaited<ReturnType<typeof fixture>>, userTaskSource?: RuntimeUserTaskSource) {
+    let now = new Date();
+    const executionId = randomUUID();
+    const authenticate = vi.fn(async (_proof: string, id?: string) => ({
+      agentId: f.agent.id,
+      computerId: randomUUID(),
+      connectionInstanceId: randomUUID(),
+      installationId: randomUUID(),
+      placementGeneration: 1,
+      sessionId: userTaskSource?.sessionId ?? f.session.id,
+      sessionKind: "channel" as const,
+      ...(id === executionId && userTaskSource ? { userTaskSource } : {}),
+    }));
+    const service = new ScheduleService({
+      database: f.db,
+      owners: new DatabaseAgentOwnerResolver(f.db),
+      proofs: { authenticate },
+      publicUrl: "https://opentag.example",
+      clock: { now: async () => now },
+    });
+    const scope = await service.authenticate("proof", executionId);
+    expect(authenticate).toHaveBeenCalledWith("proof", executionId);
+    const legacyScope = await service.authenticate("proof");
+    const scheduler = new ScheduleScheduler({
+      database: f.db,
+      publicUrl: "https://opentag.example",
+      clock: { now: async () => now },
+      dispatch: { dispatchScheduledMessage: vi.fn() },
+      sessions: { resolveScheduledMessageRoute: async () => ({ kind: "ready" }) } as never,
+    });
+    const create = () =>
+      service.createForAgent(scope, {
+        name: "task",
+        prompt: "check GitHub",
+        schedule: { kind: "every", intervalSeconds: 120 },
+        timezone: "UTC",
+      });
+    async function dispatch(id: string) {
+      const [row] = await f.db.select().from(agentSchedules).where(eq(agentSchedules.id, id));
+      if (!row?.nextTriggerAt) throw new Error("Schedule not due");
+      now = new Date(row.nextTriggerAt);
+      const result = await scheduler.claimOccurrence(id, { allowDispatch: true });
+      if (result.kind !== "claimed") throw new Error(`Unexpected claim: ${result.kind}`);
+      await f.db
+        .update(sessionMessages)
+        .set({ lastOutcome: "accepted" })
+        .where(eq(sessionMessages.id, result.snapshot.messageId));
+      return {
+        sessionId: row.targetSessionId,
+        source: { kind: "session-message" as const, messageId: result.snapshot.messageId },
+      };
+    }
+    return { service, scope, legacyScope, create, dispatch };
+  }
+
   describe.each(["local", "cloud"] as const)("%s GitHub user-task SQL authority", (origin) => {
     it("admits accepted human ingress and refuses bot, account, Agent, Session and source substitutions", async () => {
       const f = await fixture(origin);
@@ -147,7 +219,8 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       expect(await f.admit(f.target.id, await f.collaboration(false))).toBeUndefined();
       const traced = await f.collaboration(true);
       expect(await f.admit(f.target.id, traced)).toBeDefined();
-      const scheduled = await f.collaboration(false, true);
+      expect(await f.admit(f.target.id, await f.collaboration(false, true))).toBeUndefined();
+      const scheduled = await f.collaboration(true, true);
       expect(await f.admit(f.target.id, scheduled)).toBeDefined();
       await f.db
         .update(sessionMessages)
@@ -168,6 +241,55 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
         .set({ state: "pending", inputHash: null, turnId: null, reportOwnerInstanceId: null, acceptedAt: null })
         .where(eq(imMessageDeliveries.id, f.delivery.id));
       expect(await f.admit()).toBeUndefined();
+    });
+
+    it.each(["legacy", "bot", "untraceable"] as const)(
+      "does not launder %s authority through actual schedule creation and dispatch",
+      async (kind) => {
+        const f = await fixture(origin);
+        let provenance: RuntimeUserTaskSource | undefined;
+        if (kind === "bot") {
+          await f.db.update(imMessages).set({ authorKind: "bot" }).where(eq(imMessages.id, f.message.id));
+          provenance = { sessionId: f.session.id, source: f.source };
+        } else if (kind === "untraceable") {
+          provenance = { sessionId: f.target.id, source: await f.collaboration(false) };
+        }
+        const h = await schedules(f, provenance);
+        const schedule = await h.create();
+        expect(schedule).not.toHaveProperty("userTaskSource");
+        const task = await h.dispatch(schedule.id);
+        expect(await f.admit(task.sessionId, task.source)).toBeUndefined();
+        const paused = await h.service.pauseForAgent(h.scope, schedule.id, schedule.revision);
+        await h.service.resumeForAccount(f.account.id, f.agent.id, schedule.id, paused.revision);
+        const resumed = await h.dispatch(schedule.id);
+        expect(await f.admit(resumed.sessionId, resumed.source)).toBeUndefined();
+      },
+    );
+
+    it("freezes schedule provenance and drops it on unproven edits/resume without changing dispatched work", async () => {
+      const f = await fixture(origin);
+      const h = await schedules(f, { sessionId: f.session.id, source: f.source });
+      const created = await h.create();
+      const admitted = await h.dispatch(created.id);
+      expect(await f.admit(admitted.sessionId, admitted.source)).toBeDefined();
+      let edited = await h.service.updateForAgent(h.legacyScope, created.id, {
+        expectedRevision: created.revision,
+        prompt: "autonomous change",
+      });
+      const denied = await h.dispatch(created.id);
+      expect(await f.admit(denied.sessionId, denied.source)).toBeUndefined();
+      // An old dispatch is independent of the mutable schedule's new content/source.
+      expect(await f.admit(admitted.sessionId, admitted.source)).toBeDefined();
+      edited = await h.service.updateForAgent(h.scope, created.id, {
+        expectedRevision: edited.revision,
+        prompt: "new user task",
+      });
+      const paused = await h.service.pauseForAgent(h.scope, created.id, edited.revision);
+      const resumed = await h.service.resumeForAgent(h.legacyScope, created.id, paused.revision);
+      const deniedResume = await h.dispatch(created.id);
+      expect(await f.admit(deniedResume.sessionId, deniedResume.source)).toBeUndefined();
+      await h.service.deleteForAgent(h.scope, created.id, resumed.revision);
+      expect(await f.admit(admitted.sessionId, admitted.source)).toBeDefined();
     });
   });
 }

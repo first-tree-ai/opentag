@@ -24,6 +24,9 @@ export async function handleGitSmartHttp(
   });
   const repository = repositories.find((entry) => entry.fullName.toLowerCase() === fullName.toLowerCase());
   if (!repository) throw new GitPublicationError("scope_denied");
+  request.setRevalidation?.(async (signal) => {
+    await repository.recheck?.(signal);
+  });
   const scopes = publicationScopes(repository, authorization.sessionId);
   if (service === "git-receive-pack" && !scopes.length) throw new GitPublicationError("scope_denied");
   const lease = await options.leases.acquire(request.executionId, {

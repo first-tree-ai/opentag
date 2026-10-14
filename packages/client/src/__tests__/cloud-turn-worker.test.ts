@@ -651,6 +651,7 @@ describe("cloud-turn-worker", () => {
                 directories = [environment.SLACK_CONFIG_DIR as string, environment.LARKSUITE_CLI_CONFIG_DIR as string];
                 expect(environment.OPENTAG_SLACK_CONFIG_DIR).toBe(directories[0]);
                 const shell = await readFile(environment.OPENTAG_PROVIDER_ENV_FILE as string, "utf8");
+                expect(shell.split("\n")[0]).toBe(`# opentag-execution: ${manifest.executionId}`);
                 for (const directory of directories) {
                   expect((await stat(directory)).mode & 0o777).toBe(0o700);
                   expect(directory.startsWith(root)).toBe(false);

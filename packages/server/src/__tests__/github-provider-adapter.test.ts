@@ -1318,3 +1318,30 @@ function fixtureWrite(path: string, body: { variables: { input: { headRefName: s
     { status: 201 },
   );
 }
+
+it.each(["REST", "GraphQL"] as const)("keeps %s target admission registered for the response stream", async (kind) => {
+  let allowed = true;
+  repository.recheck = async () => {
+    if (!allowed) throw Object.assign(new Error("Target access revoked"), { code: "scope_denied" });
+  };
+  const original = upstream.getMockImplementation();
+  upstream.mockImplementation(async (...args) =>
+    String(args[0]).endsWith("/graphql")
+      ? Response.json({ data: { repository: { id: "R_test", nameWithOwner: "owner/repository" } } })
+      : (original as typeof fetch)(...args),
+  );
+  const req =
+    kind === "REST"
+      ? request("/repos/owner/repository/pulls")
+      : request("/graphql", "POST", {
+          query: 'query { repository(owner: "owner", name: "repository") { id nameWithOwner } }',
+        });
+  let check: ((signal: AbortSignal) => Promise<void>) | undefined;
+  req.setRevalidation = (callback) => {
+    check = callback;
+  };
+  expect((await adapter.handle(req, authorization)).status).toBe(200);
+  expect(check).toBeDefined();
+  allowed = false;
+  await expect(check?.(req.signal)).rejects.toMatchObject({ code: "scope_denied" });
+});

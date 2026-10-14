@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { AgentScheduleLastDispatch, SessionMessageScheduledOrigin } from "@opentag/shared";
 import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -373,6 +374,7 @@ export class ScheduleScheduler {
         id: messageId,
         sourceSessionId: null,
         scheduledOrigin: origin,
+        userTaskSource: row.userTaskSource,
         targetSessionId: row.targetSessionId,
         content: row.prompt,
         contentHash,
@@ -542,6 +544,7 @@ function scheduledMessageIdentityMatches(
     stored.name === origin.name &&
     existing.targetSessionId === row.targetSessionId &&
     existing.content === row.prompt &&
-    existing.contentHash === contentHash
+    existing.contentHash === contentHash &&
+    isDeepStrictEqual(existing.userTaskSource, row.userTaskSource)
   );
 }

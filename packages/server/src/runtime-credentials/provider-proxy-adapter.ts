@@ -55,6 +55,8 @@ export interface ProviderProxyRequest {
   capability: string;
   capabilityTtlSeconds: number;
   signal: AbortSignal;
+  /** Trusted adapter registers operation-specific authority while the request/response is alive. */
+  setRevalidation?: (check: (signal: AbortSignal) => Promise<void>) => void;
 }
 
 export interface ProviderProxyResponse {

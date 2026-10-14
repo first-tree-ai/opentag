@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import {
   runAgentSelfScheduleDelete,
   runAgentSelfSchedulePause,
   runAgentSelfSchedulePreview,
+  runAgentSelfScheduleResume,
   runAgentSelfScheduleUpdate,
   type ScheduleSelfApiClient,
 } from "../core/agent/self-schedule.js";
@@ -142,4 +144,34 @@ describe("agent self schedule", () => {
     expect(flags).not.toContain("--run-now");
     expect(command?.commands.every((entry) => entry.options.some((option) => option.long === "--json"))).toBe(true);
   });
+});
+
+it("carries the current turn into schedule creation, editing and resume", async () => {
+  const { api, deps } = fakeApi();
+  const directory = await mkdtemp(join(tmpdir(), "opentag-schedule-turns-"));
+  const path = join(directory, "provider-env.sh");
+  const first = randomUUID();
+  const environment = { OPENTAG_PROVIDER_ENV_FILE: path, OPENTAG_EXECUTION_ID: first };
+  try {
+    for (const executionId of [first, randomUUID()]) {
+      await writeFile(path, `# opentag-execution: ${executionId}\n`);
+      await runAgentSelfScheduleCreate({
+        ...deps,
+        environment,
+        name: "user task",
+        prompt: "check",
+        every: "120",
+        timezone: "UTC",
+      });
+      await runAgentSelfScheduleUpdate(id, { ...deps, environment, prompt: "edited task" });
+      await runAgentSelfScheduleResume(id, { ...deps, environment });
+      expect(api.createRuntimeAgentSchedule).toHaveBeenLastCalledWith(deps.proof, expect.anything(), { executionId });
+      expect(api.updateRuntimeAgentSchedule).toHaveBeenLastCalledWith(deps.proof, id, expect.anything(), {
+        executionId,
+      });
+      expect(api.resumeRuntimeAgentSchedule).toHaveBeenLastCalledWith(deps.proof, id, 3, { executionId });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

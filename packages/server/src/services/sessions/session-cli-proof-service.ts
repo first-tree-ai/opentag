@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { RUNTIME_CAPABILITY, type RuntimeExecutionSource, type SessionReconcileRequest } from "@opentag/shared";
+import { RUNTIME_CAPABILITY, type RuntimeUserTaskSource, type SessionReconcileRequest } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -15,7 +15,7 @@ import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { cloudInstanceIdFor } from "../sandboxes/cloud-runtime-fence.js";
 
 export interface SessionCliSourceContext {
-  userTaskSource?: { sessionId: string; source: RuntimeExecutionSource };
+  userTaskSource?: RuntimeUserTaskSource;
   agentId: string;
   computerId: string;
   connectionInstanceId: string;

@@ -464,7 +464,7 @@ export async function runCloudTurnWorker(
       const providerEnvironmentPath = join(scratch, "provider-environment.sh");
       await writeFile(
         providerEnvironmentPath,
-        serializeEnvironment({ ...environment, ...providerRoutingEnvironment(environment) }, process.platform),
+        `# opentag-execution: ${manifest.executionId}\n${serializeEnvironment({ ...environment, ...providerRoutingEnvironment(environment) }, process.platform)}`,
         { mode: 0o600 },
       );
       runtimeEnvironment.OPENTAG_PROVIDER_ENV_FILE = providerEnvironmentPath;

@@ -716,6 +716,7 @@
   "RuntimeSkillManifestSchema",
   "RuntimeSlackCliMetadataSchema",
   "RuntimeUsageSchema",
+  "RuntimeUserTaskSourceSchema",
   "RuntimeWebExecutionServiceSchema",
   "RuntimeWebGatewayRejectCodeSchema",
   "RuntimeWebGatewayRequestSchema",

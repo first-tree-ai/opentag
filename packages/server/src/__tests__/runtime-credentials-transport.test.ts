@@ -4,7 +4,11 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { RuntimeCapabilityStore } from "../runtime-credentials/capability-store.js";
-import { type RuntimeConnectionFence, RuntimeCredentialBroker } from "../runtime-credentials/credential-broker.js";
+import {
+  type RuntimeConnectionFence,
+  RuntimeCredentialBroker,
+  RuntimeCredentialError,
+} from "../runtime-credentials/credential-broker.js";
 import { RuntimeProviderProxyTransport } from "../runtime-credentials/data-transport.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import { UnavailableRuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
@@ -826,4 +830,53 @@ describe("RuntimeProviderProxyTransport execution fence", () => {
     expect(adapter.handle).not.toHaveBeenCalled();
     socket.close();
   });
+});
+
+it("bounds target checks per stream and does not let a slow check delay another stream's revocation", async () => {
+  let releaseSlow = () => {};
+  const slow = new Promise<void>((resolve) => {
+    releaseSlow = resolve;
+  });
+  const slowCheck = vi.fn(async () => slow);
+  const adapter: ProviderProxyAdapter = {
+    handle: async (request) => {
+      request.setRevalidation?.(
+        request.path === "/slow"
+          ? slowCheck
+          : async () => {
+              throw new RuntimeCredentialError("credential_scope_denied");
+            },
+      );
+      return {
+        status: 200,
+        headers: {},
+        body: (async function* () {
+          yield Buffer.from("prefix");
+          await new Promise<void>((resolve) => {
+            if (request.signal.aborted) resolve();
+            else request.signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        })(),
+      };
+    },
+  };
+  const state = await setup(adapter, { revalidateIntervalMs: 10 });
+  const { ticket } = state.tickets.issue({
+    executionId: state.record.executionId,
+    computerId: COMPUTER,
+    instanceId: "instance-1",
+    connectionId: "connection-1",
+  });
+  const { socket, queue } = await connect(state.port, ticket);
+  await queue.nextJson();
+  try {
+    socket.send(openFrame(1, state.grant.token, "/slow"));
+    socket.send(openFrame(2, state.grant.token, "/fast"));
+    expect(await waitForFrame(queue, "cancel")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(slowCheck).toHaveBeenCalledTimes(1);
+  } finally {
+    releaseSlow();
+    socket.close();
+  }
 });

@@ -1,4 +1,4 @@
-import type { GitHubConnectionStatus, RuntimeExecutionSource } from "@opentag/shared";
+import { type GitHubConnectionStatus, type RuntimeExecutionSource, RuntimeUserTaskSourceSchema } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
@@ -227,12 +227,12 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
       )
       .limit(1);
     if (!row) return false;
-    // Only the Server scheduler can insert this origin. Deleting its schedule cannot revoke dispatched work.
-    if (row.scheduledOrigin && !row.sourceSessionId) return true;
-    return (
-      !!row.userTaskSource &&
-      row.sourceSessionId === row.userTaskSource.sessionId &&
-      this.#userTask(accountId, row.userTaskSource.sessionId, row.userTaskSource.source, visited)
-    );
+    // A scheduler origin proves dispatch, not a user request. Its claim-frozen provenance survives
+    // schedule edits/deletion; legacy and autonomous schedules without a user root stay denied.
+    const provenance = RuntimeUserTaskSourceSchema.safeParse(row.userTaskSource);
+    if (!provenance.success) return false;
+    if (row.scheduledOrigin ? row.sourceSessionId !== null : row.sourceSessionId !== provenance.data.sessionId)
+      return false;
+    return this.#userTask(accountId, provenance.data.sessionId, provenance.data.source, visited);
   }
 }

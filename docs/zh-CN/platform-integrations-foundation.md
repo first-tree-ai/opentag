@@ -26,7 +26,11 @@ GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一�
 
 按 `.env.example` 配置 GitHub App，OAuth 回调匹配 `OPENTAG_PUBLIC_URL`。现有 Account 页面管理连接、重新授权、切换账户和断开。仓库选择由 GitHub App 安装流程管理；OpenTag 不再提供 Agent 仓库分配、仓库级委托或额外账户白名单。旧绑定接口返回 HTTP 410，历史 JSON 不变。仓库发现只服务于 Account 的安装和刷新展示，不承担执行鉴权。
 
-已接受的人类 IM 任务沿用渠道准入，使用所属账户的连接；Server 派发的用户配置定时任务也可使用。协作必须从已接受任务追溯用户来源：Session CLI 在既有 Session proof 之外提交非秘密 execution ID，Server 核验执行存活及隔离后记录准确来源。旧协作消息若来源不明，以及 Bot、自主请求、裸 Session 和连接探测，不获得 GitHub 权限。运行元数据和提示词不再包含仓库目录。
+现有 IM 渠道准入允许 Agent 接收任务的所有人类发送者，都可以请求使用该 Agent 所属 Account 的 GitHub 连接，权限受该 GitHub 用户和 App 限制。这一范围有意不限于 Account 本人；不会将 IM 发送者映射为另一 GitHub 身份，也不维护 GitHub 专属发送者或仓库白名单。
+
+定时任务必须具有 Server 记录的执行来源。创建、编辑和 Agent 恢复执行时捕获当前有效 execution 的来源，派发时将该来源冻结在消息上。仅有调度器 origin 不授予权限。缺少可追溯人类来源的历史或自主定时任务继续运行，但不获得 GitHub 权限；Account 暂停和恢复不会升级其来源。已派发任务在定时配置变更或删除后仍保留原始来源快照。
+
+协作同样需要从当前有效执行记录准确来源：Session CLI 在既有 Session proof 之外提交非秘密 execution ID，Server 核验执行存活及隔离后记录来源。Local 命令每次调用都从稳定的 provider 环境文件读取当前 execution 标记，即使 provider runtime 跨轮复用也使用本轮来源；Cloud 的每轮环境文件提供相同标记。当前材料缺失时，不回退到进程继承的旧 execution ID。旧协作消息若来源不明，以及 Bot、自主请求、裸 Session 和连接探测，不获得 GitHub 权限。运行元数据和提示词不再包含仓库目录。
 
 Local 独立协商 `runtime.githubUserTask: 1`，Cloud Runner 通过 `githubUserTaskVersion: 1` 显式加入。旧端仍可登录、使用 IM、恢复连接和升级，但不获得新版 GitHub provider。发布顺序为 Server 先行；用户令牌常规轮换不撤销未变更的任务权限。
 
@@ -36,7 +40,7 @@ Account 刷新保留焦点、播报安装/仓库数量与错误，并支持重�
 
 运行期协商 `runtime.runtimeCredential` 与 `runtime.providerProxy`。开启 execution 绑定 Account、Agent revision、已接受任务来源、Session placement、当前 Computer 连接，以及 Cloud Sandbox generation。猜到 Session ID 或来自无关 IM 发送者都不足以取得权限。签发、续期、每次请求和长流均重新核验。
 
-- Runner capability 有效期 60 秒，约 30 秒续期，至多保留当前和前一份。长流每五秒复查，必须存在仍有效的同范围 capability。
+- Runner capability 有效期 60 秒，约 30 秒续期，至多保留当前和前一份。长流每五秒复查，必须存在仍有效的同范围 capability。GitHub 还为每个活动请求登记具体目标仓库的实时权限检查，覆盖快照准备、响应传输及等待下载 credit；目标失权时取消流并释放 IAT，不依赖账户连接是否仍健康。
 - 数据 WebSocket 用首帧中一次性的 15 秒 ticket 认证，拒绝 URL query、cookie 与 bearer header。每个二进制分块最多 64 KiB，另带四字节 stream ID；双向各有 1 MiB credit 窗口，消费字节后补充额度。流结束竞态仍检查未确认字节上限；未知/重用 stream ID 及超额度帧继续拒绝。
 - capability 仅在 Runner 内存；CLI 仅看到本次执行 handle、公开 CA、代理地址和有限仓库/IM 元数据。App key、UAT、IAT、Bot Token、tenant token 与 Cloud 控制凭证不进入 Sandbox。
 - IM 代理使用明确登记的 Slack/飞书接口，在 Bot 已获准访问的资源范围内校验当前绑定和 execution 权限。当前频道/话题是回复上下文，不是隐式的唯一允许目标。每次代理写入请求只向上游发起一次尝试（每个代理请求一次），不持久化任何账本：JSON 写入必须同时获得 HTTP 2xx 与平台明确成功证据；平台明确错误和确定的 4xx（408 除外）按拒绝原样返回；缺少成功证据、5xx、408、超时、传输失败或写入响应无法解析以明确的 `write_outcome_unknown` 错误呈现。结果不确定的写入绝不自动重放——与平台核对结果由任务层负责，调用方主动重试只是一个新的代理请求。上传字节本身是独立的单次尝试写入，与平台最终完成附件的调用互不相同。
@@ -62,7 +66,7 @@ GitHub 代理解析 REST 路由与 GraphQL AST，处理 alias、fragment、varia
 
 Git 读取快照、发布暂存与 Tree 验证工作目录是私有、有上限的临时工作目录。启用 GitHub 传输时，网关首次使用时才在操作系统临时目录下懒创建一个独占 `mkdtemp` 根目录，校验其属主与权限，并在关闭或构造部分失败时删除。这些临时工作区只是验证手段，永远不是权威状态；未启用 GitHub 集成时不写任何文件，临时目录也绝不挂载到 Sandbox。
 
-跨崩溃的操作账本与来源追踪承诺明确撤回。代理对每个写入请求只发起一次上游尝试，并在内存中把响应分类为成功、确定拒绝或未知；不承诺跨重启的持久资源封锁，也不保证平台副作用 exactly-once。如果产品确实要求崩溃后仍记住未决写入，那是持久业务状态，必须在 PostgreSQL 中显式建模并定义真实的所有权与保留语义，绝不能用外挂文件库实现。
+Session 消息和定时任务中的用户任务来源属于正常的 PostgreSQL 任务状态。跨崩溃的平台操作账本与平台响应来源追踪承诺明确撤回。代理对每个写入请求只发起一次上游尝试，并在内存中把响应分类为成功、确定拒绝或未知；不承诺跨重启的持久资源封锁，也不保证平台副作用 exactly-once。如果产品确实要求崩溃后仍记住未决写入，那是持久业务状态，必须在 PostgreSQL 中显式建模并定义真实的所有权与保留语义，绝不能用外挂文件库实现。
 
 Cloud 控制身份归属 Computer/Cloud 编排；编排与此凭证运行时的接入仍待完成。集成运行期只消费显式注入的可信 verifier 与活跃检查器（`TrustedCloudControlAuthority`）：保留 credentialId/computerId/installationId 绑定、当前数据库中的 Computer 身份（`kind = 'cloud'` 与活跃 installation），以及逐请求撤销检查。当前默认启动不注入可信的 Cloud 控制 verifier 或活跃检查器，因此 Cloud 控制认证与 Cloud 凭证活跃检查一律拒绝；Local 保留既有 machine-token 路径与仅限 Local 的限制。不存在隐式自签发 Cloud 凭证、不允许 Local token 兜底，也没有 PostgreSQL 集成凭证之外的额外文件型 Cloud 凭证数据库。execution 仍绑定其精确的当前控制连接；本次修正不提供无状态多节点执行路由。
 

@@ -83,6 +83,12 @@ export const RuntimeExecutionSourceSchema = z.discriminatedUnion("kind", [
 ]);
 export type RuntimeExecutionSource = z.infer<typeof RuntimeExecutionSourceSchema>;
 
+/** Server-recorded task provenance; it contains no credentials or repository grants. */
+export const RuntimeUserTaskSourceSchema = z
+  .object({ sessionId: z.string().uuid(), source: RuntimeExecutionSourceSchema })
+  .strict();
+export type RuntimeUserTaskSource = z.infer<typeof RuntimeUserTaskSourceSchema>;
+
 export const RuntimeExecutionSandboxSchema = z
   .object({
     sandboxId: z.string().uuid(),

@@ -114,6 +114,9 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       executionTarget(plan.fullName, write),
     );
     const repository = findRepository(repositories, plan.fullName);
+    request.setRevalidation?.(async (signal) => {
+      await repository.recheck?.(signal);
+    });
     if (plan.codeOnly && !repository.scopes.some((scope) => scope.role === "code"))
       throw new GitPublicationError("scope_denied");
     if (write && !repository.scopes.some((scope) => scope.access === "write" && scope.publish === "pull_request"))
@@ -200,6 +203,9 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       (id) => resolveNode(id)?.repositoryId,
     );
     const repository = findRepository(repositories, plan.repository.fullName);
+    request.setRevalidation?.(async (signal) => {
+      await repository.recheck?.(signal);
+    });
     const write = plan.operation !== "read";
     const lease = await this.#options.leases.acquire(request.executionId, {
       installationId: repository.installationId,

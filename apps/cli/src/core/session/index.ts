@@ -11,6 +11,7 @@ import {
 } from "@opentag/shared";
 import { resolveCommandContext } from "../command/context.js";
 import { redactSecrets } from "../command/policy.js";
+import { currentSessionExecutionId } from "./execution.js";
 
 export interface SessionMessageOptions {
   message?: string;
@@ -35,13 +36,14 @@ export class SessionCommandRequestError extends Error {
 
 export async function resolveSessionProofContext(
   environment: NodeJS.ProcessEnv = process.env,
-): Promise<{ api: OpenTagApi; proof: string }> {
+): Promise<{ api: OpenTagApi; proof: string; executionId?: string }> {
   const proofPath = environment.OPENTAG_SESSION_PROOF_FILE;
   if (!proofPath) {
     throw new Error(
       "Session commands are available only inside an OpenTag-managed Agent Session (runtime context missing)",
     );
   }
+  const executionId = await currentSessionExecutionId(environment);
   const serverUrl = environment.OPENTAG_SESSION_SERVER_URL;
   if (serverUrl) {
     // E8 Cloud Session: the trusted Runner publishes the exact Server endpoint alongside the
@@ -50,7 +52,7 @@ export async function resolveSessionProofContext(
     const proof = await readSessionCliProofFile(proofPath);
     const cloudContext = await resolveCommandContext({ environment, serverUrl });
     if (!cloudContext.api) throw new Error("Command context did not resolve an API");
-    return { api: cloudContext.api, proof: proof.token };
+    return { api: cloudContext.api, proof: proof.token, ...(executionId ? { executionId } : {}) };
   }
   const context = await resolveCommandContext({ environment });
   const home = context.home;
@@ -63,7 +65,7 @@ export async function resolveSessionProofContext(
   const proof = await readSessionCliProofFile(proofPath);
   const apiContext = await resolveCommandContext({ environment, home, serverUrl: identity.serverUrl });
   if (!apiContext.api) throw new Error("Command context did not resolve an API");
-  return { api: apiContext.api, proof: proof.token };
+  return { api: apiContext.api, proof: proof.token, ...(executionId ? { executionId } : {}) };
 }
 
 export async function runSessionCreate(
@@ -79,8 +81,8 @@ export async function runSessionCreate(
   });
   const runtime = await resolveSessionProofContext();
   return requestWithRetryKey(input.messageId, () =>
-    process.env.OPENTAG_EXECUTION_ID
-      ? runtime.api.createInternalSession(runtime.proof, input, { executionId: process.env.OPENTAG_EXECUTION_ID })
+    runtime.executionId
+      ? runtime.api.createInternalSession(runtime.proof, input, { executionId: runtime.executionId })
       : runtime.api.createInternalSession(runtime.proof, input),
   );
 }
@@ -97,8 +99,8 @@ export async function runSessionSend(
   });
   const runtime = await resolveSessionProofContext();
   return requestWithRetryKey(input.messageId, () =>
-    process.env.OPENTAG_EXECUTION_ID
-      ? runtime.api.sendSessionMessage(runtime.proof, input, { executionId: process.env.OPENTAG_EXECUTION_ID })
+    runtime.executionId
+      ? runtime.api.sendSessionMessage(runtime.proof, input, { executionId: runtime.executionId })
       : runtime.api.sendSessionMessage(runtime.proof, input),
   );
 }

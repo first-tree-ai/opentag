@@ -49,3 +49,29 @@ describe("OpenTagApi runtime schedule methods", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
+
+it("includes execution provenance headers on create, update and resume", async () => {
+  const executionId = "22222222-2222-4222-8222-222222222222";
+  const requests: RequestInit[] = [];
+  const api = new OpenTagApi(baseUrl, async (_url, init) => {
+    requests.push(init ?? {});
+    throw new Error("stop after capturing request");
+  });
+  const options = { executionId };
+  await api
+    .createRuntimeAgentSchedule(
+      "proof",
+      { name: "task", prompt: "check", schedule: { kind: "every", intervalSeconds: 120 }, timezone: "UTC" },
+      options,
+    )
+    .catch(() => undefined);
+  await api
+    .updateRuntimeAgentSchedule("proof", scheduleId, { expectedRevision: 1, prompt: "edit" }, options)
+    .catch(() => undefined);
+  await api.resumeRuntimeAgentSchedule("proof", scheduleId, 1, options).catch(() => undefined);
+  expect(requests).toHaveLength(3);
+  for (const request of requests) {
+    expect(new Headers(request.headers).get("x-opentag-execution-id")).toBe(executionId);
+    expect(new Headers(request.headers).get(SESSION_CLI_PROOF_HEADER)).toBe("proof");
+  }
+});

@@ -66,6 +66,8 @@ interface ProxyStream {
   requestEnded: boolean;
   downloadNotify?: () => void;
   responseStarted: boolean;
+  revalidating?: boolean;
+  targetRecheck?: (signal: AbortSignal) => Promise<void>;
 }
 
 /**
@@ -300,6 +302,9 @@ class ProxyDataConnection {
         capability: frame.capability,
         capabilityTtlSeconds: Math.ceil(RUNTIME_CREDENTIAL_CAPABILITY_TTL_MS / 1_000),
         signal: stream.abort.signal,
+        setRevalidation: (check) => {
+          stream.targetRecheck = check;
+        },
       };
       const response = await adapter.handle(request, authorization);
       if (this.#streamClosed(stream)) return;
@@ -411,17 +416,23 @@ class ProxyDataConnection {
 
   async #revalidateStreams(): Promise<void> {
     if (this.#state !== "ready") return;
-    for (const stream of [...this.#streams.values()]) {
-      if (stream.state === "closed" || !stream.authorization) continue;
-      try {
-        await this.#transport.broker?.revalidate(stream.authorization);
-      } catch (error) {
-        if (this.#streamClosed(stream)) continue;
-        const code = errorCodeOf(error);
-        if (stream.responseStarted) this.#sendJson({ type: "cancel", streamId: stream.id, code });
-        else this.#sendJson({ type: "error", streamId: stream.id, code });
-        this.#abortStream(stream);
-      }
+    await Promise.all([...this.#streams.values()].map((stream) => this.#revalidateStream(stream)));
+  }
+
+  async #revalidateStream(stream: ProxyStream): Promise<void> {
+    if (stream.state === "closed" || !stream.authorization || stream.revalidating) return;
+    stream.revalidating = true;
+    try {
+      await this.#transport.broker?.revalidate(stream.authorization, stream.abort.signal);
+      if (!this.#streamClosed(stream)) await stream.targetRecheck?.(stream.abort.signal);
+    } catch (error) {
+      if (this.#streamClosed(stream)) return;
+      const code = errorCodeOf(error);
+      if (stream.responseStarted) this.#sendJson({ type: "cancel", streamId: stream.id, code });
+      else this.#sendJson({ type: "error", streamId: stream.id, code });
+      this.#abortStream(stream);
+    } finally {
+      stream.revalidating = false;
     }
   }
 

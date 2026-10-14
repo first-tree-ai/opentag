@@ -137,7 +137,9 @@ export function registerRuntimeAgentScheduleRoutes(
 
   function authenticate(request: FastifyRequest) {
     const header = request.headers[SESSION_CLI_PROOF_HEADER];
-    return service.authenticate(typeof header === "string" ? header : "");
+    const executionId = request.headers["x-opentag-execution-id"];
+    const proof = typeof header === "string" ? header : "";
+    return typeof executionId === "string" ? service.authenticate(proof, executionId) : service.authenticate(proof);
   }
 }
 

@@ -310,6 +310,11 @@
       "idx": 61,
       "tag": "0061_session_message_user_task_source",
       "sha256": "a59c14a18f9438a7ba16b538a870ab552b8f2be83d1f3ae2fc9c9d8b4d722638"
+    },
+    {
+      "idx": 62,
+      "tag": "0062_agent_schedule_user_task_source",
+      "sha256": "2b97107f9454224637cee91286f00c2ea043d28dd28c28f40b1a4db3a898789b"
     }
   ]
 }

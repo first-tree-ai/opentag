@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentAdminConfigSchema, CreateAgentRequestSchema } from "./agent.js";
+import { AgentAdminConfigSchema, CreateAgentRequestSchema, CreateAgentRuntimeConfigSchema } from "./agent.js";
 import { SlackAgentProvisionCodeSchema } from "./auth.js";
 import { SlackConfigurationViewSchema } from "./slack-configuration.js";
 
@@ -16,7 +16,11 @@ export const SlackProvisionCredentialsSchema = z
 export const ProvisionSlackAgentRequestSchema = z
   .object({
     code: SlackAgentProvisionCodeSchema,
-    agent: CreateAgentRequestSchema.required({ creationIntentId: true }),
+    agent: CreateAgentRequestSchema.omit({ computerId: true })
+      .required({ creationIntentId: true })
+      .extend({
+        runtimeConfig: CreateAgentRuntimeConfigSchema.omit({ permissions: true, maxDurationMs: true }).optional(),
+      }),
     slack: SlackProvisionCredentialsSchema,
   })
   .strict();

@@ -851,14 +851,21 @@ describe("createClientRuntime production composition", () => {
     );
     await chmod(command, 0o755);
 
+    const ambientProbe = resolve(home, "ambient-provider-probed");
+    for (const provider of ["claude", "pi"]) {
+      await writeFile(resolve(home, provider), `#!/bin/sh\ntouch '${ambientProbe}'\nexit 1\n`, { mode: 0o755 });
+    }
     const connection = runtimeConnection();
     const runtime = await createClientRuntime(connection, {
       clientVersion: "0.0.1",
+      claudeCodeCommand: resolve(home, "missing-claude"),
       codexCommand: command,
       codexHome,
-      environment: { HOME: home, PATH: process.env.PATH },
+      environment: { HOME: home, PATH: `${home}${delimiter}${process.env.PATH ?? ""}` },
       home,
+      piCommand: resolve(home, "missing-pi"),
     });
+    await expect(access(ambientProbe)).rejects.toMatchObject({ code: "ENOENT" });
     const result = await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()));
     expect(result).toMatchObject({ status: "ready" });
     await runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal);
@@ -907,10 +914,12 @@ describe("createClientRuntime production composition", () => {
     const connection = runtimeConnection();
     const runtime = await createClientRuntime(connection, {
       clientVersion: "0.0.1",
+      claudeCodeCommand: resolve(home, "missing-claude"),
       codexCommand: resolve(home, "missing-codex"),
       codexHome: resolve(home, "codex-home"),
       environment: { HOME: home, PATH: process.env.PATH },
       home,
+      piCommand: resolve(home, "missing-pi"),
     });
     await expect(
       runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot())),
@@ -2739,6 +2748,7 @@ async function composeClaudeCodeRuntime(options: {
     codexCommand: resolve(options.home, "missing-codex"),
     environment: options.environment,
     home: options.home,
+    piCommand: resolve(options.home, "missing-pi"),
   });
   return {
     capture: await readFile(capturePath, "utf8"),

@@ -1,6 +1,6 @@
 # 在 Slack 中创建 Agent 并绑定独立 Slack App
 
-[English](./slack-agent-provisioning.md)
+[English](../slack-agent-provisioning.md)
 
 同步日期：2026-10-14。
 
@@ -10,13 +10,17 @@
 
 ## 准备 Slack
 
-1. 在上下文保留同一个 creationIntentId、目标 Team、创建配置和 App ID。省略 computerId 即复用当前 Computer，也可显式选择另一个获授权的 Computer；Cloud 必须显式选择模型。名称不能证明 App 归属；创建结果不确定时不能重复创建。
+1. 在上下文保留同一个 creationIntentId、目标 Team、创建配置和 App ID。新 Agent 固定使用来源 Agent 的 Runtime Provider 和 Session proof 验证的当前 Computer；Cloud 必须显式选择模型。名称不能证明 App 归属；创建结果不确定时不能重复创建。
 2. `opentag slack home` 返回私有管理目录。Cloud 使用 `/tmp/opentag/slack-management`，位于每轮 HOME 和归档 workspace 之外；Local 使用 `<OpenTag home>/slack-management`。原生 CLI 配置在 `config/`，每次操作在 `project-<creationIntentId>/`，所有管理命令传同一个 `--project-dir`，临时文件也留在该目录。同 Team 的另一 App 不复用已绑定项目。管理命令顺序执行。Local 解析现有账户级原生 Provider CLI 启动器，绕开 PATH 上的 Turn 消息启动器；仅为带 proof 的可见 Session 预建这个0700目录并授予其写权限，不授予整个 OpenTag home 的写权限。
 3. 没有可用管理登录时运行 `opentag slack manage -- auth login --no-prompt`。用户在 Slack 执行返回的 `/slackauthticket` 命令，检查权限后回传 challenge；再用官方 CLI 的 `--ticket`、`--challenge` 完成同一 ticket。此协议不使用 localhost 浏览器回调，用户可在自己的设备操作；实际异机验收仍待完成。
 4. 用 `opentag slack manifest --creation-intent <uuid> --display-name <name>` 生成初始 Manifest，复用名称规则、18 项 Bot scope 和可写 App Home，暂不开事件或交互回调。
 5. 先校验同一 Manifest，再运行 `opentag slack manage --project-dir project-<intent> --team <team-id> --output-file project-<intent>/create-response.json -- api apps.manifest.create --json <manifest-request-json>`。JSON 请求的 `manifest` 字段是序列化后的 Manifest。输出路径相对私有管理目录，或为其内部的绝对路径。创建响应含 Signing Secret，不打印到聊天或普通日志。
 
 管理 raw API 命令必须指定 `--team` 和 `--output-file`。封装清除消息代理 handle 和代理路由，先运行原生 `auth list` 让官方 CLI 续期，再读取该 Team 最新原生凭证，仅传给本次进程；检查 JSON 的 `ok`，不只检查退出码。不另存 refresh token，不引入刷新服务。官方 CLI 可能在 JSON 前输出展示文字，捕获 hook 会处理这种前缀。
+
+## 原生管理授权边界
+
+本流程明确复用现有 Computer 级信任边界：同一 Computer 上带 proof 的可见 Session 共享私有 Slack 管理目录及保留的原生登录，因此这些 Agent 可管理该 Slack CLI 授权所能访问的所有 App。Account 操作码只控制 OpenTag 的创建和绑定，不能把原生管理授权限制到一个 App，也不提供同 Computer 内的 Agent 凭证隔离。应仅在该 Computer 运行可信 Agent；不新增 Agent 级 Slack 授权或凭证隔离机制。
 
 ## 安装同一个 App 并捕获凭证
 
@@ -44,7 +48,7 @@
 
 ## 一次确认和绑定
 
-把现有 Agent 创建参数写入 `agent.json`，包含稳定的 creationIntentId。省略 computerId 时，Server 复用同一次 Session proof 验证所得的当前 Computer；显式指定其他 Computer 仍保留原有所有权校验：
+把 creationIntentId、name、displayName、来源 Agent 的 runtimeProvider 和可选的 model、reasoningEffort、instructions 写入 `agent.json`。组合入口严格拒绝 computerId、runtimeConfig.permissions 和 runtimeConfig.maxDurationMs，Server 固定使用 Session proof 验证的当前 Computer，并要求 Provider 与来源 Agent 相同，避免从需审批的 Provider 切换到 Pi 的全权限策略。权限和时长使用现有默认值；owner 后续可在普通 Account 入口修改：
 
 ```sh
 opentag agent provision-slack --request-file <agent.json> --credentials-file <private-credentials.json> --json
@@ -61,8 +65,9 @@ opentag agent provision-slack --request-file <agent.json> --credentials-file <pr
 绑定后 export 同一个 App 的远端 Manifest，只补事件地址 `slack.eventsUrl`、交互地址 `interactionsUrl` 和七项 Bot 事件：`app_mention`、`app_uninstalled`、`message.channels`、`message.groups`、`message.im`、`message.mpim`、`tokens_revoked`。保留其他远端配置；现有入站路由此时能找到 Signing Secret 并处理可能的 challenge。返回实际 `slack.binding.identity.botUserId` 的提及和 App/Team 私信链接；有 `slack.binding.bot.displayName` 时才显示实际名称。
 
 - 创建结果不确定：核查已有 App，不自动重建。
+- Schema、Provider 和码的有效性在消费前检查；创建与 Slack 身份验证在消费后执行，因此名称冲突或无效 Slack 凭证可能消耗码。这保证先完成一次性授权再执行副作用，不引入预留记录或额外换票；先核对本地准备文件。
 - 码已消费或响应丢失：用新操作码、同一创建意图和配置恢复。保留未绑定 Agent；已有同 App/Team/Bot 绑定返回当前状态，不轮换凭证；不同绑定报冲突。
-- 恢复时保持实际目标 Computer 不变。响应丢失后若原 Session 已移动到另一台 Computer，现有创建指纹会安全地报冲突；应使用原目标 Computer，不更换创建意图或静默创建另一个 Agent。
+- 恢复时保持实际目标 Computer 和 Provider 不变。响应丢失后若原 Session 移动或 Provider 改变，现有创建指纹会安全地报冲突；应从原 Computer/Provider 恢复，不覆盖它们、不更换创建意图或静默创建另一个 Agent。
 - 只更新回调失败：只恢复回调，不再次取码或绑定。
 - Sandbox 重置/回收：管理登录和临时秘密可能丢失，重新授权并核查上下文 App ID，不承诺跨 Sandbox 无感恢复。
 - 完成后删除本次临时秘密文件，保留仍有效的原生管理登录。

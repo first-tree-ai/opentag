@@ -1,6 +1,6 @@
 # Create an Agent with its own Slack App from Slack
 
-[简体中文](./slack-agent-provisioning.zh-CN.md)
+[简体中文](./zh-CN/slack-agent-provisioning.md)
 
 The running Agent prepares one independent Slack App with the official Slack CLI, then submits one
 creation-and-binding request with its Session proof and an Account operation code. The operation
@@ -14,12 +14,12 @@ continues to use the current Bot's messaging proxy.
 ## Prepare Slack
 
 1. Keep one `creationIntentId`, target Team, creation configuration, and App ID in conversation
-   context. Reuse the current Computer by omitting `computerId`, or choose another authorized Computer.
+   context. The new Agent uses the source Agent's Runtime Provider and the proof-verified current Computer.
    Choose an explicit model for Cloud. Do not use a display name as an App
    identity or repeat an uncertain create.
 2. `opentag slack home` prints the private management directory. Cloud uses
    `/tmp/opentag/slack-management`, outside per-Turn HOME and the archived workspace. Local uses
-   `<OpenTag home>/slack-management`. It contains native CLI configuration under `config/` and the
+   `<OpenTag home>/slack-management`. It contains native CLI configuration under `config/` and
    each operation under `project-<creationIntentId>/`. Pass that same `--project-dir` to every management command and keep its temporary files there. Never reuse a linked project for another App in the same Team. Run management commands sequentially.
    Local resolves the existing account-level native Provider CLI launcher, bypassing the Turn
    messaging launcher on `PATH`. Visible proof-backed Sessions receive write access only to this
@@ -42,6 +42,15 @@ handles and proxy routing, runs native `auth list` to let the official CLI refre
 latest native authorization for that Team into this process only. It checks Slack JSON `ok`, not
 only the exit code. It neither copies refresh tokens elsewhere nor introduces a refresh service.
 The official CLI may prefix API JSON with presentation text; the capture hook handles that prefix.
+
+## Native management authorization boundary
+
+This flow intentionally reuses the existing Computer-level trust boundary: visible proof-backed
+Sessions on the same Computer share the private native Slack management directory and its retained
+login. Such Agents can manage every App available to that Slack CLI authorization. The Account
+operation code gates OpenTag creation and binding; it does not restrict native Slack management to
+one App or isolate one Agent from other Agents on that Computer. Only run trusted Agents there.
+No per-Agent Slack authorization or credential isolation mechanism is added.
 
 ## Install the same App and capture credentials
 
@@ -75,9 +84,12 @@ resume installation of this same App. Do not request the Account code until cred
 
 ## Confirm once and bind
 
-Save the existing Agent creation shape to `agent.json`, including a stable `creationIntentId`.
-When `computerId` is omitted, the server reuses the Computer verified by the same Session proof;
-explicit Computer choices still pass existing ownership checks. Then run:
+Save `creationIntentId`, name, displayName, the source Agent's runtimeProvider, and optional model,
+reasoning effort and instructions to `agent.json`. The provisioning schema rejects `computerId`,
+`runtimeConfig.permissions` and `runtimeConfig.maxDurationMs`; the Server fixes the Computer to the
+Session proof and requires the same Provider. This also prevents switching from an approval-based
+Provider to Pi's full-permission policy. Existing default permissions and duration apply; the owner
+can change them later through the normal Account surface. Then run:
 
 ```sh
 opentag agent provision-slack --request-file <agent.json> --credentials-file <private-credentials.json> --json
@@ -114,12 +126,17 @@ and handle a challenge. Return the actual `slack.binding.identity.botUserId` men
 DM link; use `slack.binding.bot.displayName` only when present.
 
 - An uncertain App create requires inspection, not automatic recreation.
+- Schema, Provider and code validity checks happen before consumption. Creation and Slack identity
+  validation follow consumption, so a name conflict or invalid Slack credential can spend the code.
+  This preserves one-time authorization before side effects without a reservation or extra exchange.
+  Check the prepared local files first.
 - After code consumption or a lost response, use a fresh operation code with the same intent and
   creation configuration. An unbound Agent is retained. A matching existing App/Team/Bot binding
   returns its live state without rotating credentials; a different binding conflicts.
-- Keep the same effective Computer when recovering. If the source Session moved to another Computer
-  after a lost response, the existing creation fingerprint conflicts safely; use the original target
-  Computer rather than changing the intent or silently creating another Agent.
+- Keep the same effective Computer and Provider when recovering. If the source Session moved or its
+  Provider changed after a lost response, the existing creation fingerprint conflicts safely. Resume
+  from the original Computer/Provider; do not override them, change the intent or silently create
+  another Agent.
 - Callback failure retries only the callback update. It needs no new Account code or binding request.
 - Sandbox replacement can lose native login and temporary secrets. Reauthorize and inspect the known
   App; do not promise transparent cross-Sandbox recovery.

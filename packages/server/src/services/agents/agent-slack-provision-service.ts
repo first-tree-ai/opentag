@@ -1,19 +1,21 @@
 import {
+  type AgentRuntimeProvider,
   type ProvisionSlackAgentRequest,
   type ProvisionSlackAgentResponse,
   SLACK_INTERACTIONS_PATH,
 } from "@opentag/shared";
+import { and, eq, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
+import { agents } from "../../db/schema/index.js";
 import { consumeAccountConnectCode } from "../auth/connect-code-service.js";
 import { type SlackConfigurationService, SlackConfigurationServiceError } from "../im-bindings/slack/index.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
-import type { AgentOwnerResolver } from "./agent-self-service.js";
 import type { AgentService } from "./agent-service.js";
+import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 export interface AgentSlackProvisionServiceOptions {
   database: DatabaseClient;
   proofs: Pick<SessionCliProofService, "authenticate">;
-  owners: Pick<AgentOwnerResolver, "resolveAccountId">;
   agents: Pick<AgentService, "createForAccount">;
   slack: Pick<SlackConfigurationService, "view" | "configureToken">;
   publicOrigin: string;
@@ -23,24 +25,43 @@ export interface AgentSlackProvisionServiceOptions {
 export class AgentSlackProvisionService {
   constructor(private readonly options: AgentSlackProvisionServiceOptions) {}
 
-  async authenticate(proof: string): Promise<{ accountId: string; computerId: string }> {
+  async authenticate(proof: string): Promise<{
+    accountId: string;
+    computerId: string;
+    runtimeProvider: AgentRuntimeProvider;
+  }> {
     const source = await this.options.proofs.authenticate(proof);
+    const [agent] = await this.options.database
+      .select({ accountId: agents.createdByUserId, runtimeProvider: agents.runtimeProvider })
+      .from(agents)
+      .where(and(eq(agents.id, source.agentId), ne(agents.status, "deleted")))
+      .limit(1);
+    if (!agent) throw resourceNotFound();
     // This operation has its own Account confirmation. The self-configuration switch keeps its existing meaning.
     return {
-      accountId: await this.options.owners.resolveAccountId(source.agentId),
+      ...agent,
       computerId: source.computerId,
     };
   }
 
   async provision(
-    scope: { accountId: string; computerId: string },
+    scope: { accountId: string; computerId: string; runtimeProvider: AgentRuntimeProvider },
     input: ProvisionSlackAgentRequest,
   ): Promise<ProvisionSlackAgentResponse> {
     const { accountId } = scope;
+    if (input.agent.runtimeProvider !== scope.runtimeProvider) {
+      throw new AgentServiceError(
+        "AGENT_FORBIDDEN",
+        "deterministic",
+        "Slack provisioning must use the source Agent's Runtime Provider",
+        403,
+      );
+    }
     await consumeAccountConnectCode(this.options.database, input.code, "slack-agent-provision", accountId);
     const agent = await this.options.agents.createForAccount(accountId, {
       ...input.agent,
-      computerId: input.agent.computerId ?? scope.computerId,
+      computerId: scope.computerId,
+      runtimeProvider: scope.runtimeProvider,
     });
     const interactionsUrl = new URL(SLACK_INTERACTIONS_PATH, this.options.publicOrigin).toString();
     const current = await this.options.slack.view(accountId, agent.id, this.options.publicOrigin);

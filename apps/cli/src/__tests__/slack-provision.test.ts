@@ -49,6 +49,16 @@ describe("Slack provisioning CLI", () => {
     });
     expect(JSON.stringify(prepared)).not.toContain(slack.botAccessToken);
     expect(api.provisionSlackAgent).not.toHaveBeenCalled();
+    for (const override of [
+      { computerId: randomUUID() },
+      { runtimeConfig: { permissions: { approvalPolicy: "never", allowCommands: ["sh"] } } },
+      { runtimeConfig: { maxDurationMs: 86_400_000 } },
+    ]) {
+      await writeFile(requestFile, JSON.stringify({ ...agent, ...override }));
+      await expect(runSlackAgentProvision({ requestFile, credentialsFile, runtime })).rejects.toThrow();
+    }
+    expect(api.provisionSlackAgent).not.toHaveBeenCalled();
+    await writeFile(requestFile, JSON.stringify(agent));
     await writeFile(codeFile, "slack-provision.one-time-test-code\n");
     await runSlackAgentProvision({ requestFile, credentialsFile, codeFile, runtime });
     expect(api.provisionSlackAgent).toHaveBeenCalledExactlyOnceWith("proof", {

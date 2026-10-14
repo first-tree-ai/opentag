@@ -10,7 +10,7 @@ export function registerAgentSlackProvisionCommand(agent: Command): void {
     )
     .requiredOption(
       "--request-file <path>",
-      "Agent creation JSON with a stable creationIntentId; defaults to the current Computer",
+      "Agent creation JSON with a stable creationIntentId; uses the current Computer and default permissions/duration",
     )
     .requiredOption("--credentials-file <path>", "private Slack credentials JSON from the deploy hook")
     .option(
@@ -34,7 +34,8 @@ Example request-file JSON (replace the example UUID once for this operation):
   }
 }
 Use a provider and model supported by the target Computer. Cloud requires an
-explicit runtimeConfig.model. Omit computerId to reuse the current Computer.
+explicit runtimeConfig.model. Do not set computerId, permissions or maxDurationMs;
+this operation uses the current Computer, source Agent Runtime Provider and default permissions/duration.
 Keep the same creationIntentId and configuration when recovering this operation.
 `,
     )

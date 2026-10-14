@@ -53,6 +53,7 @@ import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js"
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
 import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
+import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";
 import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
@@ -1212,7 +1213,6 @@ export async function startServer(): Promise<void> {
           agents: agentService,
           slack: slackConfigurationService,
           proofs: sessionCliProofService,
-          owners: new DatabaseAgentOwnerResolver(database),
           publicOrigin: config.publicUrl,
         }),
       },
@@ -1320,5 +1320,3 @@ const isProcessEntry = process.argv[1] !== undefined && fileURLToPath(import.met
 if (isProcessEntry) {
   await startServer();
 }
-
-import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";

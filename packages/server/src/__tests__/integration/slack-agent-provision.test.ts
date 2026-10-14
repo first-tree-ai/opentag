@@ -10,16 +10,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
-import {
-  accountCliLoginCodes,
-  agents,
-  computers,
-  imBindings,
-  slackInstallations,
-  users,
-} from "../../db/schema/index.js";
+import { accountCliLoginCodes, agents, computers, imBindings, slackInstallations } from "../../db/schema/index.js";
 import { AgentSlackProvisionService } from "../../services/agents/agent-slack-provision-service.js";
-import { AgentService, DatabaseAgentOwnerResolver } from "../../services/agents/index.js";
+import { AgentService } from "../../services/agents/index.js";
 import {
   AuthService,
   type AuthTokenProvider,
@@ -104,7 +97,6 @@ async function fixture() {
   const service = new AgentSlackProvisionService({
     database: client.database,
     proofs,
-    owners: new DatabaseAgentOwnerResolver(client.database),
     agents: agentService,
     slack,
     publicOrigin: "https://opentag.example.com",
@@ -117,7 +109,6 @@ async function fixture() {
       name: "new-helper",
       displayName: "Requested Name",
       runtimeProvider: "codex",
-      computerId: computer.id,
     },
     slack: {
       appId: "A_NEW",
@@ -152,40 +143,62 @@ async function fixture() {
 }
 
 describe("Slack Agent provisioning", () => {
-  it("defaults to the verified source Computer and still rejects an explicitly foreign Computer", async () => {
+  it("rejects authority and Computer overrides before consuming the code, then uses safe defaults", async () => {
     const f = await fixture();
     try {
-      const [other] = await f.database
-        .insert(users)
-        .values({ email: "other@example.com", displayName: "Other" })
-        .returning();
-      if (!other) throw new Error("Missing other Account");
-      const [foreign] = await f.database
+      const [otherComputer] = await f.database
         .insert(computers)
         .values({
-          ownerAccountId: other.id,
+          ownerAccountId: f.owner.userId,
           currentInstallationId: randomUUID(),
-          displayName: "Foreign",
+          displayName: "Another owned Computer",
           platform: "linux",
           arch: "x64",
           clientVersion: "0.1.1",
         })
         .returning();
-      if (!foreign) throw new Error("Missing foreign Computer");
-      const denied = await f.submit({ ...f.input, agent: { ...f.input.agent, computerId: foreign.id } });
-      expect(denied.statusCode).toBe(404);
-      expect(denied.json().error.code).toBe("COMPUTER_NOT_FOUND");
+      if (!otherComputer) throw new Error("Missing other Computer");
+      for (const override of [
+        { computerId: otherComputer.id },
+        { computerId: f.source.computerId },
+        { runtimeConfig: { permissions: { approvalPolicy: "never", allowCommands: ["sh", "curl"] } } },
+        { runtimeConfig: { permissions: { allowCommands: ["sh"] } } },
+        { runtimeConfig: { maxDurationMs: 86_400_000 } },
+        { runtimeConfig: { maxDurationMs: null } },
+      ]) {
+        const denied = await f.submit({ ...f.input, agent: { ...f.input.agent, ...override } } as never);
+        expect(denied.statusCode).toBe(400);
+      }
+      for (const runtimeProvider of ["pi", "claude-code"] as const) {
+        const denied = await f.submit({ ...f.input, agent: { ...f.input.agent, runtimeProvider } });
+        expect(denied.statusCode).toBe(403);
+        expect(denied.json().error.code).toBe("AGENT_FORBIDDEN");
+      }
+      const [code] = await f.database
+        .select()
+        .from(accountCliLoginCodes)
+        .where(eq(accountCliLoginCodes.tokenHash, `slack-provision.${hashSecret(f.input.code)}`));
+      expect(code?.consumedAt).toBeNull();
       expect(await f.database.select().from(agents)).toHaveLength(1);
+      expect(f.api.inspectInstallation).not.toHaveBeenCalled();
 
-      const { computerId: _computerId, ...agent } = f.input.agent;
       const input = {
         ...f.input,
-        agent,
-        code: (await f.issuer.issueForUser(f.owner.userId, "slack-agent-provision")).code,
+        agent: {
+          ...f.input.agent,
+          runtimeConfig: { model: "gpt-6.1-sol", reasoningEffort: "high", instructions: "Help with the task." },
+        },
       };
       const created = await f.submit(input);
       expect(created.statusCode).toBe(200);
-      expect(created.json().agent.computerId).toBe(f.source.computerId);
+      expect(created.json().agent).toMatchObject({
+        computerId: f.source.computerId,
+        runtimeConfig: {
+          ...input.agent.runtimeConfig,
+          maxDurationMs: null,
+          permissions: { approvalPolicy: "on-request", allowCommands: [] },
+        },
+      });
       const replay = await f.submit({
         ...input,
         code: (await f.issuer.issueForUser(f.owner.userId, "slack-agent-provision")).code,

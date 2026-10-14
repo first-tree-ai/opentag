@@ -36,7 +36,7 @@ function readSystemdDirective(lines: string[], start: number): string[] {
     const line = lines[start + directive.length] ?? "";
     if (/^\s*\[/u.test(line)) throw invalidSystemdEnvironment();
     directive.push(line);
-    if (!/^\s*[#;]/u.test(line)) continued = /(?:^|[^\\])(?:\\\\)*\\$/u.test(line);
+    if (!/^\s*(?:[#;]|$)/u.test(line)) continued = /(?:^|[^\\])(?:\\\\)*\\$/u.test(line);
   }
   if (continued) throw invalidSystemdEnvironment();
   return directive;

@@ -24,6 +24,8 @@ describe("service environment preservation", () => {
       'Environment="CLAUDE_CODE_OAUTH_TOKEN=synthetic-$&-$`-token"',
       "EnvironmentFile=-%h/.private/claude.env",
       'Environment="CUSTOM=one" \\',
+      "# keep the continuation across comments and blank lines",
+      "",
       ' "SECOND=two"',
       "PassEnvironment=EXTERNAL",
       "UnsetEnvironment=REMOVED",

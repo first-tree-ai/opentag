@@ -1,7 +1,12 @@
 import { GitPublicationError } from "../github-proxy/git-packets.js";
 import { type GitHubApiClient, GitHubApiClientError } from "./github-api-client.js";
 import type { GitHubManagementService } from "./github-management-service.js";
-import { ownedScopedToken, validateScopedToken, validateUserTokenInput } from "./user-token-scope.js";
+import {
+  ownedScopedToken,
+  scopedTokenCandidate,
+  validateScopedToken,
+  validateUserTokenInput,
+} from "./user-token-scope.js";
 import type { GitHubExecutionUserCredential, GitHubUserTokenInput } from "./user-token-types.js";
 
 /** User identity with one repository and explicit permissions. All material stays on the Server. */
@@ -9,7 +14,7 @@ export class GitHubUserTokenClient {
   constructor(
     readonly options: {
       api: Pick<GitHubApiClient, "createScopedUserToken" | "listInstallationRepositories" | "revokeUserToken">;
-      management: Pick<GitHubManagementService, "getExecutionUserCredential">;
+      management: Pick<GitHubManagementService, "getExecutionUserCredential" | "isCurrentUserCredential">;
       clientId: string;
       now?: () => Date;
       onRevokeFailure?: () => void;
@@ -41,9 +46,10 @@ export class GitHubUserTokenClient {
       throw new GitPublicationError("scope_denied");
     const scoped = await this.#scope(input, repositoryId, parent);
     if (!scoped) return null;
-    const token = ownedScopedToken(scoped.payload, parent, this.options.clientId);
+    const candidate = scopedTokenCandidate(scoped.payload);
     let retained = false;
     try {
+      const token = ownedScopedToken(scoped.payload, parent, this.options.clientId);
       const expiresAt = validateScopedToken(scoped.payload, input, this.#now());
       await this.#verifyRepository(token, input);
       const current = await this.options.management.getExecutionUserCredential(input);
@@ -56,7 +62,7 @@ export class GitHubUserTokenClient {
       retained = true;
       return { token, expiresAt };
     } finally {
-      if (!retained) await this.#discard(token, input);
+      if (!retained && candidate && candidate !== parent.accessToken) await this.#discard(candidate, input);
     }
   }
 
@@ -110,8 +116,9 @@ export class GitHubUserTokenClient {
 
   async #discard(token: string, input: GitHubUserTokenInput): Promise<void> {
     try {
-      const current = await this.options.management.getExecutionUserCredential(input);
-      if (current?.accessToken === token) return;
+      // Read the Account's current parent without the stale execution fence: OAuth replacement
+      // can move to another connection/authorization while a scoped-token response is in flight.
+      if (await this.options.management.isCurrentUserCredential(input.accountId, token)) return;
       await this.revoke(token);
     } catch {
       this.options.onRevokeFailure?.();

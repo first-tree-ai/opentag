@@ -12,6 +12,10 @@ GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一�
 
 用户凭证同时证明仓库准入并决定 Git、REST、GraphQL 操作身份。Server 先确认 Account、Agent、任务和实际目标，再通过 GitHub scoped-user-token 接口派生单仓库、明确权限的用户令牌。返回的用户/App 身份、owner、权限和有效期必须匹配，并核验该令牌实际只能访问目标仓库。PR、评论归属于连接的 GitHub 用户，Git push 也以该用户认证；commit 的 author/committer、对象 ID 与签名保持原样。父用户凭证和派生令牌均不进入管理响应或 Sandbox。
 
+安装选择标记允许 `all` 和 `selected`，该标记本身不作为令牌范围的证明。使用派生令牌进行的实时仓库列表探测必须恰好返回一个仓库，且稳定 ID 和名称均匹配。可为空的响应字段不能直接视为安全：缺少用户/App 身份、owner 或权限元数据时拒绝执行；`expires_at` 缺失或为 null 时明确返回 `GITHUB_TOKEN_LIFETIME_UNSUPPORTED`，不虚构有效期，也不使用无限期凭证。这些拒绝同样触发尽力清理。清理只处理固定派生接口返回的有界令牌，排除当次捕获的父令牌，并单独核对 Account 的当前父令牌，覆盖正常刷新和 OAuth 替换连接。
+
+GitHub REST API 请求改为消耗认证用户的个人配额，与该用户的其他 Agent、GitHub/OAuth App 和个人访问令牌工具共用，不再使用安装级配额。认证用户通常每小时 5,000 次，部分 GitHub Enterprise Cloud 场景配额更高。每次代理请求除实时准入和元数据检查外，还会派生令牌、探测实际仓库范围并单独撤销；仓库探测及其他使用用户身份的 REST 调用消耗共享用户配额，Agent 高频操作可能影响用户自己的工具。参见 [GitHub REST API 配额说明](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)。
+
 IM、用户定时任务和可追溯 Agent 协作都使用 Agent 所属 Account 的当前连接；IM 发信人不会自动映射为独立 GitHub 身份。本次不新增操作审计、发送者账号映射、数据库迁移或身份配置；现有任务来源继续用于授权。
 
 仓库名仅用于展示，授权使用稳定 repository/installation ID。每次请求按实际 Git URL、REST 路径或已验证 GraphQL node 定位目标；Server 用用户令牌证明用户/App 权限交集，再用 App JWT 解析对应安装并固定稳定 ID。读写权限、暂停状态、连接版本和执行存活都实时复查，不遍历完整仓库目录。代码写入保留 Session 任务分支和 PR 约束；Context Tree 工作目标表示用途，其默认分支仍走现有 Tree 校验发布路径。

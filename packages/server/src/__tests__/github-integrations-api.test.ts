@@ -316,6 +316,33 @@ describe("Server-only GitHub execution credential", () => {
     await f.management?.disconnect(f.owner.id);
     expect(await f.management?.getExecutionUserCredential(input)).toBeNull();
   });
+
+  it("protects the current Account parent after authorization changes and OAuth replacement", async () => {
+    const f = await appFixture({ withManagement: true });
+    const original = await activeConnection(f);
+    const originalToken = tokenMaterial().accessToken;
+    expect(await f.management?.isCurrentUserCredential(f.owner.id, originalToken)).toBe(true);
+    expect(await f.management?.isCurrentUserCredential(f.other.id, originalToken)).toBe(false);
+    expect(await f.management?.isCurrentUserCredential(f.owner.id, "ghu_child")).toBe(false);
+    await unit.database
+      .update(githubConnections)
+      .set({ authorizationVersion: original.authorizationVersion + 1n })
+      .where(eq(githubConnections.id, original.id));
+    expect(await f.management?.isCurrentUserCredential(f.owner.id, originalToken)).toBe(true);
+    f.api.exchangeCodeForUserToken.mockResolvedValue({ ...tokenMaterial(), accessToken: "ghu_reconnected_parent" });
+    f.api.getAuthenticatedUser.mockResolvedValue({ id: GITHUB_USER_TWO, login: "replacement" });
+    const started = await startAuthorization(f.app, { intent: "replace" });
+    const callback = await completeCallback(f.app, {
+      state: started.state,
+      cookie: started.cookie,
+      code: "replace-code",
+    });
+    expect(locationOf(callback).searchParams.get("github_oauth")).toBe("success");
+    expect((await f.management?.getOverview(f.owner.id))?.connection?.id).not.toBe(original.id);
+    expect(await f.management?.isCurrentUserCredential(f.owner.id, originalToken)).toBe(false);
+    expect(await f.management?.isCurrentUserCredential(f.owner.id, "ghu_reconnected_parent")).toBe(true);
+    expect(await f.management?.isCurrentUserCredential(f.other.id, "ghu_reconnected_parent")).toBe(false);
+  });
 });
 
 async function createAgent(accountId: string, name = "reviewer") {

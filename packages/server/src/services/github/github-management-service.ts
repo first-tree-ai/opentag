@@ -193,6 +193,14 @@ export class GitHubManagementService {
     };
   }
 
+  /** Cleanup guard only; a stale execution must not delete a newly connected parent credential. */
+  async isCurrentUserCredential(accountId: string, token: string): Promise<boolean> {
+    const current = await this.#connections.getCurrentConnection(accountId, "github.com", this.#appId);
+    if (!current) return false;
+    const row = await this.#readActiveCredentialRow(current.id);
+    return !!row && row.accountId === accountId && this.#decrypt(row).accessToken === token;
+  }
+
   async resolveRepository(input: {
     connectionId: string;
     fullName: string;

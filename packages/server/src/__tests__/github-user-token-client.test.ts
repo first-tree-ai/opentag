@@ -69,12 +69,12 @@ describe("GitHub user identity credentials", () => {
 
   it.each([
     { token: "ghu_parent_a" },
-    { token: "ghs_bot_token" },
+    { token: "ghu_parent_a", user: null },
     { token: "ghu_bad\r\ntoken" },
-    { user: { id: 99, type: "User" } },
-    { user: { id: 42, type: "Bot" } },
-    { app: { client_id: "another-app" } },
-  ])("never uses or revokes an unattested token or the parent: %j", async (changes) => {
+    { token: "" },
+    { token: null },
+    { token: "x".repeat(4097) },
+  ])("never uses or revokes the parent or malformed token material: %j", async (changes) => {
     const f = userTokenFixture();
     f.setPayload({ ...scopedUserPayload(), ...changes });
     await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
@@ -82,11 +82,31 @@ describe("GitHub user identity credentials", () => {
   });
 
   it.each([
-    { expires_at: null },
+    { token: "ghs_bot_token" },
+    { token: "future_token_format" },
+    { user: { id: 99, type: "User" } },
+    { user: { id: 42, type: "Bot" } },
+    { app: { client_id: "another-app" } },
+    { user: null },
+    { app: null },
+  ])("rejects failed identity attestation but cleans the returned token: %j", async (changes) => {
+    const f = userTokenFixture();
+    const payload = { ...scopedUserPayload(), ...changes };
+    f.setPayload(payload);
+    await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[1]).toMatchObject({ method: "DELETE", body: { access_token: payload.token } });
+    expect(f.calls.some((call) => call.path.startsWith("/user/installations"))).toBe(false);
+  });
+
+  it.each([
     { expires_at: "invalid" },
     { expires_at: now.toISOString() },
     { expires_at: new Date(now.getTime() + 9 * 3_600_000).toISOString() },
-    { installation: { repository_selection: "all", permissions: { contents: "read" }, account: { login: "owner" } } },
+    { installation: null },
+    { installation: { repository_selection: null, permissions: { contents: "read" }, account: { login: "owner" } } },
+    { installation: { repository_selection: "selected", permissions: null, account: { login: "owner" } } },
+    { installation: { repository_selection: "selected", permissions: { contents: "read" }, account: null } },
     {
       installation: {
         repository_selection: "selected",
@@ -114,6 +134,26 @@ describe("GitHub user identity credentials", () => {
     f.setPayload({ ...scopedUserPayload(), ...changes });
     await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
     expect(f.calls.at(-1)).toMatchObject({ method: "DELETE", body: { access_token: "ghu_scoped_a" } });
+  });
+
+  it.each([null, undefined])("rejects an unbounded child lifetime explicitly and cleans it: %s", async (expiry) => {
+    const f = userTokenFixture();
+    f.setPayload({ ...scopedUserPayload(), expires_at: expiry });
+    await expect(f.client.mint(input)).rejects.toMatchObject({ code: "GITHUB_TOKEN_LIFETIME_UNSUPPORTED" });
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls.at(-1)).toMatchObject({ method: "DELETE", body: { access_token: "ghu_scoped_a" } });
+  });
+
+  it.each(["all", "selected"])("proves exact repository scope independently of the %s label", async (selection) => {
+    const f = userTokenFixture();
+    const payload = scopedUserPayload();
+    payload.installation.repository_selection = selection;
+    f.setPayload(payload);
+    await expect(f.client.mint(input)).resolves.toMatchObject({ token: payload.token });
+    expect(f.calls[1]?.path).toBe("/user/installations/456/repositories");
+    f.setRepositories({ total_count: 2, repositories: scopedRepositoryPage().repositories });
+    await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
+    expect(f.calls.at(-1)).toMatchObject({ method: "DELETE", body: { access_token: payload.token } });
   });
 
   it.each([
@@ -151,10 +191,30 @@ describe("GitHub user identity credentials", () => {
       credentialGeneration: 4n,
       accessExpiresAt: new Date(now.getTime() + 8 * 3_600_000),
     };
+    f.setParent(current);
     f.management.getExecutionUserCredential
       .mockResolvedValueOnce({ ...current, accessToken: "ghu_parent_a", credentialGeneration: 3n })
       .mockResolvedValue(current);
     await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
+    expect(f.calls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+
+  it.each([false, true])("protects a replaced parent even when identity attestation fails (%s)", async (wrongUser) => {
+    const f = userTokenFixture();
+    f.setPayload(scopedUserPayload("ghu_reconnected_parent", wrongUser ? "99" : "42"));
+    f.management.getExecutionUserCredential
+      .mockResolvedValueOnce({
+        accessToken: "ghu_parent_a",
+        githubUserId: "42",
+        credentialGeneration: 3n,
+        accessExpiresAt: new Date(now.getTime() + 8 * 3_600_000),
+      })
+      .mockResolvedValue(null);
+    f.management.isCurrentUserCredential.mockImplementation(
+      async (accountId, token) => accountId === input.accountId && token === "ghu_reconnected_parent",
+    );
+    await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
+    expect(f.management.isCurrentUserCredential).toHaveBeenCalledWith(input.accountId, "ghu_reconnected_parent");
     expect(f.calls.some((call) => call.method === "DELETE")).toBe(false);
   });
 
@@ -256,11 +316,32 @@ describe("GitHub user identity credentials", () => {
 
   it("preserves the scope rejection when child cleanup fails", async () => {
     const f = userTokenFixture();
-    f.setPayload({ ...scopedUserPayload(), expires_at: null });
+    f.setPayload({ ...scopedUserPayload(), expires_at: "invalid" });
     f.api.revokeUserToken = async () => {
       throw new Error("sensitive");
     };
     await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
     expect(f.diagnostic).toHaveBeenCalledOnce();
+  });
+
+  it("preserves identity rejection and reports cleanup failure without exposing the candidate", async () => {
+    const f = userTokenFixture();
+    f.setPayload({ ...scopedUserPayload(), user: null });
+    f.api.revokeUserToken = async () => {
+      throw new Error("ghu_scoped_a");
+    };
+    const error = await f.client.mint(input).catch((error) => error);
+    expect(error).toMatchObject({ code: "scope_denied" });
+    expect(String(error)).not.toContain("ghu_scoped_a");
+    expect(f.diagnostic).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("does not revoke a candidate when the fresh parent lookup is unavailable", async () => {
+    const f = userTokenFixture();
+    f.setPayload({ ...scopedUserPayload(), user: null });
+    f.management.isCurrentUserCredential.mockRejectedValue(new Error("database unavailable"));
+    await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
+    expect(f.calls).toHaveLength(1);
+    expect(f.diagnostic).toHaveBeenCalledExactlyOnceWith();
   });
 });

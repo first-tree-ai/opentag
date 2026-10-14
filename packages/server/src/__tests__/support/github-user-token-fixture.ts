@@ -46,6 +46,7 @@ export interface UserTokenFixture {
   fetch: Mock<typeof globalThis.fetch>;
   calls: { path: string; method: string; headers: Headers; body: unknown }[];
   management: {
+    isCurrentUserCredential: Mock<(accountId: string, token: string) => Promise<boolean>>;
     getExecutionUserCredential: Mock<
       (
         input: Pick<GitHubUserTokenInput, "accountId" | "connectionId" | "authorizationRevision">,
@@ -91,7 +92,10 @@ export function userTokenFixture(): UserTokenFixture {
     now: () => USER_TOKEN_NOW,
   });
   const diagnostic = vi.fn();
-  const management = { getExecutionUserCredential };
+  const management = {
+    getExecutionUserCredential,
+    isCurrentUserCredential: vi.fn(async (_accountId: string, token: string) => parent?.accessToken === token),
+  };
   const client = new GitHubUserTokenClient({
     api,
     management,

@@ -1,9 +1,11 @@
 import { GitPublicationError } from "../github-proxy/git-packets.js";
+import { GITHUB_API_CLIENT_ERROR_CODES, GitHubApiClientError } from "./github-api-client.js";
 import type { GitHubExecutionUserCredential, GitHubUserTokenInput } from "./user-token-types.js";
 
 const LEVELS = new Set<unknown>(["read", "write"]);
 const KEYS = new Set(["contents", "pull_requests", "checks", "actions"]);
 const TOKEN = /^ghu_[A-Za-z0-9_]{1,4092}$/;
+const CLEANUP_TOKEN = /^[-A-Za-z0-9._~+/]+=*$/;
 // Expiring GitHub App user tokens have an eight-hour lifetime. Allow bounded clock skew;
 // a derived credential's expiry is distinct from its parent's refresh schedule.
 const MAX_LIFETIME_MS = 8 * 60 * 60 * 1_000 + 60_000;
@@ -35,7 +37,14 @@ export function validateUserTokenInput(input: GitHubUserTokenInput): number {
   return id;
 }
 
-/** Only an attested token for this exact App/user may enter cleanup; never revoke the parent. */
+/** A bounded token from the fixed scoped-token endpoint can be cleaned even if attestation fails. */
+export function scopedTokenCandidate(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const token = (payload as Record<string, unknown>).token;
+  return typeof token === "string" && token.length <= 4096 && CLEANUP_TOKEN.test(token) ? token : undefined;
+}
+
+/** Execution still requires an attested user token for this exact App/user. */
 export function ownedScopedToken(payload: unknown, parent: GitHubExecutionUserCredential, clientId: string): string {
   const record = tokenRecord(payload);
   const user = tokenRecord(record.user);
@@ -60,9 +69,10 @@ export function validateScopedToken(payload: unknown, input: GitHubUserTokenInpu
   if (
     typeof account.login !== "string" ||
     account.login.toLowerCase() !== input.fullName.split("/")[0]?.toLowerCase() ||
-    installation.repository_selection !== "selected"
+    (installation.repository_selection !== "selected" && installation.repository_selection !== "all")
   )
     throw new GitPublicationError("scope_denied");
+  // The selection label is not scope proof. The caller must probe the token's actual repository list.
   for (const [key, level] of Object.entries(input.permissions)) {
     if (permissions[key] !== level) throw new GitPublicationError("scope_denied");
   }
@@ -71,7 +81,16 @@ export function validateScopedToken(payload: unknown, input: GitHubUserTokenInpu
     if (!Object.hasOwn(input.permissions, key) || level !== input.permissions[key as keyof typeof input.permissions])
       throw new GitPublicationError("scope_denied");
   }
-  const expiry = typeof record.expires_at === "string" ? Date.parse(record.expires_at) : NaN;
+  return parseScopedTokenExpiry(record.expires_at, now);
+}
+
+function parseScopedTokenExpiry(value: unknown, now: number): Date {
+  if (value == null)
+    throw new GitHubApiClientError(
+      GITHUB_API_CLIENT_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED,
+      "The derived GitHub user token must have a finite expiry",
+    );
+  const expiry = typeof value === "string" ? Date.parse(value) : NaN;
   if (!Number.isFinite(expiry) || expiry <= now + 5_000 || expiry - now > MAX_LIFETIME_MS)
     throw new GitPublicationError("scope_denied");
   return new Date(expiry);

@@ -28,14 +28,14 @@ describe("MCP daily use", () => {
       }),
     ]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openTools();
+    await openTools("Linear");
     expect(screen.getByRole("button", { name: "Refresh tools" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Tool list incomplete" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Close linear tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Linear tools" }));
     expect(screen.getByText("Find and update tasks and projects.")).toBeTruthy();
     expect(screen.queryByText("Long server-provided description")).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
-    await openDetails();
+    await openDetails("Linear");
     expect(screen.queryByRole("button", { name: "Connector information" })).toBeNull();
     expect(screen.queryByText("Long server-provided description")).toBeNull();
   });

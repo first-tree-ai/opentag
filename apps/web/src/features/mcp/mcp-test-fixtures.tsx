@@ -141,13 +141,13 @@ export function wrap(children: ReactNode): RenderResult {
   );
 }
 
-export async function openDetails() {
-  if (screen.queryByRole("dialog", { name: "linear" })) return;
-  fireEvent.click(await screen.findByRole("button", { name: "linear" }, { timeout: 10000 }));
-  await screen.findByRole("dialog", { name: "linear" });
+export async function openDetails(name = "linear") {
+  if (screen.queryByRole("dialog", { name })) return;
+  fireEvent.click(await screen.findByRole("button", { name }, { timeout: 10000 }));
+  await screen.findByRole("dialog", { name });
 }
-export async function openTools() {
-  await openDetails();
+export async function openTools(name = "linear") {
+  await openDetails(name);
   fireEvent.click(screen.getByRole("button", { name: "Tools" }));
   await screen.findByRole("dialog", { name: "Tools" });
 }

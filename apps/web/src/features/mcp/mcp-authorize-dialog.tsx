@@ -16,6 +16,7 @@ import { canRevoke } from "./mcp-page-model.js";
 import { useMcpServerDetail, useSetMcpAuthorization } from "./mcp-queries.js";
 import type { McpReturnContext } from "./mcp-return-context.js";
 import { McpConfirmDialog } from "./mcp-server-dialogs.js";
+import { mcpTitle } from "./mcp-title.js";
 
 export function validAuth(draft: AuthDraft): boolean {
   if (
@@ -143,13 +144,13 @@ export function McpAuthorizeDialog({
         onBack ? (
           m.mcp_auth_label()
         ) : (
-          <McpDialogTitle entry={entry} title={m.mcp_authentication_title({ server: entry.name })} />
+          <McpDialogTitle entry={entry} title={m.mcp_authentication_title({ server: mcpTitle(entry) })} />
         )
       }
       closeLabel={m.common_close_title({
-        title: onBack ? m.mcp_auth_label() : m.mcp_authentication_title({ server: entry.name }),
+        title: onBack ? m.mcp_auth_label() : m.mcp_authentication_title({ server: mcpTitle(entry) }),
       })}
-      description={m.mcp_settings_context({ server: entry.name, agent: agentName })}
+      description={m.mcp_settings_context({ server: mcpTitle(entry), agent: agentName })}
       onClose={onClose}
       onBack={onBack}
     >

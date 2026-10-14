@@ -6,14 +6,20 @@ import * as m from "../../../paraglide/messages.js";
 import { connectionFailure, useMcpConnectionOperation } from "../mcp-connection.js";
 import { allowsOAuthDiscovery, connectionAuthKind } from "../mcp-connection-model.js";
 import { actionError } from "../mcp-form-model.js";
+import { createMcpInstallation } from "../mcp-installation.js";
 import { useMcpOAuthSessions } from "../mcp-oauth-session.js";
 import { closeMcpOAuthWindow, type McpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
-import { useAttachMcpServer, useCreateMcpServer, useDetachMcpServer, useMcpServers } from "../mcp-queries.js";
+import {
+  useAttachMcpServer,
+  useCreateMcpServer,
+  useDetachMcpServer,
+  useMcpInstallationDefinitions,
+} from "../mcp-queries.js";
 import type { McpReturnContext } from "../mcp-return-context.js";
 import { discardMcpSetup } from "../mcp-setup-cleanup.js";
 import { useMcpCatalogEntries } from "./mcp-catalog-entries.js";
 import { catalogFailure, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
-import { findAccountServer, findCatalogBinding, findCatalogEntryByUrl } from "./mcp-catalog-model.js";
+import { findCatalogBinding, findCatalogEntryByUrl } from "./mcp-catalog-model.js";
 
 export type DiscoverProps = {
   agentId: string;
@@ -30,11 +36,11 @@ const catalogAction = (binding?: MCPAgentServer): "add" | "connect" => (binding 
 
 /** Keep Discover mounted until the user finishes, and never detach a pre-existing connection. */
 export function useMcpDiscoverState(props: DiscoverProps) {
-  const account = useMcpServers();
-  const servers = account.data?.servers ?? [];
+  const definitions = useMcpInstallationDefinitions(props.mounted, props.initialContext?.serverId);
+  const servers = definitions.servers;
   const servedCatalog = useMcpCatalogEntries();
   // A card may still change its endpoint until the deployment's catalog endpoints have loaded.
-  const loading = account.isPending || servedCatalog.isPending;
+  const loading = definitions.isPending || servedCatalog.isPending;
   const create = useCreateMcpServer(props.agentId);
   const attach = useAttachMcpServer(props.agentId);
   const detach = useDetachMcpServer(props.agentId);
@@ -86,7 +92,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
   const restoreStarted = useRef(false);
   useEffect(() => {
     const context = props.initialContext;
-    if (!context || restoreStarted.current || account.isPending) return;
+    if (!context || restoreStarted.current || definitions.isPending) return;
     restoreStarted.current = true;
     const catalog = findCatalogEntryByUrl(
       servers.find((server) => server.id === context.serverId)?.url ?? "",
@@ -110,7 +116,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     props.initialContext,
     props.initialOutcome,
     props.agentId,
-    account.isPending,
+    definitions.isPending,
     servedCatalog.entries,
     detach,
     servers,
@@ -129,9 +135,9 @@ export function useMcpDiscoverState(props: DiscoverProps) {
         temporary: false,
         server: servers.find((server) => server.id === existing.mcpServerId),
       };
-    let server = findAccountServer(catalog, servers) ?? created.current.get(catalog.id);
+    let server = created.current.get(catalog.id);
     if (!server) {
-      server = await create.mutateAsync(
+      server = await createMcpInstallation(
         CreateMCPServerRequestSchema.parse({
           name: catalog.name,
           url: catalog.url,
@@ -140,6 +146,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
           authScheme: catalog.authScheme,
           extraHeaders: catalog.extraHeaders,
         }),
+        create.mutateAsync,
       );
       created.current.set(catalog.id, server);
     }
@@ -189,7 +196,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     if (cannotStart(catalog.id)) return;
     inFlight.current.add(catalog.id);
     const knownBinding = findCatalogBinding(catalog, servers, props.mounted);
-    const knownServer = findAccountServer(catalog, servers);
+    const knownServer = servers.find((server) => server.id === knownBinding?.mcpServerId);
     const kind = connectionAuthKind(knownBinding?.effective.url ?? catalog.url, knownBinding, knownServer);
     const prepared = kind === "oauth" ? prepareMcpOAuthWindow() : undefined;
     if (prepared) preparedWindows.current.set(catalog.id, prepared);
@@ -266,7 +273,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     feedback[id] = discoverFeedback(id, attempt.checking, getSession(id));
   }
   return {
-    account,
+    definitions,
     catalog: servedCatalog,
     loading,
     servers,

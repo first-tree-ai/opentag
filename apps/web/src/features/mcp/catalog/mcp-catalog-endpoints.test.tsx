@@ -7,7 +7,7 @@ import {
 } from "@opentag/shared/browser";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { browserApi } from "../../../api.js";
+import { ApiError, browserApi } from "../../../api.js";
 import { McpPage } from "../mcp-page.js";
 import { AGENT_ID, entry, stub, wrap } from "../mcp-test-fixtures.js";
 
@@ -194,17 +194,22 @@ describe("Discover with deployment catalog endpoints", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("reuses an Account's waitlist Canva Server instead of creating a second one", async () => {
+  it("creates this Agent's own Canva definition on the preferred endpoint", async () => {
     stub([]);
     vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [server(WAITLIST_URL)] });
     vi.mocked(browserApi.mcpCatalogEndpoints).mockResolvedValue(PORTAL_REPLACEMENT);
     const { create } = stubCanvaWrites();
+    create.mockRejectedValueOnce(new ApiError(409, "Name exists", "MCP_SERVER_NAME_CONFLICT"));
+    const ownId = "66666666-6666-4666-8666-666666666666";
+    create.mockResolvedValueOnce({ ...server(CANVA_DEVELOPER_PORTAL_MCP_URL), id: ownId, name: "canva-2" });
     const attach = vi.mocked(browserApi.attachMcpServer);
-    attach.mockImplementation(async () => canvaMount(WAITLIST_URL, null));
     wrap(<McpPage agentId={AGENT_ID} />);
     await addCanva();
     await waitFor(() => expect(attach).toHaveBeenCalledTimes(1));
-    expect(attach.mock.calls[0]?.[1]).toMatchObject({ mcpServerId: SERVER_ID });
-    expect(create).not.toHaveBeenCalled();
+    expect(create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ name: "canva-2", url: CANVA_DEVELOPER_PORTAL_MCP_URL }),
+    );
+    expect(attach).toHaveBeenCalledWith(AGENT_ID, { mcpServerId: ownId, enabled: true });
   });
 });

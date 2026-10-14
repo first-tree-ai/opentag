@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, KumoInputControl, Loader } from "../../../ui/design-system.js";
 import { actionError } from "../mcp-form-model.js";
+import { mcpTitle } from "../mcp-title.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
 import { type DiscoverProps, useMcpDiscoverState } from "./mcp-discover-state.js";
 
@@ -14,7 +15,7 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
   };
   const started = useRef(false);
   useEffect(() => {
-    if (!props.initialEntry || state.loading || state.account.isError || started.current) return;
+    if (!props.initialEntry || state.loading || state.definitions.isError || started.current) return;
     started.current = true;
     // The entry as this deployment serves it, so a replaced endpoint applies here too.
     const initialId = props.initialEntry.id;
@@ -29,10 +30,10 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
       className="mcp-discover-dialog"
     >
       {state.loading ? <Loader /> : null}
-      {state.account.isError ? (
+      {state.definitions.isError ? (
         <div className="grid gap-3">
-          <Banner variant="error">{actionError(state.account.error, m.common_request_failed())}</Banner>
-          <Button variant="secondary" onClick={() => void state.account.refetch()}>
+          <Banner variant="error">{actionError(state.definitions.error, m.common_request_failed())}</Banner>
+          <Button variant="secondary" onClick={() => void state.definitions.refetch()}>
             {m.mcp_retry()}
           </Button>
         </div>
@@ -45,7 +46,7 @@ export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCat
 
 type DiscoverState = ReturnType<typeof useMcpDiscoverState>;
 function discoverTitle(state: DiscoverState) {
-  if (state.keySetup) return m.mcp_authentication_title({ server: state.keySetup.binding.name });
+  if (state.keySetup) return m.mcp_authentication_title({ server: mcpTitle(state.keySetup.binding) });
   return m.mcp_discover_action();
 }
 function DiscoverKeyForm({ state }: { state: DiscoverState }) {
@@ -112,7 +113,7 @@ function DiscoverCatalog({
       onScroll={(event) => {
         state.view.current.scrollTop = event.currentTarget.scrollTop;
       }}
-      hidden={Boolean(state.keySetup) || state.loading || state.account.isError}
+      hidden={Boolean(state.keySetup) || state.loading || state.definitions.isError}
     >
       {state.error && !state.keySetup ? (
         <div role="alert" className="mb-4">

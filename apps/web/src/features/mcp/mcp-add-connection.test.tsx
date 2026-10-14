@@ -4,17 +4,29 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { McpAddDialog } from "./mcp-add-dialog.js";
 import { McpPage } from "./mcp-page.js";
-import {
-  AGENT_ID,
-  detail,
-  entry,
-  newAddress,
-  OTHER_AGENT_ID,
-  openAdd,
-  SERVER_ID,
-  stub,
-  wrap,
-} from "./mcp-test-fixtures.js";
+import { AGENT_ID, detail, entry, newAddress, OTHER_AGENT_ID, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
+
+vi.mock("@opentag/mcp-presets", () => ({
+  MCP_CATALOG_ENTRIES: [
+    {
+      id: "linear",
+      name: "linear",
+      url: "https://mcp.linear.app/sse",
+      defaultAuthKind: "oauth",
+      title: { en: "Linear", zh: "Linear" },
+      description: { en: "Issues", zh: "工单" },
+    },
+    {
+      id: "keys",
+      name: "keys",
+      url: "https://keys.example.com/mcp",
+      defaultAuthKind: "bearer",
+      title: { en: "Keys", zh: "密钥" },
+      description: { en: "Tools", zh: "工具" },
+    },
+  ],
+  MCP_CATALOG_CATEGORIES: [],
+}));
 
 afterEach(() => vi.restoreAllMocks());
 const connect = () => fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
@@ -36,7 +48,7 @@ function writes() {
   const probe = vi.spyOn(browserApi, "probeMcpServer").mockResolvedValue(ready);
   return { create, attach, auth, probe };
 }
-describe("URL and configured connectors", () => {
+describe("Independent URL connector installation", () => {
   it("keeps the first-use form minimal and writes nothing on input or cancel", async () => {
     stub([]);
     const create = vi.spyOn(browserApi, "createMcpServer");
@@ -54,7 +66,7 @@ describe("URL and configured connectors", () => {
       "Authentication",
     ])
       expect(within(screen.getByRole("dialog")).queryByRole("button", { name })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Add custom connector" }));
     expect(create).not.toHaveBeenCalled();
   });
   it.each([
@@ -75,107 +87,35 @@ describe("URL and configured connectors", () => {
     expect(await screen.findByText("Enter a complete connector URL.")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
   });
-  it("keeps choices collapsed, selects without connecting, and clears selection on editing", async () => {
+  it("does not offer account configurations or require the account pool to load", async () => {
     stub([]);
-    const a = detail(0).server;
-    const b = { ...a, id: "44444444-4444-4444-8444-444444444444", name: "docs", url: "https://docs.example.com/mcp" };
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [a, b] });
+    vi.mocked(browserApi.mcpServers).mockRejectedValue(new Error("offline"));
     const calls = writes();
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
-    const picker = await screen.findByRole("button", { name: "Choose a configured connector (2)" });
-    expect(picker.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("button", { name: /linear.*https/ })).toBeNull();
-    fireEvent.click(picker);
-    expect(picker.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.queryByLabelText("Search connectors")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /linear.*https/ }));
-    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe(a.url);
-    const selected = screen.getByRole("button", { name: "Selected: linear · Change" });
-    expect(selected.getAttribute("aria-expanded")).toBe("false");
-    expect(document.activeElement).toBe(selected);
-    expect(screen.queryByRole("button", { name: /linear.*https/ })).toBeNull();
-    fireEvent.click(selected);
-    expect(screen.getByRole("button", { name: /linear.*https/ }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: /docs.*https/ }));
-    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe(b.url);
-    expect(screen.getByRole("button", { name: "Selected: docs · Change" }).getAttribute("aria-expanded")).toBe("false");
-    writeUrl("https://new.example.com/mcp");
-    fireEvent.click(screen.getByRole("button", { name: "Choose a configured connector (2)" }));
-    expect(screen.getByRole("button", { name: /docs.*https/ }).getAttribute("aria-pressed")).toBe("false");
-    expect(calls.create).not.toHaveBeenCalled();
-    expect(calls.attach).not.toHaveBeenCalled();
-    expect(calls.auth).not.toHaveBeenCalled();
-  });
-  it("offers every configured connector in one list without search or recent shortcuts", async () => {
-    stub([]);
-    const servers = Array.from({ length: 8 }, (_, i) => ({
-      ...detail(0).server,
-      id: `44444444-4444-4444-8444-${String(i).padStart(12, "0")}`,
-      name: `tools-${i}`,
-      url: `https://tools-${i}.example.com/mcp`,
-      createdAt: `2026-09-${String(i + 10).padStart(2, "0")}T00:00:00.000Z`,
-    }));
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers });
-    wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
-    const picker = await screen.findByRole("button", { name: "Choose a configured connector (8)" });
-    fireEvent.click(picker);
-    expect(screen.getAllByRole("button", { name: /tools-.*https/ })).toHaveLength(8);
-    expect(screen.queryByLabelText("Search connectors")).toBeNull();
-    fireEvent.click(picker);
-    expect(screen.queryByRole("button", { name: /tools-.*https/ })).toBeNull();
-    fireEvent.click(picker);
-    fireEvent.click(screen.getByRole("button", { name: /tools-0.*https/ }));
-    expect(screen.getByRole("button", { name: "Selected: tools-0 · Change" }).getAttribute("aria-expanded")).toBe(
-      "false",
-    );
-    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe(servers[0]?.url);
-  });
-  it("preloads the pool before opening and offers retry when loading fails", async () => {
-    stub([]);
-    let reject: (reason: unknown) => void = () => {};
-    vi.mocked(browserApi.mcpServers).mockReturnValue(
-      new Promise((_resolve, r) => {
-        reject = r;
-      }),
-    );
-    wrap(<McpPage agentId={AGENT_ID} />);
-    const add = await screen.findByRole("button", { name: "Add custom" });
-    expect(add.hasAttribute("disabled")).toBe(true);
-    expect(screen.queryByRole("dialog")).toBeNull();
-    reject(new Error("offline"));
     await newAddress();
-    expect(await screen.findByText("Couldn’t load connectors.")).toBeTruthy();
-    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe("https://mcp.example.com/mcp");
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(0).server] });
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByRole("button", { name: "Choose a configured connector (1)" })).toBeTruthy();
-    expect(screen.queryByText("Couldn’t load connectors.")).toBeNull();
-    expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe("https://mcp.example.com/mcp");
-  });
-  it("lets an ambiguous URL be resolved through the configured connector list", async () => {
-    stub([]);
-    const servers = Array.from({ length: 6 }, (_, i) => ({
-      ...detail(0).server,
-      id: `44444444-4444-4444-8444-${String(i).padStart(12, "0")}`,
-      name: `service-${i}`,
-      url: i < 2 ? "https://shared.example.com/mcp" : `https://service-${i}.example.com/mcp`,
-      createdAt: `2026-09-${String(i + 10).padStart(2, "0")}T00:00:00.000Z`,
-    }));
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers });
-    const calls = writes();
-    wrap(<McpPage agentId={AGENT_ID} />);
-    await newAddress("https://shared.example.com/mcp");
+    expect(screen.queryByRole("button", { name: /Choose a configured connector/ })).toBeNull();
     connect();
-    await screen.findByText("Choose an existing connector for this URL.");
-    fireEvent.click(screen.getByRole("button", { name: "Choose a configured connector (6)" }));
-    fireEvent.click(screen.getByRole("button", { name: /service-0.*https/ }));
-    expect(screen.getByRole("button", { name: "Selected: service-0 · Change" }).getAttribute("aria-expanded")).toBe(
-      "false",
-    );
-    expect(calls.create).not.toHaveBeenCalled();
-    expect(calls.attach).not.toHaveBeenCalled();
+    await waitFor(() => expect(calls.create).toHaveBeenCalledTimes(1));
+    expect(browserApi.mcpServers).not.toHaveBeenCalled();
+  });
+  it("creates an independent configuration even when the account has the same URL", async () => {
+    stub([]);
+    const existing = { ...detail(1).server, name: "docs-example", url: "https://docs.example.com/mcp" };
+    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [existing] });
+    const calls = writes();
+    calls.create.mockRejectedValueOnce(new ApiError(409, "Name exists", "MCP_SERVER_NAME_CONFLICT"));
+    const freshId = "44444444-4444-4444-8444-444444444444";
+    calls.create.mockResolvedValueOnce({ ...existing, id: freshId, name: "docs-example-2" });
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await newAddress(existing.url);
+    connect();
+    await waitFor(() => expect(calls.attach).toHaveBeenCalled());
+    expect(calls.create).toHaveBeenNthCalledWith(2, {
+      name: "docs-example-2",
+      url: existing.url,
+      defaultAuthKind: "none",
+    });
+    expect(calls.attach).toHaveBeenCalledWith(AGENT_ID, { mcpServerId: freshId, enabled: true });
   });
   it("creates, binds, and probes a new anonymous service through the existing APIs", async () => {
     const scroll = vi.fn();
@@ -204,10 +144,10 @@ describe("URL and configured connectors", () => {
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("link", { name: "Message channel settings" })).toBeNull();
   });
-  it("does not replace an edited URL when an OAuth return's server pool arrives late", async () => {
+  it("does not replace an edited URL when an OAuth return's definition arrives late", async () => {
     stub([]);
-    let resolve: (value: { servers: ReturnType<typeof detail>["server"][] }) => void = () => {};
-    vi.mocked(browserApi.mcpServers).mockReturnValue(
+    let resolve: (value: ReturnType<typeof detail>) => void = () => {};
+    vi.mocked(browserApi.mcpServer).mockReturnValue(
       new Promise((r) => {
         resolve = r;
       }),
@@ -216,7 +156,7 @@ describe("URL and configured connectors", () => {
       <McpAddDialog
         agentId={AGENT_ID}
         agentName="Reviewer"
-        mounted={[entry()]}
+        mounted={[]}
         initialServerId={SERVER_ID}
         onClose={vi.fn()}
         onAdded={vi.fn()}
@@ -225,72 +165,119 @@ describe("URL and configured connectors", () => {
     );
     await screen.findByLabelText("Connector URL");
     writeUrl("https://new.example.com/mcp");
-    resolve({ servers: [detail(1).server] });
-    await waitFor(() => expect(screen.queryByRole("status", { name: "Loading connectors" })).toBeNull());
-    expect(screen.queryByRole("button", { name: "linear" })).toBeNull();
+    resolve(detail(1));
+    await waitFor(() => expect(browserApi.mcpServer).toHaveBeenCalled());
     expect((screen.getByLabelText("Connector URL") as HTMLInputElement).value).toBe("https://new.example.com/mcp");
   });
-  it.each([
-    ["connected", entry()],
-    ["disabled", entry({ enabled: false })],
-    ["not connected", entry({ authorization: null })],
-  ] as const)("hides the picker when every existing server is already in this Agent (%s)", async (_status, mounted) => {
+  it.each(["pending", "failed"] as const)(
+    "allows a new URL after abandoning a %s OAuth return lookup",
+    async (lookup) => {
+      stub([]);
+      const calls = writes();
+      vi.mocked(browserApi.mcpServer).mockImplementation(() =>
+        lookup === "pending"
+          ? new Promise(() => {})
+          : Promise.reject(new ApiError(404, "Installation removed", "MCP_SERVER_NOT_FOUND")),
+      );
+      const onAdded = vi.fn();
+      wrap(
+        <McpAddDialog
+          agentId={AGENT_ID}
+          agentName="Reviewer"
+          mounted={[]}
+          initialServerId={SERVER_ID}
+          onClose={vi.fn()}
+          onAdded={onAdded}
+          onLocate={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(browserApi.mcpServer).toHaveBeenCalledWith(SERVER_ID));
+      if (lookup === "failed") await screen.findByText("Couldn’t load connectors.");
+      writeUrl("https://new.example.com/mcp");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" }).hasAttribute("disabled")).toBe(false));
+      connect();
+      await waitFor(() => expect(onAdded).toHaveBeenCalled());
+      expect(calls.create).toHaveBeenCalledWith({
+        name: "new-example",
+        url: "https://new.example.com/mcp",
+        defaultAuthKind: "none",
+      });
+    },
+  );
+  it.each([entry(), entry({ enabled: false }), entry({ authorization: null })])(
+    "locates the current Agent's existing connector instead of creating a duplicate",
+    async (mounted) => {
+      stub([mounted]);
+      const calls = writes();
+      const locate = vi.fn();
+      wrap(
+        <McpAddDialog
+          agentId={AGENT_ID}
+          agentName="Reviewer"
+          mounted={[mounted]}
+          onClose={vi.fn()}
+          onAdded={vi.fn()}
+          onLocate={locate}
+        />,
+      );
+      await screen.findByLabelText("Connector URL");
+      writeUrl(mounted.effective.url);
+      connect();
+      await waitFor(() => expect(locate).toHaveBeenCalledWith(SERVER_ID));
+      expect(calls.create).not.toHaveBeenCalled();
+      expect(calls.attach).not.toHaveBeenCalled();
+      expect(calls.auth).not.toHaveBeenCalled();
+    },
+  );
+  it("locates an installed catalog service when the pasted URL has connection parameters", async () => {
+    const mounted = entry();
     stub([mounted]);
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(1).server] });
-    wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
-    const dialog = within(screen.getByRole("dialog"));
-    expect(dialog.queryByRole("button", { name: /Choose a configured connector/ })).toBeNull();
-    expect(dialog.queryByRole("button", { name: "linear" })).toBeNull();
-    expect(dialog.getByLabelText("Connector URL")).toBeTruthy();
-  });
-  it("excludes mounted services from the count and list while keeping choices text-only", async () => {
-    const servers = Array.from({ length: 6 }, (_, i) => ({
-      ...detail(1).server,
-      id: `44444444-4444-4444-8444-${String(i).padStart(12, "0")}`,
-      name: `service-${i}`,
-      url: `https://service-${i}.example.com/mcp`,
-    }));
-    const mounted = servers[0];
-    if (!mounted) throw new Error("Missing mounted service");
-    stub([entry({ mcpServerId: mounted.id })]);
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers });
-    wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
-    const dialog = within(screen.getByRole("dialog"));
-    fireEvent.click(dialog.getByRole("button", { name: "Choose a configured connector (5)" }));
-    expect(dialog.queryByRole("button", { name: /service-0.*https/ })).toBeNull();
-    expect(dialog.getAllByRole("button", { name: /service-.*https/ })).toHaveLength(5);
-    expect(dialog.getByRole("button", { name: /service-1.*https/ }).querySelector("svg, img")).toBeNull();
-    fireEvent.click(dialog.getByRole("button", { name: /service-5.*https/ }));
-    expect(dialog.getByRole("button", { name: "Selected: service-5 · Change" })).toBeTruthy();
-    expect((dialog.getByLabelText("Connector URL") as HTMLInputElement).value).toBe(servers[5]?.url);
-  });
-  it("collects a known API key only after Connect, without creating a new definition", async () => {
-    stub([]);
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({
-      servers: [{ ...detail(0).server, defaultAuthKind: "bearer" }],
-    });
     const calls = writes();
-    wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
-    fireEvent.click(await screen.findByRole("button", { name: "Choose a configured connector (1)" }));
-    fireEvent.click(screen.getByRole("button", { name: /linear.*https/ }));
-    expect(screen.queryByLabelText("API key")).toBeNull();
-    connect();
-    const input = await screen.findByLabelText("API key");
-    expect(input.getAttribute("type")).toBe("password");
-    expect(calls.attach).not.toHaveBeenCalled();
-    fireEvent.change(input, { target: { value: "agent-key" } });
-    connect();
-    await waitFor(() =>
-      expect(calls.auth).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { kind: "bearer", bearerKey: "agent-key" }),
+    const locate = vi.fn();
+    wrap(
+      <McpAddDialog
+        agentId={AGENT_ID}
+        agentName="Reviewer"
+        mounted={[mounted]}
+        onClose={vi.fn()}
+        onAdded={vi.fn()}
+        onLocate={locate}
+      />,
     );
+    await screen.findByLabelText("Connector URL");
+    writeUrl("https://mcp.linear.app/sse/?workspace=demo");
+    connect();
+    await waitFor(() => expect(locate).toHaveBeenCalledWith(SERVER_ID));
     expect(calls.create).not.toHaveBeenCalled();
   });
-  it("reuses the configuration for another Agent and retries OAuth without another bind", async () => {
+  it("locates a historical installation through its own overridden definition", async () => {
+    const mounted = entry({
+      effective: { ...entry().effective, url: "https://custom.example.com/mcp" },
+      overridden: { ...entry().overridden, url: true },
+    });
+    stub([mounted]);
+    const calls = writes();
+    const locate = vi.fn();
+    wrap(
+      <McpAddDialog
+        agentId={AGENT_ID}
+        agentName="Reviewer"
+        mounted={[mounted]}
+        onClose={vi.fn()}
+        onAdded={vi.fn()}
+        onLocate={locate}
+      />,
+    );
+    await screen.findByLabelText("Connector URL");
+    writeUrl("https://mcp.linear.app/sse");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Connect" }).hasAttribute("disabled")).toBe(false));
+    connect();
+    await waitFor(() => expect(locate).toHaveBeenCalledWith(SERVER_ID));
+    expect(calls.create).not.toHaveBeenCalled();
+    expect(browserApi.mcpServers).not.toHaveBeenCalled();
+  });
+  it("creates another Agent's own configuration and retries OAuth without another create or bind", async () => {
     stub([]);
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(1).server] });
     const calls = writes();
     const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "private upstream detail"));
     wrap(
@@ -303,17 +290,33 @@ describe("URL and configured connectors", () => {
         onLocate={vi.fn()}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Choose a configured connector (1)" }));
-    fireEvent.click(screen.getByRole("button", { name: /linear.*https/ }));
+    await screen.findByLabelText("Connector URL");
+    writeUrl("https://mcp.linear.app/sse");
     connect();
     await screen.findByText(/Couldn’t start sign-in/);
     connect();
     await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
     expect(oauth).toHaveBeenLastCalledWith(OTHER_AGENT_ID, SERVER_ID, {});
-    expect(calls.create).not.toHaveBeenCalled();
+    expect(calls.create).toHaveBeenCalledTimes(1);
     expect(calls.attach).toHaveBeenCalledTimes(1);
-    expect(calls.auth).not.toHaveBeenCalled();
     expect(screen.queryByText("private upstream detail")).toBeNull();
+  });
+  it("collects a preset API key only after Connect and creates a new definition", async () => {
+    stub([]);
+    const calls = writes();
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await newAddress("https://keys.example.com/mcp");
+    expect(screen.queryByLabelText("API key")).toBeNull();
+    connect();
+    const input = await screen.findByLabelText("API key");
+    expect(input.getAttribute("type")).toBe("password");
+    expect(calls.create).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "agent-key" } });
+    connect();
+    await waitFor(() =>
+      expect(calls.auth).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { kind: "bearer", bearerKey: "agent-key" }),
+    );
+    expect(calls.create).toHaveBeenCalledTimes(1);
   });
   it("retries attachment without creating another configuration", async () => {
     stub([]);
@@ -345,9 +348,6 @@ describe("URL and configured connectors", () => {
   });
   it("keeps a rejected bearer key editable and reports the credential error without starting OAuth", async () => {
     stub([]);
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({
-      servers: [{ ...detail(0).server, defaultAuthKind: "bearer" }],
-    });
     const calls = writes();
     calls.probe.mockResolvedValue({
       ...ready,
@@ -357,9 +357,7 @@ describe("URL and configured connectors", () => {
     });
     const oauth = vi.spyOn(browserApi, "startMcpOAuth");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openAdd();
-    fireEvent.click(await screen.findByRole("button", { name: "Choose a configured connector (1)" }));
-    fireEvent.click(screen.getByRole("button", { name: /linear.*https/ }));
+    await newAddress("https://keys.example.com/mcp");
     connect();
     fireEvent.change(await screen.findByLabelText("API key"), { target: { value: "wrong-key" } });
     connect();

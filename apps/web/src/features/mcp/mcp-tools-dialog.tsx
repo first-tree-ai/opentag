@@ -7,6 +7,7 @@ import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
 import { actionError } from "./mcp-form-model.js";
 import { useProbeMcpServer } from "./mcp-queries.js";
+import { mcpTitle } from "./mcp-title.js";
 
 const sentences = new Intl.Segmenter(undefined, { granularity: "sentence" });
 
@@ -145,11 +146,11 @@ export function McpToolsDialog({
         onBack ? (
           m.mcp_settings_tools()
         ) : (
-          <McpDialogTitle entry={entry} title={m.mcp_tools_dialog_title({ server: entry.name })} />
+          <McpDialogTitle entry={entry} title={m.mcp_tools_dialog_title({ server: mcpTitle(entry) })} />
         )
       }
-      closeLabel={m.common_close_title({ title: m.mcp_tools_dialog_title({ server: entry.name }) })}
-      description={m.mcp_settings_context({ server: entry.name, agent: agentName })}
+      closeLabel={m.common_close_title({ title: m.mcp_tools_dialog_title({ server: mcpTitle(entry) }) })}
+      description={m.mcp_settings_context({ server: mcpTitle(entry), agent: agentName })}
       onClose={onClose}
       onBack={onBack ? () => onBack(query, scrollTop.current) : undefined}
     >

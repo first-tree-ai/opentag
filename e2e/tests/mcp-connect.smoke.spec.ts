@@ -179,25 +179,86 @@ async function discoverPeer(page: Page, current: Awaited<ReturnType<typeof agent
   });
   expect(created.ok()).toBeTruthy();
   const serverId = ((await created.json()) as { id: string }).id;
-  // Reuse a real local peer through one catalog entry, without contacting an external provider.
+  const definition = (await (await page.request.get(`/api/v1/mcp-servers/${serverId}`)).json()).server;
+  // Keep the catalog identity fictional while exercising the real local OAuth and MCP peer.
   await page.context().route("**/api/v1/mcp-servers", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({ json: { ...definition, url: "https://mcp.linear.app/mcp" } });
+    } else await route.continue();
+  });
+  await page.context().route(`**/api/v1/mcp-servers/${serverId}`, async (route) => {
     const response = await route.fetch();
     const body = await response.json();
+    await route.fulfill({ response, json: { ...body, server: { ...body.server, url: "https://mcp.linear.app/mcp" } } });
+  });
+  await page.context().route(`**/api/v1/agents/${current.id}/mcp-servers`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const identify = (entry: { mcpServerId: string; overridden: object }) =>
+      entry.mcpServerId === serverId ? { ...entry, overridden: { ...entry.overridden, url: true } } : entry;
     await route.fulfill({
       response,
-      json: {
-        ...body,
-        servers: body.servers.map((server: { id: string }) =>
-          server.id === serverId ? { ...server, url: "https://mcp.linear.app/mcp" } : server,
-        ),
-      },
+      json: body.servers ? { ...body, servers: body.servers.map(identify) } : identify(body),
     });
   });
   return serverId;
 }
 
+test("real API creates independent installations across Agents despite Account name conflicts", async ({ page }) => {
+  const upstream = await peer("none");
+  try {
+    const first = await agent(page);
+    const second = await agent(page);
+    let nameConflicts = 0;
+    page.on("response", (response) => {
+      if (
+        new URL(response.url()).pathname === "/api/v1/mcp-servers" &&
+        response.request().method() === "POST" &&
+        response.status() === 409
+      )
+        nameConflicts++;
+    });
+    const ids: string[] = [];
+    for (const current of [first, second]) {
+      const dialog = await openAdd(page, current.id, upstream.url);
+      await expect(dialog).toBeHidden();
+      await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
+      const installed = await mounts(page, current.id);
+      expect(installed).toHaveLength(1);
+      const id = installed[0]?.mcpServerId;
+      if (!id) throw new Error("Missing independently created installation");
+      ids.push(id);
+    }
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(nameConflicts).toBeGreaterThanOrEqual(1);
+    const definitions = (await (await page.request.get("/api/v1/mcp-servers")).json()).servers as {
+      id: string;
+      name: string;
+      url: string;
+      boundAgentCount: number;
+    }[];
+    const own = definitions.filter((definition) => definition.url === upstream.url);
+    expect(own).toHaveLength(2);
+    expect(new Set(own.map((definition) => definition.name)).size).toBe(2);
+    expect(own.map((definition) => definition.boundAgentCount)).toEqual([1, 1]);
+    const duplicate = await openAdd(page, second.id, upstream.url);
+    await expect(duplicate).toBeHidden();
+    expect(await mounts(page, second.id)).toHaveLength(1);
+    const revoked = await page.request.delete(`/api/v1/agents/${first.id}/mcp-servers/${ids[0]}/authorization`, {
+      headers: first.headers,
+    });
+    expect(revoked.ok()).toBeTruthy();
+    expect((await mounts(page, first.id))[0]?.authorization).toMatchObject({ status: "revoked" });
+    expect((await mounts(page, second.id))[0]?.authorization).toMatchObject({ kind: "none", status: "active" });
+    await page.reload();
+    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
+  } finally {
+    await upstream.stop();
+  }
+});
+
 for (const kind of ["bearer", "none"] as const) {
-  test(`real local ${kind} failure retries without creating or binding twice`, async ({ page }) => {
+  test(`real local ${kind} failure preserves the appropriate installation lifecycle`, async ({ page }) => {
     const upstream = await peer(kind);
     try {
       const current = await agent(page);
@@ -207,31 +268,46 @@ for (const kind of ["bearer", "none"] as const) {
           data: { name: `key-${randomUUID()}`, url: upstream.url, defaultAuthKind: "bearer" },
         });
         expect(created.ok()).toBeTruthy();
+        const serverId = ((await created.json()) as { id: string }).id;
+        const attached = await page.request.post(`/api/v1/agents/${current.id}/mcp-servers`, {
+          headers: current.headers,
+          data: { mcpServerId: serverId, enabled: true },
+        });
+        expect(attached.ok()).toBeTruthy();
       } else upstream.unavailable(true);
-      const dialog = await openAdd(page, current.id, upstream.url);
       if (kind === "bearer") {
-        await expect(dialog.getByLabel("API key", { exact: true })).toBeFocused();
-        await dialog.getByLabel("API key", { exact: true }).fill("wrong-key");
+        await page.goto(`/agents/${current.id}/mcp`);
+        await page.getByRole("button", { name: "Connect", exact: true }).click();
+      }
+      const dialog = kind === "bearer" ? page.getByRole("dialog") : await openAdd(page, current.id, upstream.url);
+      if (kind === "bearer") {
+        await expect(dialog.getByLabel("API key or token", { exact: true })).toBeFocused();
+        await dialog.getByLabel("API key or token", { exact: true }).fill("wrong-key");
         await dialog.getByRole("button", { name: "Connect", exact: true }).click();
         await expect(dialog).toContainText("Invalid API key. Try again.");
       } else await expect(dialog).toContainText("Couldn’t load tools. Try again.");
       const initial = await mounts(page, current.id);
       expect(initial).toHaveLength(1);
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
+      await dialog
+        .getByRole("button", { name: kind === "bearer" ? "Cancel" : "Close Add custom connector", exact: true })
+        .click();
+      await expect.poll(() => mounts(page, current.id)).toHaveLength(kind === "bearer" ? 1 : 0);
       if (kind === "none") upstream.unavailable(false);
-      const retryDialog = await openAdd(page, current.id, upstream.url);
+      if (kind === "bearer") await page.getByRole("button", { name: /^(Connect|Reconnect)$/ }).click();
+      const retryDialog = kind === "bearer" ? page.getByRole("dialog") : await openAdd(page, current.id, upstream.url);
       if (kind === "bearer") {
-        const input = retryDialog.getByLabel("API key", { exact: true });
+        const input = retryDialog.getByLabel("API key or token", { exact: true });
         await expect(input).toBeFocused();
         await input.fill("fixture-key");
         await retryDialog.getByRole("button", { name: "Connect", exact: true }).click();
       }
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
-      await expect(page.locator(`[id="mcp-server-${initial[0]?.mcpServerId}"]`)).toBeFocused();
+      const final = await mounts(page, current.id);
+      await expect(page.locator(`[id="mcp-server-${final[0]?.mcpServerId}"]`)).toBeFocused();
       expect(await mounts(page, current.id)).toHaveLength(1);
-      expect((await mounts(page, current.id))[0]?.mcpServerId).toBe(initial[0]?.mcpServerId);
+      if (kind === "bearer") expect(final[0]?.mcpServerId).toBe(initial[0]?.mcpServerId);
+      else expect(final[0]?.mcpServerId).not.toBe(initial[0]?.mcpServerId);
     } finally {
       await upstream.stop();
     }
@@ -317,13 +393,26 @@ test("Discover retains search across a real OAuth cancellation and successful re
   }
 });
 
+function mcpEntrySources(
+  kind: MCPAuthKind,
+  first: string,
+  second: string,
+  third: string,
+): [string, "add" | "discover" | "list"][] {
+  const sources: [string, "add" | "discover" | "list"][] = [[third, "list"]];
+  if (kind === "oauth") sources.unshift([first, "add"], [second, "discover"]);
+  return sources;
+}
+
 /** Compare all three UI entries against the same definition; MCP/OAuth management responses are fixtures. */
 for (const kind of ["oauth", "bearer", "none"] as const) {
-  test(`Add, Discover and list use the same configured ${kind} path`, async ({ page }) => {
+  test(`catalog additions and existing ${kind} list connections retain their authentication behavior`, async ({
+    page,
+  }) => {
     const first = await agent(page);
     const second = await agent(page);
     const third = await agent(page);
-    // A shipped catalog URL is used only to exercise Discover's exact definition reuse.
+    // New catalog installations use OAuth; existing list connections retain their method.
     const serverId = randomUUID();
     const stamp = "2026-10-12T00:00:00.000Z";
     const definition = {
@@ -394,7 +483,7 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
     }
     async function respondDefinition(route: Route, path: string): Promise<boolean> {
       if (path === "/api/v1/mcp-servers") {
-        await route.fulfill({ json: { servers: [definition] } });
+        await route.fulfill({ json: route.request().method() === "POST" ? definition : { servers: [definition] } });
         return true;
       }
       if (path === `/api/v1/mcp-servers/${serverId}`) {
@@ -452,11 +541,9 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
       discover: "Connection failed",
       list: "Couldn’t start sign-in. Try again.",
     };
-    for (const [id, source] of [
-      [first.id, "add"],
-      [second.id, "discover"],
-      [third.id, "list"],
-    ] as const) {
+    const sources = mcpEntrySources(kind, first.id, second.id, third.id);
+    const addedCount = Number(kind === "oauth") * 2;
+    for (const [id, source] of sources) {
       await page.goto(`/agents/${id}/mcp`);
       if (source === "add") {
         await page.getByRole("button", { name: "Add custom", exact: true }).click();
@@ -481,8 +568,10 @@ for (const kind of ["oauth", "bearer", "none"] as const) {
       if (kind !== "oauth") await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
       expect(entries.get(id)).toHaveLength(kind === "oauth" && source === "discover" ? 0 : 1);
     }
-    expect(writes.filter((path) => path === "/api/v1/mcp-servers")).toHaveLength(0);
-    expect(writes.filter((path) => path.endsWith("/mcp-servers"))).toHaveLength(2);
+    expect(writes.filter((path) => path === "/api/v1/mcp-servers")).toHaveLength(addedCount);
+    expect(writes.filter((path) => path.startsWith("/api/v1/agents/") && path.endsWith("/mcp-servers"))).toHaveLength(
+      addedCount,
+    );
   });
 }
 
@@ -620,7 +709,7 @@ test("changing Add custom input still cancels the setup it created", async ({ pa
     await expect(dialog).toContainText("Couldn’t load tools. Try again.");
     expect(await mounts(page, current.id)).toHaveLength(1);
     await dialog.getByLabel("Connector URL", { exact: true }).fill("https://another.example/mcp");
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Add custom connector", exact: true }).click();
     await expect(dialog).toBeHidden();
     await expect.poll(() => mounts(page, current.id)).toHaveLength(0);
   } finally {

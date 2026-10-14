@@ -92,9 +92,9 @@
 
 /* Sizes depend on content. Requests and errors keep the current step's dimensions. */
 .mcp-add-dialog {
-  --mcp-add-height: 16rem;
-  --mcp-add-anchor-height: 16rem;
-  --mcp-add-max-height: 30rem;
+  --mcp-add-height: 13.5rem;
+  --mcp-add-anchor-height: 13.5rem;
+  --mcp-add-max-height: 20rem;
   width: calc(100vw - 2rem);
   max-width: 27.5rem;
   --mcp-add-top: max(
@@ -111,17 +111,8 @@
   transition-duration: 160ms;
   overflow-wrap: anywhere;
 }
-.mcp-add-size-single {
-  --mcp-add-height: 18rem;
-}
 .mcp-add-size-key {
-  --mcp-add-height: 21rem;
-}
-.mcp-add-size-picker {
-  --mcp-add-height: 30rem;
-}
-.mcp-add-anchor-single {
-  --mcp-add-anchor-height: 18rem;
+  --mcp-add-height: 19rem;
 }
 .mcp-add-dialog[data-starting-style],
 .mcp-add-dialog[data-ending-style] {
@@ -158,64 +149,6 @@
   padding-top: 1.5rem;
   gap: 0.25rem;
 }
-.mcp-add-picker-trigger {
-  justify-content: start;
-  min-height: 2.75rem;
-  height: auto;
-  width: 100%;
-  padding: 0.5rem 0.25rem;
-  text-align: left;
-  white-space: normal;
-  color: var(--color-kumo-subtle);
-  flex-shrink: 0;
-}
-.mcp-add-picker-label {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.mcp-add-picker-selected {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mcp-add-server-row {
-  height: auto;
-  min-height: 3.75rem;
-  white-space: normal;
-  text-align: left;
-  min-width: 0;
-  max-width: 100%;
-  justify-content: start;
-  gap: 0.5rem;
-  padding: 0.5rem 0.625rem;
-}
-.mcp-add-server-row[aria-pressed="true"] {
-  background: var(--color-kumo-tint);
-}
-.mcp-add-server-copy {
-  display: grid;
-  flex: 1;
-  gap: 0.125rem;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.mcp-add-server-row[aria-pressed="true"] .mcp-add-server-name {
-  font-weight: 600;
-}
-.mcp-add-results {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  gap: 0.25rem;
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-  padding: 0.125rem;
-}
-.mcp-add-server-row {
-  width: 100%;
-  flex-shrink: 0;
-}
 .mcp-add-feedback {
   flex-shrink: 0;
   min-height: 1.5rem;
@@ -226,35 +159,19 @@
   justify-content: flex-end;
   align-items: center;
   gap: 0.5rem;
-  border-top: 1px solid var(--color-kumo-line);
-  padding-top: 1rem;
+  padding-top: 0.5rem;
 }
 .mcp-add-connect {
   width: 9.5rem;
   flex-shrink: 0;
   white-space: nowrap;
 }
-.mcp-add-skeleton {
-  padding-top: 0.5rem;
-}
-.mcp-add-skeleton span {
-  display: block;
-  height: 2.5rem;
-  border-radius: 0.5rem;
-  background: var(--color-kumo-tint);
-}
 @media (max-width: 600px) {
   .mcp-add-dialog {
     padding: 1rem;
   }
-  .mcp-add-size-single {
-    --mcp-add-height: 19rem;
-  }
-  .mcp-add-anchor-single {
-    --mcp-add-anchor-height: 19rem;
-  }
   .mcp-add-size-key {
-    --mcp-add-height: 22rem;
+    --mcp-add-height: 20rem;
   }
 }
 @media (prefers-reduced-motion: reduce) {

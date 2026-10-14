@@ -15,11 +15,12 @@ import { actionError } from "./mcp-form-model.js";
 import { McpOAuthControls } from "./mcp-oauth-controls.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
 import { publishMcpOAuthWindowReturn, readMcpOAuthWindowReturn } from "./mcp-oauth-window.js";
-import { useAgentMcpServers, useDetachMcpServer, useMcpServers, useUpdateMcpBinding } from "./mcp-queries.js";
+import { useAgentMcpServers, useDetachMcpServer, useUpdateMcpBinding } from "./mcp-queries.js";
 import { consumeMcpReturn, consumePendingMcpSetupReturn, type McpReturnContext } from "./mcp-return-context.js";
 import { McpServerCard, type ServerAction } from "./mcp-server-card.js";
 import { McpSettingsDialog } from "./mcp-settings-dialog.js";
 import { discardMcpSetup } from "./mcp-setup-cleanup.js";
+import { mcpTitle } from "./mcp-title.js";
 
 type Panel =
   | { kind: "none" }
@@ -49,7 +50,6 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const identity = useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) });
   const agentName = identity.data?.displayName ?? agentId;
   const mounted = useAgentMcpServers(agentId);
-  const account = useMcpServers();
   const detach = useDetachMcpServer(agentId);
   const servers = mounted.data?.servers ?? [];
   const connection = useMcpCatalogConnection(agentId);
@@ -103,7 +103,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     });
   }, [returnContext, outcome, mounted.isPending, servers]);
   useEffect(() => {
-    if (returnContext?.source !== "add" || restored.current || mounted.isPending || account.isPending) return;
+    if (returnContext?.source !== "add" || restored.current || mounted.isPending) return;
     const entry = servers.find((server) => server.mcpServerId === returnContext.serverId);
     if (!entry) return;
     restored.current = true;
@@ -118,7 +118,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
           });
       } else restoreAdd();
     }
-  }, [returnContext, outcome, mounted.isPending, account.isPending, servers, agentId, detach]);
+  }, [returnContext, outcome, mounted.isPending, servers, agentId, detach]);
   const [removed, setRemoved] = useState<string>();
   const addTrigger = useRef<HTMLButtonElement>(null);
   const neighbors = useRef<string[]>([]);
@@ -130,7 +130,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
   const close = () => setPanel({ kind: "none" });
   const removedServer = (entry: MCPAgentServer) => {
     close();
-    setRemoved(m.mcp_removed({ server: entry.name }));
+    setRemoved(m.mcp_removed({ server: mcpTitle(entry) }));
     requestAnimationFrame(() => {
       const next = neighbors.current.map((id) => document.getElementById(`mcp-server-${id}-details`)).find(Boolean);
       (next ?? addTrigger.current)?.focus({ preventScroll: true });
@@ -161,12 +161,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
           <Icon name="integrations" />
           {m.mcp_discover_action()}
         </Button>
-        <AddServerButton
-          buttonRef={addTrigger}
-          disabled={addDisabled}
-          loading={account.isPending}
-          onClick={() => setPanel({ kind: "add" })}
-        />
+        <AddServerButton buttonRef={addTrigger} disabled={addDisabled} onClick={() => setPanel({ kind: "add" })} />
       </PageHeader>
       <McpOAuthControls session={connection.oauth} />
       {returnedFailure && mounted.isSuccess && !servers.some((entry) => entry.mcpServerId === outcome?.mcpServerId) ? (
@@ -258,12 +253,10 @@ function McpManagementPage({ agentId }: { agentId: string }) {
 function AddServerButton({
   buttonRef,
   disabled,
-  loading,
   onClick,
 }: {
   buttonRef: RefObject<HTMLButtonElement | null>;
   disabled: boolean;
-  loading: boolean;
   onClick: () => void;
 }) {
   return (
@@ -271,8 +264,7 @@ function AddServerButton({
       ref={buttonRef}
       variant="secondary"
       aria-label={m.mcp_create_action()}
-      disabled={disabled || loading}
-      loading={loading}
+      disabled={disabled}
       onClick={onClick}
     >
       <Icon name="plus" />

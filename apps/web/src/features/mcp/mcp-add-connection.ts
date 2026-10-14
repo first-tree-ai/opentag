@@ -1,8 +1,8 @@
+import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
 import { type MCPAgentServer, type MCPAuthKind, type MCPServer, MCPServerUrlSchema } from "@opentag/shared/browser";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
-import * as m from "../../paraglide/messages.js";
-import { comparableUrl } from "./catalog/mcp-catalog-model.js";
+import { comparableUrl, findCatalogBinding, findCatalogEntryByUrl } from "./catalog/mcp-catalog-model.js";
 import type { McpAddProps } from "./mcp-add-dialog.js";
 import {
   connectionFailure,
@@ -12,8 +12,14 @@ import {
 } from "./mcp-connection.js";
 import { allowsOAuthDiscovery, connectionAuthKind, connectionPreset } from "./mcp-connection-model.js";
 import { suggestServerName } from "./mcp-form-model.js";
+import { createMcpInstallation } from "./mcp-installation.js";
 import { closeMcpOAuthWindow, type McpOAuthWindow, prepareMcpOAuthWindow } from "./mcp-oauth-window.js";
-import { useAttachMcpServer, useCreateMcpServer, useDetachMcpServer, useMcpServers } from "./mcp-queries.js";
+import {
+  useAttachMcpServer,
+  useCreateMcpServer,
+  useDetachMcpServer,
+  useMcpInstallationDefinitions,
+} from "./mcp-queries.js";
 import { discardMcpSetup } from "./mcp-setup-cleanup.js";
 
 type Attempt = {
@@ -25,21 +31,13 @@ type Attempt = {
   temporary?: boolean;
 };
 export function useMcpAddConnection(props: McpAddProps) {
-  const account = useMcpServers();
-  const [openingServers, setOpeningServers] = useState<MCPServer[]>();
-  const openingMounted = useRef(props.mounted);
-  useEffect(() => {
-    if (!openingServers && account.data) setOpeningServers(account.data.servers);
-  }, [account.data, openingServers]);
-  const servers = [...(openingServers ?? account.data?.servers ?? [])].sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt),
-  );
+  const [restoreId, setRestoreId] = useState(props.initialServerId);
+  const definitions = useMcpInstallationDefinitions(props.mounted, restoreId);
   const create = useCreateMcpServer(props.agentId);
   const attach = useAttachMcpServer(props.agentId);
   const detach = useDetachMcpServer(props.agentId);
   const operation = useMcpConnectionOperation(props.agentId);
   const [url, setUrl] = useState("");
-  const [selectedId, setSelectedId] = useState<string>();
   const [key, setKey] = useState("");
   const [needsKey, setNeedsKey] = useState(false);
   const [urlInvalid, setUrlInvalid] = useState(false);
@@ -84,63 +82,31 @@ export function useMcpAddConnection(props: McpAddProps) {
   }, [discardOtherSetups]);
   useEffect(() => {
     if (restored.current || !props.initialServerId) return;
-    const server = account.data?.servers.find((value) => value.id === props.initialServerId);
+    const server = definitions.servers.find((server) => server.id === props.initialServerId);
     if (!server) return;
     restored.current = true;
     const binding = props.mounted.find((entry) => entry.mcpServerId === server.id);
     const value = binding?.effective.url ?? server.url;
     setUrl(value);
-    setSelectedId(server.id);
     attempt.current = { url: value, server, binding, kind: connectionAuthKind(value, binding, server) };
-  }, [account.data, props.initialServerId, props.mounted]);
-  const isAdded = (id: string) => {
-    const binding = openingMounted.current.find((entry) => entry.mcpServerId === id);
-    return Boolean(
-      binding &&
-        (!binding.enabled ||
-          (binding.authorization?.status === "active" &&
-            binding.authorization.probeState === "succeeded" &&
-            (binding.authorization.toolsCount ?? 0) > 0)),
-    );
-  };
-  const reset = (value: string, server?: MCPServer) => {
+  }, [definitions.servers, props.initialServerId, props.mounted]);
+  const reset = (value: string) => {
     if (inFlight.current) return;
     restored.current = true;
-    const binding = server ? props.mounted.find((entry) => entry.mcpServerId === server.id) : undefined;
+    setRestoreId(undefined);
     setUrl(value);
-    setSelectedId(server?.id);
     setNeedsKey(false);
     setKey("");
     setError(undefined);
     setUrlInvalid(false);
-    attempt.current = {
-      url: value.trim(),
-      server,
-      binding,
-      temporary: binding ? provisional.current.has(binding.mcpServerId) : undefined,
-      kind: server ? connectionAuthKind(value, binding, server) : undefined,
-    };
-  };
-  const choose = (server: MCPServer) => {
-    if (selectedId !== server.id)
-      reset(props.mounted.find((entry) => entry.mcpServerId === server.id)?.effective.url ?? server.url, server);
+    attempt.current = { url: value.trim() };
   };
   const validUrl =
     MCPServerUrlSchema.safeParse(url).success && /^https?:\/\/[^/\\?#\s]+(?:[/?][^\s\\]*)?$/i.test(url.trim());
 
   async function resolveServer(current: Attempt): Promise<MCPServer> {
     if (current.server) return current.server;
-    const input = newServerInput(current, servers);
-    try {
-      return await create.mutateAsync(input);
-    } catch (cause) {
-      if (!(cause instanceof ApiError) || cause.code !== "MCP_SERVER_NAME_CONFLICT") throw cause;
-      const latest = await browserApi.mcpServers();
-      const matches = latest.servers.filter((server) => comparableUrl(server.url) === comparableUrl(current.url));
-      if (matches.length === 1) return matches[0] as MCPServer;
-      if (matches.length > 1) throw new Error("ambiguous");
-      return await create.mutateAsync({ ...input, name: suggestServerName(current.url, latest.servers) });
-    }
+    return await createMcpInstallation(newServerInput(current), create.mutateAsync);
   }
   async function resolveBinding(current: Attempt) {
     if (current.binding) return current.binding;
@@ -161,18 +127,31 @@ export function useMcpAddConnection(props: McpAddProps) {
     }
   }
   function prepareAttempt(current: Attempt) {
-    if (!current.server) {
-      const match = uniqueServer(current.url, account.data?.servers ?? servers);
-      if (match) {
-        current.server = match;
-        setSelectedId(match.id);
-      }
-    }
-    current.binding ??= props.mounted.find(
-      (entry) => entry.mcpServerId === current.server?.id && !discarded.current.has(entry.mcpServerId),
-    );
     current.kind ??= connectionAuthKind(current.url, current.binding, current.server);
     current.allowOAuthDiscovery ??= allowsOAuthDiscovery(current.url, current.kind);
+  }
+  function installedBinding(value: string) {
+    const preset = findCatalogEntryByUrl(value, MCP_CATALOG_ENTRIES);
+    return (
+      props.mounted.find(
+        (entry) =>
+          !discarded.current.has(entry.mcpServerId) && comparableUrl(entry.effective.url) === comparableUrl(value),
+      ) ??
+      (preset
+        ? findCatalogBinding(
+            preset,
+            definitions.servers,
+            props.mounted.filter((entry) => !discarded.current.has(entry.mcpServerId)),
+          )
+        : undefined)
+    );
+  }
+  function locateInstalled(current: Attempt): boolean {
+    if (current.server || current.binding) return false;
+    const installed = installedBinding(current.url);
+    if (!installed) return false;
+    props.onLocate(installed.mcpServerId);
+    return true;
   }
   function requireKey(current: Attempt, focusKey: () => void) {
     if (!requiresConnectionKey(current.kind, current.binding, key)) return false;
@@ -222,14 +201,15 @@ export function useMcpAddConnection(props: McpAddProps) {
   function reportFailure(cause: unknown) {
     if (!alive.current) return;
     if (cause instanceof McpConnectionError && cause.reason === "key") setNeedsKey(true);
-    setError(connectionError(cause, attempt.current.kind));
+    setError(connectionFailure(cause, attempt.current.kind));
   }
   async function connect(focusKey: () => void) {
-    if (inFlight.current || !url.trim() || !account.data) return;
+    if (inFlight.current || !url.trim() || definitions.isPending || definitions.isError) return;
     if (!validUrl) {
       setUrlInvalid(true);
       return;
     }
+    if (locateInstalled(attempt.current)) return;
     oauthWindow.current =
       connectionAuthKind(url, attempt.current.binding, attempt.current.server) === "oauth"
         ? prepareMcpOAuthWindow()
@@ -262,7 +242,7 @@ export function useMcpAddConnection(props: McpAddProps) {
       await discardOtherSetups();
       props.onClose();
     } catch (cause) {
-      setError(connectionError(cause, current.kind));
+      setError(connectionFailure(cause, current.kind));
     } finally {
       inFlight.current = false;
       if (alive.current) setPhase("idle");
@@ -270,10 +250,8 @@ export function useMcpAddConnection(props: McpAddProps) {
   }
   return {
     close,
-    account,
+    definitions,
     oauth: operation.oauth,
-    servers,
-    selectedId,
     url,
     key,
     needsKey,
@@ -281,8 +259,6 @@ export function useMcpAddConnection(props: McpAddProps) {
     error,
     phase,
     busy: phase !== "idle",
-    choose,
-    isAdded,
     connect,
     validateUrl: () => setUrlInvalid(Boolean(url.trim()) && !validUrl),
     changeUrl: (value: string) => reset(value),
@@ -290,27 +266,19 @@ export function useMcpAddConnection(props: McpAddProps) {
       setKey(value);
       setError(undefined);
     },
-    canConnect: phase === "idle" && Boolean(url.trim()) && Boolean(account.data) && (!needsKey || Boolean(key.trim())),
+    canConnect:
+      phase === "idle" &&
+      !definitions.isPending &&
+      !definitions.isError &&
+      Boolean(url.trim()) &&
+      (!needsKey || Boolean(key.trim())),
   };
 }
 
-function connectionError(cause: unknown, kind?: MCPAuthKind): string {
-  if (cause instanceof Error && cause.message === "ambiguous") return m.mcp_add_choose_existing();
-  return connectionFailure(cause, kind);
-}
-
-function uniqueServer(url: string, servers: readonly MCPServer[]): MCPServer | undefined {
-  const matches = servers.filter((server) => comparableUrl(server.url) === comparableUrl(url));
-  if (matches.length > 1) throw new Error("ambiguous");
-  return matches[0];
-}
-function newServerInput(current: Attempt, servers: readonly MCPServer[]) {
+function newServerInput(current: Attempt) {
   const preset = connectionPreset(current.url);
   const input = {
-    name:
-      preset && !servers.some((server) => server.name === preset.name)
-        ? preset.name
-        : suggestServerName(current.url, servers),
+    name: preset?.name ?? suggestServerName(current.url, []),
     url: current.url,
     defaultAuthKind: current.kind ?? ("none" as const),
     ...(preset?.authHeader ? { authHeader: preset.authHeader } : {}),

@@ -12,8 +12,7 @@ import { getLocale, type Locale } from "../../../i18n/locale.js";
  *
  * The catalog carries its own copy in every supported locale, so the reader only has to pick one; it
  * never falls back, because the generator refuses a source that omits a locale. Everything else here
- * answers "what should this card do for this Agent", which is a pure join over the Account pool and
- * the Agent's mounts — no extra endpoint.
+ * answers "what should this card do for this Agent" using its own installations and definitions.
  */
 
 /** The given locale's text. Every locale is guaranteed present by the catalog generator. */
@@ -108,26 +107,11 @@ export function entriesInCategory(entries: readonly McpCatalogEntry[], categoryI
   return entries.filter((entry) => entry.category === categoryId);
 }
 
-/**
- * The Account definition a catalog entry should mount, or `undefined` when the Account has none yet.
- *
- * Matching on the URL is what keeps a hand-created or previously used definition from being
- * duplicated, and it is also what avoids the `unique(account_id, lower(name))` collision in the
- * common case.
- *
- * Every endpoint of the entry counts, preferred endpoint first. An Account that created the entry's
- * Server before the deployment replaced its endpoint keeps using that Server: creating a second one
- * would collide on the name, and the existing one still works.
- */
-export function findAccountServer(entry: ServedCatalogEntry, servers: readonly MCPServer[]): MCPServer | undefined {
-  return firstByEndpoint(entry, servers, (server) => server.url);
-}
-
 /** The first candidate on the entry's most preferred endpoint, trying each endpoint in order. */
 function firstByEndpoint<T>(entry: ServedCatalogEntry, candidates: readonly T[], urlOf: (candidate: T) => string) {
   for (const url of catalogEntryUrls(entry)) {
-    const target = comparableUrl(url);
-    const found = candidates.find((candidate) => comparableUrl(urlOf(candidate)) === target);
+    const target = catalogEndpoint(url);
+    const found = candidates.find((candidate) => target && catalogEndpoint(urlOf(candidate)) === target);
     if (found) return found;
   }
   return undefined;
@@ -163,7 +147,12 @@ export function findCatalogBinding(
   servers: readonly MCPServer[],
   mounted: readonly MCPAgentServer[],
 ): MCPAgentServer | undefined {
-  const definition = findAccountServer(entry, servers);
+  const mountedIds = new Set(mounted.map((binding) => binding.mcpServerId));
+  const definition = firstByEndpoint(
+    entry,
+    servers.filter((server) => mountedIds.has(server.id)),
+    (server) => server.url,
+  );
   return (
     firstByEndpoint(entry, mounted, (candidate) => candidate.effective.url) ??
     (definition ? mounted.find((candidate) => candidate.mcpServerId === definition.id) : undefined)

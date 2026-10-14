@@ -5,6 +5,7 @@ import * as m from "../../paraglide/messages.js";
 import { Button, Icon, Info, Loader, Popover, Switch, Text, Tooltip } from "../../ui/design-system.js";
 import { findCatalogEntryByUrl, localizedText } from "./catalog/mcp-catalog-model.js";
 import { McpServiceIcon } from "./mcp-service-icon.js";
+import { mcpTitle } from "./mcp-title.js";
 
 export type ServerAction = "authorize" | "edit";
 export function McpServerCard({
@@ -51,7 +52,7 @@ export function McpServerCard({
           tabIndex={-1}
           variant="ghost"
           disabled={connecting}
-          aria-label={m.mcp_open_details({ server: entry.name })}
+          aria-label={m.mcp_open_details({ server: mcpTitle(entry) })}
           onClick={() => onAction("edit")}
         >
           <McpServiceIcon src={catalogEntry?.iconIsOfficial ? catalogEntry.iconUrl : undefined} />
@@ -63,10 +64,10 @@ export function McpServerCard({
               className="mcp-server-name"
               variant="ghost"
               disabled={connecting}
-              title={entry.name}
+              title={mcpTitle(entry)}
               onClick={() => onAction("edit")}
             >
-              <span className="truncate">{entry.name}</span>
+              <span className="truncate">{mcpTitle(entry)}</span>
               <Icon name="chevron-right" className="size-3.5 shrink-0 text-kumo-subtle" />
             </Button>
           </Text>
@@ -78,11 +79,11 @@ export function McpServerCard({
       <div className="mcp-server-controls">
         <div className="mcp-server-toggles flex shrink-0 items-center gap-2">
           <Tooltip
-            content={m.mcp_toggle_label({ agent: agentName, name: entry.name })}
+            content={m.mcp_toggle_label({ agent: agentName, name: mcpTitle(entry) })}
             render={
               <span className="inline-flex">
                 <Switch
-                  aria-label={m.mcp_toggle_label({ agent: agentName, name: entry.name })}
+                  aria-label={m.mcp_toggle_label({ agent: agentName, name: mcpTitle(entry) })}
                   checked={entry.enabled}
                   disabled={toggling || connecting}
                   transitioning={toggling}

@@ -6,7 +6,7 @@ import type {
   MCPServer,
   MCPServerDetail,
 } from "@opentag/shared/browser";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
 import { LIVE_REFETCH_INTERVAL_MS, liveResourceQueryOptions } from "../../query/live.js";
@@ -48,6 +48,26 @@ export function useMcpServerDetail(mcpServerId: string | undefined) {
     queryFn: (): Promise<MCPServerDetail> => browserApi.mcpServer(mcpServerId as string),
     enabled: mcpServerId !== undefined,
   });
+}
+
+/** Read only this Agent's overridden definitions and the explicitly restored installation. */
+export function useMcpInstallationDefinitions(mounted: readonly MCPAgentServer[], restoredId?: string) {
+  const ids = new Set(mounted.filter((entry) => entry.overridden.url).map((entry) => entry.mcpServerId));
+  if (restoredId) ids.add(restoredId);
+  const queries = useQueries({
+    queries: [...ids].map((id) => ({
+      ...liveResourceQueryOptions,
+      queryKey: queryKeys.mcp.server(id),
+      queryFn: () => browserApi.mcpServer(id),
+    })),
+  });
+  return {
+    servers: queries.flatMap((query) => (query.data ? [query.data.server] : [])),
+    isPending: queries.some((query) => query.isPending),
+    isError: queries.some((query) => query.isError),
+    error: queries.find((query) => query.isError)?.error,
+    refetch: () => Promise.all(queries.map((query) => query.refetch())),
+  };
 }
 
 const PROBE_REFETCH_INTERVAL_MS = 1_000;

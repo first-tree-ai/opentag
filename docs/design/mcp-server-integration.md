@@ -507,13 +507,10 @@ The Web App accepts only the replacement that `MCP_CATALOG_DEPLOYMENT_ENDPOINTS`
 entry, and it recognizes both Canva endpoints as Canva for icons, titles, and the OAuth default. If
 the read fails, the catalog stays as shipped.
 
-A served entry keeps its shipped endpoint as an identity, and the Account and mount joins accept
-every endpoint of the entry, preferred endpoint first. An Account that created its Canva Server on
-the waitlist endpoint before the pair was configured therefore keeps using that Server: the card
-still shows its connection, and adding Canva to another Agent mounts the same Server. Creating a
-second Server would collide with the Account's `unique(account_id, lower(name))` constraint, and the
-waitlist Server keeps working through its own client. Only an Account without a Canva Server gets a
-new one on the Developer Portal endpoint.
+A served entry keeps its shipped endpoint as an identity. Existing mounts recognize every endpoint
+of the entry and continue working through their own client. A new Web installation uses the
+preferred endpoint and creates an independent definition, with name-conflict handling if an older
+installation already holds the catalog name.
 
 ### The authorization round trip
 
@@ -1018,7 +1015,7 @@ edit, and remove.
   continue following shared definitions; this UI change does not introduce connection snapshots or
   alter API, CLI, authorization-header validation, or database behavior.
 - **Remove** disconnects this Agent and drops its credential. The shared definition remains available
-  to the configured-connector list and the CLI's definition-management commands.
+  in the backend registry and can still be managed by the CLI's definition-management commands.
 - **Authorize** chooses the method for this Agent and, for OAuth, navigates the top-level browsing
   context to the authorization server rather than fetching the URL.
 - **View tools (N)** sits on the right of a dedicated tool footer, separated from the Server's
@@ -1041,23 +1038,34 @@ edit, and remove.
 The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
 **Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
 **发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
-**Connector URL**, an optional **Choose a configured connector (N)** disclosure, and **Cancel / Connect**. There is
+An input with localized URL guidance and **Connect**, with dismissal through the header close button
+or Escape. **Connector URL** remains its screen-reader label; opening focuses the input. There is
 no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
 manual configuration, and configuration import remain implementation capabilities rather than entry
 points in this dialog.
 
-Configured Account definitions that are not already mounted on this Agent are available through a
-single collapsed disclosure. Opening it shows every available definition in a bounded, scrollable
-list, with a name and URL on each row. There is no search, recent shortcut grid, or View all action.
-Selecting a row fills the URL, collapses the list, and returns focus to the disclosure without making
-a request. Its label becomes **Selected: {name} · Change**, and opening it again shows the selected row.
-Editing the URL clears the selection and its credential draft. Complete HTTP(S) endpoint URLs are required; only
-outer whitespace is trimmed, and configuration snippets, commands, multiple addresses, userinfo,
-and fragments are refused. One matching definition is reused; ambiguous matches require explicit
-selection. Service names are suggested automatically, with collision handling.
+Web installations are independent per Agent. Add custom offers only a URL; it neither lists the
+Account's definitions nor selects one by URL. Discover creates a new definition from the served
+catalog defaults when this Agent has no installation. Existing installations of this Agent remain
+available for connection, retry, and management, including URL overrides and every known endpoint
+of a deployment-replaced catalog entry.
 
-Connect reuses the existing create, attach, authorization, OAuth, and probe APIs. Saved configuration
-and exact preset matches provide authentication defaults; Bearer defaults reveal an API-key field
+Names are generated automatically from an exact preset or the URL's host. Creation tries the base
+name first; only `MCP_SERVER_NAME_CONFLICT` reads the Account's names and retries with a bounded,
+case-insensitive numeric suffix. A matching URL never selects another definition. Both add entry
+points share this operation. Confirmed definitions are retained within the current journey for
+attachment and authorization retries. Account definitions do not gate the ordinary Add button or
+first-use dialog. Reads of overridden definitions and OAuth return state are limited to this Agent's
+installations and the explicitly returned ID.
+
+Complete HTTP(S) endpoint URLs are required; only outer whitespace is trimmed, and configuration
+snippets, commands, multiple addresses, userinfo, and fragments are refused. Entering an already
+installed endpoint locates the current Agent's connection instead of creating another one. The
+backend registry and shared configuration semantics remain available through the API and CLI;
+this Web change does not migrate historical shared mounts or change OAuth client registration reuse.
+
+Connect uses the existing create, attach, authorization, OAuth, and probe APIs.
+Exact preset matches provide new-installation authentication defaults; Bearer defaults reveal an API-key field
 only after Connect, and OAuth defaults start provider sign-in directly. An unknown endpoint starts
 with an anonymous probe; an explicit authentication rejection permits an OAuth attempt through the
 existing discovery flow. The transport retains the shared `MCP_AUTH_REJECTION_SUMMARY` in probe errors,
@@ -1068,17 +1076,18 @@ while switching addresses discards that attempt. OAuth stores only Agent/Server 
 return view; cancellation restores this same dialog against its existing binding. Credentials remain
 strictly per Agent.
 
-The dialog is 440px wide and bounded by the viewport with 16px margins. URL-only entry uses 256px;
-the collapsed configured-connector disclosure uses 288px regardless of the number of choices.
-Opening the list expands downward to 480px while keeping the header and URL field in place;
-selection restores the compact height. API-key entry replaces the picker and uses 336px on desktop
-or 352px at widths up to 600px; the collapsed disclosure uses 304px on those narrow viewports.
-Loading and errors retain their current step's geometry. Available
-choices exclude the bindings present when the dialog opened, so an in-progress binding does not
-remove a choice during error recovery. Validation and connection feedback share a reserved line
-below the URL, or below the key when it is present. Explicit steps animate height over 160ms,
-with reduced-motion support. The list and constrained content can scroll while the footer remains
-visible.
+The dialog is 440px wide and bounded by the viewport with 16px margins. URL-only entry uses 216px;
+API-key entry uses 304px on desktop and 320px at widths up to 600px. The opening top anchor stays
+fixed when key collection expands downward. Feedback is reserved below the URL or key, and loading
+and errors retain the current step's geometry. The body scrolls within the viewport while the
+footer remains visible. Steps animate over 160ms with reduced-motion support.
+
+The list, Settings, Authentication, Tools, removal copy, and accessible names use one display-title
+function. A known catalog endpoint with its preset name or a numeric installation suffix displays
+the localized catalog title. Custom names remain verbatim. No display-name field is stored; IDs,
+raw names, and gateway tool namespaces retain their existing semantics. Removing or cancelling a
+new installation still detaches its mount; an unmounted definition remains in the backend registry
+but is not offered as a Web installation source.
 
 ### Importing a Server from another client's configuration
 
@@ -1164,7 +1173,7 @@ Directory cards place the service name and description on the left, with **Add**
 right rather than in a separate footer row. Limited-access labels sit beside the service name.
 On narrow screens, descriptions span the card width.
 
-Adding creates or reuses the Account definition and mounts it to this Agent. The directory closes as
+Adding creates this Agent's independent definition and mounts it to this Agent. The directory closes as
 soon as the mount is confirmed, and the management list highlights the service without waiting for
 authorization or tools. OAuth services immediately navigate to the provider without another confirmation.
 Bearer services open the shared authentication dialog with the known method fixed and no connection
@@ -1200,8 +1209,8 @@ use their user-supplied description, with the effective URL as the fallback when
 Subtitles stay on one line with truncation and a full-text tooltip; the complete URL remains in settings.
 An empty tool result is inspected in the existing tool browser. Authentication preserves the binding's
 effective settings and extra-header inheritance; catalog scopes are supplied only for its exact endpoint.
-Account definitions retain their chosen default authentication kind when reused. Catalog defaults apply
-to newly created definitions.
+Existing installations retain their chosen authentication kind. Catalog defaults apply to newly
+created definitions; other Agents' configuration and headers are never used to prefill them.
 
 UI validation captures use an isolated local MCP/OAuth fixture deployment: [desktop](assets/mcp-discover/desktop.png),
 [320px](assets/mcp-discover/mobile-320.png), [390px](assets/mcp-discover/mobile-390.png), and
@@ -1230,7 +1239,8 @@ and category rules, the icon, and the gates to run — is a first-party Skill at
 uploads it explicitly, and the Presets catalog never offers it.
 
 The current Add server flow uses an exact catalog endpoint match to supply authentication defaults
-and a suggested name. Account definitions are reused before creating another definition.
+and a suggested name. Each Web installation creates its own definition; the Account registry is consulted only to resolve
+a creation-name conflict.
 `default_auth_kind` remains a prefill for the new authorization, never a statement about the Server.
 
 An entry's `oauthScopes`, when present, travel as the OAuth start request's explicit scopes, so the

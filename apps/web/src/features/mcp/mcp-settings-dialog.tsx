@@ -16,6 +16,7 @@ import {
 } from "./mcp-form-model.js";
 import { useMcpServerDetail, useUpdateMcpBinding } from "./mcp-queries.js";
 import { McpConfirmDialog } from "./mcp-server-dialogs.js";
+import { mcpTitle } from "./mcp-title.js";
 import { McpToolsDialog } from "./mcp-tools-dialog.js";
 
 export function McpSettingsDialog({
@@ -204,10 +205,10 @@ export function McpSettingsDialog({
       className="mcp-form-dialog mcp-settings-dialog"
       title={
         <span className="mcp-settings-title">
-          <McpDialogTitle entry={entry} title={entry.name} />
+          <McpDialogTitle entry={entry} title={mcpTitle(entry)} />
         </span>
       }
-      closeLabel={m.common_close_title({ title: entry.name })}
+      closeLabel={m.common_close_title({ title: mcpTitle(entry) })}
       onClose={onClose}
       initialFocusRef={returnFocus.current ? focusRefs[focusKind.current] : undefined}
     >

@@ -5,6 +5,7 @@ import { Button, Dialog } from "../../ui/design-system.js";
 import { McpFooter } from "./mcp-form.js";
 import { actionError } from "./mcp-form-model.js";
 import { useDetachMcpServer, useRevokeMcpAuthorization } from "./mcp-queries.js";
+import { mcpTitle } from "./mcp-title.js";
 
 export function McpConfirmDialog({
   kind,
@@ -38,7 +39,7 @@ export function McpConfirmDialog({
       else await revoke.mutateAsync(entry.mcpServerId);
       (onConfirmed ?? onClose)();
     } catch (cause) {
-      setError(removing ? m.mcp_remove_retry({ server: entry.name }) : actionError(cause, m.mcp_revoke_failed()));
+      setError(removing ? m.mcp_remove_retry({ server: mcpTitle(entry) }) : actionError(cause, m.mcp_revoke_failed()));
     } finally {
       inFlight.current = false;
     }
@@ -51,13 +52,15 @@ export function McpConfirmDialog({
       onClose={onClose}
       onBack={onBack}
       title={
-        removing ? m.mcp_detach_title({ server: entry.name }) : m.mcp_clear_credentials_title({ server: entry.name })
+        removing
+          ? m.mcp_detach_title({ server: mcpTitle(entry) })
+          : m.mcp_clear_credentials_title({ server: mcpTitle(entry) })
       }
     >
       <div className="grid gap-3">
         <p className="text-sm leading-relaxed text-kumo-subtle">
           {removing
-            ? m.mcp_remove_description({ server: entry.name, agent: agentName })
+            ? m.mcp_remove_description({ server: mcpTitle(entry), agent: agentName })
             : m.mcp_clear_credentials_help({ agent: agentName })}
         </p>
       </div>

@@ -6,7 +6,6 @@ import {
   catalogEntryUrls,
   comparableUrl,
   entriesInCategory,
-  findAccountServer,
   findCatalogBinding,
   findCatalogEntryByUrl,
   localizedText,
@@ -125,18 +124,11 @@ describe("catalog URL comparison", () => {
   });
 });
 
-describe("catalog entry reuse", () => {
-  it("finds an Account definition with the same URL regardless of spelling", () => {
-    const server = accountServer({ url: "https://MCP.Notion.com/mcp" });
-    expect(findAccountServer(catalogEntry(), [server])).toBe(server);
-  });
-
-  it("returns nothing when the Account holds no definition for the entry", () => {
-    expect(findAccountServer(catalogEntry(), [accountServer({ url: "https://mcp.linear.app/mcp" })])).toBeUndefined();
-  });
-});
-
 describe("per-Agent catalog state", () => {
+  it("recognizes an installed service with connection parameters and a trailing slash", () => {
+    const mounted = mount({ effective: { ...mount().effective, url: "https://mcp.notion.com/mcp/?workspace=demo" } });
+    expect(catalogEntryState(catalogEntry(), [], [mounted])).toBe("added");
+  });
   it("is available when the Agent does not mount the Server", () => {
     expect(catalogEntryState(catalogEntry(), [accountServer()], [])).toBe("available");
   });
@@ -159,6 +151,13 @@ describe("per-Agent catalog state", () => {
     expect(catalogEntryState(catalogEntry(), [accountServer()], [mount()])).toBe("added");
   });
 
+  it("finds an overridden installation even when another Agent's definition comes first", () => {
+    const own = accountServer();
+    const other = accountServer({ id: "22222222-2222-4222-8222-222222222222" });
+    const mounted = mount({ effective: { ...mount().effective, url: "https://internal.example.com/mcp" } });
+    expect(findCatalogBinding(catalogEntry(), [other, own], [mounted])).toBe(mounted);
+    expect(findCatalogBinding(catalogEntry(), [other], [mounted])).toBeUndefined();
+  });
   it("matches an Agent-level URL override back to the entry", () => {
     const mounted = mount({ effective: { ...mount().effective, url: "https://internal.example.com/mcp" } });
     expect(catalogEntryState(catalogEntry(), [accountServer()], [mounted])).toBe("added");
@@ -222,16 +221,6 @@ describe("deployment catalog endpoints", () => {
     expect(catalogEntryUrls(resolved[1] as McpCatalogEntry)).toEqual([CANVA_DEVELOPER_PORTAL_MCP_URL, canva.url]);
     expect(findCatalogEntryByUrl(canva.url, resolved)).toBe(resolved[1]);
     expect(findCatalogEntryByUrl(CANVA_DEVELOPER_PORTAL_MCP_URL, resolved)).toBe(resolved[1]);
-  });
-
-  it("keeps an Account's waitlist Server serving the replaced entry", () => {
-    const served = resolveCatalogEntries([canva], [{ catalogId: "canva", url: CANVA_DEVELOPER_PORTAL_MCP_URL }])[0];
-    const waitlist = accountServer({ name: "canva", url: canva.url });
-    // Reusing it is what avoids a second Server named `canva`, which the Account's name constraint rejects.
-    expect(findAccountServer(served as McpCatalogEntry, [waitlist])).toBe(waitlist);
-    const portal = accountServer({ id: "22222222-2222-4222-8222-222222222222", url: CANVA_DEVELOPER_PORTAL_MCP_URL });
-    // When both exist, the preferred endpoint wins regardless of list order.
-    expect(findAccountServer(served as McpCatalogEntry, [waitlist, portal])).toBe(portal);
   });
 
   it("reports an Agent's working waitlist mount as added for the replaced entry", () => {

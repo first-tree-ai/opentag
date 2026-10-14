@@ -71,6 +71,10 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       await respondPool(route, method, body);
       return;
     }
+    if (await respondDefinition(route, path, method)) return;
+    await respondAgentRequest(route, path, method, body);
+  });
+  async function respondAgentRequest(route: Route, path: string, method: string, body: Record<string, unknown> | null) {
     const match = /^\/api\/v1\/agents\/([^/]+)\/mcp-servers(?:\/([^/]+))?(.*)$/.exec(path);
     if (!match?.[1]) throw new Error(`Unexpected MCP fixture request: ${path}`);
     const agentId = match[1];
@@ -84,7 +88,15 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     const entry = entries.find((value) => value.mcpServerId === match[2]);
     if (!entry) throw new Error("Missing binding fixture");
     await respond(route, agentId, entry, match[3] ?? "", body);
-  });
+  }
+  async function respondDefinition(route: Route, path: string, method: string) {
+    const id = /^\/api\/v1\/mcp-servers\/([^/]+)$/.exec(path)?.[1];
+    if (!id || method !== "GET") return false;
+    const definition = servers.find((value) => value.id === id);
+    if (!definition) throw new Error("Missing definition fixture");
+    await route.fulfill({ json: { server: definition, agents: [] } });
+    return true;
+  }
   async function respondRemoval(
     route: Route,
     method: string,
@@ -118,6 +130,13 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       await poolGate;
       await route.fulfill({ json: { servers } });
     } else {
+      if (servers.some((value) => value.name.toLowerCase() === String(body?.name).toLowerCase())) {
+        await route.fulfill({
+          status: 409,
+          json: { error: { message: "Name exists", code: "MCP_SERVER_NAME_CONFLICT", category: "deterministic" } },
+        });
+        return;
+      }
       const value = { ...server(String(body?.name)), ...body } as MCPServer;
       servers.push(value);
       await route.fulfill({ json: value });

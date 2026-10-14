@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog, Field, KumoInputControl } from "../../ui/design-system.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
+import { mcpTitle } from "./mcp-title.js";
 
 /** Ordinary bearer connection collects only the Agent credential; method edits belong to Settings. */
 export function McpConnectDialog({
@@ -25,8 +26,8 @@ export function McpConnectDialog({
   return (
     <Dialog
       className="mcp-form-dialog mcp-auth-dialog"
-      title={<McpDialogTitle entry={entry} title={m.mcp_authentication_title({ server: entry.name })} />}
-      closeLabel={m.common_close_title({ title: m.mcp_authentication_title({ server: entry.name }) })}
+      title={<McpDialogTitle entry={entry} title={m.mcp_authentication_title({ server: mcpTitle(entry) })} />}
+      closeLabel={m.common_close_title({ title: m.mcp_authentication_title({ server: mcpTitle(entry) }) })}
       initialFocusRef={keyRef}
       busy={busy}
       onClose={onClose}

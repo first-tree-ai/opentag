@@ -67,14 +67,21 @@ async function setupAgent(page: Page, endpoint: string, bearer: boolean) {
     },
   });
   expect(response.ok(), await response.text()).toBeTruthy();
+  const agentId = ((await response.json()) as { id: string }).id;
   if (bearer) {
     const server = await page.request.post("/api/v1/mcp-servers", {
       headers,
       data: { name: `rejection-${randomUUID()}`, url: endpoint, defaultAuthKind: "bearer" },
     });
     expect(server.ok(), await server.text()).toBeTruthy();
+    const serverId = ((await server.json()) as { id: string }).id;
+    const attached = await page.request.post(`/api/v1/agents/${agentId}/mcp-servers`, {
+      headers,
+      data: { mcpServerId: serverId, enabled: true },
+    });
+    expect(attached.ok(), await attached.text()).toBeTruthy();
   }
-  return ((await response.json()) as { id: string }).id;
+  return agentId;
 }
 
 for (const status of [401, 403]) {
@@ -91,13 +98,11 @@ for (const status of [401, 403]) {
             oauthRequests.push(request.url());
         });
         await page.goto(`/agents/${agent}/mcp`);
-        await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
-        const dialog = page.getByRole("dialog", { name: "Add custom connector", exact: true });
-        await dialog.getByLabel("Connector URL", { exact: true }).fill(upstream.endpoint);
-        if (bearer) {
-          await dialog.getByRole("button", { name: "Connect", exact: true }).click();
-          await dialog.getByLabel("API key", { exact: true }).fill("wrong-fixture-key");
-        }
+        if (bearer) await page.getByRole("button", { name: "Connect", exact: true }).click();
+        else await page.getByRole("button", { name: "Add custom", exact: true }).first().click();
+        const dialog = page.getByRole("dialog");
+        if (bearer) await dialog.getByLabel("API key or token", { exact: true }).fill("wrong-fixture-key");
+        else await dialog.getByLabel("Connector URL", { exact: true }).fill(upstream.endpoint);
         const probe = page.waitForResponse(
           (response) => response.request().method() === "POST" && response.url().endsWith("/probe"),
         );
@@ -106,6 +111,7 @@ for (const status of [401, 403]) {
           : page.waitForResponse(
               (response) => response.request().method() === "POST" && response.url().endsWith("/authorization/oauth"),
             );
+        const consent = bearer ? undefined : page.waitForEvent("popup");
         await dialog.getByRole("button", { name: "Connect", exact: true }).click();
         expect(await (await probe).json()).toMatchObject({
           probeState: "failed",
@@ -113,11 +119,13 @@ for (const status of [401, 403]) {
         });
         if (bearer) {
           await expect(dialog).toContainText("Invalid API key. Try again.");
-          await expect(dialog.getByLabel("API key", { exact: true })).toHaveValue("wrong-fixture-key");
+          await expect(dialog.getByLabel("API key or token", { exact: true })).toHaveValue("wrong-fixture-key");
           expect(oauthRequests).toHaveLength(0);
         } else {
           expect((await oauth)?.ok()).toBeTruthy();
-          await expect(page.getByRole("heading", { name: "Fixture sign-in" })).toBeVisible();
+          const signIn = await consent;
+          if (!signIn) throw new Error("Missing authorization window");
+          await expect(signIn.getByRole("heading", { name: "Fixture sign-in" })).toBeVisible();
           expect(oauthRequests).toHaveLength(1);
         }
       } finally {

@@ -14,8 +14,8 @@ import { McpDiscoverSource } from "./mcp-discover-source.js";
  *
  * The shipped catalog is operator-owned data, so no test asserts a shipped entry's name or endpoint:
  * editing `mcp-catalog.yaml` must not break a test. What is asserted is the surface's behavior — tab
- * order, category grouping, localization lookup, method copy, installed state, and how an add reuses
- * or creates the Account definition.
+ * order, category grouping, localization lookup, method copy, installed state, and how an add creates
+ * an independent definition.
  */
 const CATALOG = vi.hoisted(() => ({
   categories: [
@@ -119,7 +119,7 @@ function summary(status: MCPAuthorizationSummary["status"]): MCPAuthorizationSum
   };
 }
 
-/** The definition a create or a reuse produces for one catalog entry. */
+/** The definition a create produces for one catalog entry. */
 function serverFor(name: string): MCPServer {
   return {
     id: idFor(name),
@@ -191,6 +191,12 @@ function nameForId(id: string): string {
   return "alpha";
 }
 
+function catalogText(title: string): HTMLElement {
+  const catalog = document.querySelector('[data-ui="mcp-catalog"]');
+  if (!catalog) throw new Error("Missing catalog");
+  return within(catalog as HTMLElement).getByText(title);
+}
+
 async function discover(
   overrides: {
     servers?: MCPServer[];
@@ -241,8 +247,8 @@ describe("Discover catalog surface", () => {
     await discover({ entries: [...entries, singleEntry], initialView: { query: "", categoryId: "small" } });
     const tabs = () => [...screen.getByRole("group", { name: "Categories" }).querySelectorAll("button")];
     expect(tabs().map((tab) => tab.textContent)).toEqual(["All", "General", "Engineering"]);
-    expect(screen.getByText("Alpha")).toBeTruthy();
-    expect(screen.getByText("Beta")).toBeTruthy();
+    expect(catalogText("Alpha")).toBeTruthy();
+    expect(catalogText("Beta")).toBeTruthy();
     expect(screen.getByText("Solo")).toBeTruthy();
     expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "Solo" } });
@@ -255,7 +261,7 @@ describe("Discover catalog surface", () => {
   it("switches category and keeps the cards' localized copy", async () => {
     await discover();
     chooseCategory("Engineering");
-    expect(screen.getByText("Beta")).toBeTruthy();
+    expect(catalogText("Beta")).toBeTruthy();
     expect(screen.getByText("Gamma")).toBeTruthy();
     expect(screen.queryByText("Alpha")).toBeNull();
     expect(screen.getByText("Boards and tickets.")).toBeTruthy();
@@ -265,10 +271,10 @@ describe("Discover catalog surface", () => {
     await discover();
     const search = screen.getByLabelText("Search connectors");
     fireEvent.change(search, { target: { value: "wiki" } });
-    expect(screen.getByText("Alpha")).toBeTruthy();
+    expect(catalogText("Alpha")).toBeTruthy();
     expect(screen.queryByText("Beta")).toBeNull();
     fireEvent.change(search, { target: { value: "mcp.beta.test" } });
-    expect(screen.getByText("Beta")).toBeTruthy();
+    expect(catalogText("Beta")).toBeTruthy();
     fireEvent.change(search, { target: { value: "nothing here" } });
     expect(screen.getByText("No connectors match this search.")).toBeTruthy();
   });
@@ -499,7 +505,13 @@ describe("Discover to Agent management", () => {
     expect(probe).toHaveBeenCalledTimes(2);
     expect(create).toHaveBeenCalledTimes(1);
     expect(attach).toHaveBeenCalledTimes(2);
-    expect(within(screen.getByText("Beta").closest("li") as HTMLElement).getByText("Connected")).toBeTruthy();
+    expect(
+      within(
+        within(screen.getByRole("dialog", { name: "Discover" }))
+          .getByText("Beta")
+          .closest("li") as HTMLElement,
+      ).getByText("Connected"),
+    ).toBeTruthy();
   });
 
   it("opens the shared key form without method selection and saves to the same mount", async () => {
@@ -591,30 +603,21 @@ describe("Discover to Agent management", () => {
     expect(attach).toHaveBeenLastCalledWith(AGENT_ID, { mcpServerId: BETA_ID, enabled: true });
   });
 
-  it("uses the Account definition's authentication kind and preserves inherited headers", async () => {
+  it("creates from catalog defaults without inheriting another Agent's authentication or headers", async () => {
     stub([]);
     vi.mocked(browserApi.mcpServers).mockResolvedValue({
-      servers: [{ ...serverFor("alpha"), defaultAuthKind: "bearer" }],
+      servers: [{ ...serverFor("alpha"), defaultAuthKind: "bearer", extraHeaders: { "x-workspace": "other" } }],
     });
-    const { attach, create, authorize } = stubCatalogWrites();
-    const inherited = { "x-workspace": "existing-workspace" };
-    attach.mockImplementation(async () => ({
-      ...mountFor(serverFor("alpha"), null),
-      effective: { ...entry().effective, url: serverFor("alpha").url, extraHeaders: inherited },
-    }));
-    const update = vi.spyOn(browserApi, "updateAgentMcpServer");
+    const { create, authorize } = stubCatalogWrites();
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "stop"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
     fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
-    fireEvent.change(await screen.findByLabelText("API key or token", { selector: 'input[type="password"]' }), {
-      target: { value: "sample-key" },
-    });
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
-    await waitFor(() =>
-      expect(authorize).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, { kind: "bearer", bearerKey: "sample-key" }),
-    );
-    expect(create).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
+    await waitFor(() => expect(oauth).toHaveBeenCalled());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "alpha", defaultAuthKind: "oauth" }));
+    expect(create.mock.calls[0]?.[0].extraHeaders).toBeUndefined();
+    expect(authorize).not.toHaveBeenCalled();
+    expect(browserApi.mcpServers).not.toHaveBeenCalled();
   });
 });
 
@@ -641,7 +644,9 @@ describe("Discover authorization window", () => {
       await openDiscover();
       fireEvent.click(screen.getByRole("button", { name: "Connect: Alpha" }));
       await screen.findByText("Waiting for authorization…");
-      const card = screen.getByText("Alpha").closest("li") as HTMLElement;
+      const card = within(screen.getByRole("dialog", { name: "Discover" }))
+        .getByText("Alpha")
+        .closest("li") as HTMLElement;
       const cancel = within(card).getByRole("button", { name: "Cancel: Alpha" });
       expect(cancel.hasAttribute("disabled")).toBe(false);
       fireEvent.click(cancel);
@@ -667,7 +672,9 @@ describe("Discover authorization window", () => {
       fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "Alpha" } });
       fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
       await screen.findByText("Waiting for authorization…");
-      const pendingCard = screen.getByText("Alpha").closest("li") as HTMLElement;
+      const pendingCard = within(screen.getByRole("dialog", { name: "Discover" }))
+        .getByText("Alpha")
+        .closest("li") as HTMLElement;
       expect(within(pendingCard).getByRole("status").textContent).toBe("Waiting for authorization…");
       expect(screen.getByLabelText("Search connectors").hasAttribute("disabled")).toBe(false);
       expect(screen.getByRole("button", { name: "Engineering" }).hasAttribute("disabled")).toBe(false);
@@ -675,7 +682,9 @@ describe("Discover authorization window", () => {
       expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
       mounts[0] = mountFor(serverFor("alpha"), summary("active"));
       await act(async () => browser.send({ mcpServerId: ALPHA_ID, outcome: { kind: "success" } }));
-      const card = screen.getByText("Alpha").closest("li");
+      const card = within(screen.getByRole("dialog", { name: "Discover" }))
+        .getByText("Alpha")
+        .closest("li");
       if (!card) throw new Error("Missing catalog card");
       await within(card).findByText("Connected");
       expect((screen.getByLabelText("Search connectors") as HTMLInputElement).value).toBe("Alpha");
@@ -778,7 +787,9 @@ describe("Discover authorization window", () => {
       await act(async () =>
         browser.send({ mcpServerId: ALPHA_ID, outcome: { kind: "error", code: "MCP_OAUTH_FLOW_EXPIRED" } }),
       );
-      const card = screen.getByText("Alpha").closest("li") as HTMLElement;
+      const card = within(screen.getByRole("dialog", { name: "Discover" }))
+        .getByText("Alpha")
+        .closest("li") as HTMLElement;
       await waitFor(() => expect(within(card).getByRole("alert").textContent).toBe("Authorization expired"));
       expect(within(card).getByRole("button", { name: "Reconnect: Alpha" })).toBeTruthy();
     } finally {

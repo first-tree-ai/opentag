@@ -61,11 +61,13 @@ export function useMcpInstallationDefinitions(mounted: readonly MCPAgentServer[]
       queryFn: () => browserApi.mcpServer(id),
     })),
   });
+  // Cached metadata remains usable after a failed background refetch.
+  const failure = queries.find((query) => query.isError && !query.data);
   return {
     servers: queries.flatMap((query) => (query.data ? [query.data.server] : [])),
     isPending: queries.some((query) => query.isPending),
-    isError: queries.some((query) => query.isError),
-    error: queries.find((query) => query.isError)?.error,
+    isError: Boolean(failure),
+    error: failure?.error,
     refetch: () => Promise.all(queries.map((query) => query.refetch())),
   };
 }

@@ -717,6 +717,32 @@ test("changing Add custom input still cancels the setup it created", async ({ pa
   }
 });
 
+test("editing Add custom away and back reconnects instead of locating its own failed setup", async ({ page }) => {
+  const upstream = await peer("none");
+  try {
+    const current = await agent(page);
+    upstream.unavailable(true);
+    const dialog = await openAdd(page, current.id, upstream.url);
+    await expect(dialog).toContainText("Couldn’t load tools. Try again.");
+    const initial = await mounts(page, current.id);
+    expect(initial).toHaveLength(1);
+    await dialog.getByLabel("Connector URL", { exact: true }).fill(`${upstream.url}x`);
+    await dialog.getByLabel("Connector URL", { exact: true }).fill(upstream.url);
+    upstream.unavailable(false);
+    await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect
+      .poll(async () => {
+        const installed = await mounts(page, current.id);
+        return installed.length === 1 && installed[0]?.mcpServerId !== initial[0]?.mcpServerId;
+      })
+      .toBe(true);
+    await expect(page.locator('[data-ui="mcp-server-list"]')).toContainText("Connected");
+  } finally {
+    await upstream.stop();
+  }
+});
+
 async function approveToolsAuthorization(page: Page, blocked: boolean) {
   let consent = page;
   if (blocked) {

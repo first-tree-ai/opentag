@@ -12,6 +12,7 @@ import {
   useAvailableMcpServers,
   useCreateMcpServer,
   useDetachMcpServer,
+  useMcpInstallationDefinitions,
   useMcpServerDetail,
   useMcpServers,
   useProbeMcpServer,
@@ -22,7 +23,7 @@ import {
   useUpdateMcpBinding,
   useUpdateMcpServer,
 } from "./mcp-queries.js";
-import { entry } from "./mcp-test-fixtures.js";
+import { detail, entry } from "./mcp-test-fixtures.js";
 
 /**
  * The Agent-scoped mutation hooks, asserted on the body they actually send.
@@ -69,6 +70,34 @@ function captureBody(method: keyof typeof browserApi) {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+describe("installation definition reads", () => {
+  const mounted = entry({ overridden: { ...entry().overridden, url: true } });
+
+  it("keeps a cached definition usable when a background refetch fails", async () => {
+    const saved = detail(1);
+    const read = vi.spyOn(browserApi, "mcpServer").mockResolvedValueOnce(saved).mockRejectedValue(new Error("Offline"));
+    const { result } = renderHook(() => useMcpInstallationDefinitions([mounted]), { wrapper });
+    await waitFor(() => expect(result.current.servers).toEqual([saved.server]));
+    await act(async () => {
+      const refreshed = await result.current.refetch();
+      expect(refreshed[0]?.isError).toBe(true);
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(result.current.isError).toBe(false));
+    expect(result.current.servers).toEqual([saved.server]);
+    expect(result.current.error).toBeUndefined();
+  });
+
+  it("reports a required definition failure when there is no cached data", async () => {
+    const error = new Error("Offline");
+    vi.spyOn(browserApi, "mcpServer").mockRejectedValue(error);
+    const { result } = renderHook(() => useMcpInstallationDefinitions([mounted]), { wrapper });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBe(error);
+    expect(result.current.servers).toEqual([]);
+  });
 });
 
 describe("pending MCP probe polling", () => {

@@ -132,18 +132,13 @@ export function useMcpAddConnection(props: McpAddProps) {
   }
   function installedBinding(value: string) {
     const preset = findCatalogEntryByUrl(value, MCP_CATALOG_ENTRIES);
+    // Locating this dialog's temporary setup would close and discard the same mount.
+    const installed = props.mounted.filter(
+      (entry) => !discarded.current.has(entry.mcpServerId) && !provisional.current.has(entry.mcpServerId),
+    );
     return (
-      props.mounted.find(
-        (entry) =>
-          !discarded.current.has(entry.mcpServerId) && comparableUrl(entry.effective.url) === comparableUrl(value),
-      ) ??
-      (preset
-        ? findCatalogBinding(
-            preset,
-            definitions.servers,
-            props.mounted.filter((entry) => !discarded.current.has(entry.mcpServerId)),
-          )
-        : undefined)
+      installed.find((entry) => comparableUrl(entry.effective.url) === comparableUrl(value)) ??
+      (preset ? findCatalogBinding(preset, definitions.servers, installed) : undefined)
     );
   }
   function locateInstalled(current: Attempt): boolean {

@@ -4,7 +4,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { McpAddDialog } from "./mcp-add-dialog.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, detail, entry, newAddress, OTHER_AGENT_ID, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
+import {
+  AGENT_ID,
+  authorization,
+  detail,
+  entry,
+  newAddress,
+  OTHER_AGENT_ID,
+  SERVER_ID,
+  stub,
+  wrap,
+} from "./mcp-test-fixtures.js";
 
 vi.mock("@opentag/mcp-presets", () => ({
   MCP_CATALOG_ENTRIES: [
@@ -364,6 +374,46 @@ describe("Independent URL connector installation", () => {
     await screen.findByText("Invalid API key. Try again.");
     expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("wrong-key");
     expect(oauth).not.toHaveBeenCalled();
+  });
+  it("does not locate its own temporary installation after the URL is edited away and back", async () => {
+    stub([]);
+    const calls = writes();
+    const failed = entry({
+      effective: { ...entry().effective, url: "https://keys.example.com/mcp" },
+      authorization: { ...authorization(), probeState: "failed" },
+    });
+    let mounted = [] as ReturnType<typeof entry>[];
+    vi.mocked(browserApi.agentMcpServers).mockImplementation(async () => ({ servers: [...mounted] }));
+    calls.attach.mockImplementation(async () => {
+      mounted = [failed];
+      return failed;
+    });
+    calls.auth.mockResolvedValue(failed);
+    calls.probe.mockResolvedValueOnce({
+      ...ready,
+      probeState: "failed",
+      probeError: `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`,
+      toolsCount: null,
+    });
+    vi.spyOn(browserApi, "detachMcpServer").mockImplementation(async () => {
+      mounted = [];
+    });
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await newAddress("https://keys.example.com/mcp");
+    connect();
+    fireEvent.change(await screen.findByLabelText("API key"), { target: { value: "wrong-key" } });
+    connect();
+    await screen.findByText("Invalid API key. Try again.");
+    await waitFor(() => expect(screen.queryByText("No connectors yet")).toBeNull());
+    writeUrl("https://keys.example.com/mc");
+    writeUrl("https://keys.example.com/mcp");
+    connect();
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+    fireEvent.change(await screen.findByLabelText("API key"), { target: { value: "valid-key" } });
+    connect();
+    await waitFor(() => expect(calls.create).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.auth).toHaveBeenLastCalledWith(AGENT_ID, SERVER_ID, { kind: "bearer", bearerKey: "valid-key" });
   });
   it.each([
     { ...ready, probeState: "failed" as const, probeError: "offline", message: "Couldn’t load tools. Try again." },

@@ -175,7 +175,7 @@ describe("Account GitHub refresh lifecycle", () => {
     retry.focus();
     fireEvent.click(retry);
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("refreshed"));
-    expect(document.activeElement).toBe(screen.getByRole("status"));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("status")));
     expect(screen.getByRole("link", { name: "Install GitHub App" })).toBeTruthy();
   });
 });

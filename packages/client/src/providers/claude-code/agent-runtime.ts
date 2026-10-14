@@ -23,6 +23,7 @@ import {
   type AgentRuntimeFactory,
   type AgentRuntimeManifest,
   type AgentRuntimePolicy,
+  type AgentRuntimeProbeIssue,
   type AgentRuntimeProbeRequest,
   type AgentRuntimeProbeResult,
   type CreateAgentRuntimeRequest,
@@ -39,6 +40,7 @@ import {
 } from "../../agent-runtime/validation.js";
 import { createLogger } from "../../observability/logger.js";
 import { claudePermissionRules } from "../native-permissions.js";
+import { probeClaudeEnvironmentCredential } from "./credential-probe.js";
 import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
 import {
   ClaudeCodeProcess,
@@ -122,8 +124,10 @@ export interface ClaudeCodeAgentRuntimeFactoryOptions {
   ) => ClaudeCodeProcessClient;
   readonly createSessionId?: () => string;
   readonly startHostedToolBridge?: typeof startClaudeCodeHostedToolBridge;
+  readonly verifyCredential?: typeof probeClaudeEnvironmentCredential;
   readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
+    readonly credentialIssue?: AgentRuntimeProbeIssue;
     readonly streamJson: boolean;
     readonly version: string;
   }>;
@@ -709,6 +713,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
   ) => ClaudeCodeProcessClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
+    readonly credentialIssue?: AgentRuntimeProbeIssue;
     readonly streamJson: boolean;
     readonly version: string;
   }>;
@@ -731,7 +736,8 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
           maxStderrBytes: options.process?.maxStderrBytes,
           spawnProcess: options.process?.spawnProcess,
         }));
-    this.#probeRunner = options.probeRunner ?? ((signal) => probeClaudeCode(command, environment, signal));
+    this.#probeRunner =
+      options.probeRunner ?? ((signal) => probeClaudeCode(command, environment, signal, options.verifyCredential));
     this.#startHostedToolBridge = options.startHostedToolBridge ?? startClaudeCodeHostedToolBridge;
   }
 
@@ -756,7 +762,9 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
           message: "Claude Code requires stream-json, auto mode, and stdio permission prompts",
         });
       }
-      if (!result.credential) {
+      if (result.credentialIssue) {
+        issues.push(result.credentialIssue);
+      } else if (!result.credential) {
         issues.push({ code: "credential_missing", message: "Claude Code credentials were not found" });
       }
     } catch (error) {
@@ -908,6 +916,7 @@ export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = pr
     "LOCALAPPDATA",
     "LOGNAME",
     "NODE_EXTRA_CA_CERTS",
+    "NO_PROXY",
     "OPENTAG_PROVIDER_ENV_FILE",
     "OPENTAG_HOME",
     "OPENTAG_SESSION_PROOF_FILE",
@@ -925,6 +934,7 @@ export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = pr
     "WINDIR",
     "https_proxy",
     "http_proxy",
+    "no_proxy",
   ]);
   const prefixes = ["ANTHROPIC_", "AWS_", "GOOGLE_"];
   const environment: NodeJS.ProcessEnv = {};
@@ -940,7 +950,13 @@ async function probeClaudeCode(
   command: string,
   environment: NodeJS.ProcessEnv,
   signal?: AbortSignal,
-): Promise<{ readonly credential: boolean; readonly streamJson: boolean; readonly version: string }> {
+  verifyCredential = probeClaudeEnvironmentCredential,
+): Promise<{
+  readonly credential: boolean;
+  readonly credentialIssue?: AgentRuntimeProbeIssue;
+  readonly streamJson: boolean;
+  readonly version: string;
+}> {
   const execution = { encoding: "utf8" as const, env: environment, signal, timeout: 5_000, windowsHide: true };
   const [versionResult, helpResult] = await Promise.all([
     execFileAsync(command, ["--version"], execution),
@@ -958,9 +974,14 @@ async function probeClaudeCode(
     /\bauto\b/.test(helpResult.stdout) &&
     helpResult.stdout.includes("--permission-prompt-tool") &&
     helpResult.stdout.includes("--append-system-prompt");
-  const credential =
-    hasCredentialEnvironment(environment) || (await probeClaudeCodeCredential(command, execution, signal));
-  return { credential, streamJson, version };
+  const credential = await probeClaudeCodeCredential(command, execution, signal);
+  const credentialIssue = credential && streamJson ? await verifyCredential(environment, signal) : undefined;
+  return {
+    credential: credential && !credentialIssue,
+    ...(credentialIssue ? { credentialIssue } : {}),
+    streamJson,
+    version,
+  };
 }
 
 async function probeClaudeCodeCredential(
@@ -996,23 +1017,6 @@ async function probeClaudeCodeCredential(
     );
     return false;
   }
-}
-
-function hasCredentialEnvironment(environment: NodeJS.ProcessEnv): boolean {
-  const directCredentials = [
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_AWS_API_KEY",
-    "ANTHROPIC_FOUNDRY_API_KEY",
-    "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
-    "AWS_BEARER_TOKEN_BEDROCK",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-  ];
-  if (directCredentials.some((key) => Boolean(environment[key]))) return true;
-  return ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_VERTEX"].some(
-    (key) => environment[key] === "1",
-  );
 }
 
 function isEmptyNativeToolAllowList(policy: AgentRuntimePolicy): boolean {

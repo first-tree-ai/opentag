@@ -201,11 +201,13 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
         .replaceAll(CLOUD_SANDBOX_CA_DESTINATION, join(root, "sandbox-home", "ca.pem"))
         .replaceAll("/tmp/opentag", join(root, "cli"))
         .replaceAll("/home/runner", join(root, "sandbox-home"));
-      await writeFile(join(published, "entry.mjs"), entry);
+      const fixtureEntry = join(published, "entry-fixture.mjs");
+      await writeFile(fixtureEntry, entry, { mode: 0o444, flag: "wx" });
+      expect((await stat(join(published, "entry.mjs"))).mode & 0o777).toBe(0o444);
       const result = await run(
         process.execPath,
         [
-          join(published, "entry.mjs"),
+          fixtureEntry,
           "sh",
           "-c",
           'PATH="$1:$2:$PATH"; export PATH; exec gh api repos/team/fixture',

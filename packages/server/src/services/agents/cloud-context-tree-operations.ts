@@ -1,7 +1,7 @@
 /*
  * Account-authorized verification of existing Context Tree targets for Local and Cloud settings.
  * Live user/App admission fixes the requested repository and default branch; a single-repository
- * read-only IAT authenticates the pinned verifier. Connection and target fences are checked around
+ * read-only user token authenticates the pinned verifier. Connection and target fences are checked around
  * remote work. Cloud create remains unavailable; Local keeps its existing create capability boundary.
  */
 
@@ -17,7 +17,7 @@ import type { GitHubManagementService } from "../github/github-management-servic
 import { GitPublicationError } from "../github-proxy/git-packets.js";
 import { GitHubPublicationRemote, type PublicationRemote } from "../github-proxy/git-remote.js";
 import { GitWorkspace } from "../github-proxy/git-workspace.js";
-import type { GitHubIatLeases } from "../github-proxy/iat-leases.js";
+import type { GitHubUserTokenLeases } from "../github-proxy/user-token-leases.js";
 import { VerifiedTreeHead } from "../github-proxy/verified-tree-head.js";
 
 export interface CloudContextTreeOperationInput {
@@ -39,7 +39,7 @@ export type CloudContextTreeGitHubManagement = Pick<GitHubManagementService, "ge
 
 export interface CloudContextTreeOperationsOptions {
   management: CloudContextTreeGitHubManagement;
-  leases: Pick<GitHubIatLeases, "acquire">;
+  leases: Pick<GitHubUserTokenLeases, "acquire">;
   /** Exact Computer kind lookup; `undefined` for unknown rows so Cloud is never mistaken for Local. */
   computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
   /** Ephemeral verification root owner; constructed when absent. Closed by `close()`. */
@@ -104,7 +104,7 @@ function parseRepository(raw: string): string {
 }
 
 export class CloudContextTreeOperations implements CloudContextTreeOperationRunner {
-  readonly #leases: Pick<GitHubIatLeases, "acquire">;
+  readonly #leases: Pick<GitHubUserTokenLeases, "acquire">;
   readonly #management: CloudContextTreeGitHubManagement;
   readonly #computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
   readonly #treeHeads: Pick<VerifiedTreeHead, "verify">;
@@ -201,6 +201,10 @@ export class CloudContextTreeOperations implements CloudContextTreeOperationRunn
     };
     signal.throwIfAborted();
     const lease = await this.#leases.acquire(randomUUID(), {
+      accountId: input.accountId,
+      connectionId: connection.id,
+      authorizationRevision: `github:${connection.authorizationVersion}`,
+      fullName: target.fullName,
       installationId: target.installationId,
       repositoryId: target.repositoryId,
       permissions: { contents: "read" },

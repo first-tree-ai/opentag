@@ -135,7 +135,7 @@ function operations(
 ) {
   return new CloudContextTreeOperations({
     management: managementStub,
-    leases: { acquire: vi.fn(async () => ({ token: "ghs_test_token", release: vi.fn(async () => undefined) })) },
+    leases: { acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })) },
     computerKind: vi.fn(async () => "cloud" as const),
     workspace: { close: vi.fn(async () => undefined) } as unknown as GitWorkspace,
     treeHeads: verifier(),
@@ -179,7 +179,7 @@ describe("Cloud Context Tree connect", () => {
     expect(verify).toHaveBeenCalledWith(
       expect.objectContaining({ repositoryId: "777", ref: "refs/heads/master", signal: expect.any(AbortSignal) }),
     );
-    expect(remoteFactory).toHaveBeenCalledWith("acme/memory", "ghs_test_token");
+    expect(remoteFactory).toHaveBeenCalledWith("acme/memory", "ghu_scoped_test_token");
     expect(github.resolveRepository).toHaveBeenCalledWith({
       connectionId: row.id,
       fullName: "acme/memory",
@@ -521,7 +521,9 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
     const github = management(connection({ bindings: [binding({ fullNameDisplay: `acme/${name}` })] }));
     const cloud = new CloudContextTreeOperations({
       management: github,
-      leases: { acquire: vi.fn(async () => ({ token: "ghs_test_token", release: vi.fn(async () => undefined) })) },
+      leases: {
+        acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })),
+      },
       computerKind: async () => "cloud",
       workspace,
       remoteFactory: () => localRemote(origin),

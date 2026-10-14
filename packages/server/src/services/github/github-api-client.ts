@@ -1,9 +1,9 @@
 /*
- * Server-only GitHub user-facing API transport for the management plane.
+ * Server-only GitHub App user-token transport for connection and credential management.
  *
  * Speaks the official GitHub App user-authorization protocol only: the OAuth token endpoint on
  * https://github.com (code exchange with PKCE, refresh-token grant) and the REST API on
- * https://api.github.com (/user, user installations, installation repositories). Origins are fixed
+ * https://api.github.com (user identity, installations, repository scope and token management). Origins are fixed
  * by construction — no caller can supply a URL, a Host, or extra headers — and every call is
  * bounded in time and response size, refuses redirects, and never reads an error body into an
  * exception. Errors carry a controlled code, an optional HTTP status, and an optional bounded
@@ -14,6 +14,8 @@
  * client refuses (GITHUB_TOKEN_LIFETIME_UNSUPPORTED) rather than persisting an unmaintainable
  * credential.
  */
+
+import type { GitHubRepositoryTokenPermissions } from "./user-token-types.js";
 
 const GITHUB_OAUTH_ORIGIN = "https://github.com";
 const GITHUB_API_ORIGIN = "https://api.github.com";
@@ -280,7 +282,7 @@ function parseTotalCount(value: unknown): number {
 
 /**
  * The bounded user-token transport for one configured App. The client secret leaves this class
- * only inside a request body to the fixed GitHub OAuth origin; it is never logged or serialized.
+ * only to fixed GitHub origins for OAuth or token management; it is never logged or serialized.
  */
 export class GitHubApiClient {
   readonly #clientId: string;
@@ -393,6 +395,32 @@ export class GitHubApiClient {
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.fullName) || input.fullName.includes(".."))
       throw requestError("Invalid repository name");
     return parseRepository(await this.#sendApi("GET", `/repos/${input.fullName}`, input.accessToken, input.signal));
+  }
+
+  /** The scoped-token caller validates the attested identity, scope and expiry before use. */
+  async createScopedUserToken(input: {
+    accessToken: string;
+    target: string;
+    repositoryId: number;
+    permissions: GitHubRepositoryTokenPermissions;
+    signal?: AbortSignal;
+  }): Promise<unknown> {
+    return this.#sendTokenManagement(
+      "POST",
+      "/scoped",
+      {
+        access_token: parseToken(input.accessToken, "access token"),
+        target: input.target,
+        repository_ids: [input.repositoryId],
+        permissions: input.permissions,
+      },
+      input.signal,
+    );
+  }
+
+  /** Deletes this token only, never the user's authorization grant or refresh credential. */
+  async revokeUserToken(accessToken: string): Promise<void> {
+    await this.#sendTokenManagement("DELETE", "", { access_token: parseToken(accessToken, "access token") });
   }
 
   /** Installation membership probe; no repository catalog is returned or traversed. */
@@ -529,6 +557,28 @@ export class GitHubApiClient {
     });
   }
 
+  async #sendTokenManagement(
+    method: "POST" | "DELETE",
+    suffix: "" | "/scoped",
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return this.#send({
+      method,
+      url: `${GITHUB_API_ORIGIN}/applications/${encodeURIComponent(this.#clientId)}/token${suffix}`,
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Basic ${Buffer.from(`${this.#clientId}:${this.#clientSecret}`).toString("base64")}`,
+        "content-type": "application/json",
+        "user-agent": USER_AGENT,
+        "x-github-api-version": GITHUB_API_VERSION,
+      },
+      body: JSON.stringify(body),
+      signal,
+      expectedStatus: method === "DELETE" ? 204 : 200,
+    });
+  }
+
   async #sendApi(method: "GET", path: string, accessToken: string, signal?: AbortSignal): Promise<unknown> {
     return this.#send({
       method,
@@ -544,11 +594,12 @@ export class GitHubApiClient {
   }
 
   async #send(options: {
-    method: "GET" | "POST";
+    method: "GET" | "POST" | "DELETE";
     url: string;
     headers: Record<string, string>;
     body?: string;
     signal?: AbortSignal;
+    expectedStatus?: number;
   }): Promise<unknown> {
     const deadline = this.#startDeadline(options.signal);
     try {
@@ -576,6 +627,9 @@ export class GitHubApiClient {
         // The error body is never read: it is untrusted and cannot be assumed safe.
         void response.body?.cancel().catch(() => undefined);
         throw this.#classifyHttpError(response);
+      }
+      if (options.expectedStatus !== undefined && response.status !== options.expectedStatus) {
+        throw invalidResponse("The GitHub token endpoint returned an unexpected success status");
       }
       return await this.#readJson(response, deadline);
     } catch (error) {

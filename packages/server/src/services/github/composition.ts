@@ -18,8 +18,9 @@ import { GitHubCredentialRefreshStore } from "./github-refresh-store.js";
 import { GitHubWebhookService } from "./github-webhook.js";
 import { GitHubInstallationTokenClient } from "./installation-token-client.js";
 import { GitHubRepositoryAdmissionService } from "./repository-admission.js";
+import { GitHubUserTokenClient } from "./user-token-client.js";
 
-/** The management plane's configuration: the deployment App without its IAT-only private key. */
+/** The deployment App configuration for user OAuth and JWT-authenticated installation metadata. */
 export interface GitHubIntegrationConfig {
   appId: string;
   clientId: string;
@@ -34,6 +35,7 @@ export interface GitHubIntegrationComposition {
   management: GitHubManagementService;
   worker: GitHubMaintenanceWorker;
   webhook: GitHubWebhookService;
+  userTokens: GitHubUserTokenClient;
 }
 
 export function createGitHubIntegration(options: {
@@ -101,5 +103,13 @@ export function createGitHubIntegration(options: {
     recheckStore,
     now,
   });
-  return { management, worker, webhook };
+  const userTokens = new GitHubUserTokenClient({
+    api,
+    management,
+    clientId: options.config.clientId,
+    now,
+    onRevokeFailure: () =>
+      options.worker?.logger?.warn({ code: "user_token_revoke_failed" }, "GitHub user token cleanup failed"),
+  });
+  return { management, worker, webhook, userTokens };
 }

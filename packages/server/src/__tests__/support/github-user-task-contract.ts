@@ -13,11 +13,21 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import type { RuntimeProxyAuthorization } from "../../runtime-credentials/credential-broker.js";
+import { RuntimeExecutionRegistry } from "../../runtime-credentials/execution-registry.js";
+import type { ProviderProxyRequest } from "../../runtime-credentials/provider-proxy-adapter.js";
 import { DatabaseAgentOwnerResolver } from "../../services/agents/agent-self-service.js";
 import type { GitHubManagementService } from "../../services/github/github-management-service.js";
+import { GitHubProxyApiTransport, jsonBody } from "../../services/github-proxy/api-transport.js";
+import { GitPublicationGuard } from "../../services/github-proxy/git-publication.js";
+import { GitReadTransport } from "../../services/github-proxy/git-read-transport.js";
+import { GitWorkspace } from "../../services/github-proxy/git-workspace.js";
+import { GitHubProviderAdapter } from "../../services/github-proxy/github-provider-adapter.js";
 import { GitHubRuntimePolicy } from "../../services/github-proxy/runtime-policy.js";
+import { GitHubUserTokenLeases } from "../../services/github-proxy/user-token-leases.js";
 import { ScheduleScheduler } from "../../services/schedules/scheduler.js";
 import { ScheduleService } from "../../services/schedules/service.js";
+import { scopedUserPayload, USER_TOKEN_NOW, userTokenFixture } from "./github-user-token-fixture.js";
 
 /** Reused against embedded PostgreSQL and real PostgreSQL; no query-builder mocks. */
 export function githubUserTaskContract(database: () => DatabaseClient) {
@@ -145,7 +155,161 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       });
       return { kind: "session-message" as const, messageId: id };
     }
-    return { db, policy, source, account, agent, message, delivery, session, target, admit, collaboration };
+    return { db, policy, source, account, agent, message, delivery, session, target, admit, collaboration, connection };
+  }
+
+  async function executeAsUser(
+    f: Awaited<ReturnType<typeof fixture>>,
+    origin: "local" | "cloud",
+    sessionId: string,
+    source: RuntimeExecutionSource,
+    userId: string,
+    denied = false,
+  ) {
+    const tokens = userTokenFixture();
+    const child = `ghu_scoped_user_${userId}`;
+    f.connection.githubUserId = userId;
+    tokens.setPayload(scopedUserPayload(child, userId, { contents: "read", pull_requests: "read", metadata: "read" }));
+    tokens.management.getExecutionUserCredential.mockImplementation(async (input) =>
+      input.accountId === f.account.id &&
+      input.connectionId === f.connection.id &&
+      input.authorizationRevision === "github:7"
+        ? {
+            accessToken: `ghu_parent_${userId}`,
+            githubUserId: userId,
+            credentialGeneration: 3n,
+            accessExpiresAt: new Date(USER_TOKEN_NOW.getTime() + 8 * 3_600_000),
+          }
+        : null,
+    );
+    const executions = new RuntimeExecutionRegistry();
+    const record = executions.open({
+      runId: randomUUID(),
+      accountId: f.account.id,
+      agentId: f.agent.id,
+      agentRevision: 1,
+      sessionId,
+      computerId: randomUUID(),
+      instanceId: randomUUID(),
+      connectionId: randomUUID(),
+      placementGeneration: 1,
+      source,
+      purpose: "execution",
+      computerKind: origin,
+      providers: new Map(),
+    });
+    const policy = new GitHubRuntimePolicy({
+      database: f.db,
+      execution: executions,
+      management: {
+        getOverview: async () => ({ connection: f.connection }),
+        resolveRepository: async () => ({
+          repositoryId: "123",
+          installationId: "456",
+          fullName: "owner/repository",
+          defaultBranch: "main",
+          authorizationVersion: 7n,
+          credentialGeneration: 3n,
+        }),
+      } as unknown as GitHubManagementService,
+    });
+    const authorization: RuntimeProxyAuthorization = {
+      executionId: record.executionId,
+      sessionId,
+      accountId: f.account.id,
+      agentId: f.agent.id,
+      bindingId: f.connection.id,
+      provider: "github",
+      purpose: "execution",
+      scopeHash: "a".repeat(64),
+      authorizationRevision: "github:7",
+      credentialGeneration: "3",
+      cli: { provider: "github", connectionId: f.connection.id, authority: "user-task" },
+      recheck: async () => {
+        if (!(await policy.admit({ ...record, source }))) throw new Error("Task no longer admitted");
+      },
+      resolveMaterial: async () => {
+        throw new Error("No raw material goes to runtime");
+      },
+    };
+    const upstream = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${child}`);
+      return Response.json({ id: 123, full_name: "owner/repository", default_branch: "main" });
+    });
+    const workspace = new GitWorkspace();
+    const adapter = new GitHubProviderAdapter({
+      policy,
+      leases: new GitHubUserTokenLeases(tokens.client),
+      api: new GitHubProxyApiTransport(upstream),
+      reads: new GitReadTransport({ workspace }),
+      publication: new GitPublicationGuard({ workspace }),
+    });
+    const request: ProviderProxyRequest = {
+      executionId: record.executionId,
+      sessionId,
+      provider: "github",
+      bindingId: f.connection.id,
+      method: "GET",
+      path: "/repos/owner/repository",
+      headers: { "x-opentag-provider-origin": "api.github.com" },
+      body: jsonBody(null),
+      capability: "fixture-capability",
+      capabilityTtlSeconds: 60,
+      signal: new AbortController().signal,
+    };
+    try {
+      if (denied) {
+        await expect(adapter.handle(request, authorization)).rejects.toMatchObject({ code: "scope_denied" });
+        expect(tokens.fetch).not.toHaveBeenCalled();
+        expect(upstream).not.toHaveBeenCalled();
+        return;
+      }
+      const response = await adapter.handle(request, authorization);
+      for await (const _chunk of response.body) {
+        /* consume the bounded response */
+      }
+      expect(response.status).toBe(200);
+      expect(tokens.calls[0]?.body).toMatchObject({ access_token: `ghu_parent_${userId}`, repository_ids: [123] });
+      expect(tokens.calls.at(-1)?.body).toEqual({ access_token: child });
+      expect(upstream).toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+      await workspace.close();
+    }
+  }
+
+  async function collaborationPeer(f: Awaited<ReturnType<typeof fixture>>) {
+    const [agent] = await f.db
+      .insert(agents)
+      .values({ createdByUserId: f.account.id, name: "peer", displayName: "Peer", runtimeProvider: "codex" })
+      .returning();
+    if (!agent) throw new Error("Peer missing");
+    const [binding] = await f.db
+      .insert(imBindings)
+      .values({
+        agentId: agent.id,
+        provider: "feishu",
+        status: "active",
+        externalAppId: `app_${randomUUID()}`,
+        externalBotId: "ou_peer",
+        credentialSchemaVersion: 1,
+        credentialGeneration: 1,
+        encryptedCredential: "fixture",
+        activatedAt: new Date(),
+      })
+      .returning();
+    if (!binding) throw new Error("Peer binding missing");
+    const [session] = await f.db
+      .insert(sessions)
+      .values({ imBindingId: binding.id, channelId: "peer", conversationKind: "channel", kind: "channel" })
+      .returning();
+    if (!session) throw new Error("Peer Session missing");
+    const source = await f.collaboration(true);
+    await f.db
+      .update(sessionMessages)
+      .set({ targetSessionId: session.id })
+      .where(eq(sessionMessages.id, source.messageId));
+    return { agent, session, source };
   }
 
   async function schedules(f: Awaited<ReturnType<typeof fixture>>, userTaskSource?: RuntimeUserTaskSource) {
@@ -204,6 +368,60 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
   }
 
   describe.each(["local", "cloud"] as const)("%s GitHub user-task SQL authority", (origin) => {
+    it.each(["im", "schedule", "collaboration"] as const)(
+      "executes %s through each owning user's token on one shared installation",
+      async (kind) => {
+        for (const userId of ["42", "43"]) {
+          const f = await fixture(origin);
+          let acting = f;
+          let sessionId = f.session.id;
+          let source: RuntimeExecutionSource = f.source;
+          if (kind === "collaboration") {
+            const peer = await collaborationPeer(f);
+            source = peer.source;
+            sessionId = peer.session.id;
+            acting = { ...f, agent: peer.agent };
+          }
+          if (kind === "schedule") {
+            const h = await schedules(f, { sessionId: f.session.id, source: f.source });
+            const created = await h.create();
+            const task = await h.dispatch(created.id);
+            sessionId = task.sessionId;
+            source = task.source;
+          }
+          await executeAsUser(acting, origin, sessionId, source, userId);
+        }
+      },
+    );
+    it.each(["bot", "autonomous schedule", "cross-account collaboration"] as const)(
+      "does not mint a user token for %s",
+      async (kind) => {
+        const f = await fixture(origin);
+        let acting = f;
+        let sessionId = f.session.id;
+        let source: RuntimeExecutionSource = f.source;
+        if (kind === "bot")
+          await f.db.update(imMessages).set({ authorKind: "bot" }).where(eq(imMessages.id, f.message.id));
+        if (kind === "autonomous schedule") {
+          const h = await schedules(f);
+          const created = await h.create();
+          const task = await h.dispatch(created.id);
+          sessionId = task.sessionId;
+          source = task.source;
+        }
+        if (kind === "cross-account collaboration") {
+          const other = await fixture(origin);
+          source = await f.collaboration(true);
+          acting = other;
+          sessionId = other.session.id;
+          await f.db
+            .update(sessionMessages)
+            .set({ targetSessionId: sessionId })
+            .where(eq(sessionMessages.id, source.messageId));
+        }
+        await executeAsUser(acting, origin, sessionId, source, "42", true);
+      },
+    );
     it("admits accepted human ingress and refuses bot, account, Agent, Session and source substitutions", async () => {
       const f = await fixture(origin);
       expect(await f.admit()).toBeDefined();

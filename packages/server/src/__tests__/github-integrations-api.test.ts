@@ -270,6 +270,54 @@ async function activeConnection(fixture: Awaited<ReturnType<typeof appFixture>>,
   return row;
 }
 
+describe("Server-only GitHub execution credential", () => {
+  it("opens only the owning current authorization and never exposes refresh material", async () => {
+    const f = await appFixture({ withManagement: true });
+    const row = await activeConnection(f);
+    const input = {
+      accountId: f.owner.id,
+      connectionId: row.id,
+      authorizationRevision: `github:${row.authorizationVersion}`,
+    };
+    const credential = await f.management?.getExecutionUserCredential(input);
+    expect(credential).toMatchObject({ githubUserId: GITHUB_USER_ONE, accessToken: tokenMaterial().accessToken });
+    expect(credential).not.toHaveProperty("refreshToken");
+    expect(await f.management?.getExecutionUserCredential({ ...input, accountId: f.other.id })).toBeNull();
+    expect(
+      await f.management?.getExecutionUserCredential({ ...input, authorizationRevision: "github:999" }),
+    ).toBeNull();
+    await unit.database
+      .update(githubConnections)
+      .set({ authorizationVersion: row.authorizationVersion + 1n })
+      .where(eq(githubConnections.id, row.id));
+    expect(await f.management?.getExecutionUserCredential(input)).toBeNull();
+  });
+
+  it("reads routine rotated material without admitting an expired or disconnected connection", async () => {
+    const f = await appFixture({ withManagement: true });
+    const row = await activeConnection(f);
+    const input = {
+      accountId: f.owner.id,
+      connectionId: row.id,
+      authorizationRevision: `github:${row.authorizationVersion}`,
+    };
+    await unit.database
+      .update(githubConnections)
+      .set({ credentialGeneration: row.credentialGeneration + 1n })
+      .where(eq(githubConnections.id, row.id));
+    expect(await f.management?.getExecutionUserCredential(input)).toMatchObject({
+      credentialGeneration: row.credentialGeneration + 1n,
+    });
+    await unit.database
+      .update(githubConnections)
+      .set({ accessExpiresAt: new Date(NOW.getTime() - 1_000) })
+      .where(eq(githubConnections.id, row.id));
+    expect(await f.management?.getExecutionUserCredential(input)).toBeNull();
+    await f.management?.disconnect(f.owner.id);
+    expect(await f.management?.getExecutionUserCredential(input)).toBeNull();
+  });
+});
+
 async function createAgent(accountId: string, name = "reviewer") {
   const { agents } = await import("../db/schema/index.js");
   const [agent] = await unit.database

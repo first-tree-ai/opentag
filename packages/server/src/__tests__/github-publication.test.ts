@@ -161,6 +161,9 @@ describe("trusted Git publication", () => {
     expect(result.toString()).toContain(`ok ${ref}`);
     expect(upstream.publishCalls).toBe(1);
     expect(await git(remote, ["rev-parse", ref])).toBe(newSha);
+    expect(await git(remote, ["show", "-s", "--format=%an|%ae|%cn|%ce", ref])).toBe(
+      await git(source, ["show", "-s", "--format=%an|%ae|%cn|%ce", newSha]),
+    );
     expect(await leftoverStaging()).toEqual([]);
   });
 

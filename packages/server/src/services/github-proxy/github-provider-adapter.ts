@@ -27,9 +27,9 @@ import type { GitReadTransport } from "./git-read-transport.js";
 import { GitHubPublicationRemote } from "./git-remote.js";
 import { handleGitSmartHttp } from "./git-smart-http.js";
 import { type GitHubGraphqlPlan, planGitHubGraphql } from "./graphql-policy.js";
-import type { GitHubIatLeases } from "./iat-leases.js";
 import { GitHubNodeStore } from "./node-store.js";
 import { constrainTreeGraphql } from "./tree-graphql-policy.js";
+import type { GitHubUserTokenLeases } from "./user-token-leases.js";
 import type { VerifiedTreeHead } from "./verified-tree-head.js";
 
 const GraphqlRequest = z
@@ -50,14 +50,14 @@ interface ApiContext {
 }
 export interface GitHubProviderAdapterOptions {
   policy: GitHubExecutionPolicy;
-  leases: GitHubIatLeases;
+  leases: GitHubUserTokenLeases;
   reads: GitReadTransport;
   publication: GitPublicationGuard;
   api?: GitHubProxyApiTransport;
   treeHeads?: VerifiedTreeHead;
 }
 
-/** One policy gateway for native Git smart HTTP, gh REST, and gh GraphQL. Only IAT reaches GitHub. */
+/** One user-identity gateway for native Git smart HTTP, gh REST, and gh GraphQL. */
 export class GitHubProviderAdapter implements ProviderProxyAdapter {
   readonly #options: GitHubProviderAdapterOptions;
   readonly #api: GitHubProxyApiTransport;
@@ -122,6 +122,10 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     if (write && !repository.scopes.some((scope) => scope.access === "write" && scope.publish === "pull_request"))
       throw new GitPublicationError("scope_denied");
     const lease = await this.#options.leases.acquire(request.executionId, {
+      accountId: authorization.accountId,
+      connectionId: authorization.bindingId,
+      authorizationRevision: authorization.authorizationRevision,
+      fullName: repository.fullName,
       installationId: repository.installationId,
       repositoryId: repository.repositoryId,
       signal: request.signal,
@@ -208,6 +212,10 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     });
     const write = plan.operation !== "read";
     const lease = await this.#options.leases.acquire(request.executionId, {
+      accountId: authorization.accountId,
+      connectionId: authorization.bindingId,
+      authorizationRevision: authorization.authorizationRevision,
+      fullName: repository.fullName,
       installationId: repository.installationId,
       repositoryId: repository.repositoryId,
       permissions: { contents: "read", pull_requests: write ? "write" : "read" },

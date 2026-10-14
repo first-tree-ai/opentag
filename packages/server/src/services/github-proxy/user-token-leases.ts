@@ -1,24 +1,22 @@
-import type {
-  GitHubInstallationTokenClient,
-  MintGitHubInstallationTokenInput,
-} from "../github/installation-token-client.js";
+import type { GitHubUserTokenClient } from "../github/user-token-client.js";
+import type { GitHubUserTokenInput } from "../github/user-token-types.js";
 import { GitPublicationError } from "./git-packets.js";
 
-/** IATs are never serialized. Revocation covers in-flight mint completion and all execution exits. */
-export class GitHubIatLeases {
+/** Scoped user tokens are never serialized. Revocation covers in-flight mint completion and all execution exits. */
+export class GitHubUserTokenLeases {
   readonly #active = new Map<string, Set<{ token?: string; revoked: boolean }>>();
   readonly #pending = new Set<Promise<unknown>>();
   readonly #revoking = new Set<Promise<void>>();
   #closed = false;
   constructor(
-    readonly client: Pick<GitHubInstallationTokenClient, "mint" | "revoke">,
+    readonly client: Pick<GitHubUserTokenClient, "mint" | "revoke">,
     readonly onRevokeFailure: () => void = () => {
-      process.stderr.write("GitHub installation token revocation failed\n");
+      process.stderr.write("GitHub scoped user token revocation failed\n");
     },
   ) {}
   async acquire(
     executionId: string,
-    input: MintGitHubInstallationTokenInput,
+    input: GitHubUserTokenInput,
   ): Promise<{ token: string; release(): Promise<void> }> {
     if (this.#closed || this.#active.size >= 256) throw new GitPublicationError("resource_limit");
     const entries = this.#active.get(executionId) ?? new Set();

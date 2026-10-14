@@ -1,24 +1,9 @@
-/*
- * Server-only GitHub App installation-token client.
- *
- * Mints and revokes GitHub App installation access tokens scoped to exactly one repository with a
- * minimal, explicit permission set. The App private key stays on the Server and the signed JWT
- * goes only to GitHub: this adapter has no public route, is not an authorization broker, and never falls
- * back to PATs, user tokens, or ambient credentials. Errors deliberately carry no upstream URLs,
- * headers, bodies, key material, JWTs, or tokens — only a controlled code, an optional HTTP
- * status, and a bounded rate-limit classification.
- */
+/** Server-only App JWT metadata transport. Repository execution uses scoped user tokens. */
 
 import { createPrivateKey, type KeyObject, sign as rsaSign } from "node:crypto";
 import { parseGitHubInstallation } from "./github-api-client.js";
 
-import {
-  type GitHubInstallationTokenClientOptions,
-  GitHubInstallationTokenError,
-  type GitHubInstallationTokenPermissions,
-  type MintedGitHubInstallationToken,
-  type MintGitHubInstallationTokenInput,
-} from "./installation-token-types.js";
+import { type GitHubInstallationTokenClientOptions, GitHubInstallationTokenError } from "./installation-token-types.js";
 
 export * from "./installation-token-types.js";
 
@@ -29,18 +14,9 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 65_536;
 const JWT_IAT_BACKDATE_SECONDS = 60;
 const JWT_TTL_SECONDS = 600;
-const RENEWAL_SAFETY_WINDOW_MS = 5 * 60 * 1_000;
-const MAX_EXPIRY_HORIZON_MS = 24 * 60 * 60 * 1_000;
-const MAX_TOKEN_LENGTH = 4_096;
 const MAX_RETRY_AFTER_SECONDS = 3_600;
 const MIN_RSA_MODULUS_BITS = 2_048;
 const DECIMAL_ID_PATTERN = /^[1-9]\d{0,18}$/;
-const TOKEN_PATTERN = /^[-A-Za-z0-9._~+/]+=*$/;
-const PERMISSION_LEVELS = new Map<string, number>([
-  ["read", 1],
-  ["write", 2],
-]);
-const PERMISSION_KEYS = new Set(["contents", "pull_requests", "checks", "actions"]);
 
 type RequestDeadline = {
   signal: AbortSignal;
@@ -51,7 +27,7 @@ type RequestDeadline = {
 };
 
 type SendOptions = {
-  method: "GET" | "POST" | "DELETE";
+  method: "GET";
   path: string;
   authorization: string;
   body?: string;
@@ -70,71 +46,11 @@ function invalidResponseError(message: string): GitHubInstallationTokenError {
   return new GitHubInstallationTokenError("GITHUB_API_RESPONSE_INVALID", message);
 }
 
-function assertSuccessStatus(response: Response, method: SendOptions["method"]): void {
-  const expected = method === "GET" ? 200 : method === "POST" ? 201 : 204;
+function assertSuccessStatus(response: Response): void {
+  const expected = 200;
   if (response.status !== expected) {
     throw invalidResponseError("The GitHub API returned an unexpected success status");
   }
-}
-
-function tokenValidationError(message: string): GitHubInstallationTokenError {
-  return new GitHubInstallationTokenError("GITHUB_TOKEN_VALIDATION_FAILED", message);
-}
-
-function parseDecimalId(value: unknown, field: string): string {
-  if (typeof value !== "string" || !DECIMAL_ID_PATTERN.test(value)) {
-    throw requestError(`${field} must be a positive decimal identifier`);
-  }
-  return value;
-}
-
-function parseRepositoryId(value: unknown): number {
-  const text = parseDecimalId(value, "repositoryId");
-  const id = Number(text);
-  if (!Number.isSafeInteger(id)) {
-    throw requestError("repositoryId is outside the safe integer range");
-  }
-  return id;
-}
-
-function validatePermissions(input: unknown): GitHubInstallationTokenPermissions {
-  const record = requirePermissionRecord(input);
-  const contents = requirePermissionLevel(record.contents, "permissions.contents");
-  const pullRequests = optionalPermissionLevel(record.pull_requests, "permissions.pull_requests");
-  const checks = optionalReadOnlyPermission(record.checks, "checks");
-  const actions = optionalReadOnlyPermission(record.actions, "actions");
-  return {
-    contents,
-    ...(pullRequests === undefined ? {} : { pull_requests: pullRequests }),
-    ...(checks === undefined ? {} : { checks }),
-    ...(actions === undefined ? {} : { actions }),
-  };
-}
-
-function requirePermissionRecord(input: unknown): Record<string, unknown> {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    throw requestError("permissions must be an object with an explicit contents level");
-  }
-  const record = input as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    if (!PERMISSION_KEYS.has(key)) throw requestError("permissions contains an unsupported key");
-  }
-  return record;
-}
-
-function requirePermissionLevel(value: unknown, field: string): "read" | "write" {
-  if (value !== "read" && value !== "write") throw requestError(`${field} must be read or write`);
-  return value;
-}
-
-function optionalPermissionLevel(value: unknown, field: string): "read" | "write" | undefined {
-  return value === undefined ? undefined : requirePermissionLevel(value, field);
-}
-
-function optionalReadOnlyPermission(value: unknown, field: string): "read" | undefined {
-  if (value === undefined) return undefined;
-  if (value !== "read") throw requestError(`${field} only supports read access`);
-  return "read";
 }
 
 function parsePrivateKey(pem: string): KeyObject {
@@ -156,85 +72,6 @@ function parsePrivateKey(pem: string): KeyObject {
 
 function base64UrlJson(value: unknown): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
-}
-
-function extractToken(payload: unknown): string | undefined {
-  if (typeof payload !== "object" || payload === null) return undefined;
-  const token = (payload as Record<string, unknown>).token;
-  if (typeof token !== "string" || token.length > MAX_TOKEN_LENGTH || !TOKEN_PATTERN.test(token)) return undefined;
-  return token;
-}
-
-function assertRepositoryScope(repositories: unknown, repositoryId: number): void {
-  if (repositories === undefined) {
-    throw tokenValidationError("The GitHub API returned a token without repository scoping");
-  }
-  if (!Array.isArray(repositories)) {
-    throw invalidResponseError("The GitHub API response repository list is malformed");
-  }
-  if (repositories.length !== 1) {
-    throw tokenValidationError("The GitHub API returned a token scoped to unexpected repositories");
-  }
-  const entry: unknown = repositories[0];
-  if (typeof entry !== "object" || entry === null) {
-    throw invalidResponseError("The GitHub API response repository entry is malformed");
-  }
-  const id = (entry as Record<string, unknown>).id;
-  if (typeof id !== "number" || !Number.isSafeInteger(id)) {
-    throw invalidResponseError("The GitHub API response repository id is not a safe integer");
-  }
-  if (id !== repositoryId) {
-    throw tokenValidationError("The GitHub API returned a token scoped to a different repository");
-  }
-}
-
-function assertPermissionGrantContained(key: string, value: unknown, requestedLevels: Record<string, number>): void {
-  const level = typeof value === "string" ? PERMISSION_LEVELS.get(value) : undefined;
-  if (level === undefined) {
-    throw tokenValidationError("The GitHub API returned a token with an unrecognized permission level");
-  }
-  const allowed =
-    key === "metadata"
-      ? PERMISSION_LEVELS.get("read")
-      : Object.hasOwn(requestedLevels, key)
-        ? requestedLevels[key]
-        : undefined;
-  if (allowed === undefined || level > allowed) {
-    throw tokenValidationError("The GitHub API returned a token with broader permissions than requested");
-  }
-}
-
-function assertPermissionsContained(permissions: unknown, requestedLevels: Record<string, number>): void {
-  if (permissions === undefined) {
-    throw tokenValidationError("The GitHub API returned a token without a permission grant");
-  }
-  if (typeof permissions !== "object" || permissions === null || Array.isArray(permissions)) {
-    throw invalidResponseError("The GitHub API response permissions are malformed");
-  }
-  const granted = permissions as Record<string, unknown>;
-  for (const key of Object.keys(requestedLevels)) {
-    if (!Object.hasOwn(granted, key)) {
-      throw tokenValidationError("The GitHub API returned a token missing a requested permission");
-    }
-  }
-  for (const [key, value] of Object.entries(granted)) {
-    assertPermissionGrantContained(key, value, requestedLevels);
-  }
-}
-
-function parseExpiry(value: unknown, nowMs: number): Date {
-  if (typeof value !== "string") {
-    throw invalidResponseError("The GitHub API response is missing a token expiry");
-  }
-  const expiryMs = Date.parse(value);
-  if (!Number.isFinite(expiryMs)) {
-    throw invalidResponseError("The GitHub API response token expiry is malformed");
-  }
-  const lifetimeMs = expiryMs - nowMs;
-  if (lifetimeMs < RENEWAL_SAFETY_WINDOW_MS || lifetimeMs > MAX_EXPIRY_HORIZON_MS) {
-    throw tokenValidationError("The GitHub API returned a token with an unusable expiry");
-  }
-  return new Date(expiryMs);
 }
 
 function boundedSeconds(value: number): number {
@@ -354,53 +191,6 @@ export class GitHubInstallationTokenClient {
     return installation;
   }
 
-  async mint(input: MintGitHubInstallationTokenInput): Promise<MintedGitHubInstallationToken> {
-    const installationId = parseDecimalId(input.installationId, "installationId");
-    const repositoryId = parseRepositoryId(input.repositoryId);
-    const permissions = validatePermissions(input.permissions);
-    const requestedLevels: Record<string, number> = { contents: PERMISSION_LEVELS.get(permissions.contents) ?? 0 };
-    if (permissions.pull_requests !== undefined) {
-      requestedLevels.pull_requests = PERMISSION_LEVELS.get(permissions.pull_requests) ?? 0;
-    }
-    if (permissions.checks) requestedLevels.checks = 1;
-    if (permissions.actions) requestedLevels.actions = 1;
-
-    const payload = await this.#send({
-      method: "POST",
-      path: `/app/installations/${installationId}/access_tokens`,
-      authorization: `Bearer ${this.#createJwt()}`,
-      body: JSON.stringify({ repository_ids: [repositoryId], permissions }),
-      signal: input.signal,
-    });
-
-    const token = extractToken(payload);
-    try {
-      if (token === undefined) {
-        throw invalidResponseError("The GitHub API response did not include an installation token");
-      }
-      if (typeof payload !== "object" || payload === null) {
-        throw invalidResponseError("The GitHub API response is malformed");
-      }
-      const record = payload as Record<string, unknown>;
-      assertRepositoryScope(record.repositories, repositoryId);
-      assertPermissionsContained(record.permissions, requestedLevels);
-      const expiresAt = parseExpiry(record.expires_at, this.#now().getTime());
-      return { token, expiresAt };
-    } catch (error) {
-      // A token that failed validation must not be left usable: revoke it best-effort without
-      // ever replacing the original failure.
-      if (token !== undefined) await this.revoke(token).catch(() => undefined);
-      throw error;
-    }
-  }
-
-  async revoke(token: string, signal?: AbortSignal): Promise<void> {
-    if (typeof token !== "string" || token.length > MAX_TOKEN_LENGTH || !TOKEN_PATTERN.test(token)) {
-      throw requestError("The installation token to revoke is invalid");
-    }
-    await this.#send({ method: "DELETE", path: "/installation/token", authorization: `Bearer ${token}`, signal });
-  }
-
   #createJwt(): string {
     const issuedAt = Math.floor(this.#now().getTime() / 1_000) - JWT_IAT_BACKDATE_SECONDS;
     const signingInput = `${base64UrlJson({ alg: "RS256", typ: "JWT" })}.${base64UrlJson({
@@ -489,7 +279,7 @@ export class GitHubInstallationTokenClient {
         void response.body?.cancel().catch(() => undefined);
         throw classifyHttpError(response, Math.floor(this.#now().getTime() / 1_000));
       }
-      assertSuccessStatus(response, options.method);
+      assertSuccessStatus(response);
       return await this.#readJson(response, deadline);
     } catch (error) {
       if (error instanceof GitHubInstallationTokenError) throw error;

@@ -75,7 +75,7 @@ class Socket extends EventEmitter {
   }
 }
 
-/** Production broker, target policy, Git adapter and data transport; no public network or real IAT. */
+/** Production broker, target policy, Git adapter and data transport; no public network or real user token. */
 describe.each(["local", "cloud"] as const)("%s GitHub stream target authority", (origin) => {
   it.each(["preparing", "streaming", "credit"] as const)(
     "cancels revoked repository access while %s and releases the lease",
@@ -195,7 +195,7 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream target authority", 
           return handleGitSmartHttp(
             {
               policy,
-              leases: { acquire: async () => ({ token: "fake-iat", release }) } as never,
+              leases: { acquire: async () => ({ token: "ghu_scoped_stream_token", release }) } as never,
               publication: {} as never,
               metadata: async () => ({ id: 22, full_name: "owner/repo", default_branch: "main" }),
               reads: {

@@ -1,4 +1,5 @@
 import { gitHubConnectionColumns } from "./rows.js";
+import type { GitHubExecutionUserCredential } from "./user-token-types.js";
 /* Account connection management and Server-only, per-target user/App admission. */
 
 import type {
@@ -62,6 +63,7 @@ export class GitHubManagementService {
   readonly #oauth: GitHubOAuthService;
   readonly #admission: GitHubRepositoryAdmissionService;
   readonly #cipher: GitHubCredentialCipher;
+  readonly #now: () => Date;
 
   constructor(options: GitHubManagementServiceOptions) {
     this.#database = options.database;
@@ -70,6 +72,7 @@ export class GitHubManagementService {
     this.#oauth = options.oauth;
     this.#admission = options.admission;
     this.#cipher = options.cipher;
+    this.#now = options.now ?? (() => new Date());
   }
 
   /** The Account's overview: the current connection for the configured App, or null. */
@@ -162,6 +165,30 @@ export class GitHubManagementService {
       accessExpiresAt: row.accessExpiresAt,
       refreshExpiresAt: row.refreshExpiresAt,
       authorizationVersion: row.authorizationVersion,
+      credentialGeneration: row.credentialGeneration,
+    };
+  }
+
+  /** Minimal Server-only credential; refresh material never enters the execution transport. */
+  async getExecutionUserCredential(input: {
+    accountId: string;
+    connectionId: string;
+    authorizationRevision: string;
+  }): Promise<GitHubExecutionUserCredential | null> {
+    const row = await this.#readActiveCredentialRow(input.connectionId);
+    if (
+      !row ||
+      row.accountId !== input.accountId ||
+      row.appId !== this.#appId ||
+      row.githubHost !== "github.com" ||
+      `github:${row.authorizationVersion}` !== input.authorizationRevision ||
+      row.accessExpiresAt.getTime() <= this.#now().getTime()
+    )
+      return null;
+    return {
+      accessToken: this.#decrypt(row).accessToken,
+      githubUserId: row.githubUserId,
+      accessExpiresAt: row.accessExpiresAt,
       credentialGeneration: row.credentialGeneration,
     };
   }

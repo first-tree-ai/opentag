@@ -30,6 +30,10 @@ export async function handleGitSmartHttp(
   const scopes = publicationScopes(repository, authorization.sessionId);
   if (service === "git-receive-pack" && !scopes.length) throw new GitPublicationError("scope_denied");
   const lease = await options.leases.acquire(request.executionId, {
+    accountId: authorization.accountId,
+    connectionId: authorization.bindingId,
+    authorizationRevision: authorization.authorizationRevision,
+    fullName: repository.fullName,
     installationId: repository.installationId,
     repositoryId: repository.repositoryId,
     permissions: { contents: service === "git-receive-pack" && !advertise ? "write" : "read" },

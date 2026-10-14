@@ -19,13 +19,12 @@ import { AuthServiceError } from "./services/auth/index.js";
 import type { ComputerAuthContext, ComputerAuthVerifier } from "./services/computers/index.js";
 import type { ApplicationCipher } from "./services/crypto.js";
 import type { GitHubIntegrationComposition } from "./services/github/composition.js";
-import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitPublicationGuard } from "./services/github-proxy/git-publication.js";
 import { GitReadTransport } from "./services/github-proxy/git-read-transport.js";
 import { GitWorkspace } from "./services/github-proxy/git-workspace.js";
 import { GitHubProviderAdapter } from "./services/github-proxy/github-provider-adapter.js";
-import { GitHubIatLeases } from "./services/github-proxy/iat-leases.js";
 import { GitHubRuntimePolicy } from "./services/github-proxy/runtime-policy.js";
+import { GitHubUserTokenLeases } from "./services/github-proxy/user-token-leases.js";
 import { VerifiedTreeHead } from "./services/github-proxy/verified-tree-head.js";
 
 /**
@@ -90,7 +89,7 @@ export async function createPlatformRuntime(options: {
     : undefined;
   let workspace: GitWorkspace | undefined;
   let github: GitHubProviderAdapter | undefined;
-  if (policy && options.config.githubApp) {
+  if (policy && options.github) {
     // Ephemeral Git staging: the exclusive temporary root is created lazily on the first Git
     // operation and removed on close. Construction itself performs no filesystem writes; a
     // partial-construction failure disposes anything already created.
@@ -99,8 +98,8 @@ export async function createPlatformRuntime(options: {
       const staging = workspace;
       github = new GitHubProviderAdapter({
         policy,
-        leases: new GitHubIatLeases(new GitHubInstallationTokenClient(options.config.githubApp), () =>
-          options.logger?.warn({ code: "iat_revoke_failed" }, "GitHub installation token revocation failed"),
+        leases: new GitHubUserTokenLeases(options.github.userTokens, () =>
+          options.logger?.warn({ code: "user_token_revoke_failed" }, "GitHub user token revocation failed"),
         ),
         reads: new GitReadTransport({ workspace: staging }),
         publication: new GitPublicationGuard({ workspace: staging }),
@@ -142,7 +141,7 @@ export async function createPlatformRuntime(options: {
     policy?.forgetExecution(executionId);
     void github
       ?.closeExecution(executionId)
-      .catch(() => options.logger?.warn({ code: "iat_revoke_failed" }, "GitHub credential cleanup failed"));
+      .catch(() => options.logger?.warn({ code: "user_token_revoke_failed" }, "GitHub credential cleanup failed"));
   });
   return {
     credentials,

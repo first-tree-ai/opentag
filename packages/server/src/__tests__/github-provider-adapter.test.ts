@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../runtime-credentials/provider-proxy-adapter.js";
-import type { GitHubInstallationTokenClient } from "../services/github/installation-token-client.js";
+import type { GitHubUserTokenClient } from "../services/github/user-token-client.js";
 import { planGitHubRest } from "../services/github-proxy/api-policy.js";
 import { GitHubProxyApiTransport, jsonBody } from "../services/github-proxy/api-transport.js";
 import {
@@ -17,7 +17,7 @@ import { GitPublicationGuard } from "../services/github-proxy/git-publication.js
 import { GitReadTransport } from "../services/github-proxy/git-read-transport.js";
 import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
 import { GitHubProviderAdapter } from "../services/github-proxy/github-provider-adapter.js";
-import { GitHubIatLeases } from "../services/github-proxy/iat-leases.js";
+import { GitHubUserTokenLeases } from "../services/github-proxy/user-token-leases.js";
 import type { VerifiedTreeHead } from "../services/github-proxy/verified-tree-head.js";
 import type { GitHubAgentScope } from "./support/legacy-github-fixtures.js";
 
@@ -26,9 +26,9 @@ let workspace: GitWorkspace, adapter: GitHubProviderAdapter, repository: GitHubE
 let extra: GitHubProviderAdapter[];
 let authorization: RuntimeProxyAuthorization;
 let upstream: ReturnType<typeof vi.fn<typeof fetch>>;
-let mint: ReturnType<typeof vi.fn<GitHubInstallationTokenClient["mint"]>>,
-  revoke: ReturnType<typeof vi.fn<GitHubInstallationTokenClient["revoke"]>>;
-const iat = "ghs_test-installation-token";
+let mint: ReturnType<typeof vi.fn<GitHubUserTokenClient["mint"]>>,
+  revoke: ReturnType<typeof vi.fn<GitHubUserTokenClient["revoke"]>>;
+const iat = "ghu_test_user_token";
 const metadata = { id: 123, node_id: "R_test", full_name: "owner/repository", default_branch: "main" };
 let writeBehavior: "ok" | "lost" | "secret" | "empty" | "malformed" | "reject422" | "status503" | "status408";
 let writeCount: number;
@@ -87,7 +87,7 @@ beforeEach(async () => {
   });
   adapter = new GitHubProviderAdapter({
     policy: { resolve: async () => [repository] },
-    leases: new GitHubIatLeases({ mint, revoke }),
+    leases: new GitHubUserTokenLeases({ mint, revoke }),
     reads: new GitReadTransport({ workspace }),
     publication: new GitPublicationGuard({ workspace }),
     api: new GitHubProxyApiTransport(upstream),
@@ -131,7 +131,7 @@ function adapterFor(
   const target: GitHubExecutionRepository = input.scopes ? { ...repository, scopes: input.scopes } : repository;
   const built = new GitHubProviderAdapter({
     policy: { resolve: async () => [target] },
-    leases: new GitHubIatLeases({ mint, revoke }),
+    leases: new GitHubUserTokenLeases({ mint, revoke }),
     reads: (input.reads ?? new GitReadTransport({ workspace })) as GitReadTransport,
     publication: new GitPublicationGuard({ workspace }),
     ...(input.withApi === false ? {} : { api: new GitHubProxyApiTransport(upstream) }),
@@ -167,7 +167,7 @@ function pullBody() {
 }
 
 describe("production GitHub provider adapter", () => {
-  it("uses exactly one repository IAT before returning native REST output", async () => {
+  it("uses exactly one repository scoped user token before returning native REST output", async () => {
     expect(await responseJson(await adapter.handle(request("/repos/owner/repository"), authorization))).toEqual(
       metadata,
     );
@@ -281,7 +281,7 @@ describe("production GitHub provider adapter", () => {
     ).rejects.toMatchObject({ code: "write_outcome_unknown" });
     expect(writeCount).toBe(1);
   });
-  it("keeps the IAT alive through GraphQL mutation completion, with ID established by a scoped read", async () => {
+  it("keeps the scoped user token alive through GraphQL mutation completion, with ID established by a scoped read", async () => {
     await adapter.handle(request("/repos/owner/repository"), authorization);
     revoke.mockClear();
     const original = upstream.getMockImplementation();
@@ -382,7 +382,7 @@ describe("production GitHub provider adapter", () => {
     expect(writeCount).toBe(0);
   });
 
-  it("rejects stale authorization after asynchronous IAT mint before sending anything upstream", async () => {
+  it("rejects stale authorization after asynchronous scoped user token mint before sending anything upstream", async () => {
     authorization.recheck = async () => {
       throw new Error("revoked");
     };
@@ -460,13 +460,17 @@ describe("production GitHub provider adapter", () => {
   });
 });
 
-it("revokes an IAT that finishes minting after its execution was closed", async () => {
+it("revokes an scoped user token that finishes minting after its execution was closed", async () => {
   let resolveMint: ((value: { token: string; expiresAt: Date }) => void) | undefined;
   const pending = new Promise<{ token: string; expiresAt: Date }>((resolve) => {
     resolveMint = resolve;
   });
-  const leases = new GitHubIatLeases({ mint: async () => pending, revoke });
+  const leases = new GitHubUserTokenLeases({ mint: async () => pending, revoke });
   const result = leases.acquire(executionId, {
+    accountId: authorization.accountId,
+    connectionId: bindingId,
+    authorizationRevision: "github:1",
+    fullName: "owner/repository",
     installationId: "456",
     repositoryId: "123",
     permissions: { contents: "read" },
@@ -509,7 +513,7 @@ describe("production GitHub provider adapter request admission", () => {
     const policy = vi.fn(async (_authorization: RuntimeProxyAuthorization, _signal: AbortSignal) => [repository]);
     const guarded = new GitHubProviderAdapter({
       policy: { resolve: policy },
-      leases: new GitHubIatLeases({ mint, revoke }),
+      leases: new GitHubUserTokenLeases({ mint, revoke }),
       reads: new GitReadTransport({ workspace }),
       publication: new GitPublicationGuard({ workspace }),
       api: new GitHubProxyApiTransport(upstream),
@@ -555,7 +559,7 @@ describe("production GitHub provider adapter request admission", () => {
     const policy = vi.fn(async (_authorization: RuntimeProxyAuthorization, _signal: AbortSignal) => [repository]);
     const guarded = new GitHubProviderAdapter({
       policy: { resolve: policy },
-      leases: new GitHubIatLeases({ mint, revoke }),
+      leases: new GitHubUserTokenLeases({ mint, revoke }),
       reads: new GitReadTransport({ workspace }),
       publication: new GitPublicationGuard({ workspace }),
       api: new GitHubProxyApiTransport(upstream),

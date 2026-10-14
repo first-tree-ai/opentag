@@ -83,7 +83,7 @@ import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
 import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
-import { GitHubIatLeases } from "./services/github-proxy/iat-leases.js";
+import { GitHubUserTokenLeases } from "./services/github-proxy/user-token-leases.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { SlackWorkingStore } from "./services/im/slack-working-store.js";
@@ -386,21 +386,19 @@ function cloudSessionAuthorityOptions(
 }
 
 function createContextTreeServices(
-  management: NonNullable<ReturnType<typeof createGitHubIntegration>>["management"] | undefined,
+  github: ReturnType<typeof createGitHubIntegration> | undefined,
   imBindings: ImBindingService,
   agents: AgentService,
   owner: ContextTreeOperationOwner,
-  githubApp: ServerConfig["githubApp"],
 ) {
   const computerKind = (computerId: string) => imBindings.computerKind(computerId);
-  const cloudContextTreeOperations =
-    management && githubApp
-      ? new CloudContextTreeOperations({
-          management,
-          computerKind,
-          leases: new GitHubIatLeases(new GitHubInstallationTokenClient(githubApp)),
-        })
-      : undefined;
+  const cloudContextTreeOperations = github
+    ? new CloudContextTreeOperations({
+        management: github.management,
+        computerKind,
+        leases: new GitHubUserTokenLeases(github.userTokens),
+      })
+    : undefined;
   return {
     cloudContextTreeOperations,
     contextTreeOperationService: new ContextTreeOperationService(agents, owner, {
@@ -840,11 +838,10 @@ export async function startServer(): Promise<void> {
         ),
     });
     const { cloudContextTreeOperations, contextTreeOperationService } = createContextTreeServices(
-      github?.management,
+      github,
       imBindingService,
       agentService,
       contextTreeOperationOwner,
-      config.githubApp,
     );
     const agentRuntimeOptionsService = new AgentRuntimeOptionsService(
       agentService,

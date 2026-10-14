@@ -313,13 +313,19 @@ function mutationPlan(
           repositoryId: resolveNode(String(values.pullRequestId ?? values.subjectId)),
         });
   if (!repository) throw new GitHubGraphqlPolicyError();
+  walk.repositoryId = repository.repositoryId;
   validateSelection(
     field.selectionSet,
     walk,
     0,
     new Set([...ReadFields, "pullRequest", "commentEdge", "clientMutationId", "subject"]),
   );
-  return { repository, operation: name as GitHubGraphqlPlan["operation"], input: values };
+  return {
+    repository,
+    operation: name as GitHubGraphqlPlan["operation"],
+    input: values,
+    ...(Object.keys(walk.extraPermissions).length ? { extraPermissions: walk.extraPermissions } : {}),
+  };
 }
 
 function argumentsOf(field: FieldNode, variables: Record<string, unknown>): Record<string, unknown> {
@@ -543,6 +549,7 @@ function lookupRepository(
 function collectReadPermissions(name: string, args: Record<string, unknown>, walk: PolicyWalk): void {
   if (name === "isRequired") {
     const owner = typeof args.pullRequestId === "string" ? walk.resolveNode(args.pullRequestId) : undefined;
+    // The first pass has only a repository name; the second pass checks its resolved ID.
     if (!owner || (walk.repositoryId !== "pending" && owner !== walk.repositoryId))
       throw new GitHubGraphqlPolicyError();
   }

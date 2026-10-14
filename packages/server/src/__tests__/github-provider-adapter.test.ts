@@ -581,6 +581,18 @@ describe("production GitHub provider adapter REST scope gates", () => {
     expect(mint).not.toHaveBeenCalled();
   });
 
+  it.each(["/commits/main/check-runs", "/commits/main/check-suites", "/actions/runs"])(
+    "denies code authority to a Tree-only REST read of %s without minting",
+    async (suffix) => {
+      const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
+      await expect(built.handle(request(`/repos/owner/repository${suffix}`), authorization)).rejects.toMatchObject({
+        code: "scope_denied",
+      });
+      expect(mint).not.toHaveBeenCalled();
+      expect(upstream).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ["a read-only Tree scope", [treeScope({ access: "read" })]],
     ["a direct-publish Tree scope", [treeScope({ access: "write", publish: "direct" })]],
@@ -1440,8 +1452,10 @@ it.each([
   ).toThrow(/scope_denied/);
 });
 
-it("preserves existing branch-constrained GraphQL check reads without requiring a code role", async () => {
-  const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
+it.each(["tree", "code", "mixed"])("keeps GraphQL check permissions within the %s grant", async (role) => {
+  const scopes =
+    role === "tree" ? [treeScope({ access: "read" })] : role === "code" ? [codeScope()] : [codeScope(), treeScope()];
+  const built = adapterFor({ scopes });
   const original = upstream.getMockImplementation();
   upstream.mockImplementation(async (...args) => {
     if (String(args[0]).endsWith("/graphql"))
@@ -1454,11 +1468,39 @@ it("preserves existing branch-constrained GraphQL check reads without requiring 
   });
   const body = {
     query:
-      '{repository(owner:"owner",name:"repository"){pullRequest(number:1){id number statusCheckRollup{contexts(first:1){nodes{...on CheckRun{name}}}}}}}',
+      '{repository(owner:"owner",name:"repository"){pullRequest(number:1){id number statusCheckRollup{contexts(first:1){nodes{...on CheckRun{name checkSuite{workflowRun{event}}}}}}}}}',
   };
   expect((await built.handle(request("/graphql", "POST", body), authorization)).status).toBe(200);
-  expect(requests.some((row) => row.path === "/repos/owner/repository/pulls/1")).toBe(true);
+  if (role === "tree") expect(requests.some((row) => row.path === "/repos/owner/repository/pulls/1")).toBe(true);
   expect(mint).toHaveBeenCalledWith(
-    expect.objectContaining({ permissions: { contents: "read", pull_requests: "read", checks: "read" } }),
+    expect.objectContaining({
+      permissions: {
+        contents: "read",
+        pull_requests: "read",
+        ...(role === "tree" ? {} : { checks: "read", actions: "read" }),
+      },
+    }),
+  );
+});
+
+it("passes response check permissions to a code mutation after checking the PR identity", async () => {
+  await adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
+  mint.mockClear();
+  const original = upstream.getMockImplementation();
+  upstream.mockImplementation(async (...args) => {
+    if (String(args[0]).endsWith("/graphql"))
+      return Response.json({ data: { closePullRequest: { pullRequest: { id: "PR_one" } } } });
+    return (original as typeof fetch)(...args);
+  });
+  const query = `mutation { closePullRequest(input:{pullRequestId:"PR_one"}) { pullRequest {
+    statusCheckRollup { contexts(first:1) { nodes { ... on CheckRun {
+      isRequired(pullRequestId:"PR_one") checkSuite { workflowRun { event } }
+    } } } }
+  } } }`;
+  expect((await adapter.handle(request("/graphql", "POST", { query }), authorization)).status).toBe(200);
+  expect(mint).toHaveBeenCalledWith(
+    expect.objectContaining({
+      permissions: { contents: "read", pull_requests: "write", checks: "read", actions: "read" },
+    }),
   );
 });

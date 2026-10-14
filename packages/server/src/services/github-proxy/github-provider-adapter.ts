@@ -231,6 +231,11 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       await repository.recheck?.(signal);
     });
     const write = plan.operation !== "read";
+    // Checks/Actions are code authority in both REST and GraphQL. Preserve Tree-only
+    // reads with their existing token permissions rather than granting code authority.
+    const extraPermissions = repository.scopes.some((scope) => scope.role === "code")
+      ? plan.extraPermissions
+      : undefined;
     const lease = await this.#options.leases.acquire(request.executionId, {
       accountId: authorization.accountId,
       connectionId: authorization.bindingId,
@@ -238,7 +243,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       fullName: repository.fullName,
       installationId: repository.installationId,
       repositoryId: repository.repositoryId,
-      permissions: { contents: "read", pull_requests: write ? "write" : "read", ...plan.extraPermissions },
+      permissions: { contents: "read", pull_requests: write ? "write" : "read", ...extraPermissions },
       signal: request.signal,
     });
     try {

@@ -233,7 +233,10 @@ export class RuntimeProxyLoopbackAdapter {
       this.#connectPort = await listenLoopback(this.#connectServer);
       this.#directPort = await listenLoopback(this.#directServer);
       if (this.#githubApiSocketEnabled) {
-        this.#githubSocketDirectory = await mkdtemp(join(tmpdir(), "ot-gh-"));
+        // A custom TMPDIR may exceed the native socket address limit. Keep the private
+        // directory under the short Unix temp root so unrelated providers can still start.
+        const socketRoot = Buffer.byteLength(join(tmpdir(), "ot-gh-XXXXXX", "g.sock")) <= 100 ? tmpdir() : "/tmp";
+        this.#githubSocketDirectory = await mkdtemp(join(socketRoot, "ot-gh-"));
         await chmod(this.#githubSocketDirectory, 0o700);
         this.#githubApiSocketPath = join(this.#githubSocketDirectory, "g.sock");
         if (Buffer.byteLength(this.#githubApiSocketPath) > 100) throw new Error("GitHub socket path is too long");

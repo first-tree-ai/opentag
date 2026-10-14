@@ -455,3 +455,23 @@ it("keeps auto-merge display metadata read-only and its user identity window clo
     /policy/,
   );
 });
+
+it("requests checks/actions read permissions for an allowed mutation response", () => {
+  expect(
+    plan(`mutation { closePullRequest(input:{pullRequestId:"PR_123"}) { pullRequest {
+      commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:1) { nodes {
+        ... on CheckRun { checkSuite { workflowRun { event } } }
+      } } } } } }
+    } } }`),
+  ).toMatchObject({ operation: "closePullRequest", extraPermissions: { checks: "read", actions: "read" } });
+});
+
+it("binds isRequired in a mutation response to the resolved repository", () => {
+  const query = (id: string) => `mutation { closePullRequest(input:{pullRequestId:"PR_123"}) { pullRequest {
+    commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:1) { nodes {
+      ... on CheckRun { isRequired(pullRequestId:"${id}") }
+    } } } } } }
+  } } }`;
+  expect(plan(query("PR_123"))).toMatchObject({ operation: "closePullRequest", extraPermissions: { checks: "read" } });
+  expect(() => plan(query("PR_foreign"))).toThrow(/policy/);
+});

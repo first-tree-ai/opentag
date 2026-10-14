@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   closeBridgeSockets,
   createBridgeSocketResources,
@@ -116,6 +116,39 @@ describe.skipIf(!binary)("native gh execution-local transport (offline, no provi
 
 // Always-run framing control; an HTTP caller cannot use the gh IPC entry as an open proxy.
 describe("GitHub IPC authority boundary", () => {
+  it("keeps the socket private and starts other providers when TMPDIR is too long", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ot-gh-long-temp-"));
+    const longTemp = join(root, "x".repeat(120));
+    await mkdir(longTemp);
+    vi.stubEnv("TMPDIR", longTemp);
+    let adapter: RuntimeProxyLoopbackAdapter | undefined;
+    let socketPath: string | undefined;
+    try {
+      adapter = await RuntimeProxyLoopbackAdapter.start({
+        githubApiSocket: true,
+        executionId: randomUUID(),
+        materialDir: root,
+        verifyHandle: () => true,
+        openStream: async () => {
+          throw new Error("Must not dispatch");
+        },
+        logger: { debug() {}, warn() {} },
+      });
+      socketPath = adapter.githubApiSocketPath;
+      expect(socketPath).toMatch(/^\/tmp\/ot-gh-/);
+      expect(Buffer.byteLength(socketPath as string)).toBeLessThanOrEqual(100);
+      expect((await stat(dirname(socketPath as string))).mode & 0o777).toBe(0o700);
+      expect((await stat(socketPath as string)).mode & 0o777).toBe(0o600);
+      expect(adapter.connectProxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+      expect(adapter.slackApiHost).toMatch(/^https:\/\/127\.0\.0\.1:/);
+    } finally {
+      vi.unstubAllEnvs();
+      await adapter?.close();
+      await rm(root, { recursive: true, force: true });
+    }
+    await expect(stat(socketPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("rejects absolute URLs before opening a relay stream", async () => {
     const root = await mkdtemp(join(tmpdir(), "ot-gh-boundary-"));
     let hits = 0;

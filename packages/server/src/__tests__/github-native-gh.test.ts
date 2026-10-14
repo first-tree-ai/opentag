@@ -142,6 +142,30 @@ describe.skipIf(!binary)("real gh native API compatibility (offline fixture)", (
       await fixture.close();
     }
   });
+  it("supports check fields in a native GraphQL mutation response with scoped read permissions", async () => {
+    const fixture = await nativeGhFixture();
+    const gh = (args: string[]) =>
+      run(binary as string, args, { cwd: fixture.root, env: fixture.environment, timeout: 15000 });
+    try {
+      await gh(["pr", "view", "1", "-R", fixture.fullName, "--json", "id,number"]);
+      const query = `mutation($id:ID!) { closePullRequest(input:{pullRequestId:$id}) { pullRequest {
+        state commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:1) { nodes {
+          ... on CheckRun { isRequired(pullRequestId:$id) checkSuite { workflowRun { event } } }
+        } } } } } }
+      } } }`;
+      const response = JSON.parse((await gh(["api", "graphql", "-f", `query=${query}`, "-f", "id=PR_fixture"])).stdout);
+      expect(response.data.closePullRequest.pullRequest.state).toBe("CLOSED");
+      expect(fixture.permissions.at(-1)).toEqual({
+        contents: "read",
+        pull_requests: "write",
+        checks: "read",
+        actions: "read",
+      });
+      expect(fixture.counts.revoked).toBe(fixture.counts.minted);
+    } finally {
+      await fixture.close();
+    }
+  });
   it("never closes another Session's PR even after a successful native preread", async () => {
     const fixture = await nativeGhFixture();
     try {

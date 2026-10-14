@@ -158,6 +158,20 @@ describe("GitHub user identity credentials", () => {
     expect(f.calls.some((call) => call.method === "DELETE")).toBe(false);
   });
 
+  it("checks the child's own bounded expiry independently of the parent's refresh schedule", async () => {
+    const f = userTokenFixture();
+    f.setParent({
+      accessToken: "ghu_parent_a",
+      githubUserId: "42",
+      credentialGeneration: 3n,
+      accessExpiresAt: new Date(now.getTime() + 20 * 60_000),
+    });
+    await expect(f.client.mint(input)).resolves.toMatchObject({
+      token: "ghu_scoped_a",
+      expiresAt: new Date(now.getTime() + 3_600_000),
+    });
+  });
+
   it("reacquires once after routine parent rotation before any repository operation", async () => {
     const f = userTokenFixture();
     const fetchImpl = f.fetch.getMockImplementation();

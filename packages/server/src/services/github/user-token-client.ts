@@ -44,7 +44,7 @@ export class GitHubUserTokenClient {
     const token = ownedScopedToken(scoped.payload, parent, this.options.clientId);
     let retained = false;
     try {
-      const expiresAt = validateScopedToken(scoped.payload, input, parent, this.#now());
+      const expiresAt = validateScopedToken(scoped.payload, input, this.#now());
       await this.#verifyRepository(token, input);
       const current = await this.options.management.getExecutionUserCredential(input);
       input.signal?.throwIfAborted();

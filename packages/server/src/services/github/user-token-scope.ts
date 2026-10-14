@@ -4,6 +4,9 @@ import type { GitHubExecutionUserCredential, GitHubUserTokenInput } from "./user
 const LEVELS = new Set<unknown>(["read", "write"]);
 const KEYS = new Set(["contents", "pull_requests", "checks", "actions"]);
 const TOKEN = /^ghu_[A-Za-z0-9_]{1,4092}$/;
+// Expiring GitHub App user tokens have an eight-hour lifetime. Allow bounded clock skew;
+// a derived credential's expiry is distinct from its parent's refresh schedule.
+const MAX_LIFETIME_MS = 8 * 60 * 60 * 1_000 + 60_000;
 
 export function tokenRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new GitPublicationError("scope_denied");
@@ -49,12 +52,7 @@ export function ownedScopedToken(payload: unknown, parent: GitHubExecutionUserCr
   return record.token;
 }
 
-export function validateScopedToken(
-  payload: unknown,
-  input: GitHubUserTokenInput,
-  parent: GitHubExecutionUserCredential,
-  now: number,
-): Date {
+export function validateScopedToken(payload: unknown, input: GitHubUserTokenInput, now: number): Date {
   const record = tokenRecord(payload);
   const installation = tokenRecord(record.installation);
   const account = tokenRecord(installation.account);
@@ -74,7 +72,7 @@ export function validateScopedToken(
       throw new GitPublicationError("scope_denied");
   }
   const expiry = typeof record.expires_at === "string" ? Date.parse(record.expires_at) : NaN;
-  if (!Number.isFinite(expiry) || expiry <= now + 5_000 || expiry > parent.accessExpiresAt.getTime())
+  if (!Number.isFinite(expiry) || expiry <= now + 5_000 || expiry - now > MAX_LIFETIME_MS)
     throw new GitPublicationError("scope_denied");
   return new Date(expiry);
 }

@@ -21,7 +21,9 @@ For unattended Claude subscription access, use the token created by `claude setu
 
 Service installation and upgrade refresh preserve existing custom environment values in launchd plists and
 environment directives in the systemd unit. Rewritten definitions use mode `0600` because they may contain secrets. OpenTag still regenerates its executable and managed `PATH`,
-`OPENTAG_HOME`, and `OPENTAG_SERVICE_MODE`. Systemd drop-ins are separate files and remain untouched.
+`OPENTAG_HOME`, and `OPENTAG_SERVICE_MODE`. On Linux, the service entrypoint sets these three values after systemd
+applies environment files and removals, so custom directives cannot change the daemon's Home or service mode.
+Systemd drop-ins are separate files and remain untouched.
 An unsupported or ambiguous launchd environment is rejected before any definition is overwritten.
 
 Claude readiness always consults the CLI's authentication status using the same setting sources as execution.

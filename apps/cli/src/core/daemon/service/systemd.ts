@@ -37,7 +37,14 @@ export function renderSystemdUnit(options: {
   path: string;
   serviceId: string;
 }): string {
-  const command = invocationArguments(options.invocation).map(quoteSystemdToken).join(" ");
+  const command = [
+    `PATH=${options.path}`,
+    "OPENTAG_SERVICE_MODE=1",
+    `OPENTAG_HOME=${options.home}`,
+    ...invocationArguments(options.invocation),
+  ]
+    .map(quoteSystemdToken)
+    .join(" ");
   return `[Unit]
 Description=OpenTag daemon (${options.serviceId})
 StartLimitIntervalSec=300
@@ -45,7 +52,9 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-ExecStart=${command}
+# Apply owned values after systemd compiles EnvironmentFile/UnsetEnvironment.
+# The ':' prefix keeps dollar references in paths and values literal.
+ExecStart=:/usr/bin/env ${command}
 # Exit code ${SUPERVISOR_RESTART_EXIT_CODE} is the reserved supervisor-restart handoff: a clean exit
 # that still forces a restart, used by the portable upgrade after the new version is live on disk.
 Restart=on-failure

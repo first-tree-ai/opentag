@@ -24,8 +24,7 @@ describe("service environment preservation", () => {
       'Environment="CLAUDE_CODE_OAUTH_TOKEN=synthetic-$&-$`-token"',
       "EnvironmentFile=-%h/.private/claude.env",
       'Environment="CUSTOM=one" \\',
-      "# keep the continuation across comments and blank lines",
-      "",
+      "# keep the continuation across comments",
       ' "SECOND=two"',
       "PassEnvironment=EXTERNAL",
       "UnsetEnvironment=REMOVED",
@@ -37,6 +36,14 @@ describe("service environment preservation", () => {
     expect(merged).toContain(custom);
     expect(merged).toContain("/new/bin/opentag");
     expect(merged).not.toContain("/old/bin/opentag");
+    expect(preserveSystemdEnvironment(unit, merged)).toBe(merged);
+  });
+
+  it("ends a systemd environment continuation at a blank line before the next section", () => {
+    const custom = 'Environment="CLAUDE_CODE_OAUTH_TOKEN=synthetic-token" \\\n\n';
+    const installed = unit.replace("[Install]", () => `${custom}[Install]`);
+    const merged = preserveSystemdEnvironment(unit, installed);
+    expect(merged).toContain(custom);
     expect(preserveSystemdEnvironment(unit, merged)).toBe(merged);
   });
 

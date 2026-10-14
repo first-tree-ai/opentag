@@ -3,7 +3,7 @@ import { DaemonServiceError } from "./types.js";
 const MANAGED_KEYS = new Set(["PATH", "OPENTAG_HOME", "OPENTAG_SERVICE_MODE"]);
 const PLIST_ENVIRONMENT = /(<key>EnvironmentVariables<\/key>\s*<dict>)([\s\S]*?)(<\/dict>)/u;
 
-/** Keep user environment directives verbatim; the generated managed values are applied last. */
+/** Keep user environment directives verbatim; the entrypoint owns the managed values. */
 export function preserveSystemdEnvironment(template: string, installed: string | undefined): string {
   const preserved: string[] = [];
   const lines = (installed ?? "").split(/\r?\n/u);
@@ -36,7 +36,7 @@ function readSystemdDirective(lines: string[], start: number): string[] {
     const line = lines[start + directive.length] ?? "";
     if (/^\s*\[/u.test(line)) throw invalidSystemdEnvironment();
     directive.push(line);
-    if (!/^\s*(?:[#;]|$)/u.test(line)) continued = /(?:^|[^\\])(?:\\\\)*\\$/u.test(line);
+    if (!/^\s*[#;]/u.test(line)) continued = /(?:^|[^\\])(?:\\\\)*\\$/u.test(line);
   }
   if (continued) throw invalidSystemdEnvironment();
   return directive;

@@ -231,8 +231,6 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       await repository.recheck?.(signal);
     });
     const write = plan.operation !== "read";
-    if (plan.extraPermissions && !repository.scopes.some((scope) => scope.role === "code"))
-      throw new GitPublicationError("scope_denied");
     const lease = await this.#options.leases.acquire(request.executionId, {
       accountId: authorization.accountId,
       connectionId: authorization.bindingId,

@@ -1439,3 +1439,26 @@ it.each([
     githubReadRepresentation(new URL(path, "https://api.github.com"), "application/vnd.github.diff"),
   ).toThrow(/scope_denied/);
 });
+
+it("preserves existing branch-constrained GraphQL check reads without requiring a code role", async () => {
+  const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
+  const original = upstream.getMockImplementation();
+  upstream.mockImplementation(async (...args) => {
+    if (String(args[0]).endsWith("/graphql"))
+      return Response.json({
+        data: {
+          repository: { pullRequest: { id: "PR_one", number: 1, statusCheckRollup: { contexts: { nodes: [] } } } },
+        },
+      });
+    return (original as typeof fetch)(...args);
+  });
+  const body = {
+    query:
+      '{repository(owner:"owner",name:"repository"){pullRequest(number:1){id number statusCheckRollup{contexts(first:1){nodes{...on CheckRun{name}}}}}}}',
+  };
+  expect((await built.handle(request("/graphql", "POST", body), authorization)).status).toBe(200);
+  expect(requests.some((row) => row.path === "/repos/owner/repository/pulls/1")).toBe(true);
+  expect(mint).toHaveBeenCalledWith(
+    expect.objectContaining({ permissions: { contents: "read", pull_requests: "read", checks: "read" } }),
+  );
+});

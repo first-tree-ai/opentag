@@ -45,7 +45,7 @@ async function listOwnedReactions(api: ReactionClient, appId: string, messageId:
   do {
     const response = await api.list({
       path: { message_id: messageId },
-      params: { reaction_type: FEISHU_FAILURE_EMOJI, page_size: 100, ...(pageToken ? { page_token: pageToken } : {}) },
+      params: { reaction_type: FEISHU_FAILURE_EMOJI, page_size: 50, ...(pageToken ? { page_token: pageToken } : {}) },
     });
     if (response.code !== 0 || !response.data) throw new Error("FEISHU_FAILURE_REACTION_LIST_FAILED");
     for (const item of response.data.items) {

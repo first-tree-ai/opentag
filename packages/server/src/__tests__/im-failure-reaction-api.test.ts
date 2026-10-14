@@ -17,6 +17,22 @@ function feishu() {
 }
 
 describe("Feishu bot-owned error reaction", () => {
+  it.each([true, false])("honors the provider page-size limit while paginating failed=%s", async (failed) => {
+    const api = feishu();
+    vi.mocked(api.list).mockImplementation(async (input) => {
+      const pageSize = input?.params?.page_size ?? 20;
+      if (pageSize > 50) throw new Error("Feishu rejects reaction pages larger than 50");
+      const lastPage = input?.params?.page_token === "next";
+      return {
+        code: 0,
+        data: { items: lastPage && !failed ? [own] : [], has_more: !lastPage, page_token: lastPage ? "" : "next" },
+      };
+    });
+    await expect(setFeishuFailureReaction(api, "A1", "om_1", failed)).resolves.toBeUndefined();
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(api.create).toHaveBeenCalledTimes(failed ? 1 : 0);
+    expect(api.delete).toHaveBeenCalledTimes(failed ? 0 : 1);
+  });
   it("adds CrossMark and does not duplicate an existing bot reaction", async () => {
     const api = feishu();
     await setFeishuFailureReaction(api, "A1", "om_1", true);
@@ -47,7 +63,7 @@ describe("Feishu bot-owned error reaction", () => {
     await setFeishuFailureReaction(api, "A1", "om_1", false);
     expect(api.list).toHaveBeenLastCalledWith({
       path: { message_id: "om_1" },
-      params: { reaction_type: "CrossMark", page_size: 100, page_token: "next" },
+      params: { reaction_type: "CrossMark", page_size: expect.any(Number), page_token: "next" },
     });
     expect(api.delete).toHaveBeenCalledExactlyOnceWith({ path: { message_id: "om_1", reaction_id: "own" } });
     expect(api.create).not.toHaveBeenCalled();

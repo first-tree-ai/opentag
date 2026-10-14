@@ -974,8 +974,14 @@ async function probeClaudeCode(
     /\bauto\b/.test(helpResult.stdout) &&
     helpResult.stdout.includes("--permission-prompt-tool") &&
     helpResult.stdout.includes("--append-system-prompt");
-  const credential = await probeClaudeCodeCredential(command, execution, signal);
-  const credentialIssue = credential && streamJson ? await verifyCredential(environment, signal) : undefined;
+  const authentication = await probeClaudeCodeCredential(command, execution, signal);
+  const credential = authentication?.loggedIn === true;
+  // Managed gateway sign-in can override explicit environment credentials. Honor the CLI's
+  // selected provider rather than validating an unused token against the first-party endpoint.
+  const credentialIssue =
+    credential && streamJson && authentication?.apiProvider === "firstParty"
+      ? await verifyCredential(environment, signal)
+      : undefined;
   return {
     credential: credential && !credentialIssue,
     ...(credentialIssue ? { credentialIssue } : {}),
@@ -994,7 +1000,7 @@ async function probeClaudeCodeCredential(
     readonly windowsHide: boolean;
   },
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<Readonly<Record<string, unknown>> | undefined> {
   let output: string;
   try {
     output = (await execFileAsync(command, [...CLAUDE_CODE_SETTING_SOURCES, "auth", "status", "--json"], execution))
@@ -1007,15 +1013,15 @@ async function probeClaudeCodeCredential(
     );
     output = (error as Error & { readonly stdout: string }).stdout;
   }
-  if (!output) return false;
+  if (!output) return undefined;
   try {
-    return record(JSON.parse(output))?.loggedIn === true;
+    return record(JSON.parse(output));
   } catch (error) {
     logger.debug(
       { code: "credential_status_invalid_json", error: String(error) },
       "Claude Code credential status output was invalid",
     );
-    return false;
+    return undefined;
   }
 }
 

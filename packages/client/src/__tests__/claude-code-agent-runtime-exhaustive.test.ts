@@ -697,10 +697,10 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
   it("honors native login failure even with an explicit token and validates a locally accepted token", async () => {
     const directory = await temporaryDirectory("opentag-claude-token-probe-");
     const command = join(directory, "claude-fixture");
-    const script = (loggedIn: boolean) => `#!/bin/sh
+    const script = (loggedIn: boolean, apiProvider = "firstParty") => `#!/bin/sh
 if [ "$1" = "--version" ]; then echo '2.1.210 (Claude Code)'; exit 0; fi
 if [ "$1" = "--help" ]; then echo 'stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools auto --permission-prompt-tool --append-system-prompt'; exit 0; fi
-echo '{"loggedIn":${loggedIn}}'
+echo '{"loggedIn":${loggedIn},"apiProvider":"${apiProvider}"}'
 `;
     await writeFile(command, script(false), { mode: 0o700 });
     const verifyCredential = vi.fn(async () => ({
@@ -718,6 +718,9 @@ echo '{"loggedIn":${loggedIn}}'
       ready: false,
       issues: [{ code: "credential_missing", message: "Credential rejected" }],
     });
+    expect(verifyCredential).toHaveBeenCalledOnce();
+    await writeFile(command, script(true, "gateway"));
+    await expect(factory.probe({})).resolves.toMatchObject({ ready: true });
     expect(verifyCredential).toHaveBeenCalledOnce();
   });
 

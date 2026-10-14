@@ -95,13 +95,20 @@ function readLaunchdEntries(body: string): string[] {
 
 function normalizeEnvironmentKey(installed: string): string {
   const source = installed.replace(/<!--[\s\S]*?-->/gu, "");
+  const encoding = source.match(/<\?xml\b[^?]*\bencoding\s*=\s*["']([^"']+)["']/u)?.[1];
   let keys = 0;
   const normalized = source.replace(/<key\s*>([^<]*)<\/key\s*>/gu, (entry, text: string) => {
     keys += 1;
     return decodeXmlText(text) === "EnvironmentVariables" ? "<key>EnvironmentVariables</key>" : entry;
   });
   // Unsupported key encodings and binary plists must never look like a missing environment.
-  if (source.startsWith("bplist") || (source.match(/<key\b/gu)?.length ?? 0) !== keys) throw invalidEnvironment();
+  if (
+    source.startsWith("bplist") ||
+    source.includes("\0") ||
+    (encoding && encoding.toLowerCase() !== "utf-8") ||
+    (source.match(/<key\b/gu)?.length ?? 0) !== keys
+  )
+    throw invalidEnvironment();
   return normalized;
 }
 
@@ -132,6 +139,6 @@ function isXmlCharacter(point: number): boolean {
 function invalidEnvironment(): DaemonServiceError {
   return new DaemonServiceError(
     "CONFIGURATION",
-    "The LaunchAgent environment cannot be safely preserved; use a flat string dictionary or config/daemon.env",
+    "The LaunchAgent environment cannot be safely preserved; use UTF-8 XML with a flat string dictionary or config/daemon.env",
   );
 }

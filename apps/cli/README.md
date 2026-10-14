@@ -24,7 +24,7 @@ environment directives in the systemd unit. Installation and refresh enforce mod
 `OPENTAG_HOME`, and `OPENTAG_SERVICE_MODE`. On Linux, the service entrypoint sets these three values after systemd
 applies environment files and removals, so custom directives cannot change the daemon's Home or service mode.
 Systemd drop-ins are separate files and remain untouched.
-An unsupported or ambiguous launchd environment is rejected before any definition is overwritten.
+An unsupported or ambiguous launchd environment is rejected before any definition is overwritten. Only supported UTF-8 XML environments are preserved; binary plists and other encodings must be converted first or use `config/daemon.env`.
 
 Claude readiness always consults the CLI's authentication status using the same setting sources as execution.
 Explicit credentials targeting the default Anthropic endpoint are additionally checked with one bounded, read-only

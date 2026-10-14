@@ -93,6 +93,8 @@ describe("service environment preservation", () => {
     "<key>EnvironmentVariables</key><dict></dict><key>EnvironmentVari&#97;bles</key><dict></dict>",
     "<key><![CDATA[EnvironmentVariables]]></key><dict></dict>",
     "bplist00unsupported-binary-plist",
+    '<?xml version="1.0" encoding="ISO-8859-1"?><plist><dict/></plist>',
+    Buffer.from('\ufeff<?xml version="1.0" encoding="UTF-16"?><plist><dict/></plist>', "utf16le").toString("utf8"),
   ])("refuses a launchd environment it cannot preserve without ambiguity", (installed) => {
     expect(() => preserveLaunchdEnvironment(plist, installed)).toThrow("cannot be safely preserved");
   });

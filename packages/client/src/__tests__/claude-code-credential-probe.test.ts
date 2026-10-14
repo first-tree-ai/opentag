@@ -120,6 +120,57 @@ describe("Claude explicit credential validation", () => {
     expect(JSON.stringify(result)).not.toContain("synthetic-secret");
   });
 
+  it.each(["https://api.anthropic.com:443/", "https://API.ANTHROPIC.COM/"])(
+    "verifies credentials for the equivalent default URL %s",
+    async (url) => {
+      http.status = 401;
+      await expect(
+        probeClaudeEnvironmentCredential({ ANTHROPIC_BASE_URL: url, ANTHROPIC_API_KEY: "synthetic-invalid" }),
+      ).resolves.toMatchObject({ code: "credential_missing" });
+      expect(http.request).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    "invalid URL",
+    "https://api.anthropic.com/custom",
+    "https://api.anthropic.com/?gateway=1",
+    "https://api.anthropic.com/#custom",
+    "https://user@api.anthropic.com",
+    "https://:password@api.anthropic.com",
+    "http://api.anthropic.com",
+  ])("leaves non-default URLs to the CLI: %s", async (url) => {
+    await expect(
+      probeClaudeEnvironmentCredential({ ANTHROPIC_BASE_URL: url, ANTHROPIC_API_KEY: "synthetic" }),
+    ).resolves.toBeUndefined();
+    expect(http.request).not.toHaveBeenCalled();
+  });
+
+  it("sends both first-party headers when both explicit credentials are set", async () => {
+    await probeClaudeEnvironmentCredential({
+      ANTHROPIC_AUTH_TOKEN: "synthetic-bearer",
+      ANTHROPIC_API_KEY: "synthetic-api",
+      CLAUDE_CODE_OAUTH_TOKEN: "unused-oauth",
+    });
+    expect(http.request).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer synthetic-bearer", "x-api-key": "synthetic-api" }),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it.each([" invalid", "invalid ", "invalid\rnext", "invalid\nnext"])(
+    "rejects a malformed secondary API key before making a request",
+    async (key) => {
+      await expect(
+        probeClaudeEnvironmentCredential({ ANTHROPIC_AUTH_TOKEN: "synthetic-bearer", ANTHROPIC_API_KEY: key }),
+      ).resolves.toMatchObject({ code: "credential_missing" });
+      expect(http.request).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([302, 403, 429, 500, undefined])(
     "keeps non-authentication responses retryable and never follows redirects",
     async (status) => {

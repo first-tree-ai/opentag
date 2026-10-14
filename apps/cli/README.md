@@ -20,7 +20,7 @@ For unattended Claude subscription access, use the token created by `claude setu
 `CLAUDE_CODE_OAUTH_TOKEN`, rather than copying a short-lived access token from native login storage.
 
 Service installation and upgrade refresh preserve existing custom environment values in launchd plists and
-environment directives in the systemd unit. Rewritten definitions use mode `0600` because they may contain secrets. OpenTag still regenerates its executable and managed `PATH`,
+environment directives in the systemd unit. Installation and refresh enforce mode `0600` even when the definition content is unchanged, because it may contain secrets. OpenTag still regenerates its executable and managed `PATH`,
 `OPENTAG_HOME`, and `OPENTAG_SERVICE_MODE`. On Linux, the service entrypoint sets these three values after systemd
 applies environment files and removals, so custom directives cannot change the daemon's Home or service mode.
 Systemd drop-ins are separate files and remain untouched.
@@ -28,7 +28,7 @@ An unsupported or ambiguous launchd environment is rejected before any definitio
 
 Claude readiness always consults the CLI's authentication status using the same setting sources as execution.
 Explicit credentials targeting the default Anthropic endpoint are additionally checked with one bounded, read-only
-Models API request. A rejected credential requires sign-in or replacement; connectivity, permission, rate-limit,
+Models API request per readiness check. Equivalent official URLs (including the default port and host case) receive the same check. When both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` are set, the check sends both authentication headers. A rejected credential requires sign-in or replacement; connectivity, permission, rate-limit,
 and service failures remain retryable unavailability. This check makes no model generation request and does not
 prove access to a particular model or available quota. Native login storage, custom gateways, Bedrock, Vertex,
 and Foundry remain under the Claude CLI's credential handling; OpenTag does not read or renew their tokens.

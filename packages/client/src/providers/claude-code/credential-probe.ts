@@ -5,14 +5,26 @@ import type { AgentRuntimeProbeIssue } from "../../agent-runtime/types.js";
 
 const MODELS_URL = "https://api.anthropic.com/v1/models?limit=1";
 
+interface EnvironmentCredential {
+  token: string;
+  header: string;
+  oauth: boolean;
+  apiKey?: string;
+}
+
 /** Verify explicit first-party credentials without a model request or touching native login storage. */
 export async function probeClaudeEnvironmentCredential(
   environment: NodeJS.ProcessEnv,
   signal?: AbortSignal,
   readStatus = requestCredentialStatus,
 ): Promise<AgentRuntimeProbeIssue | undefined> {
-  const credential = environment.ANTHROPIC_AUTH_TOKEN
-    ? { token: environment.ANTHROPIC_AUTH_TOKEN, header: "Authorization", oauth: false }
+  const credential: EnvironmentCredential | undefined = environment.ANTHROPIC_AUTH_TOKEN
+    ? {
+        token: environment.ANTHROPIC_AUTH_TOKEN,
+        header: "Authorization",
+        oauth: false,
+        apiKey: environment.ANTHROPIC_API_KEY,
+      }
     : environment.ANTHROPIC_API_KEY
       ? { token: environment.ANTHROPIC_API_KEY, header: "x-api-key", oauth: false }
       : environment.CLAUDE_CODE_OAUTH_TOKEN
@@ -23,8 +35,7 @@ export async function probeClaudeEnvironmentCredential(
     ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].some(
       (key) => environment[key] === "1",
     ) ||
-    (environment.ANTHROPIC_BASE_URL &&
-      environment.ANTHROPIC_BASE_URL.replace(/\/+$/u, "") !== "https://api.anthropic.com")
+    (environment.ANTHROPIC_BASE_URL && !isDefaultAnthropicUrl(environment.ANTHROPIC_BASE_URL))
   )
     return undefined;
   const rejected = {
@@ -32,7 +43,12 @@ export async function probeClaudeEnvironmentCredential(
     message:
       "Claude Code credentials were rejected; renew the selected API credential or run claude setup-token for OAuth",
   };
-  if (credential.token.trim() !== credential.token || /[\r\n]/u.test(credential.token)) return rejected;
+  if (
+    [credential.token, credential.apiKey].some(
+      (token) => token !== undefined && (token.trim() !== token || /[\r\n]/u.test(token)),
+    )
+  )
+    return rejected;
   try {
     const status = await readStatus(environment, credential, signal);
     if (status === 200) return undefined;
@@ -46,9 +62,25 @@ export async function probeClaudeEnvironmentCredential(
   };
 }
 
+function isDefaultAnthropicUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.origin === "https://api.anthropic.com" &&
+      url.pathname === "/" &&
+      !url.search &&
+      !url.hash &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function requestCredentialStatus(
   environment: NodeJS.ProcessEnv,
-  credential: { token: string; header: string; oauth: boolean },
+  credential: EnvironmentCredential,
   signal?: AbortSignal,
 ): Promise<number> {
   const certificatePaths = [
@@ -71,6 +103,7 @@ async function requestCredentialStatus(
           headers: {
             [credential.header]:
               credential.header === "Authorization" ? `Bearer ${credential.token}` : credential.token,
+            ...(credential.apiKey ? { "x-api-key": credential.apiKey } : {}),
             "anthropic-version": "2023-06-01",
             ...(credential.oauth ? { "anthropic-beta": "oauth-2025-04-20" } : {}),
             Accept: "application/json",

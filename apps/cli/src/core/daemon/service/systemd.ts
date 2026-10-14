@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { chmod, rm } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { SUPERVISOR_RESTART_EXIT_CODE } from "../handoff.js";
@@ -264,6 +264,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
         await writeFileAtomically(unitPath, expected, 0o600, 0o700);
         await runRequired(options.runner, systemctl, ["--user", "daemon-reload"], "systemd daemon-reload");
       }
+      await chmod(unitPath, 0o600);
       return status();
     },
     async stop() {

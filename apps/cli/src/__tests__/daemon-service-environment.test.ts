@@ -85,11 +85,55 @@ describe("service environment preservation", () => {
   });
 
   it.each([
+    "<key>EnvironmentVari&#97;bles</key><dict><key>TOKEN</key><integer>7</integer></dict>",
     "<key>EnvironmentVariables</key><dict><key>TOKEN</key><integer>7</integer></dict>",
     "<key>EnvironmentVariables</key><array/>",
     "<key>EnvironmentVariables</key><dict><key>TOKEN</key><string>one</string><key>TOKEN</key><string>two</string></dict>",
     "<key>EnvironmentVariables</key><dict></dict><key>EnvironmentVariables</key><dict></dict>",
+    "<key>EnvironmentVariables</key><dict></dict><key>EnvironmentVari&#97;bles</key><dict></dict>",
+    "<key><![CDATA[EnvironmentVariables]]></key><dict></dict>",
+    "bplist00unsupported-binary-plist",
   ])("refuses a launchd environment it cannot preserve without ambiguity", (installed) => {
     expect(() => preserveLaunchdEnvironment(plist, installed)).toThrow("cannot be safely preserved");
   });
+
+  it.each(["EnvironmentVari&#97;bles", "EnvironmentVari&#x61;bles", "EnvironmentVariables"])(
+    "preserves credentials under semantically equivalent environment keys: %s",
+    (key) => {
+      const installed = plist
+        .replace("<key>EnvironmentVariables</key>", `<key >${key}</key >`)
+        .replace("<key>PATH</key>", "<key>TOKEN</key><string>synthetic&amp;token</string><key>P&#65;TH</key>");
+      const merged = preserveLaunchdEnvironment(plist, installed);
+      expect(merged).toContain("<key>TOKEN</key><string>synthetic&amp;token</string>");
+      expect(merged).not.toContain("<key>P&#65;TH</key>");
+      expect(preserveLaunchdEnvironment(plist, merged)).toBe(merged);
+    },
+  );
+
+  it.each([
+    ["A&amp;B", "A&#38;B"],
+    ["A&lt;B", "A&#x3c;B"],
+    ["A&gt;B", "A&#62;B"],
+    ["A&quot;B", "A&#34;B"],
+    ["A&apos;B", "A&#39;B"],
+  ])("rejects duplicate decoded keys %s and %s", (first, second) => {
+    const installed = plist.replace(
+      "<key>PATH</key>",
+      `<key>${first}</key><string>one</string><key>${second}</key><string>two</string><key>PATH</key>`,
+    );
+    expect(() => preserveLaunchdEnvironment(plist, installed)).toThrow("cannot be safely preserved");
+  });
+
+  it.each(["&unknown;", "&amp", "&#0;", "&#X41;", "&#xD800;", "&#x110000;", "&#xFFFE;", "\u0001", "\ud800"])(
+    "rejects malformed entities in keys and credential values: %s",
+    (entity) => {
+      for (const entry of [
+        `<key>${entity}</key><string>token</string>`,
+        `<key>TOKEN</key><string>${entity}</string>`,
+      ]) {
+        const installed = plist.replace("<key>PATH</key>", `${entry}<key>PATH</key>`);
+        expect(() => preserveLaunchdEnvironment(plist, installed)).toThrow("cannot be safely preserved");
+      }
+    },
+  );
 });

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -116,9 +116,13 @@ describe("systemd refreshDefinition", () => {
     await backend.installAndStart();
     expect(await readFile(unitPath, "utf8")).toContain("CLAUDE_CODE_OAUTH_TOKEN=synthetic-token");
 
-    // An up-to-date unit is left alone: no rewrite, no reload.
+    // An unchanged legacy definition still needs private permissions, without a reload.
     runner.run.mockClear();
+    const stable = await readFile(unitPath, "utf8");
+    await chmod(unitPath, 0o644);
     await backend.refreshDefinition();
+    expect((await stat(unitPath)).mode & 0o777).toBe(0o600);
+    expect(await readFile(unitPath, "utf8")).toBe(stable);
     expect(runner.run.mock.calls.filter(([, args]) => args.includes("daemon-reload"))).toHaveLength(0);
   });
 });
@@ -179,9 +183,13 @@ describe("launchd refreshDefinition", () => {
     await backend.installAndStart();
     expect(await readFile(plistPath, "utf8")).toContain("<string>synthetic-token</string>");
 
-    // Up-to-date definition files are left alone.
+    // Preserve an unchanged credential-bearing plist while migrating its old public mode.
     runner.run.mockClear();
+    const stable = await readFile(plistPath, "utf8");
+    await chmod(plistPath, 0o644);
     await backend.refreshDefinition();
+    expect((await stat(plistPath)).mode & 0o777).toBe(0o600);
+    expect(await readFile(plistPath, "utf8")).toBe(stable);
     expect(runner.run.mock.calls.filter(([, args]) => ["bootout", "bootstrap"].includes(String(args[0])))).toHaveLength(
       0,
     );

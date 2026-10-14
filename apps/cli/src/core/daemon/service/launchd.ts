@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { chmod, rm } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { ensurePrivateDirectory } from "@opentag/client";
@@ -306,6 +306,8 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       if (plist !== expectedPlist) {
         await writeFileAtomically(plistPath, expectedPlist, 0o600, 0o700);
       }
+      // Old definitions can be byte-identical while still using the previous public mode.
+      await chmod(plistPath, 0o600);
       return status();
     },
     async restart() {

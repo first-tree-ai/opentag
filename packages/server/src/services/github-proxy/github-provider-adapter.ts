@@ -8,12 +8,15 @@ import {
 } from "../../runtime-credentials/provider-proxy-adapter.js";
 import {
   CreatePullRequestBodySchema,
+  githubReadRepresentation,
   PullRequestCommentBodySchema,
   planGitHubRest,
   UpdatePullRequestBodySchema,
 } from "./api-policy.js";
 import { findRepository, parseBody, safeRequestUrl } from "./api-request.js";
 import { GitHubProxyApiTransport, jsonBody, objectValue, sanitizeGitHubResponse } from "./api-transport.js";
+import { normalizeNativeProjectRead } from "./cli-project-error.js";
+import { githubCliSchemaResponse } from "./cli-schema.js";
 import {
   assertPullRequestRefs,
   type GitHubExecutionPolicy,
@@ -26,6 +29,7 @@ import type { GitPublicationGuard } from "./git-publication.js";
 import type { GitReadTransport } from "./git-read-transport.js";
 import { GitHubPublicationRemote } from "./git-remote.js";
 import { handleGitSmartHttp } from "./git-smart-http.js";
+import { graphqlPullRequestIdentities } from "./graphql-identities.js";
 import { type GitHubGraphqlPlan, planGitHubGraphql } from "./graphql-policy.js";
 import { GitHubNodeStore } from "./node-store.js";
 import { constrainTreeGraphql } from "./tree-graphql-policy.js";
@@ -137,18 +141,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     });
     try {
       const context = await this.#context(request, authorization, repository, lease.token);
-      if (!write) {
-        await this.#constrainTreeRestRead(context, url);
-        const response = await this.#api.request({
-          token: lease.token,
-          method: "GET",
-          path: url.pathname + url.search,
-          signal: request.signal,
-        });
-        await context.recheck();
-        this.#remember(context, response.value);
-        return { ...response, body: jsonBody(sanitizeGitHubResponse(response.value, lease.token)) };
-      }
+      if (!write) return await this.#restRead(context, url);
       const body = await parseBody(request);
       let validated: unknown;
       if (plan.operation === "createPullRequest") {
@@ -174,11 +167,38 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     }
   }
 
+  async #restRead(context: ApiContext, url: URL): Promise<ProviderProxyResponse> {
+    await this.#constrainTreeRestRead(context, url);
+    const representation = githubReadRepresentation(url, context.request.headers.accept);
+    const response = await this.#api.request({
+      representation,
+      token: context.token,
+      method: "GET",
+      path: url.pathname + url.search,
+      signal: context.request.signal,
+    });
+    await context.recheck();
+    if (representation && response.status >= 200 && response.status < 300)
+      return { ...response, body: rawBody(response.value) };
+    this.#remember(context, response.value);
+    return { ...response, body: jsonBody(sanitizeGitHubResponse(response.value, context.token)) };
+  }
+
   async #graphql(
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
   ): Promise<ProviderProxyResponse> {
     const body = GraphqlRequest.parse(await parseBody(request));
+    const schema = githubCliSchemaResponse(body);
+    if (schema) {
+      await authorization.recheck(request.signal);
+      request.signal.throwIfAborted();
+      return {
+        status: 200,
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+        body: jsonBody(schema),
+      };
+    }
     const resolveNode = (id: string) => this.#nodes.get(request.executionId, authorization.scopeHash, id);
     const planned = planGitHubGraphql(
       body,
@@ -211,6 +231,8 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       await repository.recheck?.(signal);
     });
     const write = plan.operation !== "read";
+    if (plan.extraPermissions && !repository.scopes.some((scope) => scope.role === "code"))
+      throw new GitPublicationError("scope_denied");
     const lease = await this.#options.leases.acquire(request.executionId, {
       accountId: authorization.accountId,
       connectionId: authorization.bindingId,
@@ -218,7 +240,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       fullName: repository.fullName,
       installationId: repository.installationId,
       repositoryId: repository.repositoryId,
-      permissions: { contents: "read", pull_requests: write ? "write" : "read" },
+      permissions: { contents: "read", pull_requests: write ? "write" : "read", ...plan.extraPermissions },
       signal: request.signal,
     });
     try {
@@ -236,11 +258,12 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
         signal: request.signal,
       });
       await context.recheck();
-      this.#remember(context, response.value);
+      const value = normalizeNativeProjectRead(body, response.value);
+      this.#rememberGraphql(context, body, value);
       return {
         status: response.status,
         headers: response.headers,
-        body: jsonBody(sanitizeGitHubResponse(response.value, lease.token)),
+        body: jsonBody(sanitizeGitHubResponse(value, lease.token)),
       };
     } finally {
       await lease.release();
@@ -424,6 +447,19 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     return constrained.request;
   }
 
+  #rememberGraphql(context: ApiContext, request: z.infer<typeof GraphqlRequest>, value: unknown): void {
+    for (const identity of graphqlPullRequestIdentities(request, value)) {
+      this.#nodes.remember(
+        context.request.executionId,
+        context.authorization.scopeHash,
+        identity.id,
+        context.repository.repositoryId,
+        identity.number,
+        context.repository.fullName,
+      );
+    }
+  }
+
   #remember(context: ApiContext, value: unknown): void {
     if (Array.isArray(value)) {
       for (const item of value) this.#remember(context, item);
@@ -516,4 +552,9 @@ function confirmedWriteResponse(path: string, status: number, value: unknown): b
 
 function executionTarget(fullName: string, write: boolean): GitHubExecutionTarget {
   return { fullName, access: write ? "write" : "read", ...(write ? { publish: "pull_request" as const } : {}) };
+}
+
+async function* rawBody(value: unknown): AsyncIterable<Uint8Array> {
+  if (!Buffer.isBuffer(value)) throw new GitPublicationError("unavailable");
+  yield value;
 }

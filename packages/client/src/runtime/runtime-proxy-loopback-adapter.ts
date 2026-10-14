@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import type net from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
 import { promisify } from "node:util";
@@ -97,6 +98,8 @@ export interface RuntimeProxyAdapterStreamRequest {
 export interface RuntimeProxyLoopbackAdapterOptions {
   /** The single execution this dedicated entry serves. */
   readonly executionId: string;
+  /** Local native gh can use private IPC; Cloud keeps its existing sandbox CONNECT bridge. */
+  readonly githubApiSocket?: boolean;
   readonly generateCa?: (materialDir: string) => Promise<RuntimeProxyLoopbackCaMaterial>;
   /**
    * Execution-local handles held by the Sandbox. Used only to substitute the harmless
@@ -130,6 +133,10 @@ export class RuntimeProxyLoopbackAdapter {
   readonly #ca: RuntimeProxyLoopbackCaMaterial;
   readonly #connectServer: http.Server;
   readonly #directServer: https.Server;
+  readonly #githubServer: http.Server;
+  readonly #githubApiSocketEnabled: boolean;
+  #githubSocketDirectory?: string;
+  #githubApiSocketPath?: string;
   readonly #executionId: string;
   readonly #localHandleFor?: (provider: RuntimeProxyProvider) => string | undefined;
   readonly #logger: Pick<ClientLogger, "debug" | "warn">;
@@ -142,6 +149,7 @@ export class RuntimeProxyLoopbackAdapter {
 
   private constructor(options: RuntimeProxyLoopbackAdapterOptions, ca: RuntimeProxyLoopbackCaMaterial) {
     this.#ca = ca;
+    this.#githubApiSocketEnabled = options.githubApiSocket === true && process.platform !== "win32";
     this.#executionId = options.executionId;
     this.#localHandleFor = options.localHandleFor;
     this.#logger = options.logger ?? createLogger("runtime-proxy-loopback");
@@ -150,6 +158,9 @@ export class RuntimeProxyLoopbackAdapter {
     this.#connectServer = http.createServer((_request, response) => {
       response.writeHead(403, { "content-type": "text/plain" });
       response.end();
+    });
+    this.#githubServer = http.createServer((request, response) => {
+      void this.#handleGitHubSocketRequest(request, response);
     });
     this.#directServer = https.createServer((request, response) => {
       void this.#handleDirectRequest(request, response);
@@ -164,6 +175,11 @@ export class RuntimeProxyLoopbackAdapter {
   /** Loopback HTTPS endpoint the Slack launcher pins through `--apihost`. */
   get slackApiHost(): string {
     return `https://127.0.0.1:${this.#directPort}`;
+  }
+
+  /** Private authenticated IPC transport for Local native gh; Cloud uses its sandbox bridge. */
+  get githubApiSocketPath(): string | undefined {
+    return this.#githubApiSocketPath;
   }
 
   /** Execution-scoped CA public certificate path for CLI trust configuration. */
@@ -208,7 +224,7 @@ export class RuntimeProxyLoopbackAdapter {
     this.#connectServer.on("connect", (request, socket, head) => {
       this.#handleConnect(request, socket as net.Socket, head, inner, secureContext);
     });
-    for (const server of [this.#connectServer, this.#directServer]) {
+    for (const server of [this.#connectServer, this.#directServer, this.#githubServer]) {
       server.on("connection", (socket) => this.#track(socket));
       server.on("secureConnection", (socket) => this.#track(socket));
     }
@@ -216,9 +232,17 @@ export class RuntimeProxyLoopbackAdapter {
     try {
       this.#connectPort = await listenLoopback(this.#connectServer);
       this.#directPort = await listenLoopback(this.#directServer);
+      if (this.#githubApiSocketEnabled) {
+        this.#githubSocketDirectory = await mkdtemp(join(tmpdir(), "ot-gh-"));
+        await chmod(this.#githubSocketDirectory, 0o700);
+        this.#githubApiSocketPath = join(this.#githubSocketDirectory, "g.sock");
+        if (Buffer.byteLength(this.#githubApiSocketPath) > 100) throw new Error("GitHub socket path is too long");
+        this.#githubServer.listen(this.#githubApiSocketPath);
+        await once(this.#githubServer, "listening");
+        await chmod(this.#githubApiSocketPath, 0o600);
+      }
     } catch (error) {
-      this.#connectServer.close();
-      this.#directServer.close();
+      await this.close();
       throw new RuntimeProxyLoopbackError(
         "listen_failed",
         `The loopback adapter could not listen: ${error instanceof Error ? error.message : String(error)}`,
@@ -232,7 +256,7 @@ export class RuntimeProxyLoopbackAdapter {
     this.#closed = true;
     for (const socket of [...this.#sockets]) socket.destroy();
     await Promise.all(
-      [this.#connectServer, this.#directServer].map(
+      [this.#connectServer, this.#directServer, this.#githubServer].map(
         (server) =>
           new Promise<void>((resolve) => {
             server.close(() => resolve());
@@ -240,6 +264,7 @@ export class RuntimeProxyLoopbackAdapter {
           }),
       ),
     );
+    if (this.#githubSocketDirectory) await rm(this.#githubSocketDirectory, { recursive: true, force: true });
   }
 
   #track(socket: net.Socket): void {
@@ -277,6 +302,24 @@ export class RuntimeProxyLoopbackAdapter {
     };
     this.#track(encrypted);
     inner.emit("connection", encrypted);
+  }
+
+  async #handleGitHubSocketRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    try {
+      const host = request.headers.host?.toLowerCase();
+      const path = originRelativePath(request.url ?? "");
+      // The gh socket transport may dial any URL through this socket. Pin the actual HTTP
+      // authority here; a caller-supplied provider-origin header never changes the target.
+      if ((host !== "api.github.com" && host !== "api.github.com:443") || !path) {
+        replyText(response, 403, "forbidden");
+        return;
+      }
+      await this.#handleProviderRequest("github", request, response, path, "api.github.com");
+    } catch (error) {
+      this.#logger.debug({ error: runtimeProxyErrorReason(error) }, "GitHub socket request failed");
+      if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
+      response.end();
+    }
   }
 
   async #handleDirectRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

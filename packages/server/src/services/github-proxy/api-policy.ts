@@ -107,3 +107,19 @@ function validateReadQuery(url: URL): void {
       throw new GitPublicationError("invalid_request");
   }
 }
+
+/** Preserve supported native representations only on their already-authorized route families. */
+export function githubReadRepresentation(url: URL, accept: string | undefined): "diff" | "patch" | "raw" | undefined {
+  const requested = /application\/vnd\.github(?:\.v3)?\.(diff|patch|raw)(?:[+;,\s]|$)/i
+    .exec(accept ?? "")?.[1]
+    ?.toLowerCase();
+  if (!requested) return undefined;
+  if (
+    (requested === "diff" || requested === "patch") &&
+    /^\/repos\/[^/]+\/[^/]+\/(?:pulls\/[1-9]\d*|commits\/.+)$/.test(url.pathname) &&
+    !/\/commits\/.+\/(?:check-runs|check-suites|comments|status|pulls)$/.test(url.pathname)
+  )
+    return requested;
+  if (requested === "raw" && /^\/repos\/[^/]+\/[^/]+\/contents(?:\/.*)?$/.test(url.pathname)) return "raw";
+  throw new GitPublicationError("scope_denied");
+}

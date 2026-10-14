@@ -13,6 +13,7 @@ export class GitHubProxyApiTransport {
     method: string;
     path: string;
     body?: unknown;
+    representation?: "diff" | "patch" | "raw";
     signal: AbortSignal;
   }): Promise<GitHubJsonResponse> {
     if (!input.path.startsWith("/") || input.path.startsWith("//")) throw new GitPublicationError("invalid_request");
@@ -20,7 +21,7 @@ export class GitHubProxyApiTransport {
       method: input.method,
       headers: {
         authorization: `Bearer ${input.token}`,
-        accept: "application/vnd.github+json",
+        accept: representationAccept(input.representation),
         "x-github-api-version": "2022-11-28",
         "user-agent": "opentag-github-proxy",
         "content-type": "application/json",
@@ -33,7 +34,10 @@ export class GitHubProxyApiTransport {
       await response.body?.cancel();
       throw new GitPublicationError("unavailable");
     }
-    const headers: Record<string, string> = { "content-type": "application/json", "cache-control": "no-store" };
+    const headers: Record<string, string> = {
+      "content-type": representationContentType(input.representation),
+      "cache-control": "no-store",
+    };
     for (const name of ["retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"])
       if (response.headers.has(name)) headers[name] = response.headers.get(name) as string;
     const link = response.headers.get("link");
@@ -48,11 +52,12 @@ export class GitHubProxyApiTransport {
       headers.link = link;
     if (!response.ok) {
       await response.body?.cancel();
+      headers["content-type"] = "application/json";
       return { status: response.status, headers, value: { message: "GitHub rejected the authorized operation" } };
     }
     const bytes = await readBoundedBody(response.body ?? emptyBody(), 4 * 1024 * 1024, input.signal);
     try {
-      return { status: response.status, headers, value: bytes.length ? JSON.parse(bytes.toString("utf8")) : null };
+      return { status: response.status, headers, value: decodeResponse(bytes, input.token, input.representation) };
     } catch {
       throw new GitPublicationError("unavailable");
     }
@@ -114,4 +119,20 @@ export function sanitizeGitHubResponse(value: unknown, token: string): unknown {
         .map(([key, item]) => [key, sanitizeGitHubResponse(item, token)]),
     );
   return value;
+}
+
+function representationAccept(representation?: "diff" | "patch" | "raw"): string {
+  return representation ? `application/vnd.github.${representation}` : "application/vnd.github+json";
+}
+function decodeResponse(bytes: Buffer, token: string, representation?: "diff" | "patch" | "raw"): unknown {
+  if (representation) {
+    if (bytes.includes(Buffer.from(token))) throw new GitPublicationError("unavailable");
+    return bytes;
+  }
+  return bytes.length ? JSON.parse(bytes.toString("utf8")) : null;
+}
+
+function representationContentType(representation?: "diff" | "patch" | "raw"): string {
+  if (representation === "raw") return "application/octet-stream";
+  return representation ? "text/plain; charset=utf-8" : "application/json";
 }

@@ -67,6 +67,7 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
     // Scrub ambient platform credentials and agent-forwarding from CLI subprocesses.
     OPENTAG_GITHUB_REPOSITORIES: undefined,
     OPENTAG_EXECUTION_ID: input.executionId,
+    GH_HOST: undefined,
     GH_ENTERPRISE_TOKEN: undefined,
     GITHUB_ENTERPRISE_TOKEN: undefined,
     GITHUB_TOKEN: undefined,
@@ -88,6 +89,7 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
   const github = input.handles.get("github");
   if (github !== undefined) {
     Object.assign(environment, {
+      GH_HOST: "github.com",
       GH_TOKEN: github,
       GH_PROMPT_DISABLED: "1",
       GIT_CONFIG_COUNT: "2",
@@ -338,6 +340,7 @@ export class RuntimeProxyMaterialStore {
     readonly environment: RuntimeProxyEnvironment;
     readonly executionId: string;
     readonly handles: ReadonlyMap<RuntimeProxyProvider, string>;
+    readonly githubApiSocketPath?: string;
     readonly platform: NodeJS.Platform;
     readonly sessionId: string;
   }): Promise<RuntimeProxyExecutionLayout> {
@@ -346,6 +349,18 @@ export class RuntimeProxyMaterialStore {
     await mkdir(layout.larkConfigDir, { mode: 0o700, recursive: true });
     await mkdir(layout.slackConfigDir, { mode: 0o700, recursive: true });
     const github = input.handles.get("github");
+    // gh officially supports HTTP over a Unix socket. A private execution socket avoids
+    // changing the macOS trust store (Go <=1.26 ignores SSL_CERT_FILE there). Every request
+    // still authenticates its local handle and crosses the same Server policy/Relay boundary.
+    if (github !== undefined && input.githubApiSocketPath !== undefined) {
+      const configDir = join(layout.executionDir, "gh-config");
+      await mkdir(configDir, { mode: 0o700, recursive: true });
+      await writeDurableFile(
+        join(configDir, "config.yml"),
+        `http_unix_socket: ${JSON.stringify(input.githubApiSocketPath)}\n`,
+        0o600,
+      );
+    }
     // Provider CLIs opened from the stable env file get the standard routing variables there; the
     // manifest stays scoped so the Agent runtime environment never turns them global.
     const routing = providerRoutingEnvironment(input.environment);

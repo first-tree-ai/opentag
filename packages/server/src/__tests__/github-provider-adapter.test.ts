@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../runtime-credentials/provider-proxy-adapter.js";
 import type { GitHubUserTokenClient } from "../services/github/user-token-client.js";
-import { planGitHubRest } from "../services/github-proxy/api-policy.js";
+import { githubReadRepresentation, planGitHubRest } from "../services/github-proxy/api-policy.js";
 import { GitHubProxyApiTransport, jsonBody } from "../services/github-proxy/api-transport.js";
 import {
   assertPullRequestRefs,
@@ -868,10 +868,13 @@ describe("production GitHub provider adapter GraphQL reads", () => {
     const original = upstream.getMockImplementation();
     upstream.mockImplementation(async (...args) => {
       if (String(args[0]).endsWith("/graphql")) {
-        if (String((args[1] as RequestInit).body).includes("mutation")) writeCount++;
+        if (String((args[1] as RequestInit).body).includes("mutation")) {
+          writeCount++;
+          return Response.json({ data: { updatePullRequest: { pullRequest: { id: "PR_one", number: 1 } } } });
+        }
         return Response.json({
           data: {
-            repository: {
+            node: {
               id: "R_test",
               pullRequests: {
                 nodes: [{ id: "PR_one", number: 1, headRefName: "topic", baseRefName: "main" }],
@@ -1348,4 +1351,91 @@ it.each(["REST", "GraphQL"] as const)("keeps %s target admission registered for 
   expect(check).toBeDefined();
   allowed = false;
   await expect(check?.(req.signal)).rejects.toMatchObject({ code: "scope_denied" });
+});
+
+it.each(["diff", "patch"] as const)(
+  "preserves native %s output instead of JSON with an execution-scoped lease",
+  async (representation) => {
+    const patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-before\n+after\n";
+    let upstreamFinished = false;
+    const original = upstream.getMockImplementation();
+    upstream.mockImplementation(async (url, init) => {
+      if (String(url).endsWith("/pulls/1")) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(revoke).not.toHaveBeenCalled();
+        expect(new Headers(init?.headers).get("accept")).toBe(`application/vnd.github.${representation}`);
+        upstreamFinished = true;
+        return new Response(patch, { headers: { "content-type": "text/plain" } });
+      }
+      return original?.(url, init) as Promise<Response>;
+    });
+    const req = request("/repos/owner/repository/pulls/1");
+    const response = await adapter.handle(
+      { ...req, headers: { ...req.headers, accept: `application/vnd.github.v3.${representation}` } },
+      authorization,
+    );
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of response.body) chunks.push(chunk);
+    expect(Buffer.concat(chunks).toString()).toBe(patch);
+    expect(response.headers["content-type"]).toContain("text/plain");
+    expect(upstreamFinished).toBe(true);
+    expect(revoke).toHaveBeenCalledExactlyOnceWith(iat);
+  },
+);
+
+it("preserves raw binary contents byte-for-byte and never returns a scoped token", async () => {
+  const contents = Buffer.from([0xff, 0, 0x80, 0x41]);
+  const transport = new GitHubProxyApiTransport(async (_url, init) => {
+    expect(new Headers(init?.headers).get("accept")).toBe("application/vnd.github.raw");
+    return new Response(contents);
+  });
+  const result = await transport.request({
+    token: iat,
+    method: "GET",
+    path: "/repos/owner/repository/contents/image.bin",
+    representation: "raw",
+    signal: new AbortController().signal,
+  });
+  expect(result.value).toEqual(contents);
+  const unsafe = new GitHubProxyApiTransport(async () => new Response(`diff --git\n+${iat}\n`));
+  await expect(
+    unsafe.request({
+      token: iat,
+      method: "GET",
+      path: "/repos/owner/repository/pulls/1",
+      representation: "diff",
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow(/unavailable/);
+});
+
+it("answers only public schema probes after the current execution fence without minting", async () => {
+  const req = request("/graphql", "POST", {
+    query: '{WorkflowRun:__type(name:"WorkflowRun"){fields(includeDeprecated:true){name}}}',
+  });
+  expect(await responseJson(await adapter.handle(req, authorization))).toMatchObject({
+    data: { WorkflowRun: { fields: expect.arrayContaining([{ name: "event" }]) } },
+  });
+  expect(authorization.recheck).toHaveBeenCalled();
+  expect(mint).not.toHaveBeenCalled();
+  expect(upstream).not.toHaveBeenCalled();
+  const revoked = {
+    ...authorization,
+    recheck: async () => {
+      throw new Error("Execution revoked");
+    },
+  };
+  await expect(
+    adapter.handle(request("/graphql", "POST", { query: '{__type(name:"PullRequest"){fields{name}}}' }), revoked),
+  ).rejects.toThrow("revoked");
+});
+
+it.each([
+  "/repos/owner/repository/pulls",
+  "/repos/owner/repository/commits/sha/check-runs",
+  "/repos/owner/repository/commits/sha/comments",
+])("rejects diff media on JSON-only route %s", (path) => {
+  expect(() =>
+    githubReadRepresentation(new URL(path, "https://api.github.com"), "application/vnd.github.diff"),
+  ).toThrow(/scope_denied/);
 });

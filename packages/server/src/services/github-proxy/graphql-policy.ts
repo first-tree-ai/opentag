@@ -32,8 +32,15 @@ export interface GitHubGraphqlRepository {
 }
 export interface GitHubGraphqlPlan {
   repository: GitHubGraphqlRepository;
-  operation: "read" | "createPullRequest" | "updatePullRequest" | "addComment";
+  operation:
+    | "read"
+    | "createPullRequest"
+    | "updatePullRequest"
+    | "addComment"
+    | "closePullRequest"
+    | "reopenPullRequest";
   input?: Record<string, unknown>;
+  extraPermissions?: { checks?: "read"; actions?: "read" };
 }
 export interface GitHubGraphqlRequest {
   query: string;
@@ -70,6 +77,11 @@ const ReadFields = new Set([
   "bodyText",
   "state",
   "isDraft",
+  "autoMergeRequest",
+  "authorAssociation",
+  "includesCreatedEdit",
+  "isMinimized",
+  "minimizedReason",
   "isCrossRepository",
   "createdAt",
   "updatedAt",
@@ -77,8 +89,10 @@ const ReadFields = new Set([
   "mergedAt",
   "author",
   "assignees",
+  "assignedActors",
   "participants",
   "labels",
+  "color",
   "milestone",
   "dueOn",
   "reviewRequests",
@@ -141,6 +155,14 @@ const ReadFields = new Set([
   "startedAt",
   "completedAt",
   "workflowRun",
+  "checkSuite",
+  "workflow",
+  "event",
+  "checkRunCount",
+  "checkRunCountsByState",
+  "statusContextCount",
+  "statusContextCountsByState",
+  "count",
   "statusContext",
   "requiredApprovingReviewCount",
   "reviewDismissals",
@@ -151,6 +173,8 @@ const ReadFields = new Set([
   "users",
   "viewerHasReacted",
   "projectItems",
+  "fieldValueByName",
+  "optionId",
   "project",
   "owner",
   "target",
@@ -192,6 +216,8 @@ const MutationInputs: Record<string, ReadonlySet<string>> = {
     "maintainerCanModify",
     "clientMutationId",
   ]),
+  closePullRequest: new Set(["pullRequestId", "clientMutationId"]),
+  reopenPullRequest: new Set(["pullRequestId", "clientMutationId"]),
   addComment: new Set(["subjectId", "body", "clientMutationId"]),
 };
 
@@ -200,6 +226,9 @@ interface PolicyWalk {
   variables: Record<string, unknown>;
   fields: number;
   cost: number;
+  repositoryId?: string;
+  resolveNode: (id: string) => string | undefined;
+  extraPermissions: { checks?: "read"; actions?: "read" };
 }
 
 /** Mature GraphQL AST parsing plus domain/target checks; aliases and fragments never bypass field policy. */
@@ -236,6 +265,8 @@ export function planGitHubGraphql(
     variables: resolveOperationVariables(operation, request.variables),
     fields: 0,
     cost: 0,
+    resolveNode,
+    extraPermissions: {},
   };
   const fields = expandedFields(operation.selectionSet, walk, new Set(), 0);
   const targets = fields.filter((field) => field.name.value !== "rateLimit");
@@ -250,8 +281,13 @@ export function planGitHubGraphql(
       ? lookupRepository(repositories, { fullName: `${args.owner}/${args.name}` })
       : lookupRepository(repositories, { nodeId: String(args.id), repositoryId: resolveNode(String(args.id)) });
   if (!repository) throw new GitHubGraphqlPolicyError();
+  walk.repositoryId = repository.repositoryId;
   validateSelection(target.selectionSet, walk, 0, ReadFields, 1, true);
-  return { repository, operation: "read" };
+  return {
+    repository,
+    operation: "read",
+    ...(Object.keys(walk.extraPermissions).length ? { extraPermissions: walk.extraPermissions } : {}),
+  };
 }
 
 function mutationPlan(
@@ -367,7 +403,9 @@ function validateReadField(
   allowParent: boolean,
 ): void {
   const name = field.name.value;
-  const width = connectionWidth(argumentsOf(field, walk.variables));
+  const args = argumentsOf(field, walk.variables);
+  const width = connectionWidth(args);
+  collectReadPermissions(name, args, walk);
   walk.cost += multiplier * width;
   if (walk.cost > 100_000) throw new GitHubGraphqlPolicyError();
   if (name === "parent") {
@@ -500,4 +538,15 @@ function lookupRepository(
         ? item.repositoryId === target.repositoryId
         : item.nodeId === target.nodeId,
   );
+}
+
+function collectReadPermissions(name: string, args: Record<string, unknown>, walk: PolicyWalk): void {
+  if (name === "isRequired") {
+    const owner = typeof args.pullRequestId === "string" ? walk.resolveNode(args.pullRequestId) : undefined;
+    if (!owner || (walk.repositoryId !== "pending" && owner !== walk.repositoryId))
+      throw new GitHubGraphqlPolicyError();
+  }
+  if (["statusCheckRollup", "checkSuite", "checkSuites", "checkRuns"].includes(name))
+    walk.extraPermissions.checks = "read";
+  if (name === "workflowRun") walk.extraPermissions.actions = "read";
 }

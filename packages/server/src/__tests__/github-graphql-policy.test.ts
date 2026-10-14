@@ -402,3 +402,56 @@ describe("GitHub GraphQL operation variable defaults", () => {
     ).toThrow(/policy/);
   });
 });
+
+it.each(["closePullRequest", "reopenPullRequest"])(
+  "authorizes native %s only for a previously resolved PR",
+  (operation) => {
+    const query = `mutation($id:ID!){${operation}(input:{pullRequestId:$id}){pullRequest{id}}}`;
+    expect(plan(query, { id: "PR_123" })).toMatchObject({ operation, repository: repositories[0] });
+    expect(() => plan(query, { id: "PR_foreign" })).toThrow(/policy/);
+  },
+);
+
+it("supports native edit metadata without widening actor or project identity windows", () => {
+  expect(
+    plan(`{repository(owner:"team",name:"code"){pullRequest(number:1){
+    assignedActors(first:10){nodes{...on User{id login name} ...on Bot{id login}} totalCount}
+    labels(first:100){nodes{id name description color}}
+    reviewRequests(first:100){nodes{requestedReviewer{...on Team{organization{login} name slug}}}}
+    projectItems(first:100){nodes{id project{id title} status:fieldValueByName(name:"Status"){...on ProjectV2ItemFieldSingleSelectValue{optionId name}}}pageInfo{hasNextPage endCursor}}
+  }}}`),
+  ).toMatchObject({ operation: "read" });
+  for (const child of [
+    "assignedActors(first:1){nodes{...on User{repositories(first:1){nodes{id}}}}}",
+    "reviewRequests(first:1){nodes{requestedReviewer{...on Team{organization{repositories(first:1){nodes{id}}}}}}}",
+    "projectItems(first:1){nodes{project{repositories(first:1){nodes{id}}}}}",
+  ]) {
+    expect(() => plan(`{repository(owner:"team",name:"code"){pullRequest(number:1){${child}}}}`)).toThrow(/policy/);
+  }
+});
+
+it("requests minimal checks/actions permissions and rejects foreign PR arguments", () => {
+  const query = (id: string) =>
+    `{repository(owner:"team",name:"code"){pullRequest(number:1){commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{...on CheckRun{name checkSuite{workflowRun{event workflow{name}}} isRequired(pullRequestId:"${id}")}}}}}}}}}}`;
+  expect(plan(query("PR_123"))).toMatchObject({ extraPermissions: { checks: "read", actions: "read" } });
+  expect(() => plan(query("PR_foreign"))).toThrow(/policy/);
+  expect(() =>
+    planGitHubGraphql({ query: query("PR_other") }, repositories, (id) => (id === "PR_other" ? "456" : undefined)),
+  ).toThrow(/policy/);
+});
+
+it("keeps auto-merge display metadata read-only and its user identity window closed", () => {
+  expect(
+    plan(
+      '{repository(owner:"team",name:"code"){pullRequest(number:1){autoMergeRequest{authorEmail commitBody commitHeadline mergeMethod enabledAt enabledBy{login}} comments(first:1){nodes{authorAssociation includesCreatedEdit isMinimized minimizedReason}}}}}',
+    ),
+  ).toMatchObject({ operation: "read" });
+  expect(() =>
+    plan(
+      '{repository(owner:"team",name:"code"){pullRequest(number:1){autoMergeRequest{enabledBy{repositories(first:1){nodes{id}}}}}}}',
+    ),
+  ).toThrow(/policy/);
+  expect(() => plan('mutation{enablePullRequestAutoMerge(input:{pullRequestId:"PR_123"}){pullRequest{id}}}')).toThrow(
+    /policy/,
+  );
+});

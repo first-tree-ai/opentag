@@ -498,6 +498,7 @@ export class RuntimeCredentialEnvironmentManager {
   ): Promise<RuntimeProxyLoopbackAdapter> {
     return RuntimeProxyLoopbackAdapter.start({
       executionId: relay.executionId,
+      githubApiSocket: relay.providers.some((entry) => entry.provider === "github"),
       ...(this.#options.generateCa ? { generateCa: this.#options.generateCa } : {}),
       localHandleFor: (provider) => {
         try {
@@ -533,6 +534,7 @@ export class RuntimeCredentialEnvironmentManager {
     await store.publish({
       adapterCaCertPath: adapter.caCertPath,
       environment,
+      githubApiSocketPath: adapter.githubApiSocketPath,
       executionId: relay.executionId,
       handles,
       platform: this.#platform,
@@ -557,7 +559,7 @@ export class RuntimeCredentialEnvironmentManager {
       ...(imProvider ? { provider: imProvider } : {}),
       providers,
       relay,
-      slackApiHost: adapter.slackApiHost,
+      ...(imProvider === "slack" ? { slackApiHost: adapter.slackApiHost } : {}),
       ...(imProvider === "slack" ? { slackConfigDir: layout.slackConfigDir } : {}),
       ...(web ? { web } : {}),
       ...(mcp ? { mcp } : {}),

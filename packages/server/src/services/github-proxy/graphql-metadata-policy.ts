@@ -20,6 +20,15 @@ export const ParentRepositoryMetadata = new Set([
 ]);
 export const ParentOwnerMetadata = new Set(["login", "__typename"]);
 export const ParentDefaultBranchRefMetadata = new Set(["name", "__typename"]);
+export const AutoMergeMetadata = new Set([
+  "authorEmail",
+  "commitBody",
+  "commitHeadline",
+  "mergeMethod",
+  "enabledAt",
+  "enabledBy",
+]);
+export const ProjectMetadata = new Set(["id", "title", "name", "url", "__typename"]);
 export const CrossRepositoryMetadata = new Set([
   "id",
   "databaseId",
@@ -51,7 +60,7 @@ export const ActorIdentityMetadata = new Set([
 /** GitActor (commit author) adds commit-author fields and the `user` identity reference. */
 export const ActorMetadata = new Set([...ActorIdentityMetadata, "date", "user"]);
 /** Team handles may appear as requested reviewers; content connections (members/repositories) are not listed. */
-export const RequestedReviewerMetadata = new Set([...ActorIdentityMetadata, "slug"]);
+export const RequestedReviewerMetadata = new Set([...ActorIdentityMetadata, "slug", "organization"]);
 /** ReviewRequest nodes only reference the requested reviewer; they expose no repository content. */
 export const ReviewRequestMetadata = new Set(["__typename", "requestedReviewer"]);
 export const ConnectionFields = new Set(["__typename", "totalCount", "nodes", "edges", "pageInfo"]);
@@ -60,6 +69,7 @@ export const PageInfoFields = new Set(["__typename", "hasNextPage", "hasPrevious
 /** Connections whose node type is an actor/user/reviewer; their nodes never inherit ReadFields. */
 export const MetadataConnectionNodes: Readonly<Record<string, ReadonlySet<string>>> = {
   assignees: ActorIdentityMetadata,
+  assignedActors: ActorIdentityMetadata,
   participants: ActorIdentityMetadata,
   users: ActorIdentityMetadata,
   authors: ActorMetadata,
@@ -70,6 +80,10 @@ export const MetadataConnectionNodes: Readonly<Record<string, ReadonlySet<string
 /** Cross-repository/actor subtrees that must never inherit the parent content allowlist. */
 export function metadataChildSet(name: string): ReadonlySet<string> | undefined {
   switch (name) {
+    case "autoMergeRequest":
+      return AutoMergeMetadata;
+    case "enabledBy":
+    case "organization":
     case "owner":
     case "headRepositoryOwner":
       return ActorIdentityMetadata;
@@ -81,8 +95,9 @@ export function metadataChildSet(name: string): ReadonlySet<string> | undefined 
       return RequestedReviewerMetadata;
     case "headRepository":
     case "subject":
-    case "project":
       return CrossRepositoryMetadata;
+    case "project":
+      return ProjectMetadata;
     default:
       return undefined;
   }

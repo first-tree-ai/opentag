@@ -125,7 +125,7 @@ describe("systemd service backend", () => {
       serviceId: "opentag-dev",
     });
     expect(unit).toContain(
-      'ExecStart=:/usr/bin/env "PATH=/usr/bin:/bin" "OPENTAG_SERVICE_MODE=1" "OPENTAG_HOME=/Users/Test $HOME/.opentag-dev%%1" "/usr/bin/node" "/app/index.mjs" "daemon" "service-run"',
+      'ExecStart=/usr/bin/env "PATH=/usr/bin:/bin" "OPENTAG_SERVICE_MODE=1" "OPENTAG_HOME=/Users/Test $$HOME/.opentag-dev%%1" "/usr/bin/node" "/app/index.mjs" "daemon" "service-run"',
     );
     expect(unit).toContain("Restart=on-failure");
     expect(unit).toContain("OPENTAG_HOME=/Users/Test $HOME/.opentag-dev%%1");

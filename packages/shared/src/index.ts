@@ -103,6 +103,10 @@ export {
   RefreshTokenRequestSchema,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  SLACK_AGENT_PROVISION_CODE_PREFIX,
+  type SlackAgentProvisionCodeResponse,
+  SlackAgentProvisionCodeResponseSchema,
+  SlackAgentProvisionCodeSchema,
   type UpdateUserProfileRequest,
   UpdateUserProfileRequestSchema,
   UserDisplayNameSchema,
@@ -382,6 +386,7 @@ export {
   RUNTIME_AGENT_SCHEDULE_RESUME_TEMPLATE,
   RUNTIME_AGENT_SCHEDULE_TEMPLATE,
   RUNTIME_AGENT_SCHEDULES_PATH,
+  RUNTIME_AGENT_SLACK_PROVISION_PATH,
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   RUNTIME_SKILL_BUNDLE_TEMPLATE,
@@ -698,6 +703,8 @@ export * from "./skill.js";
 export * from "./skill-discovery.js";
 export * from "./skill-preset.js";
 export * from "./skill-source.js";
+export * from "./slack-agent-provision.js";
+export * from "./slack-app-manifest.js";
 export * from "./slack-configuration.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,

@@ -178,6 +178,7 @@ import {
   type SkillArchiveFormat,
   type SkillDetail,
   SkillDetailSchema,
+  SlackAgentProvisionCodeResponseSchema,
   type SlackConfigurationResult,
   SlackConfigurationResultSchema,
   type SlackConfigurationView,
@@ -312,6 +313,14 @@ export class BrowserApi {
     return this.request(CLOUD_BILLING_CHECKOUT_PATH, CloudCreditCheckoutResponseSchema, {
       method: "POST",
       body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  issueSlackAgentProvisionCode() {
+    return this.request(HTTP_PATHS.meConnectCodes, SlackAgentProvisionCodeResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ purpose: "slack-agent-provision" }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }

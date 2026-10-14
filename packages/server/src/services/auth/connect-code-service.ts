@@ -1,9 +1,11 @@
-import { type ChannelName, getChannelConfig } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { type ChannelName, getChannelConfig, SLACK_AGENT_PROVISION_CODE_PREFIX } from "@opentag/shared";
+import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { accountCliLoginCodes, users } from "../../db/schema/index.js";
-import { AuthServiceError } from "./errors.js";
+import { AuthServiceError, invalidCredential } from "./errors.js";
 import { generateSecret, hashSecret } from "./security.js";
+
+export type AccountConnectCodePurpose = "login" | "slack-agent-provision";
 
 export const CONNECT_CODE_TTL_SECONDS = 15 * 60;
 
@@ -17,7 +19,7 @@ export interface IssuedConnectCode {
 }
 
 export interface ConnectCodeIssuer {
-  issueForUser(userId: string): Promise<IssuedConnectCode>;
+  issueForUser(userId: string, purpose?: AccountConnectCodePurpose): Promise<IssuedConnectCode>;
 }
 
 function shellQuote(value: string): string {
@@ -45,17 +47,17 @@ export function buildConnectBootstrapCommand(options: {
 
 export async function issueConnectCodeInTransaction(
   transaction: DatabaseTransaction,
-  input: { issuerUserId: string; userId: string; ttlSeconds?: number },
+  input: { issuerUserId: string; userId: string; ttlSeconds?: number; purpose?: AccountConnectCodePurpose },
   now: Date,
 ): Promise<IssuedConnectCode> {
   const expiresIn = input.ttlSeconds ?? CONNECT_CODE_TTL_SECONDS;
   if (!Number.isInteger(expiresIn) || expiresIn <= 0) {
     throw new TypeError("Connect code TTL must be a positive integer");
   }
-  const code = generateSecret(24);
+  const code = `${input.purpose === "slack-agent-provision" ? SLACK_AGENT_PROVISION_CODE_PREFIX : ""}${generateSecret(24)}`;
   const expiresAt = new Date(now.getTime() + expiresIn * 1000);
   await transaction.insert(accountCliLoginCodes).values({
-    tokenHash: hashSecret(code),
+    tokenHash: accountConnectCodeHash(code, input.purpose ?? "login"),
     userId: input.userId,
     issuedByUserId: input.issuerUserId,
     createdAt: now,
@@ -77,7 +79,7 @@ export class ConnectCodeService implements ConnectCodeIssuer {
     this.#now = options.now ?? (() => new Date());
   }
 
-  async issueForUser(userId: string): Promise<IssuedConnectCode> {
+  async issueForUser(userId: string, purpose?: AccountConnectCodePurpose): Promise<IssuedConnectCode> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
       const [user] = await transaction
@@ -89,7 +91,78 @@ export class ConnectCodeService implements ConnectCodeIssuer {
       if (!user || user.suspendedAt) {
         throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
       }
-      return issueConnectCodeInTransaction(transaction, { issuerUserId: userId, userId }, now);
+      return issueConnectCodeInTransaction(transaction, { issuerUserId: userId, userId, purpose }, now);
     });
   }
+}
+
+/** Commits one-time consumption before the caller performs its separately authorized operation. */
+export async function consumeAccountConnectCode(
+  database: DatabaseClient,
+  code: string,
+  purpose: AccountConnectCodePurpose,
+  expectedUserId?: string,
+  now = new Date(),
+): Promise<string> {
+  const isProvisionCode = code.startsWith(SLACK_AGENT_PROVISION_CODE_PREFIX);
+  if (isProvisionCode !== (purpose === "slack-agent-provision")) {
+    throw invalidCredential("AUTH_CODE_PURPOSE_MISMATCH", "This code cannot be used for this operation");
+  }
+  const codeHash = accountConnectCodeHash(code, purpose);
+  return database.transaction(async (transaction) => {
+    const [connectCode] = await transaction
+      .select()
+      .from(accountCliLoginCodes)
+      .where(eq(accountCliLoginCodes.tokenHash, codeHash))
+      .for("update");
+    if (!connectCode) {
+      throw invalidCredential("AUTH_INVALID_CODE", "The connect code is invalid");
+    }
+    if (connectCode.consumedAt) {
+      throw invalidCredential("AUTH_CODE_CONSUMED", "The connect code has already been used");
+    }
+    if (connectCode.expiresAt <= now) {
+      throw invalidCredential("AUTH_CODE_EXPIRED", "The connect code has expired");
+    }
+
+    const [user] = await transaction.select().from(users).where(eq(users.id, connectCode.userId)).limit(1);
+    const [issuer] = await transaction.select().from(users).where(eq(users.id, connectCode.issuedByUserId)).limit(1);
+    assertActiveCodeUsers(user, issuer);
+    if (expectedUserId && expectedUserId !== user.id) {
+      throw new AuthServiceError(
+        "AUTH_USER_MISMATCH",
+        "deterministic",
+        "The connect code belongs to another user",
+        409,
+      );
+    }
+
+    // Conditional, so a code two callers reach at once is redeemed by exactly one of them.
+    const [consumed] = await transaction
+      .update(accountCliLoginCodes)
+      .set({ consumedAt: now })
+      .where(and(eq(accountCliLoginCodes.id, connectCode.id), isNull(accountCliLoginCodes.consumedAt)))
+      .returning({ id: accountCliLoginCodes.id });
+    if (!consumed) {
+      throw invalidCredential("AUTH_CODE_CONSUMED", "The connect code has already been used");
+    }
+    return user.id;
+  });
+}
+
+function assertActiveCodeUsers(
+  user: typeof users.$inferSelect | undefined,
+  issuer: typeof users.$inferSelect | undefined,
+): asserts user is typeof users.$inferSelect {
+  if (!user || !issuer) {
+    throw invalidCredential("AUTH_INVALID_CODE", "The connect code is invalid");
+  }
+  if (user.suspendedAt || issuer.suspendedAt) {
+    throw invalidCredential("AUTH_USER_SUSPENDED", "The user account is suspended");
+  }
+}
+
+// Tag the stored hash, not only its input: legacy login consumers compute plain hex and cannot match it after rollback.
+function accountConnectCodeHash(code: string, purpose: AccountConnectCodePurpose): string {
+  return `${purpose === "slack-agent-provision" ? SLACK_AGENT_PROVISION_CODE_PREFIX : ""}${hashSecret(code)}`;
 }

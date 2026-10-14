@@ -66,6 +66,46 @@ describe("Login session entry", () => {
     expect(screen.queryByRole("heading", { name: "All Agents" })).toBeNull();
   });
 
+  it("opens the Slack operation confirmation after login without requiring Account setup", async () => {
+    installApi({ setupCompletedAt: null });
+    const next = "/account?slackProvision=true";
+    window.history.replaceState({}, "", `/login?next=${encodeURIComponent(next)}`);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Generate and copy code" })).toBeTruthy();
+    expect(window.location.pathname + window.location.search).toBe(next);
+    expect(screen.queryByRole("heading", { name: "Prepare this computer" })).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input) === "/api/v1/me/connect-codes")).toBe(false);
+  });
+
+  it.each([
+    "/account",
+    "/account?slackProvision=false",
+    "/agents?slackProvision=true",
+    "/account?slackProvision=true&slackProvision=false",
+    "/account?slackProvision=false&slackProvision=true",
+  ])("retains Account setup admission outside the exact Slack confirmation entry: %s", async (path) => {
+    installApi({ setupCompletedAt: null });
+    window.history.replaceState({}, "", path);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents/setup");
+    expect(screen.queryByRole("button", { name: "Generate and copy code" })).toBeNull();
+  });
+
+  it("requires sign-in and preserves the Slack operation confirmation destination", async () => {
+    installApi({ unauthenticated: true, authProviders: [google] });
+    const next = "/account?slackProvision=true";
+    window.history.replaceState({}, "", next);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/login");
+    expect(new URLSearchParams(window.location.search).get("next")).toBe(next);
+    expect(screen.queryByRole("button", { name: "Generate and copy code" })).toBeNull();
+  });
+
   it("preserves the requested destination and its search parameters", async () => {
     installApi();
     const next = "/agents/computers?from=login";

@@ -24,7 +24,25 @@ export const ConnectCodeIssueResponseSchema = z
   })
   .strict();
 
-export const ConnectCodeIssueRequestSchema = z.object({}).strict();
+export const SLACK_AGENT_PROVISION_CODE_PREFIX = "slack-provision.";
+export const SlackAgentProvisionCodeSchema = z
+  .string()
+  .trim()
+  .min(16)
+  .max(512)
+  .startsWith(SLACK_AGENT_PROVISION_CODE_PREFIX);
+export const SlackAgentProvisionCodeResponseSchema = z
+  .object({
+    code: SlackAgentProvisionCodeSchema,
+    expiresIn: z.number().int().positive(),
+    issuedAt: z.string().datetime(),
+  })
+  .strict();
+
+export const ConnectCodeIssueRequestSchema = z
+  .object({ purpose: z.literal("slack-agent-provision").optional() })
+  .strict();
+export type SlackAgentProvisionCodeResponse = z.infer<typeof SlackAgentProvisionCodeResponseSchema>;
 
 export const RefreshTokenRequestSchema = z.object({ refreshToken: z.string().min(1).max(4096) }).strict();
 export const RefreshTokenResponseSchema = z.object(TokenResponseFields).strict();

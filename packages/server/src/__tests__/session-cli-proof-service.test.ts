@@ -22,7 +22,7 @@ describe("SessionCliProofService", () => {
       new Uint8Array(32).fill(7),
     );
 
-    await expect(service.prepareReconcile(randomUUID(), randomUUID(), request)).resolves.toBe(request);
+    await expect(service.prepareReconcile(randomUUID(), randomUUID(), request)).resolves.toEqual({ request });
     expect(database.transaction).not.toHaveBeenCalled();
     expect(database.delete).not.toHaveBeenCalled();
   });

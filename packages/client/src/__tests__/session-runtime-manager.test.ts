@@ -54,6 +54,41 @@ afterEach(async () => {
 });
 
 describe("SessionRuntimeManager", () => {
+  it.each(["visible-proof", "visible-no-proof", "internal-proof"])(
+    "limits Slack management writable permission to visible proof-backed Sessions: %s",
+    async (kind) => {
+      const home = await mkdtemp(resolve(tmpdir(), "opentag-slack-management-writable-"));
+      homes.push(home);
+      const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+      const factory = new FakeFactory();
+      const manager = new SessionRuntimeManager({
+        bindingStore: store,
+        home,
+        providers: await providerRegistry(factory),
+        proofManager: { materialize: async () => "/tmp/session-proof.json", cleanup: async () => undefined },
+        providerEnvironmentPath: () => "/tmp/provider-env.sh",
+        workspace: new AgentWorkspaceManager({ home, bindingStore: store }),
+      });
+      const computerId = randomUUID();
+      const request = {
+        ...reconcile(computerId, snapshot(1)),
+        ...(kind === "internal-proof" ? { sessionKind: "internal" as const, creatorSessionId: randomUUID() } : {}),
+        ...(kind !== "visible-no-proof" ? { sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) } } : {}),
+      };
+      await new SessionReconciler({ installationId: computerId, preparation: manager, localPolicy: manager }).reconcile(
+        request,
+      );
+      await manager.ensureRuntime(request.sessionId);
+      const root = resolve(await realpath(home), "slack-management");
+      const roots = factory.created[0]?.workspace.writableRoots ?? [];
+      expect(roots.includes(root)).toBe(kind === "visible-proof");
+      expect(roots).not.toContain(home);
+      if (kind === "visible-proof") expect((await stat(root)).mode & 0o777).toBe(0o700);
+      else await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+      await manager.close();
+    },
+  );
+
   it("keeps Context Tree changes blocked until the Agent's last prepared Session stops", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-agent-sessions-"));
     homes.push(home);

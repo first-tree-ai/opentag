@@ -149,6 +149,7 @@ export const PUBLIC_MCP_SERVERS_PATH = `${API_V1_PREFIX}/public/mcp-servers`;
  * is always the one the proof resolves to, so a request cannot reach a different Agent.
  */
 export const RUNTIME_AGENT_PATH = `${API_V1_PREFIX}/runtime/agent`;
+export const RUNTIME_AGENT_SLACK_PROVISION_PATH = `${RUNTIME_AGENT_PATH}/slack-provision`;
 /*
  * Agent Schedules. The runtime prefix is Session-proof authenticated and never addressed by
  * Agent id (the proof resolves the Agent); the Account prefix is scoped to an owned Agent and

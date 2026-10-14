@@ -145,6 +145,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   installSkillPreset: [ID, "mcp-onboarding"],
   resetAccountSetup: ["reboard"],
   issueComputerConnectCode: [],
+  issueSlackAgentProvisionCode: [],
   health: ["/healthz"],
   signUpWithPassword: [{ email: "a@example.com", password: "pw", displayName: "Ada" }],
   signInWithPassword: [{ email: "a@example.com", password: "pw" }],

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
-import type { NormalizedInboundImEvent, SessionReconcileRequest } from "@opentag/shared";
+import type { NormalizedInboundImEvent, SessionReconcileRequest, SessionReconcileResult } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
@@ -627,18 +627,77 @@ describe("SessionCliProofService with the unit database", () => {
       runtime: {},
     } as SessionReconcileRequest;
     expect(
-      (await service.prepareReconcile(fixture.computerId, fixture.instanceId, reconcile)).sessionCliProof,
+      (await service.prepareReconcile(fixture.computerId, fixture.instanceId, reconcile)).request.sessionCliProof,
     ).toBeDefined();
     const stopped = { ...reconcile, desired: "stopped" as const };
-    await expect(service.prepareReconcile(fixture.computerId, fixture.instanceId, stopped)).resolves.toBe(stopped);
+    expect((await service.prepareReconcile(fixture.computerId, fixture.instanceId, stopped)).request).toBe(stopped);
     await expect(service.revoke({ ...input, placementGeneration: 99 })).resolves.toBeUndefined();
     await expect(service.revoke({ ...input, connectionInstanceId: randomUUID() })).resolves.toBeUndefined();
     registry.supportsCapability.mockReturnValue(false);
-    await expect(service.prepareReconcile(fixture.computerId, fixture.instanceId, reconcile)).resolves.toBe(reconcile);
+    await expect(service.prepareReconcile(fixture.computerId, fixture.instanceId, reconcile)).resolves.toEqual({
+      request: reconcile,
+    });
     await expect(service.mint(input)).rejects.toMatchObject({ code: "runtime_unavailable" });
     registry.supportsCapability.mockReturnValue(true);
     await expect(service.revoke(input)).resolves.toBeUndefined();
   });
+
+  it.each([false, true])(
+    "preserves busy proof and fences a stopped result after newer ready=%s",
+    async (newerReady) => {
+      const service = new SessionCliProofService(
+        db.database,
+        {
+          currentInstanceId: () => fixture.instanceId,
+          supportsCapability: () => true,
+        },
+        new Uint8Array(32).fill(3),
+        { now: () => fixture.now },
+      );
+      const session = await new SessionService(db.database).ensureChatSession(
+        { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      const ready: SessionReconcileRequest = {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        installationId: fixture.installationId,
+        sessionId: session.session.id,
+        agentId: fixture.agentId,
+        placementGeneration: 1,
+        desired: "ready",
+      };
+      const initial = await service.prepareReconcile(fixture.computerId, fixture.instanceId, ready);
+      const proof = initial.request.sessionCliProof;
+      if (!proof) throw new Error("The ready reconcile must provide a proof");
+      const stopped = await service.prepareReconcile(fixture.computerId, fixture.instanceId, {
+        ...ready,
+        desired: "stopped",
+      });
+      const result: SessionReconcileResult = {
+        type: "session:reconcile:result",
+        requestId: ready.requestId,
+        sessionId: ready.sessionId,
+        placementGeneration: 1,
+        status: "busy",
+        reason: "active_turn",
+      };
+      await stopped.onResult?.(result);
+      await expect(service.authenticate(proof.token)).resolves.toHaveProperty("sessionId", ready.sessionId);
+      if (newerReady) {
+        // Fixed clock and reused proofId must still supersede the pending stop.
+        expect(
+          (await service.prepareReconcile(fixture.computerId, fixture.instanceId, ready)).request.sessionCliProof,
+        ).toEqual(proof);
+      }
+      await stopped.onResult?.({ ...result, status: "stopped", reason: undefined });
+      if (newerReady) {
+        await expect(service.authenticate(proof.token)).resolves.toHaveProperty("sessionId", ready.sessionId);
+      } else {
+        await expect(service.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
+      }
+    },
+  );
 
   it("invalidates proofs when placement, runtime, agent, or binding state changes", async () => {
     const registry = {

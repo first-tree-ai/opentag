@@ -10,6 +10,7 @@ import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types
 import { createLogger } from "../observability/logger.js";
 import type { SkillSyncManager } from "../skills/skill-sync.js";
 import { prepareContextTreeHome } from "../storage/context-tree-home.js";
+import { ensurePrivateDirectory } from "../storage/durable-file.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
@@ -357,6 +358,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         },
         writableRoots: [
           ...replyRoots,
+          ...(await visibleSlackManagementWritableRoots(managed, this.#home)),
           ...visibleSlackWritableRoots(
             managed.sessionKind,
             managed.cwd,
@@ -525,6 +527,14 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   #assertOpen(): void {
     if (this.#closing) throw new Error("The Session Runtime manager is closing");
   }
+}
+
+async function visibleSlackManagementWritableRoots(
+  managed: ManagedSessionRuntime,
+  home: string | undefined,
+): Promise<string[]> {
+  if (!home || managed.sessionKind !== "visible" || !managed.proofPath) return [];
+  return [await ensurePrivateDirectory(home, resolve(home, "slack-management"))];
 }
 
 /**

@@ -1206,6 +1206,16 @@ export async function startServer(): Promise<void> {
           proofs: sessionCliProofService,
         }),
       },
+      runtimeAgentSlackProvision: {
+        service: new AgentSlackProvisionService({
+          database,
+          agents: agentService,
+          slack: slackConfigurationService,
+          proofs: sessionCliProofService,
+          owners: new DatabaseAgentOwnerResolver(database),
+          publicOrigin: config.publicUrl,
+        }),
+      },
       runtimeAgentSchedules: { service: scheduleService },
       agentSchedules: { service: scheduleService },
       runtimeSessions: {
@@ -1310,3 +1320,5 @@ const isProcessEntry = process.argv[1] !== undefined && fileURLToPath(import.met
 if (isProcessEntry) {
   await startServer();
 }
+
+import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";

@@ -486,7 +486,7 @@ describe("Session collaboration authority", () => {
         desired: "ready",
         runtime: runtimeSnapshot(fixture.agentId),
       });
-      expect(busyReconcile.sessionCliProof).toEqual(first);
+      expect(busyReconcile.request.sessionCliProof).toEqual(first);
       await expect(proofs.authenticate(first.token)).resolves.toMatchObject({ sessionId: source.session.id });
 
       const replacementInstanceId = randomUUID();

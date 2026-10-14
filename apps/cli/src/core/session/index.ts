@@ -36,7 +36,7 @@ export class SessionCommandRequestError extends Error {
 
 export async function resolveSessionProofContext(
   environment: NodeJS.ProcessEnv = process.env,
-): Promise<{ api: OpenTagApi; proof: string; executionId?: string }> {
+): Promise<{ api: OpenTagApi; proof: string; serverUrl: string; executionId?: string }> {
   const proofPath = environment.OPENTAG_SESSION_PROOF_FILE;
   if (!proofPath) {
     throw new Error(
@@ -52,7 +52,7 @@ export async function resolveSessionProofContext(
     const proof = await readSessionCliProofFile(proofPath);
     const cloudContext = await resolveCommandContext({ environment, serverUrl });
     if (!cloudContext.api) throw new Error("Command context did not resolve an API");
-    return { api: cloudContext.api, proof: proof.token, ...(executionId ? { executionId } : {}) };
+    return { api: cloudContext.api, serverUrl, proof: proof.token, ...(executionId ? { executionId } : {}) };
   }
   const context = await resolveCommandContext({ environment });
   const home = context.home;
@@ -65,7 +65,12 @@ export async function resolveSessionProofContext(
   const proof = await readSessionCliProofFile(proofPath);
   const apiContext = await resolveCommandContext({ environment, home, serverUrl: identity.serverUrl });
   if (!apiContext.api) throw new Error("Command context did not resolve an API");
-  return { api: apiContext.api, proof: proof.token, ...(executionId ? { executionId } : {}) };
+  return {
+    api: apiContext.api,
+    serverUrl: identity.serverUrl,
+    proof: proof.token,
+    ...(executionId ? { executionId } : {}),
+  };
 }
 
 export async function runSessionCreate(

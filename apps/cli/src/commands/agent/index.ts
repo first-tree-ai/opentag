@@ -8,11 +8,13 @@ import { registerAgentLifecycleCommands } from "./lifecycle.js";
 import { registerAgentListCommand } from "./list.js";
 import { registerAgentSelfCommands } from "./self.js";
 import { registerAgentShowCommand } from "./show.js";
+import { registerAgentSlackProvisionCommand } from "./slack-provision.js";
 import { registerAgentUpdateCommand } from "./update.js";
 
 export function registerAgentCommand(program: Command): void {
   const agent = program.command("agent").description("Manage Agents available to the current Account");
   registerAgentCreateCommand(agent);
+  registerAgentSlackProvisionCommand(agent);
   registerAgentListCommand(agent);
   registerAgentShowCommand(agent);
   registerAgentUpdateCommand(agent);

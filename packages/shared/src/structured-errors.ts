@@ -688,6 +688,7 @@ function scrubCredentialHeaders(value: string): string {
 
 function scrubString(value: string): string {
   return scrubCredentialHeaders(value)
+    .replace(/\bslack-provision\.[A-Za-z0-9_-]{32,}/gu, "[REDACTED]")
     .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
     .replace(/\b(Basic|Digest|Negotiate)\s+[^\s,;}\]]+/giu, "$1 [REDACTED]")
     .replace(

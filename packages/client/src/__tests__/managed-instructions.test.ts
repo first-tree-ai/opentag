@@ -60,10 +60,11 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain('--project-path "<Agent Home>"');
     expect(prompt).toContain("do not create or reconnect a tree just because the task cwd changed");
     expect(prompt).toContain("matching skill write protocol");
-    expect(prompt).not.toContain("sandbox");
-    expect(prompt).not.toContain("manifest");
-    expect(prompt).not.toMatch(/\bGC\b/);
-    expect(prompt).not.toContain("migration");
+    const homeInstructions = prompt.slice(prompt.indexOf("## Agent Home"), prompt.indexOf("## Skills"));
+    expect(homeInstructions).not.toContain("sandbox");
+    expect(homeInstructions).not.toContain("manifest");
+    expect(homeInstructions).not.toMatch(/\bGC\b/);
+    expect(homeInstructions).not.toContain("migration");
   });
 
   it("tells the Agent how to save a reusable routine as a Skill", () => {
@@ -384,4 +385,20 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
     expect(prompt.match(/Continue the task without those trees/g)).toHaveLength(1);
   });
+});
+
+it("describes one-code Slack provisioning for visible managed Sessions without granting self-configuration", () => {
+  const prompt = renderManagedSystemPrompt(snapshot, { ...cloudSession, selfConfigurationEnabled: false });
+  expect(prompt).toContain("opentag slack --help");
+  expect(prompt).toContain("--project-dir project-<creationIntentId>");
+  expect(prompt).toContain("without --code-file");
+  expect(prompt).toContain("Never request a normal Account login code");
+  expect(prompt).toContain("Callback failure retries only that update");
+  expect(prompt).not.toContain("## Self-configuration");
+  expect(renderManagedSystemPrompt(snapshot, { ...cloudSession, sessionCliAvailable: false })).not.toContain(
+    "agent provision-slack",
+  );
+  expect(renderManagedSystemPrompt(snapshot, { ...cloudSession, sessionKind: "internal" })).not.toContain(
+    "agent provision-slack",
+  );
 });

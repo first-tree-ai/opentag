@@ -700,3 +700,12 @@ describe("structured error redaction scanners", () => {
     expect(redactForLog({ nested: { cookie: "a\\,b" } })).toEqual({ nested: { cookie: "[REDACTED]" } });
   });
 });
+
+it("redacts a full operation code without erasing source filenames", () => {
+  const code = `slack-provision.${"a".repeat(32)}`;
+  expect(redactSensitive({ code, message: `Rejected ${code}` })).toEqual({
+    code: "[REDACTED]",
+    message: "Rejected [REDACTED]",
+  });
+  expect(redactSensitive("/server/runtime-agent-slack-provision.ts")).toBe("/server/runtime-agent-slack-provision.ts");
+});

@@ -22,6 +22,7 @@ import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
 import { SoulEditor } from "./soul-editor.js";
 import { SoulFooter } from "./soul-footer.js";
+import { SoulPresetSelector } from "./soul-preset-selector.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 const PROVIDER_DEFAULT_OPTION = "__provider_default__";
@@ -84,6 +85,7 @@ function RuntimeConfigurationEditor({
     initialConfig.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION,
   );
   const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
+  const [showSoulExample, setShowSoulExample] = useState(true);
   const [permissionsDraft, setPermissionsDraft] = useState(initialConfig.runtimeConfig.permissions);
   const soulFooterRef = useRef<HTMLDivElement>(null);
   const [message, setMessage] = useState<{
@@ -300,7 +302,7 @@ function RuntimeConfigurationEditor({
         >
           {section === "instructions" ? (
             <AgentSettingsPageHeader
-              description={m.agent_settings_instructions_description({ agentName: config.displayName })}
+              description={m.agent_settings_instructions_description()}
               id="agent-instructions-heading"
               title={m.agent_settings_instructions_title()}
             />
@@ -309,33 +311,46 @@ function RuntimeConfigurationEditor({
               <Text as="h3" id="agent-instructions-heading" variant="heading">
                 {m.agent_settings_instructions_title()}
               </Text>
-              <p className="text-sm text-kumo-subtle">
-                {m.agent_settings_instructions_description({ agentName: config.displayName })}
-              </p>
+              <p className="text-sm text-kumo-subtle">{m.agent_settings_instructions_description()}</p>
             </header>
           )}
           <form className="grid gap-4" onSubmit={saveInstructions}>
             <SoulEditor
               disabled={Boolean(saving)}
+              exampleEnabled={showSoulExample}
               footerRef={soulFooterRef}
               id={fieldId("instructions")}
               value={instructionsDraft}
               onValueChange={(value) => {
                 setInstructionsDraft(value);
+                setShowSoulExample(true);
                 setMessage(undefined);
               }}
             />
-            <SoulFooter
-              busy={Boolean(saving)}
-              dirty={instructionsDirty}
-              empty={instructionsDraft === ""}
-              feedback={message?.section === "instructions" ? message : undefined}
-              footerRef={soulFooterRef}
-              onDiscard={() => {
-                setInstructionsDraft(config.runtimeConfig.instructions);
-                setMessage(undefined);
-              }}
-            />
+            <div className="grid gap-4" ref={soulFooterRef}>
+              <SoulPresetSelector
+                disabled={Boolean(saving)}
+                id={fieldId("instructions")}
+                key={config.runtimeConfig.revision}
+                value={instructionsDraft}
+                onValueChange={(value) => {
+                  setInstructionsDraft(value);
+                  setShowSoulExample(value !== "");
+                  setMessage(undefined);
+                }}
+              />
+              <SoulFooter
+                busy={Boolean(saving)}
+                dirty={instructionsDirty}
+                empty={instructionsDraft === ""}
+                feedback={message?.section === "instructions" ? message : undefined}
+                onDiscard={() => {
+                  setInstructionsDraft(config.runtimeConfig.instructions);
+                  setShowSoulExample(true);
+                  setMessage(undefined);
+                }}
+              />
+            </div>
           </form>
         </section>
       ) : null}

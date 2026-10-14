@@ -5,12 +5,14 @@ import { useSoulEditorHeight } from "./use-soul-editor-height.js";
 
 export function SoulEditor({
   disabled,
+  exampleEnabled = true,
   footerRef,
   id,
   onValueChange,
   value,
 }: {
   disabled: boolean;
+  exampleEnabled?: boolean;
   footerRef: RefObject<HTMLDivElement | null>;
   id: string;
   onValueChange: (value: string) => void;
@@ -18,8 +20,8 @@ export function SoulEditor({
 }) {
   const exampleRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
-  useSoulEditorHeight(value, editorRef, exampleRef, footerRef);
-  const showExample = value.length === 0;
+  const showExample = exampleEnabled && value.length === 0;
+  useSoulEditorHeight(value, editorRef, exampleRef, footerRef, showExample);
   const principles = [
     m.agent_settings_soul_example_voice(),
     m.agent_settings_soul_example_uncertainty(),

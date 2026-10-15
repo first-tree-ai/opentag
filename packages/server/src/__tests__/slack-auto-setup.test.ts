@@ -117,6 +117,29 @@ it("only retries callbacks for an already bound App", async () => {
   });
   expect(f.slack.configureToken).not.toHaveBeenCalled();
 });
+it.each(["authorize", "connect"] as const)(
+  "rejects %s for an official OAuth binding before dispatch",
+  async (action) => {
+    const f = fixture();
+    f.slack.view.mockResolvedValue({ ...bound(), preferredRecovery: "oauth" });
+    await expect(f.service.run("account", agentId, { action })).rejects.toMatchObject({
+      code: "SLACK_CONFIGURATION_CONFLICT",
+    });
+    expect(f.owner.start).not.toHaveBeenCalled();
+    expect(f.slack.configureToken).not.toHaveBeenCalled();
+  },
+);
+it("does not configure an OAuth App if the binding changes after installation", async () => {
+  const f = fixture();
+  f.slack.view
+    .mockResolvedValueOnce(unbound())
+    .mockResolvedValueOnce(unbound())
+    .mockResolvedValue({ ...bound(), preferredRecovery: "oauth" });
+  await expect(f.service.run("account", agentId, { action: "connect" })).rejects.toMatchObject({
+    code: "SLACK_CONFIGURATION_CONFLICT",
+  });
+  expect(f.owner.start).toHaveBeenCalledTimes(1);
+});
 it("returns a definite creation rejection without attempting to bind or configure callbacks", async () => {
   const f = fixture();
   f.owner.start.mockReset().mockResolvedValue({ status: "failed", code: "create_failed" });

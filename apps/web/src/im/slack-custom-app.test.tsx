@@ -326,3 +326,10 @@ it("resumes saved binding callbacks after closing and reopening without a new ti
   expect(screen.getByLabelText("Bot User OAuth Token")).toBeTruthy();
   expect(api).toHaveBeenCalledTimes(1);
 });
+it("does not offer automatic callback setup for a pending official OAuth binding", async () => {
+  fixture({ ...bound(), preferredRecovery: "oauth" });
+  fireEvent.click(await screen.findByRole("button", { name: "Continue Slack setup" }));
+  expect(screen.queryByRole("button", { name: "Continue automatic setup" })).toBeNull();
+  expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+  expect(screen.getByRole("link", { name: "Open Bot conversation" })).toBeTruthy();
+});

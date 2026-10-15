@@ -448,7 +448,7 @@ function SlackAppStatus({
         description={pending && autoConfigured ? m.im_slack_auto_saved() : slackSetupStatus(view)}
       />
       <div className="flex flex-wrap gap-3">
-        {pending ? (
+        {pending && view.preferredRecovery !== "oauth" ? (
           <Button variant="secondary" onClick={onAutoResume}>
             {m.im_slack_auto_resume()}
           </Button>

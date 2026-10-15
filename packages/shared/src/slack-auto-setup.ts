@@ -14,6 +14,7 @@ export const SlackAutoSetupFailureSchema = z.enum([
   "create_uncertain",
   "install_failed",
   "callbacks_failed",
+  "manual_required",
   "failed",
 ]);
 export const SlackAutoSetupResponseSchema = z.discriminatedUnion("status", [

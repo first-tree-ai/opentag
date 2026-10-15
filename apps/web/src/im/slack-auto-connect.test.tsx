@@ -69,6 +69,17 @@ it("allows explicit reauthorization after an installation failure", async () => 
   );
   expect(api).toHaveBeenLastCalledWith("agent", { action: "authorize", force: true });
 });
+it("offers manual setup without futile deploy or authorization retries when local credentials were removed", async () => {
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({ status: "failed", code: "manual_required" });
+  render(<SlackAutoConnect agentId="agent" onBusy={vi.fn()} onConnected={vi.fn()} />);
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    "This Computer has no reusable setup credentials for this App. Connect or configure the existing App manually below; another authorization command will not recover them.",
+  );
+  expect(screen.queryByRole("button", { name: "Continue connecting" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create and connect" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Get authorization command" })).toBeNull();
+});
 it("offers creation retry after a definite rejection", async () => {
   const api = vi
     .spyOn(browserApi, "autoSetupSlack")

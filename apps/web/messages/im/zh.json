@@ -89,6 +89,7 @@
   "im_slack_auto_connect": "创建并连接",
   "im_slack_auto_continue": "继续连接",
   "im_slack_auto_create_failed": "{provider} 拒绝创建 App。请检查工作区权限或 App 数量限制，或稍后重试。",
+  "im_slack_auto_existing_manual": "此 Computer 没有此 App 可复用的配置凭证。请通过下方手动入口连接或配置已有 App；重新授权无法恢复这些凭证。",
   "im_slack_auto_failed": "配置尚未完成。可继续同一个 App，或使用下方手动配置。",
   "im_slack_auto_install_failed": "安装尚未完成。如 {provider} 要求审批，请等待管理员批准后继续，将复用已创建的 App。",
   "im_slack_auto_instructions": "在目标 {provider} 工作区任意会话运行下面的命令，核对并确认权限，然后在下方粘贴验证码。可以在另一台设备操作 {provider} 和本页面。",

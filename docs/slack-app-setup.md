@@ -43,7 +43,11 @@ Computer is still working: wait and continue with the same App. There is no back
 Private per-Agent CLI project files retain the App ID for recovery. Captured installation credentials and CLI stderr/login
 output are removed when each operation finishes, including failures. The private creation Signing Secret is needed for
 same-App recovery until Server saves the encrypted binding; the existing callback request acknowledges that save and
-removes the creation secret before configuring callbacks. No extra acknowledgement request is needed. The CLI supplies
+removes the creation secret after checking the saved App ID and Team, before configuring callbacks. Official OAuth Apps
+cannot enter this management flow. Other existing Apps without a matching local creation record use manual configuration;
+the Client does not authorize or modify their callbacks. If an automatically connected App is later disconnected, its
+local creation credentials have already been removed: reconnect it through the manual entry, rather than repeat a deploy
+or create another App. No extra acknowledgement request is needed. The CLI supplies
 its packaged capture-hook entry explicitly; other Client embeddings without that entry use manual setup before creating
 an App. There is no new table or database field. Cloud Agents, offline Computers, and older Clients can use **Manually connect an App**, which
 keeps the existing two-field binding and credential update flow. Public OAuth remains available.

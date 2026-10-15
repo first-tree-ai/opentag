@@ -34,6 +34,7 @@ export class SlackAutoSetupService {
         409,
         "Another messaging App is already bound",
       );
+    this.#checkRecovery(view);
     const computerId = config.computerId;
     if (input.action === "authorize")
       return publicResult(
@@ -57,6 +58,14 @@ export class SlackAutoSetupService {
   }
   #dispatch(computerId: string, agentId: string, input: SlackAutoSetupCommand) {
     return this.options.owner.start({ computerId, agentId, input });
+  }
+  #checkRecovery(view: SlackConfigurationView) {
+    if (view.binding && view.preferredRecovery === "oauth")
+      throw new SlackConfigurationServiceError(
+        "SLACK_CONFIGURATION_CONFLICT",
+        409,
+        "Use OAuth to reconnect the official Slack App",
+      );
   }
   async #checkPlacement(accountId: string, agentId: string, computerId: string) {
     const latest = await this.options.agents.getConfigById(accountId, agentId);
@@ -102,6 +111,7 @@ export class SlackAutoSetupService {
     view: SlackConfigurationView,
     challenge?: string,
   ): Promise<SlackAutoSetupResponse> {
+    this.#checkRecovery(view);
     if (view.binding?.identity.provider !== "slack" || view.binding.reauthorizationRequired)
       throw new SlackConfigurationServiceError(
         "SLACK_CREDENTIALS_UNAVAILABLE",

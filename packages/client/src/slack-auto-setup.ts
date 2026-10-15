@@ -173,11 +173,15 @@ export class SlackAutoSetup {
     context: SetupContext,
     input: Extract<SlackAutoSetupCommand, { action: "callbacks" }>,
   ): Promise<Result> {
-    // This existing callbacks request is the Server's acknowledgement that the encrypted binding exists.
-    await this.#save(context, "create-response.json", { ok: true, app_id: input.appId });
-    await rm(this.#path(context, "credentials.json"), { force: true });
+    const created = z
+      .object({ ok: z.literal(true), app_id: z.literal(input.appId) })
+      .safeParse(await this.#creationResponse(context).catch(() => undefined));
+    if (!created.success) throw new SetupFailure("manual_required");
     const team = await this.#team(context, input.challenge, input.teamId);
     if (team !== input.teamId) throw new SetupFailure("authorization_failed");
+    // After checking this project's App and Team, the request acknowledges the encrypted Server binding.
+    await this.#save(context, "create-response.json", { ok: true, app_id: input.appId });
+    await rm(this.#path(context, "credentials.json"), { force: true });
     await this.#command(
       context,
       ["api", "apps.manifest.export", "--json", JSON.stringify({ app_id: input.appId })],
@@ -277,21 +281,22 @@ export class SlackAutoSetup {
     }
     return this.#createdApp(context);
   }
-  async #createdApp(context: SetupContext): Promise<string> {
-    const createPath = this.#path(context, "create-response.json");
-    let response: unknown;
+  async #creationResponse(context: SetupContext): Promise<unknown> {
     try {
-      const raw = await readFile(createPath, "utf8");
-      response = JSON.parse(raw.slice(raw.indexOf("{")));
+      const raw = await readFile(this.#path(context, "create-response.json"), "utf8");
+      return JSON.parse(raw.slice(raw.indexOf("{")));
     } catch {
       throw new SetupFailure("create_uncertain");
     }
+  }
+  async #createdApp(context: SetupContext): Promise<string> {
+    const response = await this.#creationResponse(context);
     const rejected = z
       .object({ ok: z.literal(false), error: z.string() })
       .passthrough()
       .safeParse(response);
     if (rejected.success && !("app_id" in rejected.data) && CREATE_REJECTIONS.has(rejected.data.error)) {
-      await rm(createPath);
+      await rm(this.#path(context, "create-response.json"));
       throw new SetupFailure("create_failed");
     }
     const created = z.object({ ok: z.literal(true), app_id: z.string().min(1) }).safeParse(response);
@@ -310,6 +315,10 @@ export class SlackAutoSetup {
       const appId = await this.#create(context, agentId, input, team);
       const cached = await this.#json(context, "credentials.json");
       if (cached) return this.#installed(cached, appId, team);
+      const creation = z
+        .object({ credentials: z.object({ signing_secret: z.string().min(1) }) })
+        .safeParse(await this.#creationResponse(context));
+      if (!creation.success) throw new SetupFailure("manual_required");
       await this.#deploy(context, appId, team, cli);
       return this.#installed(await this.#json(context, "credentials.json"), appId, team);
     } finally {

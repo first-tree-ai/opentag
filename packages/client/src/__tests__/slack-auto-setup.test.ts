@@ -118,6 +118,55 @@ async function fixture() {
     },
   };
 }
+function callbacks(appId = "A1"): Extract<SlackAutoSetupCommand, { action: "callbacks" }> {
+  return {
+    action: "callbacks",
+    appId,
+    teamId: "T1",
+    botUserId: "U1",
+    enterpriseId: null,
+    eventsUrl: "https://qa.example/events",
+    interactionsUrl: "https://qa.example/interactions",
+  };
+}
+it.each([undefined, { ok: true, app_id: "foreign" }, { ok: false, error: "invalid_manifest" }])(
+  "does not authorize, mutate, or adopt a foreign App without a matching successful creation record: %j",
+  async (record) => {
+    const f = await fixture();
+    if (record) await writePrivateJson(f.home, join(f.home, f.project, "create-response.json"), record);
+    expect(await f.setup.run(f.request(callbacks()))).toEqual({ status: "failed", code: "manual_required" });
+    expect(f.run).not.toHaveBeenCalled();
+    const saved = existsSync(join(f.home, f.project, "create-response.json"))
+      ? JSON.parse(await readFile(join(f.home, f.project, "create-response.json"), "utf8"))
+      : undefined;
+    expect(saved).toEqual(record);
+  },
+);
+it("preserves the created App and its secret when callbacks target a different bound App", async () => {
+  const f = await fixture();
+  await f.authorize();
+  await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }));
+  const path = join(f.home, f.project, "create-response.json");
+  const before = await readFile(path, "utf8");
+  f.run.mockClear();
+  expect(await f.setup.run(f.request(callbacks("official")))).toEqual({ status: "failed", code: "manual_required" });
+  expect(f.run).not.toHaveBeenCalled();
+  expect(await readFile(path, "utf8")).toBe(before);
+});
+it("directs a later reconnect to manual setup after bind acknowledgement removed local creation credentials", async () => {
+  const f = await fixture();
+  await f.authorize();
+  await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }));
+  expect(await f.setup.run(f.request(callbacks()))).toEqual({ status: "connected" });
+  f.run.mockClear();
+  for (let attempt = 0; attempt < 2; attempt++)
+    expect(await f.setup.run(f.request({ action: "install", displayName: "QA" }))).toEqual({
+      status: "failed",
+      code: "manual_required",
+    });
+  expect(f.run).not.toHaveBeenCalled();
+  expect(await f.setup.run(f.request(callbacks()))).toEqual({ status: "connected" });
+});
 it("gets one ticket, resumes installation of the same App, and removes material after verified callbacks", async () => {
   const f = await fixture();
   await f.authorize();
@@ -305,6 +354,7 @@ it("can replace revoked authorization while keeping the same App and expected Te
   ).toEqual({ status: "failed", code: "authorization_failed" });
   expect(f.run.mock.calls.some(([args]) => args[1] === "apps.manifest.update")).toBe(false);
   expect(JSON.parse(await readFile(join(f.home, f.project, "authorization.json"), "utf8"))).toEqual(auth);
+  expect(await readFile(join(f.home, f.project, "create-response.json"), "utf8")).toContain("private-secret");
   expect(
     await f.setup.run(
       f.request({

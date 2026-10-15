@@ -89,6 +89,7 @@
   "im_slack_auto_connect": "Create and connect",
   "im_slack_auto_continue": "Continue connecting",
   "im_slack_auto_create_failed": "{provider} rejected App creation. Check your workspace permissions or App limit, or wait before trying again.",
+  "im_slack_auto_existing_manual": "This Computer has no reusable setup credentials for this App. Connect or configure the existing App manually below; another authorization command will not recover them.",
   "im_slack_auto_failed": "Setup did not finish. Continue with the same App, or use manual setup below.",
   "im_slack_auto_install_failed": "Installation did not finish. If {provider} requires approval, wait for your administrator, then continue with the same App.",
   "im_slack_auto_instructions": "Run this command in any conversation in the target {provider} workspace, review and confirm the permissions, then paste the challenge code below. {provider} and this page may be on another device.",

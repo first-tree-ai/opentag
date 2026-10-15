@@ -100,6 +100,8 @@ function failureMessage(code: Extract<SlackAutoSetupResponse, { status: "failed"
       return m.im_slack_auto_install_failed({ provider: messagingProviderLabel("slack") });
     case "callbacks_failed":
       return m.im_slack_auto_callbacks_failed();
+    case "manual_required":
+      return m.im_slack_auto_existing_manual();
     default:
       return m.im_slack_auto_failed();
   }
@@ -161,7 +163,11 @@ function SetupButton({
   challenge: string;
   run: (action: "authorize" | "connect", force?: boolean) => Promise<void>;
 }) {
-  if (result.status === "connected" || (result.status === "failed" && result.code === "create_uncertain")) return null;
+  if (
+    result.status === "connected" ||
+    (result.status === "failed" && ["create_uncertain", "manual_required"].includes(result.code))
+  )
+    return null;
   const authorize =
     result.status === "failed" &&
     ["authorization_failed", "computer_unavailable", "capability_missing"].includes(result.code);

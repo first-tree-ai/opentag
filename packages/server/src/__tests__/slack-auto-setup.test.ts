@@ -57,20 +57,32 @@ function bound(): SlackConfigurationView {
     },
   };
 }
-function fixture() {
+function fixture(officialBinding = false) {
   const agents = {
     getConfigById: vi.fn(
       async () => ({ computerId, name: "qa-agent", displayName: "Friendly QA" }) as AgentAdminConfig,
     ),
   };
-  const slack = { view: vi.fn(async () => unbound()), configureToken: vi.fn(async () => ({}) as never) };
+  const slack = {
+    view: vi.fn(async (_accountId: string, _agentId: string, _publicOrigin: string, signingSecret?: string) => {
+      if (!officialBinding) return unbound();
+      return { ...bound(), preferredRecovery: signingSecret === "official-secret" ? "oauth" : "credentials" } as const;
+    }),
+    configureToken: vi.fn(async () => ({}) as never),
+  };
   const owner = {
     start: vi
       .fn<SlackAutoSetupOwner["start"]>()
       .mockResolvedValueOnce({ status: "installed", credentials })
       .mockResolvedValue({ status: "connected" }),
   };
-  const service = new SlackAutoSetupService({ agents, slack, owner, publicOrigin: "https://qa.example" });
+  const service = new SlackAutoSetupService({
+    agents,
+    slack,
+    owner,
+    publicOrigin: "https://qa.example",
+    officialSigningSecret: "official-secret",
+  });
   return { agents, slack, owner, service };
 }
 afterEach(() => vi.useRealTimers());
@@ -104,6 +116,7 @@ it("binds through the existing encrypted service and exposes only the public res
     challenge: "code",
   });
   expect(JSON.stringify(result)).not.toContain("private");
+  for (const call of f.slack.view.mock.calls) expect(call[3]).toBe("official-secret");
 });
 it("only retries callbacks for an already bound App", async () => {
   const f = fixture();
@@ -120,13 +133,13 @@ it("only retries callbacks for an already bound App", async () => {
 it.each(["authorize", "connect"] as const)(
   "rejects %s for an official OAuth binding before dispatch",
   async (action) => {
-    const f = fixture();
-    f.slack.view.mockResolvedValue({ ...bound(), preferredRecovery: "oauth" });
+    const f = fixture(true);
     await expect(f.service.run("account", agentId, { action })).rejects.toMatchObject({
       code: "SLACK_CONFIGURATION_CONFLICT",
     });
     expect(f.owner.start).not.toHaveBeenCalled();
     expect(f.slack.configureToken).not.toHaveBeenCalled();
+    expect(f.slack.view).toHaveBeenCalledWith("account", agentId, "https://qa.example", "official-secret");
   },
 );
 it("does not configure an OAuth App if the binding changes after installation", async () => {

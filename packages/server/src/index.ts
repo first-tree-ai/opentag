@@ -1146,6 +1146,7 @@ export async function startServer(): Promise<void> {
           slack: slackConfigurationService,
           owner: slackAutoSetupOwner,
           publicOrigin: config.publicUrl,
+          officialSigningSecret: config.slackOAuth?.signingSecret,
         }),
         service: slackConfigurationService,
         publicOrigin: config.publicUrl,

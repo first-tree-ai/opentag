@@ -19,13 +19,19 @@ export class SlackAutoSetupService {
       slack: Pick<SlackConfigurationService, "view" | "configureToken">;
       owner: Pick<SlackAutoSetupOwner, "start">;
       publicOrigin: string;
+      officialSigningSecret?: string;
     },
   ) {}
   async run(accountId: string, agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
     const config = await this.options.agents.getConfigById(accountId, agentId);
     if (!config.computerId)
       throw new AgentServiceError("AGENT_COMPUTER_NOT_BOUND", "deterministic", "Connect a Computer first", 409);
-    const view = await this.options.slack.view(accountId, agentId, this.options.publicOrigin);
+    const view = await this.options.slack.view(
+      accountId,
+      agentId,
+      this.options.publicOrigin,
+      this.options.officialSigningSecret,
+    );
     if (view.blockedReason)
       throw new SlackConfigurationServiceError(view.blockedReason, 409, "Slack configuration is unavailable");
     if (view.binding && view.binding.identity.provider !== "slack")
@@ -53,7 +59,7 @@ export class SlackAutoSetupService {
     return this.#callbacks(
       computerId,
       agentId,
-      await this.options.slack.view(accountId, agentId, this.options.publicOrigin),
+      await this.options.slack.view(accountId, agentId, this.options.publicOrigin, this.options.officialSigningSecret),
     );
   }
   #dispatch(computerId: string, agentId: string, input: SlackAutoSetupCommand) {
@@ -77,7 +83,12 @@ export class SlackAutoSetupService {
       );
   }
   async #bind(accountId: string, agentId: string, credentials: SlackProvisionCredentials) {
-    const current = await this.options.slack.view(accountId, agentId, this.options.publicOrigin);
+    const current = await this.options.slack.view(
+      accountId,
+      agentId,
+      this.options.publicOrigin,
+      this.options.officialSigningSecret,
+    );
     if (current.binding) {
       const identity = current.binding.identity;
       if (

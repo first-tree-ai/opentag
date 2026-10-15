@@ -94,6 +94,8 @@ REST Commit Status 读取（`/commits/{ref}/status`、`/commits/{ref}/statuses` 
 
 `GitHub Native Proxy` CI 下载 Runner 固定版本的官方 gh，验证保留 Commit 原始对象的真实 Git clone/fetch/push（macOS Local Codex IPC 和 Linux Cloud material/CONNECT）、原生 gh 工作流发现和提交筛选，以及原生 PR 生命周期和冷命令权限控制。离线 fixture 不含真实平台凭据，也不产生 GitHub 副作用，不能替代已部署用户身份及 commit 作者验收。
 
+Execution loopback 证书包含显式 key usage 和 Apple 信任评估要求的 TLS server-authentication EKU。macOS 原生回归保留 Runner 默认 Git/TLS 后端，另外使用 SecureTransport 验证 CONNECT 和调用方 CA 路由，并保留缺少信任锚时必须失败的反向控制。测试不改变产品的后端选择或系统信任。参考 Apple 的 [TLS 证书要求](https://support.apple.com/en-gb/103769)。
+
 ## 部署、持久化与恢复
 
 `createPlatformRuntime` 是 Server 装配入口，Server 镜像包含 Git 和固定版本 Tree verifier。PostgreSQL 是唯一持久化的集成状态：GitHub 连接与 IM 凭证在 Server 重建后由数据库恢复。不存在 Server 本地控制卷、文件写入账本或独立来源账本——重建 Server 不需要恢复任何集成专用磁盘。短期 capability、ticket、受限用户令牌 lease、URL handle 与 execution 状态只存在于有界 Server 内存，随进程结束；重启后 Runner 依据当前数据库事实重新鉴权。重启本身不会撤销已签发的平台令牌：派生用户令牌只是不再被使用，并按 GitHub 自身规则过期；运行 capability 的有效期不代表 GitHub 令牌有效期。

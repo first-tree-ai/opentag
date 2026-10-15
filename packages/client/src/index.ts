@@ -690,6 +690,13 @@ export {
   type SkillSyncStatus,
   skillRootForProvider,
 } from "./skills/skill-sync.js";
+export {
+  captureSlackDeploy,
+  prepareSlackCallbackUpdate,
+  runSlackManagement,
+  slackManagementEnvironment,
+  slackManagementHome,
+} from "./slack-management.js";
 export { prepareContextTreeHome, resolveContextTreeHome } from "./storage/context-tree-home.js";
 export {
   assertRealDirectory,

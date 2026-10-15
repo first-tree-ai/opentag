@@ -40,6 +40,7 @@ import {
 } from "../providers/pi/agent-runtime.js";
 import { piRuntimePolicy, validatePiRuntimePolicy } from "../providers/pi/runtime-policy.js";
 import { SkillSyncManager } from "../skills/skill-sync.js";
+import { SlackAutoSetup } from "../slack-auto-setup.js";
 import { ensurePrivateDirectory, RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { AdmissionController } from "./admission-controller.js";
@@ -848,6 +849,12 @@ export async function createClientRuntime(
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
   const runtime = new ClientRuntime(connection, {
+    slackAutoSetup:
+      credentialMode === "proxy"
+        ? undefined
+        : new SlackAutoSetup({
+            environment: { ...sourceEnvironment, OPENTAG_HOME: resolveOpenTagHomeLayout(options.home).home },
+          }),
     contextTreeSettings: new ContextTreeSettings({
       home: options.home,
       environment: sourceEnvironment,

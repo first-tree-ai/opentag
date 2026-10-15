@@ -36,6 +36,7 @@ export * from "./skill-preset.js";
 export * from "./skill-source.js";
 export * from "./slack-agent-provision.js";
 export * from "./slack-app-manifest.js";
+export * from "./slack-auto-setup.js";
 export * from "./slack-configuration.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,

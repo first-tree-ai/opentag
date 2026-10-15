@@ -28,6 +28,7 @@ it("offers a custom Slack App in the creation guide even without OAuth setup act
     identityClosure: null,
     handoff: null,
   });
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({ status: "failed", code: "computer_unavailable" });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const result = render(
     <QueryClientProvider client={client}>
@@ -37,6 +38,8 @@ it("offers a custom Slack App in the creation guide even without OAuth setup act
   try {
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     fireEvent.click(await screen.findByRole("button", { name: "Use your own Slack App" }));
+    expect(await screen.findByText("Automatically create and connect a Slack App")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Manually connect an App" }));
     expect(await screen.findByRole("link", { name: "Create App in Slack" })).toBeTruthy();
     expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));

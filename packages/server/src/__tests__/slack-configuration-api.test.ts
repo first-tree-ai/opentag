@@ -1,4 +1,4 @@
-import { agentSlackConfigurationPath } from "@opentag/shared";
+import { agentSlackAutoSetupPath, agentSlackConfigurationPath } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -44,10 +44,12 @@ function fixture() {
       me: { user: { id: userId, email: "qa@example.com", displayName: "QA" }, setupCompletedAt: null },
     }),
   } as unknown as UserAuthService;
+  const autoSetup = { run: vi.fn().mockResolvedValue({ status: "authorization_required", ticket: "ticket" }) };
   const app = createApp({
     authService,
     slackConfiguration: {
       service: service as unknown as SlackConfigurationService,
+      autoSetup,
       publicOrigin: "https://opentag.example",
     },
     loggerStream: {
@@ -57,7 +59,7 @@ function fixture() {
     },
   });
   apps.push(app);
-  return { app, service, logs };
+  return { app, service, logs, autoSetup };
 }
 
 describe("Slack configuration HTTP boundary", () => {
@@ -153,4 +155,32 @@ describe("Slack configuration HTTP boundary", () => {
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ error: { code: "SLACK_BINDING_IDENTITY_MISMATCH" } });
   });
+});
+
+it("authenticates the automatic route and rejects arbitrary commands or credentials", async () => {
+  const { app, autoSetup } = fixture();
+  const url = agentSlackAutoSetupPath(agentId);
+  expect((await app.inject({ method: "POST", url, payload: { action: "authorize" } })).statusCode).toBe(401);
+  expect(autoSetup.run).not.toHaveBeenCalled();
+  expect(
+    (
+      await app.inject({
+        method: "POST",
+        url,
+        headers: authorization,
+        payload: {
+          action: "connect",
+          challenge: "code",
+          computerId: agentId,
+          command: "anything",
+          botAccessToken: "private",
+        },
+      })
+    ).statusCode,
+  ).toBe(400);
+  expect(autoSetup.run).not.toHaveBeenCalled();
+  const response = await app.inject({ method: "POST", url, headers: authorization, payload: { action: "authorize" } });
+  expect(response.json()).toEqual({ status: "authorization_required", ticket: "ticket" });
+  expect(response.headers["cache-control"]).toBe("no-store");
+  expect(autoSetup.run).toHaveBeenCalledExactlyOnceWith(userId, agentId, { action: "authorize" });
 });

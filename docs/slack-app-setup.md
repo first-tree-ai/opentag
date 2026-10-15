@@ -15,6 +15,30 @@ verification and inbound messages are runtime observations; neither creates, com
 generation. Production Events API remains signed HTTP and includes `app_uninstalled` and `tokens_revoked`. Socket Mode
 is not used.
 
+## Automatically create and connect your own App
+
+In Agent creation or Messaging settings, choose **Use your own Slack App**. On an online local Computer with a current
+OpenTag Client, the default entry creates a dedicated App:
+
+1. Copy the generated `/slackauthticket …` command into Slack in the target workspace, review the official CLI's
+   management permissions, and confirm. Slack may be on another device; there is no localhost browser callback.
+2. Paste Slack's challenge code into OpenTag and select **Create and connect**.
+3. OpenTag creates and installs the fixed App manifest, saves the Bot Token and Signing Secret through existing
+   encrypted storage, and configures Events API and Interactivity. Send the Bot a DM to verify actual delivery.
+
+The Computer prepares the official Slack CLI through existing Provider CLI installation when necessary. Web uses the
+current Account session and checks Agent ownership; it receives neither Slack credentials nor an Account Token for the
+Computer. The CLI management grant remains in its native private config and uses native refresh. Only authorize a ticket
+from your own selected Computer. This grant covers App management for the workspace, not just this one App.
+
+If workspace policy requires admin approval, obtain approval and **Continue connecting** the same App. Failed callback
+configuration also resumes through **Continue connecting**, without another installation or credential rotation. An
+uncertain creation is stopped: inspect Slack's existing Apps and use manual binding rather than create another copy.
+Expiring or revoked management authorization can require a new ticket. Private per-Agent CLI project files retain the App
+ID for recovery; installed credential files and creation secrets are removed after callback verification. There is no new
+table or database field. Cloud Agents, offline Computers, and older Clients can use **Manually connect an App**, which
+keeps the existing two-field binding and credential update flow. Public OAuth remains available.
+
 ## Local Agent approvals
 
 Enable Interactivity with request URL `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/interactions`.

@@ -4,8 +4,14 @@ const CREDENTIAL_PATH = /^\/(?:login|applications|app|app-manifests|installation
 const GIT_PATH = /^\/[^/]+\/[^/]+\/(?:info\/refs|git-upload-pack|git-receive-pack)$/;
 export const GITHUB_DOWNLOAD_HOSTS: ReadonlySet<string> = new Set([
   "results-receiver.actions.githubusercontent.com",
-  "productionresultssa13.blob.core.windows.net",
+  "release-assets.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "codeload.github.com",
 ]);
+// GitHub documents this Actions storage family; a single observed shard is not stable.
+// https://github.blog/changelog/2023-01-31-github-actions-job-summary-updates/
+// Only trusted upstream GET/HEAD redirects reach this check, without account credentials.
+const ACTIONS_STORAGE_HOST = /^productionresultssa\d+\.blob\.core\.windows\.net$/;
 
 /** Parse once; the checked URL is also the exact URL passed to the HTTP client. */
 export function githubRequestTarget(origin: string | undefined, path: string, method: string): URL {
@@ -57,6 +63,6 @@ export function allowedDownloadTarget(url: URL): boolean {
     !url.username &&
     !url.password &&
     !url.hash &&
-    GITHUB_DOWNLOAD_HOSTS.has(url.hostname)
+    (GITHUB_DOWNLOAD_HOSTS.has(url.hostname) || ACTIONS_STORAGE_HOST.test(url.hostname))
   );
 }

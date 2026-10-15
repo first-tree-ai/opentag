@@ -580,8 +580,8 @@ describe("RuntimeProxyDataConnection", () => {
           path: "/user",
           headers: {},
         }),
-      ).rejects.toMatchObject({ code: "aborted" });
-      // The client told the Server why: the open deadline expired, not a consumer cancel.
+      ).rejects.toMatchObject({ code: "open_timeout" });
+      // Both the caller and Server retain the timeout cause rather than a consumer cancel.
       await wait(20);
       expect(fixture.requests).toContainEqual(expect.objectContaining({ code: "open_timeout", type: "cancel" }));
       expect(connection.activeStreamCount).toBe(0);

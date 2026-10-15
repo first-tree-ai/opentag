@@ -178,7 +178,14 @@ export async function nativeGhFixture(
     number: 2,
     headRefName: "opentag/different-session/code/foreign",
   };
-  const upstreamRequests: { method: string; path: string; search: string; body: unknown; accept: string | null }[] = [];
+  const upstreamRequests: {
+    host: string;
+    method: string;
+    path: string;
+    search: string;
+    body: unknown;
+    accept: string | null;
+  }[] = [];
   interface FixtureRequest {
     method: string;
     body: unknown;
@@ -217,10 +224,10 @@ export async function nativeGhFixture(
   };
   const runs = () => Response.json({ total_count: 1, workflow_runs: [workflowRun] });
   const log = "2026-10-14T01:00:00.0000000Z fixture-log-line\n";
-  const download = (name: string) =>
+  const download = (name: string, host = "productionresultssa9.blob.core.windows.net") =>
     new Response(null, {
       status: 302,
-      headers: { location: `https://productionresultssa13.blob.core.windows.net/storage/${name}?sig=fixture-only` },
+      headers: { location: `https://${host}/storage/${name}?sig=fixture-only` },
     });
   const routes: Record<string, (request: FixtureRequest) => Response> = {
     [`/repos/${fullName}/issues`]: ({ search }) => {
@@ -232,7 +239,8 @@ export async function nativeGhFixture(
     },
     [`/repos/${fullName}/issues/99/comments`]: ({ body }) =>
       Response.json({ id: 99, body: record(body).body, user: { login: "fixture-owner" } }),
-    [`/repos/${fullName}/actions/runs/7/logs`]: () => download("run.zip"),
+    [`/repos/${fullName}/actions/runs/7/logs`]: () =>
+      download("run.zip", "results-receiver.actions.githubusercontent.com"),
     [`/repos/${fullName}/actions/jobs/99/logs`]: () => download("job.txt"),
     [`/repos/${fullName}/actions/runs/7/artifacts`]: () =>
       Response.json({
@@ -257,6 +265,33 @@ export async function nativeGhFixture(
         headers: { "content-type": "application/zip" },
       }),
     "/storage/job.txt": () => new Response(log),
+    [`/repos/${fullName}/releases/tags/v1.0.0`]: () =>
+      Response.json({
+        id: 1,
+        tag_name: "v1.0.0",
+        name: "Fixture release",
+        draft: false,
+        prerelease: false,
+        zipball_url: `https://api.github.com/repos/${fullName}/zipball/v1.0.0`,
+        assets: [
+          {
+            id: 88,
+            name: "fixture.txt",
+            size: 22,
+            state: "uploaded",
+            api_url: `https://api.github.com/repos/${fullName}/releases/assets/88`,
+            url: `https://api.github.com/repos/${fullName}/releases/assets/88`,
+            browser_download_url: `https://github.com/${fullName}/releases/download/v1.0.0/fixture.txt`,
+          },
+        ],
+      }),
+    [`/repos/${fullName}/releases/assets/88`]: () => download("release.txt", "release-assets.githubusercontent.com"),
+    [`/repos/${fullName}/zipball/v1.0.0`]: () => download("archive.zip", "codeload.github.com"),
+    "/storage/release.txt": () => new Response("fixture-release-bytes\n"),
+    "/storage/archive.zip": () =>
+      new Response(Buffer.from(zipSync({ "team-code/file.txt": strToU8("fixture-archive-bytes\n") })), {
+        headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="code-v1.0.0.zip"' },
+      }),
     "/repositories/123": metadata,
     [`/repos/${fullName}/pulls/2/merge`]: () =>
       Response.json({ merged: true, sha: "2".repeat(40), message: "Merged by fixture owner" }),
@@ -380,10 +415,17 @@ export async function nativeGhFixture(
       const raw = await bytes(request);
       const body: unknown = parseFixtureBody(raw);
       const accept = request.headers.accept ?? null;
-      upstreamRequests.push({ method, path: parsed.pathname, search: parsed.search, body, accept });
-      assertFixtureCredential(request, parsed.pathname);
+      upstreamRequests.push({
+        host: request.headers.host ?? "",
+        method,
+        path: parsed.pathname,
+        search: parsed.search,
+        body,
+        accept,
+      });
+      assertFixtureCredential(request);
       const route = routes[parsed.pathname];
-      const denied = options.privateRepository && method !== "GET" && parsed.pathname !== "/graphql";
+      const denied = options.privateRepository && !["GET", "HEAD"].includes(method) && parsed.pathname !== "/graphql";
       let value = Response.json({ message: "Not Found" }, { status: 404 });
       if (route) value = route({ method, body, accept, search: parsed.searchParams });
       if (denied) value = Response.json({ message: "Resource not accessible by integration" }, { status: 403 });
@@ -408,7 +450,13 @@ export async function nativeGhFixture(
       resolveAddresses: async () => ["140.82.112.3"],
       connect: (url, options, listener) =>
         http.request(
-          { ...options, hostname: "127.0.0.1", port: address.port, path: url.pathname + url.search },
+          {
+            ...options,
+            hostname: "127.0.0.1",
+            port: address.port,
+            path: url.pathname + url.search,
+            headers: { ...options.headers, host: url.host },
+          },
           listener,
         ),
     }),
@@ -436,7 +484,8 @@ function parseFixtureBody(raw: Buffer): unknown {
   return raw.length ? JSON.parse(raw.toString()) : undefined;
 }
 
-function assertFixtureCredential(request: http.IncomingMessage, path: string): void {
-  const expected = path.startsWith("/storage/") ? undefined : "Bearer ghu_fixture_owner";
+function assertFixtureCredential(request: http.IncomingMessage): void {
+  const expected = request.headers.host === "api.github.com" ? "Bearer ghu_fixture_owner" : undefined;
   if (request.headers.authorization !== expected) throw Error("Wrong owner token");
+  if (request.headers.cookie !== undefined) throw Error("Unexpected cookie");
 }

@@ -56,6 +56,8 @@ Agent 继续使用原生 `git`、`gh`、`slack api`、`lark-cli` 命令，launch
 
 ## Git 与 Context Tree
 
+已确认的 M1 产品决策是让 Agent 在所连接 owner 用户/App 权限内跨 Session 自行管理 GitHub 工作，涵盖既有 IM 准入、用户配置的定时任务和可追溯的同账户 Agent 协作。不增加 GitHub 专用发送者/仓库白名单或运行期 Tree 发布门禁。GitHub 操作身份是 Agent owner；获准发起 IM 任务的发送者并不自动等于这个 GitHub 用户。此决策不授予合并批准，也不扩大平台 execution/沙箱边界。
+
 Git smart HTTP 原样流式转发到 GitHub。运行期 Server 不创建仓库快照、不执行 Git、不检查 pack 对象、不暂存发布，也不改写 commit。任意分支、tag、ref 删除、force push、多 ref 写入和跨 Session PR 工作，都受上游 GitHub 用户/App 权限与仓库规则约束。
 
 Context Tree 运行期 Git/gh 使用相同通道。Agent 依据 Tree skill 自行决定校验、发布和恢复；设置连接校验、配置目标同步、prepare/loading 及固定 verifier 保持独立，沿用现有限制。GitHub push 成功不代表 Tree 加载一定成功，后续加载失败也不倒改先前 GitHub 结果。
@@ -64,9 +66,11 @@ Context Tree 运行期 Git/gh 使用相同通道。Agent 依据 Tree skill 自�
 
 ## 原生 HTTP 传输
 
-Server 转发 REST/GraphQL 方法、原始查询字符串及业务正文，不增加 API/字段白名单，也不改写响应。原生 Node HTTP 保留压缩字节、编码/长度、分页、条件/Range 头、状态码和 GraphQL 部分错误；不制造 schema/Projects 响应，不删除普通业务中名为 `token` 的字段。
+Server 转发 REST/GraphQL 方法、原始查询字符串及业务正文，不增加 API/字段白名单，也不改写响应。原生 Node HTTP 保留压缩字节、编码/长度、分页、条件/Range 头、状态码和 GraphQL 部分错误；不制造 schema/Projects 响应，不删除普通业务中名为 `token` 的字段。gh 2.91.0 可能因可选 Projects 权限错误而无法修改无关的 PR 字段；已测试的 gh 2.100.0 会原生处理这些错误。诊断时记录实际工具版本，不改写 GraphQL 结果来掩盖差异。
 
-认证上游仍固定为 HTTPS `api.github.com` 和 `github.com` Git smart HTTP。调用方凭据、Cookie、连接级和内部头被清除，Server 注入当前用户令牌。DNS 地址先验证再固定连接，正常检查 TLS 主机名。GET/HEAD 下载至多跟随五次跳转，只接受 `http-target.ts` 中已观察确认的精确存储 host；跨 origin 清除凭据且不再恢复。未知目标明确失败。写请求不自动重试或跟随跳转。完整上游错误原样返回；DNS、TLS、连接、超时和响应截断使用封闭诊断码，不包含凭据或签名 URL。
+认证上游仍固定为 HTTPS `api.github.com` 和 `github.com` Git smart HTTP。调用方凭据、Cookie、连接级和内部头被清除。Server 在 Git 请求中使用 HTTP Basic，用户名为 `x-access-token`、密码为当前用户令牌；REST/GraphQL 使用 Bearer。回归测试以只接受 Basic 的 Git 上游检查这一区别，避免 API 风格夹具误放行。DNS 地址先验证再固定连接，正常检查 TLS 主机名。
+
+GET/HEAD 下载可从这些固定 origin 跟随至多五次经过验证的跳转。`http-target.ts` 接受精确的 results receiver、release-assets、objects、codeload 主机，以及严格匹配的数字 Actions 分片族 `productionresultssa[0-9]+.blob.core.windows.net`。GitHub 公布了 [Actions 存储主机族](https://github.blog/changelog/2023-01-31-github-actions-job-summary-updates/)和[下载域名](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。真实 artifact/job 日志跳转到 `sa9` 后，以此替代单个 `sa13` 样本；不接受任意 Azure/S3 主机，也不新增初始代理目标。每一跳仍验证 HTTPS/443、公开 DNS 固定连接和 TLS。跨 origin 清除凭据且不再恢复，后续跳回 API 也不恢复。未知下载目标明确失败。写请求不自动重试或跟随跳转：保留原始状态和正文，仅移除不安全或跨 origin 的 Location。完整上游错误原样返回；DNS、TLS、连接、超时和响应截断使用封闭诊断码，不包含凭据或签名 URL。
 
 保留活跃并发和字节 credit 上限，完成流释放正文与授权，只保留至多 256 个小型收尾记录；递增 ID 防止复用，不再限制累计 256 次请求。容量满只拒绝新增流，已有流继续。超出有界收尾历史的迟到帧不产生动作；近期重复结束、超 credit 和复用 open ID 继续拒绝。上游空闲等待有界，慢消费者不会触发绝对传输总时限。
 

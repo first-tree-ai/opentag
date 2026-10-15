@@ -57,7 +57,13 @@ for (const cloud of [false, true])
           void serveGit(request, response).catch(() => response.destroy());
         });
         async function serveGit(request: http.IncomingMessage, response: http.ServerResponse) {
-          expect(request.headers.authorization).toBe("Bearer ghu_fixture_owner");
+          // GitHub Git HTTP challenges with Basic; accepting API Bearer here hides real failures.
+          const expected = `Basic ${Buffer.from("x-access-token:ghu_fixture_owner").toString("base64")}`;
+          if (request.headers.authorization !== expected) {
+            response.writeHead(401, { "www-authenticate": 'Basic realm="GitHub"' });
+            response.end("Authentication required");
+            return;
+          }
           const url = new URL(request.url ?? "/", "https://github.com");
           requests.push(url.pathname);
           const chunks: Uint8Array[] = [];

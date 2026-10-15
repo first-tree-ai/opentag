@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { strFromU8, unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { nativeGhFixture } from "./support/native-gh-fixture.js";
 
@@ -284,8 +285,8 @@ for (const cloud of [false, true])
   describe.skipIf(!binary || (cloud && process.platform !== "linux"))(
     `${cloud ? "Cloud" : "Local"} native downloads through the full provider channel`,
     () => {
-      it("reads logs and downloads a ZIP through the bounded storage redirect without forwarding credentials", async () => {
-        const fixture = await nativeGhFixture({ cloud });
+      it("downloads private Actions logs/artifacts, release assets and archives without forwarding credentials", async () => {
+        const fixture = await nativeGhFixture({ cloud, privateRepository: true });
         const gh = async (args: string[]) => {
           // A fresh entry process represents a fresh command container's temporary filesystem.
           if (cloud) await rm(join(fixture.root, "sandbox-home", "ca.pem"), { force: true });
@@ -309,10 +310,27 @@ for (const cloud of [false, true])
           const destination = join(fixture.root, "download");
           await gh(["run", "download", "7", "-R", fixture.fullName, "-n", "fixture-artifact", "-D", destination]);
           expect(await readFile(join(destination, "result.txt"), "utf8")).toBe("fixture-artifact-bytes\n");
+          expect((await gh(["api", `repos/${fixture.fullName}/actions/jobs/99/logs`])).stdout).toContain(
+            "fixture-log-line",
+          );
+          await gh(["release", "download", "v1.0.0", "-R", fixture.fullName, "-p", "fixture.txt", "-D", destination]);
+          expect(await readFile(join(destination, "fixture.txt"), "utf8")).toBe("fixture-release-bytes\n");
+          await gh(["release", "download", "v1.0.0", "-R", fixture.fullName, "--archive", "zip", "-D", destination]);
+          const archive = unzipSync(await readFile(join(destination, "code-v1.0.0.zip")));
+          expect(strFromU8(archive["team-code/file.txt"] as Uint8Array)).toBe("fixture-archive-bytes\n");
           expect((await gh(["api", "--method", "HEAD", `repos/${fixture.fullName}`, "--include"])).stdout).toContain(
             "200",
           );
           expect(fixture.upstreamRequests.some((request) => request.path === "/storage/artifact.zip")).toBe(true);
+          expect(new Set(fixture.upstreamRequests.map((request) => request.host))).toEqual(
+            new Set([
+              "api.github.com",
+              "productionresultssa9.blob.core.windows.net",
+              "results-receiver.actions.githubusercontent.com",
+              "release-assets.githubusercontent.com",
+              "codeload.github.com",
+            ]),
+          );
           expect(fixture.channel.connections).toHaveLength(1);
         } finally {
           await fixture.close();

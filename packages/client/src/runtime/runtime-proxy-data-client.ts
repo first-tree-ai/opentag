@@ -751,7 +751,14 @@ export class RuntimeProxyDataConnection {
   #cancelStream(stream: ProxyStream, code: string): void {
     if (stream.settled) return;
     this.#sendControl({ type: "cancel", streamId: stream.streamId, code });
-    this.#failStream(stream, new RuntimeProxyDataError("aborted", `The data stream was cancelled: ${code}`), true);
+    this.#failStream(
+      stream,
+      new RuntimeProxyDataError(
+        code === "open_timeout" ? "open_timeout" : "aborted",
+        `The data stream was cancelled: ${code}`,
+      ),
+      true,
+    );
   }
 
   #failStream(stream: ProxyStream, error: Error, tombstone = false): void {

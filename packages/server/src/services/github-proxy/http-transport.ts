@@ -41,14 +41,15 @@ export class GitHubHttpTransport {
       const location = response.headers.location;
       if (![301, 302, 303, 307, 308].includes(status) || !location)
         return { status, headers: outgoing, body: this.#body(response) };
-      const next = redirectTarget(response, location, url, input);
       if (!["GET", "HEAD"].includes(input.method)) {
         // Do not replay writes or disclose signed cross-origin redirect capabilities.
-        if (next.origin !== input.url.origin) delete outgoing.location;
+        const next = redirectTarget(location, url, input);
+        if (!next || next.origin !== input.url.origin) delete outgoing.location;
         return { status, headers: outgoing, body: this.#body(response) };
       }
+      const next = redirectTarget(location, url, input);
       response.destroy();
-      if (hop >= 5) throw new GitHubProxyError("github_download_target_unsupported");
+      if (!next || hop >= 5) throw new GitHubProxyError("github_download_target_unsupported");
       authenticated = authenticated && next.origin === url.origin;
       url = next;
     }
@@ -193,7 +194,7 @@ function responseHeaders(response: IncomingMessage): Record<string, string> {
     ),
   );
 }
-function redirectTarget(response: IncomingMessage, location: string, url: URL, input: GitHubHttpRequest): URL {
+function redirectTarget(location: string, url: URL, input: GitHubHttpRequest): URL | undefined {
   try {
     const next = new URL(location, url);
     if (next.username || next.password || next.hash) throw new GitHubProxyError("github_download_target_unsupported");
@@ -201,8 +202,7 @@ function redirectTarget(response: IncomingMessage, location: string, url: URL, i
     else if (!allowedDownloadTarget(next)) throw new GitHubProxyError("github_download_target_unsupported");
     return next;
   } catch {
-    response.destroy();
-    throw new GitHubProxyError("github_download_target_unsupported");
+    return undefined;
   }
 }
 async function* emptyBody(): AsyncIterable<Uint8Array> {}
@@ -225,6 +225,10 @@ function requestHeaders(input: GitHubHttpRequest, authenticated: boolean, hop: n
   const headers = githubProxyHeaders(input.headers);
   if (hop > 0) delete headers["content-length"];
   if (!headers["user-agent"]) headers["user-agent"] = "opentag-github-proxy";
-  if (authenticated) headers.authorization = `Bearer ${input.token}`;
+  if (authenticated)
+    headers.authorization =
+      input.url.hostname === "github.com"
+        ? `Basic ${Buffer.from(`x-access-token:${input.token}`).toString("base64")}`
+        : `Bearer ${input.token}`;
   return headers;
 }

@@ -93,15 +93,7 @@ export async function runSlackManagement(
     const nativeEnvironment = slackManagementEnvironment(environment);
     const binary =
       options.binary ?? (await slackManagementBinary(nativeEnvironment, options.accountHome, options.nonInteractive));
-    const baseArgs = [
-      "--apihost",
-      "https://slack.com",
-      "--skip-update",
-      "--no-color",
-      "--config-dir",
-      configDir,
-      ...(options.nonInteractive ? ["--no-prompt"] : []),
-    ];
+    const baseArgs = ["--apihost", "https://slack.com", "--skip-update", "--no-color", "--config-dir", configDir];
     if (isApi) {
       // The raw API command does not read native authorization. Refresh first; never inject a stale snapshot.
       const refreshed = await invokeSlack(
@@ -118,6 +110,9 @@ export async function runSlackManagement(
           "Slack management login could not be refreshed; recover native authorization before continuing",
         );
       nativeEnvironment.SLACK_USER_TOKEN = await managementToken(home, options.team ?? "");
+    } else if (options.nonInteractive) {
+      // The raw API command has its own flag parser and is already noninteractive.
+      baseArgs.push("--no-prompt");
     }
     const code = await invokeSlack(
       binary,

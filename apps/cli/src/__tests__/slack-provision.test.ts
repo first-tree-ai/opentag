@@ -202,6 +202,7 @@ describe("Slack provisioning CLI", () => {
         environment,
         team: "T1",
         outputFile: "created.json",
+        nonInteractive: true,
       }),
     ).toBe(0);
     const root = slackManagementHome(environment);

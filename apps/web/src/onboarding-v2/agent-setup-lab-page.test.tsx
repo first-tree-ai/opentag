@@ -296,6 +296,8 @@ describe("agent setup lab page", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Slack/ }));
     fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "lab-code" } });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText("Send a message to verify.");
+    fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
     fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
     expect(window.location.pathname).not.toContain("slack");

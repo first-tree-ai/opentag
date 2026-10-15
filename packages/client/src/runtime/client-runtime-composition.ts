@@ -849,12 +849,9 @@ export async function createClientRuntime(
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
   const runtime = new ClientRuntime(connection, {
-    slackAutoSetup:
-      credentialMode === "proxy"
-        ? undefined
-        : new SlackAutoSetup({
-            environment: { ...sourceEnvironment, OPENTAG_HOME: resolveOpenTagHomeLayout(options.home).home },
-          }),
+    slackAutoSetup: new SlackAutoSetup({
+      environment: { ...sourceEnvironment, OPENTAG_HOME: resolveOpenTagHomeLayout(options.home).home },
+    }),
     contextTreeSettings: new ContextTreeSettings({
       home: options.home,
       environment: sourceEnvironment,

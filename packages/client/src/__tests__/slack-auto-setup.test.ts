@@ -202,9 +202,23 @@ it("can replace revoked authorization while keeping the same App and expected Te
   ).toEqual({ status: "connected" });
   expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(1);
 });
-it("does not run local management commands in a Cloud credential proxy", async () => {
+it("keeps Web management in the local private home when the Computer uses Turn credential proxying", async () => {
   const f = await fixture();
-  const cloud = new SlackAutoSetup({ environment: { OPENTAG_RUNTIME_CREDENTIAL_MODE: "proxy" }, run: f.run });
-  expect(await cloud.run(f.request({ action: "authorize" }))).toEqual({ status: "failed", code: "capability_missing" });
-  expect(f.run).not.toHaveBeenCalled();
+  const local = new SlackAutoSetup({
+    environment: {
+      OPENTAG_HOME: join(f.home, ".."),
+      OPENTAG_RUNTIME_CREDENTIAL_MODE: "proxy",
+      OPENTAG_SESSION_SERVER_URL: "https://turn.example",
+    },
+    run: f.run,
+  });
+  expect(await local.run(f.request({ action: "authorize" }))).toEqual({
+    status: "authorization_required",
+    ticket: "test-ticket",
+  });
+  expect(f.run.mock.calls[0]?.[1]?.environment).toMatchObject({
+    OPENTAG_RUNTIME_CREDENTIAL_MODE: "legacy",
+    OPENTAG_SESSION_SERVER_URL: undefined,
+  });
+  expect(existsSync(join(f.home, f.project, "authorization.json"))).toBe(true);
 });

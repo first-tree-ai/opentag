@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import * as m from "../paraglide/messages.js";
 import { Banner, Button, Input } from "../ui/design-system.js";
+import { messagingProviderLabel } from "./provider-label.js";
 
 export function SlackAutoConnect({
   agentId,
@@ -56,8 +57,10 @@ export function SlackAutoConnect({
   const failed = result?.status === "failed";
   return (
     <div className="grid gap-3">
-      <strong>{m.im_slack_auto_title()}</strong>
-      <p className="text-sm text-kumo-subtle">{m.im_slack_auto_permissions()}</p>
+      <strong>{m.im_slack_auto_title({ provider: messagingProviderLabel("slack") })}</strong>
+      <p className="text-sm text-kumo-subtle">
+        {m.im_slack_auto_permissions({ provider: messagingProviderLabel("slack") })}
+      </p>
       {busy ? <p role="status">{m.im_slack_auto_working()}</p> : null}
       {needsCode ? (
         <SlackTicket ticket={result.ticket} id={id} busy={busy} challenge={challenge} onChallenge={setChallenge} />
@@ -75,9 +78,9 @@ function failureMessage(code: Extract<SlackAutoSetupResponse, { status: "failed"
     case "capability_missing":
       return m.im_slack_auto_unavailable();
     case "create_uncertain":
-      return m.im_slack_auto_uncertain();
+      return m.im_slack_auto_uncertain({ provider: messagingProviderLabel("slack") });
     case "install_failed":
-      return m.im_slack_auto_install_failed();
+      return m.im_slack_auto_install_failed({ provider: messagingProviderLabel("slack") });
     case "callbacks_failed":
       return m.im_slack_auto_callbacks_failed();
     default:
@@ -100,8 +103,13 @@ function SlackTicket({
   const command = `/slackauthticket ${ticket}`;
   return (
     <>
-      <p className="text-sm">{m.im_slack_auto_instructions()}</p>
-      <Input aria-label={m.im_slack_auto_command()} readOnly value={command} onFocus={(e) => e.target.select()} />
+      <p className="text-sm">{m.im_slack_auto_instructions({ provider: messagingProviderLabel("slack") })}</p>
+      <Input
+        aria-label={m.im_slack_auto_command({ provider: messagingProviderLabel("slack") })}
+        readOnly
+        value={command}
+        onFocus={(e) => e.target.select()}
+      />
       <Button
         type="button"
         variant="secondary"
@@ -111,7 +119,7 @@ function SlackTicket({
         {m.common_copy()}
       </Button>
       <label className="grid gap-2" htmlFor={id}>
-        {m.im_slack_auto_code()}
+        {m.im_slack_auto_code({ provider: messagingProviderLabel("slack") })}
         <Input
           id={id}
           value={challenge}

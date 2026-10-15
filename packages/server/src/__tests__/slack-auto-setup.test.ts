@@ -121,6 +121,7 @@ it("correlates results with the authenticated Computer instance and clears bound
   vi.useFakeTimers();
   const registry = {
     currentInstanceId: vi.fn(() => instanceId),
+    currentControlIdentity: vi.fn(),
     supportsCapability: vi.fn(() => true),
     send: vi.fn(async (..._args: unknown[]) => {}),
   };
@@ -145,5 +146,10 @@ it("correlates results with the authenticated Computer instance and clears bound
   expect(await next).toEqual({ status: "failed", code: "computer_unavailable" });
   registry.supportsCapability.mockReturnValue(false);
   expect(await owner.start(start)).toEqual({ status: "failed", code: "capability_missing" });
+  registry.supportsCapability.mockReturnValue(true);
+  registry.currentControlIdentity.mockReturnValue({ kind: "cloud" });
+  const sent = registry.send.mock.calls.length;
+  expect(await owner.start(start)).toEqual({ status: "failed", code: "capability_missing" });
+  expect(registry.send).toHaveBeenCalledTimes(sent);
   owner.close();
 });

@@ -40,6 +40,8 @@ export class SlackAutoSetupOwner {
     input: Omit<SlackAutoSetupRuntimeRequest, "type" | "requestId">,
   ): Promise<SlackAutoSetupRuntimeResult["result"]> {
     const instanceId = this.registry.currentInstanceId(input.computerId);
+    if (this.registry.currentControlIdentity(input.computerId)?.kind === "cloud")
+      return { status: "failed", code: "capability_missing" };
     if (!instanceId) return { status: "failed", code: "computer_unavailable" };
     if (!this.registry.supportsCapability(input.computerId, instanceId, RUNTIME_CAPABILITY.slackAutoSetup))
       return { status: "failed", code: "capability_missing" };

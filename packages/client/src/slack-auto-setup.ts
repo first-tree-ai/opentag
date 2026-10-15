@@ -39,14 +39,19 @@ export class SlackAutoSetup {
       cliEntry?: string;
       run?: typeof runSlackManagement;
     },
-  ) {}
+  ) {
+    // This is the owner's Web management request, independent of a Turn's credential proxy.
+    this.options = {
+      ...options,
+      environment: {
+        ...options.environment,
+        OPENTAG_RUNTIME_CREDENTIAL_MODE: "legacy",
+        OPENTAG_SESSION_SERVER_URL: undefined,
+      },
+    };
+  }
 
   async run(request: SlackAutoSetupRuntimeRequest, signal?: AbortSignal): Promise<Result> {
-    if (
-      this.options.environment.OPENTAG_RUNTIME_CREDENTIAL_MODE === "proxy" ||
-      this.options.environment.OPENTAG_SESSION_SERVER_URL
-    )
-      return { status: "failed", code: "capability_missing" };
     if (this.#busy) return { status: "failed", code: "busy" };
     this.#busy = true;
     try {

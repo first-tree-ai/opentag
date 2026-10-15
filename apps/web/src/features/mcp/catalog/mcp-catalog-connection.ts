@@ -5,17 +5,17 @@ import {
   type ConnectionAttempt,
   connectionFailure,
   isKeyFailure,
+  requiresOAuth,
   useMcpConnectionOperation,
 } from "../mcp-connection.js";
-import { allowsOAuthDiscovery, connectionAuthKind } from "../mcp-connection-model.js";
+import { connectionAuthKind } from "../mcp-connection-model.js";
 import { closeMcpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
 
-/** Runs on the page so closing Discover cannot interrupt a connection or hide its error. */
+/** Page-owned recovery for installed connections; errors remain visible outside dialogs. */
 export function useMcpCatalogConnection(agentId: string) {
   const operation = useMcpConnectionOperation(agentId);
   const inFlight = useRef(false);
   const alive = useRef(true);
-  const attempts = useRef(new Map<string, ConnectionAttempt>());
   const [connectingId, setConnectingId] = useState<string>();
   const [failure, setFailure] = useState<{ binding: MCPAgentServer; message: string }>();
   useEffect(() => {
@@ -24,34 +24,37 @@ export function useMcpCatalogConnection(agentId: string) {
       alive.current = false;
     };
   }, []);
-  const connect = async (binding: MCPAgentServer, token?: string, definition?: MCPServer) => {
+  const connect = async (binding: MCPAgentServer, token?: string, definition?: MCPServer, reauthorize = false) => {
     if (inFlight.current || !binding.enabled) return "busy" as const;
-    const oauthWindow =
-      connectionAuthKind(binding.effective.url, binding, definition) === "oauth" ? prepareMcpOAuthWindow() : undefined;
+    const kind = connectionAuthKind(binding.effective.url, binding, definition);
+    const oauthWindow = requiresOAuth({ binding, kind }, reauthorize) ? prepareMcpOAuthWindow() : undefined;
     inFlight.current = true;
     setConnectingId(binding.mcpServerId);
     setFailure(undefined);
     try {
-      const attempt = await resolveAttempt(binding, definition, attempts.current.get(binding.mcpServerId));
-      attempts.current.set(binding.mcpServerId, attempt);
+      const attempt = await resolveAttempt(binding, definition);
       const result = await operation.run(attempt, {
         token,
+        reauthorize,
         source: "authorize",
         isAlive: () => alive.current,
         oauthWindow,
       });
       return alive.current ? result : ("busy" as const);
     } catch (cause) {
-      return reportFailure(binding, cause);
+      return reportFailure(binding, cause, definition);
     } finally {
       closeMcpOAuthWindow(oauthWindow?.popup);
       inFlight.current = false;
       if (alive.current) setConnectingId(undefined);
     }
   };
-  function reportFailure(binding: MCPAgentServer, cause: unknown) {
+  function reportFailure(binding: MCPAgentServer, cause: unknown, definition?: MCPServer) {
     if (!alive.current) return "busy" as const;
-    setFailure({ binding, message: connectionFailure(cause, attempts.current.get(binding.mcpServerId)?.kind) });
+    setFailure({
+      binding,
+      message: connectionFailure(cause, connectionAuthKind(binding.effective.url, binding, definition)),
+    });
     return isKeyFailure(cause) ? ("key" as const) : ("failed" as const);
   }
   return {
@@ -64,34 +67,8 @@ export function useMcpCatalogConnection(agentId: string) {
   };
 }
 
-function sameConfiguration(
-  previous: ConnectionAttempt | undefined,
-  binding: MCPAgentServer,
-): previous is ConnectionAttempt {
-  return Boolean(
-    previous &&
-      JSON.stringify(previous.binding.effective) === JSON.stringify(binding.effective) &&
-      previous.binding.authorization?.kind === binding.authorization?.kind &&
-      previous.binding.authorization?.revision === binding.authorization?.revision,
-  );
-}
-
-async function resolveAttempt(
-  binding: MCPAgentServer,
-  definition: MCPServer | undefined,
-  previous: ConnectionAttempt | undefined,
-): Promise<ConnectionAttempt> {
+async function resolveAttempt(binding: MCPAgentServer, definition?: MCPServer): Promise<ConnectionAttempt> {
   const server =
     definition ?? (binding.authorization ? undefined : (await browserApi.mcpServer(binding.mcpServerId)).server);
-  const same = sameConfiguration(previous, binding);
-  return {
-    binding,
-    kind:
-      same && previous.kind === "oauth" && previous.allowOAuthDiscovery
-        ? "oauth"
-        : connectionAuthKind(binding.effective.url, binding, server),
-    allowOAuthDiscovery: same
-      ? previous.allowOAuthDiscovery
-      : allowsOAuthDiscovery(binding.effective.url, connectionAuthKind(binding.effective.url, binding, server)),
-  };
+  return { binding, kind: connectionAuthKind(binding.effective.url, binding, server) };
 }

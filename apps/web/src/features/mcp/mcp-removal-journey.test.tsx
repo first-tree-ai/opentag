@@ -2,97 +2,73 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, entry, openDetails, openRemove, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
+import { AGENT_ID, entry, openRemove, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
-const click = (name: string, confirmation = false) =>
-  fireEvent.click(within(screen.getByRole(confirmation ? "alertdialog" : "dialog")).getByRole("button", { name }));
-describe("MCP details and removal journey", () => {
-  it("returns from tools and removal with draft, disclosure state, scroll and focus intact", async () => {
+const click = (name: string) => fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name }));
+describe("MCP deletion", () => {
+  it.each(["Cancel", "Escape"])("offers a concise confirmation and cancels with %s without a write", async (action) => {
     stub([entry()]);
-    const update = vi.spyOn(browserApi, "updateAgentMcpServer");
     const detach = vi.spyOn(browserApi, "detachMcpServer");
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openDetails();
-    fireEvent.change(screen.getByLabelText("Connector address"), {
-      target: { value: "https://draft.example.com/mcp" },
-    });
-    click("Advanced settings");
-    const body = screen.getByRole("dialog").querySelector(".mcp-settings-body") as HTMLElement;
-    body.scrollTop = 80;
-    fireEvent.scroll(body);
-    click("Tools");
-    fireEvent.change(screen.getByRole("textbox", { name: "Search tools" }), { target: { value: "issue" } });
-    click("Back");
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Tools" })));
-    expect(screen.getByRole("dialog").querySelector(".mcp-settings-body")?.scrollTop).toBe(80);
-    expect((screen.getByLabelText("Connector address") as HTMLInputElement).value).toBe(
-      "https://draft.example.com/mcp",
-    );
-    expect(screen.getByRole("button", { name: "Advanced settings" }).getAttribute("aria-expanded")).toBe("true");
-    expect(screen.queryByRole("button", { name: "Connector information" })).toBeNull();
-    click("Tools");
-    expect((screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement).value).toBe("issue");
-    click("Back");
-    click("Remove from agent");
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getAllByRole("alertdialog")).toHaveLength(1);
-    click("Cancel", true);
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Remove from agent" })));
-    expect((screen.getByLabelText("Connector address") as HTMLInputElement).value).toBe(
-      "https://draft.example.com/mcp",
-    );
-    expect(update).not.toHaveBeenCalled();
+    await openRemove();
+    expect(screen.getByRole("alertdialog", { name: "Delete linear?" })).toBeTruthy();
+    expect(within(screen.getByRole("alertdialog")).queryByRole("button", { name: /^Close / })).toBeNull();
+    expect(screen.getAllByRole("button").filter((button) => button.textContent === "Delete")).toHaveLength(1);
+    expect(screen.getByRole("alertdialog").getAttribute("aria-describedby")).toBeTruthy();
+    expect(screen.getByText("This Agent won’t be able to use linear until you add it again.")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" })));
+    if (action === "Cancel") click("Cancel");
+    else fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(detach).not.toHaveBeenCalled();
   });
-  it.each([false, true])(
-    "closes on success and focuses the remaining entry or Add custom (empty=%s)",
-    async (empty) => {
-      const other = entry({ mcpServerId: "other", name: "notion" });
-      stub(empty ? [entry()] : [entry(), other]);
-      const detach = vi.spyOn(browserApi, "detachMcpServer").mockImplementation(async () => {
-        vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: empty ? [] : [other] });
-      });
-      const remove = vi.spyOn(browserApi, "removeMcpServer");
-      wrap(<McpPage agentId={AGENT_ID} />);
-      await openRemove();
-      click("Remove", true);
-      await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-      expect(screen.queryByRole("dialog")).toBeNull();
-      expect(screen.queryByRole("button", { name: "linear" })).toBeNull();
-      expect(screen.getByText("linear removed from agent")).toBeTruthy();
-      await waitFor(() => expect(document.activeElement?.textContent).toBe(empty ? "Add custom" : "notion"));
-      expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
-      expect(remove).not.toHaveBeenCalled();
-    },
-  );
-  it("guards pending removal, shows a recoverable error and retries in place", async () => {
-    stub([entry()]);
-    let reject: (error: Error) => void = () => {};
-    const detach = vi
-      .spyOn(browserApi, "detachMcpServer")
-      .mockImplementationOnce(
-        () =>
-          new Promise((_resolve, fail) => {
-            reject = fail;
-          }),
-      )
-      .mockImplementationOnce(async () => {
-        vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [] });
-      });
+  it.each([false, true])("deletes the installation and restores focus (empty=%s)", async (empty) => {
+    const other = entry({ mcpServerId: "other", name: "notion" });
+    stub(empty ? [entry()] : [entry(), other]);
+    const detach = vi.spyOn(browserApi, "detachMcpServer").mockImplementation(async () => {
+      vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: empty ? [] : [other] });
+    });
     wrap(<McpPage agentId={AGENT_ID} />);
     await openRemove();
-    click("Remove", true);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(true));
-    click("Remove", true);
+    click("Delete");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
+    expect(browserApi.removeMcpServer).toHaveBeenCalledWith(SERVER_ID);
+    await waitFor(() => expect(document.activeElement?.textContent).toBe(empty ? "Add custom" : "notion"));
+  });
+  it("retains a historical definition used by another Agent", async () => {
+    stub([entry()]);
+    vi.spyOn(browserApi, "detachMcpServer").mockResolvedValue(undefined);
+    vi.mocked(browserApi.removeMcpServer).mockRejectedValue(new ApiError(409, "In use", "MCP_SERVER_IN_USE"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openRemove();
+    click("Delete");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+  it("guards deletion through both requests, then permits retry after a failure", async () => {
+    stub([entry()]);
+    vi.spyOn(browserApi, "detachMcpServer").mockResolvedValue(undefined);
+    let fail: (error: Error) => void = () => {};
+    vi.mocked(browserApi.removeMcpServer)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            fail = reject;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openRemove();
+    click("Delete");
+    await waitFor(() => expect(browserApi.removeMcpServer).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(true);
     fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
     expect(screen.getByRole("alertdialog")).toBeTruthy();
-    expect(detach).toHaveBeenCalledTimes(1);
-    reject(new ApiError(503, "Internal infrastructure detail"));
-    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn't remove linear. Try again.");
-    expect(screen.queryByText("Internal infrastructure detail")).toBeNull();
-    click("Remove", true);
+    fail(new ApiError(503, "private infrastructure detail"));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn't delete linear.");
+    click("Delete");
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(detach).toHaveBeenCalledTimes(2);
+    expect(browserApi.removeMcpServer).toHaveBeenCalledTimes(2);
   });
 });

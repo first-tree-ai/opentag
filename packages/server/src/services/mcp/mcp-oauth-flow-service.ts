@@ -642,6 +642,7 @@ export class McpOAuthFlowService {
        */
       await this.#failFlow(
         authorization.id,
+        query.state,
         query.error === "access_denied" ? MCP_ERROR_CODES.OAUTH_DENIED : MCP_ERROR_CODES.OAUTH_FAILED,
       );
       throw new McpServiceError(
@@ -650,7 +651,7 @@ export class McpOAuthFlowService {
       );
     }
     if (!query.code) {
-      await this.#failFlow(authorization.id, MCP_ERROR_CODES.OAUTH_FLOW_INVALID);
+      await this.#failFlow(authorization.id, query.state, MCP_ERROR_CODES.OAUTH_FLOW_INVALID);
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization response carried no code");
     }
     try {
@@ -674,6 +675,7 @@ export class McpOAuthFlowService {
       if (error instanceof McpServiceError && error.code === MCP_ERROR_CODES.OAUTH_FLOW_INVALID) throw error;
       await this.#failFlow(
         authorization.id,
+        query.state,
         error instanceof McpServiceError && error.category === "transient" ? undefined : MCP_ERROR_CODES.OAUTH_FAILED,
       );
       throw error;
@@ -756,7 +758,10 @@ export class McpOAuthFlowService {
         pkceCiphertext: null,
         loginSessionHash: null,
         probeState: "pending",
-        revision: sql`${authorization.revision} + 1`,
+        refreshClaimId: null,
+        refreshClaimedAt: null,
+        refreshGeneration: sql`${mcpServerAuthorizations.refreshGeneration} + 1`,
+        revision: sql`${mcpServerAuthorizations.revision} + 1`,
         updatedAt: now,
       })
       /*
@@ -887,7 +892,7 @@ export class McpOAuthFlowService {
    * Passing no code means the failure is transient — the flow's state is cleared and the row is left
    * `pending` for a retry, the one case where waiting is still the right answer.
    */
-  async #failFlow(id: string, failureCode: string | undefined): Promise<void> {
+  async #failFlow(id: string, issuedState: string, failureCode: string | undefined): Promise<void> {
     await this.#database
       .update(mcpServerAuthorizations)
       .set({
@@ -908,7 +913,7 @@ export class McpOAuthFlowService {
             }),
         updatedAt: this.#now(),
       })
-      .where(eq(mcpServerAuthorizations.id, id));
+      .where(and(eq(mcpServerAuthorizations.id, id), eq(mcpServerAuthorizations.state, hashSecret(issuedState))));
   }
 
   /**

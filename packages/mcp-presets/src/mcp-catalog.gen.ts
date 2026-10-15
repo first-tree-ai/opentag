@@ -83,6 +83,7 @@ export type McpCatalogEntry = {
   authScheme?: string;
   extraHeaders?: Record<string, string>;
   oauthScopes?: string[];
+  keyAuth?: { url: string; authHeader?: string; authScheme?: string };
   category: string;
   website: string;
   iconUrl: string;
@@ -371,6 +372,11 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     url: "https://mcp.linear.app/mcp",
     defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.linear.app/mcp",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "projects",
     website: "https://linear.app",
     iconUrl: MCP_CATALOG_ICON_URLS["linear.svg"],
@@ -409,6 +415,11 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     url: "https://mcp.monday.com/mcp",
     defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.monday.com/mcp",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "projects",
     website: "https://monday.com",
     iconUrl: MCP_CATALOG_ICON_URLS["monday.png"],
@@ -428,6 +439,11 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     url: "https://mcp.atlassian.com/v2/mcp?tools=all",
     defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.atlassian.com/v2/mcp?tools=all",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "projects",
     website: "https://www.atlassian.com",
     iconUrl: MCP_CATALOG_ICON_URLS["atlassian.svg"],
@@ -445,8 +461,13 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Search the web for useful sources.",
       zh: "查找网页资料。",
     },
-    url: "https://mcp.exa.ai/mcp",
-    defaultAuthKind: "none",
+    url: "https://mcp.exa.ai/mcp?login",
+    defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.exa.ai/mcp",
+      authHeader: "x-api-key",
+      authScheme: "",
+    },
     category: "search",
     website: "https://exa.ai",
     iconUrl: MCP_CATALOG_ICON_URLS["exa.svg"],
@@ -465,7 +486,12 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       zh: "搜索网页并提取内容。",
     },
     url: "https://mcp.tavily.com/mcp",
-    defaultAuthKind: "none",
+    defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.tavily.com/mcp",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "search",
     website: "https://tavily.com",
     iconUrl: MCP_CATALOG_ICON_URLS["tavily.svg"],
@@ -483,8 +509,13 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       en: "Extract content from web pages.",
       zh: "提取网页内容。",
     },
-    url: "https://mcp.firecrawl.dev/v2/mcp",
-    defaultAuthKind: "none",
+    url: "https://mcp.firecrawl.dev/v2/mcp-oauth",
+    defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.firecrawl.dev/v2/mcp",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "search",
     website: "https://www.firecrawl.dev",
     iconUrl: MCP_CATALOG_ICON_URLS["firecrawl.svg"],
@@ -567,6 +598,11 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     url: "https://mcp.airtable.com/mcp",
     defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.airtable.com/mcp",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "data",
     website: "https://www.airtable.com",
     iconUrl: MCP_CATALOG_ICON_URLS["airtable.png"],
@@ -624,6 +660,11 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     url: "https://mcp.supabase.com/mcp",
     defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.supabase.com/mcp",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "development",
     website: "https://supabase.com",
     iconUrl: MCP_CATALOG_ICON_URLS["supabase.svg"],
@@ -681,6 +722,11 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     url: "https://mcp.stripe.com",
     defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.stripe.com",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "finance",
     website: "https://stripe.com",
     iconUrl: MCP_CATALOG_ICON_URLS["stripe.svg"],
@@ -700,6 +746,11 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     url: "https://mcp.zapier.com/api/v1/connect",
     defaultAuthKind: "oauth",
+    keyAuth: {
+      url: "https://mcp.zapier.com/api/v1/connect",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+    },
     category: "automation",
     website: "https://zapier.com",
     iconUrl: MCP_CATALOG_ICON_URLS["zapier.png"],

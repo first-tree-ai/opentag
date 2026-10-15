@@ -480,6 +480,23 @@ describe("MCP per-Agent authorization", () => {
     expect(authorization.revoke).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER);
   });
 
+  it("conditionally cancels only the named OAuth attempt", async () => {
+    const { app, authorization } = build();
+    const { status } = await send(app, "DELETE", AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH, {
+      payload: { expectedOAuthState: "issued-state" },
+    });
+    expect(status).toBe(200);
+    expect(authorization.revoke).toHaveBeenCalledWith(ACCOUNT, AGENT, SERVER, "issued-state");
+  });
+  it("rejects an invalid cancellation body before changing authorization", async () => {
+    const { app, authorization } = build();
+    const { status } = await send(app, "DELETE", AGENT_MCP_AUTHORIZATION_TEMPLATE_PATH, {
+      payload: { expectedOAuthState: "", credential: "unused" },
+    });
+    expect(status).toBe(400);
+    expect(authorization.revoke).not.toHaveBeenCalled();
+  });
+
   it("refuses an authorization request that pairs a kind with the wrong key field", async () => {
     const { app, authorization } = build();
     for (const payload of [

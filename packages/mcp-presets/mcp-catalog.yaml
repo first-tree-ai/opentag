@@ -22,6 +22,8 @@
 #   iconIsOfficial   true only for a verified official product mark; unverified assets use a generic UI icon
 #   order            position within the category
 #
+#   keyAuth          optional alternate static-key endpoint and header rules; no credentials
+#
 # Entries carry no credential of any kind.
 
 - id: notion
@@ -48,8 +50,13 @@
   description:
     en: Search the web for useful sources.
     zh: 查找网页资料。
-  url: https://mcp.exa.ai/mcp
-  defaultAuthKind: none
+  url: https://mcp.exa.ai/mcp?login
+  defaultAuthKind: oauth
+  # Key authentication: https://exa.ai/docs/get-started/exa-mcp
+  keyAuth:
+    url: https://mcp.exa.ai/mcp
+    authHeader: x-api-key
+    authScheme: ""
   category: search
   website: https://exa.ai
   icon: exa.svg
@@ -66,6 +73,11 @@
     zh: 查找和更新任务与项目。
   url: https://mcp.linear.app/mcp
   defaultAuthKind: oauth
+  # Key authentication: https://linear.app/docs/mcp
+  keyAuth:
+    url: https://mcp.linear.app/mcp
+    authHeader: authorization
+    authScheme: Bearer
   category: projects
   website: https://linear.app
   icon: linear.svg
@@ -98,6 +110,12 @@
     zh: 查找任务和团队文档。
   url: https://mcp.atlassian.com/v2/mcp?tools=all
   defaultAuthKind: oauth
+  # Key authentication: https://support.atlassian.com/atlassian-ai-gateway/docs/configure-authentication-via-api-token/
+  # Service-account API key only; personal email/token Basic authentication is not offered.
+  keyAuth:
+    url: https://mcp.atlassian.com/v2/mcp?tools=all
+    authHeader: authorization
+    authScheme: Bearer
   category: projects
   website: https://www.atlassian.com
   icon: atlassian.svg
@@ -308,6 +326,11 @@
     zh: 查看和更新看板任务。
   url: https://mcp.monday.com/mcp
   defaultAuthKind: oauth
+  # Key authentication: https://developer.monday.com/api-reference/docs/mcp-api-token
+  keyAuth:
+    url: https://mcp.monday.com/mcp
+    authHeader: authorization
+    authScheme: Bearer
   category: projects
   website: https://monday.com
   icon: monday.png
@@ -371,7 +394,12 @@
     en: Search the web and extract content.
     zh: 搜索网页并提取内容。
   url: https://mcp.tavily.com/mcp
-  defaultAuthKind: none
+  defaultAuthKind: oauth
+  # Key authentication: https://github.com/tavily-ai/tavily-mcp
+  keyAuth:
+    url: https://mcp.tavily.com/mcp
+    authHeader: authorization
+    authScheme: Bearer
   category: search
   website: https://tavily.com
   icon: tavily.svg
@@ -386,8 +414,13 @@
   description:
     en: Extract content from web pages.
     zh: 提取网页内容。
-  url: https://mcp.firecrawl.dev/v2/mcp
-  defaultAuthKind: none
+  url: https://mcp.firecrawl.dev/v2/mcp-oauth
+  defaultAuthKind: oauth
+  # Key authentication: https://docs.firecrawl.dev/mcp-server
+  keyAuth:
+    url: https://mcp.firecrawl.dev/v2/mcp
+    authHeader: authorization
+    authScheme: Bearer
   category: search
   website: https://www.firecrawl.dev
   icon: firecrawl.svg
@@ -404,6 +437,11 @@
     zh: 跨应用执行任务。
   url: https://mcp.zapier.com/api/v1/connect
   defaultAuthKind: oauth
+  # Key authentication: https://docs.zapier.com/mcp/overview/how-connections-work
+  keyAuth:
+    url: https://mcp.zapier.com/api/v1/connect
+    authHeader: authorization
+    authScheme: Bearer
   category: automation
   website: https://zapier.com
   icon: zapier.png
@@ -427,6 +465,11 @@
     zh: 查找和更新表格记录。
   url: https://mcp.airtable.com/mcp
   defaultAuthKind: oauth
+  # Key authentication: https://airtable.com/developers/agents/mcp/getting-started
+  keyAuth:
+    url: https://mcp.airtable.com/mcp
+    authHeader: authorization
+    authScheme: Bearer
   category: data
   website: https://www.airtable.com
   icon: airtable.png
@@ -443,6 +486,11 @@
     zh: 查询数据库和查看日志。
   url: https://mcp.supabase.com/mcp
   defaultAuthKind: oauth
+  # Key authentication: https://supabase.com/docs/guides/ai-tools/mcp#manual-authentication
+  keyAuth:
+    url: https://mcp.supabase.com/mcp
+    authHeader: authorization
+    authScheme: Bearer
   category: development
   website: https://supabase.com
   icon: supabase.svg
@@ -475,6 +523,12 @@
     zh: 查询支付和订阅信息。
   url: https://mcp.stripe.com
   defaultAuthKind: oauth
+  # Key authentication: https://docs.stripe.com/mcp
+  # Stripe Agent API key.
+  keyAuth:
+    url: https://mcp.stripe.com
+    authHeader: authorization
+    authScheme: Bearer
   category: finance
   website: https://stripe.com
   icon: stripe.svg

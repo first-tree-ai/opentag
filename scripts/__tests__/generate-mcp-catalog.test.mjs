@@ -218,3 +218,26 @@ test("keeps unverified assets unmarked and rejects invalid official-mark metadat
   assert.doesNotMatch(readFileSync(fixture.target, "utf8"), /iconIsOfficial: true/);
   assertRejected(t, /iconIsOfficial: must be a boolean/, { entries: [entry({ iconIsOfficial: "yes" })] });
 });
+
+test("emits an alternate key endpoint with an empty prefix", (t) => {
+  const fixture = fixtureDirectory(t, {
+    entries: [entry({ keyAuth: { url: "https://api.example.com/mcp", authHeader: "x-api-key", authScheme: "" } })],
+  });
+  const result = runGenerator(fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  const generated = readFileSync(fixture.target, "utf8");
+  assert.match(
+    generated,
+    /keyAuth: \{\s+url: "https:\/\/api.example.com\/mcp",\s+authHeader: "x-api-key",\s+authScheme: "",/,
+  );
+});
+for (const keyAuth of [
+  { url: "http://127.0.0.1/mcp" },
+  { url: "https://api.example.com/mcp", authHeader: "Host" },
+  { url: "https://api.example.com/mcp", defaultAuthKind: "none" },
+  { url: "https://api.example.com/mcp", bearerKey: "secret" },
+]) {
+  test(`rejects invalid alternate key settings ${JSON.stringify(keyAuth)}`, (t) => {
+    assertRejected(t, /keyAuth/, { entries: [entry({ keyAuth })] });
+  });
+}

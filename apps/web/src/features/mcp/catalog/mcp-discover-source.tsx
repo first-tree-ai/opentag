@@ -4,11 +4,13 @@ import { useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
 import * as m from "../../../paraglide/messages.js";
 import { Button, Field, KumoInputControl, Select } from "../../../ui/design-system.js";
+import { authorizationAction, connectorFeedback } from "../mcp-feedback.js";
 import { McpServiceIcon } from "../mcp-service-icon.js";
 import { McpCatalogActions, McpCatalogDescription, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
 import {
   catalogEntryState,
   entriesInCategory,
+  findCatalogBinding,
   localizedText,
   type McpCatalogEntryState,
   matchesCatalogEntry,
@@ -130,7 +132,7 @@ export function McpDiscoverSource({
               connecting={Boolean(pending[entry.id])}
               pendingAction={pending[entry.id]?.action}
               onAdd={onAdd}
-              feedback={feedback?.[entry.id]}
+              feedback={catalogFeedback(entry, servers, mounted, feedback?.[entry.id])}
             />
           ))}
         </ul>
@@ -182,4 +184,28 @@ export function McpCatalogCard({
       </div>
     </li>
   );
+}
+
+function catalogFeedback(
+  entry: McpCatalogEntry,
+  servers: readonly MCPServer[],
+  mounted: readonly MCPAgentServer[],
+  local?: McpCatalogFeedback,
+): McpCatalogFeedback | undefined {
+  const binding = findCatalogBinding(entry, servers, mounted);
+  if (local)
+    return {
+      ...local,
+      actionLabel: local.action === "authorize" && binding ? authorizationAction(binding) : local.actionLabel,
+    };
+  if (!binding?.enabled) return;
+  const feedback = connectorFeedback(binding);
+  if (!feedback.label) return;
+  return {
+    entryId: entry.id,
+    phase: feedback.neutral ? (binding.authorization?.probeState === "pending" ? "checking" : "notice") : "error",
+    label: feedback.label,
+    action: feedback.action,
+    actionLabel: feedback.action === "authorize" ? authorizationAction(binding) : undefined,
+  };
 }

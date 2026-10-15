@@ -200,10 +200,25 @@ function validateCreatePayload(row, at, violations) {
     ...(row.authScheme === undefined ? {} : { authScheme: row.authScheme }),
     ...(row.extraHeaders === undefined ? {} : { extraHeaders: row.extraHeaders }),
   });
+  validateKeyAuth(row, at, violations);
   if (create.success) return;
   for (const issue of create.error.issues) {
     violations.push(`${at}.${issue.path.join(".") || "entry"}: ${issue.message}`);
   }
+}
+
+function validateKeyAuth(row, at, violations) {
+  if (row.keyAuth === undefined) return;
+  if (
+    !isRecord(row.keyAuth) ||
+    Object.keys(row.keyAuth).some((key) => !["url", "authHeader", "authScheme"].includes(key))
+  ) {
+    violations.push(`${at}.keyAuth: expected url, authHeader, and authScheme only`);
+    return;
+  }
+  const key = CreateMCPServerRequestSchema.safeParse({ ...row.keyAuth, name: row.name, defaultAuthKind: "bearer" });
+  if (!key.success) violations.push(`${at}.keyAuth: invalid API key connection settings`);
+  else validateOutboundUrl(key.data.url, `${at}.keyAuth`, violations);
 }
 
 /** The endpoint must be one the Server's outbound gate would dial. */
@@ -269,6 +284,7 @@ function catalogEntryFrom(row, id, title, description, order, oauthScopes) {
     authScheme: typeof row.authScheme === "string" ? row.authScheme : undefined,
     extraHeaders: isRecord(row.extraHeaders) ? row.extraHeaders : undefined,
     oauthScopes,
+    keyAuth: row.keyAuth,
     order,
   };
 }
@@ -309,6 +325,15 @@ function localizedLines(prefix, value, locales, indent) {
   for (const locale of locales) lines.push(`${indent}  ${locale}: ${JSON.stringify(value[locale])},`);
   lines.push(`${indent}},`);
   return lines;
+}
+
+function keyAuthLines(entry) {
+  if (!entry.keyAuth) return [];
+  const lines = ["    keyAuth: {", `      url: ${JSON.stringify(entry.keyAuth.url)},`];
+  for (const field of ["authHeader", "authScheme"]) {
+    if (entry.keyAuth[field] !== undefined) lines.push(`      ${field}: ${JSON.stringify(entry.keyAuth[field])},`);
+  }
+  return [...lines, "    },"];
 }
 
 function emitModule(categories, entries, locales, icons) {
@@ -365,6 +390,7 @@ function emitModule(categories, entries, locales, icons) {
     "  authScheme?: string;",
     "  extraHeaders?: Record<string, string>;",
     "  oauthScopes?: string[];",
+    "  keyAuth?: { url: string; authHeader?: string; authScheme?: string };",
     "  category: string;",
     "  website: string;",
     "  iconUrl: string;",
@@ -400,6 +426,7 @@ function emitModule(categories, entries, locales, icons) {
       const sorted = Object.fromEntries(Object.entries(entry.extraHeaders).sort(([a], [b]) => a.localeCompare(b)));
       lines.push(`    extraHeaders: ${JSON.stringify(sorted)},`);
     }
+    lines.push(...keyAuthLines(entry));
     lines.push(...oauthScopeLines(entry));
     lines.push(
       `    category: ${JSON.stringify(entry.category)},`,

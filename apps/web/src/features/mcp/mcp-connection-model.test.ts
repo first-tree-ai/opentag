@@ -12,6 +12,7 @@ vi.mock("@opentag/mcp-presets", () => ({
       url: "https://service.test/mcp",
       defaultAuthKind: "oauth",
       oauthScopes: ["read"],
+      keyAuth: { url: "https://service.test/key", authHeader: "x-api-key", authScheme: "" },
     },
     {
       id: "canva",
@@ -56,5 +57,86 @@ describe("connection method precedence", () => {
     // A Server on the Developer Portal endpoint keeps the entry's OAuth default and its consent flow.
     expect(connectionAuthKind(CANVA_DEVELOPER_PORTAL_MCP_URL)).toBe("oauth");
     expect(connectionPreset("https://api.canva.com/connect/v1/mcp/other")).toBeUndefined();
+  });
+});
+
+describe("Preset method configuration", () => {
+  it("uses a uniquely submitted configuration only after the old credential was revoked", () => {
+    const preset = MCP_CATALOG_ENTRIES[0];
+    if (!preset) throw new Error("Missing multi-method preset");
+    const switched = entry({
+      effective: { url: preset.url, authHeader: "authorization", authScheme: "Bearer", extraHeaders: {} },
+      authorization: { ...authorization(), kind: "bearer", status: "revoked", hasCredential: false },
+    });
+    expect(connectionAuthKind(preset.url, switched)).toBe("oauth");
+    expect(connectionAuthKind(preset.url, { ...switched, authorization: { ...authorization(), kind: "bearer" } })).toBe(
+      "bearer",
+    );
+  });
+  it("uses each method's exact address and preserves an empty key prefix", async () => {
+    const { presetAuthConfig, presetAuthKinds } = await import("./mcp-connection-model.js");
+    const preset = {
+      ...MCP_CATALOG_ENTRIES[0],
+      keyAuth: { url: "https://service.test/key", authHeader: "x-api-key", authScheme: "" },
+    } as NonNullable<(typeof MCP_CATALOG_ENTRIES)[0]>;
+    expect(presetAuthKinds(preset)).toEqual(["oauth", "bearer"]);
+    expect(presetAuthConfig(preset, "bearer")).toEqual({
+      url: "https://service.test/key",
+      authHeader: "x-api-key",
+      authScheme: "",
+    });
+    expect(presetAuthConfig(preset, "oauth").url).toBe("https://service.test/mcp");
+  });
+});
+
+describe("Details configuration classification", () => {
+  it("preserves an existing OAuth installation on a catalog's shared legacy endpoint", async () => {
+    const { settingsPreset } = await import("./mcp-connection-model.js");
+    const preset = MCP_CATALOG_ENTRIES[0];
+    if (!preset?.keyAuth) throw new Error("Missing multi-method preset");
+    const legacy = entry({
+      effective: { url: preset.keyAuth.url, authHeader: "authorization", authScheme: "Bearer", extraHeaders: {} },
+      authorization: { ...authorization(), kind: "oauth" },
+    });
+    expect(settingsPreset(legacy, MCP_CATALOG_ENTRIES)).toBe(preset);
+  });
+  it("keeps a preset while its submitted header rules differ from the revoked method", async () => {
+    const { settingsPreset } = await import("./mcp-connection-model.js");
+    const preset = {
+      ...MCP_CATALOG_ENTRIES[0],
+      keyAuth: { url: "https://service.test/key", authHeader: "x-api-key", authScheme: "" },
+    } as NonNullable<(typeof MCP_CATALOG_ENTRIES)[0]>;
+    const pending = entry({
+      effective: { url: preset.url, authHeader: "authorization", authScheme: "Bearer", extraHeaders: {} },
+      authorization: { ...authorization(), kind: "bearer", status: "revoked", hasCredential: false },
+    });
+    expect(settingsPreset(pending, [preset])).toBe(preset);
+  });
+  it("keeps custom query parameters and headers editable without a database source flag", async () => {
+    const { settingsPreset } = await import("./mcp-connection-model.js");
+    const preset = MCP_CATALOG_ENTRIES[0];
+    if (!preset) throw new Error("Missing test preset");
+    const configured = entry({
+      effective: { url: preset.url, authHeader: "authorization", authScheme: "Bearer", extraHeaders: {} },
+    });
+    expect(settingsPreset(configured, MCP_CATALOG_ENTRIES)).toBe(preset);
+    expect(
+      settingsPreset(
+        { ...configured, effective: { ...configured.effective, url: `${preset.url}?tenant=one` } },
+        MCP_CATALOG_ENTRIES,
+      ),
+    ).toBeUndefined();
+    expect(
+      settingsPreset(
+        { ...configured, effective: { ...configured.effective, extraHeaders: { "x-tenant": "one" } } },
+        MCP_CATALOG_ENTRIES,
+      ),
+    ).toBeUndefined();
+    expect(
+      settingsPreset(
+        { ...configured, effective: { ...configured.effective, authHeader: "x-api-key", authScheme: "" } },
+        MCP_CATALOG_ENTRIES,
+      ),
+    ).toBeUndefined();
   });
 });

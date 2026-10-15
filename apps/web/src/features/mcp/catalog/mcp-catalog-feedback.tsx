@@ -1,13 +1,16 @@
 import { MCP_ERROR_CODES } from "@opentag/shared/browser";
 import { ApiError } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Icon, Loader, Tooltip } from "../../../ui/design-system.js";
+import { Button, Icon, Loader } from "../../../ui/design-system.js";
+import { connectionFailure } from "../mcp-connection.js";
 import type { McpCatalogEntryState } from "./mcp-catalog-model.js";
 
 export type McpCatalogFeedback = {
   entryId: string;
-  phase: "preparing" | "waiting" | "checking" | "blocked" | "error";
+  phase: "preparing" | "waiting" | "checking" | "blocked" | "error" | "notice";
   label: string;
+  action?: "authorize" | "retry";
+  actionLabel?: string;
   onCancel?: () => void;
   onOpen?: () => void;
 };
@@ -17,14 +20,14 @@ export function catalogFailure(cause: unknown): string {
     (cause instanceof TypeError && /fetch|network|load failed/i.test(cause.message)) ||
     (cause instanceof ApiError && cause.status === 0)
   )
-    return m.mcp_catalog_network_error();
+    return m.mcp_feedback_unreachable();
   if (cause instanceof ApiError && cause.code === MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED)
     return m.mcp_authorization_expired();
-  return m.mcp_connection_failed();
+  return connectionFailure(cause);
 }
 
 export function McpCatalogFeedbackActions({ feedback, title }: { feedback: McpCatalogFeedback; title: string }) {
-  if (feedback.phase === "checking")
+  if (feedback.phase === "checking" || (feedback.phase === "preparing" && !feedback.onCancel))
     return (
       <span aria-hidden="true">
         <Loader size="sm" className="text-kumo-link" />
@@ -80,17 +83,12 @@ export function McpCatalogDescription({
         {description}
       </span>
       {feedback ? (
-        <Tooltip
-          content={feedback.label}
-          render={
-            <span
-              role={feedback.phase === "error" ? "alert" : "status"}
-              className={`mcp-catalog-feedback ${feedback.phase === "error" ? "text-kumo-danger" : ""}`}
-            />
-          }
+        <span
+          role={feedback.phase === "error" ? "alert" : "status"}
+          className={`mcp-catalog-feedback ${feedback.phase === "error" ? "text-kumo-danger" : ""}`}
         >
           {feedback.label}
-        </Tooltip>
+        </span>
       ) : null}
     </p>
   );
@@ -113,17 +111,17 @@ export function McpCatalogActions({
   feedback?: McpCatalogFeedback;
   onAdd: () => void;
 }) {
-  if (feedback && feedback.phase !== "error") return <McpCatalogFeedbackActions feedback={feedback} title={title} />;
+  if (feedback && feedback.phase !== "error" && feedback.phase !== "notice")
+    return <McpCatalogFeedbackActions feedback={feedback} title={title} />;
   const failed = feedback?.phase === "error";
   if (!failed && (state === "added" || state === "disabled"))
     return (
-      <span className="inline-flex min-h-8 items-center gap-1.5 text-xs text-kumo-subtle">
+      <span role="img" className="inline-flex min-h-8 items-center text-kumo-subtle" aria-label={m.mcp_catalog_added()}>
         <Icon name="check" />
-        {state === "disabled" ? m.mcp_catalog_added() : m.mcp_catalog_connected()}
       </span>
     );
-  const connect = pendingAction ? pendingAction === "connect" : state === "unconnected";
-  const label = failed ? m.mcp_reconnect() : connect ? m.mcp_connect() : m.mcp_attach_action();
+  const connect = (pendingAction ?? state) === "connect" || state === "unconnected";
+  const label = catalogActionLabel(connect, feedback);
   const props =
     connect || failed
       ? {}
@@ -144,4 +142,10 @@ export function McpCatalogActions({
       {connect || failed ? label : <Icon name="plus" className="size-5" />}
     </Button>
   );
+}
+
+function catalogActionLabel(connect: boolean, feedback?: McpCatalogFeedback): string {
+  if (feedback?.phase === "error")
+    return feedback.actionLabel ?? (feedback.action === "authorize" ? m.mcp_authorize_action() : m.mcp_retry());
+  return connect ? m.mcp_authorize_action() : m.mcp_attach_action();
 }

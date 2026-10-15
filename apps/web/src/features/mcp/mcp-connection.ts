@@ -4,24 +4,26 @@ import {
   type MCPAgentServer,
   type MCPAuthKind,
 } from "@opentag/shared/browser";
+import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { connectionPreset } from "./mcp-connection-model.js";
+import { probeFeedback } from "./mcp-feedback.js";
 import { type McpOAuthSession, useMcpOAuthSession } from "./mcp-oauth-session.js";
 import type { McpOAuthWindow } from "./mcp-oauth-window.js";
 import { useProbeMcpServer, useSetMcpAuthorization } from "./mcp-queries.js";
 import type { McpReturnContext } from "./mcp-return-context.js";
 
 export class McpConnectionError extends Error {
-  constructor(readonly reason: "key" | "tools" | "empty") {
-    super(
-      reason === "key" ? m.mcp_add_key_error() : reason === "empty" ? m.mcp_add_no_tools() : m.mcp_add_tools_failed(),
-    );
+  constructor(
+    readonly reason: "key" | "tools",
+    label?: string,
+  ) {
+    super(label ?? (reason === "key" ? m.mcp_add_key_error() : m.mcp_add_tools_failed()));
   }
 }
 export type ConnectionAttempt = {
   binding: MCPAgentServer;
   kind: MCPAuthKind;
-  allowOAuthDiscovery?: boolean;
 };
 
 /** The same Agent-scoped connection operation serves URL Add, Discover, and row Connect. */
@@ -33,6 +35,7 @@ export function useMcpConnectionOperation(agentId: string) {
     attempt: ConnectionAttempt,
     options: {
       oauthSession?: McpOAuthSession;
+      reauthorize?: boolean;
       token?: string;
       source: McpReturnContext["source"];
       onTools?: () => void;
@@ -54,10 +57,10 @@ export function useMcpConnectionOperation(agentId: string) {
       if (!alive()) return "cancelled" as const;
       options.onTools?.();
       const checked = await probe.mutateAsync(attempt.binding.mcpServerId);
-      if (probeRequiresOAuth(attempt, checked)) throw new McpConnectionError("tools");
+      requireTools(attempt, checked);
       return "connected" as const;
     };
-    if (requiresOAuth(attempt)) return startOAuth();
+    if (requiresOAuth(attempt, options.reauthorize)) return startOAuth();
     if (requiresConnectionKey(attempt.kind, attempt.binding, options.token)) return "key";
     if (shouldAuthorize(attempt, options.token)) {
       attempt.binding = await authorize.mutateAsync(authorizationInput(attempt, options.token));
@@ -66,7 +69,7 @@ export function useMcpConnectionOperation(agentId: string) {
     options.onTools?.();
     const result = await probe.mutateAsync(attempt.binding.mcpServerId);
     if (!alive()) return "connected";
-    if (probeRequiresOAuth(attempt, result)) return startOAuth();
+    requireTools(attempt, result);
     return "connected";
   };
   return { run, oauth };
@@ -80,43 +83,49 @@ export function requiresConnectionKey(
   if (kind !== "bearer" || token?.trim()) return false;
   const authorization = binding?.authorization;
   return (
-    authorization?.status !== "active" ||
+    !authorization?.hasCredential ||
+    authorization.status !== "active" ||
     authorization.probeError === `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`
   );
 }
 function shouldAuthorize(attempt: ConnectionAttempt, token?: string): boolean {
   return attempt.kind !== "oauth" && (Boolean(token?.trim()) || attempt.binding.authorization?.status !== "active");
 }
-function probeRequiresOAuth(
+function requireTools(
   attempt: ConnectionAttempt,
   result: { probeState: string; probeError: string | null; toolsCount: number | null },
-): boolean {
-  if (result.probeState === "succeeded") {
-    if (!result.toolsCount) throw new McpConnectionError("empty");
-    return false;
-  }
+): void {
+  if (result.probeState === "succeeded") return;
   const rejected = result.probeError === `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`;
   if (rejected && attempt.kind === "bearer") throw new McpConnectionError("key");
-  if (rejected && (attempt.allowOAuthDiscovery || attempt.kind === "oauth")) {
-    // Keep the discovered method if OAuth startup fails before its authorization write.
-    attempt.kind = "oauth";
-    return true;
-  }
-  throw new McpConnectionError("tools");
+  throw new McpConnectionError(
+    "tools",
+    probeFeedback(result.probeError, attempt.kind, Boolean(connectionPreset(attempt.binding.effective.url))).label,
+  );
 }
 
 export function connectionFailure(cause: unknown, kind?: MCPAuthKind): string {
   if (cause instanceof McpConnectionError) return cause.message;
-  return kind === "oauth" ? m.mcp_connect_sign_in_failed() : m.mcp_connect_failed();
+  if (cause instanceof TypeError && /fetch|network|load failed/i.test(cause.message))
+    return m.mcp_feedback_unreachable();
+  if (cause instanceof ApiError) {
+    if (cause.code === MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED) return m.mcp_authorization_expired();
+    if (cause.status === 0) return m.mcp_feedback_unreachable();
+    if (cause.code === MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE)
+      return probeFeedback(`${cause.code}: ${cause.message}`, kind).label ?? m.mcp_add_tools_failed();
+  }
+  return kind === "oauth" ? m.mcp_authorization_issue() : m.mcp_add_tools_failed();
 }
 export function isKeyFailure(cause: unknown): boolean {
   return cause instanceof McpConnectionError && cause.reason === "key";
 }
 
-function requiresOAuth(attempt: ConnectionAttempt): boolean {
+export function requiresOAuth(attempt: ConnectionAttempt, reauthorize = false): boolean {
   return (
     attempt.kind === "oauth" &&
-    (attempt.binding.authorization?.kind !== "oauth" || attempt.binding.authorization.status !== "active")
+    (reauthorize ||
+      attempt.binding.authorization?.kind !== "oauth" ||
+      attempt.binding.authorization.status !== "active")
   );
 }
 

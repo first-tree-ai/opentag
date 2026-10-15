@@ -189,7 +189,7 @@ describe("Discover with deployment catalog endpoints", () => {
     await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
     fireEvent.click(button);
     const dialog = await screen.findByRole("dialog", { name: "Discover" });
-    await within(dialog).findByText("Connected");
+    await within(dialog).findByRole("img", { name: "Added" });
     expect(within(dialog).queryByRole("button", { name: "Add: Canva" })).toBeNull();
     expect(create).not.toHaveBeenCalled();
   });

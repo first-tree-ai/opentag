@@ -849,10 +849,14 @@ export class BrowserApi {
     });
   }
 
-  revokeMcpAuthorization(agentId: string, mcpServerId: string): Promise<MCPAgentServer> {
+  revokeMcpAuthorization(agentId: string, mcpServerId: string, expectedOAuthState?: string): Promise<MCPAgentServer> {
     return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
       method: "DELETE",
-      headers: this.csrfHeaders(),
+      ...(expectedOAuthState !== undefined ? { body: JSON.stringify({ expectedOAuthState }) } : {}),
+      headers: {
+        ...(expectedOAuthState !== undefined ? { "content-type": "application/json" } : {}),
+        ...this.csrfHeaders(),
+      },
     });
   }
 

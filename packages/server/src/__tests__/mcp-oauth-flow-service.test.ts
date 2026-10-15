@@ -1880,3 +1880,50 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     expect(after?.ciphertext).not.toBeNull();
   });
 });
+
+describe("OAuth concurrent write protection", () => {
+  it("does not let a delayed exchange failure erase a newer flow", async () => {
+    const ids = await seed();
+    let secondState = "";
+    const { flows } = build({
+      ...discoverableAs(),
+      [TOKEN_URL]: async () => {
+        const newer = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+        secondState = stateOf(newer.authorizationUrl);
+        return doc({ error: "invalid_grant" }, 400);
+      },
+    });
+    const first = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await expect(
+      flows.callback({ code: "old-code", state: stateOf(first.authorizationUrl) }, FLOW_SECRET),
+    ).rejects.toBeDefined();
+    expect(await readAuthorization(ids)).toMatchObject({
+      state: hashSecret(secondState),
+      status: "pending",
+      failureCode: null,
+    });
+  });
+
+  it("invalidates an old refresh claim when a callback commits a new credential", async () => {
+    const ids = await seed();
+    const claim = randomUUID();
+    const { flows } = build({
+      ...discoverableAs(),
+      [TOKEN_URL]: async () => {
+        await unit.database
+          .update(mcpServerAuthorizations)
+          .set({ refreshClaimId: claim, refreshClaimedAt: new Date() })
+          .where(eq(mcpServerAuthorizations.agentId, ids.agentId));
+        return doc({ access_token: "new-token", expires_in: 3600 });
+      },
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    await flows.callback({ code: "new-code", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+    expect(await readAuthorization(ids)).toMatchObject({
+      status: "active",
+      refreshClaimId: null,
+      refreshClaimedAt: null,
+      refreshGeneration: 1,
+    });
+  });
+});

@@ -1,5 +1,5 @@
 /* MCP-specific geometry; controls, colors and typography retain the shared theme. */
-/* Reserve both action tracks in every state; error details render in a portal. */
+/* Reserve both action tracks in every state. */
 .mcp-server-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) fit-content(50%);
@@ -64,19 +64,6 @@
     grid-template-rows: minmax(2.75rem, auto) minmax(2.75rem, auto);
   }
 }
-/* Keep the cached-list recovery controls on one track at the minimum width. */
-@container content (max-width: 24rem) {
-  /* The visible Authorize action already explains the required next step. */
-  .mcp-server-auth-status {
-    display: none;
-  }
-  .mcp-server-status-full {
-    display: none;
-  }
-  .mcp-server-status-short {
-    display: inline;
-  }
-}
 .mcp-form-dialog,
 .mcp-confirm-dialog,
 .mcp-tools-dialog {
@@ -90,98 +77,31 @@
   max-height: calc(100dvh - 2rem);
 }
 
-/* Sizes depend on content. Requests and errors keep the current step's dimensions. */
+/* Custom setup exposes authentication before the first request. */
 .mcp-add-dialog {
-  --mcp-add-height: 13.5rem;
-  --mcp-add-anchor-height: 13.5rem;
-  --mcp-add-max-height: 20rem;
-  width: calc(100vw - 2rem);
-  max-width: 27.5rem;
-  --mcp-add-top: max(
-    1rem,
-    min(calc((100dvh - var(--mcp-add-anchor-height)) / 2 - 1.5rem), calc(100dvh - var(--mcp-add-max-height) - 1rem))
-  );
-  height: min(var(--mcp-add-height), calc(100dvh - var(--mcp-add-top) - 1rem));
-  max-height: calc(100dvh - 2rem);
-  top: var(--mcp-add-top);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transition-property: opacity, height;
-  transition-duration: 160ms;
-  overflow-wrap: anywhere;
-}
-.mcp-add-size-key {
-  --mcp-add-height: 19rem;
-}
-.mcp-add-dialog[data-starting-style],
-.mcp-add-dialog[data-ending-style] {
-  scale: 1;
-}
-.mcp-add-dialog > header {
-  flex-shrink: 0;
-  align-items: center;
-}
-.mcp-add-layout {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-.mcp-add-body {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
+  max-width: 32rem;
   overflow-y: auto;
-  scrollbar-gutter: stable;
-  margin: -0.25rem;
-  padding: 0.25rem;
-}
-.mcp-add-secondary {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  padding-top: 0.25rem;
-}
-.mcp-add-secondary:has(#mcp-add-key) {
-  padding-top: 1.5rem;
-  gap: 0.25rem;
-}
-.mcp-add-feedback {
-  flex-shrink: 0;
-  min-height: 1.5rem;
-}
-.mcp-add-footer {
-  display: flex;
-  flex-shrink: 0;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 0.5rem;
-  padding-top: 0.5rem;
-}
-.mcp-add-connect {
-  width: 9.5rem;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-@media (max-width: 600px) {
-  .mcp-add-dialog {
-    padding: 1rem;
-  }
-  .mcp-add-size-key {
-    --mcp-add-height: 20rem;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .mcp-add-dialog {
-    transition: none;
-  }
 }
 .mcp-confirm-dialog {
   width: calc(100vw - 2rem);
-  max-width: 28rem;
+  max-width: 26rem;
+}
+.mcp-confirm-dialog > header {
+  margin-bottom: 0.5rem;
+}
+.mcp-confirm-dialog > p {
+  margin-bottom: 0;
+  line-height: 1.5;
+  text-wrap: balance;
+}
+.mcp-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+.mcp-confirm-actions .ui-button {
+  min-width: 5rem;
 }
 .mcp-form-dialog [data-ui="dialog-heading"],
 .mcp-tools-dialog [data-ui="dialog-heading"] {
@@ -263,6 +183,25 @@
 }
 .mcp-auth-method-details > p {
   margin: 0;
+}
+.mcp-auth-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+.mcp-auth-action-row > .ui-button {
+  flex-shrink: 0;
+}
+.mcp-auth-feedback {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 30rem) {
+  .mcp-auth-action-row > .mcp-auth-feedback {
+    flex-basis: 100%;
+  }
 }
 .mcp-auth-choice {
   padding: 0.75rem;
@@ -532,6 +471,7 @@
   grid-column: 1;
   grid-row: 2;
   position: relative;
+  min-height: 2lh;
 }
 .mcp-catalog-description-reserve {
   visibility: hidden;
@@ -539,9 +479,7 @@
 .mcp-catalog-feedback {
   position: absolute;
   inset: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 .mcp-catalog-grid .mcp-catalog-card-actions {
   grid-column: 2;

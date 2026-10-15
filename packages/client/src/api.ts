@@ -769,12 +769,21 @@ export class OpenTagApi {
     accessToken: string,
     agentId: string,
     mcpServerId: string,
-    options?: RequestOptions,
+    options?: RequestOptions & { expectedOAuthState?: string },
   ): Promise<MCPAgentServer> {
     return this.#request(
       agentMcpAuthorizationPath(agentId, mcpServerId),
       MCPAgentServerSchema,
-      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+      {
+        method: "DELETE",
+        ...(options?.expectedOAuthState !== undefined
+          ? { body: JSON.stringify({ expectedOAuthState: options.expectedOAuthState }) }
+          : {}),
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          ...(options?.expectedOAuthState !== undefined ? { "content-type": "application/json" } : {}),
+        },
+      },
       options,
     );
   }

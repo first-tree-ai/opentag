@@ -646,6 +646,10 @@ export const SetMCPAuthorizationRequestSchema = z
   });
 export type SetMCPAuthorizationRequest = z.infer<typeof SetMCPAuthorizationRequestSchema>;
 
+/** Cancel only the OAuth attempt named by its already-issued state. */
+export const CancelMCPOAuthRequestSchema = z.object({ expectedOAuthState: z.string().min(1).max(512) }).strict();
+export type CancelMCPOAuthRequest = z.infer<typeof CancelMCPOAuthRequestSchema>;
+
 export const StartMCPOAuthRequestSchema = z
   .object({
     scopes: z.array(z.string().min(1).max(255)).max(64).optional(),

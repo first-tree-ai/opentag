@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MCPAgentServer, MCPAuthKind, MCPServer } from "@opentag/shared/browser";
+import { UpdateMCPBindingRequestSchema } from "@opentag/shared/browser";
 import type { Page, Route } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
 import { expect } from "./fixtures.js";
@@ -62,6 +63,8 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
   let probeGate: Promise<void> | undefined;
   let oauthGate: Promise<void> | undefined;
   let releaseOAuth: () => void = () => {};
+  let authorizationGate: Promise<void> | undefined;
+  let releaseAuthorization: () => void = () => {};
   await page.route(/\/api\/v1\/(?:agents\/[^/]+\/)?mcp-servers(?:\/.*)?$/, async (route) => {
     const path = new URL(route.request().url()).pathname;
     const body = route.request().postDataJSON() as Record<string, unknown> | null;
@@ -87,11 +90,19 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     if (await respondRemoval(route, method, match[3], entries, match[2])) return;
     const entry = entries.find((value) => value.mcpServerId === match[2]);
     if (!entry) throw new Error("Missing binding fixture");
+    if (await respondBindingUpdate(route, entry, method, match[3], body)) return;
     await respond(route, agentId, entry, match[3] ?? "", body);
   }
   async function respondDefinition(route: Route, path: string, method: string) {
     const id = /^\/api\/v1\/mcp-servers\/([^/]+)$/.exec(path)?.[1];
-    if (!id || method !== "GET") return false;
+    if (!id) return false;
+    if (method === "DELETE") {
+      const index = servers.findIndex((value) => value.id === id);
+      if (index >= 0) servers.splice(index, 1);
+      await route.fulfill({ status: 204 });
+      return true;
+    }
+    if (method !== "GET") return false;
     const definition = servers.find((value) => value.id === id);
     if (!definition) throw new Error("Missing definition fixture");
     await route.fulfill({ json: { server: definition, agents: [] } });
@@ -182,10 +193,19 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
     });
   }
   async function respondAuthorization(route: Route, entry: MCPAgentServer, body: Record<string, unknown> | null) {
+    const cancelling = route.request().method() === "DELETE";
+    if (!cancelling) await authorizationGate;
+    if (cancelling && body?.expectedOAuthState && entry.authorization?.status === "active") {
+      await route.fulfill({
+        status: 409,
+        json: { error: { message: "Attempt ended", code: "MCP_OAUTH_FLOW_INVALID", category: "deterministic" } },
+      });
+      return;
+    }
     entry.authorization = {
-      kind: body?.kind as MCPAuthKind,
-      status: "active",
-      hasCredential: body?.kind !== "none",
+      kind: cancelling ? (entry.authorization?.kind ?? "oauth") : (body?.kind as MCPAuthKind),
+      status: cancelling ? "revoked" : "active",
+      hasCredential: !cancelling && body?.kind !== "none",
       scopes: null,
       accessTokenExpiresAt: null,
       authorizationServer: null,
@@ -208,7 +228,7 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       const returnURL = `/agents/${agentId}/mcp?${outcome}&server=${entry.mcpServerId}`;
       await route.fulfill({
         json: {
-          authorizationUrl: `${baseURL}/mcp-consent-fixture?return=${encodeURIComponent(returnURL)}`,
+          authorizationUrl: `${baseURL}/mcp-consent-fixture?state=${entry.mcpServerId}&return=${encodeURIComponent(returnURL)}`,
           expiresAt: "2099-01-01T00:00:00.000Z",
         },
       });
@@ -267,5 +287,31 @@ export async function mcpFixture(page: Page, servers: MCPServer[] = []) {
       });
     },
     releaseOAuth: () => releaseOAuth(),
+    holdAuthorization: () => {
+      authorizationGate = new Promise((resolve) => {
+        releaseAuthorization = resolve;
+      });
+    },
+    releaseAuthorization: () => releaseAuthorization(),
   };
+}
+
+async function respondBindingUpdate(
+  route: Route,
+  entry: MCPAgentServer,
+  method: string,
+  operation: string | undefined,
+  body: Record<string, unknown> | null,
+) {
+  if (method !== "PATCH" || operation !== "") return false;
+  const patch = UpdateMCPBindingRequestSchema.parse(body);
+  if (patch.enabled !== undefined) entry.enabled = patch.enabled;
+  for (const name of ["url", "authHeader", "authScheme", "extraHeaders"] as const) {
+    if (patch[name] !== undefined) {
+      Object.assign(entry.effective, { [name]: patch[name] });
+      entry.overridden[name] = true;
+    }
+  }
+  await route.fulfill({ json: entry });
+  return true;
 }

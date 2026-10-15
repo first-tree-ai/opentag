@@ -44,7 +44,7 @@ export type ServedCatalogEntry = McpCatalogEntry & { shippedUrl?: string };
  * same service.
  */
 export function catalogEntryUrls(entry: ServedCatalogEntry): string[] {
-  const urls = [entry.url, entry.shippedUrl, MCP_CATALOG_DEPLOYMENT_ENDPOINTS[entry.id]];
+  const urls = [entry.url, entry.keyAuth?.url, entry.shippedUrl, MCP_CATALOG_DEPLOYMENT_ENDPOINTS[entry.id]];
   const seen = new Set<string>();
   return urls.filter((url): url is string => {
     if (url === undefined) return false;
@@ -137,9 +137,7 @@ export function catalogEntryState(
   if (!binding) return "available";
   if (!binding.enabled) return "disabled";
   const auth = binding.authorization;
-  return auth?.status === "active" && auth.probeState === "succeeded" && (auth.toolsCount ?? 0) > 0
-    ? "added"
-    : "unconnected";
+  return auth?.status === "active" && auth.probeState === "succeeded" ? "added" : "unconnected";
 }
 
 export function findCatalogBinding(

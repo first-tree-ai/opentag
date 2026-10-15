@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Collapsible, Field, Icon, KumoInputControl, Radio } from "../../ui/design-system.js";
 import { type AuthDraft, type HeaderRow, newHeader } from "./mcp-form-model.js";
@@ -97,25 +97,30 @@ export function McpAuthFields({
   label = m.mcp_auth_label(),
   variant = "setup",
   fixedMethod = false,
+  hideKey = false,
+  disabled = false,
 }: {
   draft: AuthDraft;
   onChange: (draft: AuthDraft) => void;
   label?: string;
   variant?: "setup" | "settings";
   fixedMethod?: boolean;
+  hideKey?: boolean;
+  disabled?: boolean;
 }) {
-  const help = authMethodHelp(draft.kind, variant);
-  if (fixedMethod) return <McpAuthMethodDetails draft={draft} onChange={onChange} help={help} variant={variant} />;
+  if (fixedMethod)
+    return !hideKey && draft.kind === "bearer" ? (
+      <McpKeyField draft={draft} onChange={onChange} disabled={disabled} />
+    ) : null;
   const choiceClass = variant === "settings" ? "mcp-auth-choice" : undefined;
   return (
     <>
       <div>
         <fieldset className="mcp-radio">
           <legend>{label}</legend>
-          {variant === "setup" ? (
-            <p className="mb-3 text-xs leading-relaxed text-kumo-subtle">{m.mcp_auth_help()}</p>
-          ) : null}
+
           <Radio.Group
+            disabled={disabled}
             value={draft.kind}
             onValueChange={(kind) => onChange({ ...draft, kind: kind as AuthDraft["kind"] })}
           >
@@ -128,69 +133,23 @@ export function McpAuthFields({
             <Radio.Item className={choiceClass} value="none" label={m.mcp_auth_none()} />
           </Radio.Group>
         </fieldset>
-        {variant === "setup" ? <p className="mt-3 text-xs leading-relaxed text-kumo-subtle">{help}</p> : null}
       </div>
-      <McpAuthMethodDetails draft={draft} onChange={onChange} help={help} variant={variant} />
+      {!hideKey && draft.kind === "bearer" ? (
+        <McpKeyField draft={draft} onChange={onChange} disabled={disabled} />
+      ) : null}
     </>
   );
 }
 
-function authMethodHelp(kind: AuthDraft["kind"], variant: "setup" | "settings"): string {
-  return kind === "oauth"
-    ? variant === "settings"
-      ? m.mcp_settings_auth_browser_help()
-      : m.mcp_authorize_oauth_description()
-    : kind === "bearer"
-      ? m.mcp_authorize_bearer_description()
-      : m.mcp_authorize_none_description();
-}
-
-function McpAuthMethodDetails({
+function McpKeyField({
   draft,
   onChange,
-  help,
-  variant,
+  disabled,
 }: {
   draft: AuthDraft;
   onChange: (draft: AuthDraft) => void;
-  help: string;
-  variant: "setup" | "settings";
+  disabled: boolean;
 }) {
-  const details = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (variant === "settings" && draft.kind === "bearer") {
-      details.current?.scrollIntoView?.({ block: "nearest" });
-    }
-  }, [draft.kind, variant]);
-  return (
-    <div ref={details} className={variant === "settings" ? "mcp-auth-method-details" : "contents"}>
-      {variant === "settings" ? <p className="text-xs leading-relaxed text-kumo-subtle">{help}</p> : null}
-      {draft.kind === "bearer" ? <McpKeyField draft={draft} onChange={onChange} /> : null}
-    </div>
-  );
-}
-
-export function McpHelp({
-  label,
-  children,
-  className = "",
-}: {
-  label: string;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <Collapsible.Root className={`min-w-0 text-xs text-kumo-subtle ${className}`}>
-      <Collapsible.Trigger render={<Button className="mcp-help-trigger" variant="ghost" size="compact" />}>
-        {label}
-        <Icon name="chevron-down" className="size-3 transition-transform [[data-panel-open]_&]:rotate-180" />
-      </Collapsible.Trigger>
-      <Collapsible.Panel className="mt-2 max-w-prose leading-relaxed">{children}</Collapsible.Panel>
-    </Collapsible.Root>
-  );
-}
-
-function McpKeyField({ draft, onChange }: { draft: AuthDraft; onChange: (draft: AuthDraft) => void }) {
   const [visible, setVisible] = useState(false);
   return (
     <Field htmlFor="mcp-bearer-key" label={m.mcp_authorize_bearer_label()}>
@@ -201,12 +160,14 @@ function McpKeyField({ draft, onChange }: { draft: AuthDraft; onChange: (draft: 
           id="mcp-bearer-key"
           type={visible ? "text" : "password"}
           autoComplete="off"
+          disabled={disabled}
           value={draft.token}
           onChange={(event) => onChange({ ...draft, token: event.target.value })}
         />
         <Button
           aria-label={visible ? m.mcp_hide_key() : m.mcp_show_key()}
           aria-pressed={visible}
+          disabled={disabled}
           className="absolute right-1 top-1"
           shape="square"
           size="compact"

@@ -197,6 +197,7 @@
   "COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE",
   "COMPUTER_RUNTIME_PROVIDER_CAPABILITY",
   "CONTEXT_TREES_MAX",
+  "CancelMCPOAuthRequestSchema",
   "ChannelNameSchema",
   "ClientRuntimeBusinessFrameSchema",
   "ClientRuntimeFrameSchema",

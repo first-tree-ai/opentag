@@ -8,10 +8,20 @@ import {
   connectionFailure,
   McpConnectionError,
   requiresConnectionKey,
+  requiresOAuth,
   useMcpConnectionOperation,
 } from "./mcp-connection.js";
-import { allowsOAuthDiscovery, connectionAuthKind, connectionPreset } from "./mcp-connection-model.js";
-import { suggestServerName } from "./mcp-form-model.js";
+import { connectionAuthKind, connectionPreset } from "./mcp-connection-model.js";
+import { connectorFeedback } from "./mcp-feedback.js";
+import {
+  authDraft,
+  bindingPatch,
+  defaultConnection,
+  headersFromRows,
+  suggestServerName,
+  validHeaders,
+  validTokenSettings,
+} from "./mcp-form-model.js";
 import { createMcpInstallation } from "./mcp-installation.js";
 import { closeMcpOAuthWindow, type McpOAuthWindow, prepareMcpOAuthWindow } from "./mcp-oauth-window.js";
 import {
@@ -19,6 +29,7 @@ import {
   useCreateMcpServer,
   useDetachMcpServer,
   useMcpInstallationDefinitions,
+  useUpdateMcpBinding,
 } from "./mcp-queries.js";
 import { discardMcpSetup } from "./mcp-setup-cleanup.js";
 
@@ -27,8 +38,10 @@ type Attempt = {
   kind?: MCPAuthKind;
   server?: MCPServer;
   binding?: MCPAgentServer;
-  allowOAuthDiscovery?: boolean;
   temporary?: boolean;
+  authHeader?: string;
+  authScheme?: string;
+  extraHeaders?: Record<string, string>;
 };
 export function useMcpAddConnection(props: McpAddProps) {
   const [restoreId, setRestoreId] = useState(props.initialServerId);
@@ -38,6 +51,8 @@ export function useMcpAddConnection(props: McpAddProps) {
   const detach = useDetachMcpServer(props.agentId);
   const operation = useMcpConnectionOperation(props.agentId);
   const [url, setUrl] = useState("");
+  const [authentication, setAuthentication] = useState(() => authDraft(defaultConnection, "oauth"));
+  const update = useUpdateMcpBinding(props.agentId);
   const [key, setKey] = useState("");
   const [needsKey, setNeedsKey] = useState(false);
   const [urlInvalid, setUrlInvalid] = useState(false);
@@ -64,22 +79,13 @@ export function useMcpAddConnection(props: McpAddProps) {
     },
     [props.agentId, detachSetup],
   );
-  const discardOtherSetups = useCallback(
-    async (keep?: string) => {
-      for (const id of [...provisional.current]) {
-        if (id !== keep) await discardTemporary(id);
-      }
-    },
-    [discardTemporary],
-  );
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
-      closeMcpOAuthWindow(oauthWindow.current?.popup);
-      void discardOtherSetups().catch(() => console.warn("Could not clear abandoned MCP setup."));
+      // Submitted configuration remains installed when this view closes.
     };
-  }, [discardOtherSetups]);
+  }, []);
   useEffect(() => {
     if (restored.current || !props.initialServerId) return;
     const server = definitions.servers.find((server) => server.id === props.initialServerId);
@@ -88,6 +94,9 @@ export function useMcpAddConnection(props: McpAddProps) {
     const binding = props.mounted.find((entry) => entry.mcpServerId === server.id);
     const value = binding?.effective.url ?? server.url;
     setUrl(value);
+    setAuthentication(
+      authDraft(binding?.effective ?? { ...defaultConnection, url: value }, connectionAuthKind(value, binding, server)),
+    );
     attempt.current = { url: value, server, binding, kind: connectionAuthKind(value, binding, server) };
   }, [definitions.servers, props.initialServerId, props.mounted]);
   const reset = (value: string) => {
@@ -96,10 +105,9 @@ export function useMcpAddConnection(props: McpAddProps) {
     setRestoreId(undefined);
     setUrl(value);
     setNeedsKey(false);
-    setKey("");
     setError(undefined);
     setUrlInvalid(false);
-    attempt.current = { url: value.trim() };
+    attempt.current = { url: value.trim(), kind: authentication.kind };
   };
   const validUrl =
     MCPServerUrlSchema.safeParse(url).success && /^https?:\/\/[^/\\?#\s]+(?:[/?][^\s\\]*)?$/i.test(url.trim());
@@ -127,8 +135,14 @@ export function useMcpAddConnection(props: McpAddProps) {
     }
   }
   function prepareAttempt(current: Attempt) {
-    current.kind ??= connectionAuthKind(current.url, current.binding, current.server);
-    current.allowOAuthDiscovery ??= allowsOAuthDiscovery(current.url, current.kind);
+    if (current.binding) {
+      const serverId = current.binding.mcpServerId;
+      current.binding = props.mounted.find((entry) => entry.mcpServerId === serverId) ?? current.binding;
+    }
+    current.kind = authentication.kind;
+    current.authHeader = authentication.authHeader;
+    current.authScheme = authentication.authScheme;
+    current.extraHeaders = headersFromRows(authentication.headers);
   }
   function installedBinding(value: string) {
     const preset = findCatalogEntryByUrl(value, MCP_CATALOG_ENTRIES);
@@ -156,42 +170,59 @@ export function useMcpAddConnection(props: McpAddProps) {
   }
   async function authorizeConnection(current: Attempt) {
     if (!current.binding || !current.kind) return;
-    const pending = { binding: current.binding, kind: current.kind, allowOAuthDiscovery: current.allowOAuthDiscovery };
+    const pending = { binding: current.binding, kind: current.kind };
     try {
       const result = await operation.run(pending, {
         oauthWindow: oauthWindow.current,
+        reauthorize: connectorFeedback(pending.binding).action === "authorize",
         token: key,
         source: "add",
         returnContext: { newBinding: current.temporary },
         onTools: () => setPhase("tools"),
-        isAlive: () => alive.current,
+        isAlive: () => true,
       });
-      if (alive.current && result === "connected") {
+      if (result === "connected") {
         provisional.current.delete(pending.binding.mcpServerId);
-        await discardOtherSetups();
-        props.onAdded(pending.binding);
-      } else if (result === "cancelled" && current.temporary) {
-        await discardTemporary(pending.binding.mcpServerId);
-        current.binding = undefined;
-        current.temporary = false;
-      }
+        if (alive.current) props.onAdded(pending.binding);
+      } else if (result === "cancelled") await cancelTemporary(current, pending.binding.mcpServerId);
     } finally {
       if (current.temporary !== false) current.binding = pending.binding;
       current.kind = pending.kind;
     }
   }
+  async function cancelTemporary(current: Attempt, id: string) {
+    if (!current.temporary) return;
+    await discardTemporary(id);
+    if (discarded.current.has(id)) {
+      current.binding = undefined;
+      current.server = undefined;
+      current.temporary = false;
+    }
+  }
+  async function applyConfiguration(current: Attempt) {
+    if (!current.binding) return;
+    const patch = bindingPatch(current.binding, {
+      url: current.url,
+      authHeader: authentication.authHeader,
+      authScheme: authentication.authScheme,
+      headers: authentication.headers,
+    });
+    if (current.binding.authorization && current.binding.authorization.kind !== current.kind) {
+      await browserApi.revokeMcpAuthorization(props.agentId, current.binding.mcpServerId);
+    }
+    if (Object.keys(patch).length)
+      current.binding = await update.mutateAsync({ mcpServerId: current.binding.mcpServerId, ...patch });
+  }
   async function runConnection(current: Attempt, focusKey: () => void) {
-    prepareAttempt(current);
     if (current.binding && !current.binding.enabled) {
       props.onLocate(current.binding.mcpServerId);
       return;
     }
     if (requireKey(current, focusKey)) return;
     current.server = await resolveServer(current);
-    if (!alive.current) return;
     current.binding = await resolveBinding(current);
-    if (alive.current) await authorizeConnection(current);
-    else if (current.temporary) await discardTemporary(current.binding.mcpServerId);
+    await applyConfiguration(current);
+    await authorizeConnection(current);
   }
   function reportFailure(cause: unknown) {
     if (!alive.current) return;
@@ -205,15 +236,13 @@ export function useMcpAddConnection(props: McpAddProps) {
       return;
     }
     if (locateInstalled(attempt.current)) return;
-    oauthWindow.current =
-      connectionAuthKind(url, attempt.current.binding, attempt.current.server) === "oauth"
-        ? prepareMcpOAuthWindow()
-        : undefined;
+    prepareAttempt(attempt.current);
+    oauthWindow.current = needsOAuth(attempt.current) ? prepareMcpOAuthWindow() : undefined;
     inFlight.current = true;
     setPhase("connecting");
     setError(undefined);
+    setNeedsKey(false);
     try {
-      await discardOtherSetups(attempt.current.binding?.mcpServerId ?? attempt.current.server?.id);
       await runConnection(attempt.current, focusKey);
     } catch (cause) {
       reportFailure(cause);
@@ -224,24 +253,8 @@ export function useMcpAddConnection(props: McpAddProps) {
     }
   }
 
-  async function close() {
-    if (inFlight.current) return;
-    const current = attempt.current;
-    if (!provisional.current.size) {
-      props.onClose();
-      return;
-    }
-    inFlight.current = true;
-    setPhase("connecting");
-    try {
-      await discardOtherSetups();
-      props.onClose();
-    } catch (cause) {
-      setError(connectionFailure(cause, current.kind));
-    } finally {
-      inFlight.current = false;
-      if (alive.current) setPhase("idle");
-    }
+  function close() {
+    props.onClose();
   }
   return {
     close,
@@ -250,6 +263,23 @@ export function useMcpAddConnection(props: McpAddProps) {
     url,
     key,
     needsKey,
+    authentication: { ...authentication, token: key },
+    changeAuthentication: (next: typeof authentication) => {
+      setAuthentication(next);
+      setKey(next.token);
+      attempt.current.kind = next.kind;
+      setError(undefined);
+    },
+    configuration: {
+      url,
+      authHeader: authentication.authHeader,
+      authScheme: authentication.authScheme,
+      headers: authentication.headers,
+    },
+    changeConfiguration: (next: { authHeader: string; authScheme: string; headers: typeof authentication.headers }) => {
+      setAuthentication((current) => ({ ...current, ...next }));
+      setError(undefined);
+    },
     urlInvalid,
     error,
     phase,
@@ -266,8 +296,26 @@ export function useMcpAddConnection(props: McpAddProps) {
       !definitions.isPending &&
       !definitions.isError &&
       Boolean(url.trim()) &&
-      (!needsKey || Boolean(key.trim())),
+      (authentication.kind !== "bearer" || Boolean(key.trim())) &&
+      (authentication.kind !== "bearer" || validTokenSettings(authentication)) &&
+      validHeaders(
+        authentication.headers,
+        authentication.kind === "oauth"
+          ? "authorization"
+          : authentication.kind === "bearer"
+            ? authentication.authHeader
+            : "",
+      ),
   };
+}
+
+function needsOAuth(current: Attempt): boolean {
+  if (current.kind !== "oauth") return false;
+  if (!current.binding) return true;
+  return requiresOAuth(
+    { binding: current.binding, kind: current.kind },
+    connectorFeedback(current.binding).action === "authorize",
+  );
 }
 
 function newServerInput(current: Attempt) {
@@ -276,9 +324,9 @@ function newServerInput(current: Attempt) {
     name: preset?.name ?? suggestServerName(current.url, []),
     url: current.url,
     defaultAuthKind: current.kind ?? ("none" as const),
-    ...(preset?.authHeader ? { authHeader: preset.authHeader } : {}),
-    ...(preset?.authScheme !== undefined ? { authScheme: preset.authScheme } : {}),
-    ...(preset?.extraHeaders ? { extraHeaders: preset.extraHeaders } : {}),
+    authHeader: current.authHeader,
+    authScheme: current.authScheme,
+    extraHeaders: current.extraHeaders,
   };
   return input;
 }

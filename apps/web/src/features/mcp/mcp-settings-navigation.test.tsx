@@ -1,138 +1,86 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
 import { McpPage } from "./mcp-page.js";
-import { AGENT_ID, entry, openDetails, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
+import { AGENT_ID, detail, entry, openDetails, stub, wrap } from "./mcp-test-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
-const click = (name: string | RegExp) => fireEvent.click(screen.getByRole("button", { name }));
 const address = () => screen.getByLabelText("Connector address") as HTMLInputElement;
 
-async function openSettings() {
-  wrap(<McpPage agentId={AGENT_ID} />);
-  await openDetails();
-}
-
-describe("MCP settings navigation", () => {
-  it("shows address guidance only when the address is invalid", async () => {
+describe("MCP detail drafts", () => {
+  it("shows validation after leaving an invalid address", async () => {
     stub([entry()]);
-    await openSettings();
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
     expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.change(address(), { target: { value: "not-an-address" } });
+    fireEvent.blur(address());
     expect(address().getAttribute("aria-invalid")).toBe("true");
-    expect(screen.getByRole("alert").textContent).toContain("Enter an HTTP(S) MCP URL");
-    expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
     fireEvent.change(address(), { target: { value: "https://valid.example.com/mcp" } });
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: "Save changes" }).hasAttribute("disabled")).toBe(false);
   });
-  it("keeps a Settings draft when returning from Tools", async () => {
+  it.each(["close", "escape"])("discards an unsubmitted draft using %s", async (way) => {
     stub([entry()]);
-    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(entry());
-    await openSettings();
-    expect(screen.queryByText(/Used to connect/)).toBeNull();
-    expect(screen.queryByRole("button", { name: /Connector information/ })).toBeNull();
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
     fireEvent.change(address(), { target: { value: "https://draft.example.com/mcp" } });
-    click("Tools");
-    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
-    click("Back");
-    expect(address().value).toBe("https://draft.example.com/mcp");
+    if (way === "close") fireEvent.click(screen.getByRole("button", { name: "Close linear" }));
+    else fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await openDetails();
+    expect(address().value).toBe(entry().effective.url);
     expect(update).not.toHaveBeenCalled();
-    click("Save changes");
-    await waitFor(() =>
-      expect(update).toHaveBeenCalledWith(AGENT_ID, SERVER_ID, { url: "https://draft.example.com/mcp" }),
+  });
+  it("waits for an unfinished custom connector's saved authentication method", async () => {
+    stub([entry({ authorization: null })]);
+    let finish: (value: ReturnType<typeof detail>) => void = () => {};
+    vi.mocked(browserApi.mcpServer).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
     );
-  });
-
-  it.each([/^Authentication/, /^Tools/])("closes the entire dialog with X from %s", async (child) => {
-    stub([entry()]);
-    await openSettings();
-    click(child);
-    const dialog = screen.getByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Close / }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  });
-
-  it.each([/^Authentication/, /^Tools/])("closes the entire dialog with Escape from %s", async (child) => {
-    stub([entry()]);
-    await openSettings();
-    click(child);
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  });
-
-  it("keeps drafts when canceling removal and only removes after confirmation", async () => {
-    stub([entry()]);
-    const detach = vi.spyOn(browserApi, "detachMcpServer").mockResolvedValue(undefined);
-    await openSettings();
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
+    expect(within(screen.getByRole("dialog")).queryByRole("button", { name: "Authorize" })).toBeNull();
     fireEvent.change(address(), { target: { value: "https://draft.example.com/mcp" } });
-    click("Remove from agent");
-    expect(screen.getByRole("alertdialog")).toBeTruthy();
-    expect(detach).not.toHaveBeenCalled();
-    click("Cancel");
+    const defaults = detail(1);
+    await act(async () => finish({ ...defaults, server: { ...defaults.server, defaultAuthKind: "bearer" } }));
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "API key or token" }).getAttribute("aria-checked")).toBe("true"),
+    );
     expect(address().value).toBe("https://draft.example.com/mcp");
-    click("Remove from agent");
-    click("Remove");
-    await waitFor(() => expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(oauth).not.toHaveBeenCalled();
   });
-
-  it("blocks Back, Close and Escape while credentials are submitted, then returns to Settings", async () => {
+  it("guards duplicate credential submissions until the request completes", async () => {
     stub([entry()]);
-    let finish: () => void = () => {};
+    let finish: (value: ReturnType<typeof entry>) => void = () => {};
     const authorize = vi.spyOn(browserApi, "setMcpAuthorization").mockImplementation(
       () =>
         new Promise((resolve) => {
-          finish = () => resolve(entry());
+          finish = resolve;
         }),
     );
-    await openSettings();
-    click(/^Authentication/);
-    fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
-      target: { value: "example-token" },
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    fireEvent.change(screen.getByLabelText("API key or token", { selector: "input[type=password]" }), {
+      target: { value: "new-key" },
     });
-    click("Update credentials");
-    expect(screen.getByRole("button", { name: "Back" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "Close Authentication" }).hasAttribute("disabled")).toBe(true);
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    expect(screen.queryByLabelText("Connector address")).toBeNull();
+    const save = screen.getByRole("button", { name: "Save" });
+    fireEvent.click(save);
     await waitFor(() => expect(authorize).toHaveBeenCalledTimes(1));
-    finish();
-    await screen.findByLabelText("Connector address");
-    expect(screen.getByRole("button", { name: "Authentication" })).toBeTruthy();
-  });
-
-  it("rebases a live connection update without replacing the URL draft", async () => {
-    const original = entry();
-    const saved = entry({
-      effective: { ...original.effective, authHeader: "x-api-key" },
-      overridden: { ...original.overridden, authHeader: true },
-    });
-    stub([original]);
-    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(saved);
-    const probe = vi.spyOn(browserApi, "probeMcpServer").mockImplementation(async () => {
-      vi.mocked(browserApi.agentMcpServers).mockResolvedValue({ servers: [saved] });
-      return {
-        probeState: "succeeded",
-        probeError: null,
-        toolsCount: 1,
-        toolsTruncated: false,
-        protocolEra: null,
-        protocolVersion: null,
-      };
-    });
-    await openSettings();
-    fireEvent.change(address(), { target: { value: "https://draft.example.com/mcp" } });
-    click("Tools");
-    click("Refresh tools");
-    await waitFor(() => expect(probe).toHaveBeenCalledTimes(1));
-    click("Back");
-    click("Advanced settings");
-    await waitFor(() => expect((screen.getByLabelText("Auth header") as HTMLInputElement).value).toBe("x-api-key"));
-    expect(address().value).toBe("https://draft.example.com/mcp");
-    click("Save changes");
-    await waitFor(() =>
-      expect(update).toHaveBeenLastCalledWith(AGENT_ID, SERVER_ID, { url: "https://draft.example.com/mcp" }),
-    );
+    expect(
+      (screen.getByLabelText("API key or token", { selector: "input[type=password]" }) as HTMLInputElement).disabled,
+    ).toBe(true);
+    fireEvent.click(save);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(authorize).toHaveBeenCalledTimes(1);
+    await act(async () => finish(entry()));
+    await screen.findByRole("button", { name: "Update" });
   });
 });

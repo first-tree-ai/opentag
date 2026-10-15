@@ -5,27 +5,29 @@ import { Banner, Button, Dialog, Field, KumoInputControl, Loader } from "../../.
 import { actionError } from "../mcp-form-model.js";
 import { mcpTitle } from "../mcp-title.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
-import { type DiscoverProps, useMcpDiscoverState } from "./mcp-discover-state.js";
+import type { DiscoverProps, useMcpDiscoverState } from "./mcp-discover-state.js";
 
-export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCatalogEntry }) {
-  const state = useMcpDiscoverState(props);
+export function McpDiscoverDialog(props: DiscoverProps & { state: DiscoverState; initialEntry?: McpCatalogEntry }) {
+  const { state } = props;
   const openEntry = (entry: McpCatalogEntry) => {
     if (state.catalogBusy) return;
     void state.addFromCatalog(entry);
   };
   const started = useRef(false);
   useEffect(() => {
-    if (!props.initialEntry || state.loading || state.definitions.isError || started.current) return;
+    if (props.open === false || !props.initialEntry || state.loading || state.definitions.isError || started.current)
+      return;
     started.current = true;
     // The entry as this deployment serves it, so a replaced endpoint applies here too.
     const initialId = props.initialEntry.id;
     openEntry(state.catalog.entries.find((entry) => entry.id === initialId) ?? props.initialEntry);
   });
+  if (props.open === false) return null;
   return (
     <Dialog
-      busy={state.keySetup ? state.keyBusy : state.busy}
+      busy={state.keySetup ? state.keyBusy : false}
       onClose={state.keySetup ? () => void state.cancelKey() : props.onClose}
-      onBack={state.keySetup ? () => void state.cancelKey() : undefined}
+      showCloseButton={!state.keySetup}
       title={discoverTitle(state)}
       className="mcp-discover-dialog"
     >
@@ -72,18 +74,25 @@ function DiscoverKeyForm({ state }: { state: DiscoverState }) {
           id="mcp-discover-key"
           type="password"
           autoComplete="off"
+          aria-describedby={state.error ? "mcp-discover-key-error" : undefined}
           value={token}
           disabled={state.keyBusy}
           onChange={(event) => setToken(event.target.value)}
         />
       </Field>
-      {state.error ? <Banner variant="error">{state.error}</Banner> : null}
-      <Button type="submit" disabled={state.keyBusy || !token.trim()} loading={state.keyBusy}>
-        {m.mcp_connect()}
-      </Button>
-      <Button variant="ghost" disabled={state.keyBusy} onClick={() => void state.cancelKey()}>
-        {m.common_cancel()}
-      </Button>
+      {state.error ? (
+        <p id="mcp-discover-key-error" role="alert" className="text-sm text-kumo-danger">
+          {state.error}
+        </p>
+      ) : null}
+      <footer className="flex justify-end gap-2">
+        <Button variant="ghost" disabled={state.keyBusy} onClick={() => void state.cancelKey()}>
+          {m.common_cancel()}
+        </Button>
+        <Button type="submit" disabled={state.keyBusy || !token.trim()} loading={state.keyBusy}>
+          {m.mcp_auth_save()}
+        </Button>
+      </footer>
     </form>
   );
 }
@@ -98,20 +107,25 @@ function DiscoverCatalog({
 }) {
   const catalogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const scroller = catalogRef.current?.closest<HTMLElement>(".ui-dialog");
+    if (state.keySetup) return;
+    const root = catalogRef.current;
+    const scroller = window.matchMedia("(max-width: 600px)").matches
+      ? root?.closest<HTMLElement>(".ui-dialog")
+      : root?.querySelector<HTMLElement>('[data-ui="mcp-catalog"]');
     if (!scroller) return;
-    if (!state.loading && props.initialContext?.scrollTop) scroller.scrollTop = props.initialContext.scrollTop;
+    if (!state.loading) scroller.scrollTop = state.view.current.scrollTop;
     const save = () => {
       state.view.current.scrollTop = scroller.scrollTop;
     };
     scroller.addEventListener("scroll", save);
     return () => scroller.removeEventListener("scroll", save);
-  }, [props.initialContext, state.loading, state.view]);
+  }, [state.loading, state.view, state.keySetup]);
   return (
     <div
       ref={catalogRef}
-      onScroll={(event) => {
-        state.view.current.scrollTop = event.currentTarget.scrollTop;
+      onScrollCapture={(event) => {
+        if (!state.keySetup && event.target instanceof HTMLElement && event.target.matches('[data-ui="mcp-catalog"]'))
+          state.view.current.scrollTop = event.target.scrollTop;
       }}
       hidden={Boolean(state.keySetup) || state.loading || state.definitions.isError}
     >
@@ -128,11 +142,10 @@ function DiscoverCatalog({
         busy={state.catalogBusy}
         pending={state.pending}
         onAdd={openEntry}
-        connectedIds={state.connectedIds}
         feedback={state.feedback}
         initialView={state.view.current}
         onViewChange={(view) => {
-          state.view.current = { ...state.view.current, ...view };
+          state.view.current = { ...view, scrollTop: 0 };
         }}
       />
     </div>

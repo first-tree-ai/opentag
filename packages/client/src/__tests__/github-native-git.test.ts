@@ -4,7 +4,7 @@ import { chown, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, type TestContext } from "vitest";
 import {
   closeBridgeSockets,
   createBridgeSocketResources,
@@ -18,6 +18,7 @@ import type { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { buildRuntimeProxyEnvironment, RuntimeProxyMaterialStore } from "../runtime/runtime-proxy-material.js";
 import { nativeGitFixture } from "./support/native-git-fixture.js";
+import { skipUnsupportedNativeTls } from "./support/native-tls-probe.js";
 
 const run = promisify(execFile);
 const codex = process.env.OPENTAG_TEST_CODEX_BINARY;
@@ -43,9 +44,13 @@ async function legacyGit(env: NodeJS.ProcessEnv): Promise<boolean> {
 function foreignProxy(legacy: boolean, adapter: RuntimeProxyLoopbackAdapter): string {
   return legacy ? adapter.connectProxyUrl : `socks5h://localhost${adapter.githubGitSocketPath}`;
 }
+async function checkLegacyTls(context: TestContext, root: string, legacy: boolean): Promise<void> {
+  // Modern IPC and restricted old-Git denial never depend on this HTTPS baseline.
+  if (legacy && !codex) await skipUnsupportedNativeTls(context, root);
+}
 
 describe.skipIf(process.platform === "win32")("native Git execution-local transport (offline)", () => {
-  it("preserves real Git commits and sandbox boundaries, with CONNECT compatibility for older Git", async () => {
+  it("preserves real Git commits and sandbox boundaries, with CONNECT compatibility for older Git", async (context) => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "ot-git-")));
     const fixture = await nativeGitFixture(root);
     const store = new RuntimeProxyMaterialStore({ home: root });
@@ -61,6 +66,8 @@ describe.skipIf(process.platform === "win32")("native Git execution-local transp
       logger: { debug() {}, warn() {} },
     });
     try {
+      const legacy = await legacyGit(fixture.env);
+      await checkLegacyTls(context, root, legacy);
       const layout = store.executionLayout(sessionId, executionId);
       const routing = buildRuntimeProxyEnvironment({
         layout,
@@ -129,7 +136,6 @@ describe.skipIf(process.platform === "win32")("native Git execution-local transp
         (await execute(join(store.shimDir(sessionId), "git"), args, cwd, patch)).stdout.trim();
       const url = "https://github.com/team/fixture.git",
         checkout = join(root, "checkout");
-      const legacy = await legacyGit(fixture.env);
       if (legacy && sandboxed) {
         await expect(git(["ls-remote", url])).rejects.toBeDefined();
         expect(fixture.requests).toEqual([]);

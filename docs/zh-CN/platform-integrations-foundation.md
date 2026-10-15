@@ -94,7 +94,7 @@ REST Commit Status 读取（`/commits/{ref}/status`、`/commits/{ref}/statuses` 
 
 `GitHub Native Proxy` CI 下载 Runner 固定版本的官方 gh，验证保留 Commit 原始对象的真实 Git clone/fetch/push（macOS Local Codex IPC 和 Linux Cloud material/CONNECT）、原生 gh 工作流发现和提交筛选，以及原生 PR 生命周期和冷命令权限控制。离线 fixture 不含真实平台凭据，也不产生 GitHub 副作用，不能替代已部署用户身份及 commit 作者验收。
 
-Execution loopback 证书包含显式 key usage 和 Apple 信任评估要求的 TLS server-authentication EKU。macOS 原生回归保留 Runner 默认 Git/TLS 后端，另外使用 SecureTransport 验证 CONNECT 和调用方 CA 路由，并保留缺少信任锚时必须失败的反向控制。测试不改变产品的后端选择或系统信任。参考 Apple 的 [TLS 证书要求](https://support.apple.com/en-gb/103769)。
+Execution loopback 证书包含显式 key usage 和 Apple 信任评估要求的 TLS server-authentication EKU。macOS 原生回归保留 Runner 默认 Git/TLS 后端，另外使用 SecureTransport 验证 CONNECT 和调用方 CA 路由，并保留缺少信任锚时必须失败的反向控制。依赖 HTTPS 的 macOS 测试先以独立的普通 `curl --cacert` 探测有效私有信任锚，不使用 OpenTag 实现或配置；仅 TLS 校验失败（退出码 60）会产生明确报告的能力跳过，其他探测错误和产品错误仍失败。现代 IPC 测试从不使用这一跳过。旧 CONNECT 保留现有平台 TLS 约束：不劣于 main，但尚未证明 macOS 15 系统 libcurl 可使用私有文件信任锚。Linux/OpenSSL 及具备该能力的 macOS 主机执行完整 CONNECT 和 CA 路由用例。测试不改变产品后端选择或系统信任。参考 Apple 的 [TLS 证书要求](https://support.apple.com/en-gb/103769)。
 
 ## 部署、持久化与恢复
 

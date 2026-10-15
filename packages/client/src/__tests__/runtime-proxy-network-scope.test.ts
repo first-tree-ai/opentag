@@ -22,6 +22,7 @@ import {
   renderRuntimeProxyGitCredentialHelper,
   renderRuntimeProxyProviderLauncher,
 } from "../runtime/runtime-proxy-material.js";
+import { skipUnsupportedNativeTls } from "./support/native-tls-probe.js";
 
 const execFileAsync = promisify(execFile);
 const tlsBackends = process.platform === "darwin" ? [undefined, "secure-transport"] : [undefined];
@@ -261,8 +262,9 @@ describe("runtime proxy network scope", () => {
     expect(environment.NO_PROXY).toBe("127.0.0.1,localhost");
   });
 
-  it("keeps ordinary public HTTPS direct with the public trust store, never credential-proxied", async () => {
+  it("keeps ordinary public HTTPS direct with the public trust store, never credential-proxied", async (context) => {
     const root = await temporaryRoot("opentag-network-");
+    await skipUnsupportedNativeTls(context, root);
     const fixture = await createHttpsFixture(root);
     teardowns.push(() => closeServer(fixture.server));
     const openStream = vi.fn(async () => {
@@ -391,10 +393,11 @@ describe("runtime proxy network scope", () => {
     expect(ambientProxy.requestLines).toEqual([]);
   });
 
-  it.each(tlsBackends)(
+  it.for(tlsBackends)(
     "keeps provider GitHub Git on the credential proxy with the execution CA (%s)",
-    async (backend) => {
+    async (backend, context) => {
       const root = await temporaryRoot("opentag-gitprovider-");
+      await skipUnsupportedNativeTls(context, root, backend);
       const requests: RuntimeProxyAdapterStreamRequest[] = [];
       const adapter = await RuntimeProxyLoopbackAdapter.start({
         executionId: randomUUID(),
@@ -455,10 +458,11 @@ describe("runtime proxy network scope", () => {
     },
   );
 
-  it.each(tlsBackends)(
+  it.for(tlsBackends)(
     "preserves caller CA file/directory for non-GitHub HTTPS while pinning GitHub to its execution CA (%s)",
-    async (backend) => {
+    async (backend, context) => {
       const root = await temporaryRoot("opentag-git-caller-ca-");
+      await skipUnsupportedNativeTls(context, root, backend);
       const fixture = await createHttpsFixture(root, true);
       teardowns.push(() => closeServer(fixture.server));
       const config = join(root, "gitconfig"),

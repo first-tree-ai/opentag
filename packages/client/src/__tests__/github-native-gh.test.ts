@@ -38,7 +38,11 @@ describe.skipIf(!binary)("native gh execution-local transport (offline, no provi
           status: 200,
           headers: { "content-type": "application/json" },
           body: (async function* () {
-            yield Buffer.from('{"name":"fixture"}');
+            yield Buffer.from(
+              request.path.includes("/status")
+                ? '{"state":"success","statuses":[{"context":"private-ci","state":"success"}]}'
+                : '{"name":"fixture"}',
+            );
           })(),
         };
       },
@@ -86,6 +90,15 @@ describe.skipIf(!binary)("native gh execution-local transport (offline, no provi
       expect(JSON.parse(result.stdout)).toEqual({ name: "fixture" });
       expect(requests).toHaveLength(1);
       expect(requests[0]?.headers["x-opentag-provider-origin"]).toBe("api.github.com");
+      for (const suffix of ["commits/main/status", "commits/feature/topic/statuses", "statuses/feature/topic"]) {
+        const status = await run(binary as string, ["api", `repos/team/fixture/${suffix}`], {
+          cwd: root,
+          env,
+          timeout: 15000,
+        });
+        expect(JSON.parse(status.stdout).statuses).toEqual([{ context: "private-ci", state: "success" }]);
+        expect(requests.at(-1)?.path).toBe(`/repos/team/fixture/${suffix}`);
+      }
       await expect(
         run(binary as string, ["api", "--hostname", "foreign.invalid", "repos/team/fixture"], {
           cwd: root,
@@ -100,7 +113,7 @@ describe.skipIf(!binary)("native gh execution-local transport (offline, no provi
           timeout: 15000,
         }),
       ).rejects.toMatchObject({ code: 1 });
-      expect(requests).toHaveLength(1);
+      expect(requests).toHaveLength(4);
       await adapter.close();
       await expect(stat(socketPath as string)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(
@@ -208,7 +221,11 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
           status: 200,
           headers: { "content-type": "application/json" },
           body: (async function* () {
-            yield Buffer.from('{"name":"cloud-fixture"}');
+            yield Buffer.from(
+              request.path.includes("/status")
+                ? '{"state":"success","statuses":[{"context":"private-ci","state":"success"}]}'
+                : '{"name":"cloud-fixture"}',
+            );
           })(),
         };
       },
@@ -243,15 +260,28 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
           fixtureEntry,
           "sh",
           "-c",
-          'PATH="$1:$2:$PATH"; export PATH; exec gh api repos/team/fixture',
+          'PATH="$1:$2:$PATH"; export PATH; gh api repos/team/fixture --jq tojson || exit "$?"; shift 2; for suffix in "$@"; do gh api "repos/team/fixture/$suffix" --jq tojson || exit "$?"; done',
           "fixture",
           join(published, "bin"),
           dirname(binary as string),
+          "commits/main/status",
+          "commits/feature/topic/statuses",
+          "statuses/feature/topic",
         ],
         { cwd: root, env: { PATH: process.env.PATH }, timeout: 20000 },
       );
-      expect(JSON.parse(result.stdout)).toEqual({ name: "cloud-fixture" });
-      expect(hits).toBe(1);
+      const responses = result.stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(responses).toEqual([
+        { name: "cloud-fixture" },
+        ...Array.from({ length: 3 }, () => ({
+          state: "success",
+          statuses: [{ context: "private-ci", state: "success" }],
+        })),
+      ]);
+      expect(hits).toBe(4);
       const manifest = await readFile(join(published, "environment.json"), "utf8");
       expect(manifest).not.toContain(join(root, "private"));
       expect(manifest).not.toContain("http_unix_socket");

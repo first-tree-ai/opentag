@@ -3,7 +3,7 @@ import { GITHUB_API_CLIENT_ERROR_CODES, GitHubApiClientError } from "./github-ap
 import type { GitHubExecutionUserCredential, GitHubUserTokenInput } from "./user-token-types.js";
 
 const LEVELS = new Set<unknown>(["read", "write"]);
-const KEYS = new Set(["contents", "pull_requests", "checks", "actions"]);
+const KEYS = new Set(["contents", "pull_requests", "checks", "actions", "statuses"]);
 const TOKEN = /^ghu_[A-Za-z0-9_]{1,4092}$/;
 const CLEANUP_TOKEN = /^[-A-Za-z0-9._~+/]+=*$/;
 // Expiring GitHub App user tokens have an eight-hour lifetime. Allow bounded clock skew;
@@ -31,7 +31,7 @@ export function validateUserTokenInput(input: GitHubUserTokenInput): number {
   const permissions = tokenRecord(input.permissions);
   if (!LEVELS.has(permissions.contents)) throw new GitPublicationError("invalid_request");
   for (const [key, value] of Object.entries(permissions)) {
-    if (!KEYS.has(key) || !LEVELS.has(value) || ((key === "checks" || key === "actions") && value !== "read"))
+    if (!KEYS.has(key) || !LEVELS.has(value) || (["checks", "actions", "statuses"].includes(key) && value !== "read"))
       throw new GitPublicationError("invalid_request");
   }
   return id;

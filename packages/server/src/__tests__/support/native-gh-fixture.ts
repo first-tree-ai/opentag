@@ -96,7 +96,7 @@ function graphResponse(query: string, value: unknown): Response {
   return Response.json({ data: project(operation.selectionSet, value, fragments) });
 }
 
-export async function nativeGhFixture(options: { denyProjectMetadata?: boolean } = {}) {
+export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; privateRepository?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "ot-gh-server-"));
   const socketPath = join(root, "g.sock");
   const executionId = randomUUID(),
@@ -109,6 +109,7 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean }
     databaseId: 123,
     name: "code",
     nameWithOwner: fullName,
+    isPrivate: options.privateRepository ?? false,
     owner: { id: "O_fixture", login: "team" },
     defaultBranchRef: { name: "main" },
     viewerPermission: "WRITE",
@@ -172,6 +173,7 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean }
   const foreignPr = { ...pr, id: "PR_foreign", number: 2, headRefName: `opentag/${randomUUID()}/code/foreign` };
   const upstreamRequests: { method: string; path: string; body: unknown; accept: string | null }[] = [];
   const permissions: unknown[] = [];
+  const tokenPermissions = new Map<string, Record<string, string>>();
   const counts = { minted: 0, revoked: 0 };
   interface FixtureRequest {
     method: string;
@@ -179,7 +181,14 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean }
     accept: string | null;
   }
   const metadata = () =>
-    Response.json({ ...repo, id: 123, node_id: repo.id, full_name: fullName, default_branch: "main" });
+    Response.json({
+      ...repo,
+      id: 123,
+      node_id: repo.id,
+      full_name: fullName,
+      default_branch: "main",
+      private: repo.isPrivate,
+    });
   const routes: Record<string, (request: FixtureRequest) => Response> = {
     "/repositories/123": metadata,
     [`/repos/${fullName}`]: metadata,
@@ -232,6 +241,11 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean }
         })
       );
     },
+    [`/repos/${fullName}/commits/main/status`]: () =>
+      Response.json({ state: "success", statuses: [{ context: "private-ci", state: "success" }] }),
+    [`/repos/${fullName}/commits/feature/topic/statuses`]: () =>
+      Response.json([{ context: "private-ci", state: "success" }]),
+    [`/repos/${fullName}/statuses/feature/topic`]: () => Response.json([{ context: "private-ci", state: "success" }]),
   };
   const upstream: typeof fetch = async (url, init) => {
     const path = new URL(String(url)).pathname,
@@ -239,6 +253,11 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean }
     const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined;
     const accept = new Headers(init?.headers).get("accept");
     upstreamRequests.push({ method, path, body, accept });
+    if (options.privateRepository && /\/(?:status|statuses)(?:\/|$)/.test(path)) {
+      const token = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "") ?? "";
+      if (tokenPermissions.get(token)?.statuses !== "read")
+        return Response.json({ message: "Resource not accessible by integration" }, { status: 403 });
+    }
     const route = routes[path];
     if (!route) throw new Error(`Unregistered fixture request: ${method} ${path}`);
     return route({ method, body, accept });
@@ -260,9 +279,12 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean }
       mint: async (input) => {
         counts.minted++;
         permissions.push(input.permissions);
-        return { token: "ghu_fixture_only", expiresAt: new Date(Date.now() + 60000) };
+        const token = `ghu_fixture_${counts.minted}`;
+        tokenPermissions.set(token, { ...input.permissions });
+        return { token, expiresAt: new Date(Date.now() + 60000) };
       },
-      revoke: async () => {
+      revoke: async (token) => {
+        tokenPermissions.delete(token);
         counts.revoked++;
       },
     }),

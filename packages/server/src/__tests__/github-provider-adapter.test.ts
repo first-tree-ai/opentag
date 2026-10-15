@@ -581,17 +581,21 @@ describe("production GitHub provider adapter REST scope gates", () => {
     expect(mint).not.toHaveBeenCalled();
   });
 
-  it.each(["/commits/main/check-runs", "/commits/main/check-suites", "/actions/runs"])(
-    "denies code authority to a Tree-only REST read of %s without minting",
-    async (suffix) => {
-      const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-      await expect(built.handle(request(`/repos/owner/repository${suffix}`), authorization)).rejects.toMatchObject({
-        code: "scope_denied",
-      });
-      expect(mint).not.toHaveBeenCalled();
-      expect(upstream).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    "/commits/main/check-runs",
+    "/commits/main/check-suites",
+    "/actions/runs",
+    "/commits/main/status",
+    "/commits/main/statuses",
+    "/statuses/main",
+  ])("denies code authority to a Tree-only REST read of %s without minting", async (suffix) => {
+    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
+    await expect(built.handle(request(`/repos/owner/repository${suffix}`), authorization)).rejects.toMatchObject({
+      code: "scope_denied",
+    });
+    expect(mint).not.toHaveBeenCalled();
+    expect(upstream).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["a read-only Tree scope", [treeScope({ access: "read" })]],
@@ -618,6 +622,31 @@ describe("production GitHub provider adapter REST scope gates", () => {
     expect(mint).toHaveBeenCalledWith(
       expect.objectContaining({ permissions: { contents: "read", pull_requests: "read", actions: "read" } }),
     );
+  });
+
+  it.each(["/commits/main/status", "/commits/feature/topic/statuses", "/statuses/feature/topic"])(
+    "requests only read-only commit-status authority for %s",
+    async (suffix) => {
+      expect(planGitHubRest("GET", new URL(`https://api.github.com/repos/owner/repository${suffix}`))).toMatchObject({
+        codeOnly: true,
+        extraPermission: "statuses",
+      });
+      await adapter.handle(request(`/repos/owner/repository${suffix}`), authorization);
+      expect(mint).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          permissions: { contents: "read", pull_requests: "read", statuses: "read" },
+        }),
+      );
+      expect(revoke).toHaveBeenCalledExactlyOnceWith(iat);
+    },
+  );
+
+  it.each(["POST", "PATCH", "DELETE"])("never admits a commit-status %s mutation", async (method) => {
+    await expect(
+      adapter.handle(request("/repos/owner/repository/statuses/main", method, { state: "success" }), authorization),
+    ).rejects.toMatchObject({ code: "scope_denied" });
+    expect(mint).not.toHaveBeenCalled();
+    expect(upstream).not.toHaveBeenCalled();
   });
 });
 
@@ -1446,6 +1475,9 @@ it.each([
   "/repos/owner/repository/pulls",
   "/repos/owner/repository/commits/sha/check-runs",
   "/repos/owner/repository/commits/sha/comments",
+  "/repos/owner/repository/commits/sha/status",
+  "/repos/owner/repository/commits/sha/statuses",
+  "/repos/owner/repository/statuses/sha",
 ])("rejects diff media on JSON-only route %s", (path) => {
   expect(() =>
     githubReadRepresentation(new URL(path, "https://api.github.com"), "application/vnd.github.diff"),

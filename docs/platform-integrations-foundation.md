@@ -76,6 +76,18 @@ Local native `gh` on macOS and Linux uses the official `http_unix_socket` transp
 
 Native PR create/comment/edit/close/reopen retain the same repository, task-head and base checks. PR identities are established from the actual GraphQL selection (including aliases/fragments), so a cold command does not depend on a prior full PR read. Actor, reviewer organization and project metadata have closed display-only windows. Checks/Actions read permissions are requested only for repositories with a code role, including check fields selected in mutation responses. Tree-only GraphQL reads keep their existing contents/pull-request permissions and branch constraints; REST checks/actions routes still require code authority. The configured GitHub App must grant Checks and Actions read access for native code check queries. Optional Projects metadata access denial stays explicit in the read-scope vocabulary understood by both old and current gh; mixed or credential errors are never masked, and no Projects permission is requested. The gateway answers a small, fixed public schema-capability probe locally after the execution fence; it does not expose arbitrary introspection or use schema queries to authorize repository data. Supported REST diff/patch/raw representations retain their bytes, bounded response size, credential scrubbing and revalidation instead of being silently converted to JSON.
 
+REST commit-status reads (`/commits/{ref}/status`, `/commits/{ref}/statuses` and the legacy `/statuses/{ref}` alias) request `statuses: read` only under code authority. The scoped-user-token validator accepts this exact read grant and rejects status-write or widened grants. Status responses remain JSON; diff/patch media is rejected. Ordinary repository/PR reads and GraphQL check selections do not gain this permission. The App registration and each existing installation must grant Commit statuses read before these REST reads can work on private repositories; public-repository success cannot establish that boundary.
+
+| Operation family | Derived token permissions beyond Contents/PR access |
+| --- | --- |
+| Repository, code and ordinary PR reads | None |
+| REST Checks reads | `checks: read` |
+| REST Actions reads | `actions: read` |
+| REST commit-status reads, including the legacy alias | `statuses: read` |
+| GraphQL check/WorkflowRun selections | Selected `checks: read` / `actions: read`, code role only |
+| PR mutations | `pull_requests: write`; selected response check permissions remain code-only |
+| Git publication | `contents: write`; commit objects and author/committer are preserved |
+
 `GitHub Native Proxy` CI downloads the official Runner-pinned gh and exercises macOS Local IPC and Linux Cloud publication/CONNECT, plus native PR command lifecycle and cold-command authorization controls. These offline fixtures have no real provider credentials or GitHub side effects; they do not establish deployed user identity or commit-author acceptance.
 
 ## Deployment and persistent state

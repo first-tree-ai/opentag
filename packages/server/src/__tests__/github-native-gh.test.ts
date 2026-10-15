@@ -7,6 +7,34 @@ const binary = process.env.OPENTAG_TEST_GH_BINARY;
 const run = promisify(execFile);
 
 describe.skipIf(!binary)("real gh native API compatibility (offline fixture)", () => {
+  it("reads private commit statuses with an exact read grant on every registered spelling", async () => {
+    const fixture = await nativeGhFixture({ privateRepository: true });
+    try {
+      for (const suffix of ["commits/main/status", "commits/feature/topic/statuses", "statuses/feature/topic"]) {
+        const result = await run(binary as string, ["api", `repos/${fixture.fullName}/${suffix}`], {
+          cwd: fixture.root,
+          env: fixture.environment,
+          timeout: 15000,
+        });
+        const payload = JSON.parse(result.stdout);
+        expect(Array.isArray(payload) ? payload : payload.statuses).toEqual([
+          { context: "private-ci", state: "success" },
+        ]);
+        expect(fixture.permissions.at(-1)).toEqual({ contents: "read", pull_requests: "read", statuses: "read" });
+      }
+      expect(fixture.counts.revoked).toBe(fixture.counts.minted);
+      for (const args of [
+        ["api", `repos/${fixture.fullName}/statuses/main`, "--method", "POST", "-f", "state=success"],
+        ["api", "repos/foreign/private/commits/main/status"],
+      ])
+        await expect(
+          run(binary as string, args, { cwd: fixture.root, env: fixture.environment, timeout: 15000 }),
+        ).rejects.toMatchObject({ code: 1 });
+      expect(fixture.counts.minted).toBe(3);
+    } finally {
+      await fixture.close();
+    }
+  });
   it("reads, diffs, checks, creates, comments, edits, closes and reopens within the task scope", async () => {
     const fixture = await nativeGhFixture();
     const gh = (args: string[]) =>

@@ -15,6 +15,7 @@ export interface GitHubRepositoryTokenPermissions {
   pull_requests?: "read" | "write";
   checks?: "read";
   actions?: "read";
+  statuses?: "read";
 }
 
 export interface GitHubExecutionUserCredential {

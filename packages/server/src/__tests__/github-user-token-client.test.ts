@@ -49,12 +49,47 @@ describe("GitHub user identity credentials", () => {
     { authorizationRevision: "github:wrong" },
     { permissions: { contents: "read", administration: "write" } },
     { permissions: { contents: "read", checks: "write" } },
+    { permissions: { contents: "read", actions: "write" } },
+    { permissions: { contents: "read", statuses: "write" } },
     { permissions: { contents: "admin" } },
     { permissions: { contents: "toString" } },
   ])("rejects invalid derived requests before sending any credential: %j", async (changes) => {
     const f = userTokenFixture();
     await expect(f.client.mint({ ...input, ...changes } as GitHubUserTokenInput)).rejects.toThrow();
     expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("attests a private repository's exact statuses read grant and revokes only its child", async () => {
+    const f = userTokenFixture();
+    const permissions = { contents: "read", pull_requests: "read", statuses: "read" } as const;
+    f.setPayload(scopedUserPayload("ghu_scoped_a", "42", { ...permissions, metadata: "read" }));
+    const child = await f.client.mint({ ...input, permissions });
+    expect(f.calls[0]?.body).toMatchObject({ repository_ids: [123], permissions });
+    await f.client.revoke(child.token);
+    expect(f.calls.at(-1)?.body).toEqual({ access_token: "ghu_scoped_a" });
+    expect(f.calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+  });
+
+  it.each([undefined, "write"])("rejects a missing or widened statuses grant: %s", async (level) => {
+    const f = userTokenFixture();
+    f.setPayload(
+      scopedUserPayload("ghu_scoped_a", "42", {
+        contents: "read",
+        metadata: "read",
+        ...(level ? { statuses: level } : {}),
+      }),
+    );
+    await expect(
+      f.client.mint({ ...input, permissions: { contents: "read", statuses: "read" } }),
+    ).rejects.toMatchObject({ code: "scope_denied" });
+    expect(f.calls.at(-1)?.body).toEqual({ access_token: "ghu_scoped_a" });
+  });
+
+  it("rejects statuses permission returned for an ordinary repository read", async () => {
+    const f = userTokenFixture();
+    f.setPayload(scopedUserPayload("ghu_scoped_a", "42", { contents: "read", metadata: "read", statuses: "read" }));
+    await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
+    expect(f.calls.at(-1)?.body).toEqual({ access_token: "ghu_scoped_a" });
   });
 
   it.each([

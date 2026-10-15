@@ -165,11 +165,17 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     source: RuntimeExecutionSource,
     userId: string,
     denied = false,
+    statusRead = false,
   ) {
     const tokens = userTokenFixture();
     const child = `ghu_scoped_user_${userId}`;
     f.connection.githubUserId = userId;
-    tokens.setPayload(scopedUserPayload(child, userId, { contents: "read", pull_requests: "read", metadata: "read" }));
+    const permissions = {
+      contents: "read",
+      pull_requests: "read",
+      ...(statusRead ? { statuses: "read" } : {}),
+    } as const;
+    tokens.setPayload(scopedUserPayload(child, userId, { ...permissions, metadata: "read" }));
     tokens.management.getExecutionUserCredential.mockImplementation(async (input) =>
       input.accountId === f.account.id &&
       input.connectionId === f.connection.id &&
@@ -250,7 +256,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       provider: "github",
       bindingId: f.connection.id,
       method: "GET",
-      path: "/repos/owner/repository",
+      path: statusRead ? "/repos/owner/repository/commits/main/status" : "/repos/owner/repository",
       headers: { "x-opentag-provider-origin": "api.github.com" },
       body: jsonBody(null),
       capability: "fixture-capability",
@@ -269,7 +275,11 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
         /* consume the bounded response */
       }
       expect(response.status).toBe(200);
-      expect(tokens.calls[0]?.body).toMatchObject({ access_token: `ghu_parent_${userId}`, repository_ids: [123] });
+      expect(tokens.calls[0]?.body).toMatchObject({
+        access_token: `ghu_parent_${userId}`,
+        repository_ids: [123],
+        permissions,
+      });
       expect(tokens.calls.at(-1)?.body).toEqual({ access_token: child });
       expect(upstream).toHaveBeenCalled();
     } finally {
@@ -390,6 +400,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
             source = task.source;
           }
           await executeAsUser(acting, origin, sessionId, source, userId);
+          await executeAsUser(acting, origin, sessionId, source, userId, false, true);
         }
       },
     );
@@ -420,6 +431,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
             .where(eq(sessionMessages.id, source.messageId));
         }
         await executeAsUser(acting, origin, sessionId, source, "42", true);
+        await executeAsUser(acting, origin, sessionId, source, "42", true, true);
       },
     );
     it("admits accepted human ingress and refuses bot, account, Agent, Session and source substitutions", async () => {

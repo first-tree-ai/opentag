@@ -28,7 +28,7 @@ export interface GitHubRestPlan {
   operation: "read" | "createPullRequest" | "updatePullRequest" | "addComment";
   pullRequestNumber?: number;
   codeOnly: boolean;
-  extraPermission?: "checks" | "actions";
+  extraPermission?: "checks" | "actions" | "statuses";
 }
 const READ_QUERY_KEYS = new Set([
   "page",
@@ -86,13 +86,15 @@ function planRead(fullName: string, suffix: string, url: URL): GitHubRestPlan {
     /^\/commits\/.+\/(?:check-runs|check-suites)$/.test(suffix) ||
     /^\/(?:check-runs|check-suites)\/[1-9]\d{0,19}$/.test(suffix);
   const actions = /^\/actions\/(?:runs(?:\/[1-9]\d{0,19}(?:\/jobs)?)?|jobs\/[1-9]\d{0,19})$/.test(suffix);
-  if (!normal && !code && !checks && !actions) throw new GitPublicationError("scope_denied");
+  const statuses = /^\/commits\/.+\/(?:status|statuses)$/.test(suffix) || /^\/statuses\/.+$/.test(suffix);
+  if (!normal && !code && !checks && !actions && !statuses) throw new GitPublicationError("scope_denied");
   return {
     fullName,
     operation: "read",
-    codeOnly: code || checks || actions,
+    codeOnly: code || checks || actions || statuses,
     ...(checks ? { extraPermission: "checks" as const } : {}),
     ...(actions ? { extraPermission: "actions" as const } : {}),
+    ...(statuses ? { extraPermission: "statuses" as const } : {}),
   };
 }
 
@@ -117,7 +119,7 @@ export function githubReadRepresentation(url: URL, accept: string | undefined): 
   if (
     (requested === "diff" || requested === "patch") &&
     /^\/repos\/[^/]+\/[^/]+\/(?:pulls\/[1-9]\d*|commits\/.+)$/.test(url.pathname) &&
-    !/\/commits\/.+\/(?:check-runs|check-suites|comments|status|pulls)$/.test(url.pathname)
+    !/\/commits\/.+\/(?:check-runs|check-suites|comments|status|statuses|pulls)$/.test(url.pathname)
   )
     return requested;
   if (requested === "raw" && /^\/repos\/[^/]+\/[^/]+\/contents(?:\/.*)?$/.test(url.pathname)) return "raw";

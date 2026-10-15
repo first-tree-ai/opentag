@@ -60,4 +60,4 @@ jobs:
         shell: bash
         run: |
           pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/runtime-credential-relay.test.ts src/__tests__/cloud-sandbox-credential-bridge.test.ts src/__tests__/cloud-turns-bridge-failure.test.ts --maxWorkers=1
-          pnpm --filter @opentag/server exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/github-graphql-identities.test.ts src/__tests__/github-cli-schema.test.ts src/__tests__/github-cli-project-error.test.ts src/__tests__/github-graphql-policy.test.ts src/__tests__/github-provider-adapter.test.ts src/__tests__/github-runtime-policy.test.ts --maxWorkers=1
+          pnpm --filter @opentag/server exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/github-graphql-identities.test.ts src/__tests__/github-cli-schema.test.ts src/__tests__/github-cli-project-error.test.ts src/__tests__/github-graphql-policy.test.ts src/__tests__/github-provider-adapter.test.ts src/__tests__/github-runtime-policy.test.ts src/__tests__/github-user-token-client.test.ts --maxWorkers=1

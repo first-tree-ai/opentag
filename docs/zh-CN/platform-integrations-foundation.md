@@ -72,6 +72,18 @@ macOS 与 Linux 的 Local 原生 `gh` 使用官方 `http_unix_socket` 传输，�
 
 原生 PR 创建、评论、编辑、关闭和重开沿用相同的仓库、任务 head 和 base 校验。PR identity 按 GraphQL 的实际选择路径建立（含 alias/fragment），冷启动命令不依赖此前完整读取 PR。actor、reviewer organization 和 project metadata 使用封闭的展示字段窗口。Checks/Actions 只读权限仅对具有 code role 的仓库请求，包括 mutation 响应选择的检查字段。Tree-only GraphQL 读取保留既有 contents/pull-request 权限及分支约束；REST checks/actions 路由仍要求 code 权限。原生代码检查查询要求配置的 GitHub App 授予 Checks 和 Actions 读取权限。可选 Projects metadata 的访问拒绝保留为新旧 gh 都理解的只读 scope 错误，不掩盖混合错误或凭据错误，也不请求 Projects 权限。网关在 execution fence 后本地回答少量固定公共 schema 能力探测，不开放任意 introspection，也不通过 schema 查询授权仓库数据。支持的 REST diff/patch/raw 保留原始字节、响应大小限制、凭据过滤和重校验，不再静默转换成 JSON。
 
+REST Commit Status 读取（`/commits/{ref}/status`、`/commits/{ref}/statuses` 以及旧版 `/statuses/{ref}` 别名）仅在 code 权限下按需请求 `statuses: read`。派生用户令牌校验允许这一精确只读授权，拒绝状态写入及超出请求范围的授权。状态响应保持 JSON，拒绝 diff/patch media。普通仓库/PR 读取和 GraphQL 检查选择不新增此权限。App 注册和每个已有安装都必须授予 Commit statuses 只读权限，私有仓库的这些 REST 读取才能成功；公开仓库成功不能证明该边界。
+
+| 操作类型 | Contents/PR 访问之外的派生令牌权限 |
+| --- | --- |
+| 仓库、代码及普通 PR 读取 | 无 |
+| REST Checks 读取 | `checks: read` |
+| REST Actions 读取 | `actions: read` |
+| REST Commit Status 读取，含旧版别名 | `statuses: read` |
+| GraphQL check/WorkflowRun 选择 | 按选择请求 `checks: read` / `actions: read`，仅限 code role |
+| PR mutation | `pull_requests: write`；响应中检查字段的权限仍仅限 code role |
+| Git 发布 | `contents: write`；保留 Commit 对象及 author/committer |
+
 `GitHub Native Proxy` CI 下载 Runner 固定版本的官方 gh，验证 macOS Local IPC、Linux Cloud material/CONNECT，以及原生 PR 生命周期和冷命令权限控制。离线 fixture 不含真实平台凭据，也不产生 GitHub 副作用，不能替代已部署用户身份及 commit 作者验收。
 
 ## 部署、持久化与恢复

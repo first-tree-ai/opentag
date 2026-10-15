@@ -6,9 +6,19 @@ Reviewed on 2026-10-10. These screenshots capture the built application against 
 
 Every Computer is visible on the main page. Online cards remain compact. Offline local Computers show recovery instructions automatically, with a readable summary, a copy control for the complete task, and **Show full instructions** expanding inside the same card. The connection status updates from the Server; copying instructions alone does not report a successful repair. The only management menu action is **Remove computer…**, with the existing confirmation and Agent-binding guards.
 
+The page also offers **Connect another computer** when the Account already has Computers and its inventory is confirmed. Clicking it starts one new connection without changing existing Agent bindings. Existing cards remain visible; the new Computer appears after the issued command's exact Computer is confirmed online. An already-online Computer cannot complete the new attempt, and a newly redeemed Computer does not start a separate recovery attempt while it is still connecting.
+
 ![Offline Computer at 1440 px](./offline-desktop.png)
 
 ![Offline Computer at 390 px](./offline-mobile.png)
+
+## Connecting another Computer
+
+Verified on 2026-10-15 against the built application with local API fixtures. English and Chinese entry and pending states passed overflow and axe checks at 320, 390, 768, and 1440 px. Keyboard activation issues one create request; redemption waits for the exact new Computer to come online. These checks do not claim a real daemon connection.
+
+![Additional connection at 1440 px](./multiple-computers-desktop.png)
+
+![Chinese connection entry at 390 px](./multiple-computers-mobile.png)
 
 ## Interaction verification
 

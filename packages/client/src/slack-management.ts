@@ -110,9 +110,6 @@ export async function runSlackManagement(
           "Slack management login could not be refreshed; recover native authorization before continuing",
         );
       nativeEnvironment.SLACK_USER_TOKEN = await managementToken(home, options.team ?? "");
-    } else if (options.nonInteractive) {
-      // The raw API command has its own flag parser and is already noninteractive.
-      baseArgs.push("--no-prompt");
     }
     const code = await invokeSlack(
       binary,

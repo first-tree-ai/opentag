@@ -10,7 +10,7 @@ import {
 } from "./support/github-user-token-fixture.js";
 
 describe("GitHub user identity credentials", () => {
-  it("derives one repository user token with App Basic auth and verifies the actual scope", async () => {
+  it("derives an exact repository user token with App Basic auth and verifies its target identity", async () => {
     const f = userTokenFixture();
     expect(await f.client.mint(input)).toEqual({
       token: "ghu_scoped_a",
@@ -29,7 +29,7 @@ describe("GitHub user identity credentials", () => {
     expect(f.calls[0]?.headers.get("authorization")).toBe(
       `Basic ${Buffer.from("Iv1.client:client-secret").toString("base64")}`,
     );
-    expect(f.calls[1]).toMatchObject({ path: "/user/installations/456/repositories", method: "GET" });
+    expect(f.calls[1]).toMatchObject({ path: "/repos/owner/repository", method: "GET" });
     expect(f.calls[1]?.headers.get("authorization")).toBe("Bearer ghu_scoped_a");
     expect(f.management.getExecutionUserCredential).toHaveBeenCalledWith(input);
     await f.client.revoke("ghu_scoped_a");
@@ -179,27 +179,30 @@ describe("GitHub user identity credentials", () => {
     expect(f.calls.at(-1)).toMatchObject({ method: "DELETE", body: { access_token: "ghu_scoped_a" } });
   });
 
-  it.each(["all", "selected"])("proves exact repository scope independently of the %s label", async (selection) => {
-    const f = userTokenFixture();
-    const payload = scopedUserPayload();
-    payload.installation.repository_selection = selection;
-    f.setPayload(payload);
-    await expect(f.client.mint(input)).resolves.toMatchObject({ token: payload.token });
-    expect(f.calls[1]?.path).toBe("/user/installations/456/repositories");
-    f.setRepositories({ total_count: 2, repositories: scopedRepositoryPage().repositories });
-    await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
-    expect(f.calls.at(-1)).toMatchObject({ method: "DELETE", body: { access_token: payload.token } });
-  });
+  it.each(["all", "selected"])(
+    "accepts the %s installation label without mistaking the catalog for token scope",
+    async (selection) => {
+      const f = userTokenFixture();
+      const payload = scopedUserPayload();
+      payload.installation.repository_selection = selection;
+      f.setPayload(payload);
+      // Real GitHub installation enumeration returns four entries for a token scoped to one.
+      f.setRepositories({ total_count: 4, repositories: scopedRepositoryPage().repositories });
+      await expect(f.client.mint(input)).resolves.toMatchObject({ token: payload.token });
+      expect(f.calls[0]?.body).toMatchObject({ target: "owner", repository_ids: [123] });
+      expect(f.calls[1]?.path).toBe("/repos/owner/repository");
+      expect(f.calls.some((call) => call.path.includes("/installations/"))).toBe(false);
+    },
+  );
 
   it.each([
-    { total_count: 2, repositories: scopedRepositoryPage().repositories },
-    { total_count: 1, repositories: [] },
-    { total_count: 1, repositories: [{ ...scopedRepositoryPage().repositories[0], id: 321 }] },
-    { total_count: 1, repositories: [{ ...scopedRepositoryPage().repositories[0], full_name: "other/repository" }] },
-  ])("requires proof of exactly the actual repository: %j", async (page) => {
+    {},
+    { ...scopedRepositoryPage().repositories[0], id: 321 },
+    { ...scopedRepositoryPage().repositories[0], full_name: "other/repository" },
+  ])("rejects a mismatched derived-token target and revokes the child: %j", async (repository) => {
     const f = userTokenFixture();
-    f.setRepositories(page);
-    await expect(f.client.mint(input)).rejects.toMatchObject({ code: "scope_denied" });
+    f.setRepository(repository);
+    await expect(f.client.mint(input)).rejects.toThrow();
     expect(f.calls.at(-1)?.body).toEqual({ access_token: "ghu_scoped_a" });
   });
 

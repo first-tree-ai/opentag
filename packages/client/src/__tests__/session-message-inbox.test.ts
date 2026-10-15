@@ -73,6 +73,7 @@ describe("SessionMessageInbox", () => {
       admission: new AdmissionController(),
       credentialEnvironment: {
         prepare: vi.fn(async () => ({
+          allowedUnixSockets: ["/tmp/github-scheduled-execution.sock"],
           path: "/tmp/provider-env.sh",
           provider: "feishu" as const,
           outboxContext: { provider: "feishu" as const, sessionKind: "channel" as const, chatId: "oc_visible" },
@@ -93,6 +94,9 @@ describe("SessionMessageInbox", () => {
     clock = Date.parse("2026-09-28T01:12:34.000Z");
     releaseIdle();
     await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledOnce());
+    expect(runtime.prompt).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedUnixSockets: ["/tmp/github-scheduled-execution.sock"] }),
+    );
     const input = runtime.prompt.mock.calls[0]?.[0].input;
     expect(input?.items[1]?.text).toContain("Processing started: 2026-09-28T01:12:34.000Z");
     expect(input?.items[1]?.text).toContain("Notification JSON:");
@@ -951,6 +955,7 @@ describe("SessionMessageInbox", () => {
       prepare: vi.fn(async () => {
         order.push("prepare");
         return {
+          allowedUnixSockets: ["/tmp/github-current-execution.sock"],
           path: "/tmp/provider-env.sh",
           provider: "feishu" as const,
           outboxContext: {
@@ -988,6 +993,9 @@ describe("SessionMessageInbox", () => {
     });
     expect((await visible.accept(delivery())).status).toBe("accepted");
     await visible.settled();
+    expect(runtime.prompt).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedUnixSockets: ["/tmp/github-current-execution.sock"] }),
+    );
     expect(order).toEqual(["prepare", "plan", "runtime", "prompt", "plan-cleanup", "cleanup"]);
     expect(turnPlan.prepare).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "feishu", runId: expect.stringMatching(/^session-message-/) }),
@@ -1011,6 +1019,9 @@ describe("SessionMessageInbox", () => {
     expect((await internal.accept(delivery({ text: "internal" }))).status).toBe("accepted");
     await internal.settled();
     expect(internalPlan.prepare).not.toHaveBeenCalled();
+    expect(runtime.prompt).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ allowedUnixSockets: expect.anything() }),
+    );
     internal.stop();
   });
 

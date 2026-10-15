@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, chown, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,7 +13,10 @@ import {
   publishExecutionMaterial,
 } from "../cloud-runtime/bridge-material.js";
 import { CLOUD_EXECUTION_MOUNT, CLOUD_SANDBOX_CA_DESTINATION } from "../cloud-runtime/sandbox-entry.js";
+import { CodexAppServerProcess } from "../providers/codex/app-server-wire.js";
+import { CODEX_EXECUTION_PERMISSIONS, codexSocketPermissions } from "../providers/codex/socket-permissions.js";
 import type { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay.js";
+import { RuntimeProxyDataError } from "../runtime/runtime-proxy-data-client.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { buildRuntimeProxyEnvironment, RuntimeProxyMaterialStore } from "../runtime/runtime-proxy-material.js";
 
@@ -72,6 +75,7 @@ describe.skipIf(!binary)("native gh execution-local transport (offline, no provi
       });
       const config = await readFile(join(String(environment.GH_CONFIG_DIR), "config.yml"), "utf8");
       expect(config).toContain(JSON.stringify(socketPath));
+      await chmod(join(String(environment.GH_CONFIG_DIR), "config.yml"), 0o444);
       expect((await stat(socketPath as string)).mode & 0o777).toBe(0o600);
       const env = Object.fromEntries(
         Object.entries({ HOME: root, PATH: process.env.PATH, GH_HOST: "ambient.invalid", ...environment }).filter(
@@ -82,13 +86,27 @@ describe.skipIf(!binary)("native gh execution-local transport (offline, no provi
       expect(env.SSL_CERT_FILE).toBeUndefined();
       expect(env.HTTPS_PROXY).toBeUndefined();
       expect(env.GH_HOST).toBe("github.com");
-      const result = await run(
-        binary as string,
-        ["api", "repos/team/fixture", "-H", "X-Opentag-Provider-Origin: github.com"],
-        { cwd: root, env, timeout: 15000 },
-      );
+      // macOS must enforce the same execution-material write denial as the real model sandbox.
+      // Resolve /var -> /private/var: Seatbelt subpath rules use canonical filesystem paths.
+      const configDir = await realpath(String(environment.GH_CONFIG_DIR));
+      const runReadonlyGh = (args: string[]) =>
+        run(
+          process.platform === "darwin" ? "/usr/bin/sandbox-exec" : (binary as string),
+          process.platform === "darwin"
+            ? [
+                "-p",
+                `(version 1)(allow default)(deny file-write* (subpath ${JSON.stringify(configDir)}))`,
+                binary as string,
+                ...args,
+              ]
+            : args,
+          { cwd: root, env, timeout: 15000 },
+        );
+      expect((await runReadonlyGh(["--version"])).stdout).toContain("gh version");
+      const result = await runReadonlyGh(["api", "repos/team/fixture", "-H", "X-Opentag-Provider-Origin: github.com"]);
       expect(JSON.parse(result.stdout)).toEqual({ name: "fixture" });
-      expect(requests).toHaveLength(1);
+      const sandboxed = await verifyCodexSandbox(root, env, configDir, config, socketPath as string);
+      expect(requests).toHaveLength(sandboxed ? 2 : 1);
       expect(requests[0]?.headers["x-opentag-provider-origin"]).toBe("api.github.com");
       for (const suffix of ["commits/main/status", "commits/feature/topic/statuses", "statuses/feature/topic"]) {
         const status = await run(binary as string, ["api", `repos/team/fixture/${suffix}`], {
@@ -113,7 +131,9 @@ describe.skipIf(!binary)("native gh execution-local transport (offline, no provi
           timeout: 15000,
         }),
       ).rejects.toMatchObject({ code: 1 });
-      expect(requests).toHaveLength(4);
+      expect(requests).toHaveLength(sandboxed ? 5 : 4);
+      expect(await readFile(join(configDir, "config.yml"), "utf8")).toBe(config);
+      expect(await readdir(configDir)).toEqual(["config.yml"]);
       await adapter.close();
       await expect(stat(socketPath as string)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(
@@ -160,6 +180,49 @@ describe("GitHub IPC authority boundary", () => {
       await rm(root, { recursive: true, force: true });
     }
     await expect(stat(socketPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("returns a bounded JSON permission failure through the Local gh socket", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ot-gh-error-"));
+    const adapter = await RuntimeProxyLoopbackAdapter.start({
+      githubApiSocket: true,
+      executionId: randomUUID(),
+      materialDir: root,
+      verifyHandle: () => true,
+      logger: { debug() {}, warn() {} },
+      openStream: async () => {
+        throw new RuntimeProxyDataError("stream_error", "credential must stay private", undefined, "scope_denied");
+      },
+    });
+    try {
+      const result = await new Promise<{ status?: number; headers: http.IncomingHttpHeaders; body: string }>(
+        (resolve, reject) => {
+          const req = http.request(
+            {
+              socketPath: adapter.githubApiSocketPath,
+              path: "/repos/team/fixture",
+              headers: { host: "api.github.com", authorization: "token otrh_fixture" },
+            },
+            (res) => {
+              const chunks: Buffer[] = [];
+              res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+              res.on("end", () =>
+                resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }),
+              );
+            },
+          );
+          req.on("error", reject);
+          req.end();
+        },
+      );
+      expect(result.status).toBe(403);
+      expect(result.headers["content-type"]).toBe("application/json");
+      expect(JSON.parse(result.body)).toEqual({ message: "scope_denied", code: "scope_denied" });
+      expect(result.body).not.toContain("credential");
+    } finally {
+      await adapter.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects absolute URLs before opening a relay stream", async () => {
@@ -242,6 +305,9 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
         includeEntryPrograms: true,
         publicMountPath: published,
       });
+      const ghConfig = join(published, "gh-config", "config.yml");
+      const initialConfig = await readFile(ghConfig, "utf8");
+      expect((await stat(ghConfig)).mode & 0o777).toBe(0o444);
       await listenBridgeProxySockets(resources, adapter, published);
       expect(adapter.githubApiSocketPath).toBeUndefined();
       // Remap fixed container filesystem locations to the isolated test root only. The stock
@@ -254,13 +320,15 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
       const fixtureEntry = join(published, "entry-fixture.mjs");
       await writeFile(fixtureEntry, entry, { mode: 0o444, flag: "wx" });
       expect((await stat(join(published, "entry.mjs"))).mode & 0o777).toBe(0o444);
+      const childIdentity = process.getuid?.() === 0 ? { uid: 65534, gid: 65534 } : {};
+      if (process.getuid?.() === 0) await chown(root, 65534, 65534);
       const result = await run(
         process.execPath,
         [
           fixtureEntry,
           "sh",
           "-c",
-          'PATH="$1:$2:$PATH"; export PATH; gh api repos/team/fixture --jq tojson || exit "$?"; shift 2; for suffix in "$@"; do gh api "repos/team/fixture/$suffix" --jq tojson || exit "$?"; done',
+          'PATH="$1:$2:$PATH"; export PATH; test ! -w "$GH_CONFIG_DIR/config.yml" || exit 97; gh api repos/team/fixture --jq tojson || exit "$?"; shift 2; for suffix in "$@"; do gh api "repos/team/fixture/$suffix" --jq tojson || exit "$?"; done',
           "fixture",
           join(published, "bin"),
           dirname(binary as string),
@@ -268,7 +336,7 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
           "commits/feature/topic/statuses",
           "statuses/feature/topic",
         ],
-        { cwd: root, env: { PATH: process.env.PATH }, timeout: 20000 },
+        { cwd: root, env: { PATH: process.env.PATH }, ...childIdentity, timeout: 20000 },
       );
       const responses = result.stdout
         .trim()
@@ -282,6 +350,8 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
         })),
       ]);
       expect(hits).toBe(4);
+      expect(await readFile(ghConfig, "utf8")).toBe(initialConfig);
+      expect(await readdir(dirname(ghConfig))).toEqual(["config.yml"]);
       const manifest = await readFile(join(published, "environment.json"), "utf8");
       expect(manifest).not.toContain(join(root, "private"));
       expect(manifest).not.toContain("http_unix_socket");
@@ -292,3 +362,138 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
     }
   }, 30000);
 });
+
+function inlineToml(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(inlineToml).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.entries(value)
+      .map(([key, item]) => `${JSON.stringify(key)}=${inlineToml(item)}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
+}
+
+async function verifyCodexSandbox(
+  root: string,
+  env: NodeJS.ProcessEnv,
+  configDir: string,
+  config: string,
+  socketPath: string,
+): Promise<boolean> {
+  if (!process.env.OPENTAG_TEST_CODEX_BINARY || process.platform !== "darwin") return false;
+  const codexHome = join(root, "codex-home");
+  await mkdir(codexHome);
+  const socketConfig = codexSocketPermissions(
+    [socketPath],
+    { cwd: root },
+    {
+      fileSystem: "workspace-write",
+      network: "disabled",
+      approvals: "on-request",
+      tools: { mode: "provider-default" },
+    },
+  ) as { permissions: Record<string, { filesystem: Record<string, string> }> };
+  const profile = socketConfig.permissions[CODEX_EXECUTION_PERMISSIONS];
+  if (!profile) throw Error("Missing execution profile");
+  profile.filesystem[configDir] = "read";
+  const wire = new CodexAppServerProcess({
+    command: process.env.OPENTAG_TEST_CODEX_BINARY,
+    cwd: root,
+    env: { ...env, CODEX_HOME: codexHome },
+  });
+  try {
+    await wire.initialize("0.0.1-test");
+    const loaded = (await wire.request("thread/start", {
+      cwd: root,
+      ephemeral: true,
+      approvalPolicy: "on-request",
+      permissions: CODEX_EXECUTION_PERMISSIONS,
+      config: socketConfig,
+    })) as { activePermissionProfile?: { id: string } };
+    expect(loaded.activePermissionProfile?.id).toBe(CODEX_EXECUTION_PERMISSIONS);
+  } finally {
+    await wire.close();
+  }
+  await writeFile(
+    join(codexHome, "config.toml"),
+    `features={network_proxy=true}\npermissions=${inlineToml(socketConfig.permissions)}\n`,
+  );
+  const native = await run(
+    process.env.OPENTAG_TEST_CODEX_BINARY,
+    [
+      "sandbox",
+      "--permission-profile",
+      CODEX_EXECUTION_PERMISSIONS,
+      "--",
+      binary as string,
+      "api",
+      "repos/team/fixture",
+    ],
+    { cwd: root, env: { ...env, CODEX_HOME: codexHome }, timeout: 15000 },
+  );
+  expect(JSON.parse(native.stdout)).toEqual({ name: "fixture" });
+  expect(await readFile(join(configDir, "config.yml"), "utf8")).toBe(config);
+  // An unrelated private socket remains blocked while direct TCP egress stays disabled.
+  const foreign = await RuntimeProxyLoopbackAdapter.start({
+    githubApiSocket: true,
+    executionId: randomUUID(),
+    materialDir: join(root, "foreign"),
+    verifyHandle: () => true,
+    openStream: async () => {
+      throw Error("Foreign socket reached");
+    },
+    logger: { debug() {}, warn() {} },
+  });
+  try {
+    await expect(
+      run(
+        process.env.OPENTAG_TEST_CODEX_BINARY,
+        [
+          "sandbox",
+          "--permission-profile",
+          CODEX_EXECUTION_PERMISSIONS,
+          "--",
+          "/usr/bin/curl",
+          "--silent",
+          "--show-error",
+          "--max-time",
+          "2",
+          "--unix-socket",
+          foreign.githubApiSocketPath as string,
+          "http://api.github.com",
+        ],
+        { cwd: root, env: { ...env, CODEX_HOME: codexHome }, timeout: 10000 },
+      ),
+    ).rejects.toMatchObject({ code: 7 });
+  } finally {
+    await foreign.close();
+  }
+  const tcp = http.createServer((_req, res) => res.end("must not reach direct TCP"));
+  await new Promise<void>((resolve) => tcp.listen(0, "127.0.0.1", resolve));
+  const address = tcp.address();
+  if (!address || typeof address === "string") throw Error("Missing TCP fixture port");
+  try {
+    await expect(
+      run(
+        process.env.OPENTAG_TEST_CODEX_BINARY,
+        [
+          "sandbox",
+          "--permission-profile",
+          CODEX_EXECUTION_PERMISSIONS,
+          "--",
+          "/usr/bin/curl",
+          "--noproxy",
+          "*",
+          "--silent",
+          "--show-error",
+          "--max-time",
+          "2",
+          `http://127.0.0.1:${address.port}`,
+        ],
+        { cwd: root, env: { ...env, CODEX_HOME: codexHome }, timeout: 10000 },
+      ),
+    ).rejects.toMatchObject({ code: 7 });
+  } finally {
+    await new Promise<void>((resolve) => tcp.close(() => resolve()));
+  }
+  return true;
+}

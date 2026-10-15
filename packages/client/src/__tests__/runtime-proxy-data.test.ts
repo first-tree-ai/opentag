@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type WebSocket as ServerWebSocket, WebSocketServer } from "ws";
 import type { RuntimeProxyStreamResponse } from "../runtime/runtime-proxy-data-client.js";
-import { RuntimeProxyDataConnection } from "../runtime/runtime-proxy-data-client.js";
+import { RuntimeProxyDataConnection, RuntimeProxyDataError } from "../runtime/runtime-proxy-data-client.js";
 import {
   generateExecutionCa,
   type RuntimeProxyAdapterStreamRequest,
@@ -227,7 +227,10 @@ describe("RuntimeProxyDataConnection", () => {
       headers: {},
     };
     try {
-      await expect(connection.openStream(request)).rejects.toMatchObject({ code: "stream_error" });
+      await expect(connection.openStream(request)).rejects.toMatchObject({
+        code: "stream_error",
+        upstreamCode: "upstream_denied",
+      });
       await expect(connection.openStream(request)).rejects.toMatchObject({ code: "stream_error" });
       await expect(connection.openStream(request)).rejects.toMatchObject({ code: "connection_lost" });
     } finally {
@@ -1930,7 +1933,7 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     while (raw.indexOf("\r\n\r\n") < 0) raw = Buffer.concat([raw, await onceData(tunnel)]);
     const head = raw.subarray(0, raw.indexOf("\r\n\r\n")).toString("utf8");
     expect(head).toContain("503");
-    expect(head.toLowerCase()).toContain("text/plain");
+    expect(head.toLowerCase()).toContain("application/json");
     tunnel.destroy();
   });
 
@@ -2016,5 +2019,39 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     expect(response.status).toBeGreaterThanOrEqual(400);
     // The declared length alone rejects the body before it is read or forwarded.
     expect(harness.requests).toHaveLength(0);
+  });
+});
+
+describe("GitHub proxy typed HTTP failures (Cloud CONNECT)", () => {
+  it.each([
+    ["scope_denied", 403],
+    ["GITHUB_RATE_LIMITED", 429],
+    ["GITHUB_UPSTREAM_UNAVAILABLE", 503],
+    ["secret-token-value", 503],
+  ] as const)("maps %s without exposing raw errors", async (code, status) => {
+    const harness = await startAdapter({
+      response: () => {
+        throw new RuntimeProxyDataError("stream_error", "private raw credential", undefined, code);
+      },
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    try {
+      writeRequest(tunnel, {
+        method: "GET",
+        path: "/repos/team/fixture",
+        headers: { authorization: "token otrh_valid" },
+      });
+      const response = await readHttpResponse(tunnel);
+      expect(response.status).toBe(status);
+      expect(response.headers["content-type"]).toBe("application/json");
+      expect(JSON.parse(response.body)).toEqual({
+        message: code === "secret-token-value" ? "upstream_unavailable" : code,
+        code: code === "secret-token-value" ? "upstream_unavailable" : code,
+      });
+      expect(response.body).not.toContain("private raw credential");
+    } finally {
+      tunnel.destroy();
+    }
   });
 });

@@ -320,6 +320,7 @@ class ProxyDataConnection {
       // the client may have finished it already, and a stale cancel/error would be a violation.
       if (this.#streamClosed(stream)) return;
       const code = errorCodeOf(error);
+      this.#logStreamFailure(frame.provider, code);
       if (stream.responseStarted) {
         this.#sendJson({ type: "cancel", streamId: stream.id, code });
       } else {
@@ -327,6 +328,21 @@ class ProxyDataConnection {
       }
       this.#closeStream(stream);
     }
+  }
+
+  #logStreamFailure(provider: RuntimeCredentialProvider, code: string): void {
+    // Operational diagnosis only: no paths, headers, capabilities, bodies, identities, or raw errors.
+    const safe = [
+      "scope_denied",
+      "invalid_request",
+      "unavailable",
+      "credential_scope_denied",
+      "provider_unavailable",
+    ].includes(code);
+    this.#transport.logger?.warn(
+      { provider, code: safe ? code : "upstream_unavailable" },
+      "Provider proxy stream failed",
+    );
   }
 
   #streamClosed(stream: ProxyStream): boolean {
@@ -428,6 +444,7 @@ class ProxyDataConnection {
     } catch (error) {
       if (this.#streamClosed(stream)) return;
       const code = errorCodeOf(error);
+      this.#logStreamFailure(stream.authorization.provider, code);
       if (stream.responseStarted) this.#sendJson({ type: "cancel", streamId: stream.id, code });
       else this.#sendJson({ type: "error", streamId: stream.id, code });
       this.#abortStream(stream);

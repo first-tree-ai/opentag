@@ -133,6 +133,7 @@ function echoAdapter(): ProviderProxyAdapter {
 async function setup(
   adapter: ProviderProxyAdapter,
   options: {
+    logger?: { warn(record: Record<string, unknown>, message: string): void };
     connectionFence?: RuntimeConnectionFence;
     brokerConnectionFence?: RuntimeConnectionFence;
     cloud?: boolean;
@@ -198,6 +199,7 @@ async function setup(
     tickets,
     executions,
     ...(options.connectionFence ? { connectionFence: options.connectionFence } : {}),
+    ...(options.logger ? { logger: options.logger } : {}),
     authTimeoutMs: 150,
     revalidateIntervalMs: options.revalidateIntervalMs ?? 60_000,
     ...(options.chunkMaxBytes !== undefined ? { chunkMaxBytes: options.chunkMaxBytes } : {}),
@@ -879,4 +881,43 @@ it("bounds target checks per stream and does not let a slow check delay another 
     releaseSlow();
     socket.close();
   }
+});
+
+describe("Provider stream failure diagnostics", () => {
+  it.each(["scope_denied", "private-error-code"])("logs only bounded provider/reason metadata for %s", async (code) => {
+    const logs: unknown[] = [];
+    const state = await setup(
+      {
+        handle: async () => {
+          throw Object.assign(new Error("private raw upstream message"), { code });
+        },
+      },
+      {
+        logger: {
+          warn(record, message) {
+            logs.push({ record, message });
+          },
+        },
+      },
+    );
+    const { ticket } = state.tickets.issue({
+      executionId: state.record.executionId,
+      computerId: COMPUTER,
+      instanceId: "instance-1",
+      connectionId: "connection-1",
+    });
+    const { socket, queue } = await connect(state.port, ticket);
+    await queue.nextJson();
+    socket.send(openFrame(1, state.grant.token, "/api/chat.postMessage"));
+    expect(await queue.nextJson()).toMatchObject({ type: "error", code });
+    expect(logs).toEqual([
+      {
+        record: { provider: "slack", code: code === "scope_denied" ? code : "upstream_unavailable" },
+        message: "Provider proxy stream failed",
+      },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain("private");
+    expect(JSON.stringify(logs)).not.toContain(state.record.executionId);
+    socket.close();
+  });
 });

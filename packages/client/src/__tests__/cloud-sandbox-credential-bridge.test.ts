@@ -371,6 +371,7 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
         "connect.sock",
         "entry.mjs",
         "environment.json",
+        "gh-config",
         "git-credential-helper",
         "gitconfig",
         "sandbox-ca.mjs",
@@ -382,6 +383,8 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
       environment: Record<string, string>;
     };
     expect(environmentFile.executionId).toBe(EXECUTION_ID);
+    expect(await readFile(join(publicDir, "gh-config", "config.yml"), "utf8")).toBe('version: "1"\n');
+    expect((await stat(join(publicDir, "gh-config", "config.yml"))).mode & 0o777).toBe(0o444);
     expect(environmentFile.environment.GH_TOKEN).toMatch(/^otrh_/);
     expect(environmentFile.environment.SLACK_BOT_TOKEN).toMatch(/^otrh_/);
     // The manifest publishes only the execution-scoped routing inputs; the Agent runtime

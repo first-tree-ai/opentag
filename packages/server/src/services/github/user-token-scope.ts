@@ -72,7 +72,8 @@ export function validateScopedToken(payload: unknown, input: GitHubUserTokenInpu
     (installation.repository_selection !== "selected" && installation.repository_selection !== "all")
   )
     throw new GitPublicationError("scope_denied");
-  // The selection label is not scope proof. The caller must probe the token's actual repository list.
+  // Scope is the exact repository_ids request to the fixed, App-authenticated scoped-token endpoint.
+  // The installation selection label and repository catalog do not describe a child token's scope.
   for (const [key, level] of Object.entries(input.permissions)) {
     if (permissions[key] !== level) throw new GitPublicationError("scope_denied");
   }

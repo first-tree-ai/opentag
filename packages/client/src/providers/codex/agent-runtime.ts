@@ -66,6 +66,12 @@ import {
   type CodexSpawnOptions,
   type InteractiveCodexAppServerClient,
 } from "./app-server-wire.js";
+import {
+  assertCodexSocketProfile,
+  CODEX_EXECUTION_PERMISSIONS,
+  codexSocketPermissions,
+  codexThreadPermissions,
+} from "./socket-permissions.js";
 
 const execFileAsync = promisify(execFile);
 const CODEX_BINDING_SCHEMA_VERSION = 1;
@@ -229,6 +235,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    * interrupted rebind that may have left the thread unloaded. The next run rebinds it either way.
    */
   #mcpThreadDirty = false;
+  #socketThreadDirty = false;
   /** Present only between run admission and `turn/start`, when there is no provider turn to interrupt. */
   #preTurnAbort?: AbortController;
   readonly #unsubscribeNotifications: () => void;
@@ -300,7 +307,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#preTurnAbort = preTurnAbort;
     try {
       try {
-        await this.#attachMcpGateway(request, context, AbortSignal.any([context.signal, preTurnAbort.signal]));
+        await this.#attachRunConfiguration(request, context, AbortSignal.any([context.signal, preTurnAbort.signal]));
       } catch (error) {
         if (!preTurnAbort.signal.aborted) throw error;
       }
@@ -408,7 +415,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    *
    * Codex spawns one App Server per Session, but the gateway bearer is minted per execution. Codex
    * applies a thread's `config` overrides only when it loads the thread, so the thread is reloaded
-   * with the run's `mcp_servers`. The bearer travels over the App Server's stdio and is held only in
+   * with the run's `mcp_servers` and exact local proxy socket permissions. Socket attachment
+   * and removal are mandatory and fail closed; optional MCP attachment can fall back. The bearer travels over the App Server's stdio and is held only in
    * its memory: never in its argument vector, environment, or a config file, so what a model command
    * can reach is at most the live execution's own bearer, which the Server revokes when the
    * execution ends. A run without a gateway rebinds only when the thread may still hold one.
@@ -419,7 +427,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    * the run's bearer attached to a catalogue it did not confirm. Only a thread Codex cannot reload at
    * all within the deadline fails the run, because there is no thread left to start the turn on.
    */
-  async #attachMcpGateway(
+  async #attachRunConfiguration(
     request: AgentPromptRequest,
     context: AgentProviderRunContext,
     signal: AbortSignal,
@@ -427,7 +435,10 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const endpoint = parseProviderConfiguration(
       mergeConfiguration(this.#configuration, request.configuration)?.provider,
     ).mcpGateway;
-    if (!endpoint && !this.#mcpThreadDirty) return;
+    const socketConfig = codexSocketPermissions(request.allowedUnixSockets, this.#workspace, this.#policy);
+    const hadSockets = this.#socketThreadDirty;
+    if (!endpoint && !this.#mcpThreadDirty && !socketConfig && !hadSockets) return;
+    this.#socketThreadDirty = socketConfig !== undefined;
     const startedAt = Date.now();
     const wasDirty = this.#mcpThreadDirty;
     this.#mcpThreadDirty = true;
@@ -435,29 +446,30 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const attachBudgetMs = Math.floor(this.#mcpAttachTimeoutMs * CODEX_MCP_ATTACH_BUDGET_SHARE);
     try {
       await this.#rebindThread(
-        codexMcpServersConfig(endpoint, this.#policy.approvals),
+        { ...codexMcpServersConfig(endpoint, this.#policy.approvals), ...socketConfig },
         context,
         AbortSignal.any([deadline, AbortSignal.timeout(attachBudgetMs)]),
       );
       this.#mcpThreadDirty = endpoint !== undefined;
       logger.info(
         { attached: endpoint !== undefined, durationMs: Date.now() - startedAt },
-        "Codex thread rebound to the run's MCP gateway",
+        "Codex thread rebound to execution services",
       );
       return;
     } catch (error) {
       if (signal.aborted) throw error;
       logger.warn(
-        { code: "mcp_attach_failed", error: String(error), durationMs: Date.now() - startedAt },
-        "Codex could not rebind the thread to the MCP gateway; continuing without MCP tools",
+        { code: "provider_launch_attach_failed", error: String(error), durationMs: Date.now() - startedAt },
+        "Codex could not attach execution services; retrying required permissions without MCP tools",
       );
     }
     // An unpersisted thread is only ever replaced, so the loaded one kept its previous MCP state.
-    if (!this.#threadPersisted) {
+    if (!this.#threadPersisted && !socketConfig && !hadSockets) {
       this.#mcpThreadDirty = wasDirty;
       return;
     }
-    await this.#rebindThread(codexMcpServersConfig(undefined), context, deadline);
+    // Socket attachment/removal is mandatory. Failure must never run with stale permissions.
+    await this.#rebindThread({ ...codexMcpServersConfig(undefined), ...socketConfig }, context, deadline);
     this.#mcpThreadDirty = false;
   }
 
@@ -474,11 +486,17 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const response = requireRecord(
       await this.#client.request(
         "thread/resume",
-        { ...this.#threadParams, threadId: this.#threadId, excludeTurns: true, config },
+        {
+          ...codexThreadPermissions(this.#threadParams, config.permissions ? config : undefined),
+          threadId: this.#threadId,
+          excludeTurns: true,
+          config,
+        },
         signal,
       ),
       "thread/resume returned an invalid response",
     );
+    assertCodexSocketProfile(response, config);
     const thread = requireRecord(response.thread, "thread/resume returned no thread");
     if (thread.id !== this.#threadId) throw protocolError("thread/resume restored another thread");
   }
@@ -495,9 +513,14 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     signal: AbortSignal,
   ): Promise<void> {
     const response = requireRecord(
-      await this.#client.request("thread/start", { ...this.#threadStartParams, config }, signal),
+      await this.#client.request(
+        "thread/start",
+        { ...codexThreadPermissions(this.#threadStartParams, config.permissions ? config : undefined), config },
+        signal,
+      ),
       "thread/start returned an invalid response",
     );
+    assertCodexSocketProfile(response, config);
     const thread = requireRecord(response.thread, "thread/start returned no thread");
     const threadId = requireString(thread.id, "thread/start returned no thread id");
     const previous = this.#threadId;
@@ -812,7 +835,9 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       input: codexInput(request.input.items),
       cwd: this.#workspace.cwd,
       approvalPolicy: codexApprovalPolicy(this.#policy.approvals),
-      sandboxPolicy: codexSandboxPolicy(this.#workspace, this.#policy),
+      ...(codexSocketPermissions(request.allowedUnixSockets, this.#workspace, this.#policy)
+        ? { permissions: CODEX_EXECUTION_PERMISSIONS }
+        : { sandboxPolicy: codexSandboxPolicy(this.#workspace, this.#policy) }),
       ...(configuration?.model ? { model: configuration.model } : {}),
       ...(configuration?.reasoningEffort ? { effort: configuration.reasoningEffort } : {}),
       ...(provider.personality ? { personality: provider.personality } : {}),

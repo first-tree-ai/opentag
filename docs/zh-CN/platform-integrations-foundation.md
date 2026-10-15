@@ -10,11 +10,11 @@ OpenTag 自己管理 GitHub App、Slack 与飞书凭证。Server 组合集成管
 
 GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一个当前连接，已撤销和已替换连接保留非敏感历史。唯一新增的 `github_connections` 表保存加密的用户 access/refresh 凭证、一个进行中的 OAuth 流程，以及保留的历史仓库 JSON。旧字段只用于存储兼容，新业务不查询、不修改，DTO 不返回。Slack、飞书复用现有 IM 表。
 
-用户凭证同时证明仓库准入并决定 Git、REST、GraphQL 操作身份。Server 先确认 Account、Agent、任务和实际目标，再通过 GitHub scoped-user-token 接口派生单仓库、明确权限的用户令牌。返回的用户/App 身份、owner、权限和有效期必须匹配，并核验该令牌实际只能访问目标仓库。PR、评论归属于连接的 GitHub 用户，Git push 也以该用户认证；commit 的 author/committer、对象 ID 与签名保持原样。父用户凭证和派生令牌均不进入管理响应或 Sandbox。
+用户凭证同时证明仓库准入并决定 Git、REST、GraphQL 操作身份。Server 先确认 Account、Agent、任务和实际目标，再通过 GitHub scoped-user-token 接口派生单仓库、明确权限的用户令牌。返回的用户/App 身份、owner、权限和有效期必须匹配，并通过派生令牌核验目标仓库身份。固定的 App 认证派生请求只包含一个稳定 `repository_ids`；每次操作也限制在该目标内。PR、评论归属于连接的 GitHub 用户，Git push 也以该用户认证；commit 的 author/committer、对象 ID 与签名保持原样。父用户凭证和派生令牌均不进入管理响应或 Sandbox。
 
-安装选择标记允许 `all` 和 `selected`，该标记本身不作为令牌范围的证明。使用派生令牌进行的实时仓库列表探测必须恰好返回一个仓库，且稳定 ID 和名称均匹配。可为空的响应字段不能直接视为安全：缺少用户/App 身份、owner 或权限元数据时拒绝执行；`expires_at` 缺失或为 null 时明确返回 `GITHUB_TOKEN_LIFETIME_UNSUPPORTED`，不虚构有效期，也不使用无限期凭证。这些拒绝同样触发尽力清理。清理只处理固定派生接口返回的有界令牌，排除当次捕获的父令牌，并单独核对 Account 的当前父令牌，覆盖正常刷新和 OAuth 替换连接。
+安装选择标记允许 `all` 和 `selected`，该标记本身不作为令牌范围的证明。安装仓库列表表示安装可见范围，即使用户令牌已正确缩到单仓库，也可能返回多个仓库，因此不将该列表作为令牌范围证明。派生令牌必须将请求目标解析到预期的稳定 ID 和名称。可为空的响应字段不能直接视为安全：缺少用户/App 身份、owner 或权限元数据时拒绝执行；`expires_at` 缺失或为 null 时明确返回 `GITHUB_TOKEN_LIFETIME_UNSUPPORTED`，不虚构有效期，也不使用无限期凭证。这些拒绝同样触发尽力清理。清理只处理固定派生接口返回的有界令牌，排除当次捕获的父令牌，并单独核对 Account 的当前父令牌，覆盖正常刷新和 OAuth 替换连接。
 
-GitHub REST API 请求改为消耗认证用户的个人配额，与该用户的其他 Agent、GitHub/OAuth App 和个人访问令牌工具共用，不再使用安装级配额。认证用户通常每小时 5,000 次，部分 GitHub Enterprise Cloud 场景配额更高。每次代理请求除实时准入和元数据检查外，还会派生令牌、探测实际仓库范围并单独撤销；仓库探测及其他使用用户身份的 REST 调用消耗共享用户配额，Agent 高频操作可能影响用户自己的工具。参见 [GitHub REST API 配额说明](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)。
+GitHub REST API 请求改为消耗认证用户的个人配额，与该用户的其他 Agent、GitHub/OAuth App 和个人访问令牌工具共用，不再使用安装级配额。认证用户通常每小时 5,000 次，部分 GitHub Enterprise Cloud 场景配额更高。每次代理请求除实时准入和元数据检查外，还会派生令牌、探测目标仓库身份并单独撤销；仓库探测及其他使用用户身份的 REST 调用消耗共享用户配额，Agent 高频操作可能影响用户自己的工具。参见 [GitHub REST API 配额说明](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)。
 
 IM、用户定时任务和可追溯 Agent 协作都使用 Agent 所属 Account 的当前连接；IM 发信人不会自动映射为独立 GitHub 身份。本次不新增操作审计、发送者账号映射、数据库迁移或身份配置；现有任务来源继续用于授权。
 
@@ -69,6 +69,8 @@ Code 写入使用 `refs/heads/opentag/<session-id>/code/`；Tree direct 只能�
 GitHub 代理解析 REST 路由与 GraphQL AST，处理 alias、fragment、variable 和 node identity。PR 修改核验仓库、本 Session head 与允许 base；Tree-only 查询固定在配置 base。没有任意 GitHub API 转发、任意 Git 对象写入、合并权限或分支保护绕过。
 
 macOS 与 Linux 的 Local 原生 `gh` 使用官方 `http_unix_socket` 传输，每次 execution 独占私有 socket 和配置。自定义临时目录超过 Unix socket 路径限制时，回退到 `/tmp` 下的私有目录。适配器只接受 `api.github.com`、校验本地 handle，再经过相同 Relay 和 Server 策略；execution 关闭时删除 socket。不改系统信任库，也不关闭 TLS 验证。此 Local 原生 `gh` 支持约定覆盖 macOS/Linux，Windows 不在其支持和 CI 覆盖范围内。Cloud 保留既有 Sandbox CONNECT/CA 桥接，不向 Cloud Sandbox 发布父进程本地 socket 路径。Slack 专用 CLI 参数和配置只对 Slack 执行及验证生成。
+
+生成的 `gh` 配置在发布前写入当前 schema 版本，包括 Cloud 只读挂载中的配置，避免 `gh --version` 等命令在启动时迁移写盘。限制网络的 Local Codex 执行只通过已确认加载的临时权限 profile 获得本次 GitHub Unix socket 例外；托管网络控制器使用 limited 模式，不允许任何域名或本地 TCP 绑定，其他 socket 和直接 TCP 仍被拒绝。socket 例外随 execution 轮换，下一次无 GitHub 执行前移除。不支持权限 profile 的 Codex 会拒绝执行，不在未经确认的沙箱中继续。GitHub 流打开失败保留有界原因码并返回 JSON，例如 `scope_denied` 对应 HTTP 403；未知错误仍返回 503，不返回原始错误。
 
 原生 PR 创建、评论、编辑、关闭和重开沿用相同的仓库、任务 head 和 base 校验。PR identity 按 GraphQL 的实际选择路径建立（含 alias/fragment），冷启动命令不依赖此前完整读取 PR。actor、reviewer organization 和 project metadata 使用封闭的展示字段窗口。Checks/Actions 只读权限仅对具有 code role 的仓库请求，包括 mutation 响应选择的检查字段。Tree-only GraphQL 读取保留既有 contents/pull-request 权限及分支约束；REST checks/actions 路由仍要求 code 权限。原生代码检查查询要求配置的 GitHub App 授予 Checks 和 Actions 读取权限。可选 Projects metadata 的访问拒绝保留为新旧 gh 都理解的只读 scope 错误，不掩盖混合错误或凭据错误，也不请求 Projects 权限。网关在 execution fence 后本地回答少量固定公共 schema 能力探测，不开放任意 introspection，也不通过 schema 查询授权仓库数据。支持的 REST diff/patch/raw 保留原始字节、响应大小限制、凭据过滤和重校验，不再静默转换成 JSON。
 

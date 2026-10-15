@@ -56,6 +56,7 @@ export interface UserTokenFixture {
   diagnostic: Mock<() => void>;
   setPayload(value: unknown): void;
   setRepositories(value: unknown): void;
+  setRepository(value: unknown): void;
   setParent(value: GitHubExecutionUserCredential | null): void;
 }
 
@@ -63,6 +64,7 @@ export function userTokenFixture(): UserTokenFixture {
   const calls: { path: string; method: string; headers: Headers; body: unknown }[] = [];
   let payload: unknown = scopedUserPayload();
   let repositories: unknown = scopedRepositoryPage();
+  let repository: unknown = scopedRepositoryPage().repositories[0];
   let parent: GitHubExecutionUserCredential | null = {
     accessToken: "ghu_parent_a",
     githubUserId: "42",
@@ -82,7 +84,10 @@ export function userTokenFixture(): UserTokenFixture {
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
     if (method === "DELETE") return new Response(null, { status: 204 });
-    return Response.json(path.endsWith("/scoped") ? payload : repositories);
+    if (path.endsWith("/scoped")) return Response.json(payload);
+    if (path === "/repos/owner/repository") return Response.json(repository);
+    if (path === "/user/installations/456/repositories") return Response.json(repositories);
+    throw new Error("Unexpected GitHub fixture endpoint");
   });
   const api = new GitHubApiClient({
     clientId: "Iv1.client",
@@ -112,6 +117,9 @@ export function userTokenFixture(): UserTokenFixture {
     diagnostic,
     setPayload: (value: unknown) => {
       payload = value;
+    },
+    setRepository: (value: unknown) => {
+      repository = value;
     },
     setRepositories: (value: unknown) => {
       repositories = value;

@@ -105,6 +105,7 @@ export const AGENT_RUNTIME_COVERAGE_INCLUDE = [
   "src/providers/codex/agent-runtime.ts",
   "src/providers/codex/app-server-wire.ts",
   "src/providers/codex/runtime-policy.ts",
+  "src/providers/codex/socket-permissions.ts",
   "src/providers/pi/agent-runtime.ts",
   "src/providers/pi/rpc-wire.ts",
   "src/providers/pi/runtime-policy.ts",

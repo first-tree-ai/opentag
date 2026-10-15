@@ -90,6 +90,8 @@ export interface PreparedMcpGatewayLaunch {
 }
 
 export interface PreparedRuntimeCredentialEnvironment {
+  /** Local-only exact proxy socket for this execution. Cloud uses its mounted bridge. */
+  readonly allowedUnixSockets?: readonly string[];
   /** Present in proxy mode; exact-execution cleanup token. */
   readonly executionId?: string;
   /** Execution environment manifest merged by the Turn launcher. */
@@ -587,6 +589,9 @@ export class RuntimeCredentialEnvironmentManager {
     active: ActiveProxyExecution,
   ): PreparedRuntimeCredentialEnvironment {
     return {
+      ...(!this.#options.sandboxForSession?.(sessionId) && active.adapter.githubApiSocketPath
+        ? { allowedUnixSockets: [active.adapter.githubApiSocketPath] }
+        : {}),
       executionId: relay.executionId,
       environmentManifest: store.manifestPath(sessionId),
       ...(active.outboxContext ? { outboxContext: active.outboxContext } : {}),

@@ -25,12 +25,13 @@ export type RuntimeProxyDataErrorCode =
   | "stream_error"
   | "too_many_streams";
 
-/** Controlled data-channel failure. `code` identifies the local cause; upstream codes stay in `message`. */
+/** Controlled data-channel failure. `code` identifies the local cause; upstream codes are carried separately and must be allowlisted before presentation. */
 export class RuntimeProxyDataError extends Error {
   constructor(
     readonly code: RuntimeProxyDataErrorCode,
     message: string,
     options?: ErrorOptions,
+    readonly upstreamCode?: string,
   ) {
     super(message, options);
     this.name = "RuntimeProxyDataError";
@@ -642,7 +643,10 @@ export class RuntimeProxyDataConnection {
         );
         break;
       case "error":
-        this.#failStream(stream, new RuntimeProxyDataError("stream_error", `The data stream failed: ${frame.code}`));
+        this.#failStream(
+          stream,
+          new RuntimeProxyDataError("stream_error", "The provider rejected the data stream", undefined, frame.code),
+        );
         break;
     }
   }

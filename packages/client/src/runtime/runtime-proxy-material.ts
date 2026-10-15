@@ -235,6 +235,12 @@ exec "$real_binary" "$@"
 `;
 }
 
+/** Native gh migrates unversioned config at startup, even for `--version`. Pre-migrate
+ * generated configuration so sandboxed CLIs never need to write execution material. */
+export function renderRuntimeProxyGhConfig(githubApiSocketPath?: string): string {
+  return `version: "1"\n${githubApiSocketPath ? `http_unix_socket: ${JSON.stringify(githubApiSocketPath)}\n` : ""}`;
+}
+
 /**
  * Shell lines that scope the credential proxy and its execution CA to the process that sources
  * them. They never change the caller's environment and are a no-op without both scoped inputs.
@@ -352,15 +358,13 @@ export class RuntimeProxyMaterialStore {
     // gh officially supports HTTP over a Unix socket. A private execution socket avoids
     // changing the macOS trust store (Go <=1.26 ignores SSL_CERT_FILE there). Every request
     // still authenticates its local handle and crosses the same Server policy/Relay boundary.
-    if (github !== undefined && input.githubApiSocketPath !== undefined) {
-      const configDir = join(layout.executionDir, "gh-config");
-      await mkdir(configDir, { mode: 0o700, recursive: true });
-      await writeDurableFile(
-        join(configDir, "config.yml"),
-        `http_unix_socket: ${JSON.stringify(input.githubApiSocketPath)}\n`,
-        0o600,
-      );
-    }
+    const configDir = join(layout.executionDir, "gh-config");
+    await mkdir(configDir, { mode: 0o700, recursive: true });
+    await writeDurableFile(
+      join(configDir, "config.yml"),
+      renderRuntimeProxyGhConfig(github !== undefined ? input.githubApiSocketPath : undefined),
+      0o600,
+    );
     // Provider CLIs opened from the stable env file get the standard routing variables there; the
     // manifest stays scoped so the Agent runtime environment never turns them global.
     const routing = providerRoutingEnvironment(input.environment);

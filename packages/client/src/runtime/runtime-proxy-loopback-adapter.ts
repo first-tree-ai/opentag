@@ -15,6 +15,7 @@ import {
   runtimeProxyErrorReason,
 } from "./runtime-credential-frames.js";
 import type { RuntimeProxyStreamResponse } from "./runtime-proxy-data-client.js";
+import { githubProxyFailure } from "./runtime-proxy-errors.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -523,7 +524,15 @@ export class RuntimeProxyLoopbackAdapter {
         { code: "loopback_stream_open_failed", error: runtimeProxyErrorReason(error) },
         "Loopback stream open failed",
       );
-      replyText(response, 503, "upstream_unavailable");
+      if (provider === "github") {
+        const failure = githubProxyFailure(error);
+        const body = JSON.stringify({ message: failure.code, code: failure.code });
+        response.writeHead(failure.status, {
+          "content-type": "application/json",
+          "content-length": String(Buffer.byteLength(body)),
+        });
+        response.end(body);
+      } else replyText(response, 503, "upstream_unavailable");
       return;
     }
     const onAbort = () => upstream.cancel?.("client_aborted");

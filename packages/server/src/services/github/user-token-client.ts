@@ -13,7 +13,7 @@ import type { GitHubExecutionUserCredential, GitHubUserTokenInput } from "./user
 export class GitHubUserTokenClient {
   constructor(
     readonly options: {
-      api: Pick<GitHubApiClient, "createScopedUserToken" | "listInstallationRepositories" | "revokeUserToken">;
+      api: Pick<GitHubApiClient, "createScopedUserToken" | "getRepository" | "revokeUserToken">;
       management: Pick<GitHubManagementService, "getExecutionUserCredential" | "isCurrentUserCredential">;
       clientId: string;
       now?: () => Date;
@@ -97,17 +97,15 @@ export class GitHubUserTokenClient {
   }
 
   async #verifyRepository(token: string, input: GitHubUserTokenInput): Promise<void> {
-    const page = await this.options.api.listInstallationRepositories({
+    // The scoped-token endpoint receives exactly one immutable repository ID. Installation
+    // enumeration is installation visibility, not the derived token's resource scope: GitHub
+    // can return every installed repository even for a correctly narrowed user token.
+    const repository = await this.options.api.getRepository({
       accessToken: token,
-      installationId: input.installationId,
-      page: 1,
+      fullName: input.fullName,
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    const repository = page.repositories[0];
     if (
-      page.totalCount !== 1 ||
-      page.repositories.length !== 1 ||
-      !repository ||
       repository.repositoryId !== input.repositoryId ||
       repository.fullName.toLowerCase() !== input.fullName.toLowerCase()
     )

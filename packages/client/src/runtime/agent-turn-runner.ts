@@ -408,6 +408,7 @@ export class AgentTurnRunner {
       });
       const result = await runtime.prompt({
         runId: owner.turnId,
+        ...(started.allowedUnixSockets ? { allowedUnixSockets: started.allowedUnixSockets } : {}),
         /*
          * The processing clock is sampled at actual input construction — after credential
          * preparation, at the last moment before the Run dispatch — never
@@ -546,6 +547,7 @@ export class AgentTurnRunner {
     signal: AbortSignal,
   ): Promise<{
     preparedExecutionId?: string;
+    allowedUnixSockets?: readonly string[];
     runSignal: AbortSignal;
     turnPlanInput?: ProviderCliTurnPlanPrepareInput;
     webTools?: PreparedWebToolsLaunch;
@@ -568,6 +570,7 @@ export class AgentTurnRunner {
     const turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, credentials, signal);
     return {
       ...(credentials.executionId ? { preparedExecutionId: credentials.executionId } : {}),
+      ...(credentials.allowedUnixSockets ? { allowedUnixSockets: credentials.allowedUnixSockets } : {}),
       runSignal,
       ...(turnPlanInput ? { turnPlanInput } : {}),
       ...(credentials.web ? { webTools: credentials.web } : {}),

@@ -56,6 +56,15 @@ jobs:
           chmod +x "$binary"
           "$binary" --version
           echo "OPENTAG_TEST_GH_BINARY=$binary" >> "$GITHUB_ENV"
+      - name: Install the pinned Codex sandbox for offline macOS permission regressions
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/opentag-native-codex"
+          npm install --prefix "$root" --ignore-scripts --no-audit --no-fund @openai/codex@0.159.0
+          binary="$root/node_modules/.bin/codex"
+          "$binary" --version
+          echo "OPENTAG_TEST_CODEX_BINARY=$binary" >> "$GITHUB_ENV"
       - name: Local and Cloud authority, transport and native command regressions
         shell: bash
         run: |

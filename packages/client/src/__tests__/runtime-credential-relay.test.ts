@@ -690,6 +690,8 @@ describe("RuntimeCredentialEnvironmentManager", () => {
       try {
         expect(prepared.executionId).toBe(EXECUTION_ID);
         expect(prepared.providers).toEqual(["feishu", "github"]);
+        if (placement === "local") expect(prepared.allowedUnixSockets).toEqual([expect.stringMatching(/\/g\.sock$/)]);
+        else expect(prepared.allowedUnixSockets).toBeUndefined();
         expect(prepared.provider).toBe("feishu");
         expect(prepared.slackApiHost).toBeUndefined();
         expect(prepared.slackConfigDir).toBeUndefined();

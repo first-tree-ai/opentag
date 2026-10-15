@@ -1,5 +1,5 @@
 import { chmod, mkdir, readdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RuntimeImOutboxContext } from "@opentag/shared";
 import { assertWithin, ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
@@ -169,21 +169,23 @@ export function providerRoutingEnvironment(
 export function renderRuntimeProxyGitConfig(input: {
   readonly caCertPath: string;
   readonly connectProxyUrl: string;
+  readonly privateGitProxyUrl?: string;
 }): string {
   return `[http]
 \tproxy = ${quoteGitConfigValue("")}
 [http "https://github.com"]
 \tproxy = ${quoteGitConfigValue(input.connectProxyUrl)}
 \tsslCAInfo = ${quoteGitConfigValue(input.caCertPath)}
-`;
+\tsslCAPath = ${quoteGitConfigValue(dirname(input.caCertPath))}
+${input.privateGitProxyUrl ? `[http "http://github.com"]\n\tproxy = ${quoteGitConfigValue(input.privateGitProxyUrl)}\n` : ""}`;
 }
 
 function quoteGitConfigValue(value: string): string {
   return /[\s#"';]/.test(value) ? `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"` : value;
 }
 
-export function renderRuntimeProxyGitCredentialHelper(handle: string): string {
-  // The helper answers only the github.com HTTPS credential query with the local handle.
+export function renderRuntimeProxyGitCredentialHelper(handle: string, privateHttp = false): string {
+  // HTTPS is the default. Local publication also permits HTTP through its private GitHub-only Unix channel.
   return `#!/bin/sh
 ${RUNTIME_PROXY_GIT_HELPER_MARKER}
 # OpenTag execution-local Git credential helper; do not edit.
@@ -198,7 +200,7 @@ while IFS= read -r line; do
   esac
   [ -n "$host" ] && [ -n "$protocol" ] && break
 done
-if [ "$host" = "github.com" ] && [ "$protocol" = "https" ]; then
+if [ "$host" = "github.com" ] && ${privateHttp ? '{ [ "$protocol" = "https" ] || [ "$protocol" = "http" ]; }' : '[ "$protocol" = "https" ]'}; then
   printf 'username=x-access-token\\npassword=%s\\n' '${handle.replaceAll("'", "'\"'\"'")}'
 fi
 exit 0
@@ -231,7 +233,7 @@ if [ ! -r '${environmentFilePath.replaceAll("'", "'\"'\"'")}' ]; then
   exit 1
 fi
 . '${environmentFilePath.replaceAll("'", "'\"'\"'")}'
-exec "$real_binary" "$@"
+${binary === "git" ? renderRuntimeProxyGitPreamble() : ""}exec "$real_binary" "$@"
 `;
 }
 
@@ -255,6 +257,40 @@ export function renderRuntimeProxyScopePreamble(): string {
   CURL_CA_BUNDLE=$OPENTAG_PROVIDER_CA_PATH
   export HTTPS_PROXY https_proxy NO_PROXY no_proxy SSL_CERT_FILE CURL_CA_BUNDLE
 fi`;
+}
+
+/** Keep injected CA settings for other origins; older Git retains the authenticated CONNECT route. */
+function renderRuntimeProxyGitPreamble(): string {
+  return `# Generic config preserves caller trust while GitHub's more specific execution CA wins.
+if [ "\${GIT_SSL_CAINFO+x}" = x ]; then
+  set -- -c "http.sslCAInfo=$GIT_SSL_CAINFO" "$@"
+fi
+if [ "\${GIT_SSL_CAPATH+x}" = x ]; then
+  set -- -c "http.sslCAPath=$GIT_SSL_CAPATH" "$@"
+fi
+unset GIT_SSL_CAINFO GIT_SSL_CAPATH
+if [ -r "$GIT_CONFIG_GLOBAL" ] && grep -q 'socks5h://localhost/' "$GIT_CONFIG_GLOBAL"; then
+  git_version=$("$real_binary" --version) || exit 1
+  git_version=\${git_version#git version }
+  git_major=\${git_version%%.*}
+  git_rest=\${git_version#*.}
+  git_minor=\${git_rest%%.*}
+  case "$git_major:$git_minor" in
+    :*|*:|*[!0-9:]*) echo "opentag: cannot verify native Git Unix proxy support" >&2; exit 1 ;;
+  esac
+  if [ "$git_major" -lt 2 ] || { [ "$git_major" -eq 2 ] && [ "$git_minor" -lt 47 ]; }; then
+    if [ -z "$OPENTAG_PROVIDER_PROXY_URL" ]; then
+      echo "opentag: the execution Git CONNECT proxy is unavailable" >&2
+      exit 1
+    fi
+    # Older Git drops SOCKS paths: retain HTTPS CONNECT without granting any sandbox TCP.
+    set -- -c "http.http://github.com.proxy=$OPENTAG_PROVIDER_PROXY_URL" "$@"
+  else
+    # HTTP is confined to the private Unix channel, as with native gh. Stored remote URLs stay HTTPS.
+    set -- -c "url.http://github.com/.insteadOf=https://github.com/" "$@"
+  fi
+fi
+`;
 }
 
 /**
@@ -285,7 +321,7 @@ if [ -z "$real_binary" ]; then
   exit 127
 fi
 ${renderRuntimeProxyScopePreamble()}
-exec "$real_binary" "$@"
+${binary === "git" ? renderRuntimeProxyGitPreamble() : ""}exec "$real_binary" "$@"
 `;
 }
 
@@ -347,6 +383,7 @@ export class RuntimeProxyMaterialStore {
     readonly executionId: string;
     readonly handles: ReadonlyMap<RuntimeProxyProvider, string>;
     readonly githubApiSocketPath?: string;
+    readonly githubGitSocketPath?: string;
     readonly platform: NodeJS.Platform;
     readonly sessionId: string;
   }): Promise<RuntimeProxyExecutionLayout> {
@@ -374,6 +411,9 @@ export class RuntimeProxyMaterialStore {
         renderRuntimeProxyGitConfig({
           caCertPath: routing.SSL_CERT_FILE,
           connectProxyUrl: routing.HTTPS_PROXY,
+          ...(github !== undefined && input.githubGitSocketPath
+            ? { privateGitProxyUrl: `socks5h://localhost${input.githubGitSocketPath}` }
+            : {}),
         }),
         0o600,
       );
@@ -381,7 +421,11 @@ export class RuntimeProxyMaterialStore {
       await writeDurableFile(layout.gitConfigPath, "", 0o600);
     }
     if (github !== undefined) {
-      await writeDurableFile(layout.gitCredentialHelperPath, renderRuntimeProxyGitCredentialHelper(github), 0o700);
+      await writeDurableFile(
+        layout.gitCredentialHelperPath,
+        renderRuntimeProxyGitCredentialHelper(github, input.githubGitSocketPath !== undefined),
+        0o700,
+      );
       await chmod(layout.gitCredentialHelperPath, 0o700);
     }
     const serialized = serializeEnvironment({ ...input.environment, ...routing }, input.platform);

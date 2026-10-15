@@ -163,7 +163,7 @@ describe("Slack provisioning CLI", () => {
     const binary = join(nativeBin, "slack");
     await writeFile(
       binary,
-      '#!/usr/bin/env node\nimport {statSync,writeFileSync} from "node:fs";import {join} from "node:path";const args=process.argv.slice(2);if(args.includes("version")){console.log("Using slack v4.7.0");process.exit(0);}if(args.includes("--help")||args.includes("-h")){console.log("Usage: slack api");process.exit(0);}const config=args[args.indexOf("--config-dir")+1];if(args.includes("auth")){if(!statSync(config).isDirectory())process.exit(1);writeFileSync(join(config,"credentials.json"),JSON.stringify({T1:{team_id:"T1",token:"refreshed-management-token"}}));process.exit(0);}process.stdout.write(JSON.stringify({ok:!args.includes("fail"),args,token:process.env.SLACK_BOT_TOKEN,userToken:process.env.SLACK_USER_TOKEN,proxy:process.env.HTTPS_PROXY,ca:process.env.NODE_EXTRA_CA_CERTS,cwd:process.cwd()}));\n',
+      '#!/usr/bin/env node\nimport {statSync,writeFileSync} from "node:fs";import {join} from "node:path";const args=process.argv.slice(2);if(args.includes("version")){console.log("Using slack v4.7.0");process.exit(0);}if(args.includes("--help")||args.includes("-h")){console.log("Usage: slack api");process.exit(0);}const config=args[args.indexOf("--config-dir")+1];if(args.includes("auth")){if(!statSync(config).isDirectory())process.exit(1);writeFileSync(join(config,"credentials.json"),JSON.stringify({T1:{team_id:"T1",token:"refreshed-management-token"}}));process.exit(0);}process.stdout.write(JSON.stringify({ok:!args.includes("fail"),args,token:process.env.SLACK_BOT_TOKEN,userToken:process.env.SLACK_USER_TOKEN,proxy:process.env.HTTPS_PROXY,ca:process.env.NODE_EXTRA_CA_CERTS,autoApproval:process.env.SLACK_AUTO_REQUEST_AAA,cwd:process.cwd()}));\n',
       { mode: 0o700 },
     );
     const environment = {
@@ -171,6 +171,7 @@ describe("Slack provisioning CLI", () => {
       OPENTAG_HOME: home,
       SLACK_BOT_TOKEN: "messaging-handle",
       SLACK_CONFIG_DIR: "proxy-config",
+      SLACK_AUTO_REQUEST_AAA: "untrusted-inherited-value",
       HTTPS_PROXY: "http://proxy.invalid",
       NODE_EXTRA_CA_CERTS: "proxy-ca",
       PATH: `${nativeBin}:${dirname(process.execPath)}`,
@@ -223,6 +224,7 @@ describe("Slack provisioning CLI", () => {
     expect(result).not.toHaveProperty("token");
     expect(result).not.toHaveProperty("proxy");
     expect(result).not.toHaveProperty("ca");
+    expect(result).not.toHaveProperty("autoApproval");
     expect(
       await runSlackManagement(["app", "link", "--team", "T1", "--app", "A1", "--environment", "deployed"], {
         binary,
@@ -235,6 +237,17 @@ describe("Slack provisioning CLI", () => {
     const linked = JSON.parse(await readFile(join(root, "linked.json"), "utf8"));
     expect(linked.args).not.toContain("--no-prompt");
     expect(linked.args.slice(-8)).toEqual(["app", "link", "--team", "T1", "--app", "A1", "--environment", "deployed"]);
+    expect(
+      await runSlackManagement(["platform", "deploy", "--team", "T1", "--app", "A1"], {
+        binary,
+        environment,
+        nonInteractive: true,
+        requestAppApproval: true,
+        signal: new AbortController().signal,
+        outputFile: "deployed.json",
+      }),
+    ).toBe(0);
+    expect(JSON.parse(await readFile(join(root, "deployed.json"), "utf8")).autoApproval).toBe("true");
     expect((await stat(join(root, "created.json"))).mode & 0o777).toBe(0o600);
     expect((await stat(root)).mode & 0o777).toBe(0o700);
     expect((await stat(join(root, "config"))).mode & 0o777).toBe(0o700);

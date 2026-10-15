@@ -585,6 +585,8 @@ describe("production GitHub provider adapter REST scope gates", () => {
     "/commits/main/check-runs",
     "/commits/main/check-suites",
     "/actions/runs",
+    "/actions/workflows",
+    "/actions/workflows/ci.yml/runs",
     "/commits/main/status",
     "/commits/main/statuses",
     "/statuses/main",
@@ -617,12 +619,47 @@ describe("production GitHub provider adapter REST scope gates", () => {
     );
   });
 
-  it("requests the extra actions permission for a workflow-runs read", async () => {
-    await adapter.handle(request("/repos/owner/repository/actions/runs"), authorization);
+  it.each([
+    "runs?head_sha=abc123&exclude_pull_requests=true",
+    "workflows",
+    "workflows/42",
+    "workflows/ci.yml",
+    "workflows/ci.yaml/runs",
+    "runs/7/jobs",
+    "jobs/3",
+  ])("requests only read-only Actions authority for %s", async (suffix) => {
+    await adapter.handle(request(`/repos/owner/repository/actions/${suffix}`), authorization);
     expect(mint).toHaveBeenCalledWith(
       expect.objectContaining({ permissions: { contents: "read", pull_requests: "read", actions: "read" } }),
     );
   });
+
+  it.each([
+    "workflows/42/dispatches",
+    "workflows/42/enable",
+    "workflows/42/disable",
+    "runs/7/cancel",
+    "runs/7/rerun",
+    "secrets",
+    "permissions",
+  ])("denies Actions mutation/admin route %s before minting", async (suffix) => {
+    for (const method of ["GET", "POST", "PATCH", "DELETE"])
+      await expect(
+        adapter.handle(request(`/repos/owner/repository/actions/${suffix}`, method), authorization),
+      ).rejects.toThrow();
+    expect(mint).not.toHaveBeenCalled();
+    expect(upstream).not.toHaveBeenCalled();
+  });
+  it.each(["head_sha=a&head_sha=b", `head_sha=${"a".repeat(513)}`, "head_sha=a&unknown=x", "per_page=101"])(
+    "keeps Actions query bounds for %s",
+    async (query) => {
+      await expect(
+        adapter.handle(request(`/repos/owner/repository/actions/runs?${query}`), authorization),
+      ).rejects.toThrow();
+      expect(mint).not.toHaveBeenCalled();
+      expect(upstream).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["/commits/main/status", "/commits/feature/topic/statuses", "/statuses/feature/topic"])(
     "requests only read-only commit-status authority for %s",

@@ -35,6 +35,7 @@ const READ_QUERY_KEYS = new Set([
   "per_page",
   "state",
   "head",
+  "head_sha",
   "base",
   "sort",
   "direction",
@@ -85,7 +86,10 @@ function planRead(fullName: string, suffix: string, url: URL): GitHubRestPlan {
   const checks =
     /^\/commits\/.+\/(?:check-runs|check-suites)$/.test(suffix) ||
     /^\/(?:check-runs|check-suites)\/[1-9]\d{0,19}$/.test(suffix);
-  const actions = /^\/actions\/(?:runs(?:\/[1-9]\d{0,19}(?:\/jobs)?)?|jobs\/[1-9]\d{0,19})$/.test(suffix);
+  const actions =
+    /^\/actions\/(?:runs(?:\/[1-9]\d{0,19}(?:\/jobs)?)?|jobs\/[1-9]\d{0,19}|workflows(?:\/(?:[1-9]\d{0,19}|[A-Za-z0-9_.-]+\.ya?ml)(?:\/runs)?)?)$/.test(
+      suffix,
+    );
   const statuses = /^\/commits\/.+\/(?:status|statuses)$/.test(suffix) || /^\/statuses\/.+$/.test(suffix);
   if (!normal && !code && !checks && !actions && !statuses) throw new GitPublicationError("scope_denied");
   return {

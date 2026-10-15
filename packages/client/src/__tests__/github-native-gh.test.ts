@@ -12,13 +12,13 @@ import {
   listenBridgeProxySockets,
   publishExecutionMaterial,
 } from "../cloud-runtime/bridge-material.js";
-import { CLOUD_EXECUTION_MOUNT, CLOUD_SANDBOX_CA_DESTINATION } from "../cloud-runtime/sandbox-entry.js";
 import { CodexAppServerProcess } from "../providers/codex/app-server-wire.js";
 import { CODEX_EXECUTION_PERMISSIONS, codexSocketPermissions } from "../providers/codex/socket-permissions.js";
 import type { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyDataError } from "../runtime/runtime-proxy-data-client.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { buildRuntimeProxyEnvironment, RuntimeProxyMaterialStore } from "../runtime/runtime-proxy-material.js";
+import { cloudEntryFixture } from "./support/cloud-entry-fixture.js";
 
 const binary = process.env.OPENTAG_TEST_GH_BINARY;
 const run = promisify(execFile);
@@ -149,38 +149,44 @@ describe.skipIf(!binary)("native gh execution-local transport (offline, no provi
 
 // Always-run framing control; an HTTP caller cannot use the gh IPC entry as an open proxy.
 describe("GitHub IPC authority boundary", () => {
-  it("keeps the socket private and starts other providers when TMPDIR is too long", async () => {
-    const root = await mkdtemp(join(tmpdir(), "ot-gh-long-temp-"));
-    const longTemp = join(root, "x".repeat(120));
-    await mkdir(longTemp);
-    vi.stubEnv("TMPDIR", longTemp);
-    let adapter: RuntimeProxyLoopbackAdapter | undefined;
-    let socketPath: string | undefined;
-    try {
-      adapter = await RuntimeProxyLoopbackAdapter.start({
-        githubApiSocket: true,
-        executionId: randomUUID(),
-        materialDir: root,
-        verifyHandle: () => true,
-        openStream: async () => {
-          throw new Error("Must not dispatch");
-        },
-        logger: { debug() {}, warn() {} },
-      });
-      socketPath = adapter.githubApiSocketPath;
-      expect(socketPath).toMatch(/^\/tmp\/ot-gh-/);
-      expect(Buffer.byteLength(socketPath as string)).toBeLessThanOrEqual(100);
-      expect((await stat(dirname(socketPath as string))).mode & 0o777).toBe(0o700);
-      expect((await stat(socketPath as string)).mode & 0o777).toBe(0o600);
-      expect(adapter.connectProxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
-      expect(adapter.slackApiHost).toMatch(/^https:\/\/127\.0\.0\.1:/);
-    } finally {
-      vi.unstubAllEnvs();
-      await adapter?.close();
-      await rm(root, { recursive: true, force: true });
-    }
-    await expect(stat(socketPath as string)).rejects.toMatchObject({ code: "ENOENT" });
-  });
+  it.each(["x".repeat(120), "space #@", "relative"])(
+    "keeps both sockets private with an unsuitable TMPDIR %s",
+    async (segment) => {
+      const root = await mkdtemp(join(tmpdir(), "ot-gh-long-temp-"));
+      const longTemp = join(root, segment);
+      await mkdir(longTemp);
+      vi.stubEnv("TMPDIR", segment === "relative" ? segment : longTemp);
+      let adapter: RuntimeProxyLoopbackAdapter | undefined;
+      let socketPath: string | undefined;
+      try {
+        adapter = await RuntimeProxyLoopbackAdapter.start({
+          githubApiSocket: true,
+          executionId: randomUUID(),
+          materialDir: root,
+          verifyHandle: () => true,
+          openStream: async () => {
+            throw new Error("Must not dispatch");
+          },
+          logger: { debug() {}, warn() {} },
+        });
+        socketPath = adapter.githubApiSocketPath;
+        expect(socketPath).toMatch(/^\/tmp\/ot-gh-/);
+        expect(Buffer.byteLength(socketPath as string)).toBeLessThanOrEqual(100);
+        expect(adapter.githubGitSocketPath).toMatch(/^\/tmp\/ot-gh-.*\/git\.sock$/);
+        expect(Buffer.byteLength(adapter.githubGitSocketPath as string)).toBeLessThanOrEqual(100);
+        expect((await stat(adapter.githubGitSocketPath as string)).mode & 0o777).toBe(0o600);
+        expect((await stat(dirname(socketPath as string))).mode & 0o777).toBe(0o700);
+        expect((await stat(socketPath as string)).mode & 0o777).toBe(0o600);
+        expect(adapter.connectProxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+        expect(adapter.slackApiHost).toMatch(/^https:\/\/127\.0\.0\.1:/);
+      } finally {
+        vi.unstubAllEnvs();
+        await adapter?.close();
+        await rm(root, { recursive: true, force: true });
+      }
+      await expect(stat(socketPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 
   it("returns a bounded JSON permission failure through the Local gh socket", async () => {
     const root = await mkdtemp(join(tmpdir(), "ot-gh-error-"));
@@ -272,6 +278,7 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
     const resources = createBridgeSocketResources();
     const executionId = randomUUID();
     let hits = 0;
+    const paths: string[] = [];
     const adapter = await RuntimeProxyLoopbackAdapter.start({
       executionId,
       materialDir: join(root, "private"),
@@ -280,15 +287,12 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
       openStream: async (request) => {
         expect(request.headers["x-opentag-provider-origin"]).toBe("api.github.com");
         hits++;
+        paths.push(request.path);
         return {
           status: 200,
           headers: { "content-type": "application/json" },
           body: (async function* () {
-            yield Buffer.from(
-              request.path.includes("/status")
-                ? '{"state":"success","statuses":[{"context":"private-ci","state":"success"}]}'
-                : '{"name":"cloud-fixture"}',
-            );
+            yield Buffer.from(cloudGhResponse(request.path));
           })(),
         };
       },
@@ -310,13 +314,8 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
       expect((await stat(ghConfig)).mode & 0o777).toBe(0o444);
       await listenBridgeProxySockets(resources, adapter, published);
       expect(adapter.githubApiSocketPath).toBeUndefined();
-      // Remap fixed container filesystem locations to the isolated test root only. The stock
-      // entry still owns both loopback ports, CA copying, manifest loading and process cleanup.
-      const entry = (await readFile(join(published, "entry.mjs"), "utf8"))
-        .replaceAll(CLOUD_EXECUTION_MOUNT, published)
-        .replaceAll(CLOUD_SANDBOX_CA_DESTINATION, join(root, "sandbox-home", "ca.pem"))
-        .replaceAll("/tmp/opentag", join(root, "cli"))
-        .replaceAll("/home/runner", join(root, "sandbox-home"));
+      // Remap the container namespace while keeping CA copying, manifest loading and cleanup.
+      const entry = await cloudEntryFixture(published, root);
       const fixtureEntry = join(published, "entry-fixture.mjs");
       await writeFile(fixtureEntry, entry, { mode: 0o444, flag: "wx" });
       expect((await stat(join(published, "entry.mjs"))).mode & 0o777).toBe(0o444);
@@ -328,7 +327,7 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
           fixtureEntry,
           "sh",
           "-c",
-          'PATH="$1:$2:$PATH"; export PATH; test ! -w "$GH_CONFIG_DIR/config.yml" || exit 97; gh api repos/team/fixture --jq tojson || exit "$?"; shift 2; for suffix in "$@"; do gh api "repos/team/fixture/$suffix" --jq tojson || exit "$?"; done',
+          'PATH="$1:$2:$PATH"; export PATH; test ! -w "$GH_CONFIG_DIR/config.yml" || exit 97; gh api repos/team/fixture --jq tojson || exit "$?"; shift 2; for suffix in "$@"; do gh api "repos/team/fixture/$suffix" --jq tojson || exit "$?"; done; gh run list -R team/fixture --branch main --commit 1111111111111111111111111111111111111111 --limit 1 --json databaseId,headSha,workflowName --jq tojson',
           "fixture",
           join(published, "bin"),
           dirname(binary as string),
@@ -348,8 +347,13 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
           state: "success",
           statuses: [{ context: "private-ci", state: "success" }],
         })),
+        [{ databaseId: 7, headSha: "1".repeat(40), workflowName: "Fixture CI" }],
       ]);
-      expect(hits).toBe(4);
+      expect(hits).toBe(6);
+      expect(paths.some((path) => path.startsWith("/repos/team/fixture/actions/workflows?"))).toBe(true);
+      expect(
+        paths.some((path) => new URL(path, "https://api.github.com").searchParams.get("head_sha") === "1".repeat(40)),
+      ).toBe(true);
       expect(await readFile(ghConfig, "utf8")).toBe(initialConfig);
       expect(await readdir(dirname(ghConfig))).toEqual(["config.yml"]);
       const manifest = await readFile(join(published, "environment.json"), "utf8");
@@ -362,6 +366,30 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
     }
   }, 30000);
 });
+
+function cloudGhResponse(path: string): string {
+  if (path.includes("/actions/workflows"))
+    return JSON.stringify({
+      workflows: [{ id: 42, name: "Fixture CI", state: "active", path: ".github/workflows/ci.yml" }],
+    });
+  if (path.includes("/actions/runs"))
+    return JSON.stringify({
+      workflow_runs: [
+        {
+          id: 7,
+          workflow_id: 42,
+          head_sha: "1".repeat(40),
+          head_branch: "main",
+          status: "completed",
+          conclusion: "success",
+          event: "push",
+          created_at: "2026-10-14T01:00:00Z",
+        },
+      ],
+    });
+  if (path.includes("/status")) return '{"state":"success","statuses":[{"context":"private-ci","state":"success"}]}';
+  return '{"name":"cloud-fixture"}';
+}
 
 function inlineToml(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(inlineToml).join(",")}]`;

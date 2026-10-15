@@ -69,7 +69,8 @@ export const RUNTIME_CAPABILITY = {
 
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.contextTreeSettings]: { min: 1, max: 1 },
-  [RUNTIME_CAPABILITY.slackAutoSetup]: { min: 1, max: 1 },
+  // v2 adds confirmed approval states and safe install diagnostics; v1 peers use manual setup.
+  [RUNTIME_CAPABILITY.slackAutoSetup]: { min: 2, max: 2 },
   [RUNTIME_CAPABILITY.agentRuntimeOptions]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },

@@ -28,7 +28,21 @@ remove/uninstall，使旧 row 保留历史 Agent owner 并进入 disabled，再�
 下发 Account Token，浏览器也不会收到 Slack 凭证。管理授权保留在 CLI 原生私有配置中，由原生逻辑刷新。只确认自己所选
 Computer 生成的 ticket：官方 CLI 授权范围覆盖工作区 App 管理，并非只限本次 App。
 
-工作区要求管理员审批时，完成审批后**继续连接**同一个 App；回调失败也只需继续，不重新安装或轮换凭证。创建结果不明时
+工作区要求审批时，官方 CLI 自动提交安装申请。OpenTag 只有在 Slack 确认申请已存在且待审批后，才显示等待审批，
+并提供 App/工作区标识和该工作区的应用管理入口。在其中选择“安装申请（Requests to install）”；Workspace Owner 和
+指定的 App Manager 可处理申请，仅有 Workspace Admin 角色不一定具备此权限。组织策略可能要求组织应用管理者审批。
+批准后**继续连接**，安装并绑定同一个 App。申请待审批或被拒绝时，不重复安装、取消申请或创建新 App。
+若 Slack 确认当前账号无需他人批准即可安装，则历史申请不阻断安装。
+
+审批流程使用现有可选能力 `runtime.slackAutoSetup` 的版本 2 协商。需部署配套 Server/Web 并更新 Client；
+仅支持版本 1 的一端仍可保持 Computer 连接，并使用手动 Slack 配置。
+
+其他安装失败不代表需要审批。有可识别的 Slack 错误码时会显示；详细信息可查看
+`<OpenTag home>/slack-management/config/logs/` 下的原生 CLI 调试日志。网络失败可能使 deploy 的标准输出为空。
+继续连接时通过 `--force` 重新保存同一私有项目的 App 关联，再重试安装，避免已有本地关联因 `app_found` 阻断恢复。
+原始错误文本和凭证不会发送到 Web。
+
+回调失败只需继续，不重新安装或轮换凭证。创建结果不明时
 停止自动重建，应先查看 Slack 已有 App，再用手动入口绑定，避免重复创建。文档明确的创建前拒绝（例如 manifest 无效、App 数量限制或限流）
 允许重试，可能部分成功或未知错误仍保留保护。管理授权过期或撤销后可能需要重新生成 ticket。busy 表示 Computer 仍在执行，
 请稍候再继续同一 App；不增加后台任务或进度轮询服务。

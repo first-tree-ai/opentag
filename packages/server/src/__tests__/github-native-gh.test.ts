@@ -7,6 +7,84 @@ const binary = process.env.OPENTAG_TEST_GH_BINARY;
 const run = promisify(execFile);
 
 describe.skipIf(!binary)("real gh native API compatibility (offline fixture)", () => {
+  it("discovers workflows and filters private runs with native gh while retaining read-only authority", async () => {
+    const fixture = await nativeGhFixture({ privateRepository: true });
+    const gh = (args: string[]) =>
+      run(binary as string, args, { cwd: fixture.root, env: fixture.environment, timeout: 15000 });
+    try {
+      for (const selectors of [
+        [],
+        ["--branch", "main"],
+        ["--commit", "1".repeat(40)],
+        ["--workflow", "ci.yml"],
+        ["--workflow", "42"],
+        ["--user", "fixture-user", "--event", "push", "--status", "success", "--created", ">2026-10-01"],
+      ]) {
+        const result = await gh([
+          "run",
+          "list",
+          "-R",
+          fixture.fullName,
+          "--limit",
+          "1",
+          "--json",
+          "databaseId,headSha,workflowName",
+          ...selectors,
+        ]);
+        expect(JSON.parse(result.stdout)).toEqual([
+          { databaseId: 7, headSha: "1".repeat(40), workflowName: "Fixture CI" },
+        ]);
+      }
+      expect(fixture.upstreamRequests).toContainEqual(
+        expect.objectContaining({ path: `/repos/${fixture.fullName}/actions/workflows` }),
+      );
+      expect(
+        fixture.upstreamRequests.some(
+          (request) => new URLSearchParams(request.search).get("head_sha") === "1".repeat(40),
+        ),
+      ).toBe(true);
+      expect(
+        JSON.parse((await gh(["workflow", "list", "-R", fixture.fullName, "--json", "id,name,state"])).stdout),
+      ).toEqual([{ id: 42, name: "Fixture CI", state: "active" }]);
+      expect(
+        JSON.parse(
+          (await gh(["run", "view", "7", "-R", fixture.fullName, "--json", "databaseId,conclusion,jobs"])).stdout,
+        ),
+      ).toEqual({ databaseId: 7, conclusion: "success", jobs: [] });
+      expect(
+        fixture.permissions.every(
+          (value) =>
+            JSON.stringify(value) === JSON.stringify({ contents: "read", pull_requests: "read", actions: "read" }),
+        ),
+      ).toBe(true);
+      expect(fixture.counts.revoked).toBe(fixture.counts.minted);
+      const before = fixture.counts.minted;
+      for (const args of [
+        ["workflow", "run", "42", "-R", fixture.fullName],
+        ["workflow", "disable", "42", "-R", fixture.fullName],
+        ["run", "cancel", "7", "-R", fixture.fullName],
+        ["api", "repos/foreign/private/actions/workflows"],
+      ])
+        await expect(gh(args)).rejects.toMatchObject({ code: 1 });
+      expect(
+        fixture.upstreamRequests.every(
+          (request) =>
+            request.method === "GET" ||
+            (request.path === "/graphql" && !JSON.stringify(request.body).includes("mutation")),
+        ),
+      ).toBe(true);
+      expect(
+        fixture.permissions.every((value) =>
+          Object.values(value as Record<string, string>).every((permission) => permission === "read"),
+        ),
+      ).toBe(true);
+      // Native write commands may read metadata first, but no write lease is ever minted.
+      expect(fixture.counts.minted).toBeGreaterThanOrEqual(before);
+      expect(fixture.counts.revoked).toBe(fixture.counts.minted);
+    } finally {
+      await fixture.close();
+    }
+  }, 60000);
   it("reads private commit statuses with an exact read grant on every registered spelling", async () => {
     const fixture = await nativeGhFixture({ privateRepository: true });
     try {

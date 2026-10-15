@@ -171,7 +171,7 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
     commits: { nodes: [{ commit: { oid: "1".repeat(40), statusCheckRollup: { contexts } } }], totalCount: 1 },
   };
   const foreignPr = { ...pr, id: "PR_foreign", number: 2, headRefName: `opentag/${randomUUID()}/code/foreign` };
-  const upstreamRequests: { method: string; path: string; body: unknown; accept: string | null }[] = [];
+  const upstreamRequests: { method: string; path: string; search: string; body: unknown; accept: string | null }[] = [];
   const permissions: unknown[] = [];
   const tokenPermissions = new Map<string, Record<string, string>>();
   const counts = { minted: 0, revoked: 0 };
@@ -189,8 +189,38 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
       default_branch: "main",
       private: repo.isPrivate,
     });
+  const workflow = { id: 42, name: "Fixture CI", path: ".github/workflows/ci.yml", state: "active" };
+  const workflowRun = {
+    id: 7,
+    workflow_id: 42,
+    jobs_url: `https://api.github.com/repos/${fullName}/actions/runs/7/jobs`,
+    name: "Fixture CI",
+    display_title: "Fixture commit",
+    head_branch: "main",
+    head_sha: "1".repeat(40),
+    event: "push",
+    status: "completed",
+    conclusion: "success",
+    run_number: 1,
+    run_attempt: 1,
+    created_at: "2026-10-14T01:00:00Z",
+    updated_at: "2026-10-14T01:00:01Z",
+    html_url: "https://github.com/team/code/actions/runs/7",
+    pull_requests: [],
+    actor: { login: "fixture-user" },
+    head_commit: { message: "Fixture commit" },
+  };
+  const runs = () => Response.json({ total_count: 1, workflow_runs: [workflowRun] });
   const routes: Record<string, (request: FixtureRequest) => Response> = {
     "/repositories/123": metadata,
+    [`/repos/${fullName}/actions/workflows`]: () => Response.json({ total_count: 1, workflows: [workflow] }),
+    [`/repos/${fullName}/actions/workflows/42`]: () => Response.json(workflow),
+    [`/repos/${fullName}/actions/workflows/ci.yml`]: () => Response.json(workflow),
+    [`/repos/${fullName}/actions/workflows/42/runs`]: runs,
+    [`/repos/${fullName}/actions/workflows/ci.yml/runs`]: runs,
+    [`/repos/${fullName}/actions/runs`]: runs,
+    [`/repos/${fullName}/actions/runs/7`]: () => Response.json(workflowRun),
+    [`/repos/${fullName}/actions/runs/7/jobs`]: () => Response.json({ total_count: 0, jobs: [] }),
     [`/repos/${fullName}`]: metadata,
     [`/repos/${fullName}/pulls/1`]: ({ method, accept }) => {
       if (method === "GET" && /diff|patch/.test(accept ?? ""))
@@ -247,15 +277,19 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
       Response.json([{ context: "private-ci", state: "success" }]),
     [`/repos/${fullName}/statuses/feature/topic`]: () => Response.json([{ context: "private-ci", state: "success" }]),
   };
+  const requiredReadPermission = (path: string) =>
+    path.includes("/actions/") ? "actions" : /\/(?:status|statuses)(?:\/|$)/.test(path) ? "statuses" : undefined;
   const upstream: typeof fetch = async (url, init) => {
-    const path = new URL(String(url)).pathname,
+    const parsed = new URL(String(url)),
+      path = parsed.pathname,
       method = init?.method ?? "GET";
     const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined;
     const accept = new Headers(init?.headers).get("accept");
-    upstreamRequests.push({ method, path, body, accept });
-    if (options.privateRepository && /\/(?:status|statuses)(?:\/|$)/.test(path)) {
+    upstreamRequests.push({ method, path, search: parsed.search, body, accept });
+    const requiredPermission = requiredReadPermission(path);
+    if (options.privateRepository && requiredPermission) {
       const token = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "") ?? "";
-      if (tokenPermissions.get(token)?.statuses !== "read")
+      if (tokenPermissions.get(token)?.[requiredPermission] !== "read")
         return Response.json({ message: "Resource not accessible by integration" }, { status: 403 });
     }
     const route = routes[path];
@@ -347,7 +381,9 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
   server.listen(socketPath);
   await once(server, "listening");
   await chmod(socketPath, 0o600);
-  await writeFile(join(root, "config.yml"), `http_unix_socket: ${JSON.stringify(socketPath)}\n`, { mode: 0o600 });
+  await writeFile(join(root, "config.yml"), `version: 1\nhttp_unix_socket: ${JSON.stringify(socketPath)}\n`, {
+    mode: 0o600,
+  });
   return {
     root,
     branch,

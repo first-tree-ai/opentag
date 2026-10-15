@@ -5,7 +5,7 @@ import http from "node:http";
 import https from "node:https";
 import type net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import tls from "node:tls";
 import { promisify } from "node:util";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
@@ -16,6 +16,7 @@ import {
 } from "./runtime-credential-frames.js";
 import type { RuntimeProxyStreamResponse } from "./runtime-proxy-data-client.js";
 import { githubProxyFailure } from "./runtime-proxy-errors.js";
+import { createGitProxySocketServer } from "./runtime-proxy-git-socket.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -135,9 +136,11 @@ export class RuntimeProxyLoopbackAdapter {
   readonly #connectServer: http.Server;
   readonly #directServer: https.Server;
   readonly #githubServer: http.Server;
+  readonly #gitServer: net.Server;
   readonly #githubApiSocketEnabled: boolean;
   #githubSocketDirectory?: string;
   #githubApiSocketPath?: string;
+  #githubGitSocketPath?: string;
   readonly #executionId: string;
   readonly #localHandleFor?: (provider: RuntimeProxyProvider) => string | undefined;
   readonly #logger: Pick<ClientLogger, "debug" | "warn">;
@@ -163,6 +166,10 @@ export class RuntimeProxyLoopbackAdapter {
     this.#githubServer = http.createServer((request, response) => {
       void this.#handleGitHubSocketRequest(request, response);
     });
+    this.#gitServer = createGitProxySocketServer(
+      (socket, head) => this.#startGitTunnel(socket, head),
+      (socket) => this.#track(socket),
+    );
     this.#directServer = https.createServer((request, response) => {
       void this.#handleDirectRequest(request, response);
     });
@@ -182,6 +189,13 @@ export class RuntimeProxyLoopbackAdapter {
   get githubApiSocketPath(): string | undefined {
     return this.#githubApiSocketPath;
   }
+
+  /** Native Git's private HTTP IPC entry; the same handle/Relay/Server checks still apply. */
+  get githubGitSocketPath(): string | undefined {
+    return this.#githubGitSocketPath;
+  }
+
+  #startGitTunnel: (socket: net.Socket, head: Buffer) => void = (socket) => socket.destroy();
 
   /** Execution-scoped CA public certificate path for CLI trust configuration. */
   get caCertPath(): string {
@@ -225,6 +239,17 @@ export class RuntimeProxyLoopbackAdapter {
     this.#connectServer.on("connect", (request, socket, head) => {
       this.#handleConnect(request, socket as net.Socket, head, inner, secureContext);
     });
+    this.#startGitTunnel = (socket, head) => {
+      if (this.#closed) socket.destroy();
+      else {
+        if (head.length) socket.unshift(head);
+        (socket as unknown as { __opentagConnect: PendingConnect }).__opentagConnect = {
+          host: "github.com",
+          provider: "github",
+        };
+        inner.emit("connection", socket);
+      }
+    };
     for (const server of [this.#connectServer, this.#directServer, this.#githubServer]) {
       server.on("connection", (socket) => this.#track(socket));
       server.on("secureConnection", (socket) => this.#track(socket));
@@ -236,7 +261,12 @@ export class RuntimeProxyLoopbackAdapter {
       if (this.#githubApiSocketEnabled) {
         // A custom TMPDIR may exceed the native socket address limit. Keep the private
         // directory under the short Unix temp root so unrelated providers can still start.
-        const socketRoot = Buffer.byteLength(join(tmpdir(), "ot-gh-XXXXXX", "g.sock")) <= 100 ? tmpdir() : "/tmp";
+        const socketRoot =
+          isAbsolute(tmpdir()) &&
+          Buffer.byteLength(join(tmpdir(), "ot-gh-XXXXXX", "git.sock")) <= 100 &&
+          /^[\w/.-]+$/.test(tmpdir())
+            ? tmpdir()
+            : "/tmp";
         this.#githubSocketDirectory = await mkdtemp(join(socketRoot, "ot-gh-"));
         await chmod(this.#githubSocketDirectory, 0o700);
         this.#githubApiSocketPath = join(this.#githubSocketDirectory, "g.sock");
@@ -244,6 +274,10 @@ export class RuntimeProxyLoopbackAdapter {
         this.#githubServer.listen(this.#githubApiSocketPath);
         await once(this.#githubServer, "listening");
         await chmod(this.#githubApiSocketPath, 0o600);
+        this.#githubGitSocketPath = join(this.#githubSocketDirectory, "git.sock");
+        this.#gitServer.listen(this.#githubGitSocketPath);
+        await once(this.#gitServer, "listening");
+        await chmod(this.#githubGitSocketPath, 0o600);
       }
     } catch (error) {
       await this.close();
@@ -268,6 +302,7 @@ export class RuntimeProxyLoopbackAdapter {
           }),
       ),
     );
+    await new Promise<void>((resolve) => this.#gitServer.close(() => resolve()));
     if (this.#githubSocketDirectory) await rm(this.#githubSocketDirectory, { recursive: true, force: true });
   }
 
@@ -297,6 +332,16 @@ export class RuntimeProxyLoopbackAdapter {
       return;
     }
     socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    this.#startTlsTunnel(socket, head, inner, secureContext, target);
+  }
+
+  #startTlsTunnel(
+    socket: net.Socket,
+    head: Buffer,
+    inner: http.Server,
+    secureContext: tls.SecureContext,
+    target: PendingConnect,
+  ): void {
     if (head.length > 0) socket.unshift(head);
     const encrypted = new tls.TLSSocket(socket, { isServer: true, secureContext });
     encrypted.on("error", () => encrypted.destroy());
@@ -593,6 +638,10 @@ export async function generateExecutionCa(materialDir: string): Promise<RuntimeP
         `subjectAltName=${subjectAltName}`,
         "-addext",
         "basicConstraints=critical,CA:TRUE",
+        "-addext",
+        "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign",
+        "-addext",
+        "extendedKeyUsage=serverAuth",
         "-keyout",
         keyPath,
         "-out",

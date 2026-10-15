@@ -13,6 +13,7 @@ export const SlackAutoSetupFailureSchema = z.enum([
   "create_failed",
   "create_uncertain",
   "install_failed",
+  "approval_denied",
   "callbacks_failed",
   "manual_required",
   "failed",
@@ -21,7 +22,19 @@ export const SlackAutoSetupResponseSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("authorization_required"), ticket: z.string().min(1).max(512) }).strict(),
   z.object({ status: z.literal("authorized"), teamName: z.string() }).strict(),
   z.object({ status: z.literal("connected") }).strict(),
-  z.object({ status: z.literal("failed"), code: SlackAutoSetupFailureSchema }).strict(),
+  z.object({ status: z.literal("approval_pending"), appId: z.string().min(1), teamId: z.string().min(1) }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: SlackAutoSetupFailureSchema,
+      appId: z.string().min(1).optional(),
+      teamId: z.string().min(1).optional(),
+      errorCode: z
+        .string()
+        .regex(/^[a-z][a-z0-9_]{1,63}$/)
+        .optional(),
+    })
+    .strict(),
 ]);
 export const SlackAutoSetupCommandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("authorize"), force: z.boolean().optional() }).strict(),

@@ -74,6 +74,7 @@ export async function runSlackManagement(
     signal?: AbortSignal;
     errorFile?: string;
     nonInteractive?: boolean;
+    requestAppApproval?: boolean;
   } = {},
 ): Promise<number> {
   const isApi = validateManagementArguments(args, options.team, options.outputFile);
@@ -91,6 +92,8 @@ export async function runSlackManagement(
   try {
     errors = options.errorFile ? await privateFile(home, options.errorFile) : undefined;
     const nativeEnvironment = slackManagementEnvironment(environment);
+    // The Web owner already requested this install. Submit Slack's required request without a TTY.
+    if (options.requestAppApproval) nativeEnvironment.SLACK_AUTO_REQUEST_AAA = "true";
     const binary =
       options.binary ?? (await slackManagementBinary(nativeEnvironment, options.accountHome, options.nonInteractive));
     const baseArgs = ["--apihost", "https://slack.com", "--skip-update", "--no-color", "--config-dir", configDir];

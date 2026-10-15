@@ -65,8 +65,29 @@ jobs:
           binary="$root/node_modules/.bin/codex"
           "$binary" --version
           echo "OPENTAG_TEST_CODEX_BINARY=$binary" >> "$GITHUB_ENV"
+      - name: Record actual Git and TLS toolchains
+        shell: bash
+        run: |
+          command -v git
+          git --version --build-options
+          if [ "$(uname -s)" = Darwin ]; then
+            otool -L "$(git --exec-path)/git-remote-https"
+            /usr/bin/curl -V
+            /usr/bin/git --version --build-options
+          fi
       - name: Local and Cloud authority, transport and native command regressions
         shell: bash
         run: |
-          pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/runtime-credential-relay.test.ts src/__tests__/cloud-sandbox-credential-bridge.test.ts src/__tests__/cloud-turns-bridge-failure.test.ts --maxWorkers=1
-          pnpm --filter @opentag/server exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/github-graphql-identities.test.ts src/__tests__/github-cli-schema.test.ts src/__tests__/github-cli-project-error.test.ts src/__tests__/github-graphql-policy.test.ts src/__tests__/github-provider-adapter.test.ts src/__tests__/github-runtime-policy.test.ts src/__tests__/github-user-token-client.test.ts --maxWorkers=1
+          pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/github-native-git.test.ts src/__tests__/runtime-proxy-git-socket.test.ts src/__tests__/runtime-proxy-network-scope.test.ts src/__tests__/runtime-credential-relay.test.ts src/__tests__/cloud-sandbox-credential-bridge.test.ts src/__tests__/cloud-turns-bridge-failure.test.ts --maxWorkers=1
+          pnpm --filter @opentag/server exec vitest run src/__tests__/github-native-gh.test.ts src/__tests__/github-read-transport.test.ts src/__tests__/github-graphql-identities.test.ts src/__tests__/github-cli-schema.test.ts src/__tests__/github-cli-project-error.test.ts src/__tests__/github-graphql-policy.test.ts src/__tests__/github-provider-adapter.test.ts src/__tests__/github-runtime-policy.test.ts src/__tests__/github-user-token-client.test.ts --maxWorkers=1
+      - name: Retain system Git compatibility without relaxing sandbox policy
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          OPENTAG_TEST_GIT_BINARY: /usr/bin/git
+          OPENTAG_TEST_CODEX_BINARY: ""
+        run: pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-git.test.ts --maxWorkers=1
+      - name: Concurrent Cloud native Git and gh fixtures
+        if: runner.os == 'Linux'
+        shell: bash
+        run: pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-git.test.ts src/__tests__/github-native-gh.test.ts --maxWorkers=2 --testNamePattern 'Cloud published transport'

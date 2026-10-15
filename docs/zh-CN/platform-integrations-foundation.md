@@ -70,9 +70,15 @@ GitHub 代理解析 REST 路由与 GraphQL AST，处理 alias、fragment、varia
 
 macOS 与 Linux 的 Local 原生 `gh` 使用官方 `http_unix_socket` 传输，每次 execution 独占私有 socket 和配置。自定义临时目录超过 Unix socket 路径限制时，回退到 `/tmp` 下的私有目录。适配器只接受 `api.github.com`、校验本地 handle，再经过相同 Relay 和 Server 策略；execution 关闭时删除 socket。不改系统信任库，也不关闭 TLS 验证。此 Local 原生 `gh` 支持约定覆盖 macOS/Linux，Windows 不在其支持和 CI 覆盖范围内。Cloud 保留既有 Sandbox CONNECT/CA 桥接，不向 Cloud Sandbox 发布父进程本地 socket 路径。Slack 专用 CLI 参数和配置只对 Slack 执行及验证生成。
 
+Local 原生 Git 2.47+ 使用 libcurl 的 `socks5h://localhost/path/to/socket` 传输，接入第二个 execution 私有 socket。与原生 gh 的 IPC 一样，HTTP 仅在私有 Unix 通道内传送：SOCKS 只接受域名 `github.com`、80 端口和 CONNECT，不解析 DNS、不拨号 TCP，也不支持 IP 目标、BIND 或 UDP。启动器仅在本次进程中改写规范的 `https://github.com/` URL，保存的远端地址仍为 HTTPS。固定 GitHub origin、本地 handle 鉴权、Relay、Server 仓库/ref 策略及服务端访问 GitHub 的 HTTPS 保持不变，避免 macOS TLS 后端/钥匙串差异，无须新增可信 CA 或关闭 TLS 校验。Codex profile 只授予这两个精确 socket，execution 关闭时删除。旧 Git 沿用现有认证 HTTPS CONNECT 通道，保留 Claude Code 和非受限 Local 的兼容性；受限 Codex 继续拒绝该 TCP 通道，需要 Git 2.47+/libcurl 7.84+ 才能使用私有 IPC。Cloud 保留既有 CONNECT 桥，不接收父进程 socket 路径。参考 libcurl 的 [Unix SOCKS 代理支持](https://curl.se/libcurl/c/CURLOPT_PROXY.html)。
+
+Git 启动器把注入的 `GIT_SSL_CAINFO`/`GIT_SSL_CAPATH` 转为通用 Git 配置，再清除环境覆盖。非 GitHub origin 保留调用方的 CA 文件/目录；GitHub HTTPS 使用更具体的 execution CA 和 CA 目录。HTTPS CONNECT/Cloud 通道继续启用 TLS 校验。
+
 生成的 `gh` 配置在发布前写入当前 schema 版本，包括 Cloud 只读挂载中的配置，避免 `gh --version` 等命令在启动时迁移写盘。限制网络的 Local Codex 执行只通过已确认加载的临时权限 profile 获得本次 GitHub Unix socket 例外；托管网络控制器使用 limited 模式，不允许任何域名或本地 TCP 绑定，其他 socket 和直接 TCP 仍被拒绝。socket 例外随 execution 轮换，下一次无 GitHub 执行前移除。不支持权限 profile 的 Codex 会拒绝执行，不在未经确认的沙箱中继续。GitHub 流打开失败保留有界原因码并返回 JSON，例如 `scope_denied` 对应 HTTP 403；未知错误仍返回 503，不返回原始错误。
 
 原生 PR 创建、评论、编辑、关闭和重开沿用相同的仓库、任务 head 和 base 校验。PR identity 按 GraphQL 的实际选择路径建立（含 alias/fragment），冷启动命令不依赖此前完整读取 PR。actor、reviewer organization 和 project metadata 使用封闭的展示字段窗口。Checks/Actions 只读权限仅对具有 code role 的仓库请求，包括 mutation 响应选择的检查字段。Tree-only GraphQL 读取保留既有 contents/pull-request 权限及分支约束；REST checks/actions 路由仍要求 code 权限。原生代码检查查询要求配置的 GitHub App 授予 Checks 和 Actions 读取权限。可选 Projects metadata 的访问拒绝保留为新旧 gh 都理解的只读 scope 错误，不掩盖混合错误或凭据错误，也不请求 Projects 权限。网关在 execution fence 后本地回答少量固定公共 schema 能力探测，不开放任意 introspection，也不通过 schema 查询授权仓库数据。支持的 REST diff/patch/raw 保留原始字节、响应大小限制、凭据过滤和重校验，不再静默转换成 JSON。
+
+原生 `gh run list` 的工作流发现、按 ID/文件名选择工作流、工作流详情、工作流运行列表和 `head_sha` 筛选，使用已注册的 GET 路由，仅在 code 权限下请求 `actions: read`。查询值保持有界，重复或未知参数拒绝；dispatch/enable/disable/cancel/rerun 及管理端点继续拒绝。
 
 REST Commit Status 读取（`/commits/{ref}/status`、`/commits/{ref}/statuses` 以及旧版 `/statuses/{ref}` 别名）仅在 code 权限下按需请求 `statuses: read`。派生用户令牌校验允许这一精确只读授权，拒绝状态写入及超出请求范围的授权。状态响应保持 JSON，拒绝 diff/patch media。普通仓库/PR 读取和 GraphQL 检查选择不新增此权限。App 注册和每个已有安装都必须授予 Commit statuses 只读权限，私有仓库的这些 REST 读取才能成功；公开仓库成功不能证明该边界。
 
@@ -86,7 +92,9 @@ REST Commit Status 读取（`/commits/{ref}/status`、`/commits/{ref}/statuses` 
 | PR mutation | `pull_requests: write`；响应中检查字段的权限仍仅限 code role |
 | Git 发布 | `contents: write`；保留 Commit 对象及 author/committer |
 
-`GitHub Native Proxy` CI 下载 Runner 固定版本的官方 gh，验证 macOS Local IPC、Linux Cloud material/CONNECT，以及原生 PR 生命周期和冷命令权限控制。离线 fixture 不含真实平台凭据，也不产生 GitHub 副作用，不能替代已部署用户身份及 commit 作者验收。
+`GitHub Native Proxy` CI 下载 Runner 固定版本的官方 gh，验证保留 Commit 原始对象的真实 Git clone/fetch/push（macOS Local Codex IPC 和 Linux Cloud material/CONNECT）、原生 gh 工作流发现和提交筛选，以及原生 PR 生命周期和冷命令权限控制。离线 fixture 不含真实平台凭据，也不产生 GitHub 副作用，不能替代已部署用户身份及 commit 作者验收。
+
+Execution loopback 证书包含显式 key usage 和 Apple 信任评估要求的 TLS server-authentication EKU。macOS 原生回归保留 Runner 默认 Git/TLS 后端，另外使用 SecureTransport 验证 CONNECT 和调用方 CA 路由，并保留缺少信任锚时必须失败的反向控制。依赖 HTTPS 的 macOS 测试先以独立的普通 `curl --cacert` 探测有效私有信任锚，不使用 OpenTag 实现或配置；仅 TLS 校验失败（退出码 60）会产生明确报告的能力跳过，其他探测错误和产品错误仍失败。现代 IPC 测试从不使用这一跳过。旧 CONNECT 保留现有平台 TLS 约束：不劣于 main，但尚未证明 macOS 15 系统 libcurl 可使用私有文件信任锚。Linux/OpenSSL 及具备该能力的 macOS 主机执行完整 CONNECT 和 CA 路由用例。测试不改变产品后端选择或系统信任。参考 Apple 的 [TLS 证书要求](https://support.apple.com/en-gb/103769)。
 
 ## 部署、持久化与恢复
 

@@ -18,7 +18,10 @@ type SetupContext = { home: string; project: string; signal: AbortSignal };
 type Result = SlackAutoSetupRuntimeResult["result"];
 type Failure = Extract<Result, { status: "failed" }>["code"];
 class SetupFailure extends Error {
-  constructor(readonly code: Failure) {
+  constructor(
+    readonly code: Failure,
+    readonly errorCode?: string,
+  ) {
     super(code);
   }
 }
@@ -28,6 +31,29 @@ const NativeLogins = z.record(
 );
 const Authorization = z.object({ ticket: z.string().optional(), teamId: z.string().optional() });
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+// Only fixed codes may cross the credential boundary. Never return CLI output or error messages.
+const SAFE_ERROR_CODES = [
+  "invalid_auth",
+  "token_expired",
+  "token_revoked",
+  "not_authed",
+  "missing_scope",
+  "access_denied",
+  "no_permission",
+  "not_allowed_token_type",
+  "app_approval_request_denied",
+  "comment_required",
+  "invalid_manifest",
+  "invalid_arguments",
+  "ratelimited",
+  "http_request_failed",
+  "http_response_invalid",
+  "app_install_error",
+  "app_deploy_error",
+  "app_found",
+  "sdk_hook_invocation_failed",
+  "prompt_interactivity_required",
+];
 // Only documented pre-creation rejections are safe to retry. Internal/unknown failures may be partial.
 const CREATE_REJECTIONS = new Set([
   "access_denied",
@@ -77,7 +103,7 @@ export class SlackAutoSetup {
     try {
       return await this.#execute(request, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(240_000)]));
     } catch (error) {
-      return { status: "failed", code: error instanceof SetupFailure ? error.code : "failed" };
+      return this.#failure(error);
     } finally {
       this.#busy = false;
     }
@@ -104,6 +130,13 @@ export class SlackAutoSetup {
   #save(context: SetupContext, name: string, value: unknown) {
     return writePrivateJson(context.home, this.#path(context, name), value);
   }
+  #failure(error: unknown): Extract<Result, { status: "failed" }> {
+    return {
+      status: "failed",
+      code: error instanceof SetupFailure ? error.code : "failed",
+      ...(error instanceof SetupFailure && error.errorCode ? { errorCode: error.errorCode } : {}),
+    };
+  }
   async #json(context: SetupContext, name: string): Promise<unknown> {
     return readPrivateJson(context.home, this.#path(context, name), (value) => value);
   }
@@ -124,11 +157,14 @@ export class SlackAutoSetup {
         environment: this.options.environment,
         accountHome: this.options.accountHome,
         signal: context.signal,
+        ...(args[0] === "platform" && args[1] === "deploy" ? { requestAppApproval: true } : {}),
         ...(team ? { team } : {}),
       });
       if (exit !== 0) throw new SetupFailure(code);
     } catch {
-      throw new SetupFailure(code);
+      const output = await readFile(this.#path(context, "last-error.txt"), "utf8").catch(() => "");
+      const errorCode = SAFE_ERROR_CODES.find((value) => output.includes(`(${value})`));
+      throw new SetupFailure(code, errorCode);
     }
   }
   async #authorization(context: SetupContext) {
@@ -319,11 +355,51 @@ export class SlackAutoSetup {
         .object({ credentials: z.object({ signing_secret: z.string().min(1) }) })
         .safeParse(await this.#creationResponse(context));
       if (!creation.success) throw new SetupFailure("manual_required");
-      await this.#deploy(context, appId, team, cli);
-      return this.#installed(await this.#json(context, "credentials.json"), appId, team);
+      try {
+        const approval = await this.#approval(context, appId, team);
+        if (approval) return approval;
+        const deployed = await this.#deploy(context, appId, team, cli);
+        if (deployed) return deployed;
+        return this.#installed(await this.#json(context, "credentials.json"), appId, team);
+      } catch (error) {
+        return {
+          ...this.#failure(error instanceof SetupFailure ? error : new SetupFailure("install_failed")),
+          appId,
+          teamId: team,
+        };
+      }
     } finally {
       await rm(this.#path(context, "credentials.json"), { force: true });
     }
+  }
+  async #approval(context: SetupContext, appId: string, teamId: string): Promise<Result | undefined> {
+    await this.#command(
+      context,
+      ["api", "apps.approvals.requests.list", "--json", JSON.stringify({ app_id: appId })],
+      "approval-status.json",
+      "install_failed",
+      teamId,
+    );
+    const raw = await readFile(this.#path(context, "approval-status.json"), "utf8");
+    // The native request is scoped to this App and the logged-in workspace (plus its governing org).
+    const { requests } = z
+      .object({
+        ok: z.literal(true),
+        requests: z.array(
+          z.object({
+            id: z.string().min(1),
+            status: z.enum(["pending", "approved", "denied", "cancelled"]),
+            can_self_approve: z.boolean().optional().default(false),
+          }),
+        ),
+      })
+      .parse(JSON.parse(raw.slice(raw.indexOf("{"))));
+    // A historical request can remain unresolved even when this account is now allowed to install.
+    const restricted = requests.filter((request) => !request.can_self_approve);
+    if (restricted.some((request) => request.status === "denied"))
+      return { status: "failed", code: "approval_denied", appId, teamId };
+    if (restricted.some((request) => request.status === "pending"))
+      return { status: "approval_pending", appId, teamId };
   }
   #installed(raw: unknown, appId: string, team: string): Result {
     const credentials = SlackProvisionCredentialsSchema.parse(raw);
@@ -346,15 +422,31 @@ export class SlackAutoSetup {
     }
     await this.#command(
       context,
-      ["app", "link", "--team", team, "--app", appId, "--environment", "deployed"],
+      // This private project's App/Team are already fenced by its creation record. Re-linking only replaces that local mapping.
+      ["app", "link", "--team", team, "--app", appId, "--environment", "deployed", "--force"],
       "link-output.txt",
       "install_failed",
     );
-    await this.#command(
-      context,
-      ["platform", "deploy", "--team", team, "--app", appId],
-      "deploy-output.txt",
-      "install_failed",
-    );
+    let failure: unknown;
+    try {
+      await this.#command(
+        context,
+        ["platform", "deploy", "--team", team, "--app", appId],
+        "deploy-output.txt",
+        "install_failed",
+      );
+    } catch (error) {
+      failure = error;
+    }
+    if (failure instanceof SetupFailure && failure.errorCode === "http_request_failed") throw failure;
+    if (failure || !(await this.#json(context, "credentials.json"))) {
+      try {
+        const approval = await this.#approval(context, appId, team);
+        if (approval) return approval;
+      } catch (error) {
+        throw failure ?? error;
+      }
+      throw failure ?? new SetupFailure("install_failed");
+    }
   }
 }

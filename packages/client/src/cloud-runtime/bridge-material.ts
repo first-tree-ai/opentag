@@ -145,6 +145,7 @@ export async function publishExecutionMaterial(
     0o555,
   );
   await writePublicFile(join(published, "bin", "gh"), renderRuntimeProxyProviderLauncher("gh"), 0o555);
+  await writePublicFile(join(published, "bin", "git"), renderRuntimeProxyProviderLauncher("git"), 0o555);
   return published;
 }
 

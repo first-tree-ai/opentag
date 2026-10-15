@@ -31,6 +31,11 @@ async function fixture() {
   let loseCreate = false;
   let createError: string | undefined;
   let failCallbacks = false;
+  let approvalStatus: "pending" | "approved" | "denied" | "cancelled" | undefined;
+  let requireApproval = false;
+  let submittedRequests = 0;
+  let linked = false;
+  let canSelfApprove = false;
   let remote: unknown = { display_information: { name: "QA" }, settings: { org_deploy_enabled: false } };
   async function auth(args: string[], output: string) {
     if (args.includes("--ticket"))
@@ -39,14 +44,40 @@ async function fixture() {
       });
     else await writeFile(output, "Run /slackauthticket test-ticket");
   }
-  async function deploy() {
+  async function deploy(requestAppApproval?: boolean) {
+    if (requireApproval && approvalStatus !== "approved") {
+      if (!requestAppApproval) return 1;
+      approvalStatus = "pending";
+      submittedRequests++;
+      return 0; // Native CLI successfully submitted a request, but did not install or invoke the deploy hook.
+    }
     await writePrivateJson(home, join(home, project, "credentials.json"), credentials);
     if (!failDeploy) return 0;
     await writeFile(join(home, project, "last-error.txt"), "private-stderr");
     return 1;
   }
+  async function create(output: string) {
+    if (loseCreate) {
+      await writeFile(output, "");
+      return 1;
+    }
+    if (createError) {
+      await writePrivateJson(home, output, { ok: false, error: createError });
+      return 1;
+    }
+    await writePrivateJson(home, output, {
+      ok: true,
+      app_id: "A1",
+      credentials: { signing_secret: "private-secret" },
+    });
+
+    return 0;
+  }
   const run = vi.fn(
-    async (args: string[], options: Parameters<typeof import("../slack-management.js").runSlackManagement>[1]) => {
+    async (
+      args: string[],
+      options: Parameters<typeof import("../slack-management.js").runSlackManagement>[1],
+    ): Promise<number> => {
       if (!options?.outputFile) throw new Error("Missing private output");
       const output = join(home, options.outputFile);
       await writePrivateJson(home, output, {});
@@ -55,22 +86,24 @@ async function fixture() {
           await auth(args, output);
           break;
         case "apps.manifest.create":
-          if (loseCreate) {
-            await writeFile(output, "");
+          return create(output);
+        case "deploy":
+          return deploy(options.requestAppApproval);
+        case "link":
+          if (linked && !args.includes("--force")) {
+            await writeFile(join(home, project, "last-error.txt"), "A saved app was found (app_found)");
             return 1;
           }
-          if (createError) {
-            await writePrivateJson(home, output, { ok: false, error: createError });
-            return 1;
-          }
+          linked = true;
+          break;
+        case "apps.approvals.requests.list":
           await writePrivateJson(home, output, {
             ok: true,
-            app_id: "A1",
-            credentials: { signing_secret: "private-secret" },
+            requests: approvalStatus
+              ? [{ id: "R1", team_id: "T1", status: approvalStatus, can_self_approve: canSelfApprove }]
+              : [],
           });
           break;
-        case "deploy":
-          return deploy();
         case "apps.manifest.export":
           await writePrivateJson(home, output, { ok: true, manifest: remote });
           break;
@@ -104,6 +137,16 @@ async function fixture() {
     home,
     project,
     credentials,
+    requireApproval: () => {
+      requireApproval = true;
+    },
+    setApprovalStatus: (status: typeof approvalStatus) => {
+      approvalStatus = status;
+    },
+    submittedRequests: () => submittedRequests,
+    allowSelfApproval: () => {
+      canSelfApprove = true;
+    },
     setFailDeploy: (value: boolean) => {
       failDeploy = value;
     },
@@ -129,6 +172,123 @@ function callbacks(appId = "A1"): Extract<SlackAutoSetupCommand, { action: "call
     interactionsUrl: "https://qa.example/interactions",
   };
 }
+it("submits one approval request, waits without another install, and resumes the same App after approval", async () => {
+  const f = await fixture();
+  await f.authorize();
+  f.requireApproval();
+  const pending = { status: "approval_pending", appId: "A1", teamId: "T1" };
+  expect(await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }))).toEqual(pending);
+  expect(f.submittedRequests()).toBe(1);
+  expect(existsSync(join(f.home, f.project, "credentials.json"))).toBe(false);
+  expect(await readFile(join(f.home, f.project, "create-response.json"), "utf8")).toContain("private-secret");
+  const restarted = new SlackAutoSetup({
+    environment: { OPENTAG_HOME: join(f.home, "..") },
+    run: f.run,
+    cliEntry: "/trusted/opentag.mjs",
+  });
+  expect(await restarted.run(f.request({ action: "install", displayName: "QA" }))).toEqual(pending);
+  expect(f.run.mock.calls.filter(([args]) => args[1] === "deploy")).toHaveLength(1);
+  expect(f.submittedRequests()).toBe(1);
+  f.setApprovalStatus("approved");
+  expect(await restarted.run(f.request({ action: "install", displayName: "QA" }))).toEqual({
+    status: "installed",
+    credentials: f.credentials,
+  });
+  expect(await restarted.run(f.request(callbacks()))).toEqual({ status: "connected" });
+  expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(1);
+  expect(f.run.mock.calls.filter(([args]) => args[1] === "login")).toHaveLength(2);
+  expect(f.submittedRequests()).toBe(1);
+  expect(await readFile(join(f.home, f.project, "create-response.json"), "utf8")).not.toContain("private");
+});
+it("does not install or resubmit a denied App until an app manager approves it", async () => {
+  const f = await fixture();
+  await f.authorize();
+  f.setApprovalStatus("denied");
+  expect(await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }))).toEqual({
+    status: "failed",
+    code: "approval_denied",
+    appId: "A1",
+    teamId: "T1",
+  });
+  expect(f.run.mock.calls.some(([args]) => args[1] === "deploy")).toBe(false);
+  f.setApprovalStatus("approved");
+  expect(await f.setup.run(f.request({ action: "install", displayName: "QA" }))).toEqual({
+    status: "installed",
+    credentials: f.credentials,
+  });
+  expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(1);
+});
+it("recovers an empty-stdout network EOF without recreating the App or failing on its saved local link", async () => {
+  const f = await fixture();
+  await f.authorize();
+  const original = f.run.getMockImplementation();
+  let deployAttempts = 0;
+  f.run.mockImplementation(async (args, options) => {
+    if (args[1] === "deploy" && deployAttempts++ === 0) {
+      await writeFile(join(f.home, f.project, "deploy-output.txt"), "");
+      await writeFile(
+        join(f.home, f.project, "last-error.txt"),
+        'ERROR HTTP request failed (http_request_failed) Post "https://slack.com/api/auth.test": EOF private-native',
+      );
+      return 1;
+    }
+    return original?.(args, options) ?? 1;
+  });
+  const failed = await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }));
+  expect(failed).toEqual({
+    status: "failed",
+    code: "install_failed",
+    errorCode: "http_request_failed",
+    appId: "A1",
+    teamId: "T1",
+  });
+  expect(await readFile(join(f.home, f.project, "deploy-output.txt"), "utf8")).toBe("");
+  expect(JSON.stringify(failed)).not.toContain("private-native");
+  expect(await f.setup.run(f.request({ action: "install", displayName: "QA" }))).toEqual({
+    status: "installed",
+    credentials: f.credentials,
+  });
+  expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(1);
+  const links = f.run.mock.calls.filter(([args]) => args[1] === "link");
+  expect(links).toHaveLength(2);
+  for (const [args] of links)
+    expect(args.slice(2)).toEqual(["--team", "T1", "--app", "A1", "--environment", "deployed", "--force"]);
+  expect(await f.setup.run(f.request(callbacks()))).toEqual({ status: "connected" });
+});
+it.each(["pending", "denied"] as const)(
+  "lets an authorized installer proceed despite a historical %s request",
+  async (status) => {
+    const f = await fixture();
+    await f.authorize();
+    f.setApprovalStatus(status);
+    f.allowSelfApproval();
+    expect(await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }))).toEqual({
+      status: "installed",
+      credentials: f.credentials,
+    });
+    expect(f.submittedRequests()).toBe(0);
+  },
+);
+it.each([0, 1])("never claims approval is pending without a Slack request, even with CLI exit %i", async (exit) => {
+  const f = await fixture();
+  await f.authorize();
+  const original = f.run.getMockImplementation();
+  f.run.mockImplementation(async (args, options) => {
+    if (args[1] !== "deploy") return original?.(args, options) ?? 1;
+    await writeFile(join(f.home, f.project, "last-error.txt"), "private-token (comment_required)");
+    return exit;
+  });
+  const result = await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }));
+  expect(result).toEqual({
+    status: "failed",
+    code: "install_failed",
+    appId: "A1",
+    teamId: "T1",
+    ...(exit ? { errorCode: "comment_required" } : {}),
+  });
+  expect(JSON.stringify(result)).not.toContain("private");
+  expect(existsSync(join(f.home, f.project, "last-error.txt"))).toBe(false);
+});
 it.each([undefined, { ok: true, app_id: "foreign" }, { ok: false, error: "invalid_manifest" }])(
   "does not authorize, mutate, or adopt a foreign App without a matching successful creation record: %j",
   async (record) => {
@@ -174,6 +334,8 @@ it("gets one ticket, resumes installation of the same App, and removes material 
   expect(await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }))).toEqual({
     status: "failed",
     code: "install_failed",
+    appId: "A1",
+    teamId: "T1",
   });
   expect(existsSync(join(f.home, f.project, "credentials.json"))).toBe(false);
   expect(existsSync(join(f.home, f.project, "last-error.txt"))).toBe(false);

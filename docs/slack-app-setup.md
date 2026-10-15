@@ -34,8 +34,24 @@ current Account session and checks Agent ownership; it receives neither Slack cr
 Computer. The CLI management grant remains in its native private config and uses native refresh. Only authorize a ticket
 from your own selected Computer. This grant covers App management for the workspace, not just this one App.
 
-If workspace policy requires admin approval, obtain approval and **Continue connecting** the same App. Failed callback
-configuration also resumes through **Continue connecting**, without another installation or credential rotation. An
+If workspace policy requires approval, the official CLI submits the install request automatically. OpenTag shows
+a pending request only after Slack confirms it exists, with its App and workspace identifiers
+and a link to that workspace's app management. Select **Requests to install** there; Workspace Owners and designated App
+Managers can review requests, while Workspace Admin alone does not grant this permission. Organization policies may
+require an organization app manager. After approval, **Continue connecting** installs and binds the same App. Pending or
+denied requests do not start another install, cancel the request, or create another App. If Slack confirms the current
+account can install without another person's approval, a historical request does not block installation.
+
+Approval-aware setup negotiates the existing optional `runtime.slackAutoSetup` capability at version 2. Deploy the
+matching Server/Web and update the Client; a version-1 peer keeps the Computer connected and uses manual Slack setup.
+
+Other installation failures do not imply approval is required. OpenTag shows a safe Slack error code when available;
+check the native CLI debug log under `<OpenTag home>/slack-management/config/logs/` for details. A failed network request
+can leave deploy stdout empty. Continuing re-links the same private project with `--force` before retrying installation,
+so an existing local link does not block recovery with `app_found`. No raw CLI error text or credentials are sent to Web.
+
+Failed callback configuration also resumes through **Continue connecting**, without another installation or credential
+rotation. An
 uncertain creation is stopped: inspect Slack's existing Apps and use manual binding rather than create another copy.
 Documented pre-creation rejections (such as invalid manifests, App limits, or rate limits) allow a retry; partial or unknown
 errors remain fenced. Expiring or revoked management authorization can require a new ticket. A busy response means the

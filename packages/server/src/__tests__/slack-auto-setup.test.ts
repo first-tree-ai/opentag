@@ -86,6 +86,17 @@ function fixture(officialBinding = false) {
   return { agents, slack, owner, service };
 }
 afterEach(() => vi.useRealTimers());
+it("returns confirmed pending approval without binding credentials or setting callbacks", async () => {
+  const f = fixture();
+  f.owner.start.mockReset().mockResolvedValue({ status: "approval_pending", appId: "A1", teamId: "T1" });
+  expect(await f.service.run("account", agentId, { action: "connect" })).toEqual({
+    status: "approval_pending",
+    appId: "A1",
+    teamId: "T1",
+  });
+  expect(f.slack.configureToken).not.toHaveBeenCalled();
+  expect(f.owner.start).toHaveBeenCalledTimes(1);
+});
 it("uses Web Account ownership before accessing CLI and accepts no caller-selected Computer", async () => {
   const f = fixture();
   f.agents.getConfigById.mockRejectedValueOnce(new Error("not owned"));

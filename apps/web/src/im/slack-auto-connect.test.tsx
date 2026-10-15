@@ -5,6 +5,57 @@ import { ApiError, browserApi } from "../api.js";
 import { SlackAutoConnect } from "./slack-auto-connect.js";
 
 afterEach(() => vi.restoreAllMocks());
+it("links to the right workspace after confirmed submission and continues without another ticket", async () => {
+  const api = vi
+    .spyOn(browserApi, "autoSetupSlack")
+    .mockResolvedValueOnce({ status: "approval_pending", appId: "A1", teamId: "T1" })
+    .mockResolvedValueOnce({ status: "connected" });
+  const connected = vi.fn(async () => {});
+  render(<SlackAutoConnect agentId="agent" resume onBusy={vi.fn()} onConnected={connected} />);
+  expect(await screen.findByText(/Your request to install this App has been submitted/)).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Open Slack app management" })).toHaveProperty(
+    "href",
+    "https://app.slack.com/apps-manage/T1",
+  );
+  expect(screen.getByText("App: A1 · Workspace: T1")).toBeTruthy();
+  expect(screen.getByText(/Requests to install.*Workspace Owners/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Get authorization command" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create and connect" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Continue connecting" }));
+  await waitFor(() => expect(connected).toHaveBeenCalledTimes(1));
+  expect(api.mock.calls.map(([, input]) => input)).toEqual([{ action: "connect" }, { action: "connect" }]);
+});
+it("shows the actual safe error code without treating an ordinary install failure as approval", async () => {
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({
+    status: "failed",
+    code: "install_failed",
+    appId: "A1",
+    teamId: "T1",
+    errorCode: "http_request_failed",
+  });
+  render(<SlackAutoConnect agentId="agent" resume onBusy={vi.fn()} onConnected={vi.fn()} />);
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    "A network request to Slack failed. Check your Computer’s connection, then continue with the same App.",
+  );
+  expect(screen.getByText("Slack error: http_request_failed")).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Open Slack app management" })).toBeNull();
+});
+it("provides app management for a denied request without encouraging another authorization", async () => {
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({
+    status: "failed",
+    code: "approval_denied",
+    appId: "A1",
+    teamId: "T1",
+  });
+  render(<SlackAutoConnect agentId="agent" resume onBusy={vi.fn()} onConnected={vi.fn()} />);
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    "Slack has denied installation of this App. Ask an app manager to review the restriction, then continue with the same App.",
+  );
+  expect(screen.getByRole("link", { name: "Open Slack app management" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Get authorization command" })).toBeNull();
+});
 it("shows one ticket under StrictMode and submits only the challenge before completing", async () => {
   const api = vi
     .spyOn(browserApi, "autoSetupSlack")

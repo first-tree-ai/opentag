@@ -11,10 +11,11 @@ input modalities. The Runner therefore uses a small, explicit capability snapsho
 the Server. It does not use model-family prefixes, aliases, regexes, or a blanket image default. This snapshot cannot
 authorize a model: the Server catalog and the execution token still control which model can execute.
 
-Verified on 2026-10-10:
+Verified on 2026-10-10, with Gemini 4 Argon added on 2026-10-15:
 
 | Exact Cloud model IDs | Evidence for text and image input |
 | --- | --- |
+| `gemini-4-argon` | [Google model specification](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon) |
 | `gemini-3.8-flash` | [Google model specification](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash) |
 | `gemini-3.1-flash-lite` | Pi 0.84.2 bundled `google` and `google-vertex` model metadata: `input: ["text", "image"]` |
 | `glm-5.3-flash` | Pi 0.84.2 bundled `zai` model metadata: `input: ["text", "image"]` |
@@ -42,6 +43,6 @@ older grant documents remain valid, and pure-text requests continue to work.
 `cloud-pi-image-input.test.ts` starts the locked real Pi CLI against a loopback model endpoint using the production
 document generator and an existing-schema grant. It requests the native `read` tool, checks that the initial text
 request has no image, and verifies that the next authenticated request contains the exact small PNG data URL for
-Gemini 3.8 Flash. Text-only and unknown-model controls check that image parts remain absent and Pi reports omission.
+Gemini 4 Argon and Gemini 3.8 Flash. Text-only and unknown-model controls check that image parts remain absent and Pi reports omission.
 The endpoint supplies deterministic tool calls and text: this proves transport, not a real provider's visual recognition.
 Deployment and live Slack/Feishu recognition require separate acceptance evidence.

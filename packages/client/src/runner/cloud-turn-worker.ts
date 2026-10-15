@@ -78,6 +78,7 @@ export const CLOUD_MODEL_PI_PROVIDER = "opentag";
  * Unknown IDs keep Pi's text-only behavior until their capabilities are verified.
  */
 const CLOUD_PI_IMAGE_INPUT_MODELS = new Set([
+  "gemini-4-argon",
   "gemini-3.8-flash",
   "gemini-3.1-flash-lite",
   "glm-5.3-flash",

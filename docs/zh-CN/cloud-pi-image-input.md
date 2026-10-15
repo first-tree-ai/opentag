@@ -11,10 +11,11 @@ Router 模型列表和现有执行授权包含准确的模型 ID、上下文窗�
 它不使用模型家族前缀、别名、正则表达式或默认开启图片的策略。该快照不能授权模型；
 可执行的模型仍由 Server 目录和执行令牌控制。
 
-核验日期：2026-10-10。
+核验日期：2026-10-10；Gemini 4 Argon 于 2026-10-15 补充核验。
 
 | 准确的 Cloud 模型 ID | 支持文本和图片输入的依据 |
 | --- | --- |
+| `gemini-4-argon` | [Google 模型规格](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon) |
 | `gemini-3.8-flash` | [Google 模型规格](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash) |
 | `gemini-3.1-flash-lite` | Pi 0.84.2 内置 `google` 和 `google-vertex` 模型元数据：`input: ["text", "image"]` |
 | `glm-5.3-flash` | Pi 0.84.2 内置 `zai` 模型元数据：`input: ["text", "image"]` |
@@ -41,7 +42,7 @@ Pi 保留原生图片处理；上下文窗口、输出预算、凭证、代理�
 
 `cloud-pi-image-input.test.ts` 使用生产文档生成器和现有格式的授权，启动锁定版本的真实 Pi CLI，
 并连接本地回环模型端点。测试要求调用原生 `read` 工具，检查初始文本请求不含图片，
-并核验 Gemini 3.8 Flash 的下一笔认证请求包含准确的小 PNG data URL。
+并核验 Gemini 4 Argon 和 Gemini 3.8 Flash 的下一笔认证请求包含准确的小 PNG data URL。
 仅支持文本和未知模型的对照检查图片部分仍然缺失，且 Pi 报告省略图片。
 该端点提供确定性的工具调用和文本，因此证明的是传输，不是真实 Provider 的图片识别。
 部署和线上 Slack/飞书图片识别需要独立的验收证据。

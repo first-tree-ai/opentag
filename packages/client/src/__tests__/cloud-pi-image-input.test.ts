@@ -18,6 +18,7 @@ const PNG = Buffer.from(
 );
 
 it.each([
+  { model: "gemini-4-argon", images: true },
   { model: "gemini-3.8-flash", images: true },
   { model: "glm-5.3", images: false },
   { model: "unknown-vision-model", images: false },
@@ -28,6 +29,11 @@ it.each([
     const piHome = join(root, "pi");
     const workspace = join(root, "workspace");
     const sessions = join(root, "sessions");
+    // LiteLLM carries Gemini thought signatures inside opaque tool IDs. Pi must echo them intact.
+    const toolCallId =
+      model === "gemini-4-argon"
+        ? `read-original__thought__${Buffer.from("fixture-thought-signature".repeat(8)).toString("base64")}`
+        : "read-original";
     await Promise.all([mkdir(piHome), mkdir(workspace), mkdir(sessions)]);
     await writeFile(join(workspace, "original.png"), PNG);
     const calls: Array<{ path: string | undefined; authorization: string | undefined; body: Record<string, unknown> }> =
@@ -44,7 +50,7 @@ it.each([
             tool_calls: [
               {
                 index: 0,
-                id: "read-original",
+                id: toolCallId,
                 type: "function",
                 function: { name: "read", arguments: JSON.stringify({ path: "original.png" }) },
               },
@@ -119,8 +125,18 @@ it.each([
       expect(calls.every((call) => call.authorization === `Bearer ${token}` && call.body.model === model)).toBe(true);
       // The text prompt carries no eager image; the second request follows the real native read.
       expect(JSON.stringify(calls[0]?.body.messages)).not.toContain("image_url");
-      const messages = calls[1]?.body.messages as Array<{ role: string; content: unknown }>;
-      expect(messages.some((message) => message.role === "tool")).toBe(true);
+      const messages = calls[1]?.body.messages as Array<{
+        role: string;
+        content: unknown;
+        tool_call_id?: string;
+        tool_calls?: Array<{ id: string }>;
+      }>;
+      expect(messages.find((message) => message.role === "tool")?.tool_call_id).toBe(toolCallId);
+      expect(
+        messages.some(
+          (message) => message.role === "assistant" && message.tool_calls?.some((call) => call.id === toolCallId),
+        ),
+      ).toBe(true);
       const parts = messages.flatMap((message) => (Array.isArray(message.content) ? message.content : [])) as Array<{
         type: string;
         image_url?: { url: string };

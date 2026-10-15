@@ -291,7 +291,7 @@ class ScriptedPiClient implements PiRpcClient {
 }
 
 describe("cloud-turn-worker", () => {
-  it.each(["gemini-3.8-flash", "kimi-k3", "gpt-6-astra"])(
+  it.each(["gemini-4-argon", "gemini-3.8-flash", "kimi-k3", "gpt-6-astra"])(
     "declares verified image input for the exact issued model %s without extending the grant",
     (model) => {
       const request = turnRequest("/run/opentag-execution/turn-image");
@@ -310,15 +310,18 @@ describe("cloud-turn-worker", () => {
     },
   );
 
-  it.each(["glm-5.3", "glm-5.3-flashx", "unknown-vision-model", "gemini-3.8-flash-unverified-alias"])(
-    "keeps text input for unverified model %s without inferring capabilities from a name",
-    (model) => {
-      const request = turnRequest("/run/opentag-execution/turn-text");
-      request.model = { ...MODEL, model };
-      const models = JSON.parse(cloudTurnPiDocuments(request).modelsJson);
-      expect(models.providers.opentag.models[0].input).toEqual(["text"]);
-    },
-  );
+  it.each([
+    "glm-5.3",
+    "glm-5.3-flashx",
+    "unknown-vision-model",
+    "gemini-3.8-flash-unverified-alias",
+    "gemini-4-argon-unverified-alias",
+  ])("keeps text input for unverified model %s without inferring capabilities from a name", (model) => {
+    const request = turnRequest("/run/opentag-execution/turn-text");
+    request.model = { ...MODEL, model };
+    const models = JSON.parse(cloudTurnPiDocuments(request).modelsJson);
+    expect(models.providers.opentag.models[0].input).toEqual(["text"]);
+  });
 
   it("renders the model grant as a disposable OpenAI-compatible provider document set", () => {
     const documents = cloudTurnPiDocuments(turnRequest("/run/opentag-execution/turn-1"));

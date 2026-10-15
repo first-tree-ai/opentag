@@ -96,8 +96,9 @@ describe("RouterCloudModelCatalog", () => {
         object: "list",
         data: [
           { id: "claude-sonnet-5", context_window: 262_144, max_output_tokens: 8_192 },
-          { id: "deepseek-v4.1-flash", context_window: 262_144, max_output_tokens: 8_192 },
           { id: "gemini-3.8-flash", context_window: 262_144, max_output_tokens: 8_192 },
+          { id: "deepseek-v4.1-flash", context_window: 262_144, max_output_tokens: 8_192 },
+          { id: "gemini-4-argon", context_window: 1_048_576, max_output_tokens: 8_192 },
           { id: "kimi-k3", context_window: 262_144, max_output_tokens: 8_192 },
         ],
       },
@@ -107,13 +108,17 @@ describe("RouterCloudModelCatalog", () => {
     const snapshot = await catalog.list();
     expect(snapshot).toEqual({
       available: true,
-      defaultModel: "gemini-3.8-flash",
-      models: ["gemini-3.8-flash", "claude-sonnet-5", "deepseek-v4.1-flash", "kimi-k3"],
+      defaultModel: "gemini-4-argon",
+      models: ["gemini-4-argon", "claude-sonnet-5", "gemini-3.8-flash", "deepseek-v4.1-flash", "kimi-k3"],
     });
     expect(CloudModelOptionsSchema.safeParse(snapshot).success).toBe(true);
-    await expect(catalog.defaultModel()).resolves.toBe("gemini-3.8-flash");
+    await expect(catalog.defaultModel()).resolves.toBe("gemini-4-argon");
     await expect(catalog.isModelAllowed("claude-sonnet-5")).resolves.toBe(true);
-    await expect(catalog.isModelAllowed("gemini-3.8-flash")).resolves.toBe(true);
+    await expect(catalog.isModelAllowed("gemini-4-argon")).resolves.toBe(true);
+    expect(selectCloudModelExecutionProfile(await catalog.capabilitiesOf("gemini-4-argon"))).toEqual({
+      contextWindow: 258_000,
+      maxTokens: 8_192,
+    });
   });
 
   it("never fabricates an absent or capability-ineligible preferred model and keeps the first-model fallback", async () => {
@@ -142,7 +147,7 @@ describe("RouterCloudModelCatalog", () => {
         object: "list",
         data: [
           { id: "claude-sonnet-5", context_window: 262_144, max_output_tokens: 8_192 },
-          { id: "gemini-3.8-flash" },
+          { id: "gemini-4-argon" },
           { id: "router-model-b", context_window: 64_000, max_output_tokens: 4_096 },
         ],
       },
@@ -153,15 +158,15 @@ describe("RouterCloudModelCatalog", () => {
       defaultModel: "claude-sonnet-5",
       models: ["claude-sonnet-5", "router-model-b"],
     });
-    await expect(catalog.isModelAllowed("gemini-3.8-flash")).resolves.toBe(false);
-    await expect(catalog.capabilitiesOf("gemini-3.8-flash")).resolves.toBeUndefined();
+    await expect(catalog.isModelAllowed("gemini-4-argon")).resolves.toBe(false);
+    await expect(catalog.capabilitiesOf("gemini-4-argon")).resolves.toBeUndefined();
 
     // The static double follows the same default-selection rule as the Router-backed catalog.
-    const double = createStaticCloudModelCatalog(["claude-sonnet-5", "gemini-3.8-flash"]);
+    const double = createStaticCloudModelCatalog(["claude-sonnet-5", "gemini-4-argon"]);
     await expect(double.list()).resolves.toEqual({
       available: true,
-      defaultModel: "gemini-3.8-flash",
-      models: ["gemini-3.8-flash", "claude-sonnet-5"],
+      defaultModel: "gemini-4-argon",
+      models: ["gemini-4-argon", "claude-sonnet-5"],
     });
     await expect(createStaticCloudModelCatalog(["claude-sonnet-5", "router-model-b"]).list()).resolves.toMatchObject({
       defaultModel: "claude-sonnet-5",

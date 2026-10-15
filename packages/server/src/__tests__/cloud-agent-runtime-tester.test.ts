@@ -78,12 +78,18 @@ describe("CloudAgentRuntimeTester", () => {
     expect(upstream.stats.lastRequestBody).not.toHaveProperty("tools");
   });
 
-  it("resolves an unsaved model to the current Router default", async () => {
-    const { tester, upstream } = await makeTester({ kind: "json", payload: VALID_COMPLETION });
-    await expect(tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model: null })).resolves.toEqual({
+  it.each([
+    { model: null, expected: "gemini-4-argon" },
+    { model: "gemini-3.8-flash", expected: "gemini-3.8-flash" },
+  ])("uses $expected when the selected model is $model", async ({ model, expected }) => {
+    const { tester, upstream } = await makeTester(
+      { kind: "json", payload: VALID_COMPLETION },
+      { models: ["router-model-a", "gemini-3.8-flash", "gemini-4-argon"] },
+    );
+    await expect(tester.test({ ...cloudTestOwner, computerId: COMPUTER_ID, model })).resolves.toEqual({
       status: "passed",
     });
-    expect(upstream.stats.lastRequestBody).toMatchObject({ model: "router-model-a" });
+    expect(upstream.stats.lastRequestBody).toMatchObject({ model: expected });
   });
 
   it("fails provider_start_failed when no Router default is available", async () => {

@@ -3,7 +3,7 @@ import net from "node:net";
 const MAX_HANDSHAKE_BYTES = 4096;
 const CONNECT_REPLY = Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
 
-/** Native Git/libcurl supports SOCKS5 over Unix sockets. This is a fixed GitHub TLS entry,
+/** Native Git/libcurl supports SOCKS5 over Unix sockets. This is a fixed GitHub HTTP IPC entry,
  * never a general SOCKS proxy: no DNS, TCP dialing, IP destinations, BIND or UDP forwarding. */
 export function createGitProxySocketServer(
   accept: (socket: net.Socket, head: Buffer) => void,
@@ -70,7 +70,7 @@ class GitProxyHandshake {
       .subarray(5, size - 2)
       .toString("utf8")
       .toLowerCase();
-    if (host !== "github.com" || this.#buffer.readUInt16BE(size - 2) !== 443) {
+    if (host !== "github.com" || this.#buffer.readUInt16BE(size - 2) !== 80) {
       this.#reject();
       return;
     }

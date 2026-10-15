@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createGitProxySocketServer } from "../runtime/runtime-proxy-git-socket.js";
 
-const connect = (host = "github.com", port = 443, command = 1, type = 3) =>
+const connect = (host = "github.com", port = 80, command = 1, type = 3) =>
   Buffer.concat([
     Buffer.from([5, command, 0, type, Buffer.byteLength(host)]),
     Buffer.from(host),
@@ -52,16 +52,16 @@ async function fixture() {
 
 describe.skipIf(process.platform === "win32")("Git-only SOCKS Unix entry", () => {
   it.each([false, true])(
-    "accepts fragmented=%s GitHub CONNECT and preserves pipelined TLS bytes",
+    "accepts fragmented=%s GitHub CONNECT and preserves pipelined HTTP bytes",
     async (fragmented) => {
       const f = await fixture();
       try {
-        const bytes = Buffer.concat([Buffer.from([5, 2, 2, 0]), connect("GitHub.com"), Buffer.from("TLS")]);
+        const bytes = Buffer.concat([Buffer.from([5, 2, 2, 0]), connect("GitHub.com"), Buffer.from("HTTP")]);
         const reply = await f.send(fragmented ? [...bytes].map((byte) => Buffer.from([byte])) : [bytes]);
         expect(reply).toEqual(Buffer.from([5, 0, 5, 0, 0, 1, 0, 0, 0, 0, 0, 0]));
-        // Fragmented TLS can arrive after the handshake; coalesced data must be delivered intact.
+        // Fragmented HTTP can arrive after the handshake; coalesced data must be delivered intact.
         expect(f.accepted).toHaveLength(1);
-        if (!fragmented) expect(f.accepted[0]?.toString()).toBe("TLS");
+        if (!fragmented) expect(f.accepted[0]?.toString()).toBe("HTTP");
       } finally {
         await f.close();
       }
@@ -71,11 +71,11 @@ describe.skipIf(process.platform === "win32")("Git-only SOCKS Unix entry", () =>
     connect("api.github.com"),
     connect("github.com.evil.invalid"),
     connect("127.0.0.1"),
-    connect("github.com", 80),
-    connect("github.com", 443, 2),
-    connect("github.com", 443, 3),
-    connect("github.com", 443, 1, 1),
-    connect("github.com", 443, 1, 4),
+    connect("github.com", 443),
+    connect("github.com", 80, 2),
+    connect("github.com", 80, 3),
+    connect("github.com", 80, 1, 1),
+    connect("github.com", 80, 1, 4),
     Buffer.from([4, 1, 0, 3, 0, 1, 187]),
   ])("rejects foreign destinations and unsupported SOCKS operations %j", async (request) => {
     const f = await fixture();

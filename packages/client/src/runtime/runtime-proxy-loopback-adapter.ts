@@ -190,7 +190,7 @@ export class RuntimeProxyLoopbackAdapter {
     return this.#githubApiSocketPath;
   }
 
-  /** Native Git's private SOCKS entry; credentials still cross the authenticated TLS adapter. */
+  /** Native Git's private HTTP IPC entry; the same handle/Relay/Server checks still apply. */
   get githubGitSocketPath(): string | undefined {
     return this.#githubGitSocketPath;
   }
@@ -241,7 +241,14 @@ export class RuntimeProxyLoopbackAdapter {
     });
     this.#startGitTunnel = (socket, head) => {
       if (this.#closed) socket.destroy();
-      else this.#startTlsTunnel(socket, head, inner, secureContext, { host: "github.com", provider: "github" });
+      else {
+        if (head.length) socket.unshift(head);
+        (socket as unknown as { __opentagConnect: PendingConnect }).__opentagConnect = {
+          host: "github.com",
+          provider: "github",
+        };
+        inner.emit("connection", socket);
+      }
     };
     for (const server of [this.#connectServer, this.#directServer, this.#githubServer]) {
       server.on("connection", (socket) => this.#track(socket));

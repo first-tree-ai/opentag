@@ -202,6 +202,7 @@ describe("Slack provisioning CLI", () => {
         environment,
         team: "T1",
         outputFile: "created.json",
+        nonInteractive: true,
       }),
     ).toBe(0);
     const root = slackManagementHome(environment);
@@ -222,6 +223,18 @@ describe("Slack provisioning CLI", () => {
     expect(result).not.toHaveProperty("token");
     expect(result).not.toHaveProperty("proxy");
     expect(result).not.toHaveProperty("ca");
+    expect(
+      await runSlackManagement(["app", "link", "--team", "T1", "--app", "A1", "--environment", "deployed"], {
+        binary,
+        environment,
+        nonInteractive: true,
+        signal: new AbortController().signal,
+        outputFile: "linked.json",
+      }),
+    ).toBe(0);
+    const linked = JSON.parse(await readFile(join(root, "linked.json"), "utf8"));
+    expect(linked.args).not.toContain("--no-prompt");
+    expect(linked.args.slice(-8)).toEqual(["app", "link", "--team", "T1", "--app", "A1", "--environment", "deployed"]);
     expect((await stat(join(root, "created.json"))).mode & 0o777).toBe(0o600);
     expect((await stat(root)).mode & 0o777).toBe(0o700);
     expect((await stat(join(root, "config"))).mode & 0o777).toBe(0o700);

@@ -73,6 +73,7 @@ function fixture(view: SlackConfigurationView = unbound()) {
     bindingState: "active",
     identityClosure: { status: "pending", verifiedAt: null },
   });
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({ status: "failed", code: "computer_unavailable" });
   const onSaved = vi.fn();
   const onOAuth = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -96,6 +97,8 @@ function fixture(view: SlackConfigurationView = unbound()) {
 
 async function openCreate() {
   fireEvent.click(await screen.findByRole("button", { name: "Use your own Slack App" }));
+  fireEvent.click(screen.getByRole("button", { name: "Manually connect an App" }));
+  await waitFor(() => expect(screen.getByLabelText("Signing Secret")).not.toHaveProperty("disabled", true));
 }
 function enterCredentials() {
   fireEvent.change(screen.getByLabelText("Bot User OAuth Token"), { target: { value: "private-token" } });
@@ -208,10 +211,7 @@ describe("custom Slack App flow", () => {
     enterCredentials();
     test.save.mockRejectedValue(new ApiError(400, "invalid", "SLACK_AUTH_INVALID"));
     fireEvent.click(screen.getByRole("button", { name: "Save and verify in Slack" }));
-    expect(await screen.findByRole("alert")).toHaveProperty(
-      "textContent",
-      expect.stringContaining("Slack could not verify"),
-    );
+    expect(await screen.findByText(/Slack could not verify/)).toBeTruthy();
     expect(screen.getByLabelText("Signing Secret")).toHaveProperty("value", "private-secret");
     expect(test.read).toHaveBeenCalledTimes(1);
   });
@@ -311,4 +311,25 @@ describe("custom Slack App flow", () => {
     await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(test.read).toHaveBeenCalledTimes(requests);
   });
+});
+it("resumes saved binding callbacks after closing and reopening without a new ticket or manual credentials", async () => {
+  const f = fixture(bound());
+  const api = vi.mocked(browserApi.autoSetupSlack).mockResolvedValue({ status: "connected" });
+  fireEvent.click(await screen.findByRole("button", { name: "Continue Slack setup" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Continue Slack setup" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue automatic setup" }));
+  await waitFor(() => expect(f.onSaved).toHaveBeenCalledTimes(1));
+  expect(api).toHaveBeenCalledExactlyOnceWith(agentId, { action: "connect" });
+  expect(f.save).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Update credentials" }));
+  expect(screen.getByLabelText("Bot User OAuth Token")).toBeTruthy();
+  expect(api).toHaveBeenCalledTimes(1);
+});
+it("does not offer automatic callback setup for a pending official OAuth binding", async () => {
+  fixture({ ...bound(), preferredRecovery: "oauth" });
+  fireEvent.click(await screen.findByRole("button", { name: "Continue Slack setup" }));
+  expect(screen.queryByRole("button", { name: "Continue automatic setup" })).toBeNull();
+  expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+  expect(screen.getByRole("link", { name: "Open Bot conversation" })).toBeTruthy();
 });

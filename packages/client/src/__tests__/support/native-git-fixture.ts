@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { RuntimeProxyAdapterStreamRequest } from "../../runtime/runtime-proxy-loopback-adapter.js";
 
@@ -9,7 +9,9 @@ const exec = promisify(execFile);
 /** Real Git smart HTTP without internet, host credentials, or a second TCP listener. */
 export async function nativeGitFixture(root: string) {
   const env = {
-    PATH: process.env.PATH,
+    PATH: process.env.OPENTAG_TEST_GIT_BINARY
+      ? `${dirname(process.env.OPENTAG_TEST_GIT_BINARY)}:${process.env.PATH}`
+      : process.env.PATH,
     HOME: root,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",

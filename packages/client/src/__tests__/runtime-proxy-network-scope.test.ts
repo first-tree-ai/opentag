@@ -71,7 +71,10 @@ async function closeServer(server: net.Server | https.Server): Promise<void> {
 }
 
 /** Real TLS fixture for `fixture.test` signed by a private CA; only this test's curl trusts it. */
-async function createHttpsFixture(root: string): Promise<{
+async function createHttpsFixture(
+  root: string,
+  git = false,
+): Promise<{
   caPath: string;
   hits: number;
   port: number;
@@ -120,7 +123,7 @@ async function createHttpsFixture(root: string): Promise<{
     ],
     { timeout: 30_000 },
   );
-  await writeFile(extensionPath, "subjectAltName=DNS:fixture.test\nbasicConstraints=critical,CA:FALSE\n");
+  await writeFile(extensionPath, "subjectAltName=DNS:fixture.test,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\n");
   await execFileAsync(
     "openssl",
     [
@@ -147,7 +150,8 @@ async function createHttpsFixture(root: string): Promise<{
     { key: await readFile(serverKeyPath), cert: await readFile(serverPath) },
     (_request, response) => {
       state.hits += 1;
-      response.end("ok");
+      if (git) response.setHeader("content-type", "application/x-git-upload-pack-advertisement");
+      response.end(git ? "001e# service=git-upload-pack\n00000000" : "ok");
     },
   );
   state.port = await listen(server);
@@ -440,6 +444,48 @@ describe("runtime proxy network scope", () => {
       provider: "github",
     });
     expect(requests[0]?.headers["x-opentag-provider-origin"]).toBe("github.com");
+  });
+
+  it("preserves caller CA file/directory for non-GitHub HTTPS while pinning GitHub to its execution CA", async () => {
+    const root = await temporaryRoot("opentag-git-caller-ca-");
+    const fixture = await createHttpsFixture(root, true);
+    teardowns.push(() => closeServer(fixture.server));
+    const config = join(root, "gitconfig"),
+      launcher = join(root, "git");
+    const executionCa = join(root, "execution", "ca.pem");
+    await writeFile(
+      config,
+      renderRuntimeProxyGitConfig({ caCertPath: executionCa, connectProxyUrl: "http://127.0.0.1:18080" }),
+    );
+    await writeFile(launcher, renderRuntimeProxyProviderLauncher("git"), { mode: 0o700 });
+    const env = childEnvironment(root, {
+      GIT_CONFIG_GLOBAL: config,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_SSL_CAINFO: fixture.caPath,
+      GIT_SSL_CAPATH: root,
+    });
+    const query = async (key: string, url: string) =>
+      (await execFileAsync(launcher, ["config", "--get-urlmatch", key, url], { cwd: root, env })).stdout.trim();
+    const foreign = `https://127.0.0.1:${fixture.port}/repo.git`;
+    expect(await query("http.sslCAInfo", foreign)).toBe(fixture.caPath);
+    expect(await query("http.sslCAPath", foreign)).toBe(root);
+    expect(await query("http.sslCAInfo", "https://github.com/team/repo.git")).toBe(executionCa);
+    expect(await query("http.sslCAPath", "https://github.com/team/repo.git")).toBe(join(root, "execution"));
+    // The private CA must be necessary, and the same Git request must work when the caller supplies it.
+    await expect(
+      execFileAsync(launcher, ["ls-remote", foreign], {
+        cwd: root,
+        env: childEnvironment(root, { GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: "1" }),
+        timeout: 15000,
+      }),
+    ).rejects.toBeDefined();
+    expect(fixture.hits).toBe(0);
+    await expect(
+      execFileAsync(launcher, ["ls-remote", foreign], { cwd: root, env, timeout: 15000 }),
+    ).resolves.toMatchObject({ stdout: "" });
+    expect(fixture.hits).toBeGreaterThan(0);
+    expect(env.GIT_SSL_CAINFO).toBe(fixture.caPath);
+    expect(env.GIT_SSL_CAPATH).toBe(root);
   });
 
   it("scopes routing to a provider launcher process without touching the caller environment", async () => {

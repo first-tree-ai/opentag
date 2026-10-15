@@ -393,6 +393,10 @@ export function agentSlackConfigurationPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/im-binding/slack/configuration`;
 }
 
+export function agentSlackAutoSetupPath(agentId: string): string {
+  return `${agentSlackConfigurationPath(agentId)}/auto`;
+}
+
 export function githubIntegrationPath(): string {
   return GITHUB_INTEGRATION_PATH;
 }

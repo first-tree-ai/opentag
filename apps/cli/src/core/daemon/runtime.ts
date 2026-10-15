@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import { arch, hostname, platform } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   type ClientLogger,
   type ComposedClientRuntime,
@@ -32,6 +34,17 @@ import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
 import { DaemonServiceError } from "./service/types.js";
 import { resolveWebToolsOptIn } from "./web-tools.js";
+
+export function resolveSlackAutoSetupCliEntry(moduleUrl = import.meta.url): string | undefined {
+  try {
+    // Bundles live at dist/ for npm and app/ for portable installs, both beside cli/index.mjs.
+    const entry = fileURLToPath(new URL("./cli/index.mjs", moduleUrl));
+    return statSync(entry).isFile() ? entry : undefined;
+  } catch {
+    // Source embeddings or incomplete installs must not prevent the Computer from starting.
+    return undefined;
+  }
+}
 
 export interface DaemonAutoUpdateOverrides {
   /** Force attaching or skipping the updater; defaults to portable installs on non-dev channels. */
@@ -250,6 +263,7 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     credentialMode: resolveRuntimeCredentialMode(context.daemonEnvironment),
     clientVersion: CLI_VERSION,
     cliCommand: channelConfig.binName,
+    slackAutoSetupCliEntry: resolveSlackAutoSetupCliEntry(),
     logger: runtimeLogger,
     signal,
     api: apiContext.api,

@@ -36,8 +36,16 @@ function toml(value: unknown): string {
   return JSON.stringify(value);
 }
 
+async function legacyGit(env: NodeJS.ProcessEnv): Promise<boolean> {
+  const version = (await run("git", ["--version"], { env })).stdout.match(/git version (\d+)\.(\d+)/);
+  return version?.[1] === "2" && Number(version[2]) < 47;
+}
+function foreignProxy(legacy: boolean, adapter: RuntimeProxyLoopbackAdapter): string {
+  return legacy ? adapter.connectProxyUrl : `socks5h://localhost${adapter.githubGitSocketPath}`;
+}
+
 describe.skipIf(process.platform === "win32")("native Git execution-local transport (offline)", () => {
-  it("preserves real Git commits and sandbox boundaries, rejecting unsupported Git before dispatch", async () => {
+  it("preserves real Git commits and sandbox boundaries, with CONNECT compatibility for older Git", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "ot-git-")));
     const fixture = await nativeGitFixture(root);
     const store = new RuntimeProxyMaterialStore({ home: root });
@@ -121,16 +129,15 @@ describe.skipIf(process.platform === "win32")("native Git execution-local transp
         (await execute(join(store.shimDir(sessionId), "git"), args, cwd, patch)).stdout.trim();
       const url = "https://github.com/team/fixture.git",
         checkout = join(root, "checkout");
-      const version = (await run("git", ["--version"], { env: fixture.env })).stdout.match(/git version (\d+)\.(\d+)/);
-      if (version?.[1] === "2" && Number(version[2]) < 47) {
-        await expect(git(["ls-remote", url])).rejects.toMatchObject({
-          stderr: expect.stringContaining("Git 2.47 or later"),
-        });
+      const legacy = await legacyGit(fixture.env);
+      if (legacy && sandboxed) {
+        await expect(git(["ls-remote", url])).rejects.toBeDefined();
         expect(fixture.requests).toEqual([]);
         return;
       }
       expect(await git(["ls-remote", url])).toContain("refs/heads/main");
       await git(["clone", url, checkout]);
+      expect(await git(["config", "--get", "remote.origin.url"], checkout)).toBe(url);
       expect(await readFile(join(checkout, "file.txt"), "utf8")).toBe(fixture.initial);
       await git(["checkout", "-b", "opentag/task"], checkout);
       await writeFile(join(checkout, "file.txt"), "updated\n");
@@ -149,7 +156,7 @@ describe.skipIf(process.platform === "win32")("native Git execution-local transp
       await expect(
         git([
           "-c",
-          `http.https://foreign.invalid.proxy=socks5h://localhost${adapter.githubGitSocketPath}`,
+          `http.https://foreign.invalid.proxy=${foreignProxy(legacy, adapter)}`,
           "ls-remote",
           "https://foreign.invalid/team/fixture.git",
         ]),
@@ -162,8 +169,9 @@ describe.skipIf(process.platform === "win32")("native Git execution-local transp
       if (sandboxed) {
         // Exact Unix grants do not authorize another execution or even the existing loopback proxy.
         await expect(
-          git(["-c", `http.https://github.com.proxy=${adapter.connectProxyUrl}`, "ls-remote", url]),
+          git(["-c", `http.http://github.com.proxy=${adapter.connectProxyUrl}`, "ls-remote", url]),
         ).rejects.toBeDefined();
+        await expect(git(["ls-remote", "https://github.com:443/team/fixture.git"])).rejects.toBeDefined();
         let foreignHits = 0;
         const foreign = await RuntimeProxyLoopbackAdapter.start({
           githubApiSocket: true,
@@ -180,7 +188,7 @@ describe.skipIf(process.platform === "win32")("native Git execution-local transp
           await expect(
             git([
               "-c",
-              `http.https://github.com.proxy=socks5h://localhost${foreign.githubGitSocketPath}`,
+              `http.http://github.com.proxy=socks5h://localhost${foreign.githubGitSocketPath}`,
               "ls-remote",
               url,
             ]),

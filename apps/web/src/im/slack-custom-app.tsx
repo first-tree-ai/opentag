@@ -15,6 +15,7 @@ import {
   slackBotConversationUrl,
   slackBotDisplayName,
 } from "./slack-app-manifest.js";
+import { SlackAutoConnect } from "./slack-auto-connect.js";
 import { slackConfigurationMessage } from "./slack-configuration.js";
 
 interface Props {
@@ -33,6 +34,8 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<SlackConfigurationView>();
   const [busy, setBusy] = useState(false);
+  const [autoResume, setAutoResume] = useState(false);
+  const [autoConfigured, setAutoConfigured] = useState(false);
   const [error, setError] = useState<string>();
   const saving = useRef(false);
   const mounted = useRef(true);
@@ -55,16 +58,19 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
   function close() {
     if (saving.current) return;
     setEditing(undefined);
+    setAutoResume(false);
     setError(undefined);
     setOpen(false);
   }
   function start() {
     if (!view) return;
     setError(undefined);
+    setAutoResume(false);
     setEditing(view.allowedIntent === "create" || view.binding?.reauthorizationRequired ? view : undefined);
     setOpen(true);
   }
   function update() {
+    setAutoResume(false);
     if (view?.allowedIntent !== "reauthorize") return;
     setError(undefined);
     setEditing(view);
@@ -78,6 +84,7 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
     return current.id === expected.bindingId && current.credentialGeneration > expected.credentialGeneration;
   }
   function finishSave() {
+    setAutoResume(false);
     if (!mounted.current) return;
     setEditing(undefined);
     onSaved();
@@ -133,9 +140,48 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
               />
             ) : null}
             {editing ? (
-              <SlackCredentialForm agentId={agentId} view={editing} busy={busy} onSave={save} onCancel={close} />
+              editing.allowedIntent === "create" || autoResume ? (
+                <>
+                  <SlackAutoConnect
+                    agentId={agentId}
+                    resume={autoResume}
+                    onBusy={setBusy}
+                    onConnected={async () => {
+                      setAutoConfigured(true);
+                      await configuration.refetch();
+                      finishSave();
+                    }}
+                  />
+                  <Collapsible.Root>
+                    <Collapsible.Trigger render={<Button variant="ghost" type="button" />}>
+                      {m.im_slack_auto_manual()}
+                    </Collapsible.Trigger>
+                    <Collapsible.Panel className="pt-3">
+                      <SlackCredentialForm
+                        agentId={agentId}
+                        view={editing}
+                        busy={busy}
+                        onSave={save}
+                        onCancel={close}
+                      />
+                    </Collapsible.Panel>
+                  </Collapsible.Root>
+                </>
+              ) : (
+                <SlackCredentialForm agentId={agentId} view={editing} busy={busy} onSave={save} onCancel={close} />
+              )
             ) : (
-              <SlackAppStatus view={view} onUpdate={update} onOAuth={onOAuth} onClose={close} />
+              <SlackAppStatus
+                view={view}
+                onUpdate={update}
+                onOAuth={onOAuth}
+                onClose={close}
+                autoConfigured={autoConfigured}
+                onAutoResume={() => {
+                  setAutoResume(true);
+                  setEditing(view);
+                }}
+              />
             )}
           </div>
         </Dialog>
@@ -378,11 +424,15 @@ function SlackAppStatus({
   onUpdate,
   onOAuth,
   onClose,
+  autoConfigured,
+  onAutoResume,
 }: {
   view: SlackConfigurationView;
   onUpdate: () => void;
   onOAuth?: () => void;
   onClose: () => void;
+  autoConfigured?: boolean;
+  onAutoResume: () => void;
 }) {
   const identity = view.binding?.identity;
   if (identity?.provider !== "slack") return null;
@@ -392,9 +442,18 @@ function SlackAppStatus({
     <>
       <strong>{view.binding?.bot.displayName ?? identity.appId}</strong>
       <span className="text-sm text-kumo-subtle">{identity.teamId}</span>
-      <Banner role="status" variant="secondary" description={slackSetupStatus(view)} />
+      <Banner
+        role="status"
+        variant="secondary"
+        description={pending && autoConfigured ? m.im_slack_auto_saved() : slackSetupStatus(view)}
+      />
       <div className="flex flex-wrap gap-3">
-        {pending && !view.binding?.lastInboundAt ? (
+        {pending && view.preferredRecovery !== "oauth" ? (
+          <Button variant="secondary" onClick={onAutoResume}>
+            {m.im_slack_auto_resume()}
+          </Button>
+        ) : null}
+        {pending && !view.binding?.lastInboundAt && !autoConfigured ? (
           <a className={buttonClassName({ variant: "secondary" })} href={appSettings} target="_blank" rel="noreferrer">
             {m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })}
           </a>

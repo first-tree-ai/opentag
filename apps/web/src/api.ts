@@ -63,6 +63,7 @@ import {
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
+  agentSlackAutoSetupPath,
   agentSlackConfigurationPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
@@ -179,6 +180,9 @@ import {
   type SkillDetail,
   SkillDetailSchema,
   SlackAgentProvisionCodeResponseSchema,
+  type SlackAutoSetupRequest,
+  type SlackAutoSetupResponse,
+  SlackAutoSetupResponseSchema,
   type SlackConfigurationResult,
   SlackConfigurationResultSchema,
   type SlackConfigurationView,
@@ -609,6 +613,14 @@ export class BrowserApi {
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {
     return this.request(agentSlackOAuthStartPath(agentId), StartSlackOAuthResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  autoSetupSlack(agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
+    return this.request(agentSlackAutoSetupPath(agentId), SlackAutoSetupResponseSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },

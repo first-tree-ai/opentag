@@ -52,6 +52,7 @@ import { RuntimeApprovalOwner } from "./runtime/runtime-approval-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { SlackAutoSetupOwner } from "./runtime/slack-auto-setup-owner.js";
 import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";
 import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree-operations.js";
@@ -65,6 +66,7 @@ import {
   CloudAgentRuntimeTester,
   DatabaseAgentOwnerResolver,
 } from "./services/agents/index.js";
+import { SlackAutoSetupService } from "./services/agents/slack-auto-setup-service.js";
 import {
   AuthService,
   ConnectCodeService,
@@ -818,6 +820,7 @@ export async function startServer(): Promise<void> {
     const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
     const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
+    const slackAutoSetupOwner = new SlackAutoSetupOwner(registry);
     const agentService = new AgentService(database, {
       ...optionalCloudUsage(config, cloudUsage),
       cloudIdentitiesEnabled: cloudIdentities.enabled,
@@ -1138,6 +1141,13 @@ export async function startServer(): Promise<void> {
       imBindingService,
       feishuSetupService,
       slackConfiguration: {
+        autoSetup: new SlackAutoSetupService({
+          agents: agentService,
+          slack: slackConfigurationService,
+          owner: slackAutoSetupOwner,
+          publicOrigin: config.publicUrl,
+          officialSigningSecret: config.slackOAuth?.signingSecret,
+        }),
         service: slackConfigurationService,
         publicOrigin: config.publicUrl,
         officialSigningSecret: config.slackOAuth?.signingSecret,
@@ -1189,6 +1199,7 @@ export async function startServer(): Promise<void> {
         registry,
         domainOwner,
         agentRuntimeTestOwner,
+        slackAutoSetupOwner,
         agentRuntimeOptionsOwner,
         contextTreeOperationOwner,
         providerCliReconcileOwner,

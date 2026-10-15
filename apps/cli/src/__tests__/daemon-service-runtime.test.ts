@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -38,7 +39,12 @@ vi.mock("../core/daemon/ownership.js", async (importOriginal) => {
 import { CLI_VERSION } from "../build-info.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
 import { resolveDaemonPaths } from "../core/daemon/paths.js";
-import { runDaemonLifecycle, runDaemonService, runDaemonServiceEntry } from "../core/daemon/runtime.js";
+import {
+  resolveSlackAutoSetupCliEntry,
+  runDaemonLifecycle,
+  runDaemonService,
+  runDaemonServiceEntry,
+} from "../core/daemon/runtime.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -46,6 +52,42 @@ afterEach(async () => {
   delete process.env.OPENTAG_SERVICE_MODE;
   delete process.env.OPENTAG_RUNTIME_CREDENTIAL_MODE;
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+it.each([
+  ["portable", "open-tag"],
+  ["portable", "open-tag-staging"],
+  ["npm", "open-tag"],
+  ["npm", "open-tag-staging"],
+])("finds the capture entry in a shipped %s layout for %s without package self-resolution", async (layout, name) => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-cli-layout-"));
+  directories.push(root);
+  const portable = layout === "portable";
+  const app = portable ? join(root, "versions/v1/app") : join(root, "lib/node_modules", name ?? "");
+  const bundle = join(app, portable ? "program.mjs" : "dist/program.mjs");
+  const entry = join(dirname(bundle), "cli/index.mjs");
+  await mkdir(dirname(entry), { recursive: true });
+  // Portable's generated manifest deliberately has no exports and no node_modules self-reference.
+  await writeFile(
+    join(app, "package.json"),
+    JSON.stringify({
+      name,
+      type: "module",
+      bin: { opentag: portable ? "./cli/index.mjs" : "./dist/cli/index.mjs" },
+      ...(!portable ? { exports: { ".": "./dist/index.mjs" } } : {}),
+    }),
+  );
+  await writeFile(bundle, "");
+  await writeFile(entry, "");
+  expect(resolveSlackAutoSetupCliEntry(pathToFileURL(bundle).href)).toBe(entry);
+  await rm(entry);
+  expect(resolveSlackAutoSetupCliEntry(pathToFileURL(bundle).href)).toBeUndefined();
+  await mkdir(entry);
+  expect(resolveSlackAutoSetupCliEntry(pathToFileURL(bundle).href)).toBeUndefined();
+});
+it("contains invalid module locations to the Slack feature", () => {
+  expect(resolveSlackAutoSetupCliEntry("https://example.invalid/bundle.mjs")).toBeUndefined();
+  expect(resolveSlackAutoSetupCliEntry("invalid-url")).toBeUndefined();
 });
 
 describe("daemon service runtime", () => {
@@ -242,6 +284,8 @@ describe("daemon service runtime", () => {
       credentialMode: "legacy",
     });
     expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
+    // Source-only startup has no packaged sibling entry; the daemon still composes and runs.
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].slackAutoSetupCliEntry).toBeUndefined();
     expect(run).toHaveBeenCalledOnce();
     expect(stop).not.toHaveBeenCalled();
   });

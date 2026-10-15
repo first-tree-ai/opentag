@@ -87,3 +87,7 @@ jobs:
           OPENTAG_TEST_GIT_BINARY: /usr/bin/git
           OPENTAG_TEST_CODEX_BINARY: ""
         run: pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-git.test.ts --maxWorkers=1
+      - name: Concurrent Cloud native Git and gh fixtures
+        if: runner.os == 'Linux'
+        shell: bash
+        run: pnpm --filter @opentag/client exec vitest run src/__tests__/github-native-git.test.ts src/__tests__/github-native-gh.test.ts --maxWorkers=2 --testNamePattern 'Cloud published transport'

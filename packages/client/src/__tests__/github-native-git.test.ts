@@ -11,12 +11,12 @@ import {
   listenBridgeProxySockets,
   publishExecutionMaterial,
 } from "../cloud-runtime/bridge-material.js";
-import { CLOUD_EXECUTION_MOUNT, CLOUD_SANDBOX_CA_DESTINATION } from "../cloud-runtime/sandbox-entry.js";
 import { CodexAppServerProcess } from "../providers/codex/app-server-wire.js";
 import { CODEX_EXECUTION_PERMISSIONS, codexSocketPermissions } from "../providers/codex/socket-permissions.js";
 import type { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { buildRuntimeProxyEnvironment, RuntimeProxyMaterialStore } from "../runtime/runtime-proxy-material.js";
+import { cloudEntryFixture } from "./support/cloud-entry-fixture.js";
 import { nativeGitFixture } from "./support/native-git-fixture.js";
 import { skipUnsupportedNativeTls } from "./support/native-tls-probe.js";
 
@@ -247,11 +247,8 @@ describe.skipIf(process.platform !== "linux")("native Git Cloud published transp
         publicMountPath: published,
       });
       await listenBridgeProxySockets(resources, adapter, published);
-      const entry = (await readFile(join(published, "entry.mjs"), "utf8"))
-        .replaceAll(CLOUD_EXECUTION_MOUNT, published)
-        .replaceAll(CLOUD_SANDBOX_CA_DESTINATION, join(root, "sandbox-home", "ca.pem"))
-        .replaceAll("/tmp/opentag", join(root, "cli"))
-        .replaceAll("/home/runner", join(root, "sandbox-home"));
+      const originalGitConfig = await readFile(join(published, "gitconfig"), "utf8");
+      const entry = await cloudEntryFixture(published, root);
       const path = join(published, "fixture-entry.mjs");
       await writeFile(path, entry, { mode: 0o444 });
       const identity = process.getuid?.() === 0 ? { uid: 65534, gid: 65534 } : {};
@@ -275,6 +272,7 @@ describe.skipIf(process.platform !== "linux")("native Git Cloud published transp
       expect(await fixture.git(fixture.repository, ["cat-file", "commit", sha])).toBe(raw);
       expect(raw).toContain("author Original Author <author@example.invalid>");
       expect(raw).toContain("committer Original Committer <committer@example.invalid>");
+      expect(await readFile(join(published, "gitconfig"), "utf8")).toBe(originalGitConfig);
       for (const filename of ["gitconfig", "environment.json"]) {
         const material = await readFile(join(published, filename), "utf8");
         expect(material).not.toContain(adapter.githubGitSocketPath);

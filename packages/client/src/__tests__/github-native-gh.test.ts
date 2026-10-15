@@ -12,13 +12,13 @@ import {
   listenBridgeProxySockets,
   publishExecutionMaterial,
 } from "../cloud-runtime/bridge-material.js";
-import { CLOUD_EXECUTION_MOUNT, CLOUD_SANDBOX_CA_DESTINATION } from "../cloud-runtime/sandbox-entry.js";
 import { CodexAppServerProcess } from "../providers/codex/app-server-wire.js";
 import { CODEX_EXECUTION_PERMISSIONS, codexSocketPermissions } from "../providers/codex/socket-permissions.js";
 import type { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyDataError } from "../runtime/runtime-proxy-data-client.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { buildRuntimeProxyEnvironment, RuntimeProxyMaterialStore } from "../runtime/runtime-proxy-material.js";
+import { cloudEntryFixture } from "./support/cloud-entry-fixture.js";
 
 const binary = process.env.OPENTAG_TEST_GH_BINARY;
 const run = promisify(execFile);
@@ -314,13 +314,8 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
       expect((await stat(ghConfig)).mode & 0o777).toBe(0o444);
       await listenBridgeProxySockets(resources, adapter, published);
       expect(adapter.githubApiSocketPath).toBeUndefined();
-      // Remap fixed container filesystem locations to the isolated test root only. The stock
-      // entry still owns both loopback ports, CA copying, manifest loading and process cleanup.
-      const entry = (await readFile(join(published, "entry.mjs"), "utf8"))
-        .replaceAll(CLOUD_EXECUTION_MOUNT, published)
-        .replaceAll(CLOUD_SANDBOX_CA_DESTINATION, join(root, "sandbox-home", "ca.pem"))
-        .replaceAll("/tmp/opentag", join(root, "cli"))
-        .replaceAll("/home/runner", join(root, "sandbox-home"));
+      // Remap the container namespace while keeping CA copying, manifest loading and cleanup.
+      const entry = await cloudEntryFixture(published, root);
       const fixtureEntry = join(published, "entry-fixture.mjs");
       await writeFile(fixtureEntry, entry, { mode: 0o444, flag: "wx" });
       expect((await stat(join(published, "entry.mjs"))).mode & 0o777).toBe(0o444);

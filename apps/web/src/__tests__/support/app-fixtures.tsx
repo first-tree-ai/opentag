@@ -912,7 +912,7 @@ export function installApi(
       }
       if (!options.bound) return new Response(null, { status: 204 });
       return json({
-        id: crypto.randomUUID(),
+        id: options.provider === "slack" ? agentId : crypto.randomUUID(),
         agentId,
         provider: options.provider ?? "feishu",
         bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active"),

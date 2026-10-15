@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { App } from "../app.js";
+import { pendingSlackConfiguration, setupSlackConfiguration } from "../onboarding-v2/agent-setup-test-fixtures.js";
 import { agentId, computerId, installApi, json, resetWebAppState } from "./support/app-fixtures.js";
 import { withLocaleAsync } from "./support/with-locale.js";
 
@@ -601,3 +602,47 @@ function markProvider(button: HTMLElement): string | undefined {
   const src = button.querySelector("img")?.getAttribute("src");
   return src ? /<title>([^<]+)<\/title>/.exec(decodeURIComponent(src))?.[1] : undefined;
 }
+
+it("keeps manual Slack verification open when settings refresh to a bound Agent", async () => {
+  vi.restoreAllMocks();
+  resetWebAppState();
+  installApi({ bound: false });
+  let view = setupSlackConfiguration();
+  vi.spyOn(browserApi, "slackConfiguration").mockImplementation(async () => view);
+  const binding = vi.spyOn(browserApi, "imBinding").mockImplementation(async () => view.binding ?? undefined);
+  const save = vi.spyOn(browserApi, "saveSlackConfiguration").mockImplementation(async () => {
+    view = pendingSlackConfiguration();
+    return {
+      agentId,
+      imBindingId: agentId,
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      credentialGeneration: 1,
+      bindingState: "active",
+      identityClosure: { status: "pending", verifiedAt: null },
+    };
+  });
+  window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+  render(<App />);
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Manual setup" }));
+  fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "test-token" } });
+  fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "test-secret" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(binding.mock.calls.length).toBeGreaterThan(1));
+  expect(document.querySelector('[data-ui="messaging-app-identity"]')).toBeTruthy();
+  const dialog = await screen.findByRole("dialog", { name: "Connect Slack" });
+  expect(
+    within(dialog).getByText("In Event Subscriptions, confirm Verified and select Save Changes, then send a message."),
+  ).toBeTruthy();
+  expect(within(dialog).getByRole("link", { name: "Open settings" })).toHaveProperty(
+    "href",
+    "https://api.slack.com/apps/A1/event-subscriptions",
+  );
+  expect(within(dialog).queryByLabelText("Bot Token")).toBeNull();
+  expect(save).toHaveBeenCalledTimes(1);
+});

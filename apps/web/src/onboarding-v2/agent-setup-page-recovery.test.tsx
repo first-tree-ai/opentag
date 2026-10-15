@@ -379,7 +379,7 @@ describe("AgentSetupPage messaging recovery", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
-    expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
     expect(screen.queryByRole("button", { name: "Update permissions" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
   });

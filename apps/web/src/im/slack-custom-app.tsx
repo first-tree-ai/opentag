@@ -86,6 +86,8 @@ function SlackCustomAppFlow({
   const configuration = useQuery({
     queryKey: ["slack-configuration", agentId, bindingId],
     queryFn: () => api.slackConfiguration(agentId),
+    // A new binding key must not remove the open post-save verification dialog.
+    placeholderData: (previous) => previous,
     retry: false,
     refetchInterval: (query) => (open && !editing && query.state.data?.handoff?.handoffReady === false ? 2_000 : false),
     refetchIntervalInBackground: false,
@@ -160,6 +162,7 @@ function SlackCustomAppFlow({
     <>
       <SlackConfigurationEntry
         view={view}
+        bindingId={bindingId}
         busy={busy}
         renderTrigger={renderTrigger}
         trigger={trigger}
@@ -229,6 +232,7 @@ function SlackCustomAppFlow({
 
 function SlackConfigurationEntry({
   view,
+  bindingId,
   busy,
   renderTrigger,
   trigger,
@@ -238,6 +242,7 @@ function SlackConfigurationEntry({
   onEdit,
 }: {
   view?: SlackConfigurationView;
+  bindingId?: string;
   busy: boolean;
   renderTrigger?: Props["renderTrigger"];
   trigger: RefObject<HTMLButtonElement | null>;
@@ -246,9 +251,10 @@ function SlackConfigurationEntry({
   onDisconnect?: () => void;
   onEdit: () => void;
 }) {
-  const disabled = busy || !view || Boolean(view.blockedReason);
+  const bindingMatches = !bindingId || view?.binding?.id === bindingId;
+  const disabled = busy || !view || Boolean(view.blockedReason) || !bindingMatches;
   if (renderTrigger) return renderTrigger({ onClick: onOpen, disabled, ref: trigger });
-  if (view && !view.blockedReason)
+  if (view && !view.blockedReason && bindingMatches)
     return (
       <SlackAppEntry
         view={view}
@@ -266,7 +272,7 @@ function SlackConfigurationEntry({
       disabled={disabled}
       icon={<ProviderIcon className="size-4" provider="slack" />}
     >
-      {m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
+      {bindingId ? m.im_slack_continue_setup() : m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
     </Button>
   );
 }

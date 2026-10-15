@@ -92,3 +92,13 @@ export function setupSlackConfiguration(
     handoff: bindingId ? { bindingState: "reauthorization_required", handoffReady: false } : null,
   };
 }
+
+export function pendingSlackConfiguration(bindingId = SETUP_AGENT_ID): SlackConfigurationView {
+  const view = setupSlackConfiguration(bindingId);
+  if (!view.binding) throw new Error("Missing configuration fixture");
+  return {
+    ...view,
+    binding: { ...view.binding, bindingState: "active", reauthorizationRequired: false },
+    handoff: { bindingState: "active", handoffReady: false },
+  };
+}

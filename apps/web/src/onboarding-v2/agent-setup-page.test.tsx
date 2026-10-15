@@ -15,6 +15,7 @@ import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, browserApi } from ".
 import { AgentSetupPage, BOUNDED_POLL_ATTEMPTS, BOUNDED_POLL_WINDOW_MS, SETUP_POLL_MS } from "./agent-setup-page.js";
 import {
   deferred,
+  pendingSlackConfiguration,
   SETUP_AGENT_ID,
   SETUP_COMPUTER_ID,
   SETUP_COMPUTER_IDENTITY,
@@ -2273,5 +2274,57 @@ describe("AgentSetupSurface integration seam", () => {
 
     expect(document.querySelector('[data-ui="agent-setup"]')).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
+  });
+});
+
+describe("AgentSetupPage manual Slack verification", () => {
+  it.each(["local", "cloud"] as const)("keeps verification open after saving on %s", async (kind) => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      ...(kind === "cloud" ? { cloudService: { available: true } } : {}),
+    });
+    let view = setupSlackConfiguration();
+    vi.mocked(browserApi.slackConfiguration).mockImplementation(async () => view);
+    const save = vi.spyOn(browserApi, "saveSlackConfiguration").mockImplementation(async () => {
+      await memory.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" });
+      memory.controls.completeSlackInstall();
+      const bindingId = await currentBindingId(memory.adapter);
+      view = pendingSlackConfiguration(bindingId);
+      return {
+        agentId: SETUP_AGENT_ID,
+        imBindingId: bindingId,
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        credentialGeneration: 1,
+        bindingState: "active",
+        identityClosure: { status: "pending", verifiedAt: null },
+      };
+    });
+    renderSetup(memory.adapter);
+    await settle();
+    continueFromPreparation();
+    await settle();
+    fireEvent.click(messagingChoice(/Slack/));
+    await settle();
+    if (kind === "local") fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+    fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "test-token" } });
+    fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "test-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await settle(20);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect((await memory.adapter.readSnapshot(SETUP_AGENT_ID)).messaging.kind).toBe("waiting-handoff");
+    const dialog = screen.getByRole("dialog", { name: "Connect Slack" });
+    expect(
+      within(dialog).getByText(
+        "In Event Subscriptions, confirm Verified and select Save Changes, then send a message.",
+      ),
+    ).toBeTruthy();
+    expect(within(dialog).getByRole("link", { name: "Open settings" })).toHaveProperty(
+      "href",
+      "https://api.slack.com/apps/A1/event-subscriptions",
+    );
+    expect(within(dialog).queryByLabelText("Bot Token")).toBeNull();
+    expect(within(dialog).queryByLabelText("Signing Secret")).toBeNull();
   });
 });

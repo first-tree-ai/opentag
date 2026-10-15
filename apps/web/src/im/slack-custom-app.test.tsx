@@ -297,6 +297,8 @@ describe("custom Slack App flow", () => {
     );
     expect(await screen.findByText("Update the server to connect Slack.")).toBeTruthy();
     expect(test.onOAuth).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: "Connect Slack" })).toBeNull();
   });
 
   it("polls pending setup until ready, then stops requesting unchanged configuration", async () => {

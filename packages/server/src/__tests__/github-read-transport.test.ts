@@ -140,9 +140,22 @@ describe("native Git over trusted smart HTTP", () => {
     await git(checkout, ["config", "user.email", "fixture@example.invalid"]);
     await git(checkout, ["checkout", "-b", "opentag/topic"]);
     await writeFile(join(checkout, "file.txt"), "updated\n");
-    await git(checkout, ["commit", "-am", "update"]);
+    await git(checkout, [
+      "-c",
+      "user.name=Original Committer",
+      "commit",
+      "--author=Original Author <author@example.invalid>",
+      "-am",
+      "update",
+    ]);
     await git(checkout, ["push", "origin", "HEAD"]);
     expect(await git(upstream, ["rev-parse", "opentag/topic"])).toBe(await git(checkout, ["rev-parse", "HEAD"]));
+    expect(await git(upstream, ["cat-file", "commit", "opentag/topic"])).toBe(
+      await git(checkout, ["cat-file", "commit", "HEAD"]),
+    );
+    expect(await git(upstream, ["cat-file", "commit", "opentag/topic"])).toContain(
+      "author Original Author <author@example.invalid>",
+    );
     await git(checkout, ["fetch", "origin"]);
     await expect(git(checkout, ["push", "origin", "HEAD:main"])).rejects.toThrow();
   });

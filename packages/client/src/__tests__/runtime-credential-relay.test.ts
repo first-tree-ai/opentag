@@ -690,7 +690,11 @@ describe("RuntimeCredentialEnvironmentManager", () => {
       try {
         expect(prepared.executionId).toBe(EXECUTION_ID);
         expect(prepared.providers).toEqual(["feishu", "github"]);
-        if (placement === "local") expect(prepared.allowedUnixSockets).toEqual([expect.stringMatching(/\/g\.sock$/)]);
+        if (placement === "local")
+          expect(prepared.allowedUnixSockets).toEqual([
+            expect.stringMatching(/\/g\.sock$/),
+            expect.stringMatching(/\/git\.sock$/),
+          ]);
         else expect(prepared.allowedUnixSockets).toBeUndefined();
         expect(prepared.provider).toBe("feishu");
         expect(prepared.slackApiHost).toBeUndefined();
@@ -709,6 +713,12 @@ describe("RuntimeCredentialEnvironmentManager", () => {
         expect(frozen.plan.provider).toBe("feishu");
         expect(frozen.plan).not.toHaveProperty("slackApiHost");
         const environment = manager.environmentForSession("session-1") ?? {};
+        const gitConfig = await readFile(environment.GIT_CONFIG_GLOBAL as string, "utf8");
+        if (placement === "local") expect(gitConfig).toContain("socks5h://localhost/");
+        else {
+          expect(gitConfig).not.toContain("socks5h:");
+          expect(gitConfig).toContain("http://127.0.0.1:");
+        }
         const envFile = await readFile(prepared.path, "utf8");
         expect(environment.GH_TOKEN).toMatch(/^otrh_/);
         expect(envFile).toContain(environment.GH_TOKEN as string);

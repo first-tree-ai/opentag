@@ -231,7 +231,7 @@ if [ ! -r '${environmentFilePath.replaceAll("'", "'\"'\"'")}' ]; then
   exit 1
 fi
 . '${environmentFilePath.replaceAll("'", "'\"'\"'")}'
-exec "$real_binary" "$@"
+${binary === "git" ? renderRuntimeProxyGitPreamble() : ""}exec "$real_binary" "$@"
 `;
 }
 
@@ -255,6 +255,27 @@ export function renderRuntimeProxyScopePreamble(): string {
   CURL_CA_BUNDLE=$OPENTAG_PROVIDER_CA_PATH
   export HTTPS_PROXY https_proxy NO_PROXY no_proxy SSL_CERT_FILE CURL_CA_BUNDLE
 fi`;
+}
+
+/** Git 2.47 preserves SOCKS proxy paths; older Git silently dials localhost:1080 instead. */
+function renderRuntimeProxyGitPreamble(): string {
+  return `# Native sandbox controllers can inject a CA bundle after launch. Keep the URL-specific CA.
+unset GIT_SSL_CAINFO GIT_SSL_CAPATH
+if [ -r "$GIT_CONFIG_GLOBAL" ] && grep -q 'socks5h://localhost/' "$GIT_CONFIG_GLOBAL"; then
+  git_version=$("$real_binary" --version) || exit 1
+  git_version=\${git_version#git version }
+  git_major=\${git_version%%.*}
+  git_rest=\${git_version#*.}
+  git_minor=\${git_rest%%.*}
+  case "$git_major:$git_minor" in
+    :*|*:|*[!0-9:]*) echo "opentag: cannot verify native Git Unix proxy support" >&2; exit 1 ;;
+  esac
+  if [ "$git_major" -lt 2 ] || { [ "$git_major" -eq 2 ] && [ "$git_minor" -lt 47 ]; }; then
+    echo "opentag: Git 2.47 or later is required for the execution-private Unix proxy" >&2
+    exit 1
+  fi
+fi
+`;
 }
 
 /**
@@ -285,7 +306,7 @@ if [ -z "$real_binary" ]; then
   exit 127
 fi
 ${renderRuntimeProxyScopePreamble()}
-exec "$real_binary" "$@"
+${binary === "git" ? renderRuntimeProxyGitPreamble() : ""}exec "$real_binary" "$@"
 `;
 }
 
@@ -347,6 +368,7 @@ export class RuntimeProxyMaterialStore {
     readonly executionId: string;
     readonly handles: ReadonlyMap<RuntimeProxyProvider, string>;
     readonly githubApiSocketPath?: string;
+    readonly githubGitSocketPath?: string;
     readonly platform: NodeJS.Platform;
     readonly sessionId: string;
   }): Promise<RuntimeProxyExecutionLayout> {
@@ -373,7 +395,10 @@ export class RuntimeProxyMaterialStore {
         layout.gitConfigPath,
         renderRuntimeProxyGitConfig({
           caCertPath: routing.SSL_CERT_FILE,
-          connectProxyUrl: routing.HTTPS_PROXY,
+          connectProxyUrl:
+            github !== undefined && input.githubGitSocketPath
+              ? `socks5h://localhost${input.githubGitSocketPath}`
+              : routing.HTTPS_PROXY,
         }),
         0o600,
       );

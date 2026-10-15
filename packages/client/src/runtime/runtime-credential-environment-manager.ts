@@ -474,7 +474,7 @@ export class RuntimeCredentialEnvironmentManager {
     signal?.throwIfAborted();
     const layout = store.executionLayout(sessionId, relay.executionId);
     const handles = collectProxyHandles(relay);
-    const adapter = await this.#startProxyAdapter(relay, layout);
+    const adapter = await this.#startProxyAdapter(sessionId, relay, layout);
     try {
       const active = await this.#activateProxyExecution(sessionId, relay, store, layout, handles, adapter);
       return this.#preparedProxyResult(sessionId, relay, store, active);
@@ -495,12 +495,14 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   async #startProxyAdapter(
+    sessionId: string,
     relay: RuntimeCredentialRelay,
     layout: ReturnType<RuntimeProxyMaterialStore["executionLayout"]>,
   ): Promise<RuntimeProxyLoopbackAdapter> {
     return RuntimeProxyLoopbackAdapter.start({
       executionId: relay.executionId,
-      githubApiSocket: relay.providers.some((entry) => entry.provider === "github"),
+      githubApiSocket:
+        !this.#options.sandboxForSession?.(sessionId) && relay.providers.some((entry) => entry.provider === "github"),
       ...(this.#options.generateCa ? { generateCa: this.#options.generateCa } : {}),
       localHandleFor: (provider) => {
         try {
@@ -537,6 +539,7 @@ export class RuntimeCredentialEnvironmentManager {
       adapterCaCertPath: adapter.caCertPath,
       environment,
       githubApiSocketPath: adapter.githubApiSocketPath,
+      githubGitSocketPath: adapter.githubGitSocketPath,
       executionId: relay.executionId,
       handles,
       platform: this.#platform,
@@ -590,7 +593,11 @@ export class RuntimeCredentialEnvironmentManager {
   ): PreparedRuntimeCredentialEnvironment {
     return {
       ...(!this.#options.sandboxForSession?.(sessionId) && active.adapter.githubApiSocketPath
-        ? { allowedUnixSockets: [active.adapter.githubApiSocketPath] }
+        ? {
+            allowedUnixSockets: [active.adapter.githubApiSocketPath, active.adapter.githubGitSocketPath].filter(
+              (path): path is string => path !== undefined,
+            ),
+          }
         : {}),
       executionId: relay.executionId,
       environmentManifest: store.manifestPath(sessionId),

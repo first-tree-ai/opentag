@@ -573,7 +573,7 @@ describe("RuntimeConfigurationForm", () => {
       "Inherit local configuration",
     );
     expect(screen.getByRole("heading", { name: "Soul" })).toBeTruthy();
-    expect(screen.getByText("Tell OpenTag how you’d like it to respond and work.")).toBeTruthy();
+    expect(screen.getByText("Tell Reviewer how you’d like it to respond and work.")).toBeTruthy();
     expect(screen.queryByText("Choose a common model or enter a custom model ID.")).toBeNull();
     expect(screen.queryByText("Provider default lets the runtime choose.")).toBeNull();
     expect(screen.queryByText(/^OpenTag omits model and effort overrides/)).toBeNull();

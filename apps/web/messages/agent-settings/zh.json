@@ -103,7 +103,7 @@
   "agent_settings_edit_instructions_title": "编辑指令",
   "agent_settings_execution_save_failed": "无法保存模型设置，请重试。",
   "agent_settings_inherit_local": "继承本地配置",
-  "agent_settings_instructions_description": "告诉 OpenTag，你希望它如何回复、如何做事。",
+  "agent_settings_instructions_description": "告诉{agentName}，你希望它如何回复、如何做事。",
   "agent_settings_instructions_dialog_description": "这些指令会在 OpenTag 平台指导之外进一步指导此 Agent。",
   "agent_settings_instructions_label": "指令",
   "agent_settings_instructions_saved": "指令已保存。",

@@ -302,7 +302,7 @@ function RuntimeConfigurationEditor({
         >
           {section === "instructions" ? (
             <AgentSettingsPageHeader
-              description={m.agent_settings_instructions_description()}
+              description={m.agent_settings_instructions_description({ agentName: config.displayName })}
               id="agent-instructions-heading"
               title={m.agent_settings_instructions_title()}
             />
@@ -311,7 +311,9 @@ function RuntimeConfigurationEditor({
               <Text as="h3" id="agent-instructions-heading" variant="heading">
                 {m.agent_settings_instructions_title()}
               </Text>
-              <p className="text-sm text-kumo-subtle">{m.agent_settings_instructions_description()}</p>
+              <p className="text-sm text-kumo-subtle">
+                {m.agent_settings_instructions_description({ agentName: config.displayName })}
+              </p>
             </header>
           )}
           <form className="grid gap-4" onSubmit={saveInstructions}>

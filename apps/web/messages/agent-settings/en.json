@@ -103,7 +103,7 @@
   "agent_settings_edit_instructions_title": "Edit instructions",
   "agent_settings_execution_save_failed": "Couldn’t save the model settings. Try again.",
   "agent_settings_inherit_local": "Inherit local configuration",
-  "agent_settings_instructions_description": "Tell OpenTag how you’d like it to respond and work.",
+  "agent_settings_instructions_description": "Tell {agentName} how you’d like it to respond and work.",
   "agent_settings_instructions_dialog_description": "These instructions guide this Agent in addition to OpenTag's platform guidance.",
   "agent_settings_instructions_label": "Instructions",
   "agent_settings_instructions_saved": "Instructions saved.",

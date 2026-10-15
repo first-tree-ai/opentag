@@ -27,7 +27,7 @@ export const PROVIDER_PROXY_HEADER_MAX_BYTES = 16 * 1024;
 export const PROVIDER_PROXY_CHUNK_MAX_BYTES = 65_536;
 export const PROVIDER_PROXY_INITIAL_CREDIT_BYTES = 1_048_576;
 export const PROVIDER_PROXY_MAX_STREAMS_PER_EXECUTION = 8;
-export const PROVIDER_PROXY_MAX_STREAM_OPENS_PER_CONNECTION = 256;
+export const PROVIDER_PROXY_MAX_RETIRED_STREAMS = 256;
 export const PROVIDER_PROXY_STREAM_REVALIDATE_INTERVAL_MS = 5_000;
 export const PROVIDER_PROXY_AUTH_TIMEOUT_MS = 5_000;
 export const PROVIDER_PROXY_MAX_FRAME_BYTES = PROVIDER_PROXY_CHUNK_MAX_BYTES + 4;
@@ -506,7 +506,7 @@ const streamCreditBytesSchema = z
   .int()
   .min(1)
   .max(PROVIDER_PROXY_INITIAL_CREDIT_BYTES * 4);
-const streamMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const streamMethodSchema = z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 const streamPathSchema = byteString(8192, "The provider path exceeds the 8 KiB limit", 1);
 const streamHeadersSchema = z.record(
   z.string().min(1).max(128),
@@ -535,10 +535,13 @@ export const RuntimeProviderProxyOpenFrameSchema = z
   .strict();
 export type RuntimeProviderProxyOpenFrame = z.infer<typeof RuntimeProviderProxyOpenFrameSchema>;
 
+export const PROVIDER_PROXY_HTTP_PROTOCOL = "opentag-provider-http-v2";
+
 export const RuntimeProviderProxyReadyFrameSchema = z
   .object({
     type: z.literal("ready"),
     executionId,
+    httpVersion: z.literal(2).optional(),
   })
   .strict();
 export type RuntimeProviderProxyReadyFrame = z.infer<typeof RuntimeProviderProxyReadyFrameSchema>;

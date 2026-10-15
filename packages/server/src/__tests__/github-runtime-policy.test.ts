@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { GitHubConnectionStatus, RuntimeExecutionSource } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
-import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
 import type { RuntimeExecutionRecord } from "../runtime-credentials/types.js";
 import type { GitHubManagementService } from "../services/github/github-management-service.js";
 import { GitHubRuntimePolicy } from "../services/github-proxy/runtime-policy.js";
@@ -31,27 +30,6 @@ function connectionStatus(overrides: Partial<GitHubConnectionStatus> = {}): GitH
     lastErrorCode: null,
     createdAt: new Date(now).toISOString(),
     updatedAt: new Date(now).toISOString(),
-    ...overrides,
-  };
-}
-
-function proxyAuthorization(overrides: Partial<RuntimeProxyAuthorization> = {}): RuntimeProxyAuthorization {
-  return {
-    executionId: randomUUID(),
-    provider: "github",
-    bindingId: BINDING_ID,
-    purpose: "execution",
-    scopeHash: "a".repeat(64),
-    authorizationRevision: "github:7",
-    credentialGeneration: "3",
-    sessionId: SESSION,
-    accountId: ACCOUNT,
-    agentId: AGENT,
-    cli: { provider: "github", connectionId: BINDING_ID, authority: "user-task" },
-    resolveMaterial: async () => {
-      throw new Error("resolve() must not resolve credential material");
-    },
-    recheck: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -93,7 +71,6 @@ function fixture() {
   const policy = new GitHubRuntimePolicy({
     database,
     management: { getOverview, resolveRepository } as unknown as GitHubManagementService,
-    execution: { get: () => execution },
   });
   const input = () => ({ accountId: ACCOUNT, agentId: AGENT, sessionId: SESSION, source: execution.source });
   return {
@@ -168,54 +145,17 @@ describe("GitHub user-task authority", () => {
     });
     expect(await f.policy.admit(f.input())).toBeUndefined();
   });
-  it("resolves only the requested target and rechecks its live permission before use", async () => {
-    const f = fixture();
-    const auth = proxyAuthorization();
-    const [repository] = await f.policy.resolve(auth, new AbortController().signal, target);
-    expect(f.resolveRepository).toHaveBeenCalledWith(expect.objectContaining({ ...target, connectionId: BINDING_ID }));
-    expect(repository?.scopes).toEqual([{ role: "code", access: "read", publish: "pull_request" }]);
-    f.resolveRepository.mockRejectedValue(new Error("permission removed"));
-    await expect(repository?.recheck?.(new AbortController().signal)).rejects.toThrow("permission removed");
-  });
-  it("pins repository identity across requests and clears pins with execution lifetime", async () => {
-    const f = fixture();
-    const auth = proxyAuthorization();
-    const signal = new AbortController().signal;
-    await f.policy.resolve(auth, signal, target);
-    f.resolveRepository.mockResolvedValue({
-      installationId: "100",
-      repositoryId: "different",
-      fullName: target.fullName,
-      defaultBranch: "main",
-      authorizationVersion: 7n,
-      credentialGeneration: 3n,
-    });
-    await expect(f.policy.resolve(auth, signal, target)).rejects.toMatchObject({ code: "scope_denied" });
-    f.policy.forgetExecution(auth.executionId);
-    expect(await f.policy.resolve(auth, signal, target)).toHaveLength(1);
-  });
-
-  it("uses configured Tree targets as purpose and protects their default branch", async () => {
+  it("does not discover, pin or classify repositories, including configured Trees", async () => {
     const f = fixture();
     f.setConfigs([{ agentId: AGENT, contextTrees: [{ repository: target.fullName }] }]);
-    const [repository] = await f.policy.resolve(proxyAuthorization(), new AbortController().signal, {
-      ...target,
-      access: "write",
-    });
-    expect(repository?.scopes).toEqual([
-      { role: "context_tree", access: "write", publish: "direct", branch: "refs/heads/main" },
-    ]);
-    expect(repository?.protectedTreeRefs).toEqual(["refs/heads/main"]);
+    expect(await f.policy.admit(f.input())).toBeDefined();
+    f.resolveRepository.mockRejectedValue(new Error("No repository preflight"));
+    expect(await f.policy.admit(f.input())).toBeDefined();
+    expect(f.resolveRepository).not.toHaveBeenCalled();
   });
-  it("fences account/connection/version changes and aborts", async () => {
+  it("fences an account mismatch and cancellation", async () => {
     const f = fixture();
-    await expect(
-      f.policy.resolve(proxyAuthorization({ accountId: randomUUID() }), new AbortController().signal, target),
-    ).rejects.toMatchObject({ code: "scope_denied" });
-    f.connection.authorizationVersion = "8";
-    await expect(f.policy.resolve(proxyAuthorization(), new AbortController().signal, target)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
+    expect(await f.policy.admit({ ...f.input(), accountId: randomUUID() })).toBeUndefined();
     const abort = new AbortController();
     abort.abort();
     await expect(f.policy.admit({ ...f.input(), signal: abort.signal })).rejects.toThrow();

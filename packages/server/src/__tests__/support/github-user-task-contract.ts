@@ -18,16 +18,11 @@ import { RuntimeExecutionRegistry } from "../../runtime-credentials/execution-re
 import type { ProviderProxyRequest } from "../../runtime-credentials/provider-proxy-adapter.js";
 import { DatabaseAgentOwnerResolver } from "../../services/agents/agent-self-service.js";
 import type { GitHubManagementService } from "../../services/github/github-management-service.js";
-import { GitHubProxyApiTransport, jsonBody } from "../../services/github-proxy/api-transport.js";
-import { GitPublicationGuard } from "../../services/github-proxy/git-publication.js";
-import { GitReadTransport } from "../../services/github-proxy/git-read-transport.js";
-import { GitWorkspace } from "../../services/github-proxy/git-workspace.js";
 import { GitHubProviderAdapter } from "../../services/github-proxy/github-provider-adapter.js";
 import { GitHubRuntimePolicy } from "../../services/github-proxy/runtime-policy.js";
-import { GitHubUserTokenLeases } from "../../services/github-proxy/user-token-leases.js";
 import { ScheduleScheduler } from "../../services/schedules/scheduler.js";
 import { ScheduleService } from "../../services/schedules/service.js";
-import { scopedUserPayload, USER_TOKEN_NOW, userTokenFixture } from "./github-user-token-fixture.js";
+import { body } from "./github-proxy-fixture.js";
 
 /** Reused against embedded PostgreSQL and real PostgreSQL; no query-builder mocks. */
 export function githubUserTaskContract(database: () => DatabaseClient) {
@@ -124,7 +119,6 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     const policy = new GitHubRuntimePolicy({
       database: db,
       management: { getOverview: vi.fn(async () => ({ connection })) } as unknown as GitHubManagementService,
-      execution: { get: () => undefined },
     });
     const admit = (
       sessionId = session.id,
@@ -167,27 +161,15 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     denied = false,
     statusRead = false,
   ) {
-    const tokens = userTokenFixture();
-    const child = `ghu_scoped_user_${userId}`;
     f.connection.githubUserId = userId;
-    const permissions = {
-      contents: "read",
-      pull_requests: "read",
-      ...(statusRead ? { statuses: "read" } : {}),
-    } as const;
-    tokens.setPayload(scopedUserPayload(child, userId, { ...permissions, metadata: "read" }));
-    tokens.management.getExecutionUserCredential.mockImplementation(async (input) =>
-      input.accountId === f.account.id &&
-      input.connectionId === f.connection.id &&
-      input.authorizationRevision === "github:7"
-        ? {
-            accessToken: `ghu_parent_${userId}`,
-            githubUserId: userId,
-            credentialGeneration: 3n,
-            accessExpiresAt: new Date(USER_TOKEN_NOW.getTime() + 8 * 3_600_000),
-          }
-        : null,
-    );
+    const management = {
+      getExecutionUserCredential: vi.fn(async () => ({
+        accessToken: `ghu_parent_${userId}`,
+        githubUserId: userId,
+        credentialGeneration: 3n,
+        accessExpiresAt: new Date(Date.now() + 60000),
+      })),
+    };
     const executions = new RuntimeExecutionRegistry();
     const record = executions.open({
       runId: randomUUID(),
@@ -206,7 +188,6 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     });
     const policy = new GitHubRuntimePolicy({
       database: f.db,
-      execution: executions,
       management: {
         getOverview: async () => ({ connection: f.connection }),
         resolveRepository: async () => ({
@@ -232,24 +213,18 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       credentialGeneration: "3",
       cli: { provider: "github", connectionId: f.connection.id, authority: "user-task" },
       recheck: async () => {
-        if (!(await policy.admit({ ...record, source }))) throw new Error("Task no longer admitted");
+        if (!(await policy.admit({ ...record, source })))
+          throw Object.assign(new Error("Task no longer admitted"), { code: "scope_denied" });
       },
       resolveMaterial: async () => {
         throw new Error("No raw material goes to runtime");
       },
     };
-    const upstream = vi.fn<typeof fetch>(async (_url, init) => {
-      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${child}`);
-      return Response.json({ id: 123, full_name: "owner/repository", default_branch: "main" });
+    const upstream = vi.fn(async (input: { token: string }) => {
+      expect(input.token).toBe(`ghu_parent_${userId}`);
+      return { status: 200, headers: {}, body: body(JSON.stringify({ id: 123, full_name: "owner/repository" })) };
     });
-    const workspace = new GitWorkspace();
-    const adapter = new GitHubProviderAdapter({
-      policy,
-      leases: new GitHubUserTokenLeases(tokens.client),
-      api: new GitHubProxyApiTransport(upstream),
-      reads: new GitReadTransport({ workspace }),
-      publication: new GitPublicationGuard({ workspace }),
-    });
+    const adapter = new GitHubProviderAdapter({ management, transport: { request: upstream } });
     const request: ProviderProxyRequest = {
       executionId: record.executionId,
       sessionId,
@@ -258,7 +233,7 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
       method: "GET",
       path: statusRead ? "/repos/owner/repository/commits/main/status" : "/repos/owner/repository",
       headers: { "x-opentag-provider-origin": "api.github.com" },
-      body: jsonBody(null),
+      body: body(),
       capability: "fixture-capability",
       capabilityTtlSeconds: 60,
       signal: new AbortController().signal,
@@ -266,7 +241,6 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
     try {
       if (denied) {
         await expect(adapter.handle(request, authorization)).rejects.toMatchObject({ code: "scope_denied" });
-        expect(tokens.fetch).not.toHaveBeenCalled();
         expect(upstream).not.toHaveBeenCalled();
         return;
       }
@@ -275,16 +249,14 @@ export function githubUserTaskContract(database: () => DatabaseClient) {
         /* consume the bounded response */
       }
       expect(response.status).toBe(200);
-      expect(tokens.calls[0]?.body).toMatchObject({
-        access_token: `ghu_parent_${userId}`,
-        repository_ids: [123],
-        permissions,
+      expect(management.getExecutionUserCredential).toHaveBeenCalledWith({
+        accountId: f.account.id,
+        connectionId: f.connection.id,
+        authorizationRevision: "github:7",
       });
-      expect(tokens.calls.at(-1)?.body).toEqual({ access_token: child });
       expect(upstream).toHaveBeenCalled();
     } finally {
-      await adapter.close();
-      await workspace.close();
+      executions.close(record.executionId, "execution_closed");
     }
   }
 

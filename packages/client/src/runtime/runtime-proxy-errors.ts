@@ -1,10 +1,13 @@
+import { GITHUB_PROXY_FAILURE_STATUSES } from "@opentag/shared";
 import { RuntimeProxyDataError } from "./runtime-proxy-data-client.js";
 
 const HTTP_ERRORS: Readonly<Record<string, number>> = {
+  ...GITHUB_PROXY_FAILURE_STATUSES,
   scope_denied: 403,
   credential_scope_denied: 403,
   invalid_request: 400,
   resource_limit: 429,
+  proxy_frame_too_large: 502,
   remote_conflict: 409,
   unavailable: 503,
   GITHUB_CREDENTIAL_INVALID: 401,

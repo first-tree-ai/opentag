@@ -9,9 +9,7 @@ import type { ProviderProxyAdapter, ProviderProxyRequest } from "../runtime-cred
 import type { RuntimeScopeSnapshot } from "../runtime-credentials/scope-resolver.js";
 import { RuntimeProxyTicketStore } from "../runtime-credentials/ticket-store.js";
 import { runtimeExecutionProviderBinding } from "../runtime-credentials/types.js";
-import { GitPublicationError } from "../services/github-proxy/git-packets.js";
-import type { GitReadRequest } from "../services/github-proxy/git-read-transport.js";
-import { handleGitSmartHttp } from "../services/github-proxy/git-smart-http.js";
+import { GitHubProviderAdapter } from "../services/github-proxy/github-provider-adapter.js";
 import { GitHubRuntimePolicy } from "../services/github-proxy/runtime-policy.js";
 
 const AGENT = "00000000-0000-4000-8000-0000000000a1";
@@ -75,10 +73,10 @@ class Socket extends EventEmitter {
   }
 }
 
-/** Production broker, target policy, Git adapter and data transport; no public network or real user token. */
-describe.each(["local", "cloud"] as const)("%s GitHub stream target authority", (origin) => {
+/** Production broker, task authority, user-identity adapter and data transport; no public network or real user token. */
+describe.each(["local", "cloud"] as const)("%s GitHub stream execution authority", (origin) => {
   it.each(["preparing", "streaming", "credit"] as const)(
-    "cancels revoked repository access while %s and releases the lease",
+    "cancels a disconnected account while %s without revoking its shared token",
     async (stage) => {
       const executions = new RuntimeExecutionRegistry();
       const capabilities = new RuntimeCapabilityStore();
@@ -119,18 +117,6 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream target authority", 
         credentialGeneration: "3",
         accessExpiresAt: new Date(Date.now() + 60000).toISOString(),
       };
-      let allowed = true;
-      const resolveRepository = vi.fn(async () => {
-        if (!allowed) throw new GitPublicationError("scope_denied");
-        return {
-          installationId: "11",
-          repositoryId: "22",
-          fullName: "owner/repo",
-          defaultBranch: "main",
-          authorizationVersion: 7n,
-          credentialGeneration: 3n,
-        };
-      });
       const database = {
         select: (projection: Record<string, unknown>) => {
           const chain = {
@@ -144,8 +130,7 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream target authority", 
       };
       const policy = new GitHubRuntimePolicy({
         database: database as never,
-        management: { getOverview: async () => ({ connection }), resolveRepository } as never,
-        execution: executions,
+        management: { getOverview: async () => ({ connection }) } as never,
       });
       const broker = new RuntimeCredentialBroker({
         capabilities,
@@ -187,36 +172,29 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream target authority", 
         started = resolve;
       });
       let requestSignal: AbortSignal | undefined;
-      const release = vi.fn(async () => {});
-      const adapter: ProviderProxyAdapter = {
-        handle: async (request, authorization) => {
-          requestSignal = request.signal;
-          request.signal.addEventListener("abort", unblock, { once: true });
-          return handleGitSmartHttp(
-            {
-              policy,
-              leases: { acquire: async () => ({ token: "ghu_scoped_stream_token", release }) } as never,
-              publication: {} as never,
-              metadata: async () => ({ id: 22, full_name: "owner/repo", default_branch: "main" }),
-              reads: {
-                handle: async (input: GitReadRequest) => {
-                  await input.revalidate();
-                  if (stage === "preparing") {
-                    started();
-                    await gate;
-                    request.signal.throwIfAborted();
-                  }
-                  return { status: 200, headers: {}, body: body(request) };
-                },
-              } as never,
-            },
-            request,
-            authorization,
-            new URL(`https://github.com${request.path}`),
-          );
+      const adapter: ProviderProxyAdapter = new GitHubProviderAdapter({
+        management: {
+          getExecutionUserCredential: async () => ({
+            accessToken: "ghu_owner",
+            githubUserId: "owner",
+            credentialGeneration: 1n,
+            accessExpiresAt: new Date(Date.now() + 60000),
+          }),
         },
-      };
-      async function* body(request: ProviderProxyRequest) {
+        transport: {
+          request: async (input) => {
+            requestSignal = input.signal;
+            input.signal.addEventListener("abort", unblock, { once: true });
+            if (stage === "preparing") {
+              started();
+              await gate;
+              input.signal.throwIfAborted();
+            }
+            return { status: 200, headers: {}, body: body({ signal: input.signal }) };
+          },
+        },
+      });
+      async function* body(request: Pick<ProviderProxyRequest, "signal">) {
         if (stage === "credit") {
           yield Buffer.alloc(1048576, 65);
           started();
@@ -251,14 +229,16 @@ describe.each(["local", "cloud"] as const)("%s GitHub stream target authority", 
           headers: { "x-opentag-provider-origin": "github.com" },
         });
         await ready;
-        allowed = false;
+        connection.status = "disconnected";
         await vi.waitFor(() =>
           expect(socket.json()).toContainEqual(
-            expect.objectContaining({ type: stage === "preparing" ? "error" : "cancel", code: "scope_denied" }),
+            expect.objectContaining({
+              type: stage === "preparing" ? "error" : "cancel",
+              code: "credential_scope_denied",
+            }),
           ),
         );
         expect(requestSignal?.aborted).toBe(true);
-        await vi.waitFor(() => expect(release).toHaveBeenCalled());
         expect(socket.sent.some((b) => b.toString().includes("private-tail"))).toBe(false);
       } finally {
         unblock();

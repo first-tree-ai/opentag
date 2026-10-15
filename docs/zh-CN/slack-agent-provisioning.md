@@ -2,7 +2,7 @@
 
 [English](../slack-agent-provisioning.md)
 
-同步日期：2026-10-14。
+同步日期：2026-10-15。
 
 原 Agent 通过官方 Slack CLI 准备一个独立 App，然后以 Session proof 和本次 Account 操作码，发送一次创建并绑定请求。操作码不能兑换 Account access/refresh token。不新增数据库表、字段、流程记录或永久委派。
 
@@ -12,11 +12,13 @@
 
 1. 在上下文保留同一个 creationIntentId、目标 Team、创建配置和 App ID。新 Agent 固定使用来源 Agent 的 Runtime Provider 和 Session proof 验证的当前 Computer；Cloud 必须显式选择模型。名称不能证明 App 归属；创建结果不确定时不能重复创建。
 2. `opentag slack home` 返回私有管理目录。Cloud 使用 `/tmp/opentag/slack-management`，位于每轮 HOME 和归档 workspace 之外；Local 使用 `<OpenTag home>/slack-management`。原生 CLI 配置在 `config/`，每次操作在 `project-<creationIntentId>/`，所有管理命令传同一个 `--project-dir`，临时文件也留在该目录。同 Team 的另一 App 不复用已绑定项目。管理命令顺序执行。Local 解析现有账户级原生 Provider CLI 启动器，绕开 PATH 上的 Turn 消息启动器；仅为带 proof 的可见 Session 预建这个0700目录并授予其写权限，不授予整个 OpenTag home 的写权限。
-3. 没有可用管理登录时运行 `opentag slack manage -- auth login --no-prompt`。用户在 Slack 执行返回的 `/slackauthticket` 命令，检查权限后回传 challenge；再用官方 CLI 的 `--ticket`、`--challenge` 完成同一 ticket。此协议不使用 localhost 浏览器回调，用户可在自己的设备操作；实际异机验收仍待完成。
+3. 没有可用管理登录时运行 `opentag slack manage -- auth login --no-prompt`。用户在 Slack 执行返回的 `/slackauthticket` 命令，检查权限后回传 challenge；再运行 `opentag slack manage --project-dir project-<intent> -- auth login --ticket <ticket> --challenge <challenge>` 完成同一 ticket。此协议不使用 localhost 浏览器回调，用户可在自己的设备操作；实际异机验收仍待完成。
 4. 用 `opentag slack manifest --creation-intent <uuid> --display-name <name>` 生成初始 Manifest，复用名称规则、18 项 Bot scope 和可写 App Home，暂不开事件或交互回调。
 5. 先校验同一 Manifest，再运行 `opentag slack manage --project-dir project-<intent> --team <team-id> --output-file project-<intent>/create-response.json -- api apps.manifest.create --json <manifest-request-json>`。JSON 请求的 `manifest` 字段是序列化后的 Manifest。输出路径相对私有管理目录，或为其内部的绝对路径。创建响应含 Signing Secret，不打印到聊天或普通日志。
 
 管理 raw API 命令必须指定 `--team` 和 `--output-file`。封装清除消息代理 handle 和代理路由，先运行原生 `auth list` 让官方 CLI 续期，再读取该 Team 最新原生凭证，仅传给本次进程；检查 JSON 的 `ok`，不只检查退出码。不另存 refresh token，不引入刷新服务。官方 CLI 可能在 JSON 前输出展示文字，捕获 hook 会处理这种前缀。
+
+查询原生 API 帮助使用 `opentag slack manage -- api --help` 或 `-h`，不需要 `--team` 或 `--output-file`，也不刷新或读取管理凭证。
 
 ## 原生管理授权边界
 
@@ -54,7 +56,7 @@
 opentag agent provision-slack --request-file <agent.json> --credentials-file <private-credentials.json> --json
 ```
 
-没有 `--code-file` 时只校验本地输入，返回确认链接和拟创建的 Agent/App/Team，不请求 Server。Account owner 用自己的设备打开链接，点击“生成并复制操作码”，然后粘贴回原 Agent 对话。剪贴板不可用时保留可选择复制的码，不再申请第二个码。将码保存为私有文件，用同一命令增加 `--code-file <private-code-file>` 提交。
+没有 `--code-file` 时只校验本地输入，返回确认链接和拟创建的 Agent/App/Team，不请求 Server。Account owner 用自己的设备打开链接，点击“生成并复制操作码”，然后粘贴回原 Agent 对话。剪贴板不可用时保留可选择复制的码，不再申请第二个码。将码保存为私有文件，用同一命令增加 `--code-file <private-code-file>` 提交。把成功的 `--json` 标准输出保存到私有管理目录内 `project-<intent>/provision-result.json`，用于回调配置。
 
 提交只发送一次 `POST /api/v1/runtime/agent/slack-provision`。Server 验证 Session proof，解析原 Agent 的 Account，消费匹配的操作码，调用现有创建服务，再只绑定该创建结果。保留 Computer 所有权、Slack App/Team/Bot 和 scope 校验、绑定冲突和凭证加密存储。self-configuration 开关语义不变，不接受任意目标 Agent ID 或 Account ID。
 
@@ -62,7 +64,18 @@ opentag agent provision-slack --request-file <agent.json> --credentials-file <pr
 
 ## 回调和失败恢复
 
-绑定后 export 同一个 App 的远端 Manifest，只补事件地址 `slack.eventsUrl`、交互地址 `interactionsUrl` 和七项 Bot 事件：`app_mention`、`app_uninstalled`、`message.channels`、`message.groups`、`message.im`、`message.mpim`、`tokens_revoked`。保留其他远端配置；现有入站路由此时能找到 Signing Secret 并处理可能的 challenge。返回实际 `slack.binding.identity.botUserId` 的提及和 App/Team 私信链接；有 `slack.binding.bot.displayName` 时才显示实际名称。
+绑定后 export 同一个 App 的远端 Manifest，再由 CLI 本地生成回调更新：
+
+```sh
+opentag slack manage --project-dir project-<intent> --team <team-id> --output-file project-<intent>/remote.json -- api apps.manifest.export --json '{"app_id":"<app-id>"}'
+opentag slack callbacks --manifest-file project-<intent>/remote.json --provision-result-file project-<intent>/provision-result.json --output-file project-<intent>/callback-update.json
+```
+
+`slack callbacks` 读取成功的 CLI 结果（`{"ok":true,"result":...}`）和导出的 Manifest，把 `apps.manifest.update` 请求写入 0600 私有文件。App ID 来自绑定，地址来自返回的 `slack.eventsUrl` / `interactionsUrl`，七项事件来自共享常量：`app_mention`、`app_uninstalled`、`message.channels`、`message.groups`、`message.im`、`message.mpim`、`tokens_revoked`。其他远端配置，包括事件与交互的附加设置，均保留。不要猜测事件或从 App 创建模板重建 Manifest。
+
+把 `callback-update.json` 的**内容**作为原生 CLI `--json` 参数，先执行 `apps.manifest.validate`，再执行 `apps.manifest.update`；均用同一个 `slack manage --project-dir`、`--team`，各自指定私有响应 `--output-file`。文件已包含 `app_id` 和序列化的 `manifest`。重新 export 同一 App，核对回调及保留配置。本地生成不增加网络请求、确认、存储结构或流程记录。现有入站路由此时能找到 Signing Secret 并处理可能的 challenge。
+
+返回实际 `slack.binding.identity.botUserId` 的提及和 App/Team 私信链接；有 `slack.binding.bot.displayName` 时才显示实际名称。
 
 - 创建结果不确定：核查已有 App，不自动重建。
 - Schema、Provider 和码的有效性在消费前检查；创建与 Slack 身份验证在消费后执行，因此名称冲突或无效 Slack 凭证可能消耗码。这保证先完成一次性授权再执行副作用，不引入预留记录或额外换票；先核对本地准备文件。

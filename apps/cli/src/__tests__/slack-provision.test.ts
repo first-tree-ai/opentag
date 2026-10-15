@@ -3,9 +3,15 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ProviderCliManager, renderProviderCliTurnLauncher } from "@opentag/client";
+import { SLACK_SUBSCRIBED_BOT_EVENTS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runSlackAgentProvision } from "../core/agent/slack-provision.js";
-import { captureSlackDeploy, runSlackManagement, slackManagementHome } from "../core/slack-management.js";
+import {
+  captureSlackDeploy,
+  prepareSlackCallbackUpdate,
+  runSlackManagement,
+  slackManagementHome,
+} from "../core/slack-management.js";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -18,6 +24,83 @@ async function directory() {
 }
 
 describe("Slack provisioning CLI", () => {
+  it("prepares the exact callback update while preserving unrelated remote configuration", async () => {
+    const home = await directory();
+    const environment = { OPENTAG_HOME: home };
+    const root = slackManagementHome(environment);
+    await mkdir(root);
+    const remote = {
+      display_information: { name: "Existing App" },
+      features: { bot_user: { display_name: "existing-name" } },
+      oauth_config: { redirect_urls: ["https://example.com/oauth"], scopes: { bot: ["chat:write"] } },
+      settings: {
+        socket_mode_enabled: false,
+        event_subscriptions: {
+          request_url: "https://old.example/events",
+          bot_events: ["reaction_added"],
+          user_events: ["team_join"],
+        },
+        interactivity: { is_enabled: false, message_menu_options_url: "https://example.com/options" },
+      },
+    };
+    const provision = {
+      ok: true,
+      result: {
+        agent: { id: randomUUID(), name: "helper" },
+        interactionsUrl: "https://server.example/interactions",
+        slack: {
+          allowedIntent: "reauthorize",
+          eventsUrl: "https://server.example/agent/events",
+          binding: {
+            credentialGeneration: "[REDACTED]",
+            identity: {
+              provider: "slack",
+              appId: "A1",
+              teamId: "T1",
+              enterpriseId: null,
+              botUserId: "U1",
+              appIdEvidence: "configured",
+            },
+          },
+        },
+      },
+    };
+    await writeFile(join(root, "remote.json"), `Slack CLI response\n${JSON.stringify({ ok: true, manifest: remote })}`);
+    await writeFile(join(root, "provision.json"), JSON.stringify(provision));
+    const options = {
+      environment,
+      manifestFile: "remote.json",
+      provisionResultFile: "provision.json",
+      outputFile: "update.json",
+    };
+    await prepareSlackCallbackUpdate(options);
+    const request = JSON.parse(await readFile(join(root, "update.json"), "utf8"));
+    expect(request.app_id).toBe("A1");
+    expect(JSON.parse(request.manifest)).toEqual({
+      ...remote,
+      settings: {
+        ...remote.settings,
+        event_subscriptions: {
+          ...remote.settings.event_subscriptions,
+          request_url: provision.result.slack.eventsUrl,
+          bot_events: [...SLACK_SUBSCRIBED_BOT_EVENTS],
+        },
+        interactivity: {
+          ...remote.settings.interactivity,
+          is_enabled: true,
+          request_url: provision.result.interactionsUrl,
+        },
+      },
+    });
+    expect((await stat(join(root, "update.json"))).mode & 0o777).toBe(0o600);
+    await writeFile(join(root, "provision.json"), JSON.stringify({ ok: false, error: "failed" }));
+    await expect(prepareSlackCallbackUpdate({ ...options, outputFile: "failed.json" })).rejects.toThrow();
+    await expect(stat(join(root, "failed.json"))).rejects.toThrow();
+    await expect(prepareSlackCallbackUpdate({ ...options, provisionResultFile: "../outside.json" })).rejects.toThrow(
+      "private management directory",
+    );
+  });
+
   it("prepares the remote Account link locally, then makes exactly one proof-authenticated request without Account login", async () => {
     const home = await directory();
     const agent = {
@@ -80,7 +163,7 @@ describe("Slack provisioning CLI", () => {
     const binary = join(nativeBin, "slack");
     await writeFile(
       binary,
-      '#!/usr/bin/env node\nimport {statSync,writeFileSync} from "node:fs";import {join} from "node:path";const args=process.argv.slice(2);if(args.includes("version")){console.log("Using slack v4.7.0");process.exit(0);}if(args.includes("--help")){console.log("Usage: slack api");process.exit(0);}const config=args[args.indexOf("--config-dir")+1];if(args.includes("auth")){if(args.includes("--no-prompt")){console.error("unknown flag: --no-prompt");process.exit(1);}if(!statSync(config).isDirectory())process.exit(1);writeFileSync(join(config,"credentials.json"),JSON.stringify({T1:{team_id:"T1",token:"refreshed-management-token"}}));process.exit(0);}process.stdout.write(JSON.stringify({ok:!args.includes("fail"),args,token:process.env.SLACK_BOT_TOKEN,userToken:process.env.SLACK_USER_TOKEN,proxy:process.env.HTTPS_PROXY,ca:process.env.NODE_EXTRA_CA_CERTS,cwd:process.cwd()}));\n',
+      '#!/usr/bin/env node\nimport {statSync,writeFileSync} from "node:fs";import {join} from "node:path";const args=process.argv.slice(2);if(args.includes("version")){console.log("Using slack v4.7.0");process.exit(0);}if(args.includes("--help")||args.includes("-h")){console.log("Usage: slack api");process.exit(0);}const config=args[args.indexOf("--config-dir")+1];if(args.includes("auth")){if(!statSync(config).isDirectory())process.exit(1);writeFileSync(join(config,"credentials.json"),JSON.stringify({T1:{team_id:"T1",token:"refreshed-management-token"}}));process.exit(0);}process.stdout.write(JSON.stringify({ok:!args.includes("fail"),args,token:process.env.SLACK_BOT_TOKEN,userToken:process.env.SLACK_USER_TOKEN,proxy:process.env.HTTPS_PROXY,ca:process.env.NODE_EXTRA_CA_CERTS,cwd:process.cwd()}));\n',
       { mode: 0o700 },
     );
     const environment = {
@@ -109,6 +192,10 @@ describe("Slack provisioning CLI", () => {
       { mode: 0o700 },
     );
     environment.PATH = `${turnBin}:${environment.PATH}`;
+    for (const flag of ["--help", "-h"]) {
+      expect(await runSlackManagement(["api", flag], { binary, environment })).toBe(0);
+      await expect(stat(join(slackManagementHome(environment), "config", "credentials.json"))).rejects.toThrow();
+    }
     expect(
       await runSlackManagement(["api", "apps.manifest.create"], {
         accountHome: home,

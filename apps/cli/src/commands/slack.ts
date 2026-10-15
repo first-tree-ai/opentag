@@ -1,7 +1,12 @@
 import { slackAppCreationManifest } from "@opentag/shared";
 import type { Command } from "commander";
 import { executeCommand } from "../core/command/policy.js";
-import { captureSlackDeploy, runSlackManagement, slackManagementHome } from "../core/slack-management.js";
+import {
+  captureSlackDeploy,
+  prepareSlackCallbackUpdate,
+  runSlackManagement,
+  slackManagementHome,
+} from "../core/slack-management.js";
 
 export function registerSlackCommands(program: Command): void {
   const slack = program
@@ -16,7 +21,9 @@ Managed workflow (only when requested by the user):
      Keep this operation in project-<creationIntentId> and pass that --project-dir
      to every management command. Keep temporary files in the same directory.
      Reuse native login or run slack manage --project-dir project-<creationIntentId> -- auth login --no-prompt, then exchange
-     the returned ticket and the user's Slack challenge with --ticket/--challenge.
+     the returned ticket and the user's Slack challenge with:
+       slack manage --project-dir project-<creationIntentId> -- auth login --ticket <ticket> --challenge <challenge>
+     Native help: slack manage -- api --help (or -h); no Team or output file needed.
   3. Use slack manifest to generate the 18-scope, no-callback manifest. Validate it,
      then create ONE App using slack manage --project-dir project-<creationIntentId> --team <id> --output-file project-<creationIntentId>/create-response.json
      -- api apps.manifest.create --json <JSON with serialized manifest field>.
@@ -33,11 +40,21 @@ Managed workflow (only when requested by the user):
   5. agent provision-slack without --code-file prints a confirmation URL locally.
      The owner generates one operation code on their own device and returns it.
      Add --code-file to submit ONE creation-and-binding request with Session proof.
+     Save successful --json stdout in project-<creationIntentId>/provision-result.json.
      Never request normal Account login codes or give Cloud Account Tokens.
-  6. Only after binding, export and update the SAME remote App manifest with the
-     returned slack.eventsUrl, interactionsUrl and bot_events: app_mention,
-     app_uninstalled, message.channels, message.groups, message.im, message.mpim,
-     tokens_revoked. Preserve its other settings. Retry callback failure on its own.
+  6. Only after binding, export the SAME remote App with:
+       slack manage --project-dir project-<creationIntentId> --team <id> --output-file project-<creationIntentId>/remote.json
+       -- api apps.manifest.export --json '{"app_id":"<app-id>"}'
+     Generate the callback update locally (paths are inside slack home):
+       slack callbacks --manifest-file project-<creationIntentId>/remote.json
+       --provision-result-file project-<creationIntentId>/provision-result.json
+       --output-file project-<creationIntentId>/callback-update.json
+     This uses the binding's App ID, callback URLs and the shared required events;
+     preserve all other remote settings. Do not guess events or rebuild the manifest.
+     Validate then update with slack manage --project-dir project-<creationIntentId>
+     --team <id> --output-file <private-response-file> -- api apps.manifest.validate
+     --json <callback-update.json contents>; repeat with apps.manifest.update.
+     Re-export to verify. Retry callback failure on its own; do not provision again.
      Return the actual Bot User ID mention and App/Team DM link, not a guessed name.
 All output files stay inside slack home with mode 0600. Do not print secrets.
 Use a fresh operation code and the same intent/configuration after a spent code
@@ -62,6 +79,26 @@ acceptance without a real signed event and reply.
     .action((options) => {
       process.stdout.write(
         `${JSON.stringify(slackAppCreationManifest(options.creationIntent, options.displayName), null, 2)}\n`,
+      );
+    });
+  slack
+    .command("callbacks")
+    .description(
+      "Prepare a callback-only apps.manifest.update request from the remote manifest and successful provision --json output",
+    )
+    .requiredOption("--manifest-file <path>", "private apps.manifest.export response file")
+    .requiredOption("--provision-result-file <path>", "private successful agent provision-slack --json stdout file")
+    .requiredOption(
+      "--output-file <path>",
+      "private update request file; pass its contents to apps.manifest.validate/update --json",
+    )
+    .action(async (options) => {
+      process.exitCode = await executeCommand(
+        async () => {
+          await prepareSlackCallbackUpdate(options);
+          return "Saved callback update privately. Validate and update the same App, then re-export to verify.";
+        },
+        { phase: "validation" },
       );
     });
   slack

@@ -3,7 +3,12 @@ import { constants, existsSync } from "node:fs";
 import { chmod, mkdir, open, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ProviderCliManager, resolveAccountHome, resolveOpenTagHome } from "@opentag/client";
-import { SlackProvisionCredentialsSchema } from "@opentag/shared";
+import {
+  ImBindingAdminDetailSchema,
+  ProvisionSlackAgentResponseSchema,
+  SLACK_SUBSCRIBED_BOT_EVENTS,
+  SlackProvisionCredentialsSchema,
+} from "@opentag/shared";
 import { z } from "zod";
 
 const CLOUD_SLACK_BINARY = "/opt/opentag/tools/bin/slack";
@@ -119,6 +124,61 @@ async function slackManagementBinary(
   return inspected.launcher.path;
 }
 
+/** Prepare only the callback update from a successful CLI result and the current remote manifest. */
+export async function prepareSlackCallbackUpdate(options: {
+  manifestFile: string;
+  provisionResultFile: string;
+  outputFile: string;
+  environment?: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const home = slackManagementHome(options.environment);
+  // CLI presentation redacts credentialGeneration, so validate only the fields used here.
+  const provision = z
+    .object({
+      ok: z.literal(true),
+      result: ProvisionSlackAgentResponseSchema.pick({ interactionsUrl: true })
+        .extend({
+          slack: ProvisionSlackAgentResponseSchema.shape.slack
+            .pick({ eventsUrl: true })
+            .extend({ binding: ImBindingAdminDetailSchema.pick({ identity: true }).strip() })
+            .strip(),
+        })
+        .strip(),
+    })
+    .parse(JSON.parse(await readFile(privatePath(home, options.provisionResultFile), "utf8"))).result;
+  const identity = provision.slack.binding.identity;
+  if (identity.provider !== "slack") throw new Error("The provisioning result has no Slack binding");
+  const record = z.record(z.string(), z.unknown());
+  const remote = z
+    .object({
+      manifest: z.object({ settings: record.optional() }).passthrough(),
+    })
+    .parse(await readSlackApiResponse(privatePath(home, options.manifestFile))).manifest;
+  const settings = remote.settings ?? {};
+  const manifest = {
+    ...remote,
+    settings: {
+      ...settings,
+      event_subscriptions: {
+        ...record.parse(settings.event_subscriptions ?? {}),
+        request_url: provision.slack.eventsUrl,
+        bot_events: [...SLACK_SUBSCRIBED_BOT_EVENTS],
+      },
+      interactivity: {
+        ...record.parse(settings.interactivity ?? {}),
+        is_enabled: true,
+        request_url: provision.interactionsUrl,
+      },
+    },
+  };
+  const file = await privateFile(home, options.outputFile);
+  try {
+    await file.writeFile(JSON.stringify({ app_id: identity.appId, manifest: JSON.stringify(manifest) }));
+  } finally {
+    await file.close();
+  }
+}
+
 /** Called only by the official deploy hook; writes the complete material without logging it. */
 export async function captureSlackDeploy(options: {
   createResponseFile: string;
@@ -228,7 +288,7 @@ function validateManagementArguments(
       "Slack management uses its own official API host and native login; do not override routing or tokens",
     );
   }
-  const isApi = args[0] === "api" && !args.includes("--help");
+  const isApi = args[0] === "api" && !args.some((arg) => arg === "--help" || arg === "-h");
   if (isApi && (!outputFile || !team)) {
     throw new Error(
       "Raw management API calls require --team and --output-file to select native authorization and keep responses private",

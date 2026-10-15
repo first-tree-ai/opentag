@@ -394,6 +394,9 @@ it("describes one-code Slack provisioning for visible managed Sessions without g
   expect(prompt).toContain("without --code-file");
   expect(prompt).toContain("Never request a normal Account login code");
   expect(prompt).toContain("Callback failure retries only that update");
+  expect(prompt).toContain("opentag slack callbacks --help");
+  expect(prompt).toContain("do not guess events or rebuild the App manifest");
+  expect(prompt).toContain("opentag slack manage -- api --help");
   expect(prompt).not.toContain("## Self-configuration");
   expect(renderManagedSystemPrompt(snapshot, { ...cloudSession, sessionCliAvailable: false })).not.toContain(
     "agent provision-slack",

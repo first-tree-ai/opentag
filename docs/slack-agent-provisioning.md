@@ -27,7 +27,7 @@ continues to use the current Bot's messaging proxy.
 3. If there is no usable native login, run
    `opentag slack manage -- auth login --no-prompt`. The user executes the returned `/slackauthticket`
    command in Slack, reviews permissions, and returns the challenge. Complete the same ticket with
-   the official CLI's `--ticket` and `--challenge` flags. This does not use a localhost browser callback;
+   `opentag slack manage --project-dir project-<intent> -- auth login --ticket <ticket> --challenge <challenge>`. This does not use a localhost browser callback;
    the user can act on their own device. Physical cross-device acceptance remains a live QA item.
 4. Generate the initial manifest with
    `opentag slack manifest --creation-intent <uuid> --display-name <name>`. It reuses OpenTag's name
@@ -42,6 +42,8 @@ handles and proxy routing, runs native `auth list` to let the official CLI refre
 latest native authorization for that Team into this process only. It checks Slack JSON `ok`, not
 only the exit code. It neither copies refresh tokens elsewhere nor introduces a refresh service.
 The official CLI may prefix API JSON with presentation text; the capture hook handles that prefix.
+For native API help, use `opentag slack manage -- api --help` or `-h`. Help requires neither
+`--team` nor `--output-file`, and does not refresh or read management credentials.
 
 ## Native management authorization boundary
 
@@ -99,7 +101,8 @@ Without `--code-file`, this only validates local inputs and prints the Account c
 the proposed Agent/App/Team. It makes no server request. The Account owner opens that URL on their
 own device and clicks **Generate and copy code**, then returns the code to the original conversation.
 Clipboard denial leaves a selectable code; it does not request a second code. Save the code privately
-and repeat the same command with `--code-file <private-code-file>`.
+and repeat the same command with `--code-file <private-code-file>`. Save successful `--json` stdout
+to `project-<intent>/provision-result.json` inside the private management directory for callback setup.
 
 The confirmation entry stays available after sign-in even when a CLI-created Account has not completed Web setup; other pages keep their existing setup gate.
 
@@ -118,11 +121,27 @@ exchange is needed.
 
 ## Configure callbacks and recover
 
-Only after binding, export the same remote App manifest and update its event URL to the returned
-`slack.eventsUrl`, interactivity URL to `interactionsUrl`, and Bot events to `app_mention`,
+Only after binding, export the same remote App manifest, then prepare the callback update locally:
+
+```sh
+opentag slack manage --project-dir project-<intent> --team <team-id> --output-file project-<intent>/remote.json -- api apps.manifest.export --json '{"app_id":"<app-id>"}'
+opentag slack callbacks --manifest-file project-<intent>/remote.json --provision-result-file project-<intent>/provision-result.json --output-file project-<intent>/callback-update.json
+```
+
+`slack callbacks` reads the successful CLI result (`{"ok":true,"result":...}`) and exported Manifest,
+then writes an `apps.manifest.update` request to a 0600 private file. It uses the binding's App ID,
+returned `slack.eventsUrl` / `interactionsUrl`, and the shared required events: `app_mention`,
 `app_uninstalled`, `message.channels`, `message.groups`, `message.im`, `message.mpim`, `tokens_revoked`.
-Preserve the rest of the remote manifest. Existing server ingress can now locate the Signing Secret
-and handle a challenge. Return the actual `slack.binding.identity.botUserId` mention and the App/Team
+Other remote configuration, including additional event/interactivity settings, is preserved.
+Do not guess events or rebuild the manifest from the App creation template.
+
+Pass the **contents** of `callback-update.json` as the native CLI `--json` argument to
+`apps.manifest.validate`, then `apps.manifest.update`, using the same `slack manage --project-dir`,
+`--team`, and a separate private `--output-file` for each response. The file contains both `app_id`
+and the serialized `manifest`. Re-export the same App to verify the callbacks and preserved settings.
+This local preparation adds no network call, confirmation, storage schema or workflow record.
+Existing server ingress can now locate the Signing Secret and handle a challenge.
+Return the actual `slack.binding.identity.botUserId` mention and the App/Team
 DM link; use `slack.binding.bot.displayName` only when present.
 
 - An uncertain App create requires inspection, not automatic recreation.

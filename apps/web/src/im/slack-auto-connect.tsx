@@ -1,9 +1,10 @@
 import type { SlackAutoSetupResponse } from "@opentag/shared/browser";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
 import * as m from "../paraglide/messages.js";
 import { Banner, Button, Input } from "../ui/design-system.js";
 import { messagingProviderLabel } from "./provider-label.js";
+import { slackConfigurationMessage } from "./slack-configuration.js";
 
 export function SlackAutoConnect({
   agentId,
@@ -17,6 +18,8 @@ export function SlackAutoConnect({
   onBusy: (busy: boolean) => void;
 }) {
   const [result, setResult] = useState<SlackAutoSetupResponse>();
+  const [error, setError] = useState<unknown>();
+  const apiError = error instanceof ApiError ? error : undefined;
   const [challenge, setChallenge] = useState("");
   const [busy, setBusy] = useState(false);
   const started = useRef(false);
@@ -27,6 +30,7 @@ export function SlackAutoConnect({
       if (running.current) return;
       running.current = true;
       setBusy(true);
+      setError(undefined);
       onBusy(true);
       try {
         const next = await browserApi.autoSetupSlack(agentId, {
@@ -37,8 +41,9 @@ export function SlackAutoConnect({
         setResult(next);
         setChallenge("");
         if (next.status === "connected") await onConnected();
-      } catch {
+      } catch (cause) {
         setResult({ status: "failed", code: "failed" });
+        setError(cause);
       } finally {
         running.current = false;
         setBusy(false);
@@ -66,14 +71,26 @@ export function SlackAutoConnect({
         <SlackTicket ticket={result.ticket} id={id} busy={busy} challenge={challenge} onChallenge={setChallenge} />
       ) : null}
       {result?.status === "authorized" ? <p>{m.im_slack_auto_authorized({ team: result.teamName })}</p> : null}
-      {failed ? <Banner role="alert" variant="error" description={failureMessage(result.code)} /> : null}
-      {result ? <SetupButton result={result} busy={busy} challenge={challenge} run={run} /> : null}
+      {failed && !apiError ? <Banner role="alert" variant="error" description={failureMessage(result.code)} /> : null}
+      {apiError ? (
+        <Banner role="alert" variant="error" description={slackConfigurationMessage(apiError.code ?? "")} />
+      ) : null}
+      {apiError && ["SLACK_CONFIGURATION_CONFLICT", "SLACK_CREDENTIALS_UNAVAILABLE"].includes(apiError.code ?? "") ? (
+        <p className="text-sm">{m.im_slack_auto_manual_required()}</p>
+      ) : null}
+      {result && apiError?.status !== 409 ? (
+        <SetupButton result={result} busy={busy} challenge={challenge} run={run} />
+      ) : null}
     </div>
   );
 }
 
 function failureMessage(code: Extract<SlackAutoSetupResponse, { status: "failed" }>["code"]): string {
   switch (code) {
+    case "busy":
+      return m.im_slack_auto_busy();
+    case "create_failed":
+      return m.im_slack_auto_create_failed({ provider: messagingProviderLabel("slack") });
     case "computer_unavailable":
     case "capability_missing":
       return m.im_slack_auto_unavailable();
@@ -150,7 +167,7 @@ function SetupButton({
     ["authorization_failed", "computer_unavailable", "capability_missing"].includes(result.code);
   const label = authorize
     ? m.im_slack_auto_retry_authorization()
-    : result.status === "failed"
+    : result.status === "failed" && result.code !== "create_failed"
       ? m.im_slack_auto_continue()
       : m.im_slack_auto_connect();
   return (
@@ -163,7 +180,7 @@ function SetupButton({
       >
         {label}
       </Button>
-      {result.status === "failed" && !authorize ? (
+      {result.status === "failed" && result.code !== "busy" && !authorize ? (
         <Button type="button" variant="secondary" disabled={busy} onClick={() => void run("authorize", true)}>
           {m.im_slack_auto_retry_authorization()}
         </Button>

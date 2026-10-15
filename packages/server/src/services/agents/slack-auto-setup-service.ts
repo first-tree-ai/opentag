@@ -42,7 +42,7 @@ export class SlackAutoSetupService {
     if (view.binding) return this.#callbacks(computerId, agentId, view, input.challenge);
     const installed = await this.#dispatch(computerId, agentId, {
       action: "install",
-      displayName: view.agentDisplayName,
+      displayName: config.name,
       ...(input.challenge ? { challenge: input.challenge } : {}),
     });
     if (installed.status !== "installed") return installed;

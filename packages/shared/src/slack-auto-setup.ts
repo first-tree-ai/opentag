@@ -10,6 +10,7 @@ export const SlackAutoSetupFailureSchema = z.enum([
   "capability_missing",
   "busy",
   "authorization_failed",
+  "create_failed",
   "create_uncertain",
   "install_failed",
   "callbacks_failed",

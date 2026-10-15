@@ -17,6 +17,9 @@ remove/uninstall，使旧 row 保留历史 Agent owner 并进入 disabled，再�
 
 在创建引导或消息设置选择**使用自己的 Slack App**。绑定在线本地 Computer、使用最新 Client 时，默认进入自动流程：
 
+新建 App 和 Bot 直接使用 Agent 的 `name`，不使用单独的 `displayName`；保留现有 Slack 名称合法性与长度限制。
+不添加随机后缀，此入口不会重命名已有 App。
+
 1. 将页面生成的 `/slackauthticket …` 粘贴到目标工作区的 Slack，核对官方 CLI 管理权限并确认。Slack 可在另一台设备操作，无需本机浏览器回调。
 2. 将 Slack 返回的 challenge 验证码填回页面，点击**创建并连接**。
 3. Computer 按固定清单创建并安装 App，Server 复用现有加密存储保存 Bot Token、Signing Secret，自动配置事件和交互回调。最后给 Bot 发一条私信验证实际收发。
@@ -26,8 +29,13 @@ remove/uninstall，使旧 row 保留历史 Agent owner 并进入 disabled，再�
 Computer 生成的 ticket：官方 CLI 授权范围覆盖工作区 App 管理，并非只限本次 App。
 
 工作区要求管理员审批时，完成审批后**继续连接**同一个 App；回调失败也只需继续，不重新安装或轮换凭证。创建结果不明时
-停止自动重建，应先查看 Slack 已有 App，再用手动入口绑定，避免重复创建。管理授权过期或撤销后可能需要重新生成 ticket。
-私有 CLI 项目文件保留 App ID 用于恢复；回调核验成功后移除安装凭证文件和创建响应中的密钥。不新增表或数据库字段。
+停止自动重建，应先查看 Slack 已有 App，再用手动入口绑定，避免重复创建。文档明确的创建前拒绝（例如 manifest 无效、App 数量限制或限流）
+允许重试，可能部分成功或未知错误仍保留保护。管理授权过期或撤销后可能需要重新生成 ticket。busy 表示 Computer 仍在执行，
+请稍候再继续同一 App；不增加后台任务或进度轮询服务。
+私有 CLI 项目文件保留 App ID 用于恢复。每次操作结束（包括失败）均删除采集的安装凭证、CLI stderr 和登录输出。
+创建响应中的 Signing Secret 在 Server 保存加密绑定前用于同 App 恢复；现有回调请求即为保存确认，在更新回调前删除该密钥，
+不增加确认请求。CLI 显式提供发行包中的凭证采集入口；其他未提供该入口的 Client 宿主在创建 App 前回退手动配置。
+不新增表或数据库字段。
 Cloud Agent、离线 Computer 和旧 Client 可使用**手动连接 App**，原有两项凭证绑定和更新能力保留；官方 OAuth 入口也保留。
 
 ## 本地 Agent 审批

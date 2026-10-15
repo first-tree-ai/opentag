@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { arch, hostname, platform } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   type ClientLogger,
   type ComposedClientRuntime,
@@ -250,6 +251,7 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     credentialMode: resolveRuntimeCredentialMode(context.daemonEnvironment),
     clientVersion: CLI_VERSION,
     cliCommand: channelConfig.binName,
+    slackAutoSetupCliEntry: fileURLToPath(new URL("./cli/index.mjs", import.meta.resolve(channelConfig.packageName))),
     logger: runtimeLogger,
     signal,
     api: apiContext.api,

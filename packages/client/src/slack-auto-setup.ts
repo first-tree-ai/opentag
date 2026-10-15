@@ -28,6 +28,26 @@ const NativeLogins = z.record(
 );
 const Authorization = z.object({ ticket: z.string().optional(), teamId: z.string().optional() });
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+// Only documented pre-creation rejections are safe to retry. Internal/unknown failures may be partial.
+const CREATE_REJECTIONS = new Set([
+  "access_denied",
+  "account_inactive",
+  "feature_not_enabled",
+  "invalid_app",
+  "invalid_arguments",
+  "invalid_auth",
+  "invalid_manifest",
+  "invalid_team_id",
+  "managed_app_limit_reached",
+  "missing_scope",
+  "no_permission",
+  "not_allowed_token_type",
+  "not_authed",
+  "not_in_team",
+  "ratelimited",
+  "token_expired",
+  "token_revoked",
+]);
 
 /** Fixed CLI steps requested by the authenticated owner; no model or arbitrary command input. */
 export class SlackAutoSetup {
@@ -68,13 +88,13 @@ export class SlackAutoSetup {
     const directory = join(context.home, context.project);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await chmod(directory, 0o700);
-    switch (request.input.action) {
-      case "authorize":
-        return this.#authorize(context, request.input.force);
-      case "callbacks":
-        return this.#callbacks(context, request.input);
-      case "install":
-        return this.#install(context, request.agentId, request.input);
+    try {
+      if (request.input.action === "authorize") return await this.#authorize(context, request.input.force);
+      if (request.input.action === "callbacks") return await this.#callbacks(context, request.input);
+      return await this.#install(context, request.agentId, request.input);
+    } finally {
+      for (const name of ["login-output.txt", "login-complete.txt", "last-error.txt"])
+        await rm(this.#path(context, name), { force: true });
     }
   }
 
@@ -115,6 +135,7 @@ export class SlackAutoSetup {
     return Authorization.parse((await this.#json(context, "authorization.json")) ?? {});
   }
   async #authorize(context: SetupContext, force = false): Promise<Result> {
+    if (!this.options.cliEntry) throw new SetupFailure("capability_missing");
     const authorization = await this.#authorization(context);
     const stored = Object.values(await this.#logins(context)).find((x) => x.team_id === authorization.teamId);
     if (stored && !force && !authorization.ticket) return { status: "authorized", teamName: stored.team_domain };
@@ -152,6 +173,9 @@ export class SlackAutoSetup {
     context: SetupContext,
     input: Extract<SlackAutoSetupCommand, { action: "callbacks" }>,
   ): Promise<Result> {
+    // This existing callbacks request is the Server's acknowledgement that the encrypted binding exists.
+    await this.#save(context, "create-response.json", { ok: true, app_id: input.appId });
+    await rm(this.#path(context, "credentials.json"), { force: true });
     const team = await this.#team(context, input.challenge, input.teamId);
     if (team !== input.teamId) throw new SetupFailure("authorization_failed");
     await this.#command(
@@ -217,9 +241,6 @@ export class SlackAutoSetup {
       )
     )
       throw new SetupFailure("callbacks_failed");
-    await this.#save(context, "create-response.json", { ok: true, app_id: input.appId });
-    for (const name of ["credentials.json", "login-output.txt", "login-complete.txt", "last-error.txt"])
-      await rm(this.#path(context, name), { force: true });
     return { status: "connected" };
   }
   async #create(
@@ -241,48 +262,70 @@ export class SlackAutoSetup {
         team,
       );
       // Opening the output before the request fences off uncertain creates, including interrupted requests.
-      await this.#command(
-        context,
-        ["api", "apps.manifest.create", "--json", json],
-        "create-response.json",
-        "create_uncertain",
-        team,
-      );
+      try {
+        await this.#command(
+          context,
+          ["api", "apps.manifest.create", "--json", json],
+          "create-response.json",
+          "create_uncertain",
+          team,
+        );
+      } catch {
+        // Inspect even nonzero exits: the CLI can save a definite Slack rejection before throwing.
+        return this.#createdApp(context);
+      }
     }
+    return this.#createdApp(context);
+  }
+  async #createdApp(context: SetupContext): Promise<string> {
+    const createPath = this.#path(context, "create-response.json");
+    let response: unknown;
     try {
       const raw = await readFile(createPath, "utf8");
-      const appId = z
-        .object({ ok: z.literal(true), app_id: z.string().min(1) })
-        .parse(JSON.parse(raw.slice(raw.indexOf("{")))).app_id;
-      return appId;
+      response = JSON.parse(raw.slice(raw.indexOf("{")));
     } catch {
       throw new SetupFailure("create_uncertain");
     }
+    const rejected = z
+      .object({ ok: z.literal(false), error: z.string() })
+      .passthrough()
+      .safeParse(response);
+    if (rejected.success && !("app_id" in rejected.data) && CREATE_REJECTIONS.has(rejected.data.error)) {
+      await rm(createPath);
+      throw new SetupFailure("create_failed");
+    }
+    const created = z.object({ ok: z.literal(true), app_id: z.string().min(1) }).safeParse(response);
+    if (!created.success) throw new SetupFailure("create_uncertain");
+    return created.data.app_id;
   }
   async #install(
     context: SetupContext,
     agentId: string,
     input: Extract<SlackAutoSetupCommand, { action: "install" }>,
   ): Promise<Result> {
-    const team = await this.#team(context, input.challenge);
-    const appId = await this.#create(context, agentId, input, team);
-    const cached = await this.#json(context, "credentials.json");
-    if (cached) return this.#installed(cached, appId, team);
-    await this.#deploy(context, appId, team);
-    return this.#installed(await this.#json(context, "credentials.json"), appId, team);
+    try {
+      const cli = this.options.cliEntry;
+      if (!cli) throw new SetupFailure("capability_missing");
+      const team = await this.#team(context, input.challenge);
+      const appId = await this.#create(context, agentId, input, team);
+      const cached = await this.#json(context, "credentials.json");
+      if (cached) return this.#installed(cached, appId, team);
+      await this.#deploy(context, appId, team, cli);
+      return this.#installed(await this.#json(context, "credentials.json"), appId, team);
+    } finally {
+      await rm(this.#path(context, "credentials.json"), { force: true });
+    }
   }
   #installed(raw: unknown, appId: string, team: string): Result {
     const credentials = SlackProvisionCredentialsSchema.parse(raw);
     if (credentials.appId !== appId || credentials.teamId !== team) throw new SetupFailure("install_failed");
     return { status: "installed", credentials };
   }
-  async #deploy(context: SetupContext, appId: string, team: string) {
+  async #deploy(context: SetupContext, appId: string, team: string, cli: string) {
     await this.#save(context, ".slack/config.json", { manifest: { source: "remote" } });
     await this.#save(context, ".slack/hooks.json", {
       hooks: { "get-hooks": `${shellQuote(process.execPath)} hooks.mjs` },
     });
-    const cli = this.options.cliEntry ?? process.argv[1];
-    if (!cli) throw new SetupFailure("install_failed");
     const scripts = {
       "manifest.mjs":
         "import {readFileSync} from 'node:fs';process.stdout.write(readFileSync('manifest.json','utf8'));\n",

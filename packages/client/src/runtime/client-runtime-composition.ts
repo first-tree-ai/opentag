@@ -321,6 +321,8 @@ export interface CreateClientRuntimeOptions {
   readonly piCommand?: string;
   readonly piHome?: string;
   readonly cliCommand?: string;
+  /** Authoritative packaged CLI entry for the Slack deployment hook; absent embeddings use manual setup. */
+  readonly slackAutoSetupCliEntry?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
   readonly factories?: readonly AgentRuntimeFactory[];
@@ -851,6 +853,7 @@ export async function createClientRuntime(
   const runtime = new ClientRuntime(connection, {
     slackAutoSetup: new SlackAutoSetup({
       environment: { ...sourceEnvironment, OPENTAG_HOME: resolveOpenTagHomeLayout(options.home).home },
+      cliEntry: options.slackAutoSetupCliEntry,
     }),
     contextTreeSettings: new ContextTreeSettings({
       home: options.home,

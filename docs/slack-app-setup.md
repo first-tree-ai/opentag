@@ -20,6 +20,9 @@ is not used.
 In Agent creation or Messaging settings, choose **Use your own Slack App**. On an online local Computer with a current
 OpenTag Client, the default entry creates a dedicated App:
 
+The new App and Bot use the Agent's `name`, rather than its separate `displayName`, with existing Slack name validation
+and length limits. No random suffix is added, and this entry does not rename existing Apps.
+
 1. Copy the generated `/slackauthticket …` command into Slack in the target workspace, review the official CLI's
    management permissions, and confirm. Slack may be on another device; there is no localhost browser callback.
 2. Paste Slack's challenge code into OpenTag and select **Create and connect**.
@@ -34,9 +37,15 @@ from your own selected Computer. This grant covers App management for the worksp
 If workspace policy requires admin approval, obtain approval and **Continue connecting** the same App. Failed callback
 configuration also resumes through **Continue connecting**, without another installation or credential rotation. An
 uncertain creation is stopped: inspect Slack's existing Apps and use manual binding rather than create another copy.
-Expiring or revoked management authorization can require a new ticket. Private per-Agent CLI project files retain the App
-ID for recovery; installed credential files and creation secrets are removed after callback verification. There is no new
-table or database field. Cloud Agents, offline Computers, and older Clients can use **Manually connect an App**, which
+Documented pre-creation rejections (such as invalid manifests, App limits, or rate limits) allow a retry; partial or unknown
+errors remain fenced. Expiring or revoked management authorization can require a new ticket. A busy response means the
+Computer is still working: wait and continue with the same App. There is no background job or progress-polling service.
+Private per-Agent CLI project files retain the App ID for recovery. Captured installation credentials and CLI stderr/login
+output are removed when each operation finishes, including failures. The private creation Signing Secret is needed for
+same-App recovery until Server saves the encrypted binding; the existing callback request acknowledges that save and
+removes the creation secret before configuring callbacks. No extra acknowledgement request is needed. The CLI supplies
+its packaged capture-hook entry explicitly; other Client embeddings without that entry use manual setup before creating
+an App. There is no new table or database field. Cloud Agents, offline Computers, and older Clients can use **Manually connect an App**, which
 keeps the existing two-field binding and credential update flow. Public OAuth remains available.
 
 ## Local Agent approvals

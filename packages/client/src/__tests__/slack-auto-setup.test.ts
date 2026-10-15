@@ -29,6 +29,8 @@ async function fixture() {
   };
   let failDeploy = false;
   let loseCreate = false;
+  let createError: string | undefined;
+  let failCallbacks = false;
   let remote: unknown = { display_information: { name: "QA" }, settings: { org_deploy_enabled: false } };
   async function auth(args: string[], output: string) {
     if (args.includes("--ticket"))
@@ -36,6 +38,12 @@ async function fixture() {
         login: { team_id: "T1", team_domain: "local-team", token: "private-native", last_updated: Date.now() },
       });
     else await writeFile(output, "Run /slackauthticket test-ticket");
+  }
+  async function deploy() {
+    await writePrivateJson(home, join(home, project, "credentials.json"), credentials);
+    if (!failDeploy) return 0;
+    await writeFile(join(home, project, "last-error.txt"), "private-stderr");
+    return 1;
   }
   const run = vi.fn(
     async (args: string[], options: Parameters<typeof import("../slack-management.js").runSlackManagement>[1]) => {
@@ -47,7 +55,14 @@ async function fixture() {
           await auth(args, output);
           break;
         case "apps.manifest.create":
-          if (loseCreate) return 1;
+          if (loseCreate) {
+            await writeFile(output, "");
+            return 1;
+          }
+          if (createError) {
+            await writePrivateJson(home, output, { ok: false, error: createError });
+            return 1;
+          }
           await writePrivateJson(home, output, {
             ok: true,
             app_id: "A1",
@@ -55,13 +70,12 @@ async function fixture() {
           });
           break;
         case "deploy":
-          if (failDeploy) return 1;
-          await writePrivateJson(home, join(home, project, "credentials.json"), credentials);
-          break;
+          return deploy();
         case "apps.manifest.export":
           await writePrivateJson(home, output, { ok: true, manifest: remote });
           break;
         case "apps.manifest.update":
+          if (failCallbacks) return 1;
           remote = JSON.parse(JSON.parse(args[3] ?? "{}").manifest);
           break;
       }
@@ -96,6 +110,12 @@ async function fixture() {
     loseCreate: () => {
       loseCreate = true;
     },
+    setCreateError: (value: string | undefined) => {
+      createError = value;
+    },
+    failCallbacks: () => {
+      failCallbacks = true;
+    },
   };
 }
 it("gets one ticket, resumes installation of the same App, and removes material after verified callbacks", async () => {
@@ -106,11 +126,14 @@ it("gets one ticket, resumes installation of the same App, and removes material 
     status: "failed",
     code: "install_failed",
   });
+  expect(existsSync(join(f.home, f.project, "credentials.json"))).toBe(false);
+  expect(existsSync(join(f.home, f.project, "last-error.txt"))).toBe(false);
   f.setFailDeploy(false);
   expect(await f.setup.run(f.request({ action: "install", displayName: "QA" }))).toEqual({
     status: "installed",
     credentials: f.credentials,
   });
+  expect(existsSync(join(f.home, f.project, "credentials.json"))).toBe(false);
   expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(1);
   const result = await f.setup.run(
     f.request({
@@ -146,9 +169,105 @@ it("never repeats an uncertain creation, even after the Client process is replac
   f.loseCreate();
   const input = { action: "install" as const, displayName: "QA", challenge: "code" };
   expect(await f.setup.run(f.request(input))).toEqual({ status: "failed", code: "create_uncertain" });
-  const restarted = new SlackAutoSetup({ environment: { OPENTAG_HOME: join(f.home, "..") }, run: f.run });
+  const restarted = new SlackAutoSetup({
+    environment: { OPENTAG_HOME: join(f.home, "..") },
+    run: f.run,
+    cliEntry: "/trusted/opentag.mjs",
+  });
   expect(await restarted.run(f.request(input))).toEqual({ status: "failed", code: "create_uncertain" });
   expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(1);
+});
+it.each(["invalid_manifest", "managed_app_limit_reached", "ratelimited", "access_denied"])(
+  "allows a new attempt after Slack definitely rejects creation with %s",
+  async (error) => {
+    const f = await fixture();
+    await f.authorize();
+    f.setCreateError(error);
+    expect(await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }))).toEqual({
+      status: "failed",
+      code: "create_failed",
+    });
+    expect(existsSync(join(f.home, f.project, "create-response.json"))).toBe(false);
+    f.setCreateError(undefined);
+    expect(await f.setup.run(f.request({ action: "install", displayName: "QA" }))).toEqual({
+      status: "installed",
+      credentials: f.credentials,
+    });
+    expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(2);
+  },
+);
+it.each(["internal_error", "fatal_error", "failed_adding_collaborator", "unknown"])(
+  "does not repeat a potentially partial Slack create response: %s",
+  async (error) => {
+    const f = await fixture();
+    await f.authorize();
+    f.setCreateError(error);
+    expect(await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }))).toEqual({
+      status: "failed",
+      code: "create_uncertain",
+    });
+    expect(await f.setup.run(f.request({ action: "install", displayName: "QA" }))).toEqual({
+      status: "failed",
+      code: "create_uncertain",
+    });
+    expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(1);
+  },
+);
+it("rejects an embedding without an explicit CLI hook entry before consuming the challenge or creating an App", async () => {
+  const f = await fixture();
+  await f.authorize();
+  const embedded = new SlackAutoSetup({ environment: { OPENTAG_HOME: join(f.home, "..") }, run: f.run });
+  expect(await embedded.run(f.request({ action: "authorize" }))).toEqual({
+    status: "failed",
+    code: "capability_missing",
+  });
+  expect(await embedded.run(f.request({ action: "install", displayName: "QA", challenge: "code" }))).toEqual({
+    status: "failed",
+    code: "capability_missing",
+  });
+  expect(f.run).toHaveBeenCalledTimes(1);
+});
+it("keeps the creation fence when even a known rejection includes an App ID", async () => {
+  const f = await fixture();
+  await f.authorize();
+  f.loseCreate();
+  await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }));
+  await writePrivateJson(f.home, join(f.home, f.project, "create-response.json"), {
+    ok: false,
+    error: "invalid_manifest",
+    app_id: "A1",
+  });
+  expect(await f.setup.run(f.request({ action: "install", displayName: "QA" }))).toEqual({
+    status: "failed",
+    code: "create_uncertain",
+  });
+  expect(f.run.mock.calls.filter(([args]) => args[1] === "apps.manifest.create")).toHaveLength(1);
+});
+it("removes the creation secret once Server requests callbacks, even when updating callbacks fails", async () => {
+  const f = await fixture();
+  await f.authorize();
+  await f.setup.run(f.request({ action: "install", displayName: "QA", challenge: "code" }));
+  expect(await readFile(join(f.home, f.project, "create-response.json"), "utf8")).toContain("private-secret");
+  f.failCallbacks();
+  expect(
+    await f.setup.run(
+      f.request({
+        action: "callbacks",
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        enterpriseId: null,
+        eventsUrl: "https://qa.example/events",
+        interactionsUrl: "https://qa.example/interactions",
+      }),
+    ),
+  ).toEqual({ status: "failed", code: "callbacks_failed" });
+  expect(JSON.parse(await readFile(join(f.home, f.project, "create-response.json"), "utf8"))).toEqual({
+    ok: true,
+    app_id: "A1",
+  });
+  for (const name of ["credentials.json", "login-output.txt", "login-complete.txt", "last-error.txt"])
+    expect(existsSync(join(f.home, f.project, name))).toBe(false);
 });
 it("does not accept cached credentials for another App or Team", async () => {
   const f = await fixture();
@@ -211,6 +330,7 @@ it("keeps Web management in the local private home when the Computer uses Turn c
       OPENTAG_SESSION_SERVER_URL: "https://turn.example",
     },
     run: f.run,
+    cliEntry: "/trusted/opentag.mjs",
   });
   expect(await local.run(f.request({ action: "authorize" }))).toEqual({
     status: "authorization_required",

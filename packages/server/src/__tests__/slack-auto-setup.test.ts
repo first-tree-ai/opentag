@@ -58,7 +58,11 @@ function bound(): SlackConfigurationView {
   };
 }
 function fixture() {
-  const agents = { getConfigById: vi.fn(async () => ({ computerId }) as AgentAdminConfig) };
+  const agents = {
+    getConfigById: vi.fn(
+      async () => ({ computerId, name: "qa-agent", displayName: "Friendly QA" }) as AgentAdminConfig,
+    ),
+  };
   const slack = { view: vi.fn(async () => unbound()), configureToken: vi.fn(async () => ({}) as never) };
   const owner = {
     start: vi
@@ -94,6 +98,11 @@ it("binds through the existing encrypted service and exposes only the public res
     credentials,
   );
   expect(f.owner.start.mock.calls.map(([value]) => value.input.action)).toEqual(["install", "callbacks"]);
+  expect(f.owner.start.mock.calls[0]?.[0].input).toEqual({
+    action: "install",
+    displayName: "qa-agent",
+    challenge: "code",
+  });
   expect(JSON.stringify(result)).not.toContain("private");
 });
 it("only retries callbacks for an already bound App", async () => {
@@ -107,6 +116,16 @@ it("only retries callbacks for an already bound App", async () => {
     input: expect.objectContaining({ action: "callbacks", appId: "A1", teamId: "T1" }),
   });
   expect(f.slack.configureToken).not.toHaveBeenCalled();
+});
+it("returns a definite creation rejection without attempting to bind or configure callbacks", async () => {
+  const f = fixture();
+  f.owner.start.mockReset().mockResolvedValue({ status: "failed", code: "create_failed" });
+  expect(await f.service.run("account", agentId, { action: "connect" })).toEqual({
+    status: "failed",
+    code: "create_failed",
+  });
+  expect(f.slack.configureToken).not.toHaveBeenCalled();
+  expect(f.owner.start).toHaveBeenCalledTimes(1);
 });
 it("does not bind if the Agent moved Computers during installation", async () => {
   const f = fixture();

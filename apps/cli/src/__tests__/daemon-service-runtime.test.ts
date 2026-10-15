@@ -242,6 +242,9 @@ describe("daemon service runtime", () => {
       credentialMode: "legacy",
     });
     expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].slackAutoSetupCliEntry).toMatch(
+      /\/dist\/cli\/index\.mjs$/,
+    );
     expect(run).toHaveBeenCalledOnce();
     expect(stop).not.toHaveBeenCalled();
   });

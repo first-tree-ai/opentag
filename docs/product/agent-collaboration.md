@@ -31,8 +31,12 @@ may delegate further. See [Internal Session collaboration](../system/messaging/i
 ## Attention and when to speak
 
 `receive_mode` controls which IM traffic an Agent receives: `all_message` is the
-default, while `mention_only` wakes the Agent only for messages that address it
-and provides intervening messages as later context.
+default, while `mention_only` wakes the Agent for messages that address it and
+otherwise keeps intervening messages as later context. The exception is thread
+continuity: once a thread's root or an earlier message in it addressed the
+Agent, `mention_only` still delivers that thread's unaddressed follow-ups
+immediately, as `ambient` input with the longer direct retention window. See
+[IM Channel and Thread Sessions](../system/messaging/thread-sessions.md).
 
 Each delivered input separately carries `direct` or `ambient` attention, and
 attention states only whether that message itself addresses the Agent.

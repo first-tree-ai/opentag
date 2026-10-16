@@ -73,9 +73,12 @@ describe("probe transport", () => {
     const failing = legacyOnly((async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { id?: number; method: string; params?: { cursor?: string } };
       if (body.method === "initialize") {
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: {} } }), {
-          headers: { "content-type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18", serverInfo: {} } }),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        );
       }
       if (body.method === "tools/list" && body.params?.cursor === undefined) {
         return new Response(
@@ -94,17 +97,24 @@ describe("probe transport", () => {
 
   it("retries initialize with an older protocol version after a 400", async () => {
     const versions: string[] = [];
-    const picky = (async (_url: string, init: RequestInit) => {
+    const picky = legacyOnly((async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { method: string; params?: { protocolVersion?: string } };
       if (body.method === "initialize") {
         versions.push(body.params?.protocolVersion ?? "");
         if (body.params?.protocolVersion === "2025-11-25") return new Response("bad version", { status: 400 });
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { name: "p" } } }), {
-          headers: { "content-type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { protocolVersion: "2025-06-18", serverInfo: { name: "p" } },
+          }),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        );
       }
       return new Response(null, { status: 202 });
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
     expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: picky })).toMatchObject({
       ok: true,
       authKind: "none",
@@ -114,21 +124,21 @@ describe("probe transport", () => {
 
   it("uses a complete SSE result without waiting for the stream to close", async () => {
     const encoder = new TextEncoder();
-    const open = (async (_url: string, init: RequestInit) => {
+    const open = legacyOnly((async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { method: string };
       if (body.method !== "initialize") return new Response(null, { status: 202 });
       const stream = new ReadableStream({
         start(controller) {
           controller.enqueue(
             encoder.encode(
-              'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"open"}}}\n\n',
+              'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"open"}}}\n\n',
             ),
           );
           // Never closed: a server may keep the stream open after answering.
         },
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream" } });
-    }) as unknown as typeof fetch;
+    }) as unknown as typeof fetch);
     const result = await probeMcpEndpoint("https://x.test/mcp", { fetch: open, timeoutMs: 2000 });
     expect(result).toMatchObject({ ok: true, authKind: "none", serverInfo: { name: "open" } });
   });
@@ -221,6 +231,52 @@ describe("protocol eras", () => {
     expect(versions).toEqual(["server/discover"]);
   });
 
+  it("does not downgrade after a 2xx JSON-RPC error or a malformed 2xx", async () => {
+    const methods: string[] = [];
+    const twoXxError = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id: number; method: string };
+      methods.push(body.method);
+      return json({
+        jsonrpc: "2.0",
+        id: body.id,
+        error: { code: -32022, message: "v", data: { supported: ["2025-11-25"] } },
+      });
+    }) as unknown as typeof fetch;
+    // The advertised version is legacy, so the single retry stays on server/discover and fails.
+    expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: twoXxError })).toMatchObject({ ok: false });
+    expect(methods).not.toContain("initialize");
+    methods.length = 0;
+    const malformed = (async (_url: string, init: RequestInit) => {
+      methods.push((JSON.parse(String(init.body)) as { method: string }).method);
+      return json({ nope: true });
+    }) as unknown as typeof fetch;
+    expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: malformed })).toMatchObject({ ok: false });
+    expect(methods).toEqual(["server/discover"]);
+  });
+
+  it("keeps a negotiated 2025-03-26 session free of the version header", async () => {
+    const seen: Array<{ method: string; headers: Record<string, string> }> = [];
+    const strict = legacyOnly((async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id?: number; method: string };
+      seen.push({ method: body.method, headers: init.headers as Record<string, string> });
+      if (body.method === "initialize")
+        return json({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-03-26", serverInfo: { name: "Old" } } });
+      if (body.method === "tools/list") return json({ jsonrpc: "2.0", id: body.id, result: { tools: [] } });
+      return new Response(null, { status: 202 });
+    }) as unknown as typeof fetch);
+    const result = await probeMcpEndpoint("https://x.test/mcp", { fetch: strict });
+    expect(result).toMatchObject({ ok: true, protocolEra: "legacy", protocolVersion: "2025-03-26" });
+    for (const call of seen.filter((entry) => entry.method !== "initialize")) {
+      expect(call.headers["mcp-protocol-version"]).toBeUndefined();
+    }
+  });
+
+  it("fails when the legacy server negotiates a version this probe does not speak", async () => {
+    const odd = legacyOnly((async () =>
+      json({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2024-11-05" } })) as unknown as typeof fetch);
+    expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: odd })).toMatchObject({ ok: false });
+  });
+
   it("treats a numeric or empty nextCursor as an incomplete inventory and null as absent", async () => {
     const withCursor = (cursor: unknown) =>
       (async (_url: string, init: RequestInit) => {
@@ -259,6 +315,7 @@ describe("scaffoldEntry", () => {
     authKind: "none" as const,
     evidence: "initialize answered anonymously",
     toolsComplete: true,
+    toolsAttempted: true,
     tools: [
       { name: "search_docs", sideEffect: "none" as const },
       { name: "delete_doc", sideEffect: "destructive" as const },
@@ -296,14 +353,14 @@ describe("scaffoldEntry", () => {
     const scaffold = scaffoldEntry(
       {
         url: "https://mcp.acme.test/mcp",
-        probe: { ...probe, authKind: "oauth", tools: [], toolsComplete: false },
+        probe: { ...probe, authKind: "oauth", tools: [], toolsComplete: false, toolsAttempted: false },
         category,
       },
       MCP_CATALOG_ENTRIES,
       MCP_CATALOG_CATEGORIES,
     );
     expect(scaffold.yaml).toContain("    oauth: {}");
-    expect(scaffold.yaml).toContain("    side_effects: write");
+    expect(scaffold.yaml).toContain("    side_effects: destructive");
     expect(scaffold.yaml).toContain("    data_access: private");
     expect(scaffold.yaml).toContain('capabilities: ["use-acme"]');
   });

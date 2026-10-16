@@ -176,17 +176,17 @@ interface Risk {
   readonly dataAccess: "public" | "private";
 }
 
-/** A tool list gives the strongest effect; without one, assume the conservative `write`. */
+/** A tool list gives the strongest effect; without a complete one, assume the strongest (`destructive`). */
 function resolveRisk(probe: ScaffoldInput["probe"], authKind: ProbeAuthKind, todos: string[]): Risk {
   const known = probe.toolsComplete && probe.tools.length > 0;
   todos.push(
     known
       ? "risk.side_effects: taken from tool annotations (a tool without a hint counts as write); confirm"
-      : "risk.side_effects: assumed write because the full tool list was not readable; confirm against the provider's docs",
+      : "risk.side_effects: assumed destructive because the full tool list was not readable; lower it only after checking the provider's docs",
   );
   todos.push("risk.data_access: confirm whether the Server reads only public data");
   return {
-    sideEffects: known ? strongest(probe.tools.map((tool) => tool.sideEffect)) : "write",
+    sideEffects: known ? strongest(probe.tools.map((tool) => tool.sideEffect)) : "destructive",
     dataAccess: authKind === "none" ? "public" : "private",
   };
 }

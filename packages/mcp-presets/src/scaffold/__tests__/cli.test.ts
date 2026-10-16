@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES } from "../../mcp-catalog.gen.js";
 import { runCli } from "../cli.js";
-import { anonymousFetch } from "./support.js";
+import { anonymousFetch, legacyOnly } from "./support.js";
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "catalog-add-"));
@@ -72,16 +72,41 @@ describe("catalog:add", () => {
     });
     expect(code).toBe(1);
     expect(err.join("")).toContain("non-public");
-    const skipped = await runCli(["--url", "https://mcp.acme.test/mcp", "--category", category, "--skip-dns-check"], {
-      packageDir: pathToFileURL(`${dir}/`),
-      entries: MCP_CATALOG_ENTRIES,
-      categories: MCP_CATALOG_CATEGORIES,
-      stdout: () => undefined,
-      stderr: () => undefined,
-      fetch: anonymousFetch(),
-      lookup: async () => ["10.0.0.5"],
-    });
-    expect(skipped).toBe(0);
+    // There is no bypass flag: an unknown option is a usage error, not a way around the policy.
+    expect(
+      await runCli(["--url", "https://mcp.acme.test/mcp", "--category", category, "--skip-dns-check"], {
+        packageDir: pathToFileURL(`${dir}/`),
+        entries: MCP_CATALOG_ENTRIES,
+        categories: MCP_CATALOG_CATEGORIES,
+        stdout: () => undefined,
+        stderr: () => undefined,
+        fetch: anonymousFetch(),
+        lookup: async () => ["10.0.0.5"],
+      }),
+    ).toBe(1);
+  });
+
+  it("does not persist an entry whose tool inventory is incomplete", async () => {
+    const { dir, err, run } = await fixture();
+    const broken = legacyOnly((async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id: number; method: string; params?: { cursor?: string } };
+      const ok = (result: unknown) =>
+        new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), {
+          headers: { "content-type": "application/json" },
+        });
+      if (body.method === "initialize") return ok({ protocolVersion: "2025-06-18", serverInfo: { name: "Acme" } });
+      if (body.method === "tools/list" && body.params?.cursor === undefined) {
+        return ok({ tools: [{ name: "read", annotations: { readOnlyHint: true } }], nextCursor: "n" });
+      }
+      return body.method.startsWith("notifications/")
+        ? new Response(null, { status: 202 })
+        : new Response("", { status: 500 });
+    }) as unknown as typeof fetch);
+    const args = ["--url", "https://mcp.acme.test/mcp", "--category", category];
+    expect(await run([...args, "--write"], broken)).toBe(1);
+    expect(err.join("")).toContain("risk is unproven");
+    expect(await readFile(join(dir, "mcp-catalog.yaml"), "utf8")).toBe("# catalog\n");
+    expect(await run(args, broken)).toBe(0); // a dry run still prints, flagged for review
   });
 
   it("requires --category", async () => {

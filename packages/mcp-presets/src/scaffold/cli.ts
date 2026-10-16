@@ -19,7 +19,6 @@ export const USAGE = `Usage: pnpm catalog:add --url <endpoint> [options]
   --auth <kind>          oauth | bearer | none; required when the probe cannot prove a method
   --order <n>            position within the category (default: last + 10)
   --icon-file <path>     with --write, copy this SVG or PNG into icons/ as <slug>.<ext>
-  --skip-dns-check       skip the check that the host resolves to a public address (fake-IP DNS proxies)
   --write                append the entry to mcp-catalog.yaml (default: print only)
   --json                 print a machine-readable report
 `;
@@ -52,7 +51,6 @@ function parseCli(argv: readonly string[]) {
       auth: { type: "string" },
       order: { type: "string" },
       "icon-file": { type: "string" },
-      "skip-dns-check": { type: "boolean", default: false },
       write: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -149,10 +147,15 @@ async function execute(argv: readonly string[], deps: CliDeps): Promise<void> {
   if (verdict.url.protocol !== "https:") throw new CliError("the catalog lists https endpoints only");
   const url = verdict.url.toString();
 
-  if (!values["skip-dns-check"]) await assertPublicDestination(verdict.url.hostname, deps.lookup ?? lookupAddresses);
+  await assertPublicDestination(verdict.url.hostname, deps.lookup ?? lookupAddresses);
   const probe = await probeMcpEndpoint(url, deps.fetch === undefined ? {} : { fetch: deps.fetch });
   if (!probe.ok) throw new CliError(probe.reason);
 
+  if (values.write && probe.toolsAttempted && !probe.toolsComplete) {
+    throw new CliError(
+      "tools/list was incomplete, so the entry's risk is unproven; fix the endpoint or rerun without --write",
+    );
+  }
   const scaffold = scaffoldEntry(toScaffoldInput(values, url, probe), deps.entries, deps.categories);
   const { yaml, todos, created } = await applyIcon(values, scaffold, deps);
   if (values.write) await appendEntry(yaml, created, deps);

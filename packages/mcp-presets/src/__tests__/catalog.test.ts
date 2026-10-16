@@ -55,10 +55,23 @@ describe("mcp preset catalog shape", () => {
     }
   });
 
+  it("gives every installable entry its connection fields and no other entry any", () => {
+    for (const entry of MCP_CATALOG_ENTRIES) {
+      if (entry.installable) {
+        expect(entry.url).toMatch(/^https:\/\//);
+        expect(entry.defaultAuthKind).toBe(entry.auth.defaultKind);
+      } else {
+        expect(entry.url).toBeUndefined();
+        expect(entry.defaultAuthKind).toBeUndefined();
+      }
+    }
+  });
+
   it("exports the entry schema with the supported locales injected", () => {
     const text = MCP_CATALOG_ENTRY_SCHEMA.$defs.localizedText;
     expect(Object.keys(text.properties).sort()).toEqual(["en", "zh"]);
-    expect(MCP_CATALOG_ENTRY_SCHEMA.required).toContain("remotes");
+    expect(MCP_CATALOG_ENTRY_SCHEMA.required).not.toContain("remotes");
+    expect(MCP_CATALOG_ENTRY_SCHEMA.anyOf).toEqual([{ required: ["packages"] }, { required: ["remotes"] }]);
   });
 
   it("embeds every icon as a self-contained data URL", () => {

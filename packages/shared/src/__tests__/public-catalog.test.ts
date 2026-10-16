@@ -26,6 +26,7 @@ const mcpResponse = {
       title: { en: "Notion", zh: "Notion" },
       description: { en: "Docs, wikis, and project pages.", zh: "文档、知识库与项目页面。" },
       registryId: "mcp/notion",
+      installable: true,
       whenToUse: { en: "Use for pages and wikis.", zh: "用于页面和知识库。" },
       capabilities: ["search-docs"],
       keywords: ["wiki"],
@@ -39,6 +40,43 @@ const mcpResponse = {
     },
   ],
 };
+
+describe("public MCP catalog packages", () => {
+  const packageServer = {
+    ...mcpResponse.servers[0],
+    installable: false,
+    packages: [
+      {
+        registryType: "npm",
+        identifier: "@scope/server",
+        version: "1.0.0",
+        runtimeHint: "npx",
+        transport: "stdio",
+        packageArguments: [{ type: "named", name: "--port" }],
+        environmentVariables: [{ name: "SERVER_API_KEY", isSecret: true, isRequired: true }],
+      },
+    ],
+    prerequisites: ["Node.js 22"],
+    platforms: ["linux"],
+  };
+
+  it("round-trips a packages-only server", () => {
+    const parsed = PublicMcpCatalogResponseSchema.parse({ ...mcpResponse, servers: [packageServer] });
+    expect(parsed.servers[0]?.installable).toBe(false);
+    expect(parsed.servers[0]?.packages?.[0]?.identifier).toBe("@scope/server");
+  });
+
+  it("rejects package values, defaults, and an unknown registry type", () => {
+    const withVariable = (variable: Record<string, unknown>) => ({
+      ...mcpResponse,
+      servers: [{ ...packageServer, packages: [{ ...packageServer.packages[0], environmentVariables: [variable] }] }],
+    });
+    expect(PublicMcpCatalogResponseSchema.safeParse(withVariable({ name: "X", value: "v" })).success).toBe(false);
+    expect(PublicMcpCatalogResponseSchema.safeParse(withVariable({ name: "X", default: "v" })).success).toBe(false);
+    const badType = { ...packageServer, packages: [{ ...packageServer.packages[0], registryType: "cargo" }] };
+    expect(PublicMcpCatalogResponseSchema.safeParse({ ...mcpResponse, servers: [badType] }).success).toBe(false);
+  });
+});
 
 describe("public Skill catalog schema", () => {
   it("round-trips categories and presets with display fields only", () => {

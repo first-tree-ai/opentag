@@ -300,6 +300,27 @@ function validatePackageValue(item, where, violations) {
   }
 }
 
+/** Rules for one package argument that the schema cannot express. */
+function validatePackageArgument(argument, at, violations) {
+  if (argument.type === "named" && argument.name === undefined) {
+    violations.push(`${at}.name: is required for a named argument`);
+  }
+  if (argument.type === "positional" && argument.name !== undefined) {
+    violations.push(`${at}.name: a positional argument has no name`);
+  }
+  validatePackageValue(argument, at, violations);
+}
+
+/** Rules for one environment variable; `seen` holds the names already declared in the package. */
+function validateEnvironmentVariable(variable, at, seen, violations) {
+  if (seen.has(variable.name)) violations.push(`${at}.name: duplicate variable "${variable.name}"`);
+  seen.add(variable.name);
+  if (SECRET_NAME_PATTERN.test(variable.name) && variable.is_secret !== true) {
+    violations.push(`${at}.is_secret: "${variable.name}" looks like a credential and must be marked secret`);
+  }
+  validatePackageValue(variable, at, violations);
+}
+
 /** Cross-field rules for one package that the schema cannot express. */
 function validatePackage(pkg, where, violations) {
   const hint = RUNTIME_HINT_BY_REGISTRY[pkg.registry_type];
@@ -307,24 +328,11 @@ function validatePackage(pkg, where, violations) {
     violations.push(`${where}.runtime_hint: "${pkg.runtime_hint}" does not run a ${pkg.registry_type} package`);
   }
   for (const [index, argument] of (pkg.package_arguments ?? []).entries()) {
-    const at = `${where}.package_arguments[${index}]`;
-    if (argument.type === "named" && argument.name === undefined) {
-      violations.push(`${at}.name: is required for a named argument`);
-    }
-    if (argument.type === "positional" && argument.name !== undefined) {
-      violations.push(`${at}.name: a positional argument has no name`);
-    }
-    validatePackageValue(argument, at, violations);
+    validatePackageArgument(argument, `${where}.package_arguments[${index}]`, violations);
   }
   const seen = new Set();
   for (const [index, variable] of (pkg.environment_variables ?? []).entries()) {
-    const at = `${where}.environment_variables[${index}]`;
-    if (seen.has(variable.name)) violations.push(`${at}.name: duplicate variable "${variable.name}"`);
-    seen.add(variable.name);
-    if (SECRET_NAME_PATTERN.test(variable.name) && variable.is_secret !== true) {
-      violations.push(`${at}.is_secret: "${variable.name}" looks like a credential and must be marked secret`);
-    }
-    validatePackageValue(variable, at, violations);
+    validateEnvironmentVariable(variable, `${where}.environment_variables[${index}]`, seen, violations);
   }
 }
 
@@ -412,40 +420,44 @@ function catalogEntryFrom(row, remote, headers) {
   };
 }
 
+/** Validate one schema-valid row beyond the schema and derive its entry, or undefined when withheld. */
+function deriveEntry(row, at, categoryIds, violations) {
+  validateAuth(row, at, violations);
+  validateRisk(row, at, violations);
+  validateCatalogMembership(row, at, categoryIds, violations);
+  const remotes = row.remotes ?? [];
+  const headersByRemote = remotes.map((candidate, remoteIndex) => {
+    const remoteAt = `${at}.remotes[${remoteIndex}]`;
+    validateOutboundUrl(candidate.url, `${remoteAt}.url`, violations);
+    return readHeaders(candidate, remoteAt, violations);
+  });
+  for (const [packageIndex, pkg] of (row.packages ?? []).entries()) {
+    validatePackage(pkg, `${at}.packages[${packageIndex}]`, violations);
+  }
+  const remoteIndex = remotes.findIndex((candidate) => candidate.type === "streamable-http");
+  const entry = catalogEntryFrom(row, remotes[remoteIndex], headersByRemote[remoteIndex]);
+  if (entry.installable) validateCreatePayload(entry, at, violations);
+  return entry;
+}
+
 function collectEntries(rows, categoryIds, validate, violations) {
   const entries = [];
   const seen = new Set();
-  rows.forEach((row, index) => {
+  for (const [index, row] of rows.entries()) {
     const at = `${entriesPath}[${index}]`;
     if (!validate(row)) {
       for (const error of validate.errors ?? []) violations.push(describeSchemaError(error, at));
-      return;
+      continue;
     }
     if (seen.has(row.id)) {
       violations.push(`${at}.id: duplicate entry id "${row.id}"`);
-      return;
+      continue;
     }
     seen.add(row.id);
-
-    validateAuth(row, at, violations);
-    validateRisk(row, at, violations);
-    validateCatalogMembership(row, at, categoryIds, violations);
-    const remotes = row.remotes ?? [];
-    const headersByRemote = remotes.map((candidate, remoteIndex) => {
-      const remoteAt = `${at}.remotes[${remoteIndex}]`;
-      validateOutboundUrl(candidate.url, `${remoteAt}.url`, violations);
-      return readHeaders(candidate, remoteAt, violations);
-    });
-    for (const [packageIndex, pkg] of (row.packages ?? []).entries()) {
-      validatePackage(pkg, `${at}.packages[${packageIndex}]`, violations);
-    }
-    const remoteIndex = remotes.findIndex((candidate) => candidate.type === "streamable-http");
-    const remote = remotes[remoteIndex];
-    const entry = catalogEntryFrom(row, remote, headersByRemote[remoteIndex]);
-    if (remote !== undefined) validateCreatePayload(entry, at, violations);
+    const entry = deriveEntry(row, at, categoryIds, violations);
     // A removed entry is validated like any other, then withheld so no surface can offer it.
     if (entry.status !== "removed") entries.push(entry);
-  });
+  }
   return entries;
 }
 

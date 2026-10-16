@@ -1,4 +1,4 @@
-import type { McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPAuthorizationSummary, MCPServer } from "@opentag/shared/browser";
 import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES } from "@opentag/shared/browser";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -31,6 +31,7 @@ const CATALOG = vi.hoisted(() => ({
       description: { en: "Docs and wikis.", zh: "文档与知识库。" },
       registryId: "mcp/alpha",
       whenToUse: { en: "Use for alpha.", zh: "用于 alpha。" },
+      installable: true,
       status: "active",
       capabilities: ["search"],
       auth: { methods: ["oauth"], defaultKind: "oauth", oauth: {} },
@@ -50,6 +51,7 @@ const CATALOG = vi.hoisted(() => ({
       description: { en: "Notes and tasks.", zh: "笔记与任务。" },
       registryId: "mcp/delta",
       whenToUse: { en: "Use for delta.", zh: "用于 delta。" },
+      installable: true,
       status: "active",
       capabilities: ["search"],
       auth: { methods: ["oauth"], defaultKind: "oauth", oauth: {} },
@@ -68,6 +70,7 @@ const CATALOG = vi.hoisted(() => ({
       description: { en: "Boards and tickets.", zh: "看板与工单。" },
       registryId: "mcp/beta",
       whenToUse: { en: "Use for beta.", zh: "用于 beta。" },
+      installable: true,
       status: "active",
       capabilities: ["search"],
       auth: { methods: ["none"], defaultKind: "none" },
@@ -86,6 +89,7 @@ const CATALOG = vi.hoisted(() => ({
       description: { en: "Errors and traces.", zh: "错误与链路。" },
       registryId: "mcp/gamma",
       whenToUse: { en: "Use for gamma.", zh: "用于 gamma。" },
+      installable: true,
       status: "active",
       capabilities: ["search"],
       auth: { methods: ["bearer"], defaultKind: "bearer" },
@@ -111,7 +115,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-const entries = CATALOG.entries as McpCatalogEntry[];
+const entries = CATALOG.entries as McpInstallableCatalogEntry[];
 
 const ALPHA_ID = "11111111-1111-4111-8111-111111111111";
 const BETA_ID = "22222222-2222-4222-8222-222222222222";
@@ -225,7 +229,7 @@ async function discover(
   overrides: {
     servers?: MCPServer[];
     mounted?: MCPAgentServer[];
-    entries?: readonly McpCatalogEntry[];
+    entries?: readonly McpInstallableCatalogEntry[];
     initialView?: { query: string; categoryId: string };
   } = {},
 ) {
@@ -267,7 +271,7 @@ describe("Discover catalog surface", () => {
       name: "solo",
       title: { en: "Solo", zh: "单项" },
       category: "small",
-    } as McpCatalogEntry;
+    } as McpInstallableCatalogEntry;
     await discover({ entries: [...entries, singleEntry], initialView: { query: "", categoryId: "small" } });
     const tabs = () => [...screen.getByRole("group", { name: "Categories" }).querySelectorAll("button")];
     expect(tabs().map((tab) => tab.textContent)).toEqual(["All", "General", "Engineering"]);

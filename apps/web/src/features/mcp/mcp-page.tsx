@@ -1,4 +1,4 @@
-import type { McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import { MCP_ERROR_CODES, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { type RefObject, useEffect, useRef, useState } from "react";
@@ -25,7 +25,12 @@ import { mcpTitle } from "./mcp-title.js";
 type Panel =
   | { kind: "none" }
   | { kind: "add"; serverId?: string; authenticationError?: string }
-  | { kind: "discover"; entry?: McpCatalogEntry; context?: McpReturnContext; outcome?: "cancelled" | "failed" }
+  | {
+      kind: "discover";
+      entry?: McpInstallableCatalogEntry;
+      context?: McpReturnContext;
+      outcome?: "cancelled" | "failed";
+    }
   | {
       kind: ServerAction | "tools";
       entry: MCPAgentServer;
@@ -147,7 +152,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
     if (result === "key") setPanel({ kind: "authorize", entry });
     else if (result === "connected") locate(entry.mcpServerId);
   };
-  const addedFromCatalog = (entry: MCPAgentServer, _catalog: McpCatalogEntry, _definition?: MCPServer) => {
+  const addedFromCatalog = (entry: MCPAgentServer, _catalog: McpInstallableCatalogEntry, _definition?: MCPServer) => {
     setHighlight(entry.mcpServerId);
   };
   useEffect(() => {
@@ -299,7 +304,7 @@ function McpPanel({
   onLocate: (id: string) => void;
   onCompleted: (entry: MCPAgentServer) => void;
   onRemoved: (entry: MCPAgentServer) => void;
-  onCatalogAdded: (entry: MCPAgentServer, catalog: McpCatalogEntry, server?: MCPServer) => void;
+  onCatalogAdded: (entry: MCPAgentServer, catalog: McpInstallableCatalogEntry, server?: MCPServer) => void;
 }) {
   if (panel.kind === "none") return null;
   if (panel.kind === "discover")

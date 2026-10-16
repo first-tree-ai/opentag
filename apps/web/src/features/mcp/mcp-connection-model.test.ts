@@ -9,6 +9,7 @@ vi.mock("@opentag/mcp-presets", () => ({
     {
       id: "service",
       name: "service",
+      installable: true,
       url: "https://service.test/mcp",
       defaultAuthKind: "oauth",
       oauthScopes: ["read"],
@@ -16,6 +17,7 @@ vi.mock("@opentag/mcp-presets", () => ({
     {
       id: "canva",
       name: "canva",
+      installable: true,
       url: "https://mcp.canva.com/mcp",
       defaultAuthKind: "oauth",
     },

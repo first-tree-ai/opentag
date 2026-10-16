@@ -1,4 +1,4 @@
-import { MCP_CATALOG_CATEGORIES, type McpCatalogEntry } from "@opentag/mcp-presets";
+import { MCP_CATALOG_CATEGORIES, type McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import { useEffect, useRef, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, KumoInputControl, Loader } from "../../../ui/design-system.js";
@@ -7,9 +7,9 @@ import { mcpTitle } from "../mcp-title.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
 import { type DiscoverProps, useMcpDiscoverState } from "./mcp-discover-state.js";
 
-export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpCatalogEntry }) {
+export function McpDiscoverDialog(props: DiscoverProps & { initialEntry?: McpInstallableCatalogEntry }) {
   const state = useMcpDiscoverState(props);
-  const openEntry = (entry: McpCatalogEntry) => {
+  const openEntry = (entry: McpInstallableCatalogEntry) => {
     if (state.catalogBusy) return;
     void state.addFromCatalog(entry);
   };
@@ -94,7 +94,7 @@ function DiscoverCatalog({
 }: {
   state: DiscoverState;
   props: DiscoverProps;
-  openEntry: (entry: McpCatalogEntry) => void;
+  openEntry: (entry: McpInstallableCatalogEntry) => void;
 }) {
   const catalogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {

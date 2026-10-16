@@ -1,4 +1,4 @@
-import type { McpCatalogCategory, McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpCatalogCategory, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
@@ -30,12 +30,12 @@ export function McpDiscoverSource({
   feedback,
 }: {
   categories: readonly McpCatalogCategory[];
-  entries: readonly McpCatalogEntry[];
+  entries: readonly McpInstallableCatalogEntry[];
   servers: readonly MCPServer[];
   mounted: readonly MCPAgentServer[];
   busy: boolean;
   pending?: Record<string, { action: "add" | "connect" }>;
-  onAdd: (entry: McpCatalogEntry) => void;
+  onAdd: (entry: McpInstallableCatalogEntry) => void;
   connectedIds?: string[];
   initialView?: { query: string; categoryId: string };
   onViewChange?: (view: { query: string; categoryId: string }) => void;
@@ -152,10 +152,10 @@ export function McpCatalogCard({
   pendingAction,
   feedback,
 }: {
-  entry: McpCatalogEntry;
+  entry: McpInstallableCatalogEntry;
   state?: McpCatalogEntryState;
   busy: boolean;
-  onAdd: (entry: McpCatalogEntry) => void;
+  onAdd: (entry: McpInstallableCatalogEntry) => void;
   connecting?: boolean;
   pendingAction?: "add" | "connect";
   feedback?: McpCatalogFeedback;

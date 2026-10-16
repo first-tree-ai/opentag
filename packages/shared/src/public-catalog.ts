@@ -67,6 +67,31 @@ export const PublicMcpCatalogCategorySchema = z
   .strict();
 export type PublicMcpCatalogCategory = z.infer<typeof PublicMcpCatalogCategorySchema>;
 
+const PublicMcpPackageValueSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
+    isRequired: z.boolean().optional(),
+    isSecret: z.boolean().optional(),
+  })
+  .strict();
+
+/** A self-hosted package, shown as data. Values and defaults are never exposed. */
+export const PublicMcpCatalogPackageSchema = z
+  .object({
+    registryType: z.enum(["npm", "pypi", "oci", "nuget", "mcpb"]),
+    identifier: z.string().min(1),
+    version: z.string().min(1),
+    runtimeHint: z.enum(["npx", "uvx", "docker", "dnx"]).optional(),
+    transport: z.enum(["stdio", "streamable-http"]),
+    packageArguments: z
+      .array(PublicMcpPackageValueSchema.extend({ type: z.enum(["positional", "named"]) }).strict())
+      .optional(),
+    environmentVariables: z.array(PublicMcpPackageValueSchema.required({ name: true })).optional(),
+  })
+  .strict();
+export type PublicMcpCatalogPackage = z.infer<typeof PublicMcpCatalogPackageSchema>;
+
 export const PublicMcpCatalogServerSchema = z
   .object({
     id: z.string().min(1),
@@ -74,6 +99,11 @@ export const PublicMcpCatalogServerSchema = z
     title: PublicCatalogLocalizedTextSchema,
     description: PublicCatalogLocalizedTextSchema,
     registryId: z.string().regex(/^mcp\/[a-z][a-z0-9-]*$/),
+    /** True when the Web App can add the Server; false for entries that only list packages. */
+    installable: z.boolean(),
+    packages: z.array(PublicMcpCatalogPackageSchema).optional(),
+    prerequisites: z.array(z.string().min(1)).optional(),
+    platforms: z.array(z.enum(["linux", "macos", "windows"])).optional(),
     whenToUse: PublicCatalogLocalizedTextSchema,
     capabilities: z.array(z.string().min(1)).min(1),
     keywords: z.array(z.string().min(1)).optional(),

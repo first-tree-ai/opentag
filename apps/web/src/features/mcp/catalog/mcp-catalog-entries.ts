@@ -1,7 +1,7 @@
 import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
 import { useMemo } from "react";
 import { useMcpCatalogEndpoints } from "../mcp-queries.js";
-import { resolveCatalogEntries, type ServedCatalogEntry } from "./mcp-catalog-model.js";
+import { installableEntries, resolveCatalogEntries, type ServedCatalogEntry } from "./mcp-catalog-model.js";
 
 /**
  * The catalog entries as this deployment serves them, for the surfaces that create Servers.
@@ -16,7 +16,7 @@ import { resolveCatalogEntries, type ServedCatalogEntry } from "./mcp-catalog-mo
 export function useMcpCatalogEntries(): { entries: readonly ServedCatalogEntry[]; isPending: boolean } {
   const endpoints = useMcpCatalogEndpoints();
   const entries = useMemo(
-    () => resolveCatalogEntries(MCP_CATALOG_ENTRIES, endpoints.data?.endpoints ?? []),
+    () => resolveCatalogEntries(installableEntries(MCP_CATALOG_ENTRIES), endpoints.data?.endpoints ?? []),
     [endpoints.data],
   );
   return { entries, isPending: endpoints.isPending };

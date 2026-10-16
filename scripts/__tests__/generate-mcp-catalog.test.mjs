@@ -253,6 +253,44 @@ test("rejects a runtime hint that does not run the registry type", (t) => {
   });
 });
 
+test("rejects a fragment in an sse-only remote", (t) => {
+  assertRejected(t, /remotes\[0\]\.url: .*fragment/i, {
+    entries: [entry({ remotes: [{ type: "sse", url: "https://mcp.example.com/sse#frag" }] })],
+  });
+});
+
+test("rejects credentials in a non-primary remote behind a valid primary", (t) => {
+  assertRejected(t, /remotes\[1\]\.url: .*credentials/i, {
+    entries: [
+      entry({
+        remotes: [
+          { type: "streamable-http", url: "https://mcp.example.com/mcp" },
+          { type: "sse", url: "https://demo:demo@mcp.example.com/sse" },
+        ],
+      }),
+    ],
+  });
+});
+
+test("rejects an oversized remote URL", (t) => {
+  assertRejected(t, /remotes\[0\]\.url: /, {
+    entries: [entry({ remotes: [{ type: "sse", url: `https://mcp.example.com/${"a".repeat(2100)}` }] })],
+  });
+});
+
+test("rejects a loopback sse-only remote", (t) => {
+  assertRejected(t, /remotes\[0\]\.url: /, {
+    entries: [entry({ remotes: [{ type: "sse", url: "https://127.0.0.1:8443/sse" }] })],
+  });
+});
+
+test("reports a bad primary remote URL once", (t) => {
+  const result = assertRejected(t, /remotes\[0\]\.url: /, {
+    entries: [entry({ remotes: [{ type: "streamable-http", url: "https://demo:demo@mcp.example.com/mcp" }] })],
+  });
+  assert.equal((result.stderr.match(/remotes\[0\]\.url: /g) ?? []).length, 1);
+});
+
 test("rejects an unknown key", (t) => {
   assertRejected(t, /\.surprise: unknown property/, { entries: [entry({ surprise: true })] });
 });

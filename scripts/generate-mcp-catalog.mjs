@@ -201,14 +201,22 @@ function validateCreatePayload(derived, at, violations) {
   });
   if (create.success) return;
   for (const issue of create.error.issues) {
+    // The URL is reported once per remote by `validateOutboundUrl`.
+    if (issue.path[0] === "url") continue;
     violations.push(`${at}.${issue.path.join(".") || "entry"}: ${issue.message}`);
   }
 }
 
-/** The endpoint must be one the Server's outbound gate would dial. */
+/**
+ * Every remote's URL must satisfy the shared URL contract and be one the Server's outbound gate
+ * would dial, whatever the remote's type or position: a data-only remote is still published.
+ */
 function validateOutboundUrl(value, at, violations) {
   const url = MCPServerUrlSchema.safeParse(value);
-  if (!url.success) return;
+  if (!url.success) {
+    for (const issue of url.error.issues) violations.push(`${at}: ${issue.message}`);
+    return;
+  }
   const verdict = checkOutboundUrl(url.data, { allowLoopback: false });
   if ("failure" in verdict) violations.push(`${at}: ${verdict.failure.message}`);
 }

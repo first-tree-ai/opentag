@@ -1,0 +1,4 @@
+PR905-STAGING-20261016
+Local managed Git/gh temporary transport acceptance.
+Session: b00f57c8-db24-4863-834b-b21253de5918
+Temporary QA marker only. Do not merge.

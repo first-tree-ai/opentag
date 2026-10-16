@@ -374,12 +374,9 @@ export class SessionReconciler {
       snapshot.revision.session.sequence > existingSession.revisionSequence ||
       existingSession.status === "stopped" ||
       this.#preparation.requiresSessionPreparation?.(request, hashes) === true;
-    await this.#preparation.validateSession?.(request, hashes);
-    if (shouldPrepareAgent) await this.#preparation.prepareAgent(snapshot, hashes);
-    else await this.#preparation.verifyAgent?.(snapshot, hashes);
-    const prepared = await this.#prepareSessionOrReject(request, hashes, shouldPrepareSession);
+    const prepared = await this.#prepareOrReject(request, snapshot, hashes, shouldPrepareAgent, shouldPrepareSession);
     if ("rejected" in prepared) return prepared.rejected;
-    const preparedSession = prepared.session;
+    const preparedSession = prepared.value;
 
     if (shouldPrepareAgent) {
       this.#agents.set(request.agentId, {
@@ -417,16 +414,32 @@ export class SessionReconciler {
     return this.#result(request, "ready");
   }
 
-  async #prepareSessionOrReject(
+  async #prepareOrReject(
     request: SessionReconcileRequest,
+    snapshot: EffectiveRuntimeSnapshot,
     hashes: RuntimeSnapshotHashes,
-    shouldPrepare: boolean,
+    shouldPrepareAgent: boolean,
+    shouldPrepareSession: boolean,
   ): Promise<
-    { session: Awaited<ReturnType<RuntimePreparation["prepareSession"]>> } | { rejected: SessionReconcileResult }
+    { value: Awaited<ReturnType<RuntimePreparation["prepareSession"]>> } | { rejected: SessionReconcileResult }
   > {
-    if (!shouldPrepare) return { session: undefined };
+    // Validate the durable binding before Agent preparation so a conflict has no side effects.
+    const validated = await this.#rejectBindingConflict(request, async () => {
+      await this.#preparation.validateSession?.(request, hashes);
+    });
+    if ("rejected" in validated) return validated;
+    if (shouldPrepareAgent) await this.#preparation.prepareAgent(snapshot, hashes);
+    else await this.#preparation.verifyAgent?.(snapshot, hashes);
+    if (!shouldPrepareSession) return { value: undefined };
+    return this.#rejectBindingConflict(request, () => this.#preparation.prepareSession(request, hashes));
+  }
+
+  async #rejectBindingConflict<T>(
+    request: SessionReconcileRequest,
+    operation: () => Promise<T>,
+  ): Promise<{ value: T } | { rejected: SessionReconcileResult }> {
     try {
-      return { session: await this.#preparation.prepareSession(request, hashes) };
+      return { value: await operation() };
     } catch (error) {
       // The durable binding outlives this in-memory state, so after a restart it is the first
       // place a same-sequence conflict is seen. Answer the Server instead of dropping the frame.

@@ -219,6 +219,45 @@ describe("SessionReconciler", () => {
     ).rejects.toThrow("disk full");
   });
 
+  it("answers durable binding conflicts found by the session pre-check before preparing the agent", async () => {
+    const computerId = randomUUID();
+    const prepareAgent = vi.fn(async () => undefined);
+    const prepareSession = vi.fn(async () => undefined);
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: {
+        prepareAgent,
+        prepareSession,
+        stopSession: async () => undefined,
+        validateSession: async () => {
+          throw new SessionBindingConflictError("conflict", "The Session binding identity cannot be changed");
+        },
+      },
+    });
+    await expect(
+      reconciler.reconcile(reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"))),
+    ).resolves.toMatchObject({ status: "rejected", reason: "session_binding_conflict" });
+    expect(prepareAgent).not.toHaveBeenCalled();
+    expect(prepareSession).not.toHaveBeenCalled();
+    expect(reconciler.getAgent("agent-1")).toBeUndefined();
+    expect(reconciler.getSession("session-1")).toBeUndefined();
+
+    const failing = new SessionReconciler({
+      installationId: computerId,
+      preparation: {
+        prepareAgent: async () => undefined,
+        prepareSession: async () => undefined,
+        stopSession: async () => undefined,
+        validateSession: async () => {
+          throw new Error("disk full");
+        },
+      },
+    });
+    await expect(
+      failing.reconcile(reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"))),
+    ).rejects.toThrow("disk full");
+  });
+
   it("B-11/B-12 blocks session migration and agent revision changes while a turn owns the binding", async () => {
     const computerId = randomUUID();
     const reconciler = new SessionReconciler({ installationId: computerId });

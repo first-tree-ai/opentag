@@ -214,20 +214,6 @@ export function useSetMcpAuthorization(agentId: string) {
   });
 }
 
-export function useRevokeMcpAuthorization(agentId: string) {
-  const invalidate = useMcpInvalidation(agentId);
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (mcpServerId: string) => browserApi.revokeMcpAuthorization(agentId, mcpServerId),
-    onSuccess: async (entry) => {
-      queryClient.setQueryData<ListAgentMCPServersResponse>(queryKeys.mcp.agentServers(agentId), (previous) =>
-        mergeAgentServer(previous, entry),
-      );
-      await invalidate();
-    },
-  });
-}
-
 /**
  * Split a mutation input into the routing id and the request body.
  *

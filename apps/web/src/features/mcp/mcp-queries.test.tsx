@@ -17,7 +17,6 @@ import {
   useMcpServers,
   useProbeMcpServer,
   useRemoveMcpServer,
-  useRevokeMcpAuthorization,
   useSetMcpAuthorization,
   useStartMcpOAuth,
   useUpdateMcpBinding,
@@ -324,15 +323,6 @@ describe("MCP queries and id-only mutations", () => {
     await result.current.mutateAsync(SERVER_ID);
 
     expect(remove).toHaveBeenCalledWith(SERVER_ID);
-  });
-
-  it("revokes this Agent's credential by both ids", async () => {
-    const revoke = countCalls("revokeMcpAuthorization", {});
-    const { result } = renderHook(() => useRevokeMcpAuthorization(AGENT_ID), { wrapper });
-
-    await result.current.mutateAsync(SERVER_ID);
-
-    expect(revoke).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
   });
 
   it("probes this Agent's mount by both ids", async () => {

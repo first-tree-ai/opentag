@@ -51,7 +51,6 @@ export function useMcpDiscoverState(props: DiscoverProps) {
   const [error, setError] = useState<string | undefined>(
     props.initialOutcome === "failed" ? m.mcp_oauth_return_failed() : undefined,
   );
-  const notice = undefined;
   const [restoring, setRestoring] = useState(false);
   const [pending, setPending] = useState<Record<string, Pending>>({});
   const [keySetups, setKeySetups] = useState<Record<string, Setup>>({});
@@ -303,7 +302,6 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     loading,
     servers,
     error,
-    notice,
     busy,
     keyBusy,
     catalogBusy,

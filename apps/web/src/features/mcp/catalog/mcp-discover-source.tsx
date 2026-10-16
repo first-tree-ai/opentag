@@ -1,72 +1,120 @@
-import type { McpCatalogCategory, McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpCatalogCategory, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Field, KumoInputControl } from "../../../ui/design-system.js";
+import { Button, Field, KumoInputControl, Select } from "../../../ui/design-system.js";
 import { McpServiceIcon } from "../mcp-service-icon.js";
+import { McpCatalogActions, McpCatalogDescription, type McpCatalogFeedback } from "./mcp-catalog-feedback.js";
 import {
   catalogEntryState,
   entriesInCategory,
   localizedText,
   type McpCatalogEntryState,
   matchesCatalogEntry,
+  offeredEntries,
 } from "./mcp-catalog-model.js";
 
-/**
- * The Discover source of the add flow: the marketplace catalog, grouped under the categories its
- * source declares.
- *
- * The catalog's own copy is data-driven and localized in the catalog sources, so this component only
- * picks the active locale; the surface's chrome (the search label, the method labels, the installed
- * states) is ordinary interface copy from the message catalog.
- */
+/** Stays mounted during prerequisite guidance, preserving search, category, and scroll position. */
 export function McpDiscoverSource({
   categories,
-  entries,
+  entries: catalogEntries,
   servers,
   mounted,
   busy,
+  pending = {},
   onAdd,
+  connectedIds = [],
+  initialView,
+  onViewChange,
+  feedback,
 }: {
   categories: readonly McpCatalogCategory[];
-  entries: readonly McpCatalogEntry[];
+  entries: readonly McpInstallableCatalogEntry[];
   servers: readonly MCPServer[];
   mounted: readonly MCPAgentServer[];
   busy: boolean;
-  onAdd: (entry: McpCatalogEntry) => void;
+  pending?: Record<string, { action: "add" | "connect" }>;
+  onAdd: (entry: McpInstallableCatalogEntry) => void;
+  connectedIds?: string[];
+  initialView?: { query: string; categoryId: string };
+  onViewChange?: (view: { query: string; categoryId: string }) => void;
+  feedback?: Record<string, McpCatalogFeedback>;
 }) {
   const locale = getLocale();
-  const [categoryId, setCategoryId] = useState(categories[0]?.id ?? "");
-  const [query, setQuery] = useState("");
+  const entries = offeredEntries(catalogEntries);
+  // Navigation depends on the full directory, never on search results or connection status.
+  const shownCategories = categories.filter((category) => entriesInCategory(entries, category.id).length >= 2);
+  const [categoryId, setCategoryId] = useState(
+    () => shownCategories.find((category) => category.id === initialView?.categoryId)?.id ?? "",
+  );
+  const [query, setQuery] = useState(initialView?.query ?? "");
   const searching = query.trim().length > 0;
   const visible = searching
     ? entries.filter((entry) => matchesCatalogEntry(entry, query, locale))
-    : entriesInCategory(entries, categoryId);
+    : categoryId
+      ? entriesInCategory(entries, categoryId)
+      : entries;
+  const chooseCategory = (id: string) => {
+    setQuery("");
+    setCategoryId(id);
+    onViewChange?.({ query: "", categoryId: id });
+  };
   return (
     <>
-      <Field htmlFor="mcp-discover-search" label={m.mcp_discover_search()}>
+      <Field htmlFor="mcp-discover-search" label={m.mcp_discover_search()} hideLabel>
         <KumoInputControl
           id="mcp-discover-search"
           value={query}
+          disabled={busy}
           placeholder={m.mcp_discover_search_placeholder()}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            onViewChange?.({ query: event.target.value, categoryId });
+          }}
         />
       </Field>
-      <fieldset className="mt-5 flex flex-wrap gap-1 border-0 p-0">
+      <div className="mcp-discover-category-select mt-5">
+        <Select<string>
+          aria-label={m.mcp_discover_categories()}
+          className="w-full"
+          disabled={busy}
+          value={searching ? "" : categoryId}
+          itemToStringLabel={(id) => {
+            const category = shownCategories.find((category) => category.id === id);
+            return category ? localizedText(category.label, locale) : m.mcp_discover_all();
+          }}
+          onValueChange={(id) => chooseCategory(id ?? "")}
+        >
+          <Select.Option value="">{m.mcp_discover_all()}</Select.Option>
+          {shownCategories.map((category) => (
+            <Select.Option key={category.id} value={category.id}>
+              {localizedText(category.label, locale)}
+            </Select.Option>
+          ))}
+        </Select>
+      </div>
+      <fieldset className="mcp-discover-category-tabs mt-5 flex flex-wrap gap-1 border-0 p-0">
         <legend className="sr-only">{m.mcp_discover_categories()}</legend>
-        {categories.map((category) => {
+        <Button
+          aria-pressed={!searching && !categoryId}
+          disabled={busy}
+          size="compact"
+          variant={!searching && !categoryId ? "secondary" : "ghost"}
+          onClick={() => chooseCategory("")}
+        >
+          {m.mcp_discover_all()}
+        </Button>
+        {shownCategories.map((category) => {
           const active = !searching && category.id === categoryId;
           return (
             <Button
               key={category.id}
               aria-pressed={active}
+              disabled={busy}
               size="compact"
               variant={active ? "secondary" : "ghost"}
-              onClick={() => {
-                setQuery("");
-                setCategoryId(category.id);
-              }}
+              onClick={() => chooseCategory(category.id)}
             >
               {localizedText(category.label, locale)}
             </Button>
@@ -74,14 +122,17 @@ export function McpDiscoverSource({
         })}
       </fieldset>
       {visible.length ? (
-        <ul className="mt-4 grid max-h-96 gap-3 overflow-y-auto" data-ui="mcp-catalog">
+        <ul className="mcp-catalog-grid mt-4" data-ui="mcp-catalog">
           {visible.map((entry) => (
             <McpCatalogCard
               key={entry.id}
               entry={entry}
-              state={catalogEntryState(entry, servers, mounted)}
-              busy={busy}
+              state={connectedIds.includes(entry.id) ? "added" : catalogEntryState(entry, servers, mounted)}
+              busy={busy || Boolean(pending[entry.id])}
+              connecting={Boolean(pending[entry.id])}
+              pendingAction={pending[entry.id]?.action}
               onAdd={onAdd}
+              feedback={feedback?.[entry.id]}
             />
           ))}
         </ul>
@@ -92,60 +143,45 @@ export function McpDiscoverSource({
   );
 }
 
-function McpCatalogCard({
+export function McpCatalogCard({
   entry,
-  state,
+  state = "available",
   busy,
   onAdd,
+  connecting = false,
+  pendingAction,
+  feedback,
 }: {
-  entry: McpCatalogEntry;
-  state: McpCatalogEntryState;
+  entry: McpInstallableCatalogEntry;
+  state?: McpCatalogEntryState;
   busy: boolean;
-  onAdd: (entry: McpCatalogEntry) => void;
+  onAdd: (entry: McpInstallableCatalogEntry) => void;
+  connecting?: boolean;
+  pendingAction?: "add" | "connect";
+  feedback?: McpCatalogFeedback;
 }) {
   const locale = getLocale();
   const title = localizedText(entry.title, locale);
   return (
-    <li className="flex items-center justify-between gap-3 rounded-lg border border-kumo-line p-3">
-      <div className="flex min-w-0 items-start gap-3">
-        <McpServiceIcon src={entry.iconIsOfficial ? entry.iconUrl : undefined} size={24} />
-        <div className="grid min-w-0 gap-1">
-          <strong className="text-sm font-medium">{title}</strong>
-          <p className="text-xs leading-relaxed text-kumo-subtle">{localizedText(entry.description, locale)}</p>
-          <a
-            className="justify-self-start text-xs text-kumo-subtle underline underline-offset-4"
-            href={entry.website}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {m.mcp_discover_website()}
-          </a>
+    <li className="mcp-catalog-card rounded-lg border border-kumo-line bg-kumo-base p-5">
+      <div className="mcp-catalog-card-heading flex min-w-0 items-center gap-3">
+        <McpServiceIcon src={entry.iconIsOfficial ? entry.iconUrl : undefined} size={32} />
+        <div className="mcp-catalog-card-copy flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <strong className="mcp-catalog-card-title text-sm font-medium">{title}</strong>
         </div>
       </div>
-      {state === "available" ? (
-        <Button
-          aria-label={`${methodLabel(entry)}: ${title}`}
-          disabled={busy}
-          size="compact"
-          onClick={() => onAdd(entry)}
-        >
-          {methodLabel(entry)}
-        </Button>
-      ) : (
-        <span className="shrink-0 text-xs text-kumo-subtle">
-          {state === "authorized" ? m.mcp_authorization_status_active() : m.mcp_authorization_required()}
-        </span>
-      )}
+      <McpCatalogDescription description={localizedText(entry.description, locale)} feedback={feedback} />
+      <div className="mcp-catalog-card-actions mt-auto flex flex-wrap items-center justify-end gap-3 pt-2">
+        <McpCatalogActions
+          title={title}
+          state={state}
+          busy={busy}
+          connecting={connecting}
+          pendingAction={pendingAction}
+          feedback={feedback}
+          onAdd={() => onAdd(entry)}
+        />
+      </div>
     </li>
   );
-}
-
-/**
- * Names the method the add will use. It never says the Server requires that method: the catalog's
- * `defaultAuthKind` is a prefill for the new authorization, not a statement about the Server.
- */
-function methodLabel(entry: McpCatalogEntry): string {
-  if (entry.defaultAuthKind === "oauth") return m.mcp_discover_method_oauth();
-  if (entry.defaultAuthKind === "bearer") return m.mcp_discover_method_bearer();
-  return m.mcp_discover_method_none();
 }

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { serverNameFromUrl, suggestServerName } from "./mcp-form-model.js";
+import {
+  newHeader,
+  rebaseSettingsDraft,
+  serverNameFromUrl,
+  settingsDraft,
+  suggestServerName,
+} from "./mcp-form-model.js";
+import { entry } from "./mcp-test-fixtures.js";
 
 describe("serverNameFromUrl", () => {
   it.each([
@@ -26,5 +33,32 @@ describe("suggestServerName", () => {
         { name: "api-example-4" },
       ]),
     ).toBe("api-example-3");
+  });
+});
+
+describe("rebaseSettingsDraft", () => {
+  it.each(["", "in-progress"])("preserves an added unnamed header with value %s during a live update", (value) => {
+    const previous = entry({ overridden: { ...entry().overridden, extraHeaders: true } });
+    const draft = settingsDraft(previous);
+    draft.headers.push({ ...newHeader(), value });
+    const next = entry({ ...previous, updatedAt: "2026-10-10T08:00:00.000Z" });
+    const rebased = rebaseSettingsDraft(previous, draft, next);
+    expect(rebased.headers).toEqual(draft.headers);
+  });
+
+  it("keeps a deleted header list during a live update", () => {
+    const previous = entry();
+    const draft = { ...settingsDraft(previous), headers: [] };
+    expect(rebaseSettingsDraft(previous, draft, entry({ ...previous, enabled: false })).headers).toEqual([]);
+  });
+
+  it("follows confirmed header changes when the header draft is untouched", () => {
+    const previous = entry();
+    const next = entry({
+      effective: { ...previous.effective, extraHeaders: { "x-new": "saved" } },
+      overridden: { ...previous.overridden, extraHeaders: true },
+    });
+    const rebased = rebaseSettingsDraft(previous, settingsDraft(previous), next);
+    expect(rebased.headers.map(({ name, value }) => ({ name, value }))).toEqual([{ name: "x-new", value: "saved" }]);
   });
 });

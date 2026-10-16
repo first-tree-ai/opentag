@@ -90,6 +90,8 @@ export interface PreparedMcpGatewayLaunch {
 }
 
 export interface PreparedRuntimeCredentialEnvironment {
+  /** Local-only exact proxy socket for this execution. Cloud uses its mounted bridge. */
+  readonly allowedUnixSockets?: readonly string[];
   /** Present in proxy mode; exact-execution cleanup token. */
   readonly executionId?: string;
   /** Execution environment manifest merged by the Turn launcher. */
@@ -472,7 +474,7 @@ export class RuntimeCredentialEnvironmentManager {
     signal?.throwIfAborted();
     const layout = store.executionLayout(sessionId, relay.executionId);
     const handles = collectProxyHandles(relay);
-    const adapter = await this.#startProxyAdapter(relay, layout);
+    const adapter = await this.#startProxyAdapter(sessionId, relay, layout);
     try {
       const active = await this.#activateProxyExecution(sessionId, relay, store, layout, handles, adapter);
       return this.#preparedProxyResult(sessionId, relay, store, active);
@@ -493,11 +495,14 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   async #startProxyAdapter(
+    sessionId: string,
     relay: RuntimeCredentialRelay,
     layout: ReturnType<RuntimeProxyMaterialStore["executionLayout"]>,
   ): Promise<RuntimeProxyLoopbackAdapter> {
     return RuntimeProxyLoopbackAdapter.start({
       executionId: relay.executionId,
+      githubApiSocket:
+        !this.#options.sandboxForSession?.(sessionId) && relay.providers.some((entry) => entry.provider === "github"),
       ...(this.#options.generateCa ? { generateCa: this.#options.generateCa } : {}),
       localHandleFor: (provider) => {
         try {
@@ -522,6 +527,7 @@ export class RuntimeCredentialEnvironmentManager {
     adapter: RuntimeProxyLoopbackAdapter,
   ): Promise<ActiveProxyExecution> {
     const environment = buildRuntimeProxyEnvironment({
+      executionId: relay.executionId,
       adapterCaCertPath: adapter.caCertPath,
       cliMetadata: (provider) => relay.cliMetadataFor(provider),
       connectProxyUrl: adapter.connectProxyUrl,
@@ -532,6 +538,8 @@ export class RuntimeCredentialEnvironmentManager {
     await store.publish({
       adapterCaCertPath: adapter.caCertPath,
       environment,
+      githubApiSocketPath: adapter.githubApiSocketPath,
+      githubGitSocketPath: adapter.githubGitSocketPath,
       executionId: relay.executionId,
       handles,
       platform: this.#platform,
@@ -556,7 +564,7 @@ export class RuntimeCredentialEnvironmentManager {
       ...(imProvider ? { provider: imProvider } : {}),
       providers,
       relay,
-      slackApiHost: adapter.slackApiHost,
+      ...(imProvider === "slack" ? { slackApiHost: adapter.slackApiHost } : {}),
       ...(imProvider === "slack" ? { slackConfigDir: layout.slackConfigDir } : {}),
       ...(web ? { web } : {}),
       ...(mcp ? { mcp } : {}),
@@ -584,6 +592,13 @@ export class RuntimeCredentialEnvironmentManager {
     active: ActiveProxyExecution,
   ): PreparedRuntimeCredentialEnvironment {
     return {
+      ...(!this.#options.sandboxForSession?.(sessionId) && active.adapter.githubApiSocketPath
+        ? {
+            allowedUnixSockets: [active.adapter.githubApiSocketPath, active.adapter.githubGitSocketPath].filter(
+              (path): path is string => path !== undefined,
+            ),
+          }
+        : {}),
       executionId: relay.executionId,
       environmentManifest: store.manifestPath(sessionId),
       ...(active.outboxContext ? { outboxContext: active.outboxContext } : {}),

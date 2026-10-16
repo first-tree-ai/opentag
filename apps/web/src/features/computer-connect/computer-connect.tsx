@@ -80,6 +80,8 @@ export interface ComputerConnectLifecycle {
 
 export interface ComputerConnectLifecycleProps extends ComputerConnectProps {
   readonly adapter?: ComputerConnectAdapter;
+  /** Prepare recovery instructions as soon as a confirmed offline Computer is displayed. */
+  readonly autoIssue?: boolean;
   readonly children: (lifecycle: ComputerConnectLifecycle) => ReactNode;
 }
 
@@ -123,8 +125,18 @@ async function readPollResult(
   targetComputerId: string | undefined,
   isCurrent: () => boolean,
 ): Promise<PollResult> {
-  const verdict = readConnectCodeVerdict(await adapter.status(issued.connectCodeId));
-  if (!isCurrent() || verdict.kind === "wait") return { kind: "wait" };
+  const status = await readPollStatus(adapter, issued, targetComputerId, isCurrent);
+  if (status.kind !== "verdict") return status;
+  const { verdict } = status;
+  if (!isCurrent()) return { kind: "wait" };
+  // Repair can succeed using the existing credential without consuming the optional authorization.
+  // Only a fresh inventory read of this exact Computer can retire those instructions.
+  if (targetComputerId && verdict.kind !== "adopt") {
+    const connected = await readOnlineRepairTarget(adapter, targetComputerId);
+    if (!isCurrent()) return { kind: "wait" };
+    if (connected) return { kind: "connected", computer: connected };
+  }
+  if (verdict.kind === "wait") return { kind: "wait" };
   if (verdict.kind === "expire") return { kind: "expire" };
   if (targetComputerId && verdict.computerId !== targetComputerId) return { kind: "wait" };
   const { computers } = await adapter.computers();
@@ -135,6 +147,32 @@ async function readPollResult(
   return connected
     ? { kind: "connected", computer: connected }
     : { kind: "redeemed", redeemed: { computerId: verdict.computerId, redeemedAt: verdict.redeemedAt } };
+}
+
+async function readPollStatus(
+  adapter: ComputerConnectAdapter,
+  issued: IssuedComputerConnectCommand,
+  targetComputerId: string | undefined,
+  isCurrent: () => boolean,
+): Promise<
+  | { readonly kind: "verdict"; readonly verdict: ReturnType<typeof readConnectCodeVerdict> }
+  | Extract<PollResult, { kind: "wait" | "connected" }>
+> {
+  try {
+    return { kind: "verdict", verdict: readConnectCodeVerdict(await adapter.status(issued.connectCodeId)) };
+  } catch (cause) {
+    if (!isCurrent()) return { kind: "wait" };
+    // Optional authorization must not hide a restoration made with the existing credential.
+    const connected = targetComputerId ? await readOnlineRepairTarget(adapter, targetComputerId) : undefined;
+    if (!isCurrent()) return { kind: "wait" };
+    if (connected) return { kind: "connected", computer: connected };
+    throw cause;
+  }
+}
+
+async function readOnlineRepairTarget(adapter: ComputerConnectAdapter, computerId: string) {
+  const { computers } = await adapter.computers();
+  return computers.find((computer) => computer.computerId === computerId && computer.connectionStatus === "online");
 }
 
 async function pollRedeemedComputer({
@@ -321,6 +359,7 @@ export function ComputerConnectLifecycleRoot({
   adapter,
   children,
   intent,
+  autoIssue = intent.mode === "create",
   onConnected,
 }: ComputerConnectLifecycleProps) {
   const queryClient = useOptionalQueryClient();
@@ -330,6 +369,7 @@ export function ComputerConnectLifecycleRoot({
   return (
     <ComputerConnectAttempt
       adapter={adapter ?? defaultAdapter}
+      autoIssue={autoIssue}
       key={attemptKey}
       intent={intent}
       onConnected={onConnected}
@@ -341,11 +381,13 @@ export function ComputerConnectLifecycleRoot({
 
 function ComputerConnectAttempt({
   adapter,
+  autoIssue,
   children,
   intent,
   onConnected,
 }: {
   readonly adapter: ComputerConnectAdapter;
+  readonly autoIssue: boolean;
   readonly children: ComputerConnectLifecycleProps["children"];
   readonly intent: ComputerConnectIntent;
   readonly onConnected?: (computer: AccountComputerSummary) => void;
@@ -395,14 +437,14 @@ function ComputerConnectAttempt({
     mounted.current = true;
     // React Strict Mode replays the effect while preserving this ref. One mount is one Server-side
     // attempt, even in development; the replay only restores the mounted flag after its cleanup.
-    if (!started.current && intent.mode === "create") {
+    if (!started.current && autoIssue) {
       started.current = true;
       void issue();
     }
     return () => {
       mounted.current = false;
     };
-  }, [issue, intent.mode]);
+  }, [issue, autoIssue]);
 
   useEffect(() => {
     if (state.kind !== "issued" && state.kind !== "redeemed") return;

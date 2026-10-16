@@ -746,6 +746,36 @@ describe("parseServerConfig", () => {
     }
   });
 
+  it("requires the MCP Canva client pair to be configured together", () => {
+    // Absent and empty both mean "no deployment Canva client": Canva keeps automatic resolution.
+    expect(parseServerConfig(required).mcpCanvaOAuth).toBeUndefined();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_MCP_CANVA_CLIENT_ID: "",
+        OPENTAG_MCP_CANVA_CLIENT_SECRET: "   ",
+      }).mcpCanvaOAuth,
+    ).toBeUndefined();
+    const configured = parseServerConfig({
+      ...required,
+      OPENTAG_MCP_CANVA_CLIENT_ID: "canva-client",
+      OPENTAG_MCP_CANVA_CLIENT_SECRET: "canva-secret",
+    });
+    expect(configured).toMatchObject({ mcpCanvaOAuth: { clientId: "canva-client", clientSecret: "canva-secret" } });
+    // The two deployment clients are independent: configuring Canva configures nothing for Google.
+    expect(configured.mcpGoogleOAuth).toBeUndefined();
+    expect(() => parseServerConfig({ ...required, OPENTAG_MCP_CANVA_CLIENT_ID: "canva-client" })).toThrow(
+      /OPENTAG_MCP_CANVA_CLIENT_ID and OPENTAG_MCP_CANVA_CLIENT_SECRET/,
+    );
+    // The all-or-none error names the variables and never echoes configured material.
+    try {
+      parseServerConfig({ ...required, OPENTAG_MCP_CANVA_CLIENT_SECRET: "canva-secret" });
+      expect.unreachable("partial MCP Canva client configuration must fail");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain("canva-secret");
+    }
+  });
+
   it("uses OPENTAG_ENV as the channel source without interpreting the hostname", () => {
     const config = parseServerConfig({
       ...required,
@@ -755,7 +785,7 @@ describe("parseServerConfig", () => {
     expect(serverEnvironmentSummary(config)).toEqual({
       binName: "opentag-staging",
       channel: "staging",
-      cloud: { identities: false, runner: false, model: false },
+      cloud: { identities: false, runner: false, model: false, billing: false, billingCapability: "unspecified" },
       environment: "staging",
       packageName: "open-tag-staging",
       publicUrl: "https://dev.example.com",
@@ -782,7 +812,13 @@ describe("parseServerConfig", () => {
         OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-master-key-sentinel-9f1c0d",
       }),
     );
-    expect(summary.cloud).toEqual({ identities: true, runner: true, model: true });
+    expect(summary.cloud).toEqual({
+      identities: true,
+      runner: true,
+      model: true,
+      billing: false,
+      billingCapability: "unspecified",
+    });
     const serialized = JSON.stringify(summary);
     expect(serialized).not.toContain("opentag-test");
     expect(serialized).not.toContain("fixture-master-key-sentinel");

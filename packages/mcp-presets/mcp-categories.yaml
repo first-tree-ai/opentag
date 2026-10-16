@@ -1,35 +1,36 @@
 # The marketplace category set.
 #
 # Every category declared here must be referenced by at least one entry in `mcp-catalog.yaml`, and
-# every entry's `category` must name one of these ids — `pnpm check` fails either way, so the tab bar
-# never shows a tab that leads nowhere.
+# every entry's `category` must name one of these ids — `pnpm check` fails either way.
+# Discover shows category navigation only for categories with at least two entries. Entries from
+# smaller categories remain available in All and search.
 #
 # `label` must supply every locale listed in `apps/web/project.inlang/settings.json`. A missing locale
 # fails the build rather than falling back to another at render time.
 # `order` sets the tab order.
 
-- id: general
+- id: docs
   label:
-    en: General
-    zh: 通用
+    en: Docs & Knowledge
+    zh: 文档与知识
   order: 10
 
-- id: engineering
+- id: communication
   label:
-    en: Engineering
-    zh: 工程
+    en: Communication
+    zh: 沟通
   order: 20
 
-- id: google-workspace
+- id: projects
   label:
-    en: Google Workspace
-    zh: Google Workspace
+    en: Projects
+    zh: 项目管理
   order: 30
 
-- id: productivity
+- id: search
   label:
-    en: Productivity
-    zh: 生产力
+    en: Web Search
+    zh: 网页搜索
   order: 40
 
 - id: design
@@ -38,20 +39,32 @@
     zh: 设计
   order: 50
 
-- id: search
+- id: data
   label:
-    en: Search
-    zh: 搜索
+    en: Data & Analytics
+    zh: 数据分析
   order: 60
+
+- id: development
+  label:
+    en: Developer Tools
+    zh: 开发工具
+  order: 70
+
+- id: sales
+  label:
+    en: Sales & CRM
+    zh: 销售与客户
+  order: 80
+
+- id: finance
+  label:
+    en: Finance & Payments
+    zh: 财务支付
+  order: 90
 
 - id: automation
   label:
     en: Automation
-    zh: 自动化
-  order: 70
-
-- id: business-data
-  label:
-    en: Business & Data
-    zh: 业务与数据
-  order: 80
+    zh: 工作流自动化
+  order: 100

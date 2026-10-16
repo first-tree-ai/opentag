@@ -386,3 +386,16 @@ describe("Account schedule routes", () => {
     expect(service.pauseForAccount).not.toHaveBeenCalled();
   });
 });
+
+it("passes only the header execution ID to Server proof authentication", async () => {
+  const { app, service } = runtimeFixture();
+  const executionId = randomUUID();
+  const response = await app.inject({
+    method: "POST",
+    url: RUNTIME_AGENT_SCHEDULES_PATH,
+    headers: { ...proof, "x-opentag-execution-id": executionId },
+    payload: { name: "task", prompt: "check", schedule: { kind: "every", intervalSeconds: 120 }, timezone: "UTC" },
+  });
+  expect(response.statusCode).toBe(201);
+  expect(service.authenticate).toHaveBeenCalledWith("proof-token", executionId);
+});

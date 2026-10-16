@@ -1,0 +1,1 @@
+ALTER TABLE "agent_schedules" ADD COLUMN "user_task_source" jsonb;

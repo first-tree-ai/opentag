@@ -106,6 +106,22 @@ export class DefaultSlackApiClient implements SlackApiClient {
     };
   }
 
+  async botInfo(
+    token: string,
+    botId: string,
+  ): Promise<{ id: string; userId: string; appId: string; deleted: boolean }> {
+    const result = await this.#policy.run(
+      "slack.bots.info",
+      (signal) => this.#createClient(token, signal).bots.info({ bot: botId }),
+      { circuitKey: "slack:bots.info", maxAttempts: 1, timeoutMs: 10_000 },
+    );
+    const bot = result.bot;
+    if (!result.ok || !bot?.id || !bot.user_id || !bot.app_id || typeof bot.deleted !== "boolean") {
+      throw new Error("SLACK_AUTH_IDENTITY_INCOMPLETE");
+    }
+    return { id: bot.id, userId: bot.user_id, appId: bot.app_id, deleted: bot.deleted };
+  }
+
   async authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }> {
     const result = await this.#policy.run(
       "slack.auth.test",

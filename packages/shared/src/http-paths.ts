@@ -32,6 +32,7 @@ export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/feish
 export const FEISHU_SETUP_ATTEMPT_CHECK_TEMPLATE = `${FEISHU_SETUP_ATTEMPT_TEMPLATE}/check`;
 export const AGENT_SLACK_OAUTH_START_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/oauth/start`;
 export const AGENT_SLACK_EVENTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/events`;
+export const AGENT_SLACK_CONFIGURATION_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/configuration`;
 export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindingId`;
 export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
@@ -45,6 +46,7 @@ export const SLACK_OAUTH_CALLBACK_PATH = `${API_V1_PREFIX}/im-bindings/slack/oau
  */
 export const GITHUB_INTEGRATION_PATH = `${API_V1_PREFIX}/integrations/github`;
 export const GITHUB_INTEGRATION_AUTHORIZATION_PATH = `${GITHUB_INTEGRATION_PATH}/authorization`;
+export const GITHUB_INTEGRATION_INSTALLATION_PATH = `${GITHUB_INTEGRATION_PATH}/installation`;
 export const GITHUB_INTEGRATION_REPOSITORIES_PATH = `${GITHUB_INTEGRATION_PATH}/repositories`;
 export const GITHUB_INTEGRATION_BINDINGS_PATH = `${GITHUB_INTEGRATION_PATH}/bindings`;
 export const GITHUB_INTEGRATION_DISCONNECT_PATH = `${GITHUB_INTEGRATION_PATH}/disconnect`;
@@ -104,6 +106,8 @@ export const AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE = `${AGENT_MCP_AUTHORIZATION
 export const AGENT_MCP_PROBE_TEMPLATE = `${AGENT_MCP_SERVER_TEMPLATE}/probe`;
 /** A public static document describing this deployment as an OAuth client (CIMD). */
 export const MCP_CLIENT_METADATA_PATH = "/oauth/client-metadata.json";
+/** The catalog endpoints this deployment replaces because it configured a client for them. */
+export const MCP_CATALOG_ENDPOINTS_PATH = `${API_V1_PREFIX}/mcp-catalog/endpoints`;
 /*
  * Agent Skills. A Skill is owned by exactly one Agent, so every Account- and Computer-scoped path is
  * addressed under an Agent. The runtime path is session-proof authenticated and takes the Skill name
@@ -145,6 +149,7 @@ export const PUBLIC_MCP_SERVERS_PATH = `${API_V1_PREFIX}/public/mcp-servers`;
  * is always the one the proof resolves to, so a request cannot reach a different Agent.
  */
 export const RUNTIME_AGENT_PATH = `${API_V1_PREFIX}/runtime/agent`;
+export const RUNTIME_AGENT_SLACK_PROVISION_PATH = `${RUNTIME_AGENT_PATH}/slack-provision`;
 /*
  * Agent Schedules. The runtime prefix is Session-proof authenticated and never addressed by
  * Agent id (the proof resolves the Agent); the Account prefix is scoped to an owned Agent and
@@ -185,6 +190,7 @@ export const HTTP_PATHS = {
   mcpServers: MCP_SERVERS_PATH,
   mcpOAuthCallback: MCP_OAUTH_CALLBACK_PATH,
   mcpClientMetadata: MCP_CLIENT_METADATA_PATH,
+  mcpCatalogEndpoints: MCP_CATALOG_ENDPOINTS_PATH,
   publicSkills: PUBLIC_SKILLS_PATH,
   publicMcpServers: PUBLIC_MCP_SERVERS_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,
@@ -381,6 +387,14 @@ export function agentSlackOAuthStartPath(agentId: string): string {
 
 export function agentSlackEventsPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/im-binding/slack/events`;
+}
+
+export function agentSlackConfigurationPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/im-binding/slack/configuration`;
+}
+
+export function agentSlackAutoSetupPath(agentId: string): string {
+  return `${agentSlackConfigurationPath(agentId)}/auto`;
 }
 
 export function githubIntegrationPath(): string {

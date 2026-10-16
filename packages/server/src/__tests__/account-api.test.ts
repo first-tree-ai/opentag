@@ -1022,8 +1022,8 @@ describe("Account Cloud identity routes", () => {
       list: vi.fn().mockResolvedValue({
         available: true,
         // The catalog publishes its preferred default first; the account surface relays it.
-        defaultModel: "gemini-3.8-flash",
-        models: ["gemini-3.8-flash", "claude-sonnet-5"],
+        defaultModel: "gemini-4-argon",
+        models: ["gemini-4-argon", "claude-sonnet-5"],
       }),
     };
     const app = createApp({ authService: authService(), cloudModelCatalog: catalog });
@@ -1038,8 +1038,8 @@ describe("Account Cloud identity routes", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json()).toEqual({
       available: true,
-      defaultModel: "gemini-3.8-flash",
-      models: ["gemini-3.8-flash", "claude-sonnet-5"],
+      defaultModel: "gemini-4-argon",
+      models: ["gemini-4-argon", "claude-sonnet-5"],
     });
     expect(catalog.list).toHaveBeenCalledTimes(1);
   });

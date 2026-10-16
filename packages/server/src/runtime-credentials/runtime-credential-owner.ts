@@ -103,6 +103,24 @@ export class RuntimeCredentialOwner {
     return this.#options.executions;
   }
 
+  /** Used by Session CLI to snapshot user provenance only from a currently fenced execution. */
+  async isExecutionLive(executionId: string): Promise<boolean> {
+    const record = this.#options.executions.get(executionId);
+    if (
+      this.#closed ||
+      !record ||
+      record.purpose !== "execution" ||
+      !this.#authority.isCurrentConnection(record.computerId, record.instanceId, record.connectionId)
+    )
+      return false;
+    const snapshot = await this.#options.scopeResolver.load(record.sessionId);
+    if (!snapshot || this.#options.scopeResolver.assertExecutionFence(record, snapshot)) return false;
+    return (
+      (await this.#options.authority.revalidate(record.source, record)) === "valid" &&
+      this.#options.executions.get(executionId) === record
+    );
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;

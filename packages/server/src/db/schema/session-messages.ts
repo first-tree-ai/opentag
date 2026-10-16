@@ -1,4 +1,4 @@
-import type { SessionMessageScheduledOrigin } from "@opentag/shared";
+import type { RuntimeUserTaskSource, SessionMessageScheduledOrigin } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import { check, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { sessions } from "./sessions.js";
@@ -21,6 +21,7 @@ export const sessionMessages = pgTable(
      * never deletes or disqualifies messages it already produced.
      */
     sourceSessionId: uuid("source_session_id").references(() => sessions.id, { onDelete: "restrict" }),
+    userTaskSource: jsonb("user_task_source").$type<RuntimeUserTaskSource>(),
     scheduledOrigin: jsonb("scheduled_origin").$type<SessionMessageScheduledOrigin>(),
     targetSessionId: uuid("target_session_id")
       .notNull()

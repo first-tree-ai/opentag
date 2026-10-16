@@ -63,14 +63,24 @@ import {
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
+  agentSlackAutoSetupPath,
+  agentSlackConfigurationPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
+  CLOUD_BILLING_CHECKOUT_PATH,
+  CLOUD_BILLING_PATH,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
+  CLOUD_USAGE_PATH,
   type CloudAvailability,
   CloudAvailabilitySchema,
+  CloudBillingSummarySchema,
+  type CloudCreditCheckoutRequest,
+  CloudCreditCheckoutResponseSchema,
   type CloudModelOptions,
   CloudModelOptionsSchema,
+  CloudUsageSummarySchema,
+  type CloudUsageWindowDays,
   COMPUTER_ACCESS_CAPABILITY_HEADER,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
@@ -90,7 +100,6 @@ import {
   feishuSetupAttemptCheckPath,
   feishuSetupAttemptPath,
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
-  GITHUB_INTEGRATION_BINDINGS_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
   GITHUB_INTEGRATION_PATH,
   type GitHubConnectionStatus,
@@ -137,8 +146,11 @@ import {
   ListTaskRepliesResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
+  MCP_CATALOG_ENDPOINTS_PATH,
   type MCPAgentServer,
   MCPAgentServerSchema,
+  type MCPCatalogEndpointsResponse,
+  MCPCatalogEndpointsResponseSchema,
   type MCPProbeResponse,
   MCPProbeResponseSchema,
   type MCPServer,
@@ -158,6 +170,7 @@ import {
   type RemoteSkillSelection,
   type ResolveRemoteSkillsResponse,
   ResolveRemoteSkillsResponseSchema,
+  type SaveSlackConfigurationRequest,
   type SetMCPAuthorizationRequest,
   SKILL_FORMAT_HEADER,
   SKILL_REPLACE_HEADER,
@@ -166,6 +179,14 @@ import {
   type SkillArchiveFormat,
   type SkillDetail,
   SkillDetailSchema,
+  SlackAgentProvisionCodeResponseSchema,
+  type SlackAutoSetupRequest,
+  type SlackAutoSetupResponse,
+  SlackAutoSetupResponseSchema,
+  type SlackConfigurationResult,
+  SlackConfigurationResultSchema,
+  type SlackConfigurationView,
+  SlackConfigurationViewSchema,
   type StartGitHubAuthorizationRequest,
   type StartGitHubAuthorizationResponse,
   StartGitHubAuthorizationResponseSchema,
@@ -185,7 +206,6 @@ import {
   taskRepliesPath,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
-  type UpdateGitHubConnectionBindingsRequest,
   type UpdateMCPBindingRequest,
   type UpdateMCPServerRequest,
   type UpdateSkillRequest,
@@ -284,6 +304,30 @@ export class BrowserApi {
     readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
     readonly diagnosticReporter: DiagnosticReporter = new ConsoleDiagnosticReporter(),
   ) {}
+
+  cloudUsage(windowDays: CloudUsageWindowDays) {
+    return this.request(`${CLOUD_USAGE_PATH}?windowDays=${windowDays}`, CloudUsageSummarySchema);
+  }
+
+  cloudBilling() {
+    return this.request(CLOUD_BILLING_PATH, CloudBillingSummarySchema);
+  }
+
+  cloudCreditCheckout(input: CloudCreditCheckoutRequest) {
+    return this.request(CLOUD_BILLING_CHECKOUT_PATH, CloudCreditCheckoutResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  issueSlackAgentProvisionCode() {
+    return this.request(HTTP_PATHS.meConnectCodes, SlackAgentProvisionCodeResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ purpose: "slack-agent-provision" }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
 
   me(): Promise<MeResponse> {
     return this.request("/api/v1/me", MeResponseSchema);
@@ -575,6 +619,26 @@ export class BrowserApi {
     });
   }
 
+  autoSetupSlack(agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
+    return this.request(agentSlackAutoSetupPath(agentId), SlackAutoSetupResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  slackConfiguration(agentId: string): Promise<SlackConfigurationView> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationViewSchema);
+  }
+
+  saveSlackConfiguration(agentId: string, input: SaveSlackConfigurationRequest): Promise<SlackConfigurationResult> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
   imBindingDiagnostics(imBindingId: string): Promise<ImBindingDiagnostics> {
     return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema, {
       headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
@@ -692,14 +756,6 @@ export class BrowserApi {
     return this.request(githubIntegrationRepositoriesPath(cursor), GitHubRepositoryDiscoveryPageSchema);
   }
 
-  updateGitHubBindings(input: UpdateGitHubConnectionBindingsRequest): Promise<GitHubConnectionStatus> {
-    return this.request(GITHUB_INTEGRATION_BINDINGS_PATH, GitHubConnectionStatusSchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
   disconnectGitHub(): Promise<GitHubConnectionStatus | undefined> {
     return this.requestOptional(GITHUB_INTEGRATION_DISCONNECT_PATH, GitHubConnectionStatusSchema, {
       method: "POST",
@@ -716,6 +772,11 @@ export class BrowserApi {
    */
   mcpServers(): Promise<ListMCPServersResponse> {
     return this.request(mcpServersPath(), ListMCPServersResponseSchema);
+  }
+
+  /** The catalog endpoints this deployment replaces because it configured a client for them. */
+  mcpCatalogEndpoints(): Promise<MCPCatalogEndpointsResponse> {
+    return this.request(MCP_CATALOG_ENDPOINTS_PATH, MCPCatalogEndpointsResponseSchema);
   }
 
   mcpServer(mcpServerId: string): Promise<MCPServerDetail> {

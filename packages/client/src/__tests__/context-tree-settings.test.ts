@@ -221,7 +221,7 @@ describe("managed credential Context Tree settings", () => {
     expect(await managed.run(frame("disconnect"))).toEqual({ status: "completed", repository: null });
   });
 
-  it("rejects a managed connect outside the granted repository set", async () => {
+  it("refuses a legacy repository directory without an execution transport", async () => {
     const { settings, run } = await fixture();
     const managed = new ContextTreeSettings({
       ...settings.options,
@@ -238,7 +238,8 @@ describe("managed credential Context Tree settings", () => {
       ...settings.options,
       managedCredentials: true,
       managedEnvironment: () => ({
-        OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "context_tree" }]),
+        GH_TOKEN: "execution-local-handle",
+        OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234",
       }),
     });
     expect(await managed.run(frame("connect"))).toEqual({ status: "completed", repository: "acme/memory" });

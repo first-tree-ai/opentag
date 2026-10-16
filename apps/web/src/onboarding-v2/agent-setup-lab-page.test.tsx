@@ -260,8 +260,8 @@ describe("agent setup lab page", () => {
     expect(screen.getByText("1 changed")).toBeTruthy();
     expect(await screen.findByText("Offline")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect computer" }));
-    expect(screen.queryByText("1 changed")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
+    await waitFor(() => expect(screen.queryByText("1 changed")).toBeNull(), { timeout: 3_000 });
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
   });
 
@@ -294,10 +294,14 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Connect messaging");
     fireEvent.click(await screen.findByRole("button", { name: /Slack/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Finish Slack install" }));
+    fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "lab-code" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText("Send a message to verify.");
+    fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
     fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
     expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
     expect(window.location.pathname).not.toContain("slack");
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/im-binding/slack"))).toBe(false);
   });
 
   it("only offers the connected messaging override when that preset uses it", async () => {
@@ -308,7 +312,7 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Everything ready");
     await chooseOption("Connected messaging app", "Slack");
-    expect(await screen.findByText("Tag @OpenTag in Slack to put it to work.")).toBeTruthy();
+    expect(await screen.findByText("Message this Bot in Slack to put it to work.")).toBeTruthy();
     expect(screen.getByText("1 changed")).toBeTruthy();
   });
 });

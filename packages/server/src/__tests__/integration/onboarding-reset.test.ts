@@ -537,6 +537,7 @@ describe("staging Account setup reset", () => {
     const socket = { close: vi.fn(), readyState: 1, terminate: vi.fn() };
     await value.registry.register(
       {
+        clientVersion: "0.1.1",
         computerId: value.tester.computerId,
         installationId: value.tester.installationId,
         instanceId: crypto.randomUUID(),

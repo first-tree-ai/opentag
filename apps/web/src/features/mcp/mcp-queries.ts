@@ -2,10 +2,11 @@ import type {
   ListAgentMCPServersResponse,
   ListAvailableMCPServersResponse,
   MCPAgentServer,
+  MCPCatalogEndpointsResponse,
   MCPServer,
   MCPServerDetail,
 } from "@opentag/shared/browser";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
 import { LIVE_REFETCH_INTERVAL_MS, liveResourceQueryOptions } from "../../query/live.js";
@@ -27,6 +28,19 @@ export function useMcpServers() {
   });
 }
 
+/**
+ * The catalog endpoints this deployment replaces. They change only when the deployment's
+ * configuration changes, which needs a restart, so the read is not polled.
+ */
+const CATALOG_ENDPOINTS_STALE_TIME_MS = 5 * 60_000;
+export function useMcpCatalogEndpoints() {
+  return useQuery({
+    queryKey: queryKeys.mcp.catalogEndpoints(),
+    queryFn: (): Promise<MCPCatalogEndpointsResponse> => browserApi.mcpCatalogEndpoints(),
+    staleTime: CATALOG_ENDPOINTS_STALE_TIME_MS,
+  });
+}
+
 export function useMcpServerDetail(mcpServerId: string | undefined) {
   return useQuery({
     ...liveResourceQueryOptions,
@@ -36,11 +50,57 @@ export function useMcpServerDetail(mcpServerId: string | undefined) {
   });
 }
 
+/** Read only this Agent's overridden definitions and the explicitly restored installation. */
+export function useMcpInstallationDefinitions(mounted: readonly MCPAgentServer[], restoredId?: string) {
+  const ids = new Set(mounted.filter((entry) => entry.overridden.url).map((entry) => entry.mcpServerId));
+  if (restoredId) ids.add(restoredId);
+  const queries = useQueries({
+    queries: [...ids].map((id) => ({
+      ...liveResourceQueryOptions,
+      queryKey: queryKeys.mcp.server(id),
+      queryFn: () => browserApi.mcpServer(id),
+    })),
+  });
+  // Cached metadata remains usable after a failed background refetch.
+  const failure = queries.find((query) => query.isError && !query.data);
+  return {
+    servers: queries.flatMap((query) => (query.data ? [query.data.server] : [])),
+    isPending: queries.some((query) => query.isPending),
+    isError: Boolean(failure),
+    error: failure?.error,
+    refetch: () => Promise.all(queries.map((query) => query.refetch())),
+  };
+}
+
+const PROBE_REFETCH_INTERVAL_MS = 1_000;
+const PROBE_FAST_POLL_WINDOW_MS = 30_000;
+const pendingProbeStarts = new WeakMap<object, Map<string, number>>();
+
+/** Fast polling is bounded even when failed requests keep the cached probe state pending. */
+export function mcpProbeRefetchInterval(query: { state: { data: ListAgentMCPServersResponse | undefined } }): number {
+  const pending = query.state.data?.servers.filter(
+    (entry) =>
+      entry.enabled && entry.authorization?.status === "active" && entry.authorization.probeState === "pending",
+  );
+  if (!pending?.length) {
+    pendingProbeStarts.delete(query);
+    return LIVE_REFETCH_INTERVAL_MS;
+  }
+  const now = Date.now();
+  const previous = pendingProbeStarts.get(query);
+  const starts = new Map(pending.map((entry) => [entry.mcpServerId, previous?.get(entry.mcpServerId) ?? now]));
+  pendingProbeStarts.set(query, starts);
+  return [...starts.values()].some((startedAt) => now - startedAt < PROBE_FAST_POLL_WINDOW_MS)
+    ? PROBE_REFETCH_INTERVAL_MS
+    : LIVE_REFETCH_INTERVAL_MS;
+}
+
 export function useAgentMcpServers(agentId: string) {
   return useQuery({
     ...liveResourceQueryOptions,
     queryKey: queryKeys.mcp.agentServers(agentId),
     queryFn: (): Promise<ListAgentMCPServersResponse> => browserApi.agentMcpServers(agentId),
+    refetchInterval: mcpProbeRefetchInterval,
   });
 }
 
@@ -188,7 +248,10 @@ export function useStartMcpOAuth(agentId: string) {
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.startMcpOAuth>[2]) =>
       browserApi.startMcpOAuth(agentId, input.mcpServerId, bodyOf(input)),
-    onSuccess: invalidate,
+    // The authorization URL is ready; list refreshes must not hold the redirect.
+    onSuccess: () => {
+      void invalidate();
+    },
   });
 }
 

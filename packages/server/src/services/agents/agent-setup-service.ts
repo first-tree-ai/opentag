@@ -603,9 +603,8 @@ function deriveSetupActions(
 function messagingActions(messaging: AgentSetupMessagingState, slackOAuthAvailable: boolean): AgentSetupAction[] {
   switch (messaging.kind) {
     case "not-configured": {
-      // Slack leads where both are offered, matching the settings page; Feishu is the one that is
-      // always available, so it stays the entry that survives when Slack OAuth is not configured.
-      const actions: AgentSetupAction[] = slackOAuthAvailable ? [{ kind: "start-messaging", provider: "slack" }] : [];
+      // New Slack connections use dedicated Apps independently of official OAuth availability.
+      const actions: AgentSetupAction[] = [{ kind: "start-messaging", provider: "slack" }];
       actions.push({ kind: "start-messaging", provider: "feishu" });
       return actions;
     }

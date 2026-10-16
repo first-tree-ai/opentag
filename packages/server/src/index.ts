@@ -10,6 +10,8 @@ import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import type { CloudBilling } from "./cloud-billing.js";
+import { isCloudBillingFlagIgnored } from "./cloud-billing-config.js";
 import { cloudAvailability } from "./cloud-product-config.js";
 import {
   cloudAppOptions,
@@ -50,7 +52,9 @@ import { RuntimeApprovalOwner } from "./runtime/runtime-approval-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { SlackAutoSetupOwner } from "./runtime/slack-auto-setup-owner.js";
 import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
+import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";
 import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
@@ -62,6 +66,7 @@ import {
   CloudAgentRuntimeTester,
   DatabaseAgentOwnerResolver,
 } from "./services/agents/index.js";
+import { SlackAutoSetupService } from "./services/agents/slack-auto-setup-service.js";
 import {
   AuthService,
   ConnectCodeService,
@@ -70,11 +75,18 @@ import {
   PostAuthenticationService,
 } from "./services/auth/index.js";
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
+import { loadCloudBilling } from "./services/cloud-billing-module.js";
+import { CloudCallStore } from "./services/cloud-call-store.js";
+import { createCloudExecutionContext } from "./services/cloud-model-context.js";
+import { CloudModelService, type CloudModelServiceOptions } from "./services/cloud-model-service.js";
 import { createRunnerImagePrewarmWorker } from "./services/cloud-run/runner-image-prewarm-worker.js";
+import { CloudUsageService } from "./services/cloud-usage.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
+import { GitHubInstallationTokenClient } from "./services/github/installation-token-client.js";
 import { GitHubCredentialCipher } from "./services/github-credential-material.js";
+import { GitHubUserTokenLeases } from "./services/github-proxy/user-token-leases.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { SlackWorkingStore } from "./services/im/slack-working-store.js";
@@ -224,18 +236,50 @@ function cloudPlatformRuntimeOptions(
 }
 
 /** One model catalog shared by settings, dispatch and diagnostics. */
-function createCloudModelRuntime(config: ServerConfig, runner: SandboxRunnerRuntime | undefined) {
+async function createCloudModelRuntime(
+  config: ServerConfig,
+  runner: SandboxRunnerRuntime | undefined,
+  billing: CloudBilling | undefined,
+  calls: CloudCallStore,
+  database: DatabaseClient,
+  onError: NonNullable<CloudModelServiceOptions["onError"]>,
+) {
   const model = config.cloudModel;
   if (!runner || !model.enabled) return undefined;
-  const catalog = new RouterCloudModelCatalog({ upstreamBaseUrl: model.upstreamBaseUrl, masterKey: model.masterKey });
-  return { catalog, tester: new CloudAgentRuntimeTester({ catalog, config: model }) };
+  const catalog = new RouterCloudModelCatalog({
+    upstreamBaseUrl: model.upstreamBaseUrl,
+    masterKey: model.masterKey,
+  });
+  const service = new CloudModelService(model, { calls, billing, onError });
+  try {
+    await service.initialize();
+  } catch (error) {
+    await service.close();
+    throw error;
+  }
+  return {
+    catalog,
+    routeDependencies: { modelService: service, contextForExecution: createCloudExecutionContext(database) },
+    service,
+    tester: new CloudAgentRuntimeTester({
+      catalog,
+      modelService: service,
+    }),
+  };
 }
 
-function optionalCloudModelCatalog(runtime: ReturnType<typeof createCloudModelRuntime>) {
+function githubInstallationOptions(config: ServerConfig) {
+  return config.githubApp ? { installation: new GitHubInstallationTokenClient(config.githubApp) } : {};
+}
+
+function optionalCloudUsage(config: ServerConfig, cloudUsage: CloudUsageService) {
+  return config.cloudModel.enabled ? { cloudUsage } : {};
+}
+function optionalCloudModelCatalog(runtime: Awaited<ReturnType<typeof createCloudModelRuntime>>) {
   return runtime ? { cloudModelCatalog: runtime.catalog } : {};
 }
 
-function optionalCloudModelTester(runtime: ReturnType<typeof createCloudModelRuntime>) {
+function optionalCloudModelTester(runtime: Awaited<ReturnType<typeof createCloudModelRuntime>>) {
   return runtime ? { cloud: runtime.tester } : {};
 }
 
@@ -345,14 +389,18 @@ function cloudSessionAuthorityOptions(
 }
 
 function createContextTreeServices(
-  management: NonNullable<ReturnType<typeof createGitHubIntegration>>["management"] | undefined,
+  github: ReturnType<typeof createGitHubIntegration> | undefined,
   imBindings: ImBindingService,
   agents: AgentService,
   owner: ContextTreeOperationOwner,
 ) {
   const computerKind = (computerId: string) => imBindings.computerKind(computerId);
-  const cloudContextTreeOperations = management
-    ? new CloudContextTreeOperations({ management, computerKind })
+  const cloudContextTreeOperations = github
+    ? new CloudContextTreeOperations({
+        management: github.management,
+        computerKind,
+        leases: new GitHubUserTokenLeases(github.userTokens),
+      })
     : undefined;
   return {
     cloudContextTreeOperations,
@@ -440,9 +488,20 @@ function deploymentProof(config: ServerConfig) {
   };
 }
 
+/** An image without billing boots with billing off; a stale enable flag is reported, never fatal. */
+function reportIgnoredCloudBilling(config: ServerConfig, log: { warn(payload: object, message: string): void }) {
+  if (!isCloudBillingFlagIgnored(config.cloudBilling)) return;
+  log.warn(
+    { event: "cloud_billing_flag_ignored", capability: config.cloudBilling.capability },
+    "OPENTAG_CLOUD_BILLING_ENABLED=true is ignored: this image does not bundle cloud billing",
+  );
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  let cloudBilling: CloudBilling | undefined;
+  let cloudModelService: CloudModelService | undefined;
   const knownSecrets: string[] = collectKnownSecrets(process.env);
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
@@ -585,7 +644,24 @@ export async function startServer(): Promise<void> {
      * and the runtime test — shares the same catalog instance (one lazy cache, one in-flight
      * Router read per process). The catalog performs no I/O at construction.
      */
-    const cloudModelRuntime = createCloudModelRuntime(config, cloudRunnerRuntime);
+    cloudBilling = await loadCloudBilling(config.cloudBilling.enabled, {
+      databaseUrl: config.databaseUrl,
+      publicUrl: config.publicUrl,
+      environment: process.env,
+    });
+    const cloudCalls = new CloudCallStore({
+      query: async (statement, parameters = []) => ({ rows: await sql.unsafe(statement, parameters as never[]) }),
+    });
+    const cloudUsage = new CloudUsageService(cloudCalls.db);
+    const cloudModelRuntime = await createCloudModelRuntime(
+      config,
+      cloudRunnerRuntime,
+      cloudBilling,
+      cloudCalls,
+      database,
+      (event, details) => app?.log.error({ event, ...details }),
+    );
+    cloudModelService = cloudModelRuntime?.service;
     const modelCatalogOptions = optionalCloudModelCatalog(cloudModelRuntime);
     // Exact Cloud revocation sender: the credential owner's sweep/close notifications reach the
     // owning Runner connection through the controller created below. Declared here because the
@@ -710,12 +786,11 @@ export async function startServer(): Promise<void> {
     const sandboxService = new SandboxService(database, sessionService, { cloudIdentities });
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
-    const sessionCliProofService = new SessionCliProofService(
-      database,
-      registry,
-      config.encryptionKey,
-      sessionAuthority.proof,
-    );
+    const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey, {
+      ...sessionAuthority.proof,
+      executions: platformRuntime.credentials.owner.executionRegistry,
+      executionLive: (id) => platformRuntime.credentials.owner.isExecutionLive(id),
+    });
     const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
     const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
@@ -745,7 +820,9 @@ export async function startServer(): Promise<void> {
     const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
     const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
+    const slackAutoSetupOwner = new SlackAutoSetupOwner(registry);
     const agentService = new AgentService(database, {
+      ...optionalCloudUsage(config, cloudUsage),
       cloudIdentitiesEnabled: cloudIdentities.enabled,
       ...modelCatalogOptions,
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
@@ -765,7 +842,7 @@ export async function startServer(): Promise<void> {
         ),
     });
     const { cloudContextTreeOperations, contextTreeOperationService } = createContextTreeServices(
-      github?.management,
+      github,
       imBindingService,
       agentService,
       contextTreeOperationOwner,
@@ -835,6 +912,7 @@ export async function startServer(): Promise<void> {
       logger: serviceLogger("slack-working-status"),
     });
     const slackConfigurationService = new SlackConfigurationService({
+      cipher: applicationCipher,
       onDiagnostic: reportDiagnostic,
       api: slackApi,
       database,
@@ -954,6 +1032,13 @@ export async function startServer(): Promise<void> {
        * reach beyond the Google-hosted endpoints.
        */
       googleMcpClient: config.mcpGoogleOAuth,
+      /*
+       * The deployment's Canva Developer Portal client, present only when the
+       * OPENTAG_MCP_CANVA_CLIENT_* pair is configured. The flow offers it only to the Developer
+       * Portal endpoint that resolves Canva's issuer, and it also makes the catalog's Canva card
+       * create its Server on that endpoint.
+       */
+      canvaMcpClient: config.mcpCanvaOAuth,
     });
     const mcpRefreshWorker = new McpRefreshWorker({
       authorization: mcpAuthorization,
@@ -1048,10 +1133,25 @@ export async function startServer(): Promise<void> {
         runnerRuntime: cloudRunnerRuntime,
         composition: cloudDelivery,
         cloudModel: config.cloudModel,
+        model: cloudModelRuntime?.routeDependencies,
       }),
+      cloudBilling,
+      ...optionalCloudUsage(config, cloudUsage),
       machineAuthService,
       imBindingService,
       feishuSetupService,
+      slackConfiguration: {
+        autoSetup: new SlackAutoSetupService({
+          agents: agentService,
+          slack: slackConfigurationService,
+          owner: slackAutoSetupOwner,
+          publicOrigin: config.publicUrl,
+          officialSigningSecret: config.slackOAuth?.signingSecret,
+        }),
+        service: slackConfigurationService,
+        publicOrigin: config.publicUrl,
+        officialSigningSecret: config.slackOAuth?.signingSecret,
+      },
       taskService,
       ...(slackOAuthService
         ? {
@@ -1099,6 +1199,7 @@ export async function startServer(): Promise<void> {
         registry,
         domainOwner,
         agentRuntimeTestOwner,
+        slackAutoSetupOwner,
         agentRuntimeOptionsOwner,
         contextTreeOperationOwner,
         providerCliReconcileOwner,
@@ -1112,6 +1213,15 @@ export async function startServer(): Promise<void> {
           mcp: mcpServers,
           owners: new DatabaseAgentOwnerResolver(database),
           proofs: sessionCliProofService,
+        }),
+      },
+      runtimeAgentSlackProvision: {
+        service: new AgentSlackProvisionService({
+          database,
+          agents: agentService,
+          slack: slackConfigurationService,
+          proofs: sessionCliProofService,
+          publicOrigin: config.publicUrl,
         }),
       },
       runtimeAgentSchedules: { service: scheduleService },
@@ -1144,6 +1254,7 @@ export async function startServer(): Promise<void> {
           }),
       },
       githubIntegrations: {
+        ...githubInstallationOptions(config),
         availability: config.githubApp
           ? ({ available: true, githubHost: "github.com", appId: config.githubApp.appId } as const)
           : ({ available: false, githubHost: "github.com", appId: null } as const),
@@ -1194,6 +1305,7 @@ export async function startServer(): Promise<void> {
       await shutdownTelemetry();
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
+    reportIgnoredCloudBilling(config, app.log);
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");
@@ -1205,6 +1317,8 @@ export async function startServer(): Promise<void> {
     } else {
       process.stderr.write(`Failed to start OpenTag server: ${formatStartupError(error, knownSecrets)}\n`);
     }
+    await cloudModelService?.close();
+    await cloudBilling?.close();
     await shutdownTelemetry();
     process.exitCode = 1;
   }

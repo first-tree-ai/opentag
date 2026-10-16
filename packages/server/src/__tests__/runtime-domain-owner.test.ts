@@ -23,6 +23,7 @@ import type {
   RuntimeCustodyStore,
 } from "../runtime/runtime-custody-store.js";
 import {
+  type PreparedSessionReconcile,
   RuntimeDomainConflictError,
   RuntimeDomainOwner,
   type RuntimeDomainOwnerOptions,
@@ -30,6 +31,30 @@ import {
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 
 describe("RuntimeDomainOwner", () => {
+  it.each(["0.1.0", "0.1.1-staging.43.1"])(
+    "rejects new snapshots before preparation or custody on %s",
+    async (version) => {
+      const prepareReconcile = vi.fn(
+        async (_computerId: string, _instanceId: string, request: SessionReconcileRequest) => ({ request }),
+      );
+      const fixture = await ownerFixture(1_000, { prepareReconcile }, version);
+      const begin = vi.spyOn(fixture.custody, "beginDeliveryDispatch");
+      try {
+        expect(() =>
+          fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcileRequest(fixture.computerId)),
+        ).toThrow("The Client must upgrade before receiving this snapshot");
+        expect(() => fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequest())).toThrow(
+          "The Client must upgrade before receiving this snapshot",
+        );
+        expect(prepareReconcile).not.toHaveBeenCalled();
+        expect(begin).not.toHaveBeenCalled();
+        expect(fixture.frames).toEqual([]);
+      } finally {
+        fixture.owner.close();
+      }
+    },
+  );
+
   it.each([undefined, 1, 2])("gates Turn activity on the exact negotiated version %s", async (version) => {
     const onTurnActivity = vi.fn(async (frame: TurnActivityRequest) => ({
       type: "turn:activity:result" as const,
@@ -112,10 +137,10 @@ describe("RuntimeDomainOwner", () => {
   });
 
   it("deduplicates prepared reconciles and evicts the oldest preparation", async () => {
-    const preparationResolvers: Array<(request: SessionReconcileRequest) => void> = [];
+    const preparationResolvers: Array<(request: PreparedSessionReconcile) => void> = [];
     const prepareReconcile = vi.fn(
       () =>
-        new Promise<SessionReconcileRequest>((resolve) => {
+        new Promise<PreparedSessionReconcile>((resolve) => {
           preparationResolvers.push(resolve);
         }),
     );
@@ -142,11 +167,11 @@ describe("RuntimeDomainOwner", () => {
     const second = fixture.owner
       .requestReconcile(fixture.computerId, fixture.instanceId, secondRequest)
       .catch((error: unknown) => error);
-    preparationResolvers[0]?.(firstRequest);
+    preparationResolvers[0]?.({ request: firstRequest });
     await vi.waitFor(() =>
       expect(fixture.frames).toContainEqual(expect.objectContaining({ requestId: firstRequest.requestId })),
     );
-    preparationResolvers[1]?.(secondRequest);
+    preparationResolvers[1]?.({ request: secondRequest });
     await fixture.owner.handle(
       {
         type: "session:reconcile:result",
@@ -247,6 +272,13 @@ describe("RuntimeDomainOwner", () => {
     const failingSocket = socketFixture([], new Error("send failed"));
     await fixture.registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId: fixture.computerId,
         installationId: fixture.context.installationId,
         instanceId: fixture.instanceId,
@@ -270,6 +302,7 @@ describe("RuntimeDomainOwner", () => {
     const release = vi.spyOn(custody, "releaseDeliveryDispatch");
     const owner = new RuntimeDomainOwner(
       {
+        assertSnapshotCompatible: vi.fn(),
         send: vi.fn(() => {
           throw new Error("sync send failed");
         }),
@@ -393,6 +426,13 @@ describe("RuntimeDomainOwner", () => {
     const unsupportedSocket = socketFixture([]);
     await unsupportedRegistry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId: fixture.computerId,
         installationId: fixture.context.installationId,
         instanceId: fixture.instanceId,
@@ -521,8 +561,7 @@ describe("RuntimeDomainOwner", () => {
   it("applies reconcile admission after preparation and before the Runtime frame", async () => {
     const prepareReconcile = vi.fn(
       async (_computerId: string, _instanceId: string, request: SessionReconcileRequest) => ({
-        ...request,
-        sessionCliProof: { proofId: randomUUID(), token: "runtime-proof" },
+        request: { ...request, sessionCliProof: { proofId: randomUUID(), token: "runtime-proof" } },
       }),
     );
     const fixture = await ownerFixture(1_000, { prepareReconcile });
@@ -696,6 +735,13 @@ describe("RuntimeDomainOwner", () => {
     const nextSocket = socketFixture([]);
     await fixture.registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId: fixture.computerId,
         installationId: fixture.context.installationId,
         instanceId: nextInstanceId,
@@ -953,6 +999,13 @@ describe("RuntimeDomainOwner", () => {
     const frames: unknown[] = [];
     await registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId,
         installationId: computerId,
         instanceId,
@@ -965,8 +1018,8 @@ describe("RuntimeDomainOwner", () => {
     let releasePreparation: (request: SessionReconcileRequest) => void = () => undefined;
     const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), {
       prepareReconcile: (_computerId, _instanceId, request) =>
-        new Promise<SessionReconcileRequest>((resolve) => {
-          releasePreparation = () => resolve(request);
+        new Promise<PreparedSessionReconcile>((resolve) => {
+          releasePreparation = () => resolve({ request });
         }),
     });
     const request = reconcileRequest(computerId);
@@ -978,6 +1031,156 @@ describe("RuntimeDomainOwner", () => {
     expect(frames).toHaveLength(0);
   });
 
+  it("runs reconcile completion once after validated results, not cached replay or mismatches", async () => {
+    let release: () => void = () => undefined;
+    const onResult = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const fixture = await ownerFixture(1000, {
+      prepareReconcile: async (_computerId, _instanceId, request) => ({ request, onResult }),
+    });
+    const request = { ...reconcileRequest(fixture.computerId), desired: "stopped" as const, runtime: undefined };
+    const result: SessionReconcileResult = {
+      type: "session:reconcile:result",
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      status: "stopped",
+    };
+    try {
+      const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
+      await vi.waitFor(() => expect(fixture.frames).toHaveLength(1));
+      await fixture.owner.handle({ ...result, sessionId: "wrong" }, fixture.context);
+      await fixture.owner.handle(result, { ...fixture.context, instanceId: randomUUID() });
+      expect(onResult).not.toHaveBeenCalled();
+      const completion = fixture.owner.handle(result, fixture.context);
+      await vi.waitFor(() => expect(onResult).toHaveBeenCalledOnce());
+      await fixture.owner.handle(result, fixture.context);
+      expect(onResult).toHaveBeenCalledOnce();
+      release();
+      await completion;
+      await expect(pending).resolves.toEqual(result);
+      await expect(fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request)).resolves.toEqual(
+        result,
+      );
+      expect(onResult).toHaveBeenCalledOnce();
+    } finally {
+      fixture.owner.close();
+    }
+  });
+
+  it("does not run completion for timed-out or failed sends and ignores late stopped results", async () => {
+    const onResult = vi.fn(async () => undefined);
+    const fixture = await ownerFixture(10, {
+      prepareReconcile: async (_computerId, _instanceId, request) => ({ request, onResult }),
+    });
+    const request = { ...reconcileRequest(fixture.computerId), desired: "stopped" as const, runtime: undefined };
+    try {
+      await expect(
+        fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request),
+      ).rejects.toMatchObject({ code: "timeout" });
+      await fixture.owner.handle(
+        {
+          type: "session:reconcile:result",
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          status: "stopped",
+        },
+        fixture.context,
+      );
+      expect(onResult).not.toHaveBeenCalled();
+      vi.spyOn(fixture.registry, "send").mockRejectedValue(new Error("send failed"));
+      await expect(
+        fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, { ...request, requestId: randomUUID() }),
+      ).rejects.toThrow("send failed");
+      expect(onResult).not.toHaveBeenCalled();
+    } finally {
+      fixture.owner.close();
+    }
+  });
+
+  it.each(["custody", "completion"])("keeps the request timeout while %s processing is blocked", async (stage) => {
+    let release: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onResult = vi.fn(async () => {
+      if (stage === "completion") await blocked;
+    });
+    const fixture = await ownerFixture(25, {
+      maxPendingRequests: 1,
+      prepareReconcile: async (_computerId, _instanceId, request) => ({ request, onResult }),
+    });
+    const claim = vi.spyOn(fixture.custody, "claimRetainedReports");
+    if (stage === "custody")
+      claim.mockImplementation(async () => {
+        await blocked;
+      });
+    const request = reconcileRequest(fixture.computerId);
+    try {
+      const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
+      const rejected = expect(pending).rejects.toMatchObject({ code: "timeout" });
+      await vi.waitFor(() => expect(fixture.frames).toHaveLength(1), { interval: 1 });
+      const completion = fixture.owner.handle(
+        {
+          type: "session:reconcile:result",
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          status: "ready",
+        },
+        fixture.context,
+      );
+      await rejected;
+      release();
+      await completion;
+      expect(onResult).toHaveBeenCalledTimes(stage === "custody" ? 0 : 1);
+      const next = fixture.owner
+        .requestReconcile(fixture.computerId, fixture.instanceId, { ...request, requestId: randomUUID() })
+        .catch((error) => error);
+      await vi.waitFor(() => expect(fixture.frames).toHaveLength(2), { interval: 1 });
+      fixture.owner.close();
+      await expect(next).resolves.not.toHaveProperty("code", "capacity");
+    } finally {
+      release();
+      fixture.owner.close();
+    }
+  });
+
+  it("rejects completion errors instead of leaving a pending request", async () => {
+    const fixture = await ownerFixture(1000, {
+      prepareReconcile: async (_computerId, _instanceId, request) => ({
+        request,
+        onResult: async () => {
+          throw new Error("proof delete failed");
+        },
+      }),
+    });
+    const request = reconcileRequest(fixture.computerId);
+    try {
+      const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
+      const rejected = expect(pending).rejects.toThrow("proof delete failed");
+      await vi.waitFor(() => expect(fixture.frames).toHaveLength(1));
+      await fixture.owner.handle(
+        {
+          type: "session:reconcile:result",
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          status: "ready",
+        },
+        fixture.context,
+      );
+      await rejected;
+    } finally {
+      fixture.owner.close();
+    }
+  });
+
   it("correlates SessionMessage delivery results and ignores unmatched results", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
@@ -985,6 +1188,13 @@ describe("RuntimeDomainOwner", () => {
     const frames: unknown[] = [];
     await registry.register(
       {
+        clientVersion: "0.1.1",
+        negotiatedCapabilities: {
+          "runtime.sessionReconcile": 1,
+          "runtime.imDelivery": 2,
+          "runtime.imSteer": 2,
+          "runtime.sessionCollaboration": 3,
+        },
         computerId,
         installationId: computerId,
         instanceId,
@@ -1074,30 +1284,42 @@ async function waitForDeliveryFrame(frames: unknown[], requestId: string): Promi
   });
 }
 
-async function ownerFixture(requestTimeoutMs = 1_000, options: Partial<RuntimeDomainOwnerOptions> = {}) {
+async function ownerFixture(
+  requestTimeoutMs = 1_000,
+  options: Partial<RuntimeDomainOwnerOptions> = {},
+  clientVersion = "0.1.1",
+) {
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
   const instanceId = randomUUID();
   const frames: unknown[] = [];
   await registry.register(
     {
+      clientVersion,
       computerId,
       installationId: computerId,
       instanceId,
       lastHeartbeatAt: 1,
-      negotiatedCapabilities: { [RUNTIME_CAPABILITY.imCredentialGrant]: 2 },
+      negotiatedCapabilities: {
+        "runtime.sessionReconcile": 1,
+        "runtime.imDelivery": 2,
+        "runtime.imSteer": 2,
+        "runtime.sessionCollaboration": 3,
+        [RUNTIME_CAPABILITY.imCredentialGrant]: 2,
+      },
       socket: socketFixture(frames),
     },
     async () => undefined,
   );
-  const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), { requestTimeoutMs, ...options });
+  const custody = new MemoryRuntimeCustodyStore();
+  const owner = new RuntimeDomainOwner(registry, custody, { requestTimeoutMs, ...options });
   const context: RuntimeBusinessContext = {
     computerId,
     installationId: computerId,
     instanceId,
     signal: new AbortController().signal,
   };
-  return { computerId, context, frames, instanceId, owner, registry };
+  return { computerId, context, custody, frames, instanceId, owner, registry };
 }
 
 async function replaceRuntimeInstance(fixture: Awaited<ReturnType<typeof ownerFixture>>) {
@@ -1105,6 +1327,13 @@ async function replaceRuntimeInstance(fixture: Awaited<ReturnType<typeof ownerFi
   const frames: unknown[] = [];
   await fixture.registry.register(
     {
+      clientVersion: "0.1.1",
+      negotiatedCapabilities: {
+        "runtime.sessionReconcile": 1,
+        "runtime.imDelivery": 2,
+        "runtime.imSteer": 2,
+        "runtime.sessionCollaboration": 3,
+      },
       computerId: fixture.computerId,
       installationId: fixture.context.installationId,
       instanceId,

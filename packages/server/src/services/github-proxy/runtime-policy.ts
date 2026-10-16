@@ -1,19 +1,17 @@
-import {
-  type GitHubConnectionStatus,
-  type GitHubTaskDelegationCandidate,
-  githubAgentScopeAllowsTaskDelegation,
-  type RuntimeExecutionSource,
-} from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { type GitHubConnectionStatus, type RuntimeExecutionSource, RuntimeUserTaskSourceSchema } from "@opentag/shared";
+import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { imBindings, imMessageDeliveries, imMessages, sessionMessages, sessions } from "../../db/schema/index.js";
-import type { RuntimeProxyAuthorization } from "../../runtime-credentials/credential-broker.js";
-import type { RuntimeExecutionRegistry } from "../../runtime-credentials/execution-registry.js";
+import {
+  agents,
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  sessionMessages,
+  sessions,
+} from "../../db/schema/index.js";
 import type { RuntimeGitHubAdmission } from "../../runtime-credentials/github-admission.js";
 import type { RuntimeTaskPolicy, RuntimeTaskPolicyInput } from "../../runtime-credentials/task-policy.js";
 import type { GitHubManagementService } from "../github/github-management-service.js";
-import type { GitHubExecutionPolicy, GitHubExecutionRepository } from "./execution-policy.js";
-import { GitPublicationError } from "./git-packets.js";
 
 interface AdmissionInput {
   accountId: string;
@@ -23,178 +21,108 @@ interface AdmissionInput {
   signal?: AbortSignal;
 }
 
-/** DB-derived sender identities, owner-authored delegation, live UAT admission, and final version fence. */
-export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskPolicy, GitHubExecutionPolicy {
+/** Account authority belongs to a verifiable user task, never to an Agent repository record. */
+export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskPolicy {
   constructor(
     readonly options: {
       database: DatabaseClient;
       management: GitHubManagementService;
-      execution: Pick<RuntimeExecutionRegistry, "get">;
     },
   ) {}
 
   async authorize(input: RuntimeTaskPolicyInput): Promise<"permit" | "deny"> {
     if (input.provider !== "github") return input.bindingId === input.sessionBindingId ? "permit" : "deny";
     if (input.purpose !== "execution") return "deny";
-    const result = await this.#load(input);
-    return result?.connection.id === input.bindingId && result.repositories.length > 0 ? "permit" : "deny";
+    return (await this.#load(input))?.id === input.bindingId ? "permit" : "deny";
   }
 
   async admit(input: AdmissionInput) {
-    const result = await this.#load(input);
-    if (!result?.repositories.length) return undefined;
-    await this.#verify(result.connection, result.repositories, input.signal);
-    return {
-      connectionId: result.connection.id,
-      authorizationVersion: result.connection.authorizationVersion,
-      credentialGeneration: result.connection.credentialGeneration,
-      bindings: result.repositories.flatMap((repository) =>
-        repository.scopes.map((scope) => ({
-          repositoryId: repository.repositoryId,
-          fullName: repository.fullName,
-          role: scope.role,
-          access: scope.access,
-          // The broker hashes the complete object, including explicit ref, publish mode, and delegation.
-          scope,
-        })),
-      ),
-    };
+    const connection = await this.#load(input);
+    return connection
+      ? {
+          connectionId: connection.id,
+          authorizationVersion: connection.authorizationVersion,
+          credentialGeneration: connection.credentialGeneration,
+        }
+      : undefined;
   }
 
-  async resolve(authorization: RuntimeProxyAuthorization, signal: AbortSignal): Promise<GitHubExecutionRepository[]> {
-    const execution = this.options.execution.get(authorization.executionId);
-    if (
-      !execution ||
-      execution.accountId !== authorization.accountId ||
-      execution.agentId !== authorization.agentId ||
-      execution.sessionId !== authorization.sessionId
-    )
-      throw new GitPublicationError("scope_denied");
-    const result = await this.#load({
-      accountId: execution.accountId,
-      agentId: execution.agentId,
-      sessionId: execution.sessionId,
-      source: execution.source,
-      signal,
-    });
-    if (
-      !result ||
-      result.connection.id !== authorization.bindingId ||
-      `github:${result.connection.authorizationVersion}` !== authorization.authorizationRevision
-    )
-      throw new GitPublicationError("scope_denied");
-    await this.#verify(result.connection, result.repositories, signal);
-    await authorization.recheck(signal);
-    return result.repositories;
-  }
-
-  async #load(
-    input: AdmissionInput,
-  ): Promise<{ connection: GitHubConnectionStatus; repositories: GitHubExecutionRepository[] } | undefined> {
+  async #load(input: AdmissionInput): Promise<GitHubConnectionStatus | undefined> {
     input.signal?.throwIfAborted();
-    const candidate = await this.#candidate(input.sessionId, input.source);
-    if (!candidate) return undefined;
-    const { connection } = await this.options.management.getOverview(input.accountId);
-    if (
-      !connection ||
-      connection.status !== "active" ||
-      !connection.accessExpiresAt ||
-      Date.parse(connection.accessExpiresAt) <= Date.now()
-    )
+    if (!(await this.#userTask(input.accountId, input.sessionId, input.source, new Set(), input.agentId)))
       return undefined;
-    const repositories = connection.bindings.flatMap((binding) => {
-      const scopes = binding.agentScopes.filter(
-        (scope) => scope.agentId === input.agentId && githubAgentScopeAllowsTaskDelegation(scope, candidate),
-      );
-      return scopes.length
-        ? [
-            {
-              installationId: binding.installationId,
-              repositoryId: binding.repositoryId,
-              fullName: binding.fullNameDisplay,
-              scopes,
-              protectedTreeRefs: [
-                ...new Set(
-                  binding.agentScopes
-                    .filter((scope) => scope.role === "context_tree")
-                    .flatMap((scope) => (scope.branch ? [scope.branch] : [])),
-                ),
-              ],
-            },
-          ]
-        : [];
-    });
-    return { connection, repositories };
+    const { connection } = await this.options.management.getOverview(input.accountId);
+    return connection?.accountId === input.accountId &&
+      connection.status === "active" &&
+      connection.accessExpiresAt &&
+      Date.parse(connection.accessExpiresAt) > Date.now()
+      ? connection
+      : undefined;
   }
 
-  async #verify(
-    connection: GitHubConnectionStatus,
-    repositories: GitHubExecutionRepository[],
-    signal?: AbortSignal,
-  ): Promise<void> {
-    for (const repository of repositories) {
-      signal?.throwIfAborted();
-      const write = repository.scopes.some((scope) => scope.access === "write");
-      const pullRequest = repository.scopes.some((scope) => scope.publish === "pull_request");
-      const proof = await this.options.management.verifyCurrentRepositoryAdmission({
-        connectionId: connection.id,
-        installationId: repository.installationId,
-        repositoryId: repository.repositoryId,
-        access: write ? "write" : "read",
-        ...(write ? { publish: pullRequest ? "pull_request" : "direct" } : {}),
-      });
-      if (proof.authorizationVersion.toString() !== connection.authorizationVersion)
-        throw new GitPublicationError("scope_denied");
-    }
-    const current = (await this.options.management.getOverview(connection.accountId)).connection;
-    signal?.throwIfAborted();
-    if (
-      !current ||
-      current.id !== connection.id ||
-      current.status !== "active" ||
-      current.authorizationVersion !== connection.authorizationVersion
-    )
-      throw new GitPublicationError("scope_denied");
-  }
-
-  async #candidate(
+  /** Follow immutable, Server-recorded collaboration provenance; never infer it from Session text. */
+  async #userTask(
+    accountId: string,
     sessionId: string,
-    source?: RuntimeExecutionSource,
-  ): Promise<GitHubTaskDelegationCandidate | undefined> {
-    if (!source || source.kind === "validation") return undefined;
+    source: RuntimeExecutionSource | undefined,
+    visited: Set<string>,
+    expectedAgentId?: string,
+  ): Promise<boolean> {
+    if (!source || source.kind === "validation" || visited.size >= 32) return false;
+    const key = source.kind === "delivery" ? source.deliveryId : source.messageId;
+    if (visited.has(key)) return false;
+    visited.add(key);
     if (source.kind === "delivery") {
       const [row] = await this.options.database
-        .select({ bindingId: imMessages.imBindingId, senderId: imMessages.authorExternalId })
+        .select({ id: imMessageDeliveries.id })
         .from(imMessageDeliveries)
         .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
         .where(
           and(
             eq(imMessageDeliveries.id, source.deliveryId),
             eq(imMessageDeliveries.sessionId, sessionId),
             eq(imMessageDeliveries.turnId, source.turnId),
             eq(imMessageDeliveries.state, "accepted"),
-            isNull(imMessageDeliveries.reportedAt),
+            eq(sessions.imBindingId, imMessages.imBindingId),
+            expectedAgentId ? eq(agents.id, expectedAgentId) : undefined,
             eq(imMessages.direction, "inbound"),
             eq(imMessages.authorKind, "human"),
+            eq(agents.createdByUserId, accountId),
           ),
         )
         .limit(1);
-      return row ? { imSender: row } : undefined;
+      return !!row;
     }
     const [row] = await this.options.database
-      .select({ sourceAgentId: imBindings.agentId })
+      .select({
+        scheduledOrigin: sessionMessages.scheduledOrigin,
+        userTaskSource: sessionMessages.userTaskSource,
+        sourceSessionId: sessionMessages.sourceSessionId,
+      })
       .from(sessionMessages)
-      .innerJoin(sessions, eq(sessions.id, sessionMessages.sourceSessionId))
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .where(
         and(
           eq(sessionMessages.id, source.messageId),
           eq(sessionMessages.targetSessionId, sessionId),
           eq(sessionMessages.lastOutcome, "accepted"),
-          isNull(sessions.endedAt),
+          expectedAgentId ? eq(agents.id, expectedAgentId) : undefined,
+          eq(agents.createdByUserId, accountId),
         ),
       )
       .limit(1);
-    return row;
+    if (!row) return false;
+    // A scheduler origin proves dispatch, not a user request. Its claim-frozen provenance survives
+    // schedule edits/deletion; legacy and autonomous schedules without a user root stay denied.
+    const provenance = RuntimeUserTaskSourceSchema.safeParse(row.userTaskSource);
+    if (!provenance.success) return false;
+    if (row.scheduledOrigin ? row.sourceSessionId !== null : row.sourceSessionId !== provenance.data.sessionId)
+      return false;
+    return this.#userTask(accountId, provenance.data.sessionId, provenance.data.source, visited);
   }
 }

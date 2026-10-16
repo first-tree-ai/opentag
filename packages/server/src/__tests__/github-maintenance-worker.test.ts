@@ -1,5 +1,4 @@
 import { createHmac } from "node:crypto";
-import type { GitHubRepositoryBinding } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubConnections } from "../db/schema/index.js";
@@ -17,7 +16,6 @@ import {
 } from "../services/github/github-refresh-store.js";
 import { GitHubWebhookService } from "../services/github/github-webhook.js";
 import { sha256Hex } from "../services/github/hashes.js";
-import { GitHubRepositoryAdmissionService } from "../services/github/repository-admission.js";
 import {
   createAccount,
   GITHUB_TEST_APP_ID,
@@ -29,6 +27,7 @@ import {
   testCredentialCipher,
   tokenMaterial,
 } from "./support/github-fixtures.js";
+import type { GitHubRepositoryBinding } from "./support/legacy-github-fixtures.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 let unit: UnitDatabase;
@@ -76,7 +75,7 @@ function workerFor(
     recheckStore,
     cipher,
     api,
-    admission: new GitHubRepositoryAdmissionService({ api, appId: GITHUB_TEST_APP_ID, now: () => clock }),
+
     now: () => clock,
     ...(options.batchLimit !== undefined ? { batchLimit: options.batchLimit } : {}),
     ...(options.intervalMs !== undefined ? { intervalMs: options.intervalMs } : {}),
@@ -98,7 +97,7 @@ function workerWithStores(api: GitHubApiClient, options: { tickBudgetMs?: number
     recheckStore: owned.recheckStore,
     cipher,
     api,
-    admission: new GitHubRepositoryAdmissionService({ api, appId: GITHUB_TEST_APP_ID, now: () => clock }),
+
     now: () => clock,
     ...(options.tickBudgetMs !== undefined ? { tickBudgetMs: options.tickBudgetMs } : {}),
     ...(options.intervalMs !== undefined ? { intervalMs: options.intervalMs } : {}),
@@ -461,7 +460,7 @@ describe("GitHubMaintenanceWorker recheck pass", () => {
     expect(row?.nextRecheckAt?.getTime()).toBe(clock.getTime() + 5 * 60_000);
   });
 
-  it("invalidates issued access on a user scope reduction without killing the credential", async () => {
+  it("ignores retained repository configuration during connection rechecks", async () => {
     const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
     const { connectionId } = await activeConnection({
       bindings: [binding(agentId, "write")],
@@ -472,21 +471,23 @@ describe("GitHubMaintenanceWorker recheck pass", () => {
     const api = stubGitHubApi();
     api.getAuthenticatedUser.mockResolvedValue({ id: "42", login: "octocat" });
     api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
-    // The user lost push: only pull remains. No webhook ever arrived — the periodic scan catches it.
+    // Rights are checked per operation; the connection worker checks credential identity only.
     api.listInstallationRepositories.mockResolvedValue(
       repositoriesPage([repository({ permissions: { admin: false, pull: true, push: false } })]),
     );
     const summary = await workerFor(api.asClient()).runTickOnce();
-    expect(summary.recheck.permissionRevoked).toBe(1);
+    expect(summary.recheck.healthy).toBe(1);
+    expect(api.listUserInstallations).not.toHaveBeenCalled();
+    expect(api.listInstallationRepositories).not.toHaveBeenCalled();
     const row = await rowOf(connectionId);
     expect(row?.status).toBe("active");
-    expect(row?.authorizationVersion).toBe((before?.authorizationVersion ?? 0n) + 1n);
-    expect(row?.recheckRequired).toBe(true);
-    expect(row?.lastErrorCode).toBe("GITHUB_PERMISSION_REVOKED");
+    expect(row?.authorizationVersion).toBe(before?.authorizationVersion);
+    expect(row?.recheckRequired).toBe(false);
+    expect(row?.lastErrorCode).toBeNull();
     expect(row?.credentialCiphertext).toBeTruthy();
   });
 
-  it("takes a webhook-marked installation deletion through the worker to a runtime invalidation", async () => {
+  it("rechecks connections for installation events without using a stored repository directory", async () => {
     const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
     const { connectionId } = await activeConnection({
       bindings: [binding(agentId)],
@@ -504,8 +505,7 @@ describe("GitHubMaintenanceWorker recheck pass", () => {
     });
     expect(verdict).toMatchObject({ status: "processed", recheckMarkedConnections: 1 });
 
-    // The webhook itself does not bump the authorization version: the worker's authoritative
-    // admission is what invalidates issued runtime access.
+    // Installation events schedule a connection check. Per-target admission independently rejects removed repositories.
     const marked = await rowOf(connectionId);
     expect(marked?.authorizationVersion).toBe(before?.authorizationVersion);
     expect(marked?.recheckRequired).toBe(true);
@@ -515,13 +515,15 @@ describe("GitHubMaintenanceWorker recheck pass", () => {
     // The installation is gone, so the connected user can no longer reach any repository through it.
     api.listUserInstallations.mockResolvedValue(installationsPage([]));
     const summary = await workerFor(api.asClient()).runTickOnce();
-    expect(summary.recheck.permissionRevoked).toBe(1);
+    expect(summary.recheck.healthy).toBe(1);
+    expect(api.listUserInstallations).not.toHaveBeenCalled();
+    expect(api.listInstallationRepositories).not.toHaveBeenCalled();
 
     const row = await rowOf(connectionId);
     expect(row?.status).toBe("active");
-    expect(row?.authorizationVersion).toBe((before?.authorizationVersion ?? 0n) + 1n);
-    expect(row?.recheckRequired).toBe(true);
-    expect(row?.lastErrorCode).toBe("GITHUB_PERMISSION_REVOKED");
+    expect(row?.authorizationVersion).toBe(before?.authorizationVersion);
+    expect(row?.recheckRequired).toBe(false);
+    expect(row?.lastErrorCode).toBeNull();
     expect(row?.credentialCiphertext).toBe(before?.credentialCiphertext);
   });
 
@@ -788,11 +790,6 @@ describe("GitHubMaintenanceWorker guards and defaults", () => {
       recheckStore,
       cipher,
       api: api.asClient(),
-      admission: new GitHubRepositoryAdmissionService({
-        api: api.asClient(),
-        appId: GITHUB_TEST_APP_ID,
-        now: () => clock,
-      }),
     });
     // Defaults are live: a fresh construction still performs a real bounded pass.
     await expect(worker.runTickOnce()).resolves.toEqual({

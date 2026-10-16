@@ -44,6 +44,7 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
+  Brain,
   CaretDown,
   CaretRight,
   CaretUp,
@@ -63,6 +64,7 @@ import {
   Info,
   Laptop,
   List,
+  ListChecks,
   MagnifyingGlass,
   type Icon as PhosphorIcon,
   PlugsConnected,
@@ -99,6 +101,7 @@ import {
 } from "react";
 import * as m from "../paraglide/messages.js";
 import { designTokens } from "./design.tokens.js";
+import { ConnectorIcon, SkillsIcon } from "./navigation-icons.js";
 
 export {
   Banner,
@@ -512,6 +515,7 @@ export type IconName =
   | "chevron-right"
   | "chevron-up"
   | "close"
+  | "connector"
   | "copy"
   | "eye"
   | "eye-slash"
@@ -522,14 +526,17 @@ export type IconName =
   | "integrations"
   | "laptop"
   | "message"
+  | "memory"
   | "model"
   | "more-vertical"
   | "plus"
   | "settings"
   | "shield"
+  | "skills"
   | "soul"
   | "sign-out"
   | "tree"
+  | "tasks"
   | "upload"
   | "user"
   | "usage";
@@ -542,6 +549,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   "chevron-right": CaretRight,
   "chevron-up": CaretUp,
   close: X,
+  connector: ConnectorIcon,
   copy: Copy,
   eye: Eye,
   "eye-slash": EyeSlash,
@@ -552,14 +560,17 @@ const icons: Record<IconName, PhosphorIcon> = {
   integrations: PlugsConnected,
   laptop: Laptop,
   message: ChatCircle,
+  memory: Brain,
   model: Cpu,
   "more-vertical": DotsThreeVertical,
   plus: Plus,
   settings: Gear,
   shield: Shield,
+  skills: SkillsIcon,
   soul: Fingerprint,
   "sign-out": ArrowRight,
   tree: TreeStructure,
+  tasks: ListChecks,
   upload: UploadSimple,
   user: User,
   usage: ChartLine,
@@ -676,6 +687,7 @@ export function Dialog({
   description,
   eyebrow,
   initialFocusRef,
+  onBack,
   onClose,
   open = true,
   returnFocusRef,
@@ -690,6 +702,7 @@ export function Dialog({
   description?: ReactNode;
   eyebrow?: ReactNode;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  onBack?: () => void;
   onClose: () => void;
   open?: boolean;
   returnFocusRef?: RefObject<HTMLElement | null>;
@@ -711,6 +724,9 @@ export function Dialog({
   return (
     <KumoDialog.Root
       open={open}
+      onOpenChangeComplete={(next) => {
+        if (next) initialFocusRef?.current?.focus();
+      }}
       onOpenChange={(next) => {
         if (!next && busy) return;
         if (!next) onClose();
@@ -721,9 +737,23 @@ export function Dialog({
         <header className="mb-4 flex items-start justify-between gap-4">
           <div className="grid gap-1 outline-none" data-ui="dialog-heading" ref={headingRef} tabIndex={-1}>
             {eyebrow ? <span className="text-xs font-medium text-kumo-subtle">{eyebrow}</span> : null}
-            <KumoDialog.Title id={`${id}-title`} className="text-lg font-semibold text-kumo-strong">
-              {title}
-            </KumoDialog.Title>
+            <div className="flex items-center gap-3">
+              {onBack ? (
+                <Button
+                  aria-label={m.common_back()}
+                  disabled={busy}
+                  shape="square"
+                  size="compact"
+                  variant="ghost"
+                  onClick={onBack}
+                >
+                  <Icon name="arrow-left" />
+                </Button>
+              ) : null}
+              <KumoDialog.Title id={`${id}-title`} className="text-lg font-semibold text-kumo-strong">
+                {title}
+              </KumoDialog.Title>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {headerActions}

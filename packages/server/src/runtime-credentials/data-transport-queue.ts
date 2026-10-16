@@ -6,6 +6,10 @@ export class AsyncByteQueue {
   #waiting?: (chunk: Uint8Array | typeof QUEUE_END) => void;
   #ended = false;
 
+  get byteLength(): number {
+    return this.#chunks.reduce((n, chunk) => n + chunk.byteLength, 0);
+  }
+
   push(chunk: Uint8Array): void {
     if (this.#ended) return;
     if (this.#waiting) {
@@ -25,6 +29,11 @@ export class AsyncByteQueue {
       this.#waiting = undefined;
       waiting(QUEUE_END);
     }
+  }
+
+  discard(): void {
+    this.#chunks = [];
+    this.end();
   }
 
   take(): Promise<Uint8Array | typeof QUEUE_END> {

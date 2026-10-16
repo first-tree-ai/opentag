@@ -1,4 +1,4 @@
-import { MCP_ERROR_CODES } from "@opentag/shared";
+import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { McpProbe } from "../services/mcp/mcp-probe.js";
 import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
@@ -113,6 +113,25 @@ function toolsPage(tools: unknown[], nextCursor?: string): Response {
 }
 
 describe("MCP probe success path", () => {
+  it.each([
+    [401, "application/json"],
+    [403, "application/json"],
+    [401, "text/event-stream"],
+    [403, "text/event-stream"],
+  ])("retains the authentication-rejection contract for HTTP %i with %s", async (status, contentType) => {
+    const { probe } = node({
+      status,
+      contentType,
+      raw: contentType === "application/json" ? '{"message":"Unauthorized"}' : "",
+    });
+    const result = await probe.probe(request());
+    expect(result).toMatchObject({
+      probeState: "failed",
+      probeError: `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`,
+      tools: [],
+      toolsCount: 0,
+    });
+  });
   it("records the Server identity, capabilities, and instructions alongside the tools", async () => {
     const { probe } = node(
       discover({

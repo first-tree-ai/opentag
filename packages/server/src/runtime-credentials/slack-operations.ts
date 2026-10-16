@@ -45,7 +45,9 @@ function read(operationId: string, extra: Partial<ProviderOperation> = {}): Prov
     method: "POST",
     pathTemplate: `/api/${operationId}`,
     kind: "read",
-    body: "json",
+    // Legacy read endpoints such as files.info ignore application/json parameters.
+    // Accept native JSON input, but serialize these reads as urlencoded forms upstream.
+    body: "form",
     response: "json",
     maxBodyBytes: JSON_BODY,
     maxResponseBytes: JSON_RESPONSE,
@@ -76,7 +78,6 @@ function write(operationId: string, extra: Partial<ProviderOperation> = {}): Pro
 export const SLACK_OPERATIONS: readonly ProviderOperation[] = [
   read("auth.test", {
     validationAllowed: true,
-    body: "json",
   }),
   read("bots.info"),
   read("team.info"),

@@ -13,9 +13,15 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
 import { AgentSetupPage, type AgentSetupPageProps, setupSnapshotIsTransitional } from "./agent-setup-page.js";
-import { deferred, SETUP_AGENT_ID, SETUP_COMPUTER_ID, setupAgent } from "./agent-setup-test-fixtures.js";
+import {
+  deferred,
+  SETUP_AGENT_ID,
+  SETUP_COMPUTER_ID,
+  setupAgent,
+  setupSlackConfiguration,
+} from "./agent-setup-test-fixtures.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter, type MemorySetupSeed } from "./setup-memory-adapter.js";
 
@@ -23,6 +29,7 @@ import { createMemorySetupAdapter, type MemorySetupSeed } from "./setup-memory-a
 async function settle(rounds = 6): Promise<void> {
   await act(async () => {
     for (let index = 0; index < rounds; index += 1) await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
   });
 }
 
@@ -84,6 +91,8 @@ const onlineReviewMac = {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.spyOn(browserApi, "slackConfiguration").mockResolvedValue(setupSlackConfiguration());
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({ status: "authorization_required", ticket: "test-ticket" });
 });
 
 afterEach(() => {
@@ -176,24 +185,20 @@ describe("AgentSetupPage action failures", () => {
       new ApiError(502, "upstream", "SLACK_UPSTREAM_UNAVAILABLE", "transient"),
       "Slack is unavailable right now. Check the connection and try again.",
     ],
-    ["no code", new Error("network"), "Couldn’t connect Slack. Start the connection again from this Agent."],
+    ["no code", new Error("network"), "Connection failed. Try again."],
   ])("explains a refused Slack start with %s", async (_label, cause, message) => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
-    renderSetup(
-      failingAdapter(memory, {
-        startSlackInstall: vi.fn(async () => {
-          throw cause;
-        }),
-      }),
-    );
+    vi.mocked(browserApi.autoSetupSlack).mockRejectedValue(cause);
+    renderSetup(memory.adapter);
     await settle();
     continueFromPreparation();
+    await settle();
 
     fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
     await settle();
 
     expect(screen.getByRole("alert").textContent).toBe(message);
-    expect(screen.getByRole("button", { name: /Slack/ }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Close Connect Slack" })).not.toHaveProperty("disabled", true);
   });
 
   it.each([
@@ -339,7 +344,7 @@ describe("AgentSetupPage messaging recovery", () => {
     const unbind = vi.spyOn(memory.adapter, "unbindMessaging");
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByText(/In Slack, add OpenTag to a channel/)).toBeTruthy();
+    expect(screen.getByText(/In Slack, add this Bot to a channel/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
@@ -371,7 +376,10 @@ describe("AgentSetupPage messaging recovery", () => {
     await settle();
 
     expect(screen.getByText("Slack reported a problem. Reconnect it to continue.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
     expect(screen.queryByRole("button", { name: "Update permissions" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
   });
@@ -408,7 +416,7 @@ describe("AgentSetupPage messaging recovery", () => {
       await settle();
 
       expect(screen.getByText(copy)).toBeTruthy();
-      expect(screen.queryByText(/In Slack, add OpenTag to a channel/)).toBeNull();
+      expect(screen.queryByText(/In Slack, add this Bot to a channel/)).toBeNull();
     },
   );
 
@@ -523,16 +531,9 @@ describe("AgentSetupPage with the Lab Computer adapters", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
     await settle();
-    expect(screen.getByText("Turn on or wake this computer and check its internet connection.")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Assistant requested a repair?" }));
-    await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Repair connection" }));
-    await settle();
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
     expect(memory.inspect().computerConnectState).toBe("pending");
-    expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
+    expect(screen.queryByText("Waiting for Review Mac to reconnect…")).toBeNull();
 
     act(() => memory.controls.completeComputerConnection());
     await advance(1_600);

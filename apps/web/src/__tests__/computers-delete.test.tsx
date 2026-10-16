@@ -45,8 +45,11 @@ async function openComputer(id: string) {
   window.history.replaceState({}, "", `/agents/computers?computerId=${id}`);
   render(<App />);
   expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
-  fireEvent.click(await screen.findByRole("button", { name: "Computer actions" }));
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Delete computer" }));
+  const card = (await screen.findByRole("heading", { name: id === computerId ? "Ada's Mac" : "Build Box" })).closest(
+    "section",
+  ) as HTMLElement;
+  fireEvent.click(within(card).getByRole("button", { name: "Computer actions" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Remove computer…" }));
 }
 
 describe("deleting a Computer", () => {
@@ -56,9 +59,9 @@ describe("deleting a Computer", () => {
     const { deletes } = installComputers();
     await openComputer(computerId);
 
-    const dialog = await screen.findByRole("alertdialog", { name: "Delete Ada's Mac?" });
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
     expect(within(dialog).getByText(/This computer is online/)).toBeTruthy();
-    const confirm = within(dialog).getByRole("button", { name: "Delete computer" }) as HTMLButtonElement;
+    const confirm = within(dialog).getByRole("button", { name: "Remove computer" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
 
     fireEvent.change(within(dialog).getByLabelText("Type Ada's Mac to confirm"), { target: { value: "Ada's" } });
@@ -91,9 +94,9 @@ describe("deleting a Computer", () => {
     );
     await openComputer(computerId);
 
-    const dialog = await screen.findByRole("alertdialog", { name: "Delete Ada's Mac?" });
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
     fireEvent.change(within(dialog).getByLabelText("Type Ada's Mac to confirm"), { target: { value: " Ada's Mac " } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Delete computer" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove computer" }));
 
     await waitFor(() => expect(window.location.search).not.toContain("computerId"));
     expect(deletes).toEqual([computerPath(computerId)]);
@@ -105,10 +108,10 @@ describe("deleting a Computer", () => {
     const { deletes } = installComputers();
     await openComputer(secondComputerId);
 
-    const dialog = await screen.findByRole("alertdialog", { name: "Delete Build Box?" });
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Build Box?" });
     expect(within(dialog).getByText(/Agents still use this computer/)).toBeTruthy();
     expect(within(dialog).queryByLabelText("Type Build Box to confirm")).toBeNull();
-    expect((within(dialog).getByRole("button", { name: "Delete computer" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(dialog).getByRole("button", { name: "Remove computer" }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
@@ -130,9 +133,9 @@ describe("deleting a Computer", () => {
     );
     await openComputer(computerId);
 
-    const dialog = await screen.findByRole("alertdialog", { name: "Delete Ada's Mac?" });
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
     fireEvent.change(within(dialog).getByLabelText("Type Ada's Mac to confirm"), { target: { value: "Ada's Mac" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Delete computer" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove computer" }));
 
     expect((await within(dialog).findByRole("alert")).textContent).toContain("Agents still use this computer");
     expect(screen.getAllByText("Ada's Mac").length).toBeGreaterThan(0);
@@ -142,10 +145,10 @@ describe("deleting a Computer", () => {
     installComputers(() => json({ error: { message: "unavailable" } }, 503));
     await openComputer(computerId);
 
-    const dialog = await screen.findByRole("alertdialog", { name: "Delete Ada's Mac?" });
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
     fireEvent.change(within(dialog).getByLabelText("Type Ada's Mac to confirm"), { target: { value: "Ada's Mac" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Delete computer" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove computer" }));
 
-    expect((await within(dialog).findByRole("alert")).textContent).toBe("Unable to delete this computer. Try again.");
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Couldn’t remove this computer. Try again.");
   });
 });

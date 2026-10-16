@@ -1,7 +1,7 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-10-09
+> Last synced with: 2026-10-12
 
 OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI、完成 CLI/Runner 发布的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
@@ -52,6 +52,30 @@ Production Server 沿用现有运维部署流程。手动 **Deploy Runner** work
 Workflow 声明了 `staging` 这个 GitHub Environment，使部署出现在仓库的 Deployments 视图中，之后也可以为它加上保护规则。
 Repository secrets 在该 job 中依然可读；把这三个 secret 改放到该 Environment 下同样可行，并能把它们限定在 Staging。
 
+## 部署失败告警
+
+当 `npm Publish`、`Deploy Staging` 或 `Deploy Runner` 的一次运行以 `failure`、`timed_out` 或 `startup_failure` 结束时，
+`Deploy Failure Alert` workflow 会发送一张飞书卡片。被取消、被跳过的运行以及 pull request 运行不会告警。卡片的标题和
+颜色区分环境（生产或预发），并列出部署阶段、失败的 job 与 step、commit，以及运行链接。
+
+告警不监听 `Docker`。Server 镜像构建失败时，`Deploy Staging` 会在等待该镜像时失败，它的告警会把失败的 Docker 运行
+标为根因。因此一次故障只发一条告警。
+
+| Secret | 值 | 是否必填 |
+| --- | --- | --- |
+| `FEISHU_DEPLOY_WEBHOOK_URL` | 飞书自定义机器人的 webhook URL，`https://open.feishu.cn/open-apis/bot/v2/hook/...` | 是 |
+| `FEISHU_DEPLOY_WEBHOOK_SECRET` | 机器人开启签名校验时的签名密钥 | 否 |
+
+如果机器人使用关键词校验，请使用关键词 `部署失败`。不要使用 IP 白名单，因为 GitHub 托管的 runner 没有固定地址。未配置
+webhook URL 时，workflow 只记录一条 warning，不发送消息。
+
+要测试 webhook，请在 `main` 上手动运行 `Deploy Failure Alert`，并填入任一被监听 workflow 的运行 id。卡片会带
+`【演练】` 前缀，避免被误认为真实故障。
+
+`workflow_run` 按名称匹配 workflow，并且 GitHub 在三层之后会停止 `workflow_run` 链。`Deploy Staging` 的告警已经处在
+第三层（`CI` → `npm Publish` → `Deploy Staging` → 告警）。重命名被监听的 workflow，或在 `Deploy Staging` 之前再加一层
+`workflow_run` 时，也要同步更新告警 workflow。
+
 ## CapRover App 前置条件
 
 Workflow 只改变 App 运行哪个镜像。以下都是首次部署前必须在 CapRover 侧完成的配置。
@@ -92,7 +116,7 @@ service，不会配置 CapRover 的 server container。
 | `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用；签发全部 Account session |
 | `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `BETTER_AUTH_SECRET` 不同；仅用于签名 Slack OAuth state |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 编码的 32 字节 key，Staging 专用 |
-| `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
+| `OPENTAG_AUTO_MIGRATE` | 使用 `true`，包括[云端计费发布](cloud-billing.md)；启动时应用公开迁移 |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
 | `GOOGLE_CLOUD_PROJECT` | 可选；将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting，参见 [客户端错误上报](./error-reporting.md) |
@@ -182,17 +206,33 @@ bundle 始终以调用方自己的凭据（Account session、Computer machine to
 回滚只回退应用代码，不会回退更新的 revision 已经执行过的数据库 migration，因此跨越破坏性 migration 的回滚需要一份
 有意为之的数据库方案。
 
-有一次 migration 需要先做数据步骤，再回滚代码：`0053_white_killmonger` 为 `skill_source` enum 增加了 `url_install`，
-而旧版 Server 只接受此前的三个取值。若行中仍带有 `url_install` 就回滚 Server，受影响 Agent 的每次 Skill 读取都会因
-校验失败而报错。因此请先执行下面的语句——它保留 Skill，只是把它们呈现为 Web 上传，也就是旧版本最接近的表示：
+有两次 migration 需要在回滚代码前检查数据兼容性：`0053_white_killmonger` 为 `skill_source` enum 增加了
+`url_install`，`0055_first_angel` 增加了 `preset`。早于这两次新增的 Server 只接受 `web_upload`、`cli_upload` 和
+`agent_upload`。若行中仍带有目标 Server 不接受的来源值就回滚，受影响 Agent 的 Skill 读取会因校验失败而报错，
+即使这两次 migration 都只是扩展数据库 enum。
+
+先检查目标 revision 的 `SkillSourceSchema`，并审计当前数据，再选择映射方式：
 
 ```sql
-update agent_skills set source = 'web_upload' where source = 'url_install';
+select source, count(*) from agent_skills where source in ('url_install', 'preset') group by source;
 ```
 
-之后重新部署新版 Server 是安全的；该取值不会被自动恢复，因此回滚期间通过 URL 安装的 Skill 会重新显示为 Web 上传。
-如果这个 enum 取值必须跨过回滚窗口存活，替代方案是分两次发布：先单独发布这条 migration，再在下一个 release 中发布
-写入 `url_install` 的代码。
+修改前备份受影响的行，包括 ID 和原始来源。暂停 Skill 安装直到回滚完成，避免数据步骤与代码切换之间再次写入不兼容
+的值。若回滚目标对这两个新来源都不支持，请先执行下面的语句——它保留 Skill 及其归档，只是把它们呈现为 Web 上传，
+也就是旧版本最接近的表示：
+
+```sql
+update agent_skills set source = 'web_upload' where source in ('url_install', 'preset');
+```
+
+若目标已支持 `url_install`、但不支持 `preset`，则只映射 `preset`，不要改写目标已支持的来源。切换 Server revision
+前再次执行审计，确认所有不受支持的来源值均已清零。
+
+这项映射会丢失原始来源标记。重新部署新版 Server 不会自动恢复这些标记，恢复需要使用备份；新的 URL 或预设安装仍可
+再次写入这些值。恢复前，预设目录会将映射后的预设 Skill 视为用户上传：归档相同时显示为 `installed`，归档变化后则
+显示为 `name_conflict` 并拒绝更新。重新安装同名预设不会修复来源标记；应从备份恢复原始来源，或删除该 Skill 后重新
+安装。若必须在当前数据库中保留原始来源，只能回滚到接受这些值的 Server。单独部署 enum migration 并不能让旧应用
+的校验器兼容新值。
 
 ## 验证一次部署
 

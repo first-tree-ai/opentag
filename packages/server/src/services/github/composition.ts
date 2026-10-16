@@ -9,7 +9,6 @@
 import type { DatabaseClient } from "../../db/client.js";
 import type { GitHubCredentialCipher } from "../github-credential-material.js";
 import { GitHubApiClient } from "./github-api-client.js";
-import { GitHubBindingsService } from "./github-bindings-service.js";
 import { GitHubConnectionService } from "./github-connection-service.js";
 import { GitHubMaintenanceWorker, type GitHubMaintenanceWorkerOptions } from "./github-maintenance-worker.js";
 import { GitHubManagementService } from "./github-management-service.js";
@@ -17,13 +16,16 @@ import { GitHubOAuthService } from "./github-oauth-service.js";
 import { GitHubConnectionRecheckStore } from "./github-recheck-store.js";
 import { GitHubCredentialRefreshStore } from "./github-refresh-store.js";
 import { GitHubWebhookService } from "./github-webhook.js";
+import { GitHubInstallationTokenClient } from "./installation-token-client.js";
 import { GitHubRepositoryAdmissionService } from "./repository-admission.js";
+import { GitHubUserTokenClient } from "./user-token-client.js";
 
-/** The management plane's configuration: the deployment App without its IAT-only private key. */
+/** The deployment App configuration for user OAuth and JWT-authenticated installation metadata. */
 export interface GitHubIntegrationConfig {
   appId: string;
   clientId: string;
   clientSecret: string;
+  privateKey: string;
   webhookSecret: string;
   /** Exact OAuth callback URL on this Server's public origin. */
   oauthCallbackUrl: string;
@@ -33,6 +35,7 @@ export interface GitHubIntegrationComposition {
   management: GitHubManagementService;
   worker: GitHubMaintenanceWorker;
   webhook: GitHubWebhookService;
+  userTokens: GitHubUserTokenClient;
 }
 
 export function createGitHubIntegration(options: {
@@ -55,8 +58,16 @@ export function createGitHubIntegration(options: {
     now,
   });
   const connections = new GitHubConnectionService(options.database, { now });
-  const bindings = new GitHubBindingsService(options.database, { now });
-  const admission = new GitHubRepositoryAdmissionService({ api, appId: options.config.appId, now });
+  const admission = new GitHubRepositoryAdmissionService({
+    api,
+    appId: options.config.appId,
+    now,
+    installations: new GitHubInstallationTokenClient({
+      ...options.config,
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      now,
+    }),
+  });
   const oauth = new GitHubOAuthService({
     connections,
     cipher: options.cipher,
@@ -68,20 +79,18 @@ export function createGitHubIntegration(options: {
     database: options.database,
     appId: options.config.appId,
     connections,
-    bindings,
     oauth,
     admission,
     cipher: options.cipher,
     now,
   });
   const refreshStore = new GitHubCredentialRefreshStore(options.database, { now });
-  const recheckStore = new GitHubConnectionRecheckStore(options.database, { now });
+  const recheckStore = new GitHubConnectionRecheckStore(options.database, { now, appId: options.config.appId });
   const worker = new GitHubMaintenanceWorker({
     refreshStore,
     recheckStore,
     cipher: options.cipher,
     api,
-    admission,
     now,
     ...(options.worker?.intervalMs !== undefined ? { intervalMs: options.worker.intervalMs } : {}),
     ...(options.worker?.tickBudgetMs !== undefined ? { tickBudgetMs: options.worker.tickBudgetMs } : {}),
@@ -94,5 +103,13 @@ export function createGitHubIntegration(options: {
     recheckStore,
     now,
   });
-  return { management, worker, webhook };
+  const userTokens = new GitHubUserTokenClient({
+    api,
+    management,
+    clientId: options.config.clientId,
+    now,
+    onRevokeFailure: () =>
+      options.worker?.logger?.warn({ code: "user_token_revoke_failed" }, "GitHub user token cleanup failed"),
+  });
+  return { management, worker, webhook, userTokens };
 }

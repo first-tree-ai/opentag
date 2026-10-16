@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { CloudAgentRuntimeTester } from "../services/agents/cloud-agent-runtime-tester.js";
+import {
+  CloudAgentRuntimeTester,
+  type CloudAgentRuntimeTesterOptions,
+} from "../services/agents/cloud-agent-runtime-tester.js";
 import { createStaticCloudModelCatalog, readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
+
+import { cloudTestOwner, createTestCloudModelService } from "./support/cloud-model-service.js";
 
 const completion = { choices: [{ message: { role: "assistant", content: "ok" } }] };
 const config = {
@@ -14,10 +19,14 @@ const config = {
   maxStreamsPerToken: 1,
 };
 
+function makeTester(options: Omit<CloudAgentRuntimeTesterOptions, "modelService"> & { fetchImpl: typeof fetch }) {
+  const { fetchImpl, ...rest } = options;
+  return new CloudAgentRuntimeTester({ ...rest, modelService: createTestCloudModelService(config, fetchImpl) });
+}
+
 describe("Cloud model admission and cancellation boundaries", () => {
   it("accepts a reasoning-only assistant response within the short probe budget", async () => {
-    const tester = new CloudAgentRuntimeTester({
-      config,
+    const tester = makeTester({
       catalog: createStaticCloudModelCatalog(["current"]),
       fetchImpl: async () =>
         Response.json({
@@ -34,21 +43,24 @@ describe("Cloud model admission and cancellation boundaries", () => {
           ],
         }),
     });
-    await expect(tester.test({ computerId: "cloud", model: "current" })).resolves.toEqual({ status: "passed" });
+    await expect(tester.test({ ...cloudTestOwner, computerId: "cloud", model: "current" })).resolves.toEqual({
+      status: "passed",
+    });
     tester.close();
   });
 
   it("does not report success when cancellation precedes the upstream response", async () => {
     const caller = new AbortController();
-    const tester = new CloudAgentRuntimeTester({
-      config,
+    const tester = makeTester({
       catalog: createStaticCloudModelCatalog(["current"]),
       fetchImpl: async () => {
         caller.abort();
         return Response.json(completion);
       },
     });
-    await expect(tester.test({ computerId: "cloud", model: "current", signal: caller.signal })).resolves.toEqual({
+    await expect(
+      tester.test({ ...cloudTestOwner, computerId: "cloud", model: "current", signal: caller.signal }),
+    ).resolves.toEqual({
       status: "failed",
       code: "cancelled",
     });
@@ -57,12 +69,11 @@ describe("Cloud model admission and cancellation boundaries", () => {
 
   it("does not probe an explicit model missing from the Router list", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => Response.json(completion));
-    const tester = new CloudAgentRuntimeTester({
-      config,
+    const tester = makeTester({
       catalog: createStaticCloudModelCatalog(["current"]),
       fetchImpl,
     });
-    await expect(tester.test({ computerId: "cloud", model: "retired" })).resolves.toEqual({
+    await expect(tester.test({ ...cloudTestOwner, computerId: "cloud", model: "retired" })).resolves.toEqual({
       status: "failed",
       code: "provider_start_failed",
     });
@@ -76,12 +87,11 @@ describe("Cloud model admission and cancellation boundaries", () => {
     { role: "assistant", content: "" },
     { role: "assistant", content: "ok", tool_calls: [{ id: "unexpected" }] },
   ])("rejects a malformed or tool completion: %j", async (message) => {
-    const tester = new CloudAgentRuntimeTester({
-      config,
+    const tester = makeTester({
       catalog: createStaticCloudModelCatalog(["current"]),
       fetchImpl: async () => Response.json({ choices: [{ message }] }),
     });
-    await expect(tester.test({ computerId: "cloud", model: "current" })).resolves.toEqual({
+    await expect(tester.test({ ...cloudTestOwner, computerId: "cloud", model: "current" })).resolves.toEqual({
       status: "failed",
       code: "provider_failed",
     });
@@ -97,14 +107,13 @@ describe("Cloud model admission and cancellation boundaries", () => {
         resolveCatalog = resolve;
       });
       const fetchImpl = vi.fn<typeof fetch>(async () => Response.json(completion));
-      const tester = new CloudAgentRuntimeTester({
-        config,
+      const tester = makeTester({
         catalog: { ...catalog, list: () => pendingCatalog, defaultModel: () => new Promise(() => {}) },
         fetchImpl,
         timeoutMs: kind === "timeout" ? 20 : 5_000,
       });
       const caller = new AbortController();
-      const result = tester.test({ computerId: "cloud", model: null, signal: caller.signal });
+      const result = tester.test({ ...cloudTestOwner, computerId: "cloud", model: null, signal: caller.signal });
       if (kind === "caller") caller.abort();
       if (kind === "shutdown") tester.close();
       await expect(result).resolves.toEqual({ status: "failed", code: kind === "timeout" ? "timeout" : "cancelled" });

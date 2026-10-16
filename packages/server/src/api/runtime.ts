@@ -8,6 +8,7 @@ import type { ContextTreeOperationOwner } from "../runtime/context-tree-operatio
 import type { ProviderCliReconcileOwner } from "../runtime/provider-cli-reconcile-owner.js";
 import type { RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
 import { type RuntimeBusinessOptions, RuntimeSession, type RuntimeSessionOptions } from "../runtime/runtime-session.js";
+import type { SlackAutoSetupOwner } from "../runtime/slack-auto-setup-owner.js";
 import type { ComputerAuthVerifier, ComputerService } from "../services/computers/index.js";
 import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-config/index.js";
 
@@ -18,6 +19,7 @@ export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
   };
   agentRuntimeOptionsOwner?: AgentRuntimeOptionsOwner;
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;
+  slackAutoSetupOwner?: SlackAutoSetupOwner;
   contextTreeOperationOwner?: ContextTreeOperationOwner;
   domainOwner?: RuntimeDomainOwner;
   providerCliReconcileOwner?: ProviderCliReconcileOwner;
@@ -89,6 +91,7 @@ export function registerRuntimeRoutes(
         options.approvalOwner?.businessOptions(),
         providerCliReconcileOwner?.businessOptions(),
         agentRuntimeTestOwner?.businessOptions(),
+        options.slackAutoSetupOwner?.businessOptions(),
         options.agentRuntimeOptionsOwner?.businessOptions(),
         options.contextTreeOperationOwner?.businessOptions(),
         domainOwner?.businessOptions(),
@@ -128,6 +131,7 @@ export function registerRuntimeRoutes(
     clearInterval(sweep);
     options.approvalOwner?.close();
     agentRuntimeTestOwner?.close();
+    options.slackAutoSetupOwner?.close();
     options.agentRuntimeOptionsOwner?.close();
     options.contextTreeOperationOwner?.close();
     providerCliReconcileOwner?.close();

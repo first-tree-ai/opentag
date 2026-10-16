@@ -1,22 +1,24 @@
-import { type MCPAgentServer, MCPAuthSchemeSchema, MCPCustomAuthHeaderSchema } from "@opentag/shared/browser";
+import {
+  type MCPAgentServer,
+  type MCPAuthKind,
+  MCPAuthSchemeSchema,
+  MCPCustomAuthHeaderSchema,
+} from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog } from "../../ui/design-system.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
-import { McpAuthFields, McpFooter } from "./mcp-form.js";
-import {
-  type AuthDraft,
-  actionError,
-  authBindingPatch,
-  authDraft,
-  connectionHeaderMode,
-  validHeaders,
-} from "./mcp-form-model.js";
+import { McpAuthFields } from "./mcp-form.js";
+import { type AuthDraft, actionError, authDraft } from "./mcp-form-model.js";
+import { McpOAuthControls } from "./mcp-oauth-controls.js";
+import { useMcpOAuthSession } from "./mcp-oauth-session.js";
 import { canRevoke } from "./mcp-page-model.js";
-import { useMcpServerDetail, useSetMcpAuthorization, useStartMcpOAuth, useUpdateMcpBinding } from "./mcp-queries.js";
+import { useMcpServerDetail, useSetMcpAuthorization } from "./mcp-queries.js";
+import type { McpReturnContext } from "./mcp-return-context.js";
 import { McpConfirmDialog } from "./mcp-server-dialogs.js";
+import { mcpTitle } from "./mcp-title.js";
 
-export function validAuth(draft: AuthDraft, existing: boolean): boolean {
+export function validAuth(draft: AuthDraft): boolean {
   if (
     draft.kind === "bearer" &&
     (!draft.token.trim() ||
@@ -24,79 +26,66 @@ export function validAuth(draft: AuthDraft, existing: boolean): boolean {
       !MCPAuthSchemeSchema.safeParse(draft.authScheme).success)
   )
     return false;
-  return (existing && draft.headerMode !== "custom") || validHeaders(draft.headers, draft.authHeader);
+  return true;
 }
-/** The OAuth start request for one Server: the card's declared scopes only when it has any. */
-function oauthStartInput(mcpServerId: string, scopes?: readonly string[]): { mcpServerId: string; scopes?: string[] } {
-  if (!scopes || scopes.length === 0) return { mcpServerId };
-  return { mcpServerId, scopes: [...scopes] };
-}
-
 /**
- * Authorization writes stay Agent-scoped, including headers set before OAuth discovery.
+ * Authorization and credential entry stay Agent-scoped. Settings saves connection parameters
+ * separately before this flow begins.
  *
  * `oauthScopes` are the scopes a catalog entry declares for its provider's consent screen, and they
  * are only ever supplied by the card add flow. A manual, imported, or re-authorization flow passes
  * none, which leaves scope selection to the flow's own discovery rules.
  */
 export function useMcpAuthorization(agentId: string) {
-  const update = useUpdateMcpBinding(agentId);
   const authorize = useSetMcpAuthorization(agentId);
-  const oauth = useStartMcpOAuth(agentId);
-  const saved = useRef<{ agentId: string; entry: MCPAgentServer }>(undefined);
-  return async (
+  const oauth = useMcpOAuthSession(agentId);
+  const run = async (
     entry: MCPAgentServer,
     draft: AuthDraft,
     oauthScopes?: readonly string[],
-    options?: { onBeforeOAuth?: () => void; connectionSettings?: boolean },
+    options?: { returnContext?: () => McpReturnContext },
   ) => {
-    // A failed authorization does not roll back the preceding connection write. Retry against
-    // that confirmed result so restoring the opening values also restores them on the Server.
-    const current =
-      saved.current?.agentId === agentId && saved.current.entry.mcpServerId === entry.mcpServerId
-        ? saved.current.entry
-        : entry;
-    const patch = options?.connectionSettings === false ? {} : authBindingPatch(draft, current.effective);
-    if (options?.connectionSettings !== false && draft.headerMode === "inherit" && current.overridden.extraHeaders)
-      patch.clearExtraHeaders = true;
-    if (Object.keys(patch).length) {
-      saved.current = { agentId, entry: await update.mutateAsync({ mcpServerId: entry.mcpServerId, ...patch }) };
-    }
     if (draft.kind === "oauth") {
-      const result = await oauth.mutateAsync(oauthStartInput(entry.mcpServerId, oauthScopes));
-      options?.onBeforeOAuth?.();
-      window.location.assign(result.authorizationUrl);
-      return;
+      const context: McpReturnContext = options?.returnContext?.() ?? {
+        agentId,
+        serverId: entry.mcpServerId,
+        source: "edit",
+      };
+      return await oauth.start(context, oauthScopes);
     }
-    await authorize.mutateAsync({
+    return authorize.mutateAsync({
       mcpServerId: entry.mcpServerId,
       kind: draft.kind,
       ...(draft.kind === "bearer" ? { bearerKey: draft.token } : {}),
     });
   };
+  return { run, oauth };
 }
 export function McpAuthorizeDialog({
   agentId,
   agentName,
   entry,
   onClose,
+  onBack,
   onAuthorized,
-  onBeforeOAuth,
+  returnContext,
   initialError,
+  presetAuthKind,
 }: {
   agentId: string;
   agentName: string;
   entry: MCPAgentServer;
   onClose: () => void;
+  onBack?: () => void;
   onAuthorized: () => void;
-  onBeforeOAuth?: () => void;
+  returnContext?: () => McpReturnContext;
   initialError?: string;
+  presetAuthKind?: MCPAuthKind;
 }) {
   const [draft, setDraft] = useState<AuthDraft>(() => ({
-    ...authDraft(entry.effective, entry.authorization?.kind ?? "oauth"),
-    headerMode: connectionHeaderMode(entry),
+    ...authDraft(entry.effective, presetAuthKind ?? entry.authorization?.kind ?? "oauth"),
   }));
-  const defaults = useMcpServerDetail(entry.authorization ? undefined : entry.mcpServerId);
+  const defaults = useMcpServerDetail(entry.authorization || presetAuthKind ? undefined : entry.mcpServerId);
   const chosen = useRef(false);
   const defaultKind = defaults.data?.server.defaultAuthKind;
   useEffect(() => {
@@ -112,13 +101,13 @@ export function McpAuthorizeDialog({
   const returnFocus = useRef(false);
   const authorize = useMcpAuthorization(agentId);
   const submit = async () => {
-    if (inFlight.current || !validAuth(draft, true)) return;
+    if (inFlight.current || !validAuth(draft)) return;
     inFlight.current = true;
     setBusy(true);
     setError(undefined);
     try {
-      await authorize(entry, draft, undefined, { onBeforeOAuth, connectionSettings: false });
-      if (draft.kind !== "oauth") onAuthorized();
+      const result = await authorize.run(entry, draft, undefined, { returnContext });
+      if (draft.kind !== "oauth" || result === "authorized") onAuthorized();
     } catch (cause) {
       setError(actionError(cause, m.mcp_authorize_failed()));
     } finally {
@@ -133,7 +122,8 @@ export function McpAuthorizeDialog({
         agentId={agentId}
         agentName={agentName}
         entry={entry}
-        onClose={() => {
+        onClose={onClose}
+        onBack={() => {
           returnFocus.current = true;
           setClearing(false);
         }}
@@ -148,57 +138,70 @@ export function McpAuthorizeDialog({
   return (
     <Dialog
       initialFocusRef={returnFocus.current ? clearTrigger : undefined}
-      className="mcp-form-dialog"
+      className="mcp-form-dialog mcp-auth-dialog"
       busy={busy}
-      title={<McpDialogTitle entry={entry} title={m.mcp_authentication_title({ server: entry.name })} />}
-      closeLabel={m.common_close_title({ title: m.mcp_authentication_title({ server: entry.name }) })}
-      description={m.mcp_auth_scope({ agent: agentName })}
+      title={
+        onBack ? (
+          m.mcp_auth_label()
+        ) : (
+          <McpDialogTitle entry={entry} title={m.mcp_authentication_title({ server: mcpTitle(entry) })} />
+        )
+      }
+      closeLabel={m.common_close_title({
+        title: onBack ? m.mcp_auth_label() : m.mcp_authentication_title({ server: mcpTitle(entry) }),
+      })}
+      description={m.mcp_settings_context({ server: mcpTitle(entry), agent: agentName })}
       onClose={onClose}
+      onBack={onBack}
     >
+      <McpOAuthControls session={authorize.oauth} className="mb-4" />
       <form
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <fieldset disabled={busy} className="mcp-fields border-0 p-0">
-          <McpAuthFields
-            draft={draft}
-            onChange={(next) => {
-              chosen.current = true;
-              setDraft(next);
-            }}
-            existing
-            connectionSettings={false}
-          />
-        </fieldset>
-        {error ? (
-          <p role="alert" className="mt-3 text-sm text-kumo-danger">
-            {error}
-          </p>
-        ) : null}
-        {canRevoke(entry) && entry.authorization?.hasCredential ? (
-          <Button
-            ref={clearTrigger}
-            className="mt-4 px-0 text-kumo-danger"
-            size="compact"
-            variant="ghost"
-            disabled={busy}
-            onClick={() => setClearing(true)}
-          >
-            {m.mcp_clear_credentials()}
-          </Button>
-        ) : null}
-        <McpFooter onClose={onClose} busy={busy}>
+        <div className="mcp-settings-body">
+          <fieldset disabled={busy} className="mcp-fields border-0 p-0">
+            <McpAuthFields
+              label={m.mcp_settings_auth_method()}
+              variant="settings"
+              draft={draft}
+              onChange={(next) => {
+                chosen.current = true;
+                setDraft(next);
+              }}
+              fixedMethod={presetAuthKind !== undefined}
+            />
+          </fieldset>
+          {error ? (
+            <p role="alert" className="mt-3 text-sm text-kumo-danger">
+              {error}
+            </p>
+          ) : null}
+        </div>
+        <footer className="mcp-settings-footer">
+          {canRevoke(entry) && entry.authorization?.hasCredential ? (
+            <Button
+              ref={clearTrigger}
+              className="mcp-settings-remove"
+              size="compact"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => setClearing(true)}
+            >
+              {m.mcp_clear_credentials()}
+            </Button>
+          ) : null}
           <Button
             aria-label={authorizationLabel(draft.kind, entry)}
             type="submit"
-            disabled={busy || !validAuth(draft, true)}
+            disabled={busy || !validAuth(draft)}
             loading={busy}
           >
             {authorizationLabel(draft.kind, entry)}
           </Button>
-        </McpFooter>
+        </footer>
       </form>
     </Dialog>
   );

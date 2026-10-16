@@ -14,6 +14,10 @@ describe("sign-in destination", () => {
       "/agents?tab=all",
       "/settings",
       "/settings/profile",
+      "/account",
+      "/account?from=checkout",
+      "/usage",
+      "/usage?windowDays=7",
       "/agents/setup",
       "/login",
     ]) {
@@ -45,6 +49,9 @@ describe("sign-in destination", () => {
       "/",
       "/internal",
       "/api/v1/me",
+      "/accounting",
+      "/account/other",
+      "/usage/other",
       "agents",
       "",
     ]) {

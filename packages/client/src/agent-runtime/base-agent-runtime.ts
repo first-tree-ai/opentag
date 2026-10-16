@@ -642,6 +642,7 @@ function snapshotPromptRequest(request: AgentPromptRequest): AgentPromptRequest 
   return Object.freeze({
     runId: request.runId,
     input: immutableSnapshot(request.input),
+    ...(request.allowedUnixSockets ? { allowedUnixSockets: immutableSnapshot(request.allowedUnixSockets) } : {}),
     ...(request.configuration ? { configuration: immutableSnapshot(request.configuration) } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
   });

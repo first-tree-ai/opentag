@@ -1,4 +1,4 @@
-import { MCP_ERROR_CODES } from "@opentag/shared";
+import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpServiceError } from "../services/mcp/errors.js";
 import {
@@ -209,9 +209,11 @@ describe("MCP response parsing", () => {
     for (const status of [401, 403]) {
       const { fetcher } = stubFetch([{ status, body: JSON.stringify({ message: "Unauthorized" }) }]);
       const transport = new McpTransport({ fetcher });
-      await expect(transport.call(ACCOUNT, "https://mcp.example.com/mcp", "tools/list", {}, {})).rejects.toThrow(
-        /refused this credential/u,
-      );
+      await expect(transport.call(ACCOUNT, "https://mcp.example.com/mcp", "tools/list", {}, {})).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+        message: MCP_AUTH_REJECTION_SUMMARY,
+        status,
+      });
     }
   });
 

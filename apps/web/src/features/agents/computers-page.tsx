@@ -18,9 +18,8 @@ import { useAccount } from "../session/session-context.js";
 import { useAgentListQuery, useComputersQuery } from "./agent-queries.js";
 import { accountComputerLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { ComputerManagement } from "./computer-management.js";
-import { ComputerIdentity } from "./computer-status.js";
 
-/** One Account normally uses one Computer. Existing multi-Computer Accounts retain explicit selection. */
+/** All Account Computers are managed in place; existing targeted links focus the requested card. */
 export function ComputersPage({ computerId, fromAgent }: { computerId?: string; fromAgent?: string }) {
   const { me } = useAccount();
   const query = useComputersQuery(true);
@@ -52,9 +51,7 @@ export function ComputersPage({ computerId, fromAgent }: { computerId?: string; 
       ) : null}
       <Page title={m.agents_computers_title()} description={m.agents_computers_description()}>
         <div className="grid min-w-0 gap-6">
-          {refreshError && !computerId && query.data?.computers.length !== 1 ? (
-            <ResourceRefreshNotice error={refreshError} onRetry={() => void query.refetch()} />
-          ) : null}
+          {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void query.refetch()} /> : null}
           <AsyncState state={state}>
             {({ computers }) => (
               <ComputerContent
@@ -95,64 +92,71 @@ function ComputerContent({
   onConnected: () => void;
 }) {
   const navigate = useNavigate();
-  const [connecting, setConnecting] = useState(false);
+  const [connectionBaseline, setConnectionBaseline] = useState<readonly string[] | null>(null);
+  const connecting = connectionBaseline !== null;
+  // A newly redeemed, still-offline Computer belongs to the active create attempt. Do not mount
+  // its recovery card until that attempt confirms it online, or it would issue an extra repair.
+  const visibleComputers = connectionBaseline
+    ? computers.filter((computer) => connectionBaseline.includes(computer.computerId))
+    : computers;
   // Redemption can populate inventory before the daemon starts. Keep the exact attempt mounted
   // until it confirms online, so this intermediate state never offers a second connection attempt.
   const finishConnection = () => {
-    setConnecting(false);
+    setConnectionBaseline(null);
     onConnected();
   };
-  if (connecting)
-    return <FirstComputer connecting onStart={() => setConnecting(true)} onConnected={finishConnection} />;
-  const selected =
-    computerId !== undefined
-      ? computers.find((computer) => computer.computerId === computerId)
-      : computers.length === 1
-        ? computers[0]
-        : undefined;
-  if (computerId !== undefined && !selected) return <ComputerMissing />;
-  if (computers.length === 0)
-    return confirmed ? (
-      <FirstComputer connecting={false} onStart={() => setConnecting(true)} onConnected={finishConnection} />
-    ) : null;
-  if (!selected) return <ComputerList computers={computers} confirmed={confirmed} fromAgent={fromAgent} />;
+  if (computers.length === 0 && computerId && !connecting) return <ComputerMissing />;
   return (
-    <>
-      {computers.length > 1 ? (
-        <Link {...accountComputerLink(undefined, fromAgent)} className="w-fit text-sm text-kumo-link">
-          {m.computer_view_all()}
-        </Link>
+    <div className="grid min-w-0 gap-4">
+      {computerId && !computers.some((computer) => computer.computerId === computerId) ? <ComputerMissing /> : null}
+      {visibleComputers.map((computer) => (
+        <ComputerManagement
+          computer={computer}
+          confirmed={confirmed}
+          refreshing={refreshing}
+          key={computer.computerId}
+          requested={computer.computerId === computerId}
+          onConnected={onConnected}
+          onDeleted={() => void navigate(accountComputerLink(undefined, fromAgent))}
+        />
+      ))}
+      {confirmed || connecting ? (
+        <ComputerConnection
+          additional={(connectionBaseline ?? computers).length > 0}
+          connecting={connecting}
+          onStart={() => setConnectionBaseline(computers.map((computer) => computer.computerId))}
+          onConnected={finishConnection}
+        />
       ) : null}
-      <ComputerManagement
-        computer={selected}
-        confirmed={confirmed}
-        refreshing={refreshing}
-        key={selected.computerId}
-        onConnected={onConnected}
-        // The deleted computer is gone from the cached inventory; leave its page for the Account's list.
-        onDeleted={() => void navigate(accountComputerLink(undefined, fromAgent))}
-      />
-    </>
+    </div>
   );
 }
 
-function FirstComputer({
+function ComputerConnection({
+  additional,
   connecting,
   onStart,
   onConnected,
 }: {
+  additional: boolean;
   connecting: boolean;
   onStart: () => void;
   onConnected: () => void;
 }) {
+  if (additional && !connecting)
+    return (
+      <Button className="w-fit" onClick={onStart}>
+        {m.computer_connect_another_action()}
+      </Button>
+    );
   return (
-    <section aria-labelledby="first-computer-heading" className="grid gap-6 ui-surface bg-kumo-base p-6">
+    <section aria-labelledby="connect-computer-heading" className="grid gap-6 ui-surface bg-kumo-base p-6">
       <div className="grid gap-3">
         <span aria-hidden="true" className="grid size-12 place-items-center rounded-lg bg-kumo-tint">
           <Icon name="laptop" className="size-6" />
         </span>
-        <Text as="h2" id="first-computer-heading" variant="heading">
-          {m.computer_first_heading()}
+        <Text as="h2" id="connect-computer-heading" variant="heading">
+          {additional ? m.computer_connect_another_action() : m.computer_first_heading()}
         </Text>
         <p className="max-w-prose text-sm text-kumo-subtle">{m.computer_first_description()}</p>
       </div>
@@ -175,38 +179,5 @@ function ComputerMissing() {
         {m.computer_view_all()}
       </Link>
     </div>
-  );
-}
-
-export function ComputerList({
-  computers,
-  confirmed = true,
-  fromAgent,
-}: {
-  computers: readonly AccountComputerSummary[];
-  confirmed?: boolean;
-  fromAgent?: string;
-}) {
-  return (
-    <section aria-label={m.computer_choose_management()} className="grid gap-4">
-      <p className="text-sm text-kumo-subtle">{m.computer_choose_management()}</p>
-      <ul className="divide-y divide-kumo-line">
-        {computers.map((computer) => (
-          <li className="grid gap-3 py-5 first:pt-0" key={computer.computerId}>
-            <ComputerIdentity
-              computer={computer}
-              connection={confirmed ? computer.connectionStatus : "unconfirmed"}
-              lastSeenAt={computer.lastSeenAt}
-            />
-            <Link
-              {...accountComputerLink(computer.computerId, fromAgent)}
-              className="w-fit text-sm font-medium text-kumo-link"
-            >
-              {m.computer_manage_named({ name: computer.displayName })}
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }

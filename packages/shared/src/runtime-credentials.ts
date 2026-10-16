@@ -1,11 +1,5 @@
 import { z } from "zod";
 import { RuntimeExecutionServiceRequestSchema, RuntimeExecutionServiceSchema } from "./execution-services.js";
-import {
-  GitBranchRefSchema,
-  GitHubRepositoryAccessSchema,
-  GitHubRepositoryPublishModeSchema,
-  GitHubRepositoryRoleSchema,
-} from "./github-integration.js";
 import { MCP_GATEWAY_PATH } from "./mcp-gateway.js";
 import { runtimeByteString as byteString } from "./runtime-config.js";
 import { RuntimeImOutboxContextSchema, RuntimeOpaqueIdSchema } from "./runtime-domain.js";
@@ -33,11 +27,10 @@ export const PROVIDER_PROXY_HEADER_MAX_BYTES = 16 * 1024;
 export const PROVIDER_PROXY_CHUNK_MAX_BYTES = 65_536;
 export const PROVIDER_PROXY_INITIAL_CREDIT_BYTES = 1_048_576;
 export const PROVIDER_PROXY_MAX_STREAMS_PER_EXECUTION = 8;
-export const PROVIDER_PROXY_MAX_STREAM_OPENS_PER_CONNECTION = 256;
+export const PROVIDER_PROXY_MAX_RETIRED_STREAMS = 256;
 export const PROVIDER_PROXY_STREAM_REVALIDATE_INTERVAL_MS = 5_000;
 export const PROVIDER_PROXY_AUTH_TIMEOUT_MS = 5_000;
 export const PROVIDER_PROXY_MAX_FRAME_BYTES = PROVIDER_PROXY_CHUNK_MAX_BYTES + 4;
-export const RUNTIME_CLI_METADATA_MAX_REPOSITORIES = 100;
 
 /**
  * Reserved internal header carrying the pinned upstream host for GitHub proxy streams
@@ -90,6 +83,12 @@ export const RuntimeExecutionSourceSchema = z.discriminatedUnion("kind", [
 ]);
 export type RuntimeExecutionSource = z.infer<typeof RuntimeExecutionSourceSchema>;
 
+/** Server-recorded task provenance; it contains no credentials or repository grants. */
+export const RuntimeUserTaskSourceSchema = z
+  .object({ sessionId: z.string().uuid(), source: RuntimeExecutionSourceSchema })
+  .strict();
+export type RuntimeUserTaskSource = z.infer<typeof RuntimeUserTaskSourceSchema>;
+
 export const RuntimeExecutionSandboxSchema = z
   .object({
     sandboxId: z.string().uuid(),
@@ -140,28 +139,12 @@ export const RuntimeSlackCliMetadataSchema = z
   .strict();
 export type RuntimeSlackCliMetadata = z.infer<typeof RuntimeSlackCliMetadataSchema>;
 
-export const RuntimeGitHubCliRepositorySchema = z
-  .object({
-    repositoryId: z.string().min(1).max(128),
-    fullName: z.string().min(1).max(255),
-    role: GitHubRepositoryRoleSchema,
-    access: GitHubRepositoryAccessSchema,
-    branch: GitBranchRefSchema.optional(),
-    publish: GitHubRepositoryPublishModeSchema.optional(),
-    workBranchPrefix: z
-      .string()
-      .max(160)
-      .regex(/^refs\/heads\/opentag\/[0-9a-f-]{36}\/(?:code|context_tree)\/$/)
-      .optional(),
-  })
-  .strict();
-export type RuntimeGitHubCliRepository = z.infer<typeof RuntimeGitHubCliRepositorySchema>;
-
+/** GitHub targets are resolved by the Server per request; no repository directory is exposed. */
 export const RuntimeGitHubCliMetadataSchema = z
   .object({
     provider: z.literal("github"),
-    connectionId: z.string().min(1).max(128),
-    repositories: z.array(RuntimeGitHubCliRepositorySchema).max(RUNTIME_CLI_METADATA_MAX_REPOSITORIES),
+    connectionId: bindingId,
+    authority: z.literal("user-task"),
   })
   .strict();
 export type RuntimeGitHubCliMetadata = z.infer<typeof RuntimeGitHubCliMetadataSchema>;
@@ -523,7 +506,7 @@ const streamCreditBytesSchema = z
   .int()
   .min(1)
   .max(PROVIDER_PROXY_INITIAL_CREDIT_BYTES * 4);
-const streamMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const streamMethodSchema = z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 const streamPathSchema = byteString(8192, "The provider path exceeds the 8 KiB limit", 1);
 const streamHeadersSchema = z.record(
   z.string().min(1).max(128),
@@ -552,10 +535,13 @@ export const RuntimeProviderProxyOpenFrameSchema = z
   .strict();
 export type RuntimeProviderProxyOpenFrame = z.infer<typeof RuntimeProviderProxyOpenFrameSchema>;
 
+export const PROVIDER_PROXY_HTTP_PROTOCOL = "opentag-provider-http-v2";
+
 export const RuntimeProviderProxyReadyFrameSchema = z
   .object({
     type: z.literal("ready"),
     executionId,
+    httpVersion: z.literal(2).optional(),
   })
   .strict();
 export type RuntimeProviderProxyReadyFrame = z.infer<typeof RuntimeProviderProxyReadyFrameSchema>;

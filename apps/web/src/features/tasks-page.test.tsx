@@ -498,6 +498,45 @@ describe("Tasks view", () => {
     expect(computers).not.toHaveBeenCalled();
   });
 
+  it("shows the agent logo in Task rows and the agent filter while preserving filter labels", async () => {
+    const avatarPath = `/api/v1/agents/${agentId}/avatar`;
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({
+      tasks: [{ ...task, agent: { ...task.agent, avatarPath } }],
+      nextCursor: null,
+    });
+
+    await renderInRouter(<TasksPage />);
+    const row = (await screen.findByRole("link", { name: task.title })).closest("tr");
+    expect(row?.querySelector("img")?.getAttribute("src")).toBe(avatarPath);
+    const filter = screen.getByRole("combobox", { name: "Filter by Agent" });
+    fireEvent.click(filter);
+    const option = await screen.findByRole("option", { name: "Atlas" });
+    expect(option.querySelector("img")?.getAttribute("src")).toBe(avatarPath);
+    fireEvent.pointerMove(option, { pointerType: "mouse" });
+    fireEvent.pointerDown(option, { pointerType: "mouse" });
+    fireEvent.pointerUp(option, { pointerType: "mouse" });
+    fireEvent.click(option);
+    await waitFor(() => expect(filter.textContent).toContain("Agent: Atlas"));
+    expect(filter.querySelector("img")?.getAttribute("src")).toBe(avatarPath);
+    expect(screen.getByRole("link", { name: task.title })).toBeTruthy();
+  });
+
+  it("shows the agent logo in the chat header and falls back if it cannot load", async () => {
+    const avatarPath = `/api/v1/agents/${agentId}/avatar`;
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      task: { ...task, agent: { ...task.agent, avatarPath } },
+    });
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />);
+    const facts = await screen.findByLabelText("Task details");
+    const agentFact = facts.querySelector("dd");
+    const image = agentFact?.querySelector("img");
+    expect(image?.getAttribute("src")).toBe(avatarPath);
+    fireEvent.error(image as HTMLImageElement);
+    expect(agentFact?.querySelector("img")).toBeNull();
+    expect(agentFact?.querySelector('[aria-hidden="true"]')?.textContent).toBe("A");
+  });
+
   it("keeps generated Task titles read-only and separates useful list metadata into columns", async () => {
     vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
 

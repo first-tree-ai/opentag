@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { consumeMcpReturn, rememberMcpReturn } from "./mcp-return-context.js";
+import { consumeMcpReturn, consumePendingMcpSetupReturn, rememberMcpReturn } from "./mcp-return-context.js";
 import { AGENT_ID, SERVER_ID } from "./mcp-test-fixtures.js";
 
 afterEach(() => {
@@ -33,5 +33,25 @@ describe("MCP OAuth return view", () => {
     rememberMcpReturn({ agentId: AGENT_ID, serverId: SERVER_ID, source: "edit" });
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60 * 1000);
     expect(consumeMcpReturn(AGENT_ID, SERVER_ID)).toBeUndefined();
+  });
+  it("restores Discover after browser Back without an OAuth callback", () => {
+    const view = {
+      agentId: AGENT_ID,
+      serverId: SERVER_ID,
+      source: "discover" as const,
+      query: "linear",
+      categoryId: "productivity",
+      scrollTop: 240,
+      newBinding: true,
+    };
+    rememberMcpReturn(view);
+    expect(consumePendingMcpSetupReturn(AGENT_ID)).toEqual(view);
+    expect(consumePendingMcpSetupReturn(AGENT_ID)).toBeUndefined();
+  });
+  it("preserves an existing connection's return view for its callback", () => {
+    const view = { agentId: AGENT_ID, serverId: SERVER_ID, source: "tools" as const };
+    rememberMcpReturn(view);
+    expect(consumePendingMcpSetupReturn(AGENT_ID)).toBeUndefined();
+    expect(consumeMcpReturn(AGENT_ID, SERVER_ID)).toEqual(view);
   });
 });

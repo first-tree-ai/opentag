@@ -4,6 +4,7 @@ import {
   ConnectCodeIssueResponseSchema,
   HTTP_PATHS,
   MeResponseSchema,
+  SlackAgentProvisionCodeResponseSchema,
   UpdateUserProfileRequestSchema,
   UserProfileSchema,
 } from "@opentag/shared";
@@ -48,7 +49,20 @@ export function registerMeRoutes(
     app.post(HTTP_PATHS.meConnectCodes, { preHandler }, async (request, reply) => {
       const userId = request.authContext?.me.user.id;
       if (!userId) throw new Error("Authenticated user context is missing");
-      parseRequest(ConnectCodeIssueRequestSchema, request.body ?? {});
+      const input = parseRequest(ConnectCodeIssueRequestSchema, request.body ?? {});
+      if (input.purpose === "slack-agent-provision") {
+        const issued = await connectCodeIssuer.issueForUser(userId, "slack-agent-provision");
+        return reply
+          .header("Cache-Control", "no-store")
+          .code(201)
+          .send(
+            SlackAgentProvisionCodeResponseSchema.parse({
+              code: issued.code,
+              expiresIn: issued.expiresIn,
+              issuedAt: issued.issuedAt.toISOString(),
+            }),
+          );
+      }
       const issued = await connectCodeIssuer.issueForUser(userId);
       return reply
         .header("Cache-Control", "no-store")

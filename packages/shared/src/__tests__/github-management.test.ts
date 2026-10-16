@@ -42,8 +42,6 @@ const connectionStatus = {
   githubUserId: "42",
   githubLogin: "octocat",
   status: "active",
-  bindingsSchemaVersion: 1,
-  bindings: [],
   authorizationVersion: "2",
   credentialGeneration: "1",
   accessExpiresAt: "2026-09-16T08:00:00.000Z",

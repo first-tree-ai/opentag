@@ -85,7 +85,7 @@ function soleReachableComputer(
 }
 
 /**
- * Giving an Agent a Computer to run on.
+ * Giving a Local Agent a Local Computer to run on.
  *
  * An Account may hold no Computers, one, or several, and the surface answers each honestly. With
  * several, which one an Agent runs on is the reader's to say and nothing here decides it for them:
@@ -134,7 +134,8 @@ export function AgentComputerChoice({
   // A bind is attempted once per Agent-and-Computer pair, so a failure is not restarted by every
   // render it causes. The Agent belongs in the key because this surface outlives any one of them.
   const attempted = useRef<string | undefined>(undefined);
-  const connected = inventory.computers;
+  // Older inventory responses omit kind for Local Computers; Cloud identities are never Local bind targets.
+  const connected = inventory.computers?.filter((computer) => computer.kind !== "cloud");
   const sole = soleReachableComputer(connected);
   const hasReachableComputer = connected?.some(isReachableComputer) ?? false;
   const soleTarget = sole ? `${agentId}:${sole.computerId}` : undefined;

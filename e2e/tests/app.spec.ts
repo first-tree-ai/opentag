@@ -169,7 +169,7 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await expect(fineTune).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("button", { name: "Take computer offline" }).click();
   await expect(page.getByText("1 changed", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Reconnect computer" }).click();
+  await page.getByRole("button", { name: "Connect computer" }).click();
   await expect(page.getByText("1 changed", { exact: true })).toHaveCount(0);
 
   await expectWithinViewport(closeLab);

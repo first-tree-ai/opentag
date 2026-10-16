@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "packages/mcp-presets/schema/mcp-catalog-entry.schema.json",
+  "title": "OpenTag MCP catalog entry",
+  "description": "One MCP Server in the OpenTag marketplace catalog. The generator injects the supported locales into `$defs.localizedText` from apps/web/project.inlang/settings.json and runs the cross-field checks this schema cannot express. An entry lists `packages` (self-hosted, run in a sandbox), `remotes` (hosted endpoints), or both. Only an entry with a streamable-http remote is installable today; packages are data. When `oauth` is an auth method the generator requires an `auth.oauth` block; its `scopes` are optional.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "kind",
+    "name",
+    "summary",
+    "when_to_use",
+    "capabilities",
+    "status",
+    "auth",
+    "risk",
+    "catalog",
+    "homepage"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "description": "Registry identity. The slug after `mcp/` is the Server definition name and the card id.",
+      "type": "string",
+      "pattern": "^mcp/[a-z][a-z0-9-]*$",
+      "maxLength": 64
+    },
+    "kind": {
+      "const": "mcp"
+    },
+    "name": {
+      "$ref": "#/$defs/localizedText"
+    },
+    "summary": {
+      "$ref": "#/$defs/localizedText"
+    },
+    "when_to_use": {
+      "$ref": "#/$defs/localizedText"
+    },
+    "keywords": {
+      "$ref": "#/$defs/tokenList"
+    },
+    "aliases": {
+      "$ref": "#/$defs/tokenList"
+    },
+    "tags": {
+      "$ref": "#/$defs/tokenList"
+    },
+    "capabilities": {
+      "description": "What the Server lets an Agent do, as lowercase kebab-case tokens such as `search-docs`.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*$",
+        "maxLength": 64
+      }
+    },
+    "status": {
+      "description": "`deprecated` and `archived` entries are hidden from Discover; `removed` entries are not emitted at all.",
+      "enum": ["active", "deprecated", "archived", "removed"]
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["methods", "default_kind"],
+      "properties": {
+        "methods": {
+          "description": "The authorization methods the Server accepts. Matches the shared MCP auth kinds.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["none", "bearer", "oauth"]
+          }
+        },
+        "default_kind": {
+          "description": "A prefill for a new authorization, never a claim about what the Server requires.",
+          "enum": ["none", "bearer", "oauth"]
+        },
+        "oauth": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Present exactly when `oauth` is a method. Without `scopes`, scope selection is left to the flow's discovery rules.",
+          "properties": {
+            "scopes": {
+              "description": "The scopes a card's OAuth start requests. Same bounds as the start request.",
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255,
+                "pattern": "\\S"
+              }
+            }
+          }
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["side_effects", "data_access"],
+      "properties": {
+        "side_effects": {
+          "description": "The strongest effect any tool can have. Ordered none < write < destructive.",
+          "enum": ["none", "write", "destructive"]
+        },
+        "data_access": {
+          "description": "`public` reads public data only; `private` reads the connected account's data.",
+          "enum": ["public", "private"]
+        },
+        "notes": {
+          "$ref": "#/$defs/localizedText"
+        }
+      }
+    },
+    "tools": {
+      "description": "Optional tool inventory. Names are unique within an entry.",
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "side_effect"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "maxLength": 128
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "side_effect": {
+            "enum": ["none", "write", "destructive"]
+          }
+        }
+      }
+    },
+    "packages": {
+      "description": "Self-hosted stdio or HTTP packages, recorded as data. They are not installable yet.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["registry_type", "identifier", "version", "transport"],
+        "properties": {
+          "registry_type": {
+            "enum": ["npm", "pypi", "oci", "nuget", "mcpb"]
+          },
+          "identifier": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^\\S+$"
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^\\S+$"
+          },
+          "runtime_hint": {
+            "enum": ["npx", "uvx", "docker", "dnx"]
+          },
+          "transport": {
+            "enum": ["stdio", "streamable-http"]
+          },
+          "package_arguments": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "$ref": "#/$defs/packageArgument"
+            }
+          },
+          "environment_variables": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "$ref": "#/$defs/environmentVariable"
+            }
+          }
+        }
+      }
+    },
+    "prerequisites": {
+      "description": "What a user needs before the package can run, such as an account or a tool.",
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "platforms": {
+      "description": "Operating systems the package supports. Omit when it runs everywhere.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["linux", "macos", "windows"]
+      }
+    },
+    "remotes": {
+      "description": "Hosted endpoints. Only a `streamable-http` remote makes an entry installable; `sse` is recorded as data.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "url"],
+        "properties": {
+          "type": {
+            "enum": ["streamable-http", "sse"]
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "headers": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "role"],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+                  "maxLength": 128
+                },
+                "role": {
+                  "description": "`auth` carries the credential (with an optional `scheme`); `extra` is a static header with a `value`.",
+                  "enum": ["auth", "extra"]
+                },
+                "scheme": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 1024
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "order", "icon", "icon_is_official"],
+      "properties": {
+        "category": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "order": {
+          "type": "number"
+        },
+        "icon": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*\\.(?:svg|png)$"
+        },
+        "icon_is_official": {
+          "type": "boolean"
+        }
+      }
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://"
+    },
+    "repository": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "maintainers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    }
+  },
+  "$defs": {
+    "localizedText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["en", "zh"],
+      "properties": {
+        "en": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        },
+        "zh": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "tokenList": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "\\S"
+      }
+    },
+    "packageArgument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["positional", "named"]
+        },
+        "name": {
+          "description": "Required when `type` is `named`, for example `--port`.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^\\S+$"
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "default": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "is_required": {
+          "type": "boolean"
+        },
+        "is_secret": {
+          "description": "A secret argument carries no `value` or `default`.",
+          "type": "boolean"
+        }
+      }
+    },
+    "environmentVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]*$",
+          "maxLength": 128
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "default": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "is_required": {
+          "type": "boolean"
+        },
+        "is_secret": {
+          "description": "A secret variable carries no `value` or `default`.",
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "anyOf": [
+    {
+      "required": ["packages"]
+    },
+    {
+      "required": ["remotes"]
+    }
+  ]
+}

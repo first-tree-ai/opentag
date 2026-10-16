@@ -53,6 +53,8 @@ export interface AgentRunConfiguration {
 }
 
 export interface AgentPromptRequest {
+  /** Exact sockets from trusted execution preparation; never model-supplied or persisted. */
+  readonly allowedUnixSockets?: readonly string[];
   readonly runId: AgentRunId;
   readonly input: AgentInput;
   readonly configuration?: AgentRunConfiguration;

@@ -404,25 +404,33 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.fake.liveInstanceCount()).toBe(1);
   });
 
-  it("rotates a full batch of failed seals so another Session is reclaimed on the next sweep", async () => {
-    const accountId = await account();
-    // Sweep-fairness fixture: deliberately above the E9 default ceilings (3/20) so the full
-    // 26-environment batch can be allocated; admission is not what this test exercises.
-    const stack = makeStack({ capacity: { accountLimit: 100, platformLimit: 1_000 } });
-    for (let index = 0; index < 25; index += 1) {
-      await readySandbox(stack, accountId, `failed-${index}`, { reuseCapable: false, seal: "fail" });
-      stack.advance(1);
-    }
-    const healthy = await readySandbox(stack, accountId, "healthy", { reuseCapable: false });
-    stack.advance(IDLE_TIMEOUT_MS + 1_000);
-    const first = await stack.service.reclaimIdleSandboxes();
-    expect(first.failed).toBe(25);
-    expect((await sandboxRow(healthy.row.id)).lifecycle).toBe("ready");
-    stack.advance(15_000);
-    const second = await stack.service.reclaimIdleSandboxes();
-    expect(second.released).toBe(1);
-    expect((await sandboxRow(healthy.row.id)).lifecycle).toBe("unallocated");
-    expect(stack.fake.liveInstanceCount()).toBe(25);
+  describe("full reclaim batch", () => {
+    let stack: Stack;
+    let healthy: Awaited<ReturnType<typeof readySandbox>>;
+
+    beforeEach(async () => {
+      const accountId = await account();
+      // Allocate the full fixture in the hook's preparation budget, leaving the test budget for
+      // the two real sweeps. Admission is not what this fairness test exercises.
+      stack = makeStack({ capacity: { accountLimit: 100, platformLimit: 1_000 } });
+      for (let index = 0; index < 25; index += 1) {
+        await readySandbox(stack, accountId, `failed-${index}`, { reuseCapable: false, seal: "fail" });
+        stack.advance(1);
+      }
+      healthy = await readySandbox(stack, accountId, "healthy", { reuseCapable: false });
+      stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    });
+
+    it("rotates a full batch of failed seals so another Session is reclaimed on the next sweep", async () => {
+      const first = await stack.service.reclaimIdleSandboxes();
+      expect(first.failed).toBe(25);
+      expect((await sandboxRow(healthy.row.id)).lifecycle).toBe("ready");
+      stack.advance(15_000);
+      const second = await stack.service.reclaimIdleSandboxes();
+      expect(second.released).toBe(1);
+      expect((await sandboxRow(healthy.row.id)).lifecycle).toBe("unallocated");
+      expect(stack.fake.liveInstanceCount()).toBe(25);
+    });
   });
 
   it("seals and deletes a ready environment after the single idle budget, clearing every binding", async () => {

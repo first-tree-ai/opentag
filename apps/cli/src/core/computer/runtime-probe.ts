@@ -228,7 +228,7 @@ export function runtimeComponentFromProbeResult(
         status: "needs_attention" as const,
         blocking: true,
         diagnosticCode: issue.code,
-        message: `${label} credentials were not found.`,
+        message: `${label} credentials are missing or were rejected.`,
         nextAction: { instruction: `Sign in to the ${label} with its own login command, then run the verify command.` },
         verifyAction,
       };

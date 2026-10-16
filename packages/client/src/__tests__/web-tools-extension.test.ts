@@ -504,7 +504,7 @@ describe("artifact store", () => {
     await expect(
       saveWebArtifact({ cwd, toolCallId: artifactId, fileName: "page-0.md", content: "bounded replacement" }),
     ).rejects.toThrow(/bounded regular file/);
-    expect(await readFile(join(directory, "page-0.md"))).toEqual(oversizePage);
+    expect((await readFile(join(directory, "page-0.md"))).equals(oversizePage)).toBe(true);
 
     // Symlinked entry: O_NOFOLLOW rejects it and the outside target is never written through.
     const outside = await workspace();

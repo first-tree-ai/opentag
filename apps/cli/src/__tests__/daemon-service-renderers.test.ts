@@ -119,14 +119,16 @@ describe("systemd service backend", () => {
   });
   it("renders a user unit with an absolute hidden entry and no secrets", () => {
     const unit = renderSystemdUnit({
-      home: "/Users/Test Home/.opentag-dev%1",
+      home: "/Users/Test $HOME/.opentag-dev%1",
       invocation: { args: ["/app/index.mjs"], program: "/usr/bin/node" },
       path: "/usr/bin:/bin",
       serviceId: "opentag-dev",
     });
-    expect(unit).toContain('ExecStart="/usr/bin/node" "/app/index.mjs" "daemon" "service-run"');
+    expect(unit).toContain(
+      'ExecStart=/usr/bin/env "PATH=/usr/bin:/bin" "OPENTAG_SERVICE_MODE=1" "OPENTAG_HOME=/Users/Test $$HOME/.opentag-dev%%1" "/usr/bin/node" "/app/index.mjs" "daemon" "service-run"',
+    );
     expect(unit).toContain("Restart=on-failure");
-    expect(unit).toContain("OPENTAG_HOME=/Users/Test Home/.opentag-dev%%1");
+    expect(unit).toContain("OPENTAG_HOME=/Users/Test $HOME/.opentag-dev%%1");
     expect(unit).not.toMatch(/access|refresh|secret-token/iu);
   });
 
@@ -289,7 +291,7 @@ describe("systemd service backend", () => {
       join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`),
       "utf8",
     );
-    expect(unit).toContain(`ExecStart="${installedCli}" "daemon" "service-run"`);
+    expect(unit).toContain(`"${installedCli}" "daemon" "service-run"`);
     expect(unit).not.toContain(staleCli);
     expect(unit).toContain(staleBin);
     expect(unit.indexOf(installedBin)).toBeLessThan(unit.indexOf(staleBin));

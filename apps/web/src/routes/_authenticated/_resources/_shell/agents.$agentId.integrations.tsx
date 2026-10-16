@@ -1,11 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { AgentGitHubRepositories } from "../../../../features/integrations/agent-github-repositories.js";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
+/** Historical deep links go to the existing Account connection surface. */
 export const Route = createFileRoute("/_authenticated/_resources/_shell/agents/$agentId/integrations")({
-  component: AgentIntegrationsRoute,
+  beforeLoad: () => {
+    throw redirect({ to: "/account" });
+  },
 });
-
-function AgentIntegrationsRoute() {
-  const { agentId } = Route.useParams();
-  return <AgentGitHubRepositories agentId={agentId} />;
-}

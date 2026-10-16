@@ -204,7 +204,8 @@ describe("createClientRuntime production composition", () => {
       ensureAgent.mockRestore();
     });
     const trustedEnvironment: Readonly<Record<string, string | undefined>> = {
-      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/context-tree", role: "context_tree" }]),
+      GH_TOKEN: "execution-local-handle",
+      OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234",
       HTTPS_PROXY: "http://127.0.0.1:43119",
     };
     const requestedSessions: string[] = [];
@@ -448,7 +449,7 @@ describe("createClientRuntime production composition", () => {
       sent.push(frame as Record<string, unknown>);
     });
     const managementEnvironments = vi.fn(() => ({
-      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/other", role: "context_tree" }]),
+      GH_TOKEN: "execution-local-handle",
       HTTPS_PROXY: "http://127.0.0.1:43119",
     }));
     const runtime = await createClientRuntime(connection, {
@@ -850,14 +851,21 @@ describe("createClientRuntime production composition", () => {
     );
     await chmod(command, 0o755);
 
+    const ambientProbe = resolve(home, "ambient-provider-probed");
+    for (const provider of ["claude", "pi"]) {
+      await writeFile(resolve(home, provider), `#!/bin/sh\ntouch '${ambientProbe}'\nexit 1\n`, { mode: 0o755 });
+    }
     const connection = runtimeConnection();
     const runtime = await createClientRuntime(connection, {
       clientVersion: "0.0.1",
+      claudeCodeCommand: resolve(home, "missing-claude"),
       codexCommand: command,
       codexHome,
-      environment: { HOME: home, PATH: process.env.PATH },
+      environment: { HOME: home, PATH: `${home}${delimiter}${process.env.PATH ?? ""}` },
       home,
+      piCommand: resolve(home, "missing-pi"),
     });
+    await expect(access(ambientProbe)).rejects.toMatchObject({ code: "ENOENT" });
     const result = await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()));
     expect(result).toMatchObject({ status: "ready" });
     await runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal);
@@ -906,10 +914,12 @@ describe("createClientRuntime production composition", () => {
     const connection = runtimeConnection();
     const runtime = await createClientRuntime(connection, {
       clientVersion: "0.0.1",
+      claudeCodeCommand: resolve(home, "missing-claude"),
       codexCommand: resolve(home, "missing-codex"),
       codexHome: resolve(home, "codex-home"),
       environment: { HOME: home, PATH: process.env.PATH },
       home,
+      piCommand: resolve(home, "missing-pi"),
     });
     await expect(
       runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot())),
@@ -1101,14 +1111,14 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const command = resolve(home, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool auto --append-system-prompt\\n"; exit 0; fi\nexit 1\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --permission-prompt-tool auto --append-system-prompt\\n"; exit 0; fi\nif [ "$3" = "auth" ]; then echo \'{"loggedIn":true}\'; exit 0; fi\nexit 1\n',
       "utf8",
     );
     await chmod(command, 0o755);
     const resolved = resolvedClaudeCodeFactory({
       claudeCodeHome: home,
       command,
-      environment: { PATH: process.env.PATH, ANTHROPIC_API_KEY: "fixture" },
+      environment: { PATH: process.env.PATH },
       sourceEnvironment: { PATH: process.env.PATH },
     });
     expect(() => resolved.create({} as never)).toThrow("readiness has not been established");
@@ -2738,6 +2748,7 @@ async function composeClaudeCodeRuntime(options: {
     codexCommand: resolve(options.home, "missing-codex"),
     environment: options.environment,
     home: options.home,
+    piCommand: resolve(options.home, "missing-pi"),
   });
   return {
     capture: await readFile(capturePath, "utf8"),

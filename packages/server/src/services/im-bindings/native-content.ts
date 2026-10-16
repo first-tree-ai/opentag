@@ -8,6 +8,37 @@ export function nativeString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/** Preserve provider inline formatting in model-visible Markdown, including literal code ticks. */
+export function nativeInlineStyles(text: string, style: unknown): string {
+  if (!text) return text;
+  const allowed = Array.isArray(style)
+    ? ["bold", "italic", "lineThrough", "underline"]
+    : ["bold", "italic", "strike", "code"];
+  const flags = new Set(
+    (Array.isArray(style)
+      ? style
+      : Object.entries(nativeObject(style))
+          .filter(([, value]) => value === true)
+          .map(([key]) => key)
+    ).filter((key) => allowed.includes(key)),
+  );
+  if (flags.has("code")) text = nativeInlineCode(text);
+  if (flags.has("bold")) text = `**${text}**`;
+  if (flags.has("italic")) text = `*${text}*`;
+  if (flags.has("strike") || flags.has("lineThrough")) text = `~~${text}~~`;
+  if (flags.has("underline")) text = `<u>${text}</u>`;
+  return text;
+}
+
+function nativeInlineCode(text: string): string {
+  let fence = "`";
+  for (const run of text.matchAll(/`+/g)) {
+    if (run[0].length >= fence.length) fence = "`".repeat(run[0].length + 1);
+  }
+  const padding = /^`|`$/.test(text) || (text.startsWith(" ") && text.endsWith(" ") && text.trim()) ? " " : "";
+  return `${fence}${padding}${text}${padding}${fence}`;
+}
+
 export function nativeHttpUrl(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   try {

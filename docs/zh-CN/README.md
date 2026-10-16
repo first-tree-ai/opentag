@@ -30,6 +30,7 @@
 
 ## 运维与发布
 
+- [云端计费 MVP](./cloud-billing.md)
 - [Cloud Computer 产品与资源控制](./cloud-computer-product.md)
 
 - [staging 部署指南](./deploying.md)

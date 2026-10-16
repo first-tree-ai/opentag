@@ -27,7 +27,6 @@ import {
 } from "./cloud-computer.js";
 import { disconnectComputerAccess } from "./disconnect-computer.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
-import { rejectUnsupportedClientVersion } from "./machine-auth-service.js";
 import type { ProviderReadinessSource } from "./provider-readiness.js";
 
 export interface ActiveUserResolver {
@@ -290,7 +289,6 @@ export class ComputerService {
   }
 
   async register(context: ComputerAuthContext, frame: ComputerRegisterFrame, connectionId?: string): Promise<void> {
-    rejectUnsupportedClientVersion(frame.clientVersion);
     if (frame.installationId !== context.installationId) {
       throw new AuthServiceError(
         "COMPUTER_IDENTITY_CONFLICT",

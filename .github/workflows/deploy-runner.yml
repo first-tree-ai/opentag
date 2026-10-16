@@ -1,4 +1,6 @@
 name: Deploy Runner
+# The deploy failure alert reads the channel and mode from this title; keep the `·` layout.
+run-name: Deploy Runner · ${{ inputs.channel }} · ${{ inputs.version }} · ${{ inputs.mode }}
 
 on:
   workflow_dispatch:
@@ -29,6 +31,8 @@ on:
 
 permissions:
   contents: read
+  # Read the Server image's billing capability from its published configuration.
+  packages: read
   id-token: write
 
 # Share the staging deployment lock; a manual rollback must not race an automatic rollout.
@@ -93,6 +97,8 @@ jobs:
           git merge-base --is-ancestor "$RUNNER_REVISION" "$SERVER_REVISION"
 
       - name: Check or activate the Runner target
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >-
           node scripts/runner/deploy.mjs "$DEPLOY_MODE"
           --release "$RUNNER_TEMP/runner-target.json" --server-revision "$SERVER_REVISION"

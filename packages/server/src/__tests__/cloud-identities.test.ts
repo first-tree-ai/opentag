@@ -122,6 +122,37 @@ describe("Cloud identity database decisions", () => {
     expect(capable.computers[0]).toMatchObject({ kind: "cloud", connectionStatus: "online" });
   });
 
+  it.each([false, true])(
+    "offers dedicated Slack setup independently of official OAuth (%s)",
+    async (slackOAuthAvailable) => {
+      const owner = await account();
+      const cloud = await computerService().ensureCloudComputerForAccount(owner);
+      const agentService = new AgentService(unit.database, { cloudIdentitiesEnabled: true });
+      const agent = await agentService.createForAccount(owner, {
+        name: "slack-entry",
+        displayName: "Slack entry",
+        runtimeProvider: "pi",
+        computerId: cloud.computerId,
+      });
+      const setup = new AgentSetupService(
+        unit.database,
+        agentService,
+        { getSetupBindingForAgent: async () => undefined },
+        { observeForAgent: async () => undefined },
+        {
+          slackOAuthAvailable,
+          cloudAvailability: (now) => ({ enabled: true, available: true, reason: null, observedAt: now.toISOString() }),
+        },
+      );
+      const snapshot = await setup.getSetupById(owner, agent.id);
+      expect(snapshot.stage).toBe("needs-messaging");
+      expect(snapshot.actions).toEqual([
+        { kind: "start-messaging", provider: "slack" },
+        { kind: "start-messaging", provider: "feishu" },
+      ]);
+    },
+  );
+
   it("keeps Account identity and installation metadata stable without inventing Local credentials", async () => {
     const owner = await account();
     const service = computerService();

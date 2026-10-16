@@ -159,6 +159,7 @@ describe("ComputerConnect", () => {
   });
 
   it("keeps repair idle compact without a command surface, then issues against the exact target", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [{ ...computer, connectionStatus: "offline" }] });
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand: COMMAND,

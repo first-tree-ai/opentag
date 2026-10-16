@@ -1,8 +1,8 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { assertDirectoryBudget } from "./directory-budget.js";
 import { GitPublicationError } from "./git-packets.js";
 import { type GitProcessOptions, runTrustedGit } from "./git-process.js";
-import { assertDirectoryBudget } from "./git-publication.js";
 import type { PublicationRemote } from "./git-remote.js";
 import type { GitWorkspace } from "./git-workspace.js";
 import { verifyPublishedContextTree } from "./tree-verifier.js";

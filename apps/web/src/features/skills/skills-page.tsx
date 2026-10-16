@@ -3,12 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, DropdownMenu, Empty, Icon, Loader } from "../../ui/design-system.js";
+import { Banner, Button, DropdownMenu, Icon, Loader, Text } from "../../ui/design-system.js";
 import "./skills.css";
 import { InstallSkillDialog } from "./install-skill-dialog.js";
 import { SkillDetailsDialog } from "./skill-details-dialog.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
-import { SkillPresetDialog } from "./skill-preset-dialog.js";
 import { SkillRow } from "./skill-row.js";
 import {
   checkSkillArchiveFile,
@@ -70,7 +69,6 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
    * started for rather than reading "whichever Agent is mounted now".
    */
   const [installOpen, setInstallOpen] = useState(false);
-  const [presetOpen, setPresetOpen] = useState(false);
 
   /*
    * Three states, not two. Storage is only "available" once a successful list says so; before that it
@@ -91,12 +89,6 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
     setInstallationNotice(undefined);
     setActionError(undefined);
     setInstallOpen(true);
-  };
-
-  const openPresetCatalog = () => {
-    setInstallationNotice(undefined);
-    setActionError(undefined);
-    setPresetOpen(true);
   };
 
   /*
@@ -203,12 +195,6 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
     </DropdownMenu>
   );
 
-  const presetAction = (
-    <Button disabled={!storageAvailable} onClick={openPresetCatalog} variant="ghost">
-      {m.skills_preset_button()}
-    </Button>
-  );
-
   return (
     <section className="grid gap-6" aria-labelledby="skills-page-title" data-ui="skills-page">
       <PageHeader description={m.skills_page_description()} title={m.skills_page_title()} titleId="skills-page-title">
@@ -229,10 +215,7 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           }}
           ref={fileInputRef}
         />
-        <div className="flex flex-wrap items-center gap-3">
-          {presetAction}
-          {addAction}
-        </div>
+        {addAction}
       </PageHeader>
 
       {storage === "unavailable" ? <Banner variant="alert">{m.skills_storage_unavailable()}</Banner> : null}
@@ -264,8 +247,6 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           setDetailsTarget(skill);
         }}
         onDelete={setDeleteTarget}
-        onOpenPresets={openPresetCatalog}
-        presetsAvailable={storageAvailable}
         skills={skills.data?.skills ?? []}
         storageAvailable={storageAvailable}
       />
@@ -292,7 +273,6 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
           onInstalled={(count) => setInstallationNotice(m.skills_install_success({ count }))}
         />
       ) : null}
-      {presetOpen ? <SkillPresetDialog agentId={agentId} onClose={() => setPresetOpen(false)} /> : null}
     </section>
   );
 }
@@ -308,18 +288,14 @@ function SkillList({
   hasData,
   isPending,
   onDelete,
-  onOpenPresets,
   onViewDetails,
-  presetsAvailable,
   skills,
   storageAvailable,
 }: {
   hasData: boolean;
   isPending: boolean;
   onDelete: (skill: Skill) => void;
-  onOpenPresets: () => void;
   onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
-  presetsAvailable: boolean;
   skills: Skill[];
   storageAvailable: boolean;
 }) {
@@ -335,16 +311,17 @@ function SkillList({
   if (!hasData) return null;
   if (skills.length === 0)
     return (
-      <Empty
-        className="ui-surface min-h-48 justify-center gap-3 bg-kumo-base px-4 py-6 text-sm"
-        title={m.skills_empty()}
-        description={m.skills_empty_description()}
-        contents={
-          <Button disabled={!presetsAvailable} onClick={onOpenPresets} variant="secondary">
-            {m.skills_preset_button()}
-          </Button>
-        }
-      />
+      <div className="flex flex-col items-center gap-5 px-4 py-12 text-center sm:py-16" data-ui="skills-empty-state">
+        <Icon name="file" weight="light" className="size-8 text-kumo-inactive" />
+        <div className="flex max-w-sm flex-col gap-2">
+          <Text as="h2" size="lg" variant="heading">
+            {m.skills_empty()}
+          </Text>
+          <Text as="p" size="sm" variant="secondary">
+            {m.skills_empty_description()}
+          </Text>
+        </div>
+      </div>
     );
   return (
     <ul

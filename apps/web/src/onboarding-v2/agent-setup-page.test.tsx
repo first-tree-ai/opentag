@@ -15,11 +15,13 @@ import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, browserApi } from ".
 import { AgentSetupPage, BOUNDED_POLL_ATTEMPTS, BOUNDED_POLL_WINDOW_MS, SETUP_POLL_MS } from "./agent-setup-page.js";
 import {
   deferred,
+  pendingSlackConfiguration,
   SETUP_AGENT_ID,
   SETUP_COMPUTER_ID,
   SETUP_COMPUTER_IDENTITY,
   SETUP_OTHER_AGENT_ID,
   setupAgent,
+  setupSlackConfiguration,
 } from "./agent-setup-test-fixtures.js";
 import { AgentSetupSurface } from "./page.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
@@ -32,6 +34,7 @@ const POLL_MS = SETUP_POLL_MS;
 async function settle(rounds = 6): Promise<void> {
   await act(async () => {
     for (let index = 0; index < rounds; index += 1) await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
   });
 }
 
@@ -179,6 +182,7 @@ async function renderMessagingStartChoice(
   renderSetup(adapter, props);
   await settle();
   continueFromPreparation();
+  await settle();
   return adapter;
 }
 
@@ -193,6 +197,8 @@ async function currentBindingId(adapter: AgentSetupAdapter): Promise<string> {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.spyOn(browserApi, "slackConfiguration").mockResolvedValue(setupSlackConfiguration());
+  vi.spyOn(browserApi, "autoSetupSlack").mockResolvedValue({ status: "authorization_required", ticket: "test-ticket" });
 });
 
 afterEach(() => {
@@ -234,6 +240,7 @@ describe("AgentSetupPage stages", () => {
   });
 
   it("says an offline Computer is offline and keeps watching it", async () => {
+    mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
     renderSetup(memory.adapter);
@@ -247,9 +254,8 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(reads).toHaveBeenCalledTimes(1);
 
-    // Ordinary offline guidance does not assume OpenTag was uninstalled.
-    expect(screen.getByText("Turn on or wake this computer and check its internet connection.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Get connection help" })).toBeTruthy();
+    expect(screen.getByText("Preparing recovery instructions…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
     expect(screen.getByText("You can continue when this computer is ready.")).toBeTruthy();
     expect(screen.queryByText("Complete the action above, then check again.")).toBeNull();
@@ -260,9 +266,9 @@ describe("AgentSetupPage stages", () => {
     expect(reads.mock.calls.length).toBeGreaterThan(readsBeforePoll);
   });
 
-  it("issues a targeted repair only after opening connection help and requesting repair", async () => {
+  it("automatically prepares a complete repair task for the bound Computer and Agent", async () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
-      bootstrapCommand: "opentag computer connect --server https://opentag.example.com -- repair-code",
+      bootstrapCommand: "opentag connect --server https://opentag.example.com -- repair-code",
       connectCodeId: "repair-code",
       expiresIn: 900,
       issuedAt: new Date().toISOString(),
@@ -273,31 +279,18 @@ describe("AgentSetupPage stages", () => {
       redeemedAt: null,
       state: "pending",
     });
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-
-    expect(issue).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    await settle();
-    expect(issue).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Assistant requested a repair?" }));
-    await settle();
-    const repairAction = screen.getByRole("button", { name: "Repair connection" });
-    expect(repairAction.closest(".ots-command__body")).toBeNull();
-    expect(screen.queryByText("Need to reinstall?")).toBeNull();
-    fireEvent.click(repairAction);
-    await settle();
-
-    const repairSurface = document.querySelector('[data-ui="computer-connect"]');
-    expect(repairSurface?.querySelector(".ots-command__body")).not.toBeNull();
-    expect(screen.getByText("Paste this command into your coding assistant on Review Mac.")).toBeTruthy();
-    expect(screen.getByText("Expires in 15:00")).toBeTruthy();
-    expect(screen.getByText("Waiting for Review Mac to reconnect…").closest('[role="status"]')).toBeTruthy();
-    expect(issue).toHaveBeenCalledWith({
+    expect(screen.queryByText(/Waiting for|Expires in/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("repair-code");
+    expect(issue).toHaveBeenCalledExactlyOnceWith({
       mode: "repair",
       targetAgentId: SETUP_AGENT_ID,
       targetComputerId: SETUP_COMPUTER_ID,
@@ -514,7 +507,7 @@ describe("AgentSetupPage stages", () => {
     const alert = screen.getByRole("alert");
     expect(messaging?.contains(alert)).toBe(true);
     expect(alert.textContent).toBe(
-      "This Slack workspace is already connected to another Agent. Disconnect it from that Agent, or choose a different workspace.",
+      "This Slack App is already connected to another Agent. Create another App for this Agent; you can use the same workspace.",
     );
   });
 
@@ -566,7 +559,7 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
     // Provider identity reaches the done screen from the snapshot, not from page state.
-    expect(screen.getByText("Tag @OpenTag in Slack to put it to work.")).toBeTruthy();
+    expect(screen.getByText("Message this Bot in Slack to put it to work.")).toBeTruthy();
     expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
     expect(onReady).toHaveBeenCalledTimes(1);
   });
@@ -718,7 +711,7 @@ describe("preparation review regressions", () => {
 
     expect(
       screen.getByText(
-        "In Slack, add OpenTag to a channel and send it a message, or message it directly, to finish the connection check.",
+        "In Slack, add this Bot to a channel and send it a message, or message it directly, to finish the connection check.",
       ),
     ).toBeTruthy();
   });
@@ -959,23 +952,20 @@ describe("AgentSetupPage transitions", () => {
     }
   });
 
-  it("starts the Slack install by leaving for Slack", async () => {
-    const assign = vi.fn();
-    const originalLocation = window.location;
-    Object.defineProperty(window, "location", { configurable: true, value: { ...originalLocation, assign } });
-    try {
-      const memory = createMemorySetupAdapter({ agent: setupAgent() });
-      renderSetup(memory.adapter);
-      await settle();
-
-      continueFromPreparation();
-      fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
-      await settle();
-
-      expect(assign).toHaveBeenCalledWith(expect.stringContaining("https://slack.com/"));
-    } finally {
-      Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
-    }
+  it("opens Slack setup in place without leaving for official OAuth", async () => {
+    const navigate = vi.fn();
+    const memory = createMemorySetupAdapter({ agent: setupAgent() });
+    const oauth = vi.spyOn(memory.adapter, "startSlackInstall");
+    renderSetup(memory.adapter, { onExternalNavigation: navigate });
+    await settle();
+    continueFromPreparation();
+    await settle();
+    fireEvent.click(messagingChoice(/Slack/));
+    await settle();
+    expect(screen.getByRole("dialog", { name: "Connect Slack" })).toBeTruthy();
+    expect(screen.getByLabelText("Code")).toBeTruthy();
+    expect(oauth).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("reauthorizes the current Slack binding rather than starting fresh", async () => {
@@ -988,10 +978,16 @@ describe("AgentSetupPage transitions", () => {
         messaging: { kind: "bound", provider: "slack", reachable: true, attention: "reauthorization-required" },
       });
       const start = vi.spyOn(memory.adapter, "startSlackInstall");
+      const current = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+      if (!("bindingId" in current.messaging)) throw new Error("Missing binding");
+      vi.mocked(browserApi.slackConfiguration).mockResolvedValue(
+        setupSlackConfiguration(current.messaging.bindingId, "oauth"),
+      );
       renderSetup(memory.adapter);
       await settle();
+      await advance(1);
 
-      fireEvent.click(screen.getByRole("button", { name: "Update permissions" }));
+      fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
       await settle();
 
       expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "reauthorize", {
@@ -1181,21 +1177,18 @@ describe("AgentSetupPage transitions", () => {
 });
 
 describe("AgentSetupPage messaging choice loading", () => {
-  it("shows a spinner only on Slack while both choices stay disabled", async () => {
-    const gate = deferred<string>();
-    await renderMessagingStartChoice(
-      {
-        startSlackInstall: vi.fn(async () => gate.promise),
-      },
-      { onExternalNavigation: vi.fn() },
-    );
-
+  it("keeps authorization inside the Slack dialog and locks it while preparing", async () => {
+    const gate = deferred<Awaited<ReturnType<typeof browserApi.autoSetupSlack>>>();
+    vi.mocked(browserApi.autoSetupSlack).mockImplementation(() => gate.promise);
+    const adapter = await renderMessagingStartChoice();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
-
-    expectPendingMessagingChoice(/Slack/, /Lark/);
-    gate.resolve("https://slack.com/oauth/v2/authorize?state=scripted");
+    expect(screen.getByRole("button", { name: "Close Connect Slack" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Manual setup" })).toHaveProperty("disabled", true);
+    expect(adapter.startSlackInstall).not.toHaveBeenCalled();
+    gate.resolve({ status: "authorization_required", ticket: "ticket" });
     await settle();
+    expect(screen.getByLabelText("Code")).toBeTruthy();
   });
 
   it("shows a spinner only on Lark while both choices stay disabled", async () => {
@@ -1212,99 +1205,31 @@ describe("AgentSetupPage messaging choice loading", () => {
     await settle();
   });
 
-  it("clears both spinners when a pending start resolves with the choices still visible", async () => {
-    const slackGate = deferred<string>();
-    const larkGate = deferred<void>();
-    const navigate = vi.fn();
-    const adapter = await renderMessagingStartChoice(
-      {
-        startSlackInstall: vi.fn(async () => slackGate.promise),
-        startFeishuAttempt: vi.fn(async () => larkGate.promise),
-      },
-      { onExternalNavigation: navigate },
-    );
-
+  it("returns from Slack setup without putting the choices in OAuth waiting state", async () => {
+    const adapter = await renderMessagingStartChoice();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
-    expectPendingMessagingChoice(/Slack/, /Lark/);
-    slackGate.resolve("https://slack.com/oauth/v2/authorize?state=scripted");
+    fireEvent.click(screen.getByRole("button", { name: "Close Connect Slack" }));
     await settle();
     expectIdleMessagingChoices();
-    expect(navigate).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(messagingChoice(/Lark/));
-    await settle();
-    expectPendingMessagingChoice(/Lark/, /Slack/);
-    larkGate.resolve();
-    await settle();
-    expectIdleMessagingChoices();
-    expect(adapter.startSlackInstall).toHaveBeenCalledTimes(1);
-    expect(adapter.startFeishuAttempt).toHaveBeenCalledTimes(1);
+    expect(adapter.startSlackInstall).not.toHaveBeenCalled();
   });
 
-  it.each(["Slack", "Lark"] as const)("clears a failed %s start before retrying the other provider", async (name) => {
-    const gates = { Slack: deferred<void>(), Lark: deferred<void>() };
-    const other = name === "Slack" ? "Lark" : "Slack";
-    const selectedPattern = new RegExp(name);
-    const otherPattern = new RegExp(other);
-    const adapter = await renderMessagingStartChoice(
-      {
-        startFeishuAttempt: vi.fn(async () => gates.Lark.promise),
-        startSlackInstall: vi.fn(async () => {
-          await gates.Slack.promise;
-          return "https://slack.com/oauth/v2/authorize?state=scripted";
-        }),
-      },
-      { onExternalNavigation: vi.fn() },
-    );
-
-    fireEvent.click(messagingChoice(selectedPattern));
-    await settle();
-    expectPendingMessagingChoice(selectedPattern, otherPattern);
-
-    gates[name].reject(new Error("refused"));
-    await settle();
-    expectIdleMessagingChoices();
-    expect(screen.getByRole("alert")).toBeTruthy();
-
-    fireEvent.click(messagingChoice(otherPattern));
-    await settle();
-    expectPendingMessagingChoice(otherPattern, selectedPattern);
-    expect(screen.queryByRole("alert")).toBeNull();
-    gates[other].resolve();
-    await settle();
-    expectIdleMessagingChoices();
-    expect(adapter.startSlackInstall).toHaveBeenCalledTimes(1);
-    expect(adapter.startFeishuAttempt).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(["Slack", "Lark"] as const)("refuses same-event-loop duplicate clicks starting with %s", async (name) => {
-    const gates = { Slack: deferred<string>(), Lark: deferred<void>() };
-    const selectedPattern = new RegExp(name);
-    const otherPattern = name === "Slack" ? /Lark/ : /Slack/;
-    const adapter = await renderMessagingStartChoice(
-      {
-        startFeishuAttempt: vi.fn(async () => gates.Lark.promise),
-        startSlackInstall: vi.fn(async () => gates.Slack.promise),
-      },
-      { onExternalNavigation: vi.fn() },
-    );
-
-    const selected = messagingChoice(selectedPattern);
-    const other = messagingChoice(otherPattern);
-    // Batch the clicks before React can commit disabled buttons, exercising the synchronous guard.
+  it("refuses same-event-loop duplicate Feishu starts", async () => {
+    const gate = deferred<void>();
+    const adapter = await renderMessagingStartChoice({ startFeishuAttempt: vi.fn(async () => gate.promise) });
+    const selected = messagingChoice(/Lark/);
     act(() => {
       fireEvent.click(selected);
       fireEvent.click(selected);
-      fireEvent.click(other);
+      fireEvent.click(messagingChoice(/Slack/));
     });
     await settle();
-
-    expect(adapter.startFeishuAttempt).toHaveBeenCalledTimes(name === "Lark" ? 1 : 0);
-    expect(adapter.startSlackInstall).toHaveBeenCalledTimes(name === "Slack" ? 1 : 0);
-    expectPendingMessagingChoice(selectedPattern, otherPattern);
-    gates.Slack.resolve("https://slack.com/oauth/v2/authorize?state=scripted");
-    gates.Lark.resolve();
+    expect(adapter.startFeishuAttempt).toHaveBeenCalledTimes(1);
+    expect(adapter.startSlackInstall).not.toHaveBeenCalled();
+    expect(browserApi.autoSetupSlack).not.toHaveBeenCalled();
+    expectPendingMessagingChoice(/Lark/, /Slack/);
+    gate.resolve();
     await settle();
     expectIdleMessagingChoices();
   });
@@ -2349,5 +2274,57 @@ describe("AgentSetupSurface integration seam", () => {
 
     expect(document.querySelector('[data-ui="agent-setup"]')).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
+  });
+});
+
+describe("AgentSetupPage manual Slack verification", () => {
+  it.each(["local", "cloud"] as const)("keeps verification open after saving on %s", async (kind) => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      ...(kind === "cloud" ? { cloudService: { available: true } } : {}),
+    });
+    let view = setupSlackConfiguration();
+    vi.mocked(browserApi.slackConfiguration).mockImplementation(async () => view);
+    const save = vi.spyOn(browserApi, "saveSlackConfiguration").mockImplementation(async () => {
+      await memory.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" });
+      memory.controls.completeSlackInstall();
+      const bindingId = await currentBindingId(memory.adapter);
+      view = pendingSlackConfiguration(bindingId);
+      return {
+        agentId: SETUP_AGENT_ID,
+        imBindingId: bindingId,
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        credentialGeneration: 1,
+        bindingState: "active",
+        identityClosure: { status: "pending", verifiedAt: null },
+      };
+    });
+    renderSetup(memory.adapter);
+    await settle();
+    continueFromPreparation();
+    await settle();
+    fireEvent.click(messagingChoice(/Slack/));
+    await settle();
+    if (kind === "local") fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+    fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "test-token" } });
+    fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "test-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await settle(20);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect((await memory.adapter.readSnapshot(SETUP_AGENT_ID)).messaging.kind).toBe("waiting-handoff");
+    const dialog = screen.getByRole("dialog", { name: "Connect Slack" });
+    expect(
+      within(dialog).getByText(
+        "In Event Subscriptions, confirm Verified and select Save Changes, then send a message.",
+      ),
+    ).toBeTruthy();
+    expect(within(dialog).getByRole("link", { name: "Open settings" })).toHaveProperty(
+      "href",
+      "https://api.slack.com/apps/A1/event-subscriptions",
+    );
+    expect(within(dialog).queryByLabelText("Bot Token")).toBeNull();
+    expect(within(dialog).queryByLabelText("Signing Secret")).toBeNull();
   });
 });

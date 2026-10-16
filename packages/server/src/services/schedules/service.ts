@@ -9,6 +9,7 @@ import {
   type AgentScheduleRule,
   type AgentScheduleTarget,
   type CreateAgentScheduleRequest,
+  type RuntimeUserTaskSource,
   SCHEDULE_ERROR_CODES,
   type UpdateAgentScheduleRequest,
 } from "@opentag/shared";
@@ -51,6 +52,7 @@ export interface AgentScheduleScope {
   readonly agentId: string;
   readonly sessionId: string;
   readonly sessionKind: "channel" | "thread" | "internal";
+  readonly userTaskSource?: RuntimeUserTaskSource;
 }
 
 /** Anything that can run queries: the pool client or an open transaction. */
@@ -150,14 +152,17 @@ export class ScheduleService {
    * Authentication: the Session CLI proof is the only identity input on the runtime surface.
    * ---------------------------------------------------------------------------------------- */
 
-  async authenticate(proof: string): Promise<AgentScheduleScope> {
-    const source = await this.#options.proofs.authenticate(proof);
+  async authenticate(proof: string, executionId?: string): Promise<AgentScheduleScope> {
+    const source = executionId
+      ? await this.#options.proofs.authenticate(proof, executionId)
+      : await this.#options.proofs.authenticate(proof);
     const accountId = await this.#options.owners.resolveAccountId(source.agentId);
     return {
       accountId,
       agentId: source.agentId,
       sessionId: source.sessionId,
       sessionKind: source.sessionKind,
+      ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
     };
   }
 
@@ -178,6 +183,7 @@ export class ScheduleService {
           targetSessionId: target.sessionId,
           name: input.name,
           prompt: input.prompt,
+          userTaskSource: scope.userTaskSource ?? null,
           schedule: rule,
           timezone,
           enabled: true,
@@ -222,6 +228,7 @@ export class ScheduleService {
         .set({
           name,
           prompt,
+          userTaskSource: scope.userTaskSource ?? null,
           schedule: timing.rule,
           timezone: timing.timezone,
           nextTriggerAt: timing.nextTriggerAt,
@@ -275,7 +282,7 @@ export class ScheduleService {
     scheduleId: string,
     expectedRevision: number,
   ): Promise<AgentSchedule> {
-    return this.#resume(scope.agentId, scheduleId, expectedRevision);
+    return this.#resume(scope.agentId, scheduleId, expectedRevision, scope.userTaskSource ?? null);
   }
 
   async deleteForAgent(scope: AgentScheduleScope, scheduleId: string, expectedRevision: number): Promise<void> {
@@ -401,7 +408,12 @@ export class ScheduleService {
     return this.#detailForRow(row);
   }
 
-  async #resume(agentId: string, scheduleId: string, expectedRevision: number): Promise<AgentSchedule> {
+  async #resume(
+    agentId: string,
+    scheduleId: string,
+    expectedRevision: number,
+    userTaskSource?: RuntimeUserTaskSource | null,
+  ): Promise<AgentSchedule> {
     const row = await this.#options.database.transaction(async (transaction) => {
       const locked = await this.#lockOwned(transaction, agentId, scheduleId);
       this.#requireRevision(locked, expectedRevision);
@@ -416,7 +428,14 @@ export class ScheduleService {
       const next = this.#requireNext(locked.schedule, locked.timezone, now);
       const [updated] = await transaction
         .update(agentSchedules)
-        .set({ enabled: true, nextTriggerAt: next, revision: locked.revision + 1, updatedAt: now })
+        .set({
+          enabled: true,
+          nextTriggerAt: next,
+          revision: locked.revision + 1,
+          updatedAt: now,
+          // Account resume preserves provenance; an Agent resume must attest its current task.
+          ...(userTaskSource !== undefined ? { userTaskSource } : {}),
+        })
         .where(eq(agentSchedules.id, locked.id))
         .returning();
       if (!updated) throw new Error("Schedule resume did not return a row");

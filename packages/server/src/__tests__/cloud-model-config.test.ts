@@ -5,7 +5,6 @@ const MASTER_KEY = "fixture-master-key-sentinel-9f1c0d";
 
 function enabledEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
-    OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "model-a,model-b",
     OPENTAG_CLOUD_MODEL_ENABLED: "true",
     OPENTAG_CLOUD_MODEL_MASTER_KEY: MASTER_KEY,
     OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models.example.com/v1/",
@@ -33,10 +32,6 @@ describe("resolveCloudModelConfig", () => {
     expect(() => resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_MASTER_KEY: "" }), true)).toThrow(
       /MASTER_KEY/,
     );
-    // The retired allowlist variable is ignored: it is neither required nor restrictive.
-    expect(resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "" }), true)).toMatchObject(
-      { enabled: true },
-    );
   });
 
   it("validates an opted-in configuration even while the Runner is off", () => {
@@ -46,10 +41,6 @@ describe("resolveCloudModelConfig", () => {
     expect(() => resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_MASTER_KEY: "" }), false)).toThrow(
       /MASTER_KEY/,
     );
-    // A malformed retired allowlist value no longer fails the boot: the Router is the authority.
-    expect(
-      resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "model-a,model-a" }), false),
-    ).toEqual({ enabled: false });
     expect(() =>
       resolveCloudModelConfig(
         enabledEnvironment({ OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "ftp://models.example.com/v1" }),
@@ -62,6 +53,11 @@ describe("resolveCloudModelConfig", () => {
     expect(resolveCloudModelConfig({ OPENTAG_CLOUD_MODEL_ENABLED: "false" }, false)).toEqual({ enabled: false });
   });
 
+  it("reads the router identity from the environment", () => {
+    expect(
+      resolveCloudModelConfig(enabledEnvironment({ OPENTAG_CLOUD_MODEL_GATEWAY_ID: "gateway-b" }), true),
+    ).toMatchObject({ gatewayId: "gateway-b" });
+  });
   it("normalizes a fixed HTTPS upstream and sources models from the Router, not the environment", () => {
     const config = resolveCloudModelConfig(enabledEnvironment(), true);
     if (!config.enabled) throw new Error("expected enabled config");

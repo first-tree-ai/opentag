@@ -31,6 +31,7 @@ const TOOLING_CONFIG_ROOTS = new Set([
   "apps/web",
   "e2e",
   "packages/client",
+  "packages/mcp-presets",
   "packages/server",
   "packages/shared",
 ]);

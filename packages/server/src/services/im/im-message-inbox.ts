@@ -22,6 +22,11 @@ const TASK_TITLE_GENERATION_TIMEOUT_MS = 3_000;
 
 type DeliveryAttention = "direct" | "ambient";
 
+/** Direct continuity keeps an unaddressed Thread follow-up for the direct window. */
+function deliveryRetentionMs(delivery: { attention: DeliveryAttention; continuity?: boolean }): number {
+  return delivery.attention === "direct" || delivery.continuity === true ? DIRECT_TTL_MS : AMBIENT_TTL_MS;
+}
+
 interface OverflowCandidate {
   sessionId: string;
   attention: DeliveryAttention;
@@ -416,7 +421,18 @@ export class ImMessageInbox {
             const direct =
               conversationKind === "dm" ||
               event.mentions.some((mention) => mention.externalId === scope.imBinding.externalBotId);
-            const deliveries: Array<{ sessionId: string; attention: "direct" | "ambient"; generation: number }> = [];
+            /*
+             * Attention states whether this message itself addresses the Agent (a DM or an @-mention).
+             * Thread continuity only decides delivery and retention: an unaddressed follow-up in a
+             * Thread the Agent was brought into stays ambient, so the Agent judges whether it is meant
+             * for it instead of being told it was addressed.
+             */
+            const deliveries: Array<{
+              sessionId: string;
+              attention: "direct" | "ambient";
+              generation: number;
+              continuity?: boolean;
+            }> = [];
             if (event.conversation.kind === "unknown") {
               deliveries.push(
                 ...inheritedDeliveries.map(({ sessionId, attention, generation }) => ({
@@ -477,8 +493,9 @@ export class ImMessageInbox {
                   recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
                   deliveries.push({
                     sessionId: thread.id,
-                    attention: directContinuity ? "direct" : "ambient",
+                    attention: direct ? "direct" : "ambient",
                     generation: thread.generation,
+                    continuity: directContinuity,
                   });
                 }
                 if (scope.agent.receiveMode === "all_message") {
@@ -521,9 +538,7 @@ export class ImMessageInbox {
                   attention: delivery.attention,
                   placementGeneration: delivery.generation,
                   nextAttemptAt: now,
-                  expiresAt: new Date(
-                    now.getTime() + (delivery.attention === "direct" ? DIRECT_TTL_MS : AMBIENT_TTL_MS),
-                  ),
+                  expiresAt: new Date(now.getTime() + deliveryRetentionMs(delivery)),
                 })
                 .onConflictDoNothing()
                 .returning({ id: imMessageDeliveries.id });
@@ -585,12 +600,11 @@ export class ImMessageInbox {
                   now,
                 });
                 recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
-                const [upgraded] = await transaction
+                // The direct root establishes continuity for these earlier-committed replies; they
+                // stay ambient because they do not address the Agent themselves.
+                const [retained] = await transaction
                   .update(imMessageDeliveries)
-                  .set({
-                    attention: "direct",
-                    expiresAt: new Date(now.getTime() + DIRECT_TTL_MS),
-                  })
+                  .set({ expiresAt: new Date(now.getTime() + DIRECT_TTL_MS) })
                   .where(
                     and(
                       eq(imMessageDeliveries.messageId, pending.id),
@@ -604,19 +618,19 @@ export class ImMessageInbox {
                     ),
                   )
                   .returning({ id: imMessageDeliveries.id });
-                if (!upgraded)
+                if (!retained)
                   await transaction
                     .insert(imMessageDeliveries)
                     .values({
                       messageId: pending.id,
                       sessionId: thread.id,
-                      attention: "direct",
+                      attention: "ambient",
                       placementGeneration: thread.generation,
                       nextAttemptAt: now,
                       expiresAt: new Date(now.getTime() + DIRECT_TTL_MS),
                     })
                     .onConflictDoNothing();
-                const candidate = { sessionId: thread.id, attention: "direct" as const };
+                const candidate = { sessionId: thread.id, attention: "ambient" as const };
                 overflowCandidates.set(this.#overflowKey(candidate.sessionId, candidate.attention), candidate);
               }
             }

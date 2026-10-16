@@ -1470,7 +1470,7 @@ export class ImDeliveryWorker {
   }): Promise<RuntimeImDeliveryContent> {
     const content = deliveryMessageContent(input.message, input.imBinding);
     const history =
-      input.delivery.attention === "direct" && (input.receiveMode === "mention_only" || input.session.kind === "thread")
+      input.session.kind === "thread" || (input.delivery.attention === "direct" && input.receiveMode === "mention_only")
         ? await loadDirectHistory(this.#database, {
             session: input.session,
             providerContext: input.message.providerContext,

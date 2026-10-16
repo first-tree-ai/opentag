@@ -1136,7 +1136,8 @@ describe("session-message worker integration", () => {
     expect(systemPrompt).toContain(`Current Session: ${request.message.targetSessionId}`);
     expect(systemPrompt).toContain("do not publish directly to IM");
     expect(systemPrompt).not.toContain("emoji");
-    expect(systemPrompt).not.toContain("lively, friendly tone");
+    expect(systemPrompt).not.toContain("be warm and natural");
+    expect(systemPrompt).not.toContain("## When to speak");
     expect(systemPrompt).not.toContain("Creator Session");
     expect(systemPrompt).toContain(
       "Session collaboration commands are unavailable because managed Session context is missing.",
@@ -1205,9 +1206,10 @@ describe("session-message worker integration", () => {
     expect(observed.systemPrompt).toContain("You are a visible Session");
     expect(observed.systemPrompt).toContain("Session kind: visible");
     expect(observed.systemPrompt).toContain(`Current Session: ${request.message.targetSessionId}`);
-    expect(observed.systemPrompt).toContain("Lean toward a lively, friendly tone");
+    expect(observed.systemPrompt).toContain("When you speak, be warm and natural");
+    expect(observed.systemPrompt).toContain("## When to speak");
     expect(observed.systemPrompt).toContain('add one emoji reaction meaning "received, working on it"');
-    expect(observed.systemPrompt).toContain("to the original user message via the provider CLI");
+    expect(observed.systemPrompt).toContain("to the original message via the provider CLI");
     expect(observed.systemPrompt).toContain(
       "Do not use approval or completion reactions such as thumbs-up or check marks",
     );
@@ -1399,9 +1401,10 @@ describe("session-message worker integration", () => {
     expect(opened[0]?.systemPrompt).toContain("You are a visible Session");
     expect(opened[0]?.systemPrompt).toContain("Session kind: visible");
     expect(opened[0]?.systemPrompt).toContain(`Current Session: ${delivery.sessionId}`);
-    expect(opened[0]?.systemPrompt).toContain("Lean toward a lively, friendly tone");
+    expect(opened[0]?.systemPrompt).toContain("When you speak, be warm and natural");
+    expect(opened[0]?.systemPrompt).toContain("## When to speak");
     expect(opened[0]?.systemPrompt).toContain('add one emoji reaction meaning "received, working on it"');
-    expect(opened[0]?.systemPrompt).toContain("to the original user message via the provider CLI");
+    expect(opened[0]?.systemPrompt).toContain("to the original message via the provider CLI");
     expect(opened[0]?.systemPrompt).toContain(
       "Do not use approval or completion reactions such as thumbs-up or check marks",
     );

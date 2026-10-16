@@ -269,12 +269,12 @@ describe("AgentTurnRunner", () => {
     expect(input.items[0]?.text).toContain("The IM participant is a separate audience");
     expect(input.items[0]?.text).toContain("The official slack api CLI is your outbox and the only path");
     expect(input.items[0]?.text).toContain("only records it in OpenTag; it does not deliver it");
-    expect(input.items[0]?.text).toContain("Before ending this Turn, send a concise completion");
-    expect(input.items[0]?.text).toContain("send a concise completion, failure, or blocker update");
-    expect(input.items[0]?.text).toContain("including after an approval decision");
-    expect(input.items[0]?.text).toContain("Your final text to OpenTag does not count as the reply");
-    expect(input.items[0]?.text).toContain("If the human explicitly asked for silence");
-    expect(input.items[0]?.text).toContain("does not waive a pre-work reaction required by the managed instructions");
+    expect(input.items[0]?.text).toContain("This message addresses you (a DM or an @-mention)");
+    expect(input.items[0]?.text).toContain('Reply by default; the narrow exceptions are in "When to speak"');
+    expect(input.items[0]?.text).toContain("the result after an approval decision or a failure or blocker update");
+    expect(input.items[0]?.text).toContain("your final text to OpenTag does not count as the reply");
+    // Addressed messages are no longer an unconditional reply mandate.
+    expect(input.items[0]?.text).not.toContain("Before ending this Turn, send");
     expect(input.items[0]?.text).not.toContain("Your final text is not sent to the IM provider automatically");
     expect(input.items[0]?.text).toContain("OpenTag has no hosted message send, reply, or reaction tool");
     expect(input.items[0]?.text).toContain("query the provider before deciding whether to retry");
@@ -357,17 +357,20 @@ describe("AgentTurnRunner", () => {
     expect(steer.items[0]?.text).not.toContain("Asia/Shanghai");
   });
 
-  it("preserves ambient attention beside the provider reference without disabling provider credentials", () => {
+  it("tells ambient listeners to stay silent by default while keeping the provider reference", () => {
     const request = { ...delivery(), attention: "ambient" as const };
     const context = buildAgentInput(request).items[0]?.text;
     expect(context).toContain("Attention: ambient");
     expect(context).toContain(JSON.stringify(request.content.providerRef));
-    expect(context).toContain("overheard the message");
-    expect(context).toContain("avoid meaningless, duplicate, intrusive");
+    expect(context).toContain("This message does not address you; you are listening");
+    expect(context).toContain("a Thread follow-up");
     expect(context).toContain(
-      "Choosing not to reply remains valid; it does not waive a pre-work reaction required by the managed instructions.",
+      'Stay silent by default; reply only when it is clearly meant for you, per "When to speak"',
     );
-    expect(context).toContain("Attention does not change provider CLI or credential availability");
+    expect(context).toContain("Ending this Turn without any provider action is the expected outcome");
+    expect(context).toContain("reply through the provider CLI before this Turn ends");
+    // Proactive sends are no longer offered as an ordinary option for overheard messages.
+    expect(context).not.toContain("send proactively");
   });
 
   it("compiles observer restrictions independently from attention and provider without removing Session credentials", () => {
@@ -409,12 +412,11 @@ describe("AgentTurnRunner", () => {
 
     const directObserverContext = buildAgentInput({ ...delivery(), replyRole: "observer" }).items[0]?.text;
     expect(directObserverContext).toContain("Do not run a provider CLI mutation for this observer copy");
-    expect(directObserverContext).not.toContain("Before ending this Turn, send a concise completion");
+    expect(directObserverContext).not.toContain("Reply by default");
 
     const ownerContext = buildAgentInput(delivery()).items[0]?.text;
     expect(ownerContext).toContain("Reply role: owner");
-    expect(ownerContext).toContain("For direct requests, deliver the result through the provider CLI");
-    expect(ownerContext).toContain("does not waive a pre-work reaction required by the managed instructions");
+    expect(ownerContext).toContain("whether to reply follows the attention above");
     expect(ownerContext).not.toContain("take no provider action");
     expect(ownerContext).not.toContain("must reply");
     expect(ownerContext).not.toContain("observer Turn");

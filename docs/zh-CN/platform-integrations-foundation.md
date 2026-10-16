@@ -56,7 +56,7 @@ Agent 继续使用原生 `git`、`gh`、`slack api`、`lark-cli` 命令，launch
 
 ## Git 与 Context Tree
 
-已确认的 M1 产品决策是让 Agent 在所连接 owner 用户/App 权限内跨 Session 自行管理 GitHub 工作，涵盖既有 IM 准入、用户配置的定时任务和可追溯的同账户 Agent 协作。不增加 GitHub 专用发送者/仓库白名单或运行期 Tree 发布门禁。GitHub 操作身份是 Agent owner；获准发起 IM 任务的发送者并不自动等于这个 GitHub 用户。此决策不授予合并批准，也不扩大平台 execution/沙箱边界。
+M1 实现 PR 作者 `@yuezengwu` 要求的范围：让 Agent 在所连接 owner 用户/App 权限内跨 Session 自行管理 GitHub 工作，涵盖既有 IM 准入、用户配置的定时任务和可追溯的同账户 Agent 协作。不增加 GitHub 专用发送者/仓库白名单或运行期 Tree 发布门禁。GitHub 操作身份是 Agent owner；获准发起 IM 任务的发送者并不自动等于这个 GitHub 用户。这里记录的是要求实现的行为，不代表仓库 owner 或 reviewer 的批准；这些仍是独立的 PR 门禁，也不扩大平台 execution/沙箱边界。
 
 Git smart HTTP 原样流式转发到 GitHub。运行期 Server 不创建仓库快照、不执行 Git、不检查 pack 对象、不暂存发布，也不改写 commit。任意分支、tag、ref 删除、force push、多 ref 写入和跨 Session PR 工作，都受上游 GitHub 用户/App 权限与仓库规则约束。
 

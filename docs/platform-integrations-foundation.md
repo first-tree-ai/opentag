@@ -60,7 +60,7 @@ Native command names and arguments remain `git`, `gh`, `slack api`, and `lark-cl
 
 ## Git and Context Tree
 
-The confirmed M1 product decision is to let Agents manage GitHub work across Sessions within the connected owner user/App permissions, including tasks from existing IM admission, user-configured schedules and traceable same-account collaboration. There is no extra GitHub sender/repository allowlist or runtime Tree publication gate. The Agent owner is the GitHub actor; an admitted IM sender is not automatically that GitHub user. This decision does not grant merge approval or expand the platform execution/sandbox boundary.
+M1 implements the scope requested by the PR author, `@yuezengwu`: let Agents manage GitHub work across Sessions within the connected owner user/App permissions, including tasks from existing IM admission, user-configured schedules and traceable same-account collaboration. There is no extra GitHub sender/repository allowlist or runtime Tree publication gate. The Agent owner is the GitHub actor; an admitted IM sender is not automatically that GitHub user. This records the requested behavior, not repository-owner or reviewer approval; those remain separate PR gates. It does not expand the platform execution/sandbox boundary.
 
 Git smart HTTP is streamed byte-for-byte to GitHub. The runtime Server does not create a repository snapshot, execute Git, inspect pack objects, stage publication or rewrite commits. Arbitrary branches, tags, ref deletes, force pushes, multi-ref writes and cross-Session PR work are governed by the upstream GitHub user/App permissions and repository rules.
 

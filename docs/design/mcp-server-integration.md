@@ -1222,7 +1222,7 @@ The catalog is committed repository data in the `@opentag/mcp-presets` workspace
 | Source | Holds |
 | --- | --- |
 | `packages/mcp-presets/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
-| `packages/mcp-presets/mcp-catalog.yaml` | the entries, one registry-style record each: `id` (`mcp/<slug>`), localized `name`, `summary`, and `when_to_use`, `capabilities`, `status`, `auth` (`methods`, `default_kind`, and `oauth.scopes` — the scopes the provider's consent screen is configured for), `risk`, one `remotes` endpoint with its header configuration, `catalog` placement (category, order, icon), and `homepage` |
+| `packages/mcp-presets/mcp-catalog.yaml` | the entries, one registry-style record each: `id` (`mcp/<slug>`), localized `name`, `summary`, and `when_to_use`, `capabilities`, `status`, `auth` (`methods`, `default_kind`, and `oauth.scopes` — the scopes the provider's consent screen is configured for), `risk`, `remotes` endpoints with their header configuration and/or self-hosted `packages` (with `prerequisites` and `platforms`), `catalog` placement (category, order, icon), and `homepage` |
 | `packages/mcp-presets/schema/mcp-catalog-entry.schema.json` | the JSON Schema (draft 2020-12) every entry is validated against; the generator injects the supported locales |
 | `packages/mcp-presets/icons/` | the monochrome card marks referenced by the entries |
 
@@ -1269,8 +1269,11 @@ Web App reads (`id` as the slug, `title`, `description`, `url`, `defaultAuthKind
 
 The generator refuses, at build time, at minimum:
 
-- an entry that does not validate against the entry schema: an unknown key, a non-HTTPS or
-  non-Streamable-HTTP remote, a stdio `packages` block, an unknown `status`, or a missing locale;
+- an entry that does not validate against the entry schema: an unknown key, a non-HTTPS remote, an
+  unknown package registry type, an unknown `status`, a missing locale, or neither `packages` nor
+  `remotes`;
+- a package whose named argument has no name, whose secret carries a value or default, whose
+  credential-looking variable is not marked secret, or whose value looks like a credential;
 - an `auth.default_kind` that is not in `auth.methods`, or an `oauth` method without an `auth.oauth`
   block (and the reverse);
 - a `risk.side_effects` weaker than the strongest tool side effect, or a duplicate tool name;
@@ -1287,8 +1290,12 @@ The generator refuses, at build time, at minimum:
 - an entry whose referenced icon file does not exist;
 - a compiled module that does not match its sources.
 
-Only remote Streamable HTTP Servers may be listed: OpenTag is a hosted service and cannot run a user's
-local stdio subprocess.
+Only a Server with a remote Streamable HTTP endpoint is **installable**. An entry may also record
+self-hosted `packages` (stdio and similar) as catalog data: the deployment has sandboxes, but the
+Server create contract and runtime do not run packages yet, so such an entry is emitted with
+`installable: false`, carries no flat connection fields, is withheld from Discover and URL matching,
+and is exposed read-only in the public catalog (with package values and defaults omitted). An SSE
+remote is data only as well. This document's Server-create contract is unchanged.
 
 **Staleness is not asserted by `pnpm check`.** Whether a listed endpoint still answers, and whether its
 authorization method is still what the catalog says, cannot be decided without the public network, and

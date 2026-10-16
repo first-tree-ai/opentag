@@ -38,9 +38,11 @@ blog post, a client configuration in another project, or from memory.
 
 Rules:
 
-- List remote Streamable HTTP Servers only. Reject a stdio package (`npx …`, `mcp-remote …`), an
-  SSE-only or deprecated fallback path such as `/sse`, and anything that needs a local subprocess:
-  OpenTag is a hosted service and cannot run one on a user's machine.
+- Prefer the provider's remote Streamable HTTP endpoint: only an entry with one is installable and
+  shown as an addable card in Discover. A self-hosted stdio package (`npx …`, `uvx …`, `docker …`)
+  may be recorded under `packages` as data, but it is **not yet installable**: the Server create
+  contract and the runtime do not run packages, so a packages-only entry never appears as a card.
+  An SSE remote (`/sse`) is likewise data only. Do not list `mcp-remote …` wrappers.
 - List the provider's primary endpoint once. Do not add a read-only or legacy variant beside it.
 - `auth.default_kind` is a prefill for a new authorization, never a statement about what the Server
   requires. The card uses it to pick the shortest finishing step, so it must match the method that
@@ -111,9 +113,16 @@ The entry is validated against `packages/mcp-presets/schema/mcp-catalog-entry.sc
 - `name`, `summary`, and `when_to_use` must supply every locale listed in
   `apps/web/project.inlang/settings.json` (currently `en` and `zh`) and no other. A missing locale is
   a build failure, not a fallback.
-- `remotes[0].url` must be an absolute `https` URL with no credentials and no fragment. The generator
-  refuses plain HTTP and every loopback host, and the schema allows `streamable-http` only: a stdio
-  `packages` block or an SSE remote is rejected.
+- An entry needs `packages`, `remotes`, or both. Every remote `url` must be an absolute `https` URL
+  with no credentials and no fragment; the generator refuses plain HTTP and every loopback host.
+  Remote `type` is `streamable-http` or `sse`; only the first `streamable-http` remote makes the
+  entry installable and supplies the flat connection fields.
+- `packages[]` records `registry_type` (`npm`, `pypi`, `oci`, `nuget`, `mcpb`), `identifier`,
+  `version`, `transport` (`stdio` or `streamable-http`), an optional `runtime_hint` that must match
+  the registry type (`npx`, `uvx`, `docker`, `dnx`), `package_arguments`, and
+  `environment_variables`. A `named` argument needs a `name`; a secret carries no `value` or
+  `default`; a variable named like a credential must be `is_secret: true`; and no value may look like
+  a credential. Add `prerequisites` and `platforms` (`linux`, `macos`, `windows`) when they apply.
 - `homepage` is an absolute `http(s)` URL; it is the provider's site, linked from the card.
 - `catalog.order` is a finite number placing the entry within its category. Read the neighbours and
   keep the gaps you find there.
@@ -175,8 +184,10 @@ flow.
 - an entry that names a category the category source does not declare;
 - a declared category that no entry references;
 - a duplicate entry or category id;
-- an entry that does not validate against the entry schema (unknown key, bad status, non-HTTPS or
-  non-Streamable-HTTP remote, stdio `packages`);
+- an entry that does not validate against the entry schema (unknown key, bad status, non-HTTPS
+  remote, an unknown registry type, or neither `packages` nor `remotes`);
+- a package whose named argument has no name, whose secret carries a value or default, whose
+  credential-looking variable is not secret, or whose value looks like a credential;
 - an `auth.default_kind` outside `auth.methods`, or an `oauth` method without an `auth.oauth` block;
 - a `risk.side_effects` weaker than a listed tool;
 - an `auth.oauth.scopes` list that is empty, carries a blank or oversized scope, or exceeds the start

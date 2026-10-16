@@ -19,6 +19,7 @@ import { RuntimeProxyDataError } from "../runtime/runtime-proxy-data-client.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { buildRuntimeProxyEnvironment, RuntimeProxyMaterialStore } from "../runtime/runtime-proxy-material.js";
 import { cloudEntryFixture } from "./support/cloud-entry-fixture.js";
+import { nativeGhLogsResponse } from "./support/native-gh-logs-fixture.js";
 
 const binary = process.env.OPENTAG_TEST_GH_BINARY;
 const run = promisify(execFile);
@@ -286,8 +287,10 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
       logger: { debug() {}, warn() {} },
       openStream: async (request) => {
         expect(request.headers["x-opentag-provider-origin"]).toBe("api.github.com");
-        hits++;
         paths.push(request.path);
+        const logs = nativeGhLogsResponse(request.path);
+        if (logs) return logs;
+        hits++;
         return {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -327,7 +330,7 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
           fixtureEntry,
           "sh",
           "-c",
-          'PATH="$1:$2:$PATH"; export PATH; test ! -w "$GH_CONFIG_DIR/config.yml" || exit 97; gh api repos/team/fixture --jq tojson || exit "$?"; shift 2; for suffix in "$@"; do gh api "repos/team/fixture/$suffix" --jq tojson || exit "$?"; done; gh run list -R team/fixture --branch main --commit 1111111111111111111111111111111111111111 --limit 1 --json databaseId,headSha,workflowName --jq tojson',
+          'PATH="$1:$2:$PATH"; export PATH; test ! -w "$GH_CONFIG_DIR/config.yml" || exit 97; gh api repos/team/fixture --jq tojson || exit "$?"; shift 2; for suffix in "$@"; do gh api "repos/team/fixture/$suffix" --jq tojson || exit "$?"; done; gh run list -R team/fixture --branch main --commit 1111111111111111111111111111111111111111 --limit 1 --json databaseId,headSha,workflowName --jq tojson || exit "$?"; test -z "$XDG_CACHE_HOME" || exit 98; gh run view 7 -R team/fixture --log && gh run view 7 -R team/fixture --log',
           "fixture",
           join(published, "bin"),
           dirname(binary as string),
@@ -340,6 +343,7 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
       const responses = result.stdout
         .trim()
         .split("\n")
+        .slice(0, 5)
         .map((line) => JSON.parse(line));
       expect(responses).toEqual([
         { name: "cloud-fixture" },
@@ -354,11 +358,17 @@ describe.skipIf(!binary || process.platform !== "linux")("native gh Cloud publis
       expect(
         paths.some((path) => new URL(path, "https://api.github.com").searchParams.get("head_sha") === "1".repeat(40)),
       ).toBe(true);
+      expect(result.stdout.match(/native-gh-cache-ok/g)).toHaveLength(2);
+      expect(paths.filter((path) => path.endsWith("/runs/7/logs"))).toHaveLength(1);
+      expect(await readdir(join(root, "sandbox-home", ".cache", "gh"))).toEqual([
+        expect.stringMatching(/^run-log-7-.*\.zip$/),
+      ]);
       expect(await readFile(ghConfig, "utf8")).toBe(initialConfig);
       expect(await readdir(dirname(ghConfig))).toEqual(["config.yml"]);
       const manifest = await readFile(join(published, "environment.json"), "utf8");
       expect(manifest).not.toContain(join(root, "private"));
       expect(manifest).not.toContain("http_unix_socket");
+      expect(manifest).not.toContain("CACHE_HOME");
     } finally {
       await closeBridgeSockets(resources);
       await adapter.close();

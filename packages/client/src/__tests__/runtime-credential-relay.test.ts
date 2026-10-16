@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import { RuntimeCredentialEnvironmentManager } from "../runtime/runtime-credential-environment-manager.js";
@@ -726,6 +726,8 @@ describe("RuntimeCredentialEnvironmentManager", () => {
         expect(envFile).not.toContain(CAPABILITY_1);
         expect(envFile).not.toContain("export GITHUB_TOKEN=");
         expect(environment).not.toHaveProperty("GH_REPO");
+        expect(environment).not.toHaveProperty("XDG_CACHE_HOME");
+        expect(await readFile(prepared.environmentManifest as string, "utf8")).not.toContain("CACHE_HOME");
         // The Agent runtime env stays scoped: only the standard provider CLI variables may turn
         // these routing inputs into a proxy/CA, and the sourced env file does exactly that.
         expect(environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -877,22 +879,117 @@ describe("RuntimeCredentialEnvironmentManager", () => {
     };
     const firstPrepared = await manager.prepare(subject);
     expect(firstPrepared.executionId).toBe(EXECUTION_ID);
+    const firstCache = join(dirname(firstPrepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+    await mkdir(firstCache, { recursive: true });
+    await writeFile(join(firstCache, "run-log.zip"), "old cache");
     const secondPrepared = await manager.prepare(subject);
     expect(secondPrepared.executionId).toBe("99999999-9999-4999-8999-999999999999");
+    await expect(stat(firstCache)).rejects.toMatchObject({ code: "ENOENT" });
+    const secondCache = join(dirname(secondPrepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+    await mkdir(secondCache, { recursive: true });
+    await writeFile(join(secondCache, "run-log.zip"), "new cache");
 
     // A stale cleanup for the replaced execution must leave the successor material alone.
     await manager.cleanup("session-1", EXECUTION_ID);
     const successorEnv = await readFile(secondPrepared.path, "utf8");
     expect(successorEnv).toContain("otrh_");
     expect(manager.executionIdForSession("session-1")).toBe(secondPrepared.executionId);
+    expect(await readFile(join(secondCache, "run-log.zip"), "utf8")).toBe("new cache");
 
     await manager.cleanup("session-1", secondPrepared.executionId);
     await expect(stat(secondPrepared.path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(secondCache)).rejects.toMatchObject({ code: "ENOENT" });
     await manager.close();
+  });
+
+  it.each(["revocation", "shutdown"])("removes the Local gh cache on %s", async (reason) => {
+    const home = await temporaryHome();
+    const harness = relayHarness({ providers: ["github"] });
+    const manager = new RuntimeCredentialEnvironmentManager({
+      connection: harness.connection,
+      dataConnectionFactory: harness.relayOptions.dataConnectionFactory,
+      home,
+      logger: { debug() {}, warn() {} },
+      mode: "proxy",
+      now: harness.relayOptions.now,
+      platform: "linux",
+      serverUrl: "https://runtime.example",
+    });
+    try {
+      const prepared = await manager.prepare({
+        sessionId: "cache-session",
+        agentId: "agent-1",
+        placementGeneration: 1,
+        run: { runId: randomUUID(), source: { kind: "delivery", deliveryId: "d", turnId: randomUUID() } },
+      });
+      const cache = join(dirname(prepared.allowedUnixSockets?.[0] as string), "cache", "gh");
+      await mkdir(cache, { recursive: true });
+      await writeFile(join(cache, "run-log.zip"), "fixture cache");
+      if (reason === "revocation")
+        harness.connection.emit({ type: "runtime:credential:revoked", executionId: EXECUTION_ID, code: "owner_lost" });
+      else await manager.close();
+      await expect
+        .poll(async () =>
+          stat(cache).then(
+            () => true,
+            () => false,
+          ),
+        )
+        .toBe(false);
+      expect(prepared.signal?.aborted).toBe(true);
+    } finally {
+      await manager.close();
+    }
   });
 });
 
 describe("runtime proxy material", () => {
+  it.each(["local", "no-socket", "no-grant"])(
+    "scopes the published gh cache without changing caller or Git environment: %s",
+    async (mode) => {
+      const home = await temporaryHome();
+      const store = new RuntimeProxyMaterialStore({ home });
+      const sessionId = randomUUID();
+      const realBin = join(home, "real-bin");
+      await mkdir(realBin);
+      for (const name of ["git", "gh"]) {
+        await writeFile(join(realBin, name), '#!/bin/sh\nprintf "%s|%s\\n" "$XDG_CACHE_HOME" "$HOME"\n', {
+          mode: 0o700,
+        });
+      }
+      const socket = join(home, "socket-dir", "g.sock");
+      await store.publish({
+        sessionId,
+        executionId: EXECUTION_ID,
+        adapterCaCertPath: join(home, "ca.pem"),
+        environment: {},
+        platform: process.platform,
+        handles: mode === "no-grant" ? new Map() : new Map([["github", "otrh_fixture"]]),
+        ...(mode === "no-socket" ? {} : { githubApiSocketPath: socket }),
+      });
+      const result = await runWithInput(
+        "/bin/sh",
+        ["-c", 'gh --version; git status; printf "%s|%s\\n" "$XDG_CACHE_HOME" "$HOME"'],
+        "",
+        {
+          env: {
+            PATH: `${store.shimDir(sessionId)}:${realBin}:/usr/bin:/bin`,
+            HOME: home,
+            XDG_CACHE_HOME: "/caller-cache",
+            OPENTAG_GH_CACHE_HOME: "/stale-cache",
+          },
+        },
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout.trim().split("\n")).toEqual([
+        `${mode === "local" ? join(dirname(socket), "cache") : "/caller-cache"}|${home}`,
+        `/caller-cache|${home}`,
+        `/caller-cache|${home}`,
+      ]);
+      expect(await readFile(store.manifestPath(sessionId), "utf8")).not.toContain("CACHE_HOME");
+    },
+  );
+
   it("builds an execution environment with handles and CA only", () => {
     const environment = buildRuntimeProxyEnvironment({
       adapterCaCertPath: "/exec/loopback-ca.pem",

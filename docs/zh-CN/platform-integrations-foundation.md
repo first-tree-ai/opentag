@@ -2,7 +2,7 @@
 
 [English](../platform-integrations-foundation.md)
 
-> Last synced with: 2026-10-15
+> Last synced with: 2026-10-16
 
 OpenTag 自己管理 GitHub App、Slack 与飞书凭证。Server 组合集成管理、执行授权、短期凭证能力和平台代理；可信 Runner 向原生 CLI 进程提供 execution-local handle。
 
@@ -81,6 +81,8 @@ Local 原生 Git 2.47+ 使用 libcurl 的 `socks5h://localhost/path/to/socket` �
 Git 启动器把注入的 `GIT_SSL_CAINFO`/`GIT_SSL_CAPATH` 转为通用 Git 配置，再清除环境覆盖。非 GitHub origin 保留调用方的 CA 文件/目录；GitHub HTTPS 使用更具体的 execution CA 和 CA 目录。HTTPS CONNECT/Cloud 通道继续启用 TLS 校验。
 
 生成的 `gh` 配置在发布前写入当前 schema 版本，包括 Cloud 只读挂载中的配置，避免 `gh --version` 等命令在启动时迁移写盘。限制网络的 Local Codex 执行只通过已确认加载的临时权限 profile 获得本次 GitHub Unix socket 例外；托管网络控制器使用 limited 模式，不允许任何域名或本地 TCP 绑定，其他 socket 和直接 TCP 仍被拒绝。socket 例外随 execution 轮换，下一次无 GitHub 执行前移除。不支持权限 profile 的 Codex 会拒绝执行，不在未经确认的沙箱中继续。GitHub 流打开失败保留有界原因码并返回 JSON，例如 `scope_denied` 对应 HTTP 403；未知错误仍返回 503，不返回原始错误。
+
+仅 Local 托管 `gh` 子进程设置 `XDG_CACHE_HOME`，指向已有私有 socket 临时目录内部。原生日志缓存可在同次 execution 内复用，并由适配器既有关闭流程删除，包括替换 execution 和撤权时。Agent 环境、Git 和其他 CLI 保留各自缓存设置。Cloud 沿用 scratch HOME 及现有清理机制；不将缓存纳入工作区连续性，也不增加独立缓存管理层。
 
 Checks、Actions、Commit statuses、PR 及其他 GitHub 业务 API 使用同一连接用户令牌。App 和安装必须授予操作所需权限；代理不扩权、不把权限失败转换成成功。公开读取不能证明私库权限，必须另外验收。令牌派生仅保留于独立的 Tree 设置校验。
 

@@ -233,7 +233,15 @@ if [ ! -r '${environmentFilePath.replaceAll("'", "'\"'\"'")}' ]; then
   exit 1
 fi
 . '${environmentFilePath.replaceAll("'", "'\"'\"'")}'
-${binary === "git" ? renderRuntimeProxyGitPreamble() : ""}exec "$real_binary" "$@"
+${
+  binary === "gh"
+    ? `if [ -n "$OPENTAG_GH_CACHE_HOME" ]; then
+  XDG_CACHE_HOME=$OPENTAG_GH_CACHE_HOME
+  export XDG_CACHE_HOME
+fi
+`
+    : ""
+}${binary === "git" ? renderRuntimeProxyGitPreamble() : ""}exec "$real_binary" "$@"
 `;
 }
 
@@ -428,7 +436,19 @@ export class RuntimeProxyMaterialStore {
       );
       await chmod(layout.gitCredentialHelperPath, 0o700);
     }
-    const serialized = serializeEnvironment({ ...input.environment, ...routing }, input.platform);
+    const serialized = serializeEnvironment(
+      {
+        ...input.environment,
+        ...routing,
+        // Only the Local gh shim consumes this pointer. Reuse the adapter's private temporary
+        // directory and close cleanup; never redirect the Agent's or another CLI's cache.
+        OPENTAG_GH_CACHE_HOME:
+          github !== undefined && input.githubApiSocketPath
+            ? join(dirname(input.githubApiSocketPath), "cache")
+            : undefined,
+      },
+      input.platform,
+    );
     const marked = `${EXECUTION_MARKER_PREFIX}${input.executionId}\n${serialized}`;
     await writeDurableFile(this.environmentFilePath(input.sessionId), marked, 0o600);
     // JSON has no `undefined`: unset markers serialize as null and the launcher deletes them.

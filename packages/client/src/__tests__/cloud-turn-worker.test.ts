@@ -687,15 +687,20 @@ describe("cloud-turn-worker", () => {
       fileContent?: string;
       fileMode?: number;
       inputText?: string;
+      ghCache?: string;
     } = {};
     const createPiFactory = (input: { environment: Record<string, string> }): CloudTurnPiFactory => {
       observed.environmentFile = input.environment.OPENTAG_PROVIDER_ENV_FILE;
+      expect(input.environment.XDG_CACHE_HOME).toBeUndefined();
+      observed.ghCache = join(input.environment.HOME as string, ".cache", "gh");
       return {
         create: async () =>
           ({
             close: async () => undefined,
             prompt: async (request: AgentPromptRequest) => {
               observed.inputText = request.input.items.map((item) => item.text).join("\n");
+              await mkdir(observed.ghCache as string, { recursive: true });
+              await writeFile(join(observed.ghCache as string, "run-log.zip"), "fixture cache");
               if (observed.environmentFile) {
                 observed.fileContent = await readFile(observed.environmentFile, "utf8");
                 observed.fileMode = (await stat(observed.environmentFile)).mode & 0o777;
@@ -731,6 +736,8 @@ describe("cloud-turn-worker", () => {
     // The per-turn secret file is scratch-only: never part of the persistent Pi continuity dir.
     expect(observed.environmentFile?.startsWith(continuity)).toBe(false);
     await expect(stat(observed.environmentFile as string)).rejects.toThrow();
+    expect(observed.ghCache?.startsWith(continuity)).toBe(false);
+    await expect(stat(observed.ghCache as string)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("never starts Pi when the execution deadline fires during Context Tree preparation", async () => {
@@ -837,6 +844,7 @@ describe("cloud-turn-worker", () => {
     const executionDir = await fixtureExecution(root, "turn-1");
     const controller = new AbortController();
     let child: ChildProcess | undefined;
+    let ghCache: string | undefined;
     let markPromptStarted: () => void = () => undefined;
     const promptStarted = new Promise<void>((resolve) => {
       markPromptStarted = resolve;
@@ -851,6 +859,10 @@ describe("cloud-turn-worker", () => {
       sessionDirectory: string;
     }): CloudTurnPiFactory => ({
       create: async () => {
+        expect(input.environment.XDG_CACHE_HOME).toBeUndefined();
+        ghCache = join(input.environment.HOME as string, ".cache", "gh");
+        await mkdir(ghCache, { recursive: true });
+        await writeFile(join(ghCache, "run-log.zip"), "cancelled fixture cache");
         const spawnedChild = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], {
           stdio: "ignore",
         });
@@ -892,6 +904,7 @@ describe("cloud-turn-worker", () => {
     expect(child?.signalCode ?? (child?.exitCode === null ? null : "exited")).toBe("SIGTERM");
     expect(completion.outcome).toBe("cancelled");
     expect(completion.errorReason).toBe("client_shutdown");
+    await expect(stat(ghCache as string)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

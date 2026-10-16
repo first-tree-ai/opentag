@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { checkOutboundUrl } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
-import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES } from "../index.js";
+import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, validateMcpCatalog } from "../index.js";
 
 describe("mcp preset catalog shape", () => {
   it("exposes a non-empty category list in strict order", () => {
@@ -71,5 +72,24 @@ describe("mcp preset catalog shape", () => {
     const source = await readFile(new URL("../../mcp-catalog.yaml", import.meta.url), "utf8");
     expect(source).toContain("client_secret_post");
     expect(source).toContain("Amplitude's authorization remains unverified");
+  });
+
+  it("validates every entry against the Server create schema and card rules", () => {
+    expect(validateMcpCatalog(MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES)).toEqual([]);
+  });
+
+  it("points every entry at an endpoint the outbound gate would dial", () => {
+    for (const entry of MCP_CATALOG_ENTRIES) {
+      const verdict = checkOutboundUrl(entry.url, { allowLoopback: false });
+      expect(verdict, entry.id).not.toHaveProperty("failure");
+    }
+  });
+
+  it("reports violations for a malformed entry", () => {
+    const base = MCP_CATALOG_ENTRIES[0];
+    if (!base) throw new Error("catalog is empty");
+    const bad = { ...base, name: "Bad Name", category: "missing", website: "ftp://x", oauthScopes: [] };
+    const fields = validateMcpCatalog(MCP_CATALOG_CATEGORIES, [bad]).map((v) => v.field);
+    expect(fields).toEqual(expect.arrayContaining(["name", "category", "website", "oauthScopes"]));
   });
 });

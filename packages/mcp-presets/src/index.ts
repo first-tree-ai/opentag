@@ -15,3 +15,4 @@ export {
   type McpCatalogLocale,
   type McpCatalogLocalizedText,
 } from "./mcp-catalog.gen.js";
+export { type McpCatalogViolation, validateMcpCatalog, validateMcpCatalogEntry } from "./validate.js";

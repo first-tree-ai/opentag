@@ -261,6 +261,7 @@ export class RunnerConnection {
    * ---------------------------------------------------------------------------------------- */
 
   #wantsTurnActivity = false;
+  #wantsGithubUserTask = false;
 
   async #handleAuth(
     token: string,
@@ -526,6 +527,7 @@ export class RunnerConnection {
         // E8: gated on the explicit auth opt-in, so a legacy E7 Runner's fence record never
         // receives a Session-CLI proof field or a session:message frame.
         sessionCollaborationVersion: sessionCollaborationVersion || undefined,
+        githubUserTaskVersion: this.#githubUserTaskVersion(),
         turnActivityVersion: this.#wantsTurnActivity ? 1 : undefined,
       });
     }
@@ -536,6 +538,7 @@ export class RunnerConnection {
         control,
         fence,
         sessionCollaborationVersion,
+        githubUserTaskVersion: this.#githubUserTaskVersion(),
         validated,
         workspaceNegotiated,
       }),
@@ -568,11 +571,16 @@ export class RunnerConnection {
    * The exact legacy E3 welcome shape for a connection that did not opt into a capability: only
    * negotiated capabilities and the verified allocation UID are additive fields.
    */
+  #githubUserTaskVersion(): 1 | undefined {
+    return this.#wantsGithubUserTask ? 1 : undefined;
+  }
+
   #welcomeFrame(input: {
     cloudNegotiated: boolean;
     control: { reuseCapable: boolean } | undefined;
     fence: { resourceUid: string | null } | undefined;
     sessionCollaborationVersion: 0 | 1 | 2;
+    githubUserTaskVersion?: 1;
     validated: RunnerScope;
     workspaceNegotiated: boolean;
   }): RunnerServerFrame {
@@ -588,6 +596,7 @@ export class RunnerConnection {
       ...(input.cloudNegotiated && input.fence?.resourceUid ? { resourceUid: input.fence.resourceUid } : {}),
       ...(input.workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
       ...(input.control?.reuseCapable === true ? { reuseVersion: RUNNER_REUSE_VERSION } : {}),
+      ...(input.githubUserTaskVersion ? { githubUserTaskVersion: input.githubUserTaskVersion } : {}),
       ...(input.sessionCollaborationVersion ? { sessionCollaborationVersion: input.sessionCollaborationVersion } : {}),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       heartbeatTimeoutMs: this.#heartbeatTimeoutMs,
@@ -1078,6 +1087,7 @@ export class RunnerConnection {
     // capability and keeps the exact legacy welcome/behavior, and an E7 Runner that does not send
     // the E8 request never receives a Session-collaboration field or frame.
     this.#wantsTurnActivity = data.turnActivityVersion === 1;
+    this.#wantsGithubUserTask = data.githubUserTaskVersion === 1;
     await this.#handleAuth(
       data.token,
       data.requestId,

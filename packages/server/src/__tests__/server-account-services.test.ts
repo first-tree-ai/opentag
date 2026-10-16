@@ -29,7 +29,6 @@ import {
   PostAuthenticationService,
 } from "../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../services/computers/index.js";
-import { rejectUnsupportedClientVersion } from "../services/computers/machine-auth-service.js";
 import {
   projectComputerImCliReadiness,
   projectComputerProviderReadiness,
@@ -293,7 +292,7 @@ describe("machine authentication and Computer services", () => {
   it("issues and exchanges create codes, rotates credentials, and verifies machine tokens", async () => {
     const value = await machineFixture();
     const installationId = randomUUID();
-    const exchange = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code, installationId));
+    const exchange = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code, installationId, "0.0.1"));
     expect(exchange).toMatchObject({
       computerId: expect.any(String),
       installationId,
@@ -642,9 +641,6 @@ describe("machine authentication and Computer services", () => {
       code: "AUTH_INVALID_CODE",
     });
     await expect(
-      value.machine.exchangeConnectCode(exchangeInput(value.issued.code, randomUUID(), "0.0.1")),
-    ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED" });
-    await expect(
       value.machine.exchangeConnectCode(exchangeInput(value.issued.code, target.computerId as TestUuid)),
     ).rejects.toMatchObject({ code: "AUTH_CODE_CONSUMED" });
     const fresh = await value.machine.issueForAccount(value.bootstrap.userId, {});
@@ -902,7 +898,6 @@ describe("machine authentication and Computer services", () => {
     expect(projectComputerImCliReadiness("c", "online", observed, source)).toEqual([
       { provider: "feishu", status: "ready", observedAt: observed.toISOString() },
     ]);
-    expect(() => rejectUnsupportedClientVersion("0.0.1")).toThrow(AuthServiceError);
   });
 
   it("answers the exact target Agent runtime provider to marked Clients and keeps the legacy strict shape for unmarked ones", async () => {

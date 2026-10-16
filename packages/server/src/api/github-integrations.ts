@@ -14,6 +14,7 @@ import {
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_BINDINGS_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
+  GITHUB_INTEGRATION_INSTALLATION_PATH,
   GITHUB_INTEGRATION_PATH,
   GITHUB_INTEGRATION_REPOSITORIES_PATH,
   GITHUB_OAUTH_CALLBACK_PATH,
@@ -30,7 +31,6 @@ import {
   GitHubRepositoryDiscoveryQuerySchema,
   StartGitHubAuthorizationRequestSchema,
   StartGitHubAuthorizationResponseSchema,
-  UpdateGitHubConnectionBindingsRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -49,6 +49,10 @@ import {
   type GitHubManagementService,
   type GitHubWebhookService,
 } from "../services/github/index.js";
+import {
+  type GitHubInstallationTokenClient,
+  GitHubInstallationTokenError,
+} from "../services/github/installation-token-client.js";
 import { parseRequest } from "./request-validation.js";
 
 /** The HttpOnly login-session proof carried through the OAuth round trip; only its hash persists. */
@@ -82,6 +86,8 @@ export interface GitHubIntegrationsRouteOptions {
   availability: GitHubIntegrationAvailability;
   /** Present exactly when the deployment GitHub App is configured. */
   management?: GitHubManagementService;
+  /** Server-only App metadata lookup; its private key and JWT never reach the browser. */
+  installation?: Pick<GitHubInstallationTokenClient, "installationUrl">;
   webhook?: GitHubWebhookService;
 }
 
@@ -147,6 +153,7 @@ function publicErrorCode(error: unknown): string {
 export function registerGitHubIntegrationsRoutes(app: FastifyInstance, options: GitHubIntegrationsRouteOptions): void {
   const preHandler = createUserAuthPreHandler(options.authService, options.authOptions ?? {});
   const logger = createServiceLoggerPort(() => app.log, "github-integrations");
+  registerGitHubInstallationRoute(app, options, preHandler);
 
   app.get(GITHUB_INTEGRATION_PATH, { preHandler }, async (request, reply) => {
     if (!options.management) {
@@ -189,12 +196,10 @@ export function registerGitHubIntegrationsRoutes(app: FastifyInstance, options: 
     return reply.code(200).send(GitHubRepositoryDiscoveryPageSchema.parse(page));
   });
 
-  app.put(GITHUB_INTEGRATION_BINDINGS_PATH, { preHandler }, async (request, reply) => {
-    if (!options.management) throw unavailable();
-    const input = parseRequest(UpdateGitHubConnectionBindingsRequestSchema, request.body ?? {});
-    const status = await options.management.updateBindings(authenticatedUserId(request), input);
-    return reply.code(200).send(GitHubConnectionStatusSchema.parse(status));
-  });
+  // Retired clients must not mutate the retained historical repository configuration.
+  app.put(GITHUB_INTEGRATION_BINDINGS_PATH, { preHandler }, async (_request, reply) =>
+    reply.code(410).send({ code: "GITHUB_REPOSITORY_CONFIGURATION_RETIRED" }),
+  );
 
   app.post(GITHUB_INTEGRATION_DISCONNECT_PATH, { preHandler }, async (request, reply) => {
     if (!options.management) throw unavailable();
@@ -320,6 +325,28 @@ export function registerGitHubIntegrationsRoutes(app: FastifyInstance, options: 
       });
     });
   }
+}
+
+function registerGitHubInstallationRoute(
+  app: FastifyInstance,
+  options: GitHubIntegrationsRouteOptions,
+  preHandler: ReturnType<typeof createUserAuthPreHandler>,
+): void {
+  app.get(GITHUB_INTEGRATION_INSTALLATION_PATH, { preHandler }, async (_request, reply) => {
+    if (!options.installation) throw unavailable();
+    try {
+      const url = await options.installation.installationUrl();
+      return reply.header("cache-control", "no-store").redirect(url, 302);
+    } catch (error) {
+      const rateLimited = error instanceof GitHubInstallationTokenError && error.code === "GITHUB_API_RATE_LIMITED";
+      throw new GitHubConnectionServiceError(
+        rateLimited ? GITHUB_CONNECTION_ERROR_CODES.RATE_LIMITED : GITHUB_CONNECTION_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+        rateLimited ? 429 : 503,
+        "The GitHub App installation page could not be resolved; try again",
+        "transient",
+      );
+    }
+  });
 }
 
 function firstHeader(value: string | string[] | undefined): string | undefined {

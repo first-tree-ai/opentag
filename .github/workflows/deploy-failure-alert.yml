@@ -1,0 +1,75 @@
+name: Deploy Failure Alert
+
+# Posts one Feishu card when a deployment run fails. It watches the deploy workflows from the
+# outside instead of adding a job to each of them, so the deploy jobs keep their own permissions,
+# the webhook secret never reaches a job that holds deployment credentials, and a run that fails
+# before any job starts (startup_failure) is still reported.
+#
+# Docker is deliberately not watched: Deploy Staging waits for the Server image of its revision,
+# so a failed image build already fails that run, and the alert names the Docker run as the cause.
+#
+# `workflow_run` matches by workflow `name:` and GitHub stops a `workflow_run` chain after three
+# levels. CI -> npm Publish -> Deploy Staging -> this workflow is already the third level, so adding
+# another `workflow_run` hop before Deploy Staging silently disables its alerts.
+on:
+  workflow_run:
+    workflows:
+      - npm Publish
+      - Deploy Staging
+      - Deploy Runner
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run id of a watched deploy workflow; sends a rehearsal card to verify the webhook"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: Notify Feishu
+    if: >-
+      github.repository == 'first-tree-ai/opentag' &&
+      ((github.event_name == 'workflow_run' &&
+        contains(fromJSON('["failure","timed_out","startup_failure"]'), github.event.workflow_run.conclusion) &&
+        github.event.workflow_run.event != 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Read the failed jobs and steps of the deploy run, and the Docker run of the same commit.
+      actions: read
+    steps:
+      # For workflow_run this is the default branch, never code from the run being reported.
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # The script imports only node: builtins, so there is nothing to install.
+      - name: Send the deploy failure alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.run_id }}
+          REHEARSAL: ${{ github.event_name == 'workflow_dispatch' }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_DEPLOY_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_DEPLOY_WEBHOOK_SECRET }}
+          DEPLOY_ALERT_LOG_LEVEL: ${{ runner.debug == '1' && 'debug' || 'info' }}
+        run: |
+          set -euo pipefail
+          if [ "$REHEARSAL" = "true" ]; then
+            node scripts/deploy-failure-alert.mjs --run-id "$RUN_ID" --rehearsal
+          else
+            node scripts/deploy-failure-alert.mjs --run-id "$RUN_ID"
+          fi

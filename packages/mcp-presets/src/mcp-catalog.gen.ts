@@ -10,6 +10,12 @@ export type McpCatalogLocale = "en" | "zh";
 /** Card and tab copy. Every supported locale is required, so a card never falls back silently. */
 export type McpCatalogLocalizedText = Record<McpCatalogLocale, string>;
 
+/** The ordering of a tool's or a Server's strongest effect. */
+export type McpCatalogSideEffect = "none" | "write" | "destructive";
+
+/** Whether an entry is offered. `removed` entries are never emitted. */
+export type McpCatalogStatus = "active" | "deprecated" | "archived";
+
 /** The card marks, embedded as data URLs: one declaration per distinct icon file. */
 export const MCP_CATALOG_ICON_URLS = {
   "airtable.png":
@@ -72,13 +78,62 @@ export type McpCatalogCategory = {
   order: number;
 };
 
+export type McpCatalogTool = {
+  name: string;
+  description?: string;
+  sideEffect: McpCatalogSideEffect;
+};
+
+export type McpCatalogRemote = {
+  type: "streamable-http" | "sse";
+  url: string;
+};
+
+export type McpCatalogPackageArgument = {
+  type: "positional" | "named";
+  name?: string;
+  value?: string;
+  default?: string;
+  description?: string;
+  isRequired?: boolean;
+  isSecret?: boolean;
+};
+
+export type McpCatalogEnvironmentVariable = {
+  name: string;
+  value?: string;
+  default?: string;
+  description?: string;
+  isRequired?: boolean;
+  isSecret?: boolean;
+};
+
+export type McpCatalogPlatform = "linux" | "macos" | "windows";
+
+export type McpCatalogPackage = {
+  registryType: "npm" | "pypi" | "oci" | "nuget" | "mcpb";
+  identifier: string;
+  version: string;
+  runtimeHint?: "npx" | "uvx" | "docker" | "dnx";
+  transport: "stdio" | "streamable-http";
+  packageArguments?: McpCatalogPackageArgument[];
+  environmentVariables?: McpCatalogEnvironmentVariable[];
+};
+
 export type McpCatalogEntry = {
+  /** The slug: the Server definition name and the card id the Web App keys on. */
   id: string;
+  /** The registry identity, `mcp/<slug>`. */
+  registryId: string;
   name: string;
   title: McpCatalogLocalizedText;
   description: McpCatalogLocalizedText;
-  url: string;
-  defaultAuthKind: MCPAuthKind;
+  whenToUse: McpCatalogLocalizedText;
+  /** True when the entry has a streamable-http remote the Server accepts; only these are addable. */
+  installable: boolean;
+  /** The flat connection fields below are present exactly when `installable` is true. */
+  url?: string;
+  defaultAuthKind?: MCPAuthKind;
   authHeader?: string;
   authScheme?: string;
   extraHeaders?: Record<string, string>;
@@ -88,39 +143,505 @@ export type McpCatalogEntry = {
   iconUrl: string;
   iconIsOfficial?: boolean;
   order: number;
+  status: McpCatalogStatus;
+  capabilities: string[];
+  keywords?: string[];
+  aliases?: string[];
+  tags?: string[];
+  auth: {
+    methods: MCPAuthKind[];
+    defaultKind: MCPAuthKind;
+    oauth?: { scopes?: string[] };
+  };
+  risk: {
+    sideEffects: McpCatalogSideEffect;
+    dataAccess: "public" | "private";
+    notes?: McpCatalogLocalizedText;
+  };
+  tools?: McpCatalogTool[];
+  remotes?: McpCatalogRemote[];
+  packages?: McpCatalogPackage[];
+  prerequisites?: string[];
+  platforms?: McpCatalogPlatform[];
+  repository?: string;
+  license?: string;
+  maintainers?: string[];
 };
+
+/** An entry a card may offer to add: it has the remote endpoint the Server create contract accepts. */
+export type McpInstallableCatalogEntry = McpCatalogEntry & {
+  installable: true;
+  url: string;
+  defaultAuthKind: MCPAuthKind;
+};
+
+/** The JSON Schema every source entry was validated against, with the supported locales injected. */
+export const MCP_CATALOG_ENTRY_SCHEMA = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "packages/mcp-presets/schema/mcp-catalog-entry.schema.json",
+  title: "OpenTag MCP catalog entry",
+  description:
+    "One MCP Server in the OpenTag marketplace catalog. The generator injects the supported locales into `$defs.localizedText` from apps/web/project.inlang/settings.json and runs the cross-field checks this schema cannot express. An entry lists `packages` (self-hosted, run in a sandbox), `remotes` (hosted endpoints), or both. Only an entry with a streamable-http remote is installable today; packages are data. When `oauth` is an auth method the generator requires an `auth.oauth` block; its `scopes` are optional.",
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "schema_version",
+    "id",
+    "kind",
+    "name",
+    "summary",
+    "when_to_use",
+    "capabilities",
+    "status",
+    "auth",
+    "risk",
+    "catalog",
+    "homepage",
+  ],
+  properties: {
+    schema_version: {
+      const: 1,
+    },
+    id: {
+      description: "Registry identity. The slug after `mcp/` is the Server definition name and the card id.",
+      type: "string",
+      pattern: "^mcp/[a-z][a-z0-9-]*$",
+      maxLength: 64,
+    },
+    kind: {
+      const: "mcp",
+    },
+    name: {
+      $ref: "#/$defs/localizedText",
+    },
+    summary: {
+      $ref: "#/$defs/localizedText",
+    },
+    when_to_use: {
+      $ref: "#/$defs/localizedText",
+    },
+    keywords: {
+      $ref: "#/$defs/tokenList",
+    },
+    aliases: {
+      $ref: "#/$defs/tokenList",
+    },
+    tags: {
+      $ref: "#/$defs/tokenList",
+    },
+    capabilities: {
+      description: "What the Server lets an Agent do, as lowercase kebab-case tokens such as `search-docs`.",
+      type: "array",
+      minItems: 1,
+      maxItems: 32,
+      uniqueItems: true,
+      items: {
+        type: "string",
+        pattern: "^[a-z][a-z0-9-]*$",
+        maxLength: 64,
+      },
+    },
+    status: {
+      description:
+        "`deprecated` and `archived` entries are hidden from Discover; `removed` entries are not emitted at all.",
+      enum: ["active", "deprecated", "archived", "removed"],
+    },
+    auth: {
+      type: "object",
+      additionalProperties: false,
+      required: ["methods", "default_kind"],
+      properties: {
+        methods: {
+          description: "The authorization methods the Server accepts. Matches the shared MCP auth kinds.",
+          type: "array",
+          minItems: 1,
+          uniqueItems: true,
+          items: {
+            enum: ["none", "bearer", "oauth"],
+          },
+        },
+        default_kind: {
+          description: "A prefill for a new authorization, never a claim about what the Server requires.",
+          enum: ["none", "bearer", "oauth"],
+        },
+        oauth: {
+          type: "object",
+          additionalProperties: false,
+          description:
+            "Present exactly when `oauth` is a method. Without `scopes`, scope selection is left to the flow's discovery rules.",
+          properties: {
+            scopes: {
+              description: "The scopes a card's OAuth start requests. Same bounds as the start request.",
+              type: "array",
+              minItems: 1,
+              maxItems: 64,
+              items: {
+                type: "string",
+                minLength: 1,
+                maxLength: 255,
+                pattern: "\\S",
+              },
+            },
+          },
+        },
+      },
+    },
+    risk: {
+      type: "object",
+      additionalProperties: false,
+      required: ["side_effects", "data_access"],
+      properties: {
+        side_effects: {
+          description: "The strongest effect any tool can have. Ordered none < write < destructive.",
+          enum: ["none", "write", "destructive"],
+        },
+        data_access: {
+          description: "`public` reads public data only; `private` reads the connected account's data.",
+          enum: ["public", "private"],
+        },
+        notes: {
+          $ref: "#/$defs/localizedText",
+        },
+      },
+    },
+    tools: {
+      description: "Optional tool inventory. Names are unique within an entry.",
+      type: "array",
+      maxItems: 256,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "side_effect"],
+        properties: {
+          name: {
+            type: "string",
+            pattern: "^[A-Za-z0-9_.-]+$",
+            maxLength: 128,
+          },
+          description: {
+            type: "string",
+            minLength: 1,
+            maxLength: 500,
+          },
+          side_effect: {
+            enum: ["none", "write", "destructive"],
+          },
+        },
+      },
+    },
+    packages: {
+      description: "Self-hosted stdio or HTTP packages, recorded as data. They are not installable yet.",
+      type: "array",
+      minItems: 1,
+      maxItems: 8,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["registry_type", "identifier", "version", "transport"],
+        properties: {
+          registry_type: {
+            enum: ["npm", "pypi", "oci", "nuget", "mcpb"],
+          },
+          identifier: {
+            type: "string",
+            minLength: 1,
+            maxLength: 256,
+            pattern: "^\\S+$",
+          },
+          version: {
+            type: "string",
+            minLength: 1,
+            maxLength: 64,
+            pattern: "^\\S+$",
+          },
+          runtime_hint: {
+            enum: ["npx", "uvx", "docker", "dnx"],
+          },
+          transport: {
+            enum: ["stdio", "streamable-http"],
+          },
+          package_arguments: {
+            type: "array",
+            maxItems: 32,
+            items: {
+              $ref: "#/$defs/packageArgument",
+            },
+          },
+          environment_variables: {
+            type: "array",
+            maxItems: 32,
+            items: {
+              $ref: "#/$defs/environmentVariable",
+            },
+          },
+        },
+      },
+    },
+    prerequisites: {
+      description: "What a user needs before the package can run, such as an account or a tool.",
+      type: "array",
+      maxItems: 16,
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 200,
+      },
+    },
+    platforms: {
+      description: "Operating systems the package supports. Omit when it runs everywhere.",
+      type: "array",
+      minItems: 1,
+      uniqueItems: true,
+      items: {
+        enum: ["linux", "macos", "windows"],
+      },
+    },
+    remotes: {
+      description:
+        "Hosted endpoints. Only a `streamable-http` remote makes an entry installable; `sse` is recorded as data.",
+      type: "array",
+      minItems: 1,
+      maxItems: 4,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "url"],
+        properties: {
+          type: {
+            enum: ["streamable-http", "sse"],
+          },
+          url: {
+            type: "string",
+            format: "uri",
+            pattern: "^https://",
+          },
+          headers: {
+            type: "array",
+            maxItems: 16,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["name", "role"],
+              properties: {
+                name: {
+                  type: "string",
+                  pattern: "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+                  maxLength: 128,
+                },
+                role: {
+                  description:
+                    "`auth` carries the credential (with an optional `scheme`); `extra` is a static header with a `value`.",
+                  enum: ["auth", "extra"],
+                },
+                scheme: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 64,
+                },
+                value: {
+                  type: "string",
+                  maxLength: 1024,
+                },
+                description: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 500,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    catalog: {
+      type: "object",
+      additionalProperties: false,
+      required: ["category", "order", "icon", "icon_is_official"],
+      properties: {
+        category: {
+          type: "string",
+          pattern: "^[a-z][a-z0-9-]*$",
+        },
+        order: {
+          type: "number",
+        },
+        icon: {
+          type: "string",
+          pattern: "^[a-z0-9][a-z0-9-]*\\.(?:svg|png)$",
+        },
+        icon_is_official: {
+          type: "boolean",
+        },
+      },
+    },
+    homepage: {
+      type: "string",
+      format: "uri",
+      pattern: "^https?://",
+    },
+    repository: {
+      type: "string",
+      format: "uri",
+      pattern: "^https://",
+    },
+    license: {
+      type: "string",
+      minLength: 1,
+      maxLength: 64,
+    },
+    maintainers: {
+      type: "array",
+      minItems: 1,
+      uniqueItems: true,
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 128,
+      },
+    },
+  },
+  $defs: {
+    localizedText: {
+      type: "object",
+      additionalProperties: false,
+      required: ["en", "zh"],
+      properties: {
+        en: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+          pattern: "\\S",
+        },
+        zh: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+          pattern: "\\S",
+        },
+      },
+    },
+    tokenList: {
+      type: "array",
+      maxItems: 32,
+      uniqueItems: true,
+      items: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+        pattern: "\\S",
+      },
+    },
+    packageArgument: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type"],
+      properties: {
+        type: {
+          enum: ["positional", "named"],
+        },
+        name: {
+          description: "Required when `type` is `named`, for example `--port`.",
+          type: "string",
+          minLength: 1,
+          maxLength: 128,
+          pattern: "^\\S+$",
+        },
+        value: {
+          type: "string",
+          maxLength: 1024,
+        },
+        default: {
+          type: "string",
+          maxLength: 1024,
+        },
+        description: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+        },
+        is_required: {
+          type: "boolean",
+        },
+        is_secret: {
+          description: "A secret argument carries no `value` or `default`.",
+          type: "boolean",
+        },
+      },
+    },
+    environmentVariable: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name"],
+      properties: {
+        name: {
+          type: "string",
+          pattern: "^[A-Z_][A-Z0-9_]*$",
+          maxLength: 128,
+        },
+        value: {
+          type: "string",
+          maxLength: 1024,
+        },
+        default: {
+          type: "string",
+          maxLength: 1024,
+        },
+        description: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+        },
+        is_required: {
+          type: "boolean",
+        },
+        is_secret: {
+          description: "A secret variable carries no `value` or `default`.",
+          type: "boolean",
+        },
+      },
+    },
+  },
+  anyOf: [
+    {
+      required: ["packages"],
+    },
+    {
+      required: ["remotes"],
+    },
+  ],
+} as const;
 
 /** Tab order is this array's order. */
 export const MCP_CATALOG_CATEGORIES: readonly McpCatalogCategory[] = [
   {
-    id: "general",
+    id: "docs",
     label: {
-      en: "General",
-      zh: "通用",
+      en: "Docs & Knowledge",
+      zh: "文档与知识",
     },
     order: 10,
   },
   {
-    id: "engineering",
+    id: "communication",
     label: {
-      en: "Engineering",
-      zh: "工程",
+      en: "Communication",
+      zh: "沟通",
     },
     order: 20,
   },
   {
-    id: "google-workspace",
+    id: "projects",
     label: {
-      en: "Google Workspace",
-      zh: "Google Workspace",
+      en: "Projects",
+      zh: "项目管理",
     },
     order: 30,
   },
   {
-    id: "productivity",
+    id: "search",
     label: {
-      en: "Productivity",
-      zh: "生产力",
+      en: "Web Search",
+      zh: "网页搜索",
     },
     order: 40,
   },
@@ -133,28 +654,44 @@ export const MCP_CATALOG_CATEGORIES: readonly McpCatalogCategory[] = [
     order: 50,
   },
   {
-    id: "search",
+    id: "data",
     label: {
-      en: "Search",
-      zh: "搜索",
+      en: "Data & Analytics",
+      zh: "数据分析",
     },
     order: 60,
+  },
+  {
+    id: "development",
+    label: {
+      en: "Developer Tools",
+      zh: "开发工具",
+    },
+    order: 70,
+  },
+  {
+    id: "sales",
+    label: {
+      en: "Sales & CRM",
+      zh: "销售与客户",
+    },
+    order: 80,
+  },
+  {
+    id: "finance",
+    label: {
+      en: "Finance & Payments",
+      zh: "财务支付",
+    },
+    order: 90,
   },
   {
     id: "automation",
     label: {
       en: "Automation",
-      zh: "自动化",
+      zh: "工作流自动化",
     },
-    order: 70,
-  },
-  {
-    id: "business-data",
-    label: {
-      en: "Business & Data",
-      zh: "业务与数据",
-    },
-    order: 80,
+    order: 100,
   },
 ];
 
@@ -162,141 +699,96 @@ export const MCP_CATALOG_CATEGORIES: readonly McpCatalogCategory[] = [
 export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
   {
     id: "notion",
+    registryId: "mcp/notion",
     name: "notion",
     title: {
       en: "Notion",
       zh: "Notion",
     },
     description: {
-      en: "Docs, wikis, and project pages.",
-      zh: "文档、知识库与项目页面。",
+      en: "Search and edit docs and wikis.",
+      zh: "搜索和编辑文档与知识库。",
     },
+    whenToUse: {
+      en: "Use when the task needs to find, read, or update pages and wikis in Notion.",
+      zh: "当任务需要查找、阅读或更新 Notion 中的页面和知识库时使用。",
+    },
+    installable: true,
     url: "https://mcp.notion.com/mcp",
     defaultAuthKind: "oauth",
-    category: "general",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.notion.com/mcp",
+      },
+    ],
+    category: "docs",
     website: "https://www.notion.com",
+    iconIsOfficial: true,
+    order: 10,
+    status: "active",
+    capabilities: ["search-docs", "read-pages", "edit-pages"],
+    keywords: ["wiki", "notes", "knowledge base"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
     iconUrl: MCP_CATALOG_ICON_URLS["notion.png"],
-    iconIsOfficial: true,
-    order: 10,
-  },
-  {
-    id: "exa",
-    name: "exa",
-    title: {
-      en: "Exa",
-      zh: "Exa",
-    },
-    description: {
-      en: "Web search and research.",
-      zh: "网页搜索与研究。",
-    },
-    url: "https://mcp.exa.ai/mcp",
-    defaultAuthKind: "none",
-    category: "general",
-    website: "https://exa.ai",
-    iconUrl: MCP_CATALOG_ICON_URLS["exa.svg"],
-    iconIsOfficial: true,
-    order: 20,
-  },
-  {
-    id: "linear",
-    name: "linear",
-    title: {
-      en: "Linear",
-      zh: "Linear",
-    },
-    description: {
-      en: "Issues, projects, and cycles.",
-      zh: "事务、项目与迭代。",
-    },
-    url: "https://mcp.linear.app/mcp",
-    defaultAuthKind: "oauth",
-    category: "engineering",
-    website: "https://linear.app",
-    iconUrl: MCP_CATALOG_ICON_URLS["linear.svg"],
-    iconIsOfficial: true,
-    order: 10,
-  },
-  {
-    id: "sentry",
-    name: "sentry",
-    title: {
-      en: "Sentry",
-      zh: "Sentry",
-    },
-    description: {
-      en: "Errors, traces, and releases.",
-      zh: "错误、链路追踪与发布。",
-    },
-    url: "https://mcp.sentry.dev/mcp",
-    defaultAuthKind: "oauth",
-    category: "engineering",
-    website: "https://sentry.io",
-    iconUrl: MCP_CATALOG_ICON_URLS["sentry.svg"],
-    iconIsOfficial: true,
-    order: 20,
-  },
-  {
-    id: "atlassian",
-    name: "atlassian",
-    title: {
-      en: "Atlassian",
-      zh: "Atlassian",
-    },
-    description: {
-      en: "Jira issues, Confluence pages, and team knowledge.",
-      zh: "Jira 事务、Confluence 页面与团队知识。",
-    },
-    url: "https://mcp.atlassian.com/v2/mcp?tools=all",
-    defaultAuthKind: "oauth",
-    category: "engineering",
-    website: "https://www.atlassian.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["atlassian.svg"],
-    iconIsOfficial: true,
-    order: 30,
-  },
-  {
-    id: "gmail",
-    name: "gmail",
-    title: {
-      en: "Gmail",
-      zh: "Gmail",
-    },
-    description: {
-      en: "Read, search, and draft email.",
-      zh: "阅读、搜索和起草邮件。",
-    },
-    url: "https://gmailmcp.googleapis.com/mcp/v1",
-    defaultAuthKind: "oauth",
-    oauthScopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
-    category: "google-workspace",
-    website: "https://workspace.google.com/products/gmail/",
-    iconUrl: MCP_CATALOG_ICON_URLS["gmail.svg"],
-    iconIsOfficial: true,
-    order: 10,
   },
   {
     id: "google-drive",
+    registryId: "mcp/google-drive",
     name: "google-drive",
     title: {
       en: "Google Drive",
       zh: "Google Drive",
     },
     description: {
-      en: "Find, read, and manage files.",
-      zh: "查找、读取和管理文件。",
+      en: "Find and read files.",
+      zh: "查找和读取文件。",
     },
+    whenToUse: {
+      en: "Use when the task needs to find or read files in Google Drive.",
+      zh: "当任务需要在 Google Drive 中查找或读取文件时使用。",
+    },
+    installable: true,
     url: "https://drivemcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"],
-    category: "google-workspace",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://drivemcp.googleapis.com/mcp/v1",
+      },
+    ],
+    category: "docs",
     website: "https://workspace.google.com/products/drive/",
-    iconUrl: MCP_CATALOG_ICON_URLS["google-drive.svg"],
     iconIsOfficial: true,
     order: 20,
+    status: "active",
+    capabilities: ["search-files", "read-files", "create-files"],
+    keywords: ["drive", "files", "storage"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {
+        scopes: ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"],
+      },
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["google-drive.svg"],
   },
   {
     id: "google-docs",
+    registryId: "mcp/google-docs",
     name: "google-docs",
     title: {
       en: "Google Docs",
@@ -304,8 +796,13 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     description: {
       en: "Read and edit documents.",
-      zh: "读取和编辑文档。",
+      zh: "阅读和编辑文档。",
     },
+    whenToUse: {
+      en: "Use when the task needs to read or edit a Google Docs document.",
+      zh: "当任务需要阅读或编辑 Google Docs 文档时使用。",
+    },
+    installable: true,
     url: "https://docsmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
@@ -314,39 +811,40 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/documents",
     ],
-    category: "google-workspace",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://docsmcp.googleapis.com/mcp/v1",
+      },
+    ],
+    category: "docs",
     website: "https://workspace.google.com/products/docs/",
-    iconUrl: MCP_CATALOG_ICON_URLS["google-docs.svg"],
     iconIsOfficial: true,
     order: 30,
-  },
-  {
-    id: "google-sheets",
-    name: "google-sheets",
-    title: {
-      en: "Google Sheets",
-      zh: "Google Sheets",
+    status: "active",
+    capabilities: ["read-documents", "edit-documents"],
+    keywords: ["docs", "documents", "writing"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {
+        scopes: [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/documents.readonly",
+          "https://www.googleapis.com/auth/documents",
+        ],
+      },
     },
-    description: {
-      en: "Read and update spreadsheets.",
-      zh: "读取和更新电子表格。",
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
     },
-    url: "https://sheetsmcp.googleapis.com/mcp/v1",
-    defaultAuthKind: "oauth",
-    oauthScopes: [
-      "https://www.googleapis.com/auth/drive.readonly",
-      "https://www.googleapis.com/auth/drive.file",
-      "https://www.googleapis.com/auth/spreadsheets.readonly",
-      "https://www.googleapis.com/auth/spreadsheets",
-    ],
-    category: "google-workspace",
-    website: "https://workspace.google.com/products/sheets/",
-    iconUrl: MCP_CATALOG_ICON_URLS["google-sheets.svg"],
-    iconIsOfficial: true,
-    order: 40,
+    iconUrl: MCP_CATALOG_ICON_URLS["google-docs.svg"],
   },
   {
     id: "google-slides",
+    registryId: "mcp/google-slides",
     name: "google-slides",
     title: {
       en: "Google Slides",
@@ -354,8 +852,13 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
     },
     description: {
       en: "Read and edit presentations.",
-      zh: "读取和编辑演示文稿。",
+      zh: "阅读和编辑演示文稿。",
     },
+    whenToUse: {
+      en: "Use when the task needs to read or edit a Google Slides presentation.",
+      zh: "当任务需要阅读或编辑 Google Slides 演示文稿时使用。",
+    },
+    installable: true,
     url: "https://slidesmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
@@ -364,47 +867,100 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       "https://www.googleapis.com/auth/presentations.readonly",
       "https://www.googleapis.com/auth/presentations",
     ],
-    category: "google-workspace",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://slidesmcp.googleapis.com/mcp/v1",
+      },
+    ],
+    category: "docs",
     website: "https://workspace.google.com/products/slides/",
-    iconUrl: MCP_CATALOG_ICON_URLS["google-slides.svg"],
     iconIsOfficial: true,
-    order: 50,
+    order: 40,
+    status: "active",
+    capabilities: ["read-presentations", "edit-presentations"],
+    keywords: ["slides", "presentation", "deck"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {
+        scopes: [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/presentations.readonly",
+          "https://www.googleapis.com/auth/presentations",
+        ],
+      },
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["google-slides.svg"],
   },
   {
-    id: "google-calendar",
-    name: "google-calendar",
+    id: "gmail",
+    registryId: "mcp/gmail",
+    name: "gmail",
     title: {
-      en: "Google Calendar",
-      zh: "Google Calendar",
+      en: "Gmail",
+      zh: "Gmail",
     },
     description: {
-      en: "View and manage events and calendars.",
-      zh: "查看和管理日程与日历。",
+      en: "Search emails and draft replies.",
+      zh: "搜索邮件并起草回复。",
     },
-    url: "https://calendarmcp.googleapis.com/mcp/v1",
+    whenToUse: {
+      en: "Use when the task needs to search mail or draft a reply in Gmail.",
+      zh: "当任务需要在 Gmail 中搜索邮件或起草回复时使用。",
+    },
+    installable: true,
+    url: "https://gmailmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
-    oauthScopes: [
-      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-      "https://www.googleapis.com/auth/calendar.events.freebusy",
-      "https://www.googleapis.com/auth/calendar.events.readonly",
+    oauthScopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://gmailmcp.googleapis.com/mcp/v1",
+      },
     ],
-    category: "google-workspace",
-    website: "https://workspace.google.com/products/calendar/",
-    iconUrl: MCP_CATALOG_ICON_URLS["google-calendar.svg"],
+    category: "communication",
+    website: "https://workspace.google.com/products/gmail/",
     iconIsOfficial: true,
-    order: 60,
+    order: 10,
+    status: "active",
+    capabilities: ["search-email", "read-email", "draft-email"],
+    keywords: ["email", "mail", "inbox"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {
+        scopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
+      },
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["gmail.svg"],
   },
   {
     id: "google-chat",
+    registryId: "mcp/google-chat",
     name: "google-chat",
     title: {
       en: "Google Chat",
       zh: "Google Chat",
     },
     description: {
-      en: "Search conversations and send messages.",
+      en: "Search chats and send messages.",
       zh: "搜索会话并发送消息。",
     },
+    whenToUse: {
+      en: "Use when the task needs to search conversations or send a message in Google Chat.",
+      zh: "当任务需要在 Google Chat 中搜索会话或发送消息时使用。",
+    },
+    installable: true,
     url: "https://chatmcp.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
@@ -414,23 +970,109 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       "https://www.googleapis.com/auth/chat.messages.create",
       "https://www.googleapis.com/auth/chat.users.readstate",
     ],
-    category: "google-workspace",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://chatmcp.googleapis.com/mcp/v1",
+      },
+    ],
+    category: "communication",
     website: "https://workspace.google.com/products/chat/",
-    iconUrl: MCP_CATALOG_ICON_URLS["google-chat.svg"],
     iconIsOfficial: true,
-    order: 70,
+    order: 20,
+    status: "active",
+    capabilities: ["search-messages", "send-messages"],
+    keywords: ["chat", "messaging", "spaces"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {
+        scopes: [
+          "https://www.googleapis.com/auth/chat.spaces.readonly",
+          "https://www.googleapis.com/auth/chat.memberships.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly",
+          "https://www.googleapis.com/auth/chat.messages.create",
+          "https://www.googleapis.com/auth/chat.users.readstate",
+        ],
+      },
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["google-chat.svg"],
+  },
+  {
+    id: "google-calendar",
+    registryId: "mcp/google-calendar",
+    name: "google-calendar",
+    title: {
+      en: "Google Calendar",
+      zh: "Google Calendar",
+    },
+    description: {
+      en: "View events and check availability.",
+      zh: "查看日程和空闲时间。",
+    },
+    whenToUse: {
+      en: "Use when the task needs to view events or check availability in Google Calendar.",
+      zh: "当任务需要查看 Google Calendar 的日程或空闲时间时使用。",
+    },
+    installable: true,
+    url: "https://calendarmcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
+      "https://www.googleapis.com/auth/calendar.events.readonly",
+    ],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://calendarmcp.googleapis.com/mcp/v1",
+      },
+    ],
+    category: "communication",
+    website: "https://workspace.google.com/products/calendar/",
+    iconIsOfficial: true,
+    order: 30,
+    status: "active",
+    capabilities: ["list-events", "check-availability"],
+    keywords: ["calendar", "schedule", "meetings"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {
+        scopes: [
+          "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+          "https://www.googleapis.com/auth/calendar.events.freebusy",
+          "https://www.googleapis.com/auth/calendar.events.readonly",
+        ],
+      },
+    },
+    risk: {
+      sideEffects: "none",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["google-calendar.svg"],
   },
   {
     id: "google-people",
+    registryId: "mcp/google-people",
     name: "google-people",
     title: {
       en: "People",
       zh: "People",
     },
     description: {
-      en: "Look up profiles, contacts, and directory people.",
-      zh: "查询个人资料、联系人和目录成员。",
+      en: "Find contacts and colleague details.",
+      zh: "查找联系人和同事资料。",
     },
+    whenToUse: {
+      en: "Use when the task needs contact or colleague details from Google People.",
+      zh: "当任务需要查询 Google People 中的联系人或同事资料时使用。",
+    },
+    installable: true,
     url: "https://people.googleapis.com/mcp/v1",
     defaultAuthKind: "oauth",
     oauthScopes: [
@@ -438,256 +1080,816 @@ export const MCP_CATALOG_ENTRIES: readonly McpCatalogEntry[] = [
       "https://www.googleapis.com/auth/userinfo.profile",
       "https://www.googleapis.com/auth/contacts.readonly",
     ],
-    category: "google-workspace",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://people.googleapis.com/mcp/v1",
+      },
+    ],
+    category: "communication",
     website: "https://developers.google.com/people",
+    order: 40,
+    status: "active",
+    capabilities: ["find-contacts", "read-directory"],
+    keywords: ["contacts", "directory", "colleagues"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {
+        scopes: [
+          "https://www.googleapis.com/auth/directory.readonly",
+          "https://www.googleapis.com/auth/userinfo.profile",
+          "https://www.googleapis.com/auth/contacts.readonly",
+        ],
+      },
+    },
+    risk: {
+      sideEffects: "none",
+      dataAccess: "private",
+    },
     iconUrl: MCP_CATALOG_ICON_URLS["google-people.svg"],
-    order: 80,
   },
   {
-    id: "microsoft-365",
-    name: "microsoft-365",
+    id: "linear",
+    registryId: "mcp/linear",
+    name: "linear",
     title: {
-      en: "Microsoft 365",
-      zh: "Microsoft 365",
+      en: "Linear",
+      zh: "Linear",
     },
     description: {
-      en: "Microsoft 365 roadmap, Azure updates, and release communications.",
-      zh: "Microsoft 365 路线图、Azure 更新与发布信息。",
+      en: "Find and update tasks and projects.",
+      zh: "查找和更新任务与项目。",
     },
-    url: "https://www.microsoft.com/releasecommunications/mcp",
-    defaultAuthKind: "none",
-    category: "productivity",
-    website: "https://www.microsoft.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["microsoft-365.svg"],
+    whenToUse: {
+      en: "Use when the task needs to find or update Linear issues and projects.",
+      zh: "当任务需要查找或更新 Linear 的工单与项目时使用。",
+    },
+    installable: true,
+    url: "https://mcp.linear.app/mcp",
+    defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.linear.app/mcp",
+      },
+    ],
+    category: "projects",
+    website: "https://linear.app",
     iconIsOfficial: true,
     order: 10,
+    status: "active",
+    capabilities: ["search-issues", "create-issues", "update-issues"],
+    keywords: ["issues", "tickets", "tasks"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["linear.svg"],
   },
   {
     id: "asana",
+    registryId: "mcp/asana",
     name: "asana",
     title: {
       en: "Asana",
       zh: "Asana",
     },
     description: {
-      en: "Tasks, projects, and workspaces.",
-      zh: "任务、项目与工作区。",
+      en: "Find and update tasks and projects.",
+      zh: "查找和更新任务与项目。",
     },
+    whenToUse: {
+      en: "Use when the task needs to find or update Asana tasks and projects.",
+      zh: "当任务需要查找或更新 Asana 的任务与项目时使用。",
+    },
+    installable: true,
     url: "https://mcp.asana.com/v2/mcp",
     defaultAuthKind: "oauth",
-    category: "productivity",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.asana.com/v2/mcp",
+      },
+    ],
+    category: "projects",
     website: "https://asana.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["asana.png"],
     iconIsOfficial: true,
     order: 20,
+    status: "active",
+    capabilities: ["search-tasks", "update-tasks", "manage-projects"],
+    keywords: ["tasks", "projects", "work management"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["asana.png"],
   },
   {
     id: "monday",
+    registryId: "mcp/monday",
     name: "monday",
     title: {
       en: "monday.com",
       zh: "monday.com",
     },
     description: {
-      en: "Work management, boards, and automations.",
-      zh: "工作管理、看板与自动化。",
+      en: "Read and update board items.",
+      zh: "查看和更新看板任务。",
     },
+    whenToUse: {
+      en: "Use when the task needs to read or update items on monday.com boards.",
+      zh: "当任务需要读取或更新 monday.com 看板中的任务时使用。",
+    },
+    installable: true,
     url: "https://mcp.monday.com/mcp",
     defaultAuthKind: "oauth",
-    category: "productivity",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.monday.com/mcp",
+      },
+    ],
+    category: "projects",
     website: "https://monday.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["monday.png"],
     iconIsOfficial: true,
     order: 30,
+    status: "active",
+    capabilities: ["read-boards", "update-items"],
+    keywords: ["boards", "items", "work management"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["monday.png"],
   },
   {
-    id: "hubspot",
-    name: "hubspot",
+    id: "atlassian",
+    registryId: "mcp/atlassian",
+    name: "atlassian",
     title: {
-      en: "HubSpot",
-      zh: "HubSpot",
+      en: "Atlassian",
+      zh: "Atlassian",
     },
     description: {
-      en: "CRM, marketing, and customer data.",
-      zh: "CRM、营销与客户数据。",
+      en: "Find tasks and team documents.",
+      zh: "查找任务和团队文档。",
     },
-    url: "https://mcp.hubspot.com",
+    whenToUse: {
+      en: "Use when the task needs to find or update Jira work items or Confluence pages.",
+      zh: "当任务需要查找或更新 Jira 工作项或 Confluence 页面时使用。",
+    },
+    installable: true,
+    url: "https://mcp.atlassian.com/v2/mcp?tools=all",
     defaultAuthKind: "oauth",
-    category: "productivity",
-    website: "https://www.hubspot.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["hubspot.png"],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.atlassian.com/v2/mcp?tools=all",
+      },
+    ],
+    category: "projects",
+    website: "https://www.atlassian.com",
     iconIsOfficial: true,
     order: 40,
+    status: "active",
+    capabilities: ["search-issues", "update-issues", "read-pages", "edit-pages"],
+    keywords: ["jira", "confluence", "tickets"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["atlassian.svg"],
   },
   {
-    id: "figma",
-    name: "figma",
+    id: "exa",
+    registryId: "mcp/exa",
+    name: "exa",
     title: {
-      en: "Figma",
-      zh: "Figma",
+      en: "Exa",
+      zh: "Exa",
     },
     description: {
-      en: "Files, designs, and Dev Mode context.",
-      zh: "文件、设计与开发模式上下文。",
+      en: "Search the web for useful sources.",
+      zh: "查找网页资料。",
     },
-    url: "https://mcp.figma.com/mcp",
-    defaultAuthKind: "oauth",
-    category: "design",
-    website: "https://www.figma.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["figma.svg"],
+    whenToUse: {
+      en: "Use when the task needs fresh web sources or research material.",
+      zh: "当任务需要最新的网页资料或调研素材时使用。",
+    },
+    installable: true,
+    url: "https://mcp.exa.ai/mcp",
+    defaultAuthKind: "none",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.exa.ai/mcp",
+      },
+    ],
+    category: "search",
+    website: "https://exa.ai",
     iconIsOfficial: true,
     order: 10,
-  },
-  {
-    id: "canva",
-    name: "canva",
-    title: {
-      en: "Canva",
-      zh: "Canva",
+    status: "active",
+    capabilities: ["web-search"],
+    keywords: ["search", "web", "research"],
+    auth: {
+      methods: ["none"],
+      defaultKind: "none",
     },
-    description: {
-      en: "Designs, assets, and exports.",
-      zh: "设计、素材与导出。",
+    risk: {
+      sideEffects: "none",
+      dataAccess: "public",
     },
-    url: "https://mcp.canva.com/mcp",
-    defaultAuthKind: "oauth",
-    category: "design",
-    website: "https://www.canva.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["canva.png"],
-    iconIsOfficial: true,
-    order: 20,
+    iconUrl: MCP_CATALOG_ICON_URLS["exa.svg"],
   },
   {
     id: "tavily",
+    registryId: "mcp/tavily",
     name: "tavily",
     title: {
       en: "Tavily",
       zh: "Tavily",
     },
     description: {
-      en: "Web search and research.",
-      zh: "网页搜索与研究。",
+      en: "Search the web and extract content.",
+      zh: "搜索网页并提取内容。",
     },
+    whenToUse: {
+      en: "Use when the task needs web search results or the content of specific pages.",
+      zh: "当任务需要网页搜索结果或指定页面的内容时使用。",
+    },
+    installable: true,
     url: "https://mcp.tavily.com/mcp",
     defaultAuthKind: "none",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.tavily.com/mcp",
+      },
+    ],
     category: "search",
     website: "https://tavily.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["tavily.svg"],
     iconIsOfficial: true,
-    order: 10,
+    order: 20,
+    status: "active",
+    capabilities: ["web-search", "extract-content"],
+    keywords: ["search", "web", "crawl"],
+    auth: {
+      methods: ["none"],
+      defaultKind: "none",
+    },
+    risk: {
+      sideEffects: "none",
+      dataAccess: "public",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["tavily.svg"],
   },
   {
     id: "firecrawl",
+    registryId: "mcp/firecrawl",
     name: "firecrawl",
     title: {
       en: "Firecrawl",
       zh: "Firecrawl",
     },
     description: {
-      en: "Web scraping, crawling, and extraction.",
-      zh: "网页抓取、爬取与提取。",
+      en: "Extract content from web pages.",
+      zh: "提取网页内容。",
     },
+    whenToUse: {
+      en: "Use when the task needs the content of web pages in a clean, readable form.",
+      zh: "当任务需要以清晰可读的形式获取网页内容时使用。",
+    },
+    installable: true,
     url: "https://mcp.firecrawl.dev/v2/mcp",
     defaultAuthKind: "none",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.firecrawl.dev/v2/mcp",
+      },
+    ],
     category: "search",
     website: "https://www.firecrawl.dev",
-    iconUrl: MCP_CATALOG_ICON_URLS["firecrawl.svg"],
     iconIsOfficial: true,
-    order: 20,
+    order: 30,
+    status: "active",
+    capabilities: ["extract-content", "crawl-pages"],
+    keywords: ["scrape", "crawl", "web"],
+    auth: {
+      methods: ["none"],
+      defaultKind: "none",
+    },
+    risk: {
+      sideEffects: "none",
+      dataAccess: "public",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["firecrawl.svg"],
   },
   {
-    id: "zapier",
-    name: "zapier",
+    id: "figma",
+    registryId: "mcp/figma",
+    name: "figma",
     title: {
-      en: "Zapier",
-      zh: "Zapier",
+      en: "Figma",
+      zh: "Figma",
     },
     description: {
-      en: "Connect to 9,000+ apps and workflows.",
-      zh: "连接 9,000+ 应用与自动化流程。",
+      en: "Read designs and inspect layouts.",
+      zh: "读取设计稿和布局信息。",
     },
-    url: "https://mcp.zapier.com/api/v1/connect",
+    whenToUse: {
+      en: "Use when the task needs to read a Figma design or inspect its layout.",
+      zh: "当任务需要读取 Figma 设计稿或查看其布局时使用。",
+    },
+    installable: true,
+    url: "https://mcp.figma.com/mcp",
     defaultAuthKind: "oauth",
-    category: "automation",
-    website: "https://zapier.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["zapier.png"],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.figma.com/mcp",
+      },
+    ],
+    category: "design",
+    website: "https://www.figma.com",
     iconIsOfficial: true,
     order: 10,
+    status: "active",
+    capabilities: ["read-designs", "inspect-layouts"],
+    keywords: ["design", "ui", "mockups"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "none",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["figma.svg"],
+  },
+  {
+    id: "canva",
+    registryId: "mcp/canva",
+    name: "canva",
+    title: {
+      en: "Canva",
+      zh: "Canva",
+    },
+    description: {
+      en: "Create and export designs.",
+      zh: "创建设计并导出文件。",
+    },
+    whenToUse: {
+      en: "Use when the task needs to create or export a design in Canva.",
+      zh: "当任务需要在 Canva 中创建设计或导出文件时使用。",
+    },
+    installable: true,
+    url: "https://mcp.canva.com/mcp",
+    defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.canva.com/mcp",
+      },
+    ],
+    category: "design",
+    website: "https://www.canva.com",
+    iconIsOfficial: true,
+    order: 20,
+    status: "active",
+    capabilities: ["create-designs", "export-designs"],
+    keywords: ["design", "graphics", "presentations"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["canva.png"],
+  },
+  {
+    id: "google-sheets",
+    registryId: "mcp/google-sheets",
+    name: "google-sheets",
+    title: {
+      en: "Google Sheets",
+      zh: "Google Sheets",
+    },
+    description: {
+      en: "Read and update spreadsheet data.",
+      zh: "读取和更新表格数据。",
+    },
+    whenToUse: {
+      en: "Use when the task needs to read or update spreadsheet data in Google Sheets.",
+      zh: "当任务需要读取或更新 Google Sheets 中的表格数据时使用。",
+    },
+    installable: true,
+    url: "https://sheetsmcp.googleapis.com/mcp/v1",
+    defaultAuthKind: "oauth",
+    oauthScopes: [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ],
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://sheetsmcp.googleapis.com/mcp/v1",
+      },
+    ],
+    category: "data",
+    website: "https://workspace.google.com/products/sheets/",
+    iconIsOfficial: true,
+    order: 10,
+    status: "active",
+    capabilities: ["read-spreadsheets", "update-spreadsheets"],
+    keywords: ["sheets", "spreadsheet", "tables"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {
+        scopes: [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/spreadsheets.readonly",
+          "https://www.googleapis.com/auth/spreadsheets",
+        ],
+      },
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["google-sheets.svg"],
   },
   {
     id: "airtable",
+    registryId: "mcp/airtable",
     name: "airtable",
     title: {
       en: "Airtable",
       zh: "Airtable",
     },
     description: {
-      en: "Bases, tables, records, and business workflows.",
-      zh: "数据库、数据表、记录与业务流程。",
+      en: "Find and update table records.",
+      zh: "查找和更新表格记录。",
     },
+    whenToUse: {
+      en: "Use when the task needs to find or update records in an Airtable base.",
+      zh: "当任务需要查找或更新 Airtable 数据表中的记录时使用。",
+    },
+    installable: true,
     url: "https://mcp.airtable.com/mcp",
     defaultAuthKind: "oauth",
-    category: "business-data",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.airtable.com/mcp",
+      },
+    ],
+    category: "data",
     website: "https://www.airtable.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["airtable.png"],
-    iconIsOfficial: true,
-    order: 10,
-  },
-  {
-    id: "supabase",
-    name: "supabase",
-    title: {
-      en: "Supabase",
-      zh: "Supabase",
-    },
-    description: {
-      en: "Projects, databases, and backend development.",
-      zh: "项目、数据库与后端开发。",
-    },
-    url: "https://mcp.supabase.com/mcp",
-    defaultAuthKind: "oauth",
-    category: "business-data",
-    website: "https://supabase.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["supabase.svg"],
     iconIsOfficial: true,
     order: 20,
+    status: "active",
+    capabilities: ["search-records", "update-records"],
+    keywords: ["database", "tables", "records"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["airtable.png"],
   },
   {
     id: "amplitude",
+    registryId: "mcp/amplitude",
     name: "amplitude",
     title: {
       en: "Amplitude",
       zh: "Amplitude",
     },
     description: {
-      en: "Product analytics, funnels, and retention.",
-      zh: "产品分析、漏斗与留存。",
+      en: "Analyze usage and conversion data.",
+      zh: "分析使用情况和转化数据。",
     },
+    whenToUse: {
+      en: "Use when the task needs product usage or conversion data from Amplitude.",
+      zh: "当任务需要 Amplitude 中的产品使用或转化数据时使用。",
+    },
+    installable: true,
     url: "https://mcp.amplitude.com/mcp",
     defaultAuthKind: "oauth",
-    category: "business-data",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.amplitude.com/mcp",
+      },
+    ],
+    category: "data",
     website: "https://amplitude.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["amplitude.png"],
     iconIsOfficial: true,
     order: 30,
+    status: "active",
+    capabilities: ["analyze-usage", "read-charts"],
+    keywords: ["analytics", "product", "conversion"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "none",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["amplitude.png"],
+  },
+  {
+    id: "sentry",
+    registryId: "mcp/sentry",
+    name: "sentry",
+    title: {
+      en: "Sentry",
+      zh: "Sentry",
+    },
+    description: {
+      en: "Investigate errors and performance.",
+      zh: "排查错误和性能问题。",
+    },
+    whenToUse: {
+      en: "Use when the task needs to investigate errors, stack traces, or performance problems in Sentry.",
+      zh: "当任务需要在 Sentry 中排查错误、堆栈或性能问题时使用。",
+    },
+    installable: true,
+    url: "https://mcp.sentry.dev/mcp",
+    defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.sentry.dev/mcp",
+      },
+    ],
+    category: "development",
+    website: "https://sentry.io",
+    iconIsOfficial: true,
+    order: 10,
+    status: "active",
+    capabilities: ["search-issues", "inspect-errors", "update-issues"],
+    keywords: ["errors", "monitoring", "performance"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["sentry.svg"],
+  },
+  {
+    id: "supabase",
+    registryId: "mcp/supabase",
+    name: "supabase",
+    title: {
+      en: "Supabase",
+      zh: "Supabase",
+    },
+    description: {
+      en: "Query databases and inspect logs.",
+      zh: "查询数据库和查看日志。",
+    },
+    whenToUse: {
+      en: "Use when the task needs to query a Supabase database or inspect its logs.",
+      zh: "当任务需要查询 Supabase 数据库或查看其日志时使用。",
+    },
+    installable: true,
+    url: "https://mcp.supabase.com/mcp",
+    defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.supabase.com/mcp",
+      },
+    ],
+    category: "development",
+    website: "https://supabase.com",
+    iconIsOfficial: true,
+    order: 20,
+    status: "active",
+    capabilities: ["query-databases", "inspect-logs", "manage-projects"],
+    keywords: ["postgres", "database", "backend"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "destructive",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["supabase.svg"],
+  },
+  {
+    id: "microsoft-365",
+    registryId: "mcp/microsoft-365",
+    name: "microsoft-365",
+    title: {
+      en: "Microsoft 365",
+      zh: "Microsoft 365",
+    },
+    description: {
+      en: "View product roadmaps and Azure updates.",
+      zh: "查看产品路线图和 Azure 更新。",
+    },
+    whenToUse: {
+      en: "Use when the task needs Microsoft product roadmap or Azure update information.",
+      zh: "当任务需要 Microsoft 产品路线图或 Azure 更新信息时使用。",
+    },
+    installable: true,
+    url: "https://www.microsoft.com/releasecommunications/mcp",
+    defaultAuthKind: "none",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://www.microsoft.com/releasecommunications/mcp",
+      },
+    ],
+    category: "development",
+    website: "https://www.microsoft.com",
+    iconIsOfficial: true,
+    order: 30,
+    status: "active",
+    capabilities: ["read-roadmaps", "read-updates"],
+    keywords: ["roadmap", "azure", "release notes"],
+    auth: {
+      methods: ["none"],
+      defaultKind: "none",
+    },
+    risk: {
+      sideEffects: "none",
+      dataAccess: "public",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["microsoft-365.svg"],
+  },
+  {
+    id: "hubspot",
+    registryId: "mcp/hubspot",
+    name: "hubspot",
+    title: {
+      en: "HubSpot",
+      zh: "HubSpot",
+    },
+    description: {
+      en: "Find and update customer records.",
+      zh: "查找和更新客户资料。",
+    },
+    whenToUse: {
+      en: "Use when the task needs to find or update customer records in HubSpot.",
+      zh: "当任务需要查找或更新 HubSpot 中的客户资料时使用。",
+    },
+    installable: true,
+    url: "https://mcp.hubspot.com",
+    defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.hubspot.com",
+      },
+    ],
+    category: "sales",
+    website: "https://www.hubspot.com",
+    iconIsOfficial: true,
+    order: 10,
+    status: "active",
+    capabilities: ["search-records", "update-records"],
+    keywords: ["crm", "contacts", "deals"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["hubspot.png"],
   },
   {
     id: "stripe",
+    registryId: "mcp/stripe",
     name: "stripe",
     title: {
       en: "Stripe",
       zh: "Stripe",
     },
     description: {
-      en: "Payments, customers, and subscriptions.",
-      zh: "支付、客户与订阅。",
+      en: "Look up payments and subscriptions.",
+      zh: "查询支付和订阅信息。",
     },
+    whenToUse: {
+      en: "Use when the task needs to look up payments or subscriptions in Stripe.",
+      zh: "当任务需要在 Stripe 中查询支付或订阅信息时使用。",
+    },
+    installable: true,
     url: "https://mcp.stripe.com",
     defaultAuthKind: "oauth",
-    category: "business-data",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.stripe.com",
+      },
+    ],
+    category: "finance",
     website: "https://stripe.com",
-    iconUrl: MCP_CATALOG_ICON_URLS["stripe.svg"],
     iconIsOfficial: true,
-    order: 40,
+    order: 10,
+    status: "active",
+    capabilities: ["lookup-payments", "lookup-subscriptions", "manage-customers"],
+    keywords: ["payments", "billing", "subscriptions"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "write",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["stripe.svg"],
+  },
+  {
+    id: "zapier",
+    registryId: "mcp/zapier",
+    name: "zapier",
+    title: {
+      en: "Zapier",
+      zh: "Zapier",
+    },
+    description: {
+      en: "Run actions across your apps.",
+      zh: "跨应用执行任务。",
+    },
+    whenToUse: {
+      en: "Use when the task needs to run an action in an app the user connected to Zapier.",
+      zh: "当任务需要在用户已接入 Zapier 的应用中执行操作时使用。",
+    },
+    installable: true,
+    url: "https://mcp.zapier.com/api/v1/connect",
+    defaultAuthKind: "oauth",
+    remotes: [
+      {
+        type: "streamable-http",
+        url: "https://mcp.zapier.com/api/v1/connect",
+      },
+    ],
+    category: "automation",
+    website: "https://zapier.com",
+    iconIsOfficial: true,
+    order: 10,
+    status: "active",
+    capabilities: ["run-actions", "connect-apps"],
+    keywords: ["automation", "workflow", "integrations"],
+    auth: {
+      methods: ["oauth"],
+      defaultKind: "oauth",
+      oauth: {},
+    },
+    risk: {
+      sideEffects: "destructive",
+      dataAccess: "private",
+    },
+    iconUrl: MCP_CATALOG_ICON_URLS["zapier.png"],
   },
 ];

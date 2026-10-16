@@ -7,8 +7,10 @@ import { SKILL_ERROR_CODES } from "./skill.js";
 export const ErrorCategorySchema = z.enum(["credential", "deterministic", "validation", "transient", "rate_limit"]);
 
 export const ErrorCodeSchema = z.enum([
+  "CLOUD_BILLING_UNAVAILABLE",
   "AUTH_CODE_CONSUMED",
   "AUTH_CODE_EXPIRED",
+  "AUTH_CODE_PURPOSE_MISMATCH",
   "AUTH_DEV_USER_UNAVAILABLE",
   "AUTH_DEV_USER_UNAVAILABLE",
   "AUTH_INVALID_CODE",
@@ -81,7 +83,6 @@ export const ErrorCodeSchema = z.enum([
   ...Object.values(SCHEDULE_ERROR_CODES),
   /* Agent Skill failures; kept in step with SKILL_ERROR_CODES. */
   ...Object.values(SKILL_ERROR_CODES),
-  "CLIENT_VERSION_UNSUPPORTED",
   "COMPUTER_IDENTITY_CONFLICT",
   "COMPUTER_IN_USE",
   "COMPUTER_NOT_DELETABLE",

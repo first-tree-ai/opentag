@@ -1,4 +1,4 @@
-import type { AgentScheduleLastDispatch, AgentScheduleRule } from "@opentag/shared";
+import type { AgentScheduleLastDispatch, AgentScheduleRule, RuntimeUserTaskSource } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import { bigint, boolean, check, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
@@ -23,6 +23,7 @@ export const agentSchedules = pgTable(
       .references(() => sessions.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     prompt: text("prompt").notNull(),
+    userTaskSource: jsonb("user_task_source").$type<RuntimeUserTaskSource>(),
     schedule: jsonb("schedule").$type<AgentScheduleRule>().notNull(),
     timezone: text("timezone").notNull(),
     enabled: boolean("enabled").notNull().default(true),

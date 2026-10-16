@@ -623,7 +623,7 @@ describe("Agent setup projection Messaging states", () => {
     });
   });
 
-  it("withholds Slack setup when the deployment has no Slack OAuth capability", async () => {
+  it("offers dedicated Slack setup when the deployment has no Slack OAuth capability", async () => {
     const bootstrap = await account();
     const { service } = harness({
       runtimeReadiness: runtimeReadiness("ready"),
@@ -637,7 +637,10 @@ describe("Agent setup projection Messaging states", () => {
     expect(snapshot).toMatchObject({
       stage: "needs-messaging",
       messaging: { kind: "not-configured" },
-      actions: [{ kind: "start-messaging", provider: "feishu" }],
+      actions: [
+        { kind: "start-messaging", provider: "slack" },
+        { kind: "start-messaging", provider: "feishu" },
+      ],
     });
   });
 
@@ -1331,6 +1334,7 @@ async function registerRuntimeConnection(
   const instanceId = crypto.randomUUID();
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       installationId: crypto.randomUUID(),
       instanceId,

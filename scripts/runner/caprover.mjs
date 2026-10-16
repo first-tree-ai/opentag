@@ -236,6 +236,41 @@ export function assertRunnerEnvironment({ envVars, channel, publicUrl }) {
 }
 
 /**
+ * Enforce single-replica cloud recovery and return the request timeout needed for rollout draining.
+ *
+ * `billingRevision` is the billing revision the deployed image itself bundles. Billing is active only
+ * when the image bundles it and the app enables it; an ordinary image boots with billing disabled
+ * even under a stale enable flag, so it needs none of the billing rollout configuration.
+ */
+export function assertBillingEnvironment({ definition, envVars, billingRevision }) {
+  if (envVars.has("OPENTAG_CLOUD_BILLING_CAPABILITY"))
+    throw new Error("The billing capability must come from the image");
+  if (envVars.get("OPENTAG_CLOUD_BILLING_ENABLED") !== "true" || !billingRevision) return 0;
+  for (const key of ["OPENTAG_CLOUD_MODEL_ENABLED", "OPENTAG_AUTO_MIGRATE"]) {
+    if (envVars.get(key) !== "true") throw new Error(`${key} must remain enabled for cloud billing`);
+  }
+  if (envVars.get("OPENTAG_BUILD_REVISION") || envVars.get("OPENTAG_BILLING_REVISION"))
+    throw new Error("Build revisions must come from the image");
+  if (definition.instanceCount !== 1 || definition.preDeployFunction)
+    throw new Error("Cloud billing requires one replica and no predeploy function");
+  const override = JSON.parse(definition.serviceUpdateOverride || "{}");
+  const timeout = Number(envVars.get("OPENTAG_CLOUD_MODEL_REQUEST_TIMEOUT_MS") ?? 600_000);
+  if (
+    !Number.isInteger(timeout) ||
+    timeout < 10_000 ||
+    timeout > 1_800_000 ||
+    override.UpdateConfig?.Order !== "stop-first" ||
+    override.UpdateConfig?.Parallelism !== 1 ||
+    override.UpdateConfig?.FailureAction !== "pause" ||
+    override.RollbackConfig?.Order !== "stop-first" ||
+    override.RollbackConfig?.Parallelism !== 1 ||
+    !(override.TaskTemplate?.ContainerSpec?.StopGracePeriod >= (timeout + 30_000) * 1_000_000)
+  )
+    throw new Error("Cloud billing requires stop-first replacement and enough time to drain requests");
+  return timeout;
+}
+
+/**
  * The deployed Server image must be exactly `ghcr.io/first-tree-ai/opentag:<server-revision>`
  * with an optional `@sha256:` digest suffix — the immutable per-commit coordinate the Server
  * deploy produced.

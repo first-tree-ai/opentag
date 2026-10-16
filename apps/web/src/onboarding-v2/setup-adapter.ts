@@ -23,11 +23,14 @@ import type {
 } from "@opentag/shared/browser";
 import type { QueryClient } from "@tanstack/react-query";
 import { browserApi } from "../api.js";
+import type { SlackSetupApi } from "../im/slack-custom-app.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { queryKeys } from "../query/keys.js";
 import { fetchSharedResource } from "../query/session-cache.js";
 
 export interface AgentSetupAdapter {
+  /** Review Lab supplies an isolated Slack configuration transport. Production uses BrowserApi. */
+  readonly slackSetup?: SlackSetupApi;
   /** The canonical setup state of one exact Agent — the only read this surface makes. */
   readonly readSnapshot: (agentId: string) => Promise<AgentSetupSnapshot>;
   /** Starts a real preparation on an already-connected Computer; never aliases a snapshot read. */

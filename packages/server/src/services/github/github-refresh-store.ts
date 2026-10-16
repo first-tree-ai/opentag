@@ -5,6 +5,7 @@ import { githubConnections } from "../../db/schema/index.js";
 import { assertGitHubCredentialMaterial, type GitHubConnectionCredentialMaterial } from "./credentials.js";
 import { boundedGitHubErrorCode } from "./errors.js";
 import type { GitHubConnectionRow } from "./rows.js";
+import { gitHubConnectionColumns } from "./rows.js";
 import { GITHUB_REFRESH_CLAIM_TTL_MS, githubWorkerBatchLimit } from "./timing.js";
 
 export interface GitHubRefreshCandidate {
@@ -58,7 +59,7 @@ export class GitHubCredentialRefreshStore {
   async listRefreshDue(input: { withinMs: number; limit: number }): Promise<GitHubRefreshCandidate[]> {
     const now = this.now();
     const rows = await this.database
-      .select()
+      .select(gitHubConnectionColumns())
       .from(githubConnections)
       .where(
         and(
@@ -94,12 +95,12 @@ export class GitHubCredentialRefreshStore {
           eq(githubConnections.refreshStatus, "idle"),
         ),
       )
-      .returning();
+      .returning(gitHubConnectionColumns());
     if (claimed) {
       return { claimed: true, claim: toClaimedRefresh(claimed, attemptId) };
     }
     const [row] = await this.database
-      .select()
+      .select(gitHubConnectionColumns())
       .from(githubConnections)
       .where(eq(githubConnections.id, connectionId))
       .limit(1);

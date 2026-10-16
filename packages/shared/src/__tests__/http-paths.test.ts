@@ -95,6 +95,7 @@ import {
   HTTP_PATHS,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  MCP_CATALOG_ENDPOINTS_PATH,
   MCP_CLIENT_METADATA_PATH,
   MCP_OAUTH_CALLBACK_PATH,
   MCP_SERVER_BY_ID_TEMPLATE,
@@ -469,6 +470,8 @@ describe("http paths", () => {
       expect(HTTP_PATHS.mcpServers).toBe(MCP_SERVERS_PATH);
       expect(HTTP_PATHS.mcpOAuthCallback).toBe(MCP_OAUTH_CALLBACK_PATH);
       expect(HTTP_PATHS.mcpClientMetadata).toBe(MCP_CLIENT_METADATA_PATH);
+      expect(HTTP_PATHS.mcpCatalogEndpoints).toBe(MCP_CATALOG_ENDPOINTS_PATH);
+      expect(MCP_CATALOG_ENDPOINTS_PATH).toBe("/api/v1/mcp-catalog/endpoints");
       expect(HTTP_PATHS.runtimeSkills).toBe(RUNTIME_SKILLS_PATH);
       expect(HTTP_PATHS.runtimeSkillPresets).toBe(RUNTIME_SKILL_PRESETS_PATH);
       expect(HTTP_PATHS.runtimeDurableWork).toBe(RUNTIME_DURABLE_WORK_PATH);

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -384,3 +385,50 @@ describe("session CLI", () => {
     }
   });
 });
+
+it.each(["local", "cloud"])(
+  "uses the current %s execution for repeated create/send despite a stale provider environment",
+  async (origin) => {
+    const directory = await mkdtemp(join(tmpdir(), "opentag-session-turns-"));
+    const envFile = join(directory, "provider-env.sh");
+    const proofFile = join(directory, "proof.json");
+    vi.mocked(client.readSessionCliProofFile).mockResolvedValue({ proofId: randomUUID(), token: "p".repeat(40) });
+    const create = vi
+      .spyOn(OpenTagApi.prototype, "createInternalSession")
+      .mockResolvedValue({ status: "accepted", messageId: randomUUID(), sessionId: randomUUID() });
+    const send = vi
+      .spyOn(OpenTagApi.prototype, "sendSessionMessage")
+      .mockResolvedValue({ status: "accepted", messageId: randomUUID(), sessionId: randomUUID() });
+    const first = randomUUID();
+    vi.stubEnv("OPENTAG_SESSION_PROOF_FILE", proofFile);
+    vi.mocked(client.resolveOpenTagHome).mockReturnValue(directory);
+    vi.mocked(client.readComputerIdentity).mockResolvedValue({
+      version: 2,
+      computerId: randomUUID(),
+      serverUrl: "https://opentag.example",
+    });
+    vi.stubEnv("OPENTAG_SESSION_SERVER_URL", origin === "cloud" ? "https://opentag.example" : undefined);
+    vi.stubEnv("OPENTAG_PROVIDER_ENV_FILE", envFile);
+    vi.stubEnv("OPENTAG_EXECUTION_ID", first);
+    try {
+      for (const executionId of [first, randomUUID(), randomUUID()]) {
+        await writeFile(envFile, `# opentag-execution: ${executionId}\nexport OPENTAG_EXECUTION_ID=${executionId}\n`);
+        await runSessionCreate({ message: "delegate" });
+        await runSessionSend(randomUUID(), { message: "continue" });
+        expect(create).toHaveBeenLastCalledWith("p".repeat(40), expect.anything(), { executionId });
+        expect(send).toHaveBeenLastCalledWith("p".repeat(40), expect.anything(), { executionId });
+      }
+      await rm(envFile);
+      await runSessionCreate({ message: "legacy collaboration without authority" });
+      expect(create).toHaveBeenLastCalledWith("p".repeat(40), expect.anything());
+      await writeFile(envFile, "export OPENTAG_EXECUTION_ID=untrusted\n");
+      await runSessionSend(randomUUID(), { message: "no fallback to stale ID" });
+      expect(send).toHaveBeenLastCalledWith("p".repeat(40), expect.anything());
+    } finally {
+      vi.unstubAllEnvs();
+      create.mockRestore();
+      send.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

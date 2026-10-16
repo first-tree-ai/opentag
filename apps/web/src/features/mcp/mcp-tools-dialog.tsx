@@ -7,7 +7,7 @@ import { McpAuthorizeDialog } from "./mcp-authorize-dialog.js";
 import { McpDialogTitle } from "./mcp-dialog-title.js";
 import { actionError } from "./mcp-form-model.js";
 import { useProbeMcpServer } from "./mcp-queries.js";
-import { rememberMcpReturn } from "./mcp-return-context.js";
+import { mcpTitle } from "./mcp-title.js";
 
 const sentences = new Intl.Segmenter(undefined, { granularity: "sentence" });
 
@@ -115,7 +115,8 @@ export function McpToolsDialog({
         agentName={agentName}
         entry={entry}
         initialError={authError}
-        onClose={() => {
+        onClose={onClose}
+        onBack={() => {
           returning.current = true;
           setAuthError(undefined);
           setAuthentication(false);
@@ -126,15 +127,13 @@ export function McpToolsDialog({
           setAuthError(undefined);
           setAuthentication(false);
         }}
-        onBeforeOAuth={() =>
-          rememberMcpReturn({
-            agentId,
-            serverId: entry.mcpServerId,
-            source: "tools",
-            query,
-            scrollTop: scrollTop.current,
-          })
-        }
+        returnContext={() => ({
+          agentId,
+          serverId: entry.mcpServerId,
+          source: "tools",
+          query,
+          scrollTop: scrollTop.current,
+        })}
       />
     );
   const connected = entry.authorization?.status === "active";
@@ -143,12 +142,19 @@ export function McpToolsDialog({
     <Dialog
       initialFocusRef={returning.current ? search : undefined}
       className="mcp-tools-dialog"
-      title={<ToolsTitle entry={entry} onBack={onBack} query={query} scrollTop={scrollTop} />}
-      closeLabel={m.common_close_title({ title: m.mcp_tools_dialog_title({ server: entry.name }) })}
-      description={m.mcp_tools_use_help({ agent: agentName })}
+      title={
+        onBack ? (
+          m.mcp_settings_tools()
+        ) : (
+          <McpDialogTitle entry={entry} title={m.mcp_tools_dialog_title({ server: mcpTitle(entry) })} />
+        )
+      }
+      closeLabel={m.common_close_title({ title: m.mcp_tools_dialog_title({ server: mcpTitle(entry) }) })}
+      description={m.mcp_settings_context({ server: mcpTitle(entry), agent: agentName })}
       onClose={onClose}
+      onBack={onBack ? () => onBack(query, scrollTop.current) : undefined}
     >
-      <div className="mcp-tools-body">
+      <div className={`mcp-tools-body ${tools.length > 5 ? "mcp-tools-body-long" : ""}`}>
         <ToolsToolbar
           entry={entry}
           history={history}
@@ -197,24 +203,13 @@ export function McpToolsDialog({
             </Button>
           ) : null}
         </div>
-        {failure && connected ? (
-          <div className="mb-3">
-            <p role="alert" className="text-sm text-kumo-danger">
-              {failure}
-            </p>
-          </div>
-        ) : null}
-        {!connected && tools.length > 0 ? (
-          <p className="mb-3 text-sm text-kumo-subtle">{m.mcp_tools_auth_required()}</p>
-        ) : null}
-        {history && entry.snapshot ? (
-          <p className="mb-3 text-xs text-kumo-subtle">{m.mcp_tools_previous_hint()}</p>
-        ) : null}
-        {entry.authorization?.toolsTruncated ? (
-          <div className="mb-4 shrink-0">
-            <McpPartialTools />
-          </div>
-        ) : null}
+        <ToolsStatus
+          entry={entry}
+          failure={failure}
+          connected={connected}
+          history={history}
+          hasTools={tools.length > 0}
+        />
         <ToolList
           list={attachList}
           matches={matches}
@@ -278,7 +273,9 @@ function ToolsToolbar({
         {entry.snapshot
           ? history
             ? m.mcp_tools_history()
-            : m.mcp_tools_count({ count: count })
+            : count === 1
+              ? m.mcp_tools_count_one()
+              : m.mcp_tools_count({ count: count })
           : pending
             ? m.mcp_probe_state_pending()
             : m.mcp_tools_none_loaded()}
@@ -328,7 +325,7 @@ function ToolList({
     <section
       ref={list}
       onScroll={onScroll}
-      className="mcp-tool-list border-t border-kumo-line focus-visible:outline-2 focus-visible:outline-kumo-ring"
+      className="mcp-tool-list border-t border-kumo-line focus-visible:outline-2 focus-visible:outline-kumo-focus"
       aria-label={m.mcp_tools_title()}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: The tool list must support keyboard scrolling inside the dialog.
       tabIndex={0}
@@ -401,31 +398,37 @@ function toolFailure(entry: MCPAgentServer, pending: boolean, error?: string): s
   return error ?? (entry.authorization?.probeState === "failed" ? m.mcp_tools_refresh_error() : undefined);
 }
 
-function ToolsTitle({
+function ToolsStatus({
   entry,
-  onBack,
-  query,
-  scrollTop,
+  failure,
+  connected,
+  history,
+  hasTools,
 }: {
   entry: MCPAgentServer;
-  onBack?: (query: string, scrollTop: number) => void;
-  query: string;
-  scrollTop: RefObject<number>;
+  failure?: string;
+  connected: boolean;
+  history: boolean;
+  hasTools: boolean;
 }) {
   return (
-    <span className="flex items-center gap-2">
-      {onBack ? (
-        <Button
-          aria-label={m.mcp_back_details()}
-          variant="ghost"
-          size="compact"
-          shape="square"
-          onClick={() => onBack?.(query, scrollTop.current)}
-        >
-          <Icon name="arrow-left" />
-        </Button>
+    <>
+      {failure && connected ? (
+        <div className="mb-3">
+          <p role="alert" className="text-sm text-kumo-danger">
+            {failure}
+          </p>
+        </div>
       ) : null}
-      <McpDialogTitle entry={entry} title={m.mcp_tools_dialog_title({ server: entry.name })} />
-    </span>
+      {!connected && hasTools ? <p className="mb-3 text-sm text-kumo-subtle">{m.mcp_tools_auth_required()}</p> : null}
+      {history && entry.snapshot ? (
+        <p className="mb-3 text-xs text-kumo-subtle">{m.mcp_tools_previous_hint()}</p>
+      ) : null}
+      {entry.authorization?.toolsTruncated ? (
+        <div className="mb-4 shrink-0">
+          <McpPartialTools />
+        </div>
+      ) : null}
+    </>
   );
 }

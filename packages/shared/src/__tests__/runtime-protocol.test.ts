@@ -8,7 +8,6 @@ import {
   ComputerRegisterResultV2FrameSchema,
   HeartbeatResultV1FrameSchema,
   HeartbeatResultV2FrameSchema,
-  missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
@@ -34,6 +33,19 @@ import {
 } from "../runtime-protocol.js";
 
 describe("runtime protocol", () => {
+  it("negotiates Slack auto setup only with approval-aware peers without requiring the capability", () => {
+    const v1 = { [RUNTIME_CAPABILITY.slackAutoSetup]: { min: 1, max: 1 } };
+    expect(negotiateRuntimeCapabilities(v1, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});
+    expect(negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, v1)).toEqual({});
+    expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.slackAutoSetup]: { min: 2, max: 2 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.slackAutoSetup]: 2 });
+    expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.slackAutoSetup);
+    expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.slackAutoSetup);
+  });
   it("requires the Computer identity on a successful auth result and an error code on failure", () => {
     const ok = {
       type: "auth:result" as const,
@@ -231,8 +243,6 @@ describe("runtime protocol", () => {
     );
     expect(negotiated["future.optionalFeature"]).toBe(3);
     expect(negotiated["server.unknownFeature"]).toBeUndefined();
-    expect(missingRuntimeCapabilities(["runtime.imDelivery"], negotiated)).toEqual([]);
-    expect(missingRuntimeCapabilities(["future.requiredFeature"], negotiated)).toEqual(["future.requiredFeature"]);
     expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(3);
     expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(2);
     expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(2);
@@ -565,11 +575,6 @@ describe("runtime protocol refinements", () => {
     expect(negotiated).toEqual({ "alpha.shared": 2, "gamma.pinned": 2, "zeta.shared": 3 });
     expect(Object.keys(negotiated)).toEqual(["alpha.shared", "gamma.pinned", "zeta.shared"]);
     expect(negotiateRuntimeCapabilities({}, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});
-    expect(missingRuntimeCapabilities([], negotiated)).toEqual([]);
-    expect(missingRuntimeCapabilities(["beta.disjoint", "alpha.shared", "theta.localOnly"], negotiated)).toEqual([
-      "beta.disjoint",
-      "theta.localOnly",
-    ]);
   });
 
   it("compares negotiated capabilities by content regardless of key order", () => {

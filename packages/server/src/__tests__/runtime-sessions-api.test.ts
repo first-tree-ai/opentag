@@ -44,10 +44,11 @@ describe("Runtime Session CLI routes", () => {
     const response = await app.inject({
       method: "POST",
       url: HTTP_PATHS.runtimeSessionMessages,
-      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof", "x-opentag-execution-id": "execution-live" },
       payload: { messageId, targetSessionId: randomUUID(), message: "done" },
     });
     expect(response.statusCode).toBe(200);
+    expect(authenticate).toHaveBeenCalledWith("proof", "execution-live");
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(authenticate).toHaveBeenCalledWith("proof");
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ messageId }), source);

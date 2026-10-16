@@ -1,4 +1,4 @@
-import type { GitHubOAuthContext, GitHubRepositoryBinding } from "@opentag/shared";
+import type { GitHubOAuthContext } from "@opentag/shared";
 import { relations, sql } from "drizzle-orm";
 import {
   bigint,
@@ -53,10 +53,8 @@ export const githubConnections = pgTable(
     status: githubConnectionStatus("status").notNull().default("pending"),
 
     bindingsSchemaVersion: integer("bindings_schema_version").notNull().default(1),
-    repositoryBindings: jsonb("repository_bindings")
-      .$type<GitHubRepositoryBinding[]>()
-      .notNull()
-      .default(sql`'[]'::jsonb`),
+    /** Retained historical JSON. Inert: never read or written by integration business logic. */
+    repositoryBindings: jsonb("repository_bindings").$type<unknown[]>().notNull().default(sql`'[]'::jsonb`),
 
     credentialCiphertext: text("credential_ciphertext"),
     credentialKeyId: text("credential_key_id"),

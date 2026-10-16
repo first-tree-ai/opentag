@@ -1,8 +1,10 @@
-import type { McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPAuthorizationSummary, MCPServer } from "@opentag/shared/browser";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES } from "@opentag/shared/browser";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../../api.js";
+import { fakeMcpOAuthBrowser } from "../mcp-oauth-test-fixtures.js";
 import { McpPage } from "../mcp-page.js";
 import { AGENT_ID, entry, openAdd, stub, wrap } from "../mcp-test-fixtures.js";
 import { McpDiscoverSource } from "./mcp-discover-source.js";
@@ -12,13 +14,14 @@ import { McpDiscoverSource } from "./mcp-discover-source.js";
  *
  * The shipped catalog is operator-owned data, so no test asserts a shipped entry's name or endpoint:
  * editing `mcp-catalog.yaml` must not break a test. What is asserted is the surface's behavior — tab
- * order, category grouping, localization lookup, method copy, installed state, and how an add reuses
- * or creates the Account definition.
+ * order, category grouping, localization lookup, method copy, installed state, and how an add creates
+ * an independent definition.
  */
 const CATALOG = vi.hoisted(() => ({
   categories: [
     { id: "general", label: { en: "General", zh: "通用" }, order: 10 },
     { id: "engineering", label: { en: "Engineering", zh: "工程" }, order: 20 },
+    { id: "small", label: { en: "Small category", zh: "小分类" }, order: 30 },
   ],
   entries: [
     {
@@ -26,6 +29,13 @@ const CATALOG = vi.hoisted(() => ({
       name: "alpha",
       title: { en: "Alpha", zh: "阿尔法" },
       description: { en: "Docs and wikis.", zh: "文档与知识库。" },
+      registryId: "mcp/alpha",
+      whenToUse: { en: "Use for alpha.", zh: "用于 alpha。" },
+      installable: true,
+      status: "active",
+      capabilities: ["search"],
+      auth: { methods: ["oauth"], defaultKind: "oauth", oauth: {} },
+      risk: { sideEffects: "none", dataAccess: "private" },
       url: "https://mcp.alpha.test/mcp",
       defaultAuthKind: "oauth",
       oauthScopes: ["alpha.read", "alpha.write"],
@@ -39,6 +49,13 @@ const CATALOG = vi.hoisted(() => ({
       name: "delta",
       title: { en: "Delta", zh: "德尔塔" },
       description: { en: "Notes and tasks.", zh: "笔记与任务。" },
+      registryId: "mcp/delta",
+      whenToUse: { en: "Use for delta.", zh: "用于 delta。" },
+      installable: true,
+      status: "active",
+      capabilities: ["search"],
+      auth: { methods: ["oauth"], defaultKind: "oauth", oauth: {} },
+      risk: { sideEffects: "none", dataAccess: "private" },
       url: "https://mcp.delta.test/mcp",
       defaultAuthKind: "oauth",
       category: "general",
@@ -51,6 +68,13 @@ const CATALOG = vi.hoisted(() => ({
       name: "beta",
       title: { en: "Beta", zh: "贝塔" },
       description: { en: "Boards and tickets.", zh: "看板与工单。" },
+      registryId: "mcp/beta",
+      whenToUse: { en: "Use for beta.", zh: "用于 beta。" },
+      installable: true,
+      status: "active",
+      capabilities: ["search"],
+      auth: { methods: ["none"], defaultKind: "none" },
+      risk: { sideEffects: "none", dataAccess: "private" },
       url: "https://mcp.beta.test/mcp",
       defaultAuthKind: "none",
       category: "engineering",
@@ -63,6 +87,13 @@ const CATALOG = vi.hoisted(() => ({
       name: "gamma",
       title: { en: "Gamma", zh: "伽马" },
       description: { en: "Errors and traces.", zh: "错误与链路。" },
+      registryId: "mcp/gamma",
+      whenToUse: { en: "Use for gamma.", zh: "用于 gamma。" },
+      installable: true,
+      status: "active",
+      capabilities: ["search"],
+      auth: { methods: ["bearer"], defaultKind: "bearer" },
+      risk: { sideEffects: "none", dataAccess: "private" },
       url: "https://mcp.gamma.test/mcp",
       defaultAuthKind: "bearer",
       category: "engineering",
@@ -78,9 +109,13 @@ vi.mock("@opentag/mcp-presets", () => ({
   MCP_CATALOG_ENTRIES: CATALOG.entries,
 }));
 
+beforeEach(() => {
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+  vi.spyOn(window, "open").mockReturnValue(null);
+});
 afterEach(() => vi.restoreAllMocks());
 
-const entries = CATALOG.entries as McpCatalogEntry[];
+const entries = CATALOG.entries as McpInstallableCatalogEntry[];
 
 const ALPHA_ID = "11111111-1111-4111-8111-111111111111";
 const BETA_ID = "22222222-2222-4222-8222-222222222222";
@@ -112,14 +147,14 @@ function summary(status: MCPAuthorizationSummary["status"]): MCPAuthorizationSum
   };
 }
 
-/** The definition a create or a reuse produces for one catalog entry. */
+/** The definition a create produces for one catalog entry. */
 function serverFor(name: string): MCPServer {
   return {
     id: idFor(name),
     name,
     description: null,
     url: `https://mcp.${name}.test/mcp`,
-    defaultAuthKind: "oauth",
+    defaultAuthKind: entries.find((entry) => entry.name === name)?.defaultAuthKind ?? "oauth",
     authHeader: "authorization",
     authScheme: "Bearer",
     extraHeaders: {},
@@ -144,16 +179,37 @@ function mountFor(server: MCPServer, authorization: MCPAuthorizationSummary | nu
 
 /** Every write the catalog flow performs, keyed by the catalog entry's own definition. */
 function stubCatalogWrites() {
-  const create = vi
-    .spyOn(browserApi, "createMcpServer")
-    .mockImplementation(async (input) => serverFor((input as { name: string }).name));
-  const attach = vi
-    .spyOn(browserApi, "attachMcpServer")
-    .mockImplementation(async (_agentId, body) => mountFor(serverFor(nameForId(body.mcpServerId)), null));
-  const authorize = vi
-    .spyOn(browserApi, "setMcpAuthorization")
-    .mockImplementation(async (_agentId, id) => mountFor(serverFor(nameForId(id)), summary("active")));
-  return { create, attach, authorize };
+  const mounts: MCPAgentServer[] = [];
+  vi.mocked(browserApi.agentMcpServers).mockImplementation(async () => ({ servers: [...mounts] }));
+  const create = vi.spyOn(browserApi, "createMcpServer").mockImplementation(async (input) => serverFor(input.name));
+  const attach = vi.spyOn(browserApi, "attachMcpServer").mockImplementation(async (_agentId, body) => {
+    const binding = { ...mountFor(serverFor(nameForId(body.mcpServerId)), null), snapshot: null };
+    mounts.push(binding);
+    return binding;
+  });
+  const detach = vi.spyOn(browserApi, "detachMcpServer").mockImplementation(async (_agentId, id) => {
+    const index = mounts.findIndex((entry) => entry.mcpServerId === id);
+    if (index >= 0) mounts.splice(index, 1);
+  });
+  const authorize = vi.spyOn(browserApi, "setMcpAuthorization").mockImplementation(async (_agentId, id, input) => {
+    const binding = mountFor(serverFor(nameForId(id)), { ...summary("active"), kind: input.kind });
+    const index = mounts.findIndex((entry) => entry.mcpServerId === id);
+    mounts[index] = binding;
+    return binding;
+  });
+  vi.mocked(browserApi.mcpServer).mockImplementation(async (id) => ({
+    server: (await browserApi.mcpServers()).servers.find((server) => server.id === id) ?? serverFor(nameForId(id)),
+    agents: [],
+  }));
+  vi.spyOn(browserApi, "probeMcpServer").mockResolvedValue({
+    probeState: "succeeded",
+    probeError: null,
+    toolsCount: 3,
+    toolsTruncated: false,
+    protocolEra: null,
+    protocolVersion: null,
+  });
+  return { create, attach, authorize, mounts, detach };
 }
 
 function nameForId(id: string): string {
@@ -163,38 +219,43 @@ function nameForId(id: string): string {
   return "alpha";
 }
 
-async function discover(overrides: { servers?: MCPServer[]; mounted?: MCPAgentServer[] } = {}) {
+function catalogText(title: string): HTMLElement {
+  const catalog = document.querySelector('[data-ui="mcp-catalog"]');
+  if (!catalog) throw new Error("Missing catalog");
+  return within(catalog as HTMLElement).getByText(title);
+}
+
+async function discover(
+  overrides: {
+    servers?: MCPServer[];
+    mounted?: MCPAgentServer[];
+    entries?: readonly McpInstallableCatalogEntry[];
+    initialView?: { query: string; categoryId: string };
+  } = {},
+) {
   const onAdd = vi.fn();
   wrap(
     <McpDiscoverSource
       categories={CATALOG.categories}
-      entries={entries}
+      entries={overrides.entries ?? entries}
       servers={overrides.servers ?? []}
       mounted={overrides.mounted ?? []}
       busy={false}
       onAdd={onAdd}
+      initialView={overrides.initialView}
     />,
   );
-  await screen.findByLabelText("Search the marketplace");
+  await screen.findByLabelText("Search connectors");
   return onAdd;
 }
 
-/** Open the add dialog from the page header, then switch it to the Discover source. */
+/** The directory is a first-class page action, independent of custom connections. */
 async function openDiscover() {
-  await openAdd();
-  fireEvent.click(await screen.findByRole("button", { name: "Discover" }));
-}
-
-/** Click the page's "Add server" button once the Agent read has settled and it is enabled. */
-async function clickAddButton(which: "first" | "last") {
-  const opens = await screen.findAllByRole("button", { name: "Add server" });
-  const button = (which === "first" ? opens[0] : opens[opens.length - 1]) as HTMLButtonElement;
-  await waitFor(() => {
-    if (button.hasAttribute("disabled")) throw new Error("Still loading connections");
-  });
+  const button = await screen.findByRole("button", { name: "Discover" });
+  await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
   fireEvent.click(button);
   await screen.findByRole("dialog");
-  return button;
+  await screen.findByLabelText("Search connectors");
 }
 
 /** Choose a category tab inside the open dialog. */
@@ -203,18 +264,32 @@ function chooseCategory(name: string) {
 }
 
 describe("Discover catalog surface", () => {
-  it("renders category tabs in the declared order and only the active category's cards", async () => {
-    await discover();
-    const tabs = screen.getByRole("group", { name: "Categories" }).querySelectorAll("button");
-    expect([...tabs].map((tab) => tab.textContent)).toEqual(["General", "Engineering"]);
-    expect(screen.getByText("Alpha")).toBeTruthy();
-    expect(screen.queryByText("Beta")).toBeNull();
+  it("hides small category navigation while retaining its entries in All and search", async () => {
+    const singleEntry = {
+      ...entries[0],
+      id: "solo",
+      name: "solo",
+      title: { en: "Solo", zh: "单项" },
+      category: "small",
+    } as McpInstallableCatalogEntry;
+    await discover({ entries: [...entries, singleEntry], initialView: { query: "", categoryId: "small" } });
+    const tabs = () => [...screen.getByRole("group", { name: "Categories" }).querySelectorAll("button")];
+    expect(tabs().map((tab) => tab.textContent)).toEqual(["All", "General", "Engineering"]);
+    expect(catalogText("Alpha")).toBeTruthy();
+    expect(catalogText("Beta")).toBeTruthy();
+    expect(screen.getByText("Solo")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "Solo" } });
+    expect(screen.getByText("Solo")).toBeTruthy();
+    expect(screen.queryByText("Alpha")).toBeNull();
+    expect(tabs().map((tab) => tab.textContent)).toEqual(["All", "General", "Engineering"]);
+    expect(screen.queryByRole("button", { name: "Small category" })).toBeNull();
   });
 
   it("switches category and keeps the cards' localized copy", async () => {
     await discover();
     chooseCategory("Engineering");
-    expect(screen.getByText("Beta")).toBeTruthy();
+    expect(catalogText("Beta")).toBeTruthy();
     expect(screen.getByText("Gamma")).toBeTruthy();
     expect(screen.queryByText("Alpha")).toBeNull();
     expect(screen.getByText("Boards and tickets.")).toBeTruthy();
@@ -222,235 +297,531 @@ describe("Discover catalog surface", () => {
 
   it("filters by the active locale's text, the name, and the URL", async () => {
     await discover();
-    const search = screen.getByLabelText("Search the marketplace");
+    const search = screen.getByLabelText("Search connectors");
     fireEvent.change(search, { target: { value: "wiki" } });
-    expect(screen.getByText("Alpha")).toBeTruthy();
+    expect(catalogText("Alpha")).toBeTruthy();
     expect(screen.queryByText("Beta")).toBeNull();
     fireEvent.change(search, { target: { value: "mcp.beta.test" } });
-    expect(screen.getByText("Beta")).toBeTruthy();
+    expect(catalogText("Beta")).toBeTruthy();
     fireEvent.change(search, { target: { value: "nothing here" } });
-    expect(screen.getByText("No MCP servers match this search.")).toBeTruthy();
+    expect(screen.getByText("No connectors match this search.")).toBeTruthy();
   });
 
-  it("names the method it will use for each authorization kind", async () => {
+  it("uses one add action without exposing authentication methods while browsing", async () => {
     await discover();
-    expect(screen.getByRole("button", { name: "Connect with OAuth: Alpha" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add: Alpha" })).toBeTruthy();
     chooseCategory("Engineering");
-    expect(screen.getByRole("button", { name: "Add without signing in: Beta" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Connect with an API key: Gamma" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add: Beta" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add: Gamma" })).toBeTruthy();
+    expect(screen.queryByText("API key needed")).toBeNull();
+    expect(screen.queryByText("No API key needed")).toBeNull();
+    expect(screen.queryByText("Authorize on the service’s website")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Website" })).toBeNull();
   });
 
-  it("shows an authorized mount instead of an add action", async () => {
-    await discover({ mounted: [mountFor(serverFor("alpha"), summary("active"))] });
-    expect(screen.getByText("Authorized")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect with OAuth: Alpha" })).toBeNull();
+  it("shows an added mount instead of an add action", async () => {
+    const onAdd = await discover({ mounted: [mountFor(serverFor("alpha"), summary("active"))] });
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View: Alpha" })).toBeNull();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Add: Alpha" })).toBeNull();
   });
 
-  it("distinguishes a mount that still needs authorization", async () => {
+  it("keeps authorization details out of an added card", async () => {
     await discover({ mounted: [mountFor(serverFor("alpha"), summary("pending"))] });
-    expect(screen.getByText("Authorization required")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect with OAuth: Alpha" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect: Alpha" })).toBeTruthy();
+    expect(screen.queryByText("Authorization required")).toBeNull();
+    expect(screen.queryByRole("button", { name: "View: Alpha" })).toBeNull();
   });
 });
 
-describe("Discover inside the add flow", () => {
-  it("offers the catalog from the empty state of an Agent with no mounts", async () => {
+describe("Discover to Agent management", () => {
+  it("keeps the URL Add dialog separate from the independent directory", async () => {
     stub([]);
-    wrap(<McpPage agentId={AGENT_ID} />);
-    // The header offers the manual source; the empty state is the second "Add server" action.
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Add server" }).length).toBeGreaterThan(1));
-    await clickAddButton("last");
-    expect((await screen.findByRole("button", { name: "Discover" })).getAttribute("aria-pressed")).toBe("true");
-    expect(await screen.findByText("Alpha")).toBeTruthy();
-  });
-
-  it("adds an OAuth entry without an intermediate configuration step", async () => {
-    stub([]);
-    const { create, attach } = stubCatalogWrites();
-    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
-    await waitFor(() => expect(oauth).toHaveBeenCalled());
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "alpha", url: "https://mcp.alpha.test/mcp", defaultAuthKind: "oauth" }),
+    expect(screen.queryByRole("button", { name: "Use an existing connector" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close Discover" }));
+    expect(screen.getAllByRole("button", { name: "Add custom" })).toHaveLength(1);
+    await openAdd();
+    expect(await screen.findByLabelText("Connector URL")).toBeTruthy();
+    for (const name of ["Discover", "Use an existing connector", "Import configuration", "Configure manually"]) {
+      expect(within(screen.getByRole("dialog")).queryByRole("button", { name })).toBeNull();
+    }
+    expect(screen.queryByLabelText("Search connectors")).toBeNull();
+  });
+
+  it.each(["Alpha", "Delta"])(
+    "keeps %s startup failures in Discover and removes only the new binding",
+    async (title) => {
+      stub([]);
+      const { create, attach } = stubCatalogWrites();
+      const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "upstream detail"));
+      wrap(<McpPage agentId={AGENT_ID} />);
+      await openDiscover();
+      fireEvent.click(screen.getByRole("button", { name: `Add: ${title}` }));
+      await screen.findByText("Connection failed");
+      expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
+      expect(screen.queryByRole("dialog", { name: /authentication/ })).toBeNull();
+      expect(screen.queryByText(/^Set up /)).toBeNull();
+      expect(oauth).toHaveBeenCalledWith(
+        AGENT_ID,
+        title === "Alpha" ? ALPHA_ID : DELTA_ID,
+        title === "Alpha" ? { scopes: ["alpha.read", "alpha.write"] } : {},
+      );
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(attach).toHaveBeenCalledTimes(1);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: `Reconnect: ${title}` }).hasAttribute("disabled")).toBe(false),
+      );
+      fireEvent.click(screen.getByRole("button", { name: `Reconnect: ${title}` }));
+      await waitFor(() => expect(oauth).toHaveBeenCalledTimes(2));
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(attach).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("admits only one mount while an Add write is in flight", async () => {
+    stub([]);
+    const { create, attach } = stubCatalogWrites();
+    let finish: (server: MCPServer) => void = () => {};
+    create.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
     );
-    expect(attach).toHaveBeenCalledWith(AGENT_ID, { mcpServerId: ALPHA_ID, enabled: true });
-    expect(screen.queryByLabelText("MCP URL")).toBeNull();
-    expect(screen.queryByLabelText("Name")).toBeNull();
-  });
-
-  it("sends the entry's declared OAuth scopes with the start request", async () => {
-    stub([]);
-    stubCatalogWrites();
-    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "upstream detail"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
-    await waitFor(() => expect(oauth).toHaveBeenCalled());
-    expect(oauth).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, { scopes: ["alpha.read", "alpha.write"] });
+    const add = screen.getByRole("button", { name: "Add: Alpha" });
+    fireEvent.click(add);
+    fireEvent.click(add);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(attach).not.toHaveBeenCalled();
+    finish(serverFor("alpha"));
+    await screen.findByText("Connection failed");
+    expect(attach).toHaveBeenCalledTimes(1);
   });
 
-  it("sends no explicit scopes for an entry that declares none", async () => {
+  it("does not send catalog scopes to a restored binding's custom endpoint", async () => {
     stub([]);
-    stubCatalogWrites();
-    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    const { attach, mounts } = stubCatalogWrites();
+    attach.mockImplementation(async () => {
+      const binding = { ...mountFor(serverFor("alpha"), null), snapshot: null };
+      binding.effective = { ...binding.effective, url: "https://custom.alpha.test/mcp" };
+      mounts.push(binding);
+      return binding;
+    });
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer");
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "upstream detail"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Delta" }));
-    await waitFor(() => expect(oauth).toHaveBeenCalled());
-    expect(oauth).toHaveBeenCalledWith(AGENT_ID, DELTA_ID, {});
+    fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
+    await screen.findByText("Connection failed");
+    expect(oauth).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, {});
+    expect(update).not.toHaveBeenCalled();
   });
 
-  it("reuses an existing Account definition with the same URL", async () => {
+  it("immediately probes an anonymous mount that is already authorized", async () => {
     stub([]);
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [serverFor("alpha")] });
-    const { create, attach } = stubCatalogWrites();
-    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    const { attach, authorize, mounts } = stubCatalogWrites();
+    attach.mockImplementation(async () => {
+      const binding = mountFor(serverFor("beta"), { ...summary("active"), kind: "none", probeState: "pending" });
+      mounts.push(binding);
+      return binding;
+    });
+    const probe = vi.spyOn(browserApi, "probeMcpServer").mockImplementation(async () => {
+      mounts[0] = mountFor(serverFor("beta"), { ...summary("active"), kind: "none" });
+      return {
+        probeState: "succeeded",
+        probeError: null,
+        toolsCount: 3,
+        toolsTruncated: false,
+        protocolEra: "modern",
+        protocolVersion: "2025-03-26",
+      };
+    });
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
-    await waitFor(() => expect(attach).toHaveBeenCalledWith(AGENT_ID, { mcpServerId: ALPHA_ID, enabled: true }));
-    expect(create).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Add: Beta" }));
+    await within(screen.getByRole("dialog")).findByText("Connected");
+    expect(probe).toHaveBeenCalledWith(AGENT_ID, BETA_ID);
+    expect(authorize).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
   });
 
-  it("reuses an existing Account definition for a bearer entry too", async () => {
+  it("retains Discover while anonymous credentials and tool discovery finish", async () => {
     stub([]);
-    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [serverFor("gamma")] });
+    const { authorize, mounts } = stubCatalogWrites();
+    let finish: () => void = () => {};
+    authorize.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            const pending = {
+              ...mountFor(serverFor("beta"), {
+                ...summary("active"),
+                kind: "none",
+                probeState: "pending",
+                toolsCount: 0,
+              }),
+              snapshot: null,
+            };
+            mounts[0] = pending;
+            resolve(pending);
+          };
+        }),
+    );
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDiscover();
+    fireEvent.click(screen.getByRole("button", { name: "Add: Beta" }));
+    await screen.findByText("Connecting…");
+    expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /^(Add|Connect|Reconnect|Cancel): Beta$/ }).hasAttribute("disabled"),
+    ).toBe(true);
+    finish();
+    await within(screen.getByRole("dialog", { name: "Discover" })).findByText("Connected");
+    expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
+    expect(authorize).toHaveBeenCalledWith(AGENT_ID, BETA_ID, { kind: "none" });
+  });
+
+  it("keeps probe failures and retries in Discover", async () => {
+    stub([]);
+    const { create, attach, authorize, mounts } = stubCatalogWrites();
+    authorize.mockImplementation(async () => {
+      const failed = mountFor(serverFor("beta"), {
+        ...summary("active"),
+        kind: "none",
+        probeState: "failed",
+        probeError: "Upstream unavailable",
+        toolsCount: 0,
+      });
+      mounts[0] = failed;
+      return failed;
+    });
+    const probe = vi
+      .spyOn(browserApi, "probeMcpServer")
+      .mockResolvedValueOnce({
+        probeState: "failed",
+        probeError: "Upstream unavailable",
+        toolsCount: null,
+        toolsTruncated: false,
+        protocolEra: null,
+        protocolVersion: null,
+      })
+      .mockImplementation(async () => {
+        mounts[0] = mountFor(serverFor("beta"), { ...summary("active"), kind: "none" });
+        return {
+          probeState: "succeeded",
+          probeError: null,
+          toolsCount: 3,
+          toolsTruncated: false,
+          protocolEra: null,
+          protocolVersion: null,
+        };
+      });
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDiscover();
+    fireEvent.click(screen.getByRole("button", { name: "Add: Beta" }));
+    await screen.findByText("Connection failed");
+    const retry = screen.getByRole("button", { name: /^(Add|Connect|Reconnect|Cancel): Beta$/ });
+    expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
+    fireEvent.click(retry);
+    expect(await within(screen.getByRole("dialog")).findByText("Connected", { exact: true })).toBeTruthy();
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledTimes(2);
+    expect(
+      within(
+        within(screen.getByRole("dialog", { name: "Discover" }))
+          .getByText("Beta")
+          .closest("li") as HTMLElement,
+      ).getByText("Connected"),
+    ).toBeTruthy();
+  });
+
+  it("opens the shared key form without method selection and saves to the same mount", async () => {
+    stub([]);
     const { create, attach, authorize } = stubCatalogWrites();
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    chooseCategory("Engineering");
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with an API key: Gamma" }));
-    // The key form opens on the shared definition, not on a new one.
-    expect(await screen.findByText(/Authorize separately for/)).toBeTruthy();
-    expect(screen.queryByLabelText("Name")).toBeNull();
-    fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
-      target: { value: "sample-key" },
-    });
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add server" }));
-    await waitFor(() =>
-      expect(authorize).toHaveBeenCalledWith(AGENT_ID, GAMMA_ID, { kind: "bearer", bearerKey: "sample-key" }),
-    );
-    expect(create).not.toHaveBeenCalled();
-    expect(attach).toHaveBeenCalledWith(AGENT_ID, { mcpServerId: GAMMA_ID, enabled: true });
+    fireEvent.click(screen.getByRole("button", { name: "Add: Gamma" }));
+    const key = await screen.findByLabelText("API key or token", { selector: 'input[type="password"]' });
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.queryByRole("radio")).toBeNull();
+    expect(dialog.queryByRole("button", { name: "Advanced connection settings" })).toBeNull();
+    expect(screen.getByLabelText("Search connectors").closest("[hidden]")).toBeTruthy();
+    fireEvent.change(key, { target: { value: "sample-key" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Connect" }));
+    await screen.findByRole("dialog", { name: "Discover" });
+    await within(screen.getByRole("dialog", { name: "Discover" })).findByText("Connected");
+    expect(authorize).toHaveBeenCalledWith(AGENT_ID, GAMMA_ID, { kind: "bearer", bearerKey: "sample-key" });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledTimes(1);
   });
 
-  it("adds an anonymous entry without any authorization prompt", async () => {
+  it("removes a new key setup on cancel and reuses its definition on retry", async () => {
     stub([]);
-    const { create, authorize } = stubCatalogWrites();
-    const oauth = vi
-      .spyOn(browserApi, "startMcpOAuth")
-      .mockResolvedValue({ authorizationUrl: "https://auth.test", expiresAt: "2026-09-15T00:10:00.000Z" });
+    const { create, attach, authorize, detach } = stubCatalogWrites();
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    chooseCategory("Engineering");
-    fireEvent.click(await screen.findByRole("button", { name: "Add without signing in: Beta" }));
-    await waitFor(() => expect(authorize).toHaveBeenCalledWith(AGENT_ID, BETA_ID, { kind: "none" }));
-    expect(oauth).not.toHaveBeenCalled();
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "beta", defaultAuthKind: "none" }));
-    expect(screen.queryByLabelText("API key or token", { selector: 'input[type="password"]' })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add: Gamma" }));
+    await screen.findByLabelText("API key or token", { selector: 'input[type="password"]' });
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel(?:: Alpha)?$/ }));
+    await waitFor(() => expect(detach).toHaveBeenCalledWith(AGENT_ID, GAMMA_ID));
+    await screen.findByRole("dialog", { name: "Discover" });
+    fireEvent.click(screen.getByRole("button", { name: "Add: Gamma" }));
+    await screen.findByLabelText("API key or token", { selector: 'input[type="password"]' });
+    expect(authorize).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledTimes(2);
   });
 
-  it("stops a bearer entry to collect the key", async () => {
+  it("keeps key errors and typed credentials in the shared authentication form", async () => {
     stub([]);
-    const create = vi.spyOn(browserApi, "createMcpServer");
+    const { authorize, create, attach } = stubCatalogWrites();
+    authorize.mockRejectedValueOnce(new ApiError(503, "upstream detail"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    chooseCategory("Engineering");
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with an API key: Gamma" }));
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("gamma");
-    expect(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' })).toBeTruthy();
-    expect(create).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Add: Gamma" }));
+    const key = await screen.findByLabelText("API key or token", { selector: 'input[type="password"]' });
+    fireEvent.change(key, { target: { value: "sample-key" } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText("Couldn’t connect. Try again.")).toBeTruthy();
+    expect((key as HTMLInputElement).value).toBe("sample-key");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }));
+    await screen.findByRole("dialog", { name: "Discover" });
+    await within(screen.getByRole("dialog", { name: "Discover" })).findByText("Connected");
+    expect(authorize).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledTimes(1);
   });
 
-  it("does not carry a failed add's mount to an anonymous card", async () => {
+  it("keeps adding errors in the directory and retries without duplicate definitions", async () => {
     stub([]);
-    const { attach, authorize } = stubCatalogWrites();
-    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    const { attach, create } = stubCatalogWrites();
+    attach.mockRejectedValueOnce(new ApiError(503, "Attach unavailable"));
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "upstream detail"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    // The first card mounts Alpha, then fails at authorization.
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
-    await screen.findByText("OAuth unavailable");
-    expect(attach).toHaveBeenCalledWith(AGENT_ID, { mcpServerId: ALPHA_ID, enabled: true });
-    // A different card must get its own definition and its own mount.
-    chooseCategory("Engineering");
-    fireEvent.click(await screen.findByRole("button", { name: "Add without signing in: Beta" }));
+    fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "Alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
+    await screen.findByText("Connection failed");
+    expect((screen.getByLabelText("Search connectors") as HTMLInputElement).value).toBe("Alpha");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect: Alpha" }));
+    await waitFor(() => expect(oauth).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a failed authorization separate from the next service's mount", async () => {
+    stub([]);
+    const { authorize, attach } = stubCatalogWrites();
+    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "upstream detail"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await openDiscover();
+    fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
+    await screen.findByText("Connection failed");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add: Beta" }).hasAttribute("disabled")).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Add: Beta" }));
     await waitFor(() => expect(authorize).toHaveBeenCalledWith(AGENT_ID, BETA_ID, { kind: "none" }));
     expect(attach).toHaveBeenLastCalledWith(AGENT_ID, { mcpServerId: BETA_ID, enabled: true });
-    expect(authorize).not.toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, expect.anything());
   });
 
-  it("does not carry a failed add's mount into a bearer card's key submit", async () => {
-    stub([]);
-    const { attach, authorize } = stubCatalogWrites();
-    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
-    wrap(<McpPage agentId={AGENT_ID} />);
-    await openDiscover();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
-    await screen.findByText("OAuth unavailable");
-    chooseCategory("Engineering");
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with an API key: Gamma" }));
-    fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
-      target: { value: "sample-key" },
-    });
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add server" }));
-    await waitFor(() =>
-      expect(authorize).toHaveBeenCalledWith(AGENT_ID, GAMMA_ID, { kind: "bearer", bearerKey: "sample-key" }),
-    );
-    expect(attach).toHaveBeenLastCalledWith(AGENT_ID, { mcpServerId: GAMMA_ID, enabled: true });
-    expect(authorize).not.toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, expect.anything());
-  });
-
-  it("clears a failed catalog attempt when the user switches to an existing Server", async () => {
+  it("creates from catalog defaults without inheriting another Agent's authentication or headers", async () => {
     stub([]);
     vi.mocked(browserApi.mcpServers).mockResolvedValue({
-      servers: [{ ...serverFor("gamma"), defaultAuthKind: "bearer" }],
+      servers: [{ ...serverFor("alpha"), defaultAuthKind: "bearer", extraHeaders: { "x-workspace": "other" } }],
     });
-    const { attach, authorize } = stubCatalogWrites();
-    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    const { create, authorize } = stubCatalogWrites();
+    const oauth = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "stop"));
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
-    await screen.findByText("OAuth unavailable");
-    // Leave the catalog for the manual source and pick a different Server.
-    fireEvent.click(screen.getByRole("button", { name: "Use an existing Server" }));
-    fireEvent.click(await screen.findByRole("button", { name: /gamma.*https/ }));
-    fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
-      target: { value: "sample-key" },
-    });
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add server" }));
-    await waitFor(() =>
-      expect(authorize).toHaveBeenCalledWith(AGENT_ID, GAMMA_ID, { kind: "bearer", bearerKey: "sample-key" }),
-    );
-    expect(attach).toHaveBeenLastCalledWith(AGENT_ID, { mcpServerId: GAMMA_ID, enabled: true });
-    expect(authorize).not.toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
+    await waitFor(() => expect(oauth).toHaveBeenCalled());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "alpha", defaultAuthKind: "oauth" }));
+    expect(create.mock.calls[0]?.[0].extraHeaders).toBeUndefined();
+    expect(authorize).not.toHaveBeenCalled();
+    expect(browserApi.mcpServers).not.toHaveBeenCalled();
   });
+});
 
-  it("clears a failed catalog attempt when the user pastes a new URL", async () => {
+describe("Discover authorization window", () => {
+  it("offers cancellation when a rejected active credential starts reauthorization", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      const prior = mountFor(serverFor("alpha"), { ...summary("active"), probeState: "failed" });
+      stub([prior]);
+      vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [serverFor("alpha")] });
+      vi.spyOn(browserApi, "probeMcpServer").mockResolvedValue({
+        probeState: "failed",
+        probeError: `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`,
+        toolsCount: null,
+        toolsTruncated: false,
+        protocolEra: null,
+        protocolVersion: null,
+      });
+      vi.spyOn(browserApi, "startMcpOAuth").mockResolvedValue({
+        authorizationUrl: "https://provider.test/authorize",
+        expiresAt: "2099-01-01T00:00:00Z",
+      });
+      wrap(<McpPage agentId={AGENT_ID} />);
+      await openDiscover();
+      fireEvent.click(screen.getByRole("button", { name: "Connect: Alpha" }));
+      await screen.findByText("Waiting for authorization…");
+      const card = within(screen.getByRole("dialog", { name: "Discover" }))
+        .getByText("Alpha")
+        .closest("li") as HTMLElement;
+      const cancel = within(card).getByRole("button", { name: "Cancel: Alpha" });
+      expect(cancel.hasAttribute("disabled")).toBe(false);
+      fireEvent.click(cancel);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Connect: Alpha" }).hasAttribute("disabled")).toBe(false),
+      );
+    } finally {
+      browser.restore();
+    }
+  });
+  it("keeps search and category intact, verifies success, and permits another installation", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      stub([]);
+      const { mounts } = stubCatalogWrites();
+      vi.spyOn(browserApi, "startMcpOAuth").mockResolvedValue({
+        authorizationUrl: "https://provider.test/authorize",
+        expiresAt: "2026-10-12T12:00:00Z",
+      });
+      wrap(<McpPage agentId={AGENT_ID} />);
+      await openDiscover();
+      chooseCategory("General");
+      fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "Alpha" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
+      await screen.findByText("Waiting for authorization…");
+      const pendingCard = within(screen.getByRole("dialog", { name: "Discover" }))
+        .getByText("Alpha")
+        .closest("li") as HTMLElement;
+      expect(within(pendingCard).getByRole("status").textContent).toBe("Waiting for authorization…");
+      expect(screen.getByLabelText("Search connectors").hasAttribute("disabled")).toBe(false);
+      expect(screen.getByRole("button", { name: "Engineering" }).hasAttribute("disabled")).toBe(false);
+      expect(browser.open).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
+      mounts[0] = mountFor(serverFor("alpha"), summary("active"));
+      await act(async () => browser.send({ mcpServerId: ALPHA_ID, outcome: { kind: "success" } }));
+      const card = within(screen.getByRole("dialog", { name: "Discover" }))
+        .getByText("Alpha")
+        .closest("li");
+      if (!card) throw new Error("Missing catalog card");
+      await within(card).findByText("Connected");
+      expect((screen.getByLabelText("Search connectors") as HTMLInputElement).value).toBe("Alpha");
+      fireEvent.change(screen.getByLabelText("Search connectors"), { target: { value: "" } });
+      expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByRole("button", { name: "Add: Delta" }).hasAttribute("disabled")).toBe(false);
+    } finally {
+      browser.restore();
+    }
+  });
+  it.each(["deny", "close"])(
+    "cleans up a new installation on %s and retains its definition for retry",
+    async (action) => {
+      const browser = fakeMcpOAuthBrowser();
+      try {
+        stub([]);
+        const { create, detach, mounts } = stubCatalogWrites();
+        vi.spyOn(browserApi, "startMcpOAuth").mockResolvedValue({
+          authorizationUrl: "https://provider.test/authorize",
+          expiresAt: "2026-10-12T12:00:00Z",
+        });
+        wrap(<McpPage agentId={AGENT_ID} />);
+        await openDiscover();
+        fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
+        await screen.findByText("Waiting for authorization…");
+        if (action === "deny")
+          await act(async () =>
+            browser.send({ mcpServerId: ALPHA_ID, outcome: { kind: "error", code: "MCP_OAUTH_DENIED" } }),
+          );
+        else {
+          browser.popup.closed = true;
+          await waitFor(() => expect(browser.popup.closed).toBe(true));
+          fireEvent.click(screen.getByRole("button", { name: /^Cancel(?:: Alpha)?$/ }));
+        }
+        await waitFor(() => expect(screen.queryByText("Waiting for authorization…")).toBeNull());
+        await waitFor(() => expect(detach).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
+        expect(mounts).toHaveLength(0);
+        expect(create).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Add: Alpha" })).toBeTruthy();
+      } finally {
+        browser.restore();
+      }
+    },
+  );
+  it("cancelling a pre-existing connection never removes its binding or credential", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      const prior = mountFor(serverFor("alpha"), summary("expired"));
+      stub([prior]);
+      vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [serverFor("alpha")] });
+      const detach = vi.spyOn(browserApi, "detachMcpServer");
+      vi.spyOn(browserApi, "startMcpOAuth").mockResolvedValue({
+        authorizationUrl: "https://provider.test/authorize",
+        expiresAt: "2026-10-12T12:00:00Z",
+      });
+      wrap(<McpPage agentId={AGENT_ID} />);
+      await openDiscover();
+      fireEvent.click(screen.getByRole("button", { name: "Connect: Alpha" }));
+      await screen.findByText("Waiting for authorization…");
+      await act(async () =>
+        browser.send({ mcpServerId: ALPHA_ID, outcome: { kind: "error", code: "MCP_OAUTH_DENIED" } }),
+      );
+      await waitFor(() => expect(screen.queryByText("Waiting for authorization…")).toBeNull());
+      expect(detach).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Connect: Alpha" }).hasAttribute("disabled")).toBe(false);
+    } finally {
+      browser.restore();
+    }
+  });
+  it("offers an explicit link when a popup is blocked and allows cancellation", async () => {
     stub([]);
-    const { create, attach, authorize } = stubCatalogWrites();
-    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "OAuth unavailable"));
+    const { detach } = stubCatalogWrites();
+    vi.spyOn(browserApi, "startMcpOAuth").mockResolvedValue({
+      authorizationUrl: "https://provider.test/authorize",
+      expiresAt: "2026-10-12T12:00:00Z",
+    });
     wrap(<McpPage agentId={AGENT_ID} />);
     await openDiscover();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect with OAuth: Alpha" }));
-    await screen.findByText("OAuth unavailable");
-    fireEvent.click(screen.getByRole("button", { name: "Use an existing Server" }));
-    fireEvent.change(await screen.findByLabelText("MCP URL"), {
-      target: { value: "https://mcp.delta.test/mcp" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    fireEvent.click(screen.getByRole("radio", { name: "API key or token" }));
-    fireEvent.change(screen.getByLabelText("API key or token", { selector: 'input[type="password"]' }), {
-      target: { value: "sample-key" },
-    });
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add server" }));
-    await waitFor(() =>
-      expect(authorize).toHaveBeenCalledWith(AGENT_ID, DELTA_ID, { kind: "bearer", bearerKey: "sample-key" }),
-    );
-    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ url: "https://mcp.delta.test/mcp" }));
-    expect(attach).toHaveBeenLastCalledWith(AGENT_ID, { mcpServerId: DELTA_ID, enabled: true });
-    expect(authorize).not.toHaveBeenCalledWith(AGENT_ID, ALPHA_ID, expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
+    await screen.findByText("Authorization page did not open");
+    expect(screen.getByRole("button", { name: "Open authorization page" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel(?:: Alpha)?$/ }));
+    await waitFor(() => expect(detach).toHaveBeenCalledWith(AGENT_ID, ALPHA_ID));
+    expect(screen.getByRole("dialog", { name: "Discover" })).toBeTruthy();
+  });
+  it("keeps callback failure codes on the affected card and offers Reconnect", async () => {
+    const browser = fakeMcpOAuthBrowser();
+    try {
+      stub([]);
+      stubCatalogWrites();
+      vi.spyOn(browserApi, "startMcpOAuth").mockResolvedValue({
+        authorizationUrl: "https://provider.test/authorize",
+        expiresAt: "2099-01-01T00:00:00Z",
+      });
+      wrap(<McpPage agentId={AGENT_ID} />);
+      await openDiscover();
+      fireEvent.click(screen.getByRole("button", { name: "Add: Alpha" }));
+      await screen.findByText("Waiting for authorization…");
+      await act(async () =>
+        browser.send({ mcpServerId: ALPHA_ID, outcome: { kind: "error", code: "MCP_OAUTH_FLOW_EXPIRED" } }),
+      );
+      const card = within(screen.getByRole("dialog", { name: "Discover" }))
+        .getByText("Alpha")
+        .closest("li") as HTMLElement;
+      await waitFor(() => expect(within(card).getByRole("alert").textContent).toBe("Authorization expired"));
+      expect(within(card).getByRole("button", { name: "Reconnect: Alpha" })).toBeTruthy();
+    } finally {
+      browser.restore();
+    }
   });
 });

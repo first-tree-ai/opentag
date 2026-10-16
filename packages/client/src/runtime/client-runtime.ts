@@ -1,4 +1,4 @@
-import type { TurnActivityResult } from "@opentag/shared";
+import type { SlackAutoSetupRuntimeRequest, SlackAutoSetupRuntimeResult, TurnActivityResult } from "@opentag/shared";
 import {
   type AgentRuntimeOptions,
   type AgentRuntimeOptionsRequestFrame,
@@ -27,6 +27,7 @@ import {
   type SessionReconcileRequest,
   type SessionReconcileResult,
   SessionReconcileResultSchema,
+  SlackAutoSetupRuntimeResultSchema,
   type TurnReportResult,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
@@ -42,6 +43,7 @@ type ResidualBusinessFrame = Extract<
       | "provider-cli:validation:grant"
       | "provider-cli:validation:run"
       | "provider-cli:cancel"
+      | "slack:auto-setup"
       | "context-tree:operation"
       | "agent-runtime:options"
       | "agent-runtime:options:cancel"
@@ -60,6 +62,9 @@ export interface DeliveryDecision {
 
 export interface ClientRuntimeOptions {
   handleApproval?(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult>;
+  slackAutoSetup?: {
+    run(request: SlackAutoSetupRuntimeRequest, signal?: AbortSignal): Promise<SlackAutoSetupRuntimeResult["result"]>;
+  };
   contextTreeSettings?: {
     run(frame: ContextTreeOperationFrame): Promise<ContextTreeOperationResponse>;
     close?(): void;
@@ -212,6 +217,21 @@ export class ClientRuntime {
     await this.#handleResidualFrame(frame);
   }
 
+  async #setupSlack(frame: SlackAutoSetupRuntimeRequest): Promise<void> {
+    const result = (await this.#options.slackAutoSetup?.run(frame, this.#abort.signal)) ?? {
+      status: "failed",
+      code: "capability_missing",
+    };
+    await this.#connection.send(
+      SlackAutoSetupRuntimeResultSchema.parse({
+        type: "slack:auto-setup:result",
+        requestId: frame.requestId,
+        result,
+      }),
+      { priority: "result", signal: this.#abort.signal },
+    );
+  }
+
   async #handleResidualFrame(frame: ResidualBusinessFrame): Promise<void> {
     if (frame.type === "approval:decision") {
       const result = await this.#options.handleApproval?.(frame);
@@ -228,6 +248,10 @@ export class ClientRuntime {
       return;
     }
     if (frame.type.startsWith("provider-cli:")) return;
+    if (frame.type === "slack:auto-setup") {
+      await this.#setupSlack(frame);
+      return;
+    }
     if (frame.type === "context-tree:operation") {
       let result: ContextTreeOperationResponse;
       try {

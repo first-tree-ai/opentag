@@ -6,7 +6,9 @@ import { rememberMcpReturn } from "./mcp-return-context.js";
 import {
   AGENT_ID,
   authorization,
+  detail,
   entry,
+  openAdd,
   openDetails,
   openRemove,
   openTools,
@@ -19,24 +21,31 @@ import {
 afterEach(() => vi.restoreAllMocks());
 describe("MCP daily use", () => {
   it("keeps normal rows quiet and offers refresh inside the tool browser", async () => {
-    stub([entry({ discoveredDescription: "Long server-provided description" })]);
+    stub([
+      entry({
+        effective: { ...entry().effective, url: "https://mcp.linear.app/mcp" },
+        discoveredDescription: "Long server-provided description",
+      }),
+    ]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await openTools();
+    await openTools("Linear");
     expect(screen.getByRole("button", { name: "Refresh tools" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Tool list incomplete" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Close linear tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Linear tools" }));
+    expect(screen.getByText("Find and update tasks and projects.")).toBeTruthy();
     expect(screen.queryByText("Long server-provided description")).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh tools" })).toBeNull();
-    await openDetails();
-    fireEvent.click(await screen.findByRole("button", { name: "Server information" }));
-    expect(await screen.findByText("Long server-provided description")).toBeTruthy();
+    await openDetails("Linear");
+    expect(screen.queryByRole("button", { name: "Connector information" })).toBeNull();
+    expect(screen.queryByText("Long server-provided description")).toBeNull();
   });
   it("uses identity navigation without menus or a permanent tools action", async () => {
-    stub([entry()]);
+    const description = "Search internal support documents.";
+    stub([entry({ description })]);
     wrap(<McpPage agentId={AGENT_ID} />);
     await screen.findByRole("button", { name: "linear" });
     expect(screen.queryByRole("button", { name: /More actions|View tools/ })).toBeNull();
-    fireEvent.click(screen.getByText(entry().effective.url));
+    fireEvent.click(screen.getByText(description));
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open linear details" }));
     expect(await screen.findByRole("dialog", { name: "linear" })).toBeTruthy();
@@ -47,19 +56,23 @@ describe("MCP daily use", () => {
     await openTools();
     expect(await screen.findByText("No tools available")).toBeTruthy();
   });
-  it.each(["pending", "expired", "revoked", "error"] as const)(
-    "shows an authorization action for %s",
-    async (status) => {
-      stub([entry({ authorization: { ...authorization(), status } })]);
-      wrap(<McpPage agentId={AGENT_ID} />);
-      expect(await screen.findByRole("button", { name: "Reconnect" })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
-    },
-  );
+  it.each([
+    ["pending", "Authorization incomplete"],
+    ["expired", "Authorization expired"],
+    ["revoked", "Authorization revoked"],
+    ["error", "Authorization issue"],
+  ] as const)("shows an authorization action for %s", async (status, reason) => {
+    stub([entry({ authorization: { ...authorization(), status } })]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    expect(await screen.findByRole("button", { name: "Reconnect" })).toBeTruthy();
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(screen.queryByText("Not connected")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
+  });
   it("does not turn a disabled connection into an authorization error", async () => {
     stub([entry({ enabled: false, authorization: null, snapshot: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("Disabled for Reviewer · Settings kept")).toBeTruthy();
+    expect(await screen.findByText("Disabled")).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Allow Reviewer to use linear" }).getAttribute("aria-checked")).toBe(
       "false",
     );
@@ -93,7 +106,7 @@ describe("MCP daily use", () => {
       }),
     ).toBeTruthy();
   });
-  it("offers Retry for a probe failure without asking for credentials", async () => {
+  it("offers Reconnect for a probe failure without asking for credentials", async () => {
     stub([
       entry({
         snapshot: null,
@@ -106,20 +119,19 @@ describe("MCP daily use", () => {
     ]);
     const probe = vi.spyOn(browserApi, "probeMcpServer").mockRejectedValue(new ApiError(502, "Try later"));
     wrap(<McpPage agentId={AGENT_ID} />);
-    const retry = await screen.findByRole("button", { name: "Retry" });
+    const reconnect = await screen.findByRole("button", { name: "Reconnect" });
     expect(screen.queryByText("MCP_PROBE_FAILED: upstream limit")).toBeNull();
     const errorDetails = screen.getByRole("button", { name: /^Connection failed/, description: "View error details" });
     fireEvent.click(errorDetails);
     expect(await screen.findByText("MCP_PROBE_FAILED: upstream limit")).toBeTruthy();
     fireEvent.click(errorDetails);
-    fireEvent.click(retry);
-    expect(await screen.findByText("Try later")).toBeTruthy();
+    fireEvent.click(reconnect);
+    expect(await screen.findByText("Couldn’t connect. Try again.")).toBeTruthy();
     expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
-    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^View tools/ })).toBeNull();
-    expect(
-      screen.getByRole("button", { name: /^Action failed/, description: "View error details" }).textContent,
-    ).toContain("Action failed");
+    expect(screen.getByRole("alert").textContent).toContain("Couldn’t connect.");
   });
   it("shows a real pending probe even before its first timestamp", async () => {
     stub([entry({ snapshot: null, authorization: { ...authorization(), probeState: "pending", probedAt: null } })]);
@@ -132,27 +144,33 @@ describe("MCP daily use", () => {
     vi.mocked(browserApi.agentMcpServers).mockRejectedValue(new ApiError(503, "MCP unavailable"));
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("MCP unavailable")).toBeTruthy();
-    expect(screen.queryByText("No servers added")).toBeNull();
+    expect(screen.queryByText("No connectors yet")).toBeNull();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
   it("shows an actionable empty state only after a successful read", async () => {
     stub([]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    expect(await screen.findByText("No servers added")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Add server" }).length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { level: 2, name: "No connectors yet" })).toBeTruthy();
+    expect(screen.getByText("Add a connector to give your Agent access to its tools.")).toBeTruthy();
+    expect(screen.getByText("Connect your Agent to external tools.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Add custom" })).toHaveLength(1);
+    await openAdd();
+    expect(screen.getByRole("dialog", { name: "Add custom connector" })).toBeTruthy();
+    expect(screen.getByLabelText("Connector URL")).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).queryByRole("button", { name: "Discover" })).toBeNull();
   });
   it("shows tool truncation only as a disclosure in the tool browser", async () => {
     stub([entry({ authorization: { ...authorization(), toolsCount: 200, toolsTruncated: true } })]);
     wrap(<McpPage agentId={AGENT_ID} />);
     await screen.findByRole("button", { name: "linear" });
     expect(screen.queryByText(/\d+ tools loaded/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Tool list incomplete" })).toBeNull();
     await openTools();
     const dialog = await screen.findByRole("dialog");
     const disclosure = within(dialog).getByRole("button", { name: "Tool list incomplete" });
     const explanation =
-      "The tool list may be incomplete, so this Agent may not have access to all of this Server’s tools.";
+      "The tool list may be incomplete, so this Agent may not have access to all of this connector’s tools.";
     expect(disclosure.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText(explanation)).toBeNull();
     fireEvent.click(disclosure);
@@ -287,13 +305,18 @@ describe("MCP daily use", () => {
     fireEvent.click(screen.getByRole("button", { name: "Authentication" }));
     expect(screen.queryByRole("button", { name: "Clear credentials…" })).toBeNull();
   });
-  it("associates OAuth completion with the returned server and clears bounded URL parameters", async () => {
+  it("shows OAuth completion on the card without a separate notification and clears return parameters", async () => {
     Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=success&server=${SERVER_ID}`);
     stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await waitFor(() => expect(window.location.search).toBe(""));
-    expect(await screen.findByRole("status")).toBeTruthy();
+    expect(await screen.findByText("Connected")).toBeTruthy();
+    expect(window.location.search).toBe("");
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText("linear authorized for Reviewer")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Message channel settings" })).toBeNull();
+    expect(screen.queryByText(/Ask Reviewer|Connect a messaging app/)).toBeNull();
+    expect(browserApi.imBinding).not.toHaveBeenCalled();
   });
   it("does not display an upstream OAuth error code as user copy", async () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&mcp_oauth_error=ARBITRARY`);
@@ -301,6 +324,41 @@ describe("MCP daily use", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     expect(await screen.findByText("Couldn’t start the authorization. Try again.")).toBeTruthy();
     expect(screen.queryByText(/ARBITRARY/)).toBeNull();
+  });
+  it("restores a canceled URL Add sign-in to the new Add dialog without another write", async () => {
+    rememberMcpReturn({ agentId: AGENT_ID, serverId: SERVER_ID, source: "add" });
+    window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
+    const binding = entry({ authorization: null });
+    stub([binding]);
+    vi.mocked(browserApi.mcpServers).mockResolvedValue({ servers: [detail(1).server] });
+    const create = vi.spyOn(browserApi, "createMcpServer");
+    const attach = vi.spyOn(browserApi, "attachMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const dialog = within(await screen.findByRole("dialog", { name: "Add custom connector" }));
+    await waitFor(() =>
+      expect((dialog.getByLabelText("Connector URL") as HTMLInputElement).value).toBe(binding.effective.url),
+    );
+    expect(dialog.getByText("Sign-in was not completed. Try again.")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: /authentication/i })).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
+    expect(window.location.search).toBe("");
+  });
+  it.each([true, false])("keeps canceled sign-in retryable on the card (return context=%s)", async (hasContext) => {
+    if (hasContext) rememberMcpReturn({ agentId: AGENT_ID, serverId: SERVER_ID, source: "authorize" });
+    window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
+    stub([entry({ authorization: null })]);
+    vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(502, "unsupported"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const row = within((await screen.findByRole("button", { name: "linear" })).closest("li") as HTMLElement);
+    expect(row.getByRole("alert").textContent).toBe("Sign-in was not completed. Try again.");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
+    fireEvent.click(row.getByRole("button", { name: "Connect" }));
+    await row.findByText("Couldn’t start sign-in. Try again.");
+    expect(row.queryByText("Sign-in was not completed. Try again.")).toBeNull();
+    expect(row.getByRole("button", { name: "Connect" }).hasAttribute("disabled")).toBe(false);
   });
   it("returns to the saved tool search and scroll position after canceling reconnect", async () => {
     stub([entry({ authorization: { ...authorization(), status: "expired" } })]);
@@ -312,7 +370,7 @@ describe("MCP daily use", () => {
     fireEvent.scroll(list);
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reconnect" }));
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect((screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement).value).toBe("issue");
     expect(screen.getByRole("region", { name: "Tools discovered with this Agent’s credential" }).scrollTop).toBe(120);
   });
@@ -322,7 +380,7 @@ describe("MCP daily use", () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=success&server=${SERVER_ID}`);
     stub([entry()]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await screen.findByRole("dialog", { name: "linear tools" });
+    await screen.findByRole("dialog", { name: "Tools" });
     expect((screen.getByRole("textbox", { name: "Search tools" }) as HTMLInputElement).value).toBe("issue");
     expect(screen.queryByText("linear authorized for Reviewer")).toBeNull();
     expect(window.location.search).toBe("");
@@ -332,9 +390,9 @@ describe("MCP daily use", () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(screen.getByText("Sign-in was not completed. Try again.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByRole("dialog", { name: "linear" });
     fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));
     expect(screen.queryByText("Sign-in was not completed. Try again.")).toBeNull();
@@ -367,14 +425,14 @@ describe("MCP tools OAuth error consumption", () => {
     window.history.replaceState({}, "", `/agents/${AGENT_ID}/mcp?mcp_oauth=error&server=${SERVER_ID}`);
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(screen.getByText("Sign-in was not completed. Try again.")).toBeTruthy();
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
-    fireEvent.click(screen.getByRole("button", { name: "Back to server details" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(screen.getByRole("button", { name: "Tools" }));
     expect((screen.getByLabelText("Search tools") as HTMLInputElement).value).toBe("issue");
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Reconnect" }));
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(screen.queryByText("Sign-in was not completed. Try again.")).toBeNull();
   });
 });

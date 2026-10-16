@@ -1,15 +1,18 @@
 import type { ListAgentMCPServersResponse } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
+import { LIVE_REFETCH_INTERVAL_MS } from "../../query/live.js";
 import {
+  mcpProbeRefetchInterval,
   useAgentMcpServers,
   useAttachMcpServer,
   useAvailableMcpServers,
   useCreateMcpServer,
   useDetachMcpServer,
+  useMcpInstallationDefinitions,
   useMcpServerDetail,
   useMcpServers,
   useProbeMcpServer,
@@ -20,7 +23,7 @@ import {
   useUpdateMcpBinding,
   useUpdateMcpServer,
 } from "./mcp-queries.js";
-import { entry } from "./mcp-test-fixtures.js";
+import { detail, entry } from "./mcp-test-fixtures.js";
 
 /**
  * The Agent-scoped mutation hooks, asserted on the body they actually send.
@@ -64,7 +67,110 @@ function captureBody(method: keyof typeof browserApi) {
   return { calls, spy };
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe("installation definition reads", () => {
+  const mounted = entry({ overridden: { ...entry().overridden, url: true } });
+
+  it("keeps a cached definition usable when a background refetch fails", async () => {
+    const saved = detail(1);
+    const read = vi.spyOn(browserApi, "mcpServer").mockResolvedValueOnce(saved).mockRejectedValue(new Error("Offline"));
+    const { result } = renderHook(() => useMcpInstallationDefinitions([mounted]), { wrapper });
+    await waitFor(() => expect(result.current.servers).toEqual([saved.server]));
+    await act(async () => {
+      const refreshed = await result.current.refetch();
+      expect(refreshed[0]?.isError).toBe(true);
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(result.current.isError).toBe(false));
+    expect(result.current.servers).toEqual([saved.server]);
+    expect(result.current.error).toBeUndefined();
+  });
+
+  it("reports a required definition failure when there is no cached data", async () => {
+    const error = new Error("Offline");
+    vi.spyOn(browserApi, "mcpServer").mockRejectedValue(error);
+    const { result } = renderHook(() => useMcpInstallationDefinitions([mounted]), { wrapper });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBe(error);
+    expect(result.current.servers).toEqual([]);
+  });
+});
+
+describe("pending MCP probe polling", () => {
+  const pending = (id = SERVER_ID) => {
+    const server = entry({ mcpServerId: id });
+    if (!server.authorization) throw new Error("Expected an authorized MCP fixture");
+    return { ...server, authorization: { ...server.authorization, probeState: "pending" as const } };
+  };
+
+  it("bounds fast polling when failed reads retain a cached pending probe", async () => {
+    vi.useFakeTimers();
+    const data = { servers: [pending()] };
+    const read = vi
+      .spyOn(browserApi, "agentMcpServers")
+      .mockResolvedValueOnce(data)
+      .mockRejectedValue(new Error("Offline"));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+    const { result, unmount } = renderHook(() => useAgentMcpServers(AGENT_ID), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(result.current.isSuccess).toBe(true);
+    await act(() => vi.advanceTimersByTimeAsync(90_000));
+    expect(result.current.isError).toBe(true);
+    expect(result.current.data).toEqual(data);
+    // The first ~30 reads are prompt; subsequent failed reads use the normal 30-second cadence.
+    expect(read.mock.calls.length).toBeGreaterThanOrEqual(30);
+    expect(read.mock.calls.length).toBeLessThanOrEqual(34);
+    unmount();
+    client.clear();
+  });
+
+  it("keeps the elapsed budget across successful reads and gives a new mount its own window", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    const query = { state: { data: { servers: [pending()] } } };
+    expect(mcpProbeRefetchInterval(query)).toBe(1_000);
+    now.mockReturnValue(30_000);
+    query.state.data = { servers: [pending()] };
+    expect(mcpProbeRefetchInterval(query)).toBe(LIVE_REFETCH_INTERVAL_MS);
+    query.state.data = { servers: [pending(), pending("new-mount")] };
+    expect(mcpProbeRefetchInterval(query)).toBe(1_000);
+    now.mockReturnValue(60_000);
+    expect(mcpProbeRefetchInterval(query)).toBe(LIVE_REFETCH_INTERVAL_MS);
+  });
+
+  it("ends fast polling when a probe settles or is disabled and restarts for a new pending period", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    const query: { state: { data: ListAgentMCPServersResponse } } = { state: { data: { servers: [pending()] } } };
+    expect(mcpProbeRefetchInterval(query)).toBe(1_000);
+    query.state.data = { servers: [entry()] };
+    expect(mcpProbeRefetchInterval(query)).toBe(LIVE_REFETCH_INTERVAL_MS);
+    query.state.data = { servers: [pending()] };
+    expect(mcpProbeRefetchInterval(query)).toBe(1_000);
+    query.state.data = { servers: [{ ...pending(), enabled: false }] };
+    expect(mcpProbeRefetchInterval(query)).toBe(LIVE_REFETCH_INTERVAL_MS);
+    now.mockReturnValue(90_000);
+    query.state.data = { servers: [pending()] };
+    expect(mcpProbeRefetchInterval(query)).toBe(1_000);
+    query.state.data = { servers: [] };
+    expect(mcpProbeRefetchInterval(query)).toBe(LIVE_REFETCH_INTERVAL_MS);
+  });
+
+  it("keeps budgets separate between Agent query caches", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    const first = { state: { data: { servers: [pending()] } } };
+    expect(mcpProbeRefetchInterval(first)).toBe(1_000);
+    now.mockReturnValue(30_000);
+    expect(mcpProbeRefetchInterval(first)).toBe(LIVE_REFETCH_INTERVAL_MS);
+    expect(mcpProbeRefetchInterval({ state: { data: { servers: [pending()] } } })).toBe(1_000);
+  });
+});
 
 describe("MCP mutation bodies", () => {
   it("starts OAuth without putting the Server id in the body", async () => {

@@ -89,6 +89,8 @@ export function slackConfigurationMessage(code: string): string {
   // way the reader learns the fix is on the Agent rather than in Slack.
   if (code === "AGENT_COMPUTER_NOT_BOUND")
     return m.im_slack_agent_computer_not_bound({ provider: messagingProviderLabel("slack") });
+  if (code === "SLACK_CONFIGURATION_CONFLICT") return m.im_slack_configuration_changed();
+  if (code === "SLACK_CREDENTIALS_UNAVAILABLE") return m.im_slack_credentials_unavailable();
   if (code === "SLACK_SCOPE_REAUTH_REQUIRED" || code === "SLACK_TOKEN_REVOKED") {
     return m.im_slack_permissions_missing({ provider: messagingProviderLabel("slack") });
   }

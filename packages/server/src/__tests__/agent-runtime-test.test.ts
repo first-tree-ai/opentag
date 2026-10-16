@@ -209,6 +209,7 @@ describe("Agent Runtime test owner", () => {
     const instanceId = randomUUID();
     await failingRegistry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -424,6 +425,8 @@ describe("Agent Runtime test Cloud branch", () => {
     expect(response.json()).toEqual({ status: "passed" });
     // The saved model and the caller disconnect signal reach the probe; the Local owner never runs.
     expect(cloud.test).toHaveBeenCalledWith({
+      accountId: userId,
+      agentId,
       computerId,
       model: "gpt-5.6",
       signal: expect.any(AbortSignal),
@@ -572,6 +575,7 @@ async function registerComputer(
   const frames: unknown[] = [];
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       installationId,
       instanceId,

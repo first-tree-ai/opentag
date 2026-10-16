@@ -13,7 +13,13 @@ import { AgentServiceError } from "./errors.js";
  * Session, Sandbox, or Instance is created and no product history is written.
  */
 export interface CloudAgentRuntimeTestPort {
-  test(input: { computerId: string; model: string | null; signal?: AbortSignal }): Promise<AgentRuntimeTestResponse>;
+  test(input: {
+    accountId?: string;
+    agentId?: string;
+    computerId: string;
+    model: string | null;
+    signal?: AbortSignal;
+  }): Promise<AgentRuntimeTestResponse>;
 }
 
 export class AgentRuntimeTestService {
@@ -73,6 +79,8 @@ export class AgentRuntimeTestService {
       const cloud = this.#cloud;
       if (!cloud) return { status: "failed", code: "computer_unavailable" };
       return cloud.test({
+        accountId: callerUserId,
+        agentId,
         computerId: config.computerId,
         model: config.runtimeConfig.model,
         ...(signal ? { signal } : {}),

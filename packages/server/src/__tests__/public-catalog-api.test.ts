@@ -74,6 +74,17 @@ describe("public catalog routes", () => {
         name: entry.name,
         title: { ...entry.title },
         description: { ...entry.description },
+        registryId: entry.registryId,
+        installable: entry.installable,
+        ...(entry.prerequisites ? { prerequisites: [...entry.prerequisites] } : {}),
+        ...(entry.platforms ? { platforms: [...entry.platforms] } : {}),
+        whenToUse: { ...entry.whenToUse },
+        capabilities: [...entry.capabilities],
+        ...(entry.keywords ? { keywords: [...entry.keywords] } : {}),
+        ...(entry.aliases ? { aliases: [...entry.aliases] } : {}),
+        ...(entry.tags ? { tags: [...entry.tags] } : {}),
+        status: entry.status,
+        risk: { sideEffects: entry.risk.sideEffects, dataAccess: entry.risk.dataAccess },
         category: entry.category,
         website: entry.website,
         iconUrl: entry.iconUrl,
@@ -81,18 +92,32 @@ describe("public catalog routes", () => {
         defaultAuthKind: entry.defaultAuthKind,
       })),
     );
+    const allowed = new Set([
+      "aliases",
+      "capabilities",
+      "category",
+      "defaultAuthKind",
+      "description",
+      "iconUrl",
+      "id",
+      "keywords",
+      "installable",
+      "name",
+      "order",
+      "packages",
+      "platforms",
+      "prerequisites",
+      "registryId",
+      "risk",
+      "status",
+      "tags",
+      "title",
+      "website",
+      "whenToUse",
+    ]);
     for (const server of body.servers) {
-      expect(Object.keys(server).sort()).toEqual([
-        "category",
-        "defaultAuthKind",
-        "description",
-        "iconUrl",
-        "id",
-        "name",
-        "order",
-        "title",
-        "website",
-      ]);
+      // Display fields only: no endpoint URL, header, scope, or other connection configuration.
+      for (const key of Object.keys(server)) expect(allowed.has(key)).toBe(true);
       expect(server.title.en.length).toBeGreaterThan(0);
       expect(server.title.zh.length).toBeGreaterThan(0);
     }

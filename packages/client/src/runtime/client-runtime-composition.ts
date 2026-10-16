@@ -40,6 +40,7 @@ import {
 } from "../providers/pi/agent-runtime.js";
 import { piRuntimePolicy, validatePiRuntimePolicy } from "../providers/pi/runtime-policy.js";
 import { SkillSyncManager } from "../skills/skill-sync.js";
+import { SlackAutoSetup } from "../slack-auto-setup.js";
 import { ensurePrivateDirectory, RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { AdmissionController } from "./admission-controller.js";
@@ -320,6 +321,8 @@ export interface CreateClientRuntimeOptions {
   readonly piCommand?: string;
   readonly piHome?: string;
   readonly cliCommand?: string;
+  /** Authoritative packaged CLI entry for the Slack deployment hook; absent embeddings use manual setup. */
+  readonly slackAutoSetupCliEntry?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
   readonly factories?: readonly AgentRuntimeFactory[];
@@ -848,6 +851,10 @@ export async function createClientRuntime(
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
   const runtime = new ClientRuntime(connection, {
+    slackAutoSetup: new SlackAutoSetup({
+      environment: { ...sourceEnvironment, OPENTAG_HOME: resolveOpenTagHomeLayout(options.home).home },
+      cliEntry: options.slackAutoSetupCliEntry,
+    }),
     contextTreeSettings: new ContextTreeSettings({
       home: options.home,
       environment: sourceEnvironment,

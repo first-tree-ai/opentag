@@ -12,9 +12,7 @@ const translations = [
     offline: "Offline",
     restore: "Restore connection",
     repair: "Repair connection",
-    start: "Get connection help",
     copy: "Copy instructions",
-    close: "Close Connection help",
     back: "Back to Reviewer settings",
   },
   {
@@ -24,9 +22,7 @@ const translations = [
     offline: "离线",
     restore: "恢复连接",
     repair: "修复连接",
-    start: "查看连接帮助",
     copy: "复制指令",
-    close: "关闭 连接帮助",
     back: "返回 Reviewer 设置",
   },
 ];
@@ -46,16 +42,17 @@ describe("Computer localization", () => {
     const restore = screen.getByRole("link", { name: copy.restore });
     expect(restore.getAttribute("href")).toContain(`computerId=${computerId}`);
     fireEvent.click(restore);
-    const help = await screen.findByRole("button", { name: copy.start });
+    await screen.findByRole("button", { name: copy.copy });
     expect(screen.queryByRole("button", { name: copy.repair })).toBeNull();
-    fireEvent.click(help);
+    fireEvent.click(
+      screen.getByRole("button", { name: copy.locale === "en" ? "Show full instructions" : "展开完整指令" }),
+    );
     expect(await screen.findByRole("button", { name: copy.copy })).toBeTruthy();
     expect(screen.getByRole("region", { name: copy.restore }).textContent).toContain("opentag doctor --json");
     if (copy.locale === "zh") {
       expect(screen.queryByRole("heading", { name: "运行环境" })).toBeNull();
       expect(screen.getByRole("main").textContent).not.toMatch(/计算机|账号|\bComputer\b|运行时/);
     }
-    fireEvent.click(screen.getByRole("button", { name: copy.close }));
     fireEvent.click(await screen.findByRole("link", { name: copy.back }));
     expect(await screen.findByRole("link", { name: copy.restore })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: copy.runtime })).toBeNull();

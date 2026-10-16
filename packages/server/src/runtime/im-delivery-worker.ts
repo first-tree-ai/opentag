@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  computeDirectInputHash,
   computeRuntimeImSteerInputHash,
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
@@ -67,6 +66,7 @@ import {
   runImDeliveryJanitor,
   runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
+import { matchPinnedDirectInputHash } from "./im-delivery-pinned-hash.js";
 import { ImDeliveryReadyWakeup, isCloudReadinessRetry, readySessionClaimGuard } from "./im-delivery-ready-wakeup.js";
 import type {
   CloudSessionAllocationPort,
@@ -93,17 +93,14 @@ const acceptedPlacements = alias(sessionPlacements, "agent_accepted_placements")
 const acceptedComputers = alias(computers, "agent_accepted_computers");
 const earlierPendingDeliveries = alias(imMessageDeliveries, "pending_earlier_deliveries");
 const earlierPendingMessages = alias(imMessages, "pending_earlier_messages");
-
 function positiveWorkerLimit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
   return value;
 }
-
 /** A claim deferred by another occupant: Local rows are declined steers, Cloud rows are custody races. */
 function custodyDeferralCode(computerKind: "local" | "cloud"): string {
   return computerKind === "cloud" ? "IM_DELIVERY_CUSTODY_DEFERRED" : "IM_DELIVERY_STEER_DEFERRED";
 }
-
 /**
  * E6 ordering guard for undispatched Cloud inputs: an input never overtakes an earlier live input
  * of the same Session. The earlier row's own retry backoff and another Worker's in-flight
@@ -147,7 +144,6 @@ function cloudPendingOrderingGuard(transaction: DatabaseTransaction) {
     ),
   );
 }
-
 export class ImDeliveryWorker {
   #closed = false;
   readonly #readyWakeup: ImDeliveryReadyWakeup;
@@ -617,6 +613,7 @@ export class ImDeliveryWorker {
         await transaction
           .update(imMessageDeliveries)
           .set({
+            executionOrigin: null,
             dispatchRequestId: null,
             dispatchInputHash: null,
             dispatchPayload: null,
@@ -632,8 +629,10 @@ export class ImDeliveryWorker {
         .set({
           attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
           ...(row.state === "pending" ? { placementGeneration: row.generation } : {}),
+          executionOrigin: sql`case when ${imMessageDeliveries.dispatchRequestId} is null then null else ${imMessageDeliveries.executionOrigin} end`,
           ...(retiredSteerCorrelation
             ? {
+                executionOrigin: null,
                 dispatchRequestId: null,
                 dispatchInputHash: null,
                 dispatchPayload: null,
@@ -798,6 +797,10 @@ export class ImDeliveryWorker {
       fitDeliveryFrame(request);
       validateFreshImRequest(request);
       if (!(await lease.assertOwned())) return;
+      await this.#database
+        .update(imMessageDeliveries)
+        .set({ executionOrigin: "local" })
+        .where(and(eq(imMessageDeliveries.id, claim.id), eq(imMessageDeliveries.lastErrorCode, claim.claimToken)));
       const admitted = await this.#withActiveAgentAdmission(
         {
           agentId: row.agent.id,
@@ -896,20 +899,21 @@ export class ImDeliveryWorker {
     }
     validateUndispatchedContent(row);
     /*
-     * E4 Cloud branch: a Cloud Computer is a logical identity with one Sandbox Runner per Agent
-     * Session, so deliveries route through the per-Sandbox Cloud dispatch owner, never the Local
-     * runtime registry (`computer.currentInstanceId`/`registry.currentInstanceId` are Local-only
-     * facts). Cloud pending-deadline discipline, deliberately reusing Local bounds:
-     * - the claim lease (claimLeaseMs) and operation deadline (operationTimeoutMs) are unchanged:
-     *   Cloud dispatch is a short custody write + control-frame send, never a wait for cold start;
-     * - an unready environment/Runner is a TRANSIENT failure retried on RETRY_DELAY_MS, so long
-     *   allocations are absorbed by repeated short attempts instead of one long in-operation wait;
-     * - no Local admission/queue-age TTL applies (maxQueueAgeMs is unset in production wiring);
-     *   the delivery's own expiresAt — set at ingress and protected by the Cloud-aware
-     *   inbox/janitor retention — is the bounded deadline for the UNDISPATCHED pending input;
-     *   once a dispatch window is frozen, its runtime-budget deadline (separate from the short
-     *   operationTimeoutMs and ingress TTL) bounds it; accepted-unreported custody is never expired.
+     * Cloud dispatch uses the per-Sandbox owner and short claim/operation deadlines, not the
+     * Local runtime registry or queue-age TTL. Unready Runners retry in short attempts; ingress
+     * expiresAt bounds undispatched input, the runtime budget bounds frozen dispatches, and
+     * accepted-unreported custody never expires.
      */
+    await this.#database
+      .update(imMessageDeliveries)
+      .set({ executionOrigin: row.computer.kind })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          eq(imMessageDeliveries.lastErrorCode, claimToken),
+          isNull(imMessageDeliveries.executionOrigin),
+        ),
+      );
     if (row.computer.kind === "cloud") {
       await this.#deliverCloud(row, claimToken, lease, signal);
       return;
@@ -939,6 +943,10 @@ export class ImDeliveryWorker {
       this.#registry.capabilityVersion(row.computer.id, instanceId, RUNTIME_CAPABILITY.imDelivery) !== 2
     ) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_OBSERVER_UNSUPPORTED", claimToken);
+      return;
+    }
+    if (!this.#registry.canReceiveSnapshot(row.computer.id, instanceId)) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UPGRADE_REQUIRED", claimToken);
       return;
     }
     const runtime =
@@ -1160,10 +1168,7 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
       return;
     }
-    const recovery = await this.#resolveRecoveryRuntime(row, deliveryId);
-    if ("invalid" in recovery) return;
-    const runtime = recovery.runtime;
-    if (row.agent.status === "active" && !runtime) return;
+    if (!(await this.#validateRecoveryPayload(row, deliveryId))) return;
     try {
       await this.#domain.requestReconcile(row.computer.id, instanceId, {
         type: "session:reconcile",
@@ -1172,8 +1177,8 @@ export class ImDeliveryWorker {
         sessionId: row.session.id,
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,
-        desired: row.agent.status === "active" ? "ready" : "stopped",
-        ...(runtime ? { runtime } : {}),
+        // Accepted work must settle before applying any snapshot, including after an upgrade.
+        desired: "stopped",
       });
       setActiveSpanAttributes(outcomeAttrs("recovered"));
     } catch {
@@ -1181,11 +1186,8 @@ export class ImDeliveryWorker {
     }
   }
 
-  /**
-   * The Local recovery runtime: a pinned dispatch payload is validated exactly, a legacy row may
-   * fall back to the assembled snapshot only while the Agent is still active.
-   */
-  async #resolveRecoveryRuntime(
+  /** Verify the original dispatch identity without preparing new business or rewriting old hashes. */
+  async #validateRecoveryPayload(
     row: {
       delivery: typeof imMessageDeliveries.$inferSelect;
       session: typeof sessions.$inferSelect;
@@ -1193,14 +1195,12 @@ export class ImDeliveryWorker {
       placement: typeof sessionPlacements.$inferSelect;
     },
     deliveryId: string,
-  ): Promise<{ invalid: true } | { runtime: EffectiveRuntimeSnapshot | undefined }> {
-    if (row.delivery.dispatchPayload === null) {
-      if (row.agent.status !== "active") return { runtime: undefined };
-      this.#onDiagnostic("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
-      return { runtime: await this.#assembleRuntime(deliveryId, row.session.id, "recovery") };
-    }
+  ): Promise<boolean> {
+    if (row.delivery.dispatchPayload === null) return true;
     const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
-    const pinnedInputHash = pinned.success ? computeDirectInputHash(pinned.data) : undefined;
+    const pinnedInputHash = pinned.success
+      ? matchPinnedDirectInputHash(pinned.data, row.delivery.dispatchInputHash)
+      : undefined;
     if (
       !pinned.success ||
       pinned.data.deliveryId !== row.delivery.id ||
@@ -1213,9 +1213,9 @@ export class ImDeliveryWorker {
       pinnedInputHash !== row.delivery.inputHash
     ) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
-      return { invalid: true };
+      return false;
     }
-    return { runtime: row.agent.status === "active" ? pinned.data.runtime : undefined };
+    return true;
   }
 
   async #assembleRuntime(
@@ -1337,6 +1337,7 @@ export class ImDeliveryWorker {
     const [released] = await this.#database
       .update(imMessageDeliveries)
       .set({
+        executionOrigin: null,
         dispatchRequestId: null,
         dispatchInputHash: null,
         dispatchPayload: null,
@@ -1379,6 +1380,7 @@ export class ImDeliveryWorker {
       .update(imMessageDeliveries)
       .set({
         state: "terminal_rejected",
+        executionOrigin: null,
         dispatchRequestId: null,
         dispatchInputHash: null,
         dispatchPayload: null,

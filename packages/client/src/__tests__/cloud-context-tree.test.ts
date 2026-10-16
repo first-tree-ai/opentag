@@ -40,7 +40,7 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 }
 
 const PACKAGE = { root: "/pkg", cliPath: "/pkg/dist/cli/index.mjs", skillsPath: "/pkg/skills" };
-const GRANT = { OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "context_tree" }]) };
+const GRANT = { GH_TOKEN: "execution-local-handle", OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234" };
 
 interface CapturedCall {
   args: string[];
@@ -214,17 +214,11 @@ describe("prepareCloudContextTree (unit)", () => {
 
   it.each([
     ["absent", {}],
-    [
-      "for another repository",
-      { OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/other", role: "context_tree" }]) },
-    ],
-    [
-      "with only a code role",
-      { OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "code" }]) },
-    ],
-    ["malformed", { OPENTAG_GITHUB_REPOSITORIES: "not-json" }],
+    ["no proxy", { GH_TOKEN: "local-handle" }],
+    ["no handle", { OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234" }],
+    ["legacy directory only", { OPENTAG_GITHUB_REPOSITORIES: "[]" }],
   ])(
-    "denies the connect when the current grant is %s, preserving the record and drafts",
+    "denies the connect when the managed transport is %s, preserving the record and drafts",
     async (_label, environment) => {
       const { calls, execFile, input, treeHome, treePath } = await fixture({ environment, preserved: {} });
       await writeFile(join(treePath, "draft.md"), "unpublished draft");
@@ -516,9 +510,8 @@ describe("multiple Cloud Context Trees", () => {
         ...f.input,
         contextTrees: connections,
         environment: {
-          OPENTAG_GITHUB_REPOSITORIES: JSON.stringify(
-            connections.map((entry) => ({ fullName: entry.repository, role: "context_tree" })),
-          ),
+          GH_TOKEN: "execution-local-handle",
+          OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234",
         },
       },
       { contextTreePackage: PACKAGE, execFile },
@@ -550,9 +543,8 @@ describe("multiple Cloud Context Trees", () => {
         contextTrees: connections,
         signal: controller.signal,
         environment: {
-          OPENTAG_GITHUB_REPOSITORIES: JSON.stringify(
-            connections.map((entry) => ({ fullName: entry.repository, role: "context_tree" })),
-          ),
+          GH_TOKEN: "execution-local-handle",
+          OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234",
         },
       },
       { contextTreePackage: PACKAGE, execFile },
@@ -612,7 +604,7 @@ function partialSyncCli(
   };
 }
 
-it("detaches a revoked alias before exposing the CLI for another authorized tree", async () => {
+it("detaches a removed working target while preserving its unpublished checkout", async () => {
   const f = await fixture({ preserved: {} });
   await writeFile(join(f.treePath, "draft.md"), "preserved draft");
   const other = { alias: "team", repository: "acme/team" };
@@ -644,18 +636,16 @@ it("detaches a revoked alias before exposing the CLI for another authorized tree
   const result = await prepareCloudContextTrees(
     {
       ...f.input,
-      contextTrees: [...f.input.contextTrees, other],
+      contextTrees: [other],
       environment: {
-        OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: other.repository, role: "context_tree" }]),
+        GH_TOKEN: "execution-local-handle",
+        OPENTAG_PROVIDER_PROXY_URL: "http://127.0.0.1:1234",
       },
     },
     { contextTreePackage: PACKAGE, execFile },
   );
   expect(result.status).toMatchObject({
-    connections: [
-      { alias: "memory", reason: "GITHUB_PERMISSION" },
-      { alias: "team", status: "ready" },
-    ],
+    connections: [{ alias: "team", status: "ready" }],
   });
   expect(f.calls.map((call) => call.args[0])).toEqual(["resolve", "disconnect", "connect", "sync"]);
   expect(f.calls[1]?.args).toContain("memory");

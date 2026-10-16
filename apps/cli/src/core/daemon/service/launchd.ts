@@ -1,8 +1,9 @@
-import { rm } from "node:fs/promises";
+import { chmod, rm } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { ensurePrivateDirectory } from "@opentag/client";
 import { resolveDaemonPaths } from "../paths.js";
+import { preserveLaunchdEnvironment } from "./environment.js";
 import {
   buildServicePath,
   deriveServiceIdentity,
@@ -104,7 +105,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const stderrPath = paths.daemonStderrLog;
   const servicePath = buildServicePath(options.invocation, "darwin", options.sourcePath);
   const expectedWrapper = renderLaunchdWrapper(options.invocation);
-  const expectedPlist = renderLaunchdPlist({
+  const plistTemplate = renderLaunchdPlist({
     home: options.home,
     label: identity.launchdLabel,
     path: servicePath,
@@ -153,7 +154,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       });
     }
     const result = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
-    const drifted = plist !== expectedPlist || wrapper !== expectedWrapper;
+    const drifted = plist !== preserveLaunchdEnvironment(plistTemplate, plist) || wrapper !== expectedWrapper;
     if (result.timedOut) {
       if (failOnTimeout) {
         throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
@@ -248,9 +249,10 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     preflight,
     async installAndStart() {
       await preflight();
+      const expectedPlist = preserveLaunchdEnvironment(plistTemplate, await readRegularFile(plistPath));
       await ensurePrivateDirectory(paths.home, logDirectory);
       await writeFileAtomically(wrapperPath, expectedWrapper, 0o700, 0o700, paths.home);
-      await writeFileAtomically(plistPath, expectedPlist, 0o644, 0o700);
+      await writeFileAtomically(plistPath, expectedPlist, 0o600, 0o700);
       await bootout();
       await waitForEviction();
       await bootstrap();
@@ -292,6 +294,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       if (plist === undefined) {
         throw new DaemonServiceError("NOT_INSTALLED", "The daemon service is not installed; run daemon install");
       }
+      const expectedPlist = preserveLaunchdEnvironment(plistTemplate, plist);
       const wrapper = await readRegularFile(wrapperPath);
       // Rewrite the definition files only: never bootout the label here, because the caller is the
       // running daemon handing off to the supervisor, and bootout would kill it before the handoff.
@@ -301,8 +304,10 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
         await writeFileAtomically(wrapperPath, expectedWrapper, 0o700, 0o700, paths.home);
       }
       if (plist !== expectedPlist) {
-        await writeFileAtomically(plistPath, expectedPlist, 0o644, 0o700);
+        await writeFileAtomically(plistPath, expectedPlist, 0o600, 0o700);
       }
+      // Old definitions can be byte-identical while still using the previous public mode.
+      await chmod(plistPath, 0o600);
       return status();
     },
     async restart() {

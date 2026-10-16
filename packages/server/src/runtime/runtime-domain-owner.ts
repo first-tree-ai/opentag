@@ -95,6 +95,11 @@ export type RuntimeDispatchAdmission<T> = (
   operation: (onDispatched: () => void) => Promise<T>,
 ) => Promise<{ admitted: false } | { admitted: true; result: Promise<T> }>;
 
+export interface PreparedSessionReconcile {
+  request: SessionReconcileRequest;
+  onResult?(result: SessionReconcileResult): Promise<void>;
+}
+
 export interface RuntimeDomainOwnerOptions {
   logger?: ServiceLogger;
   maxPendingRequests?: number;
@@ -108,7 +113,7 @@ export interface RuntimeDomainOwnerOptions {
     computerId: string,
     instanceId: string,
     request: SessionReconcileRequest,
-  ): Promise<SessionReconcileRequest>;
+  ): Promise<PreparedSessionReconcile>;
   requestTimeoutMs?: number;
 }
 
@@ -125,6 +130,8 @@ interface PendingBase<TRequest, TResult> {
 
 interface PendingReconcile extends PendingBase<SessionReconcileRequest, SessionReconcileResult> {
   kind: "reconcile";
+  onResult?: PreparedSessionReconcile["onResult"];
+  completing?: boolean;
 }
 
 interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, ImMessageDeliveryResult> {
@@ -186,9 +193,10 @@ function createPendingRequest(
   base: PendingRequestBase,
   inputHash: string | undefined,
   semanticHash: string | undefined,
+  onResult?: PreparedSessionReconcile["onResult"],
 ): PendingRequest {
   if (kind === "reconcile") {
-    return { ...base, kind, request: base.request as SessionReconcileRequest } as PendingReconcile;
+    return { ...base, kind, request: base.request as SessionReconcileRequest, onResult } as PendingReconcile;
   }
   if (kind === "delivery") {
     return {
@@ -299,6 +307,7 @@ export class RuntimeDomainOwner {
     });
     let operation: Promise<SessionReconcileResult>;
     try {
+      this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
       const hash = computeReconcilePayloadHash(request);
       const preparation = this.#options.prepareReconcile;
       if (!preparation) {
@@ -327,7 +336,7 @@ export class RuntimeDomainOwner {
           onDispatched?.();
           operation = existing.promise;
         } else {
-          operation = preparation(computerId, instanceId, request).then((value) =>
+          operation = preparation(computerId, instanceId, request).then((prepared) =>
             this.#withDispatchAdmission(
               admission,
               (admissionDispatched) =>
@@ -337,12 +346,13 @@ export class RuntimeDomainOwner {
                   "reconcile",
                   computerId,
                   instanceId,
-                  value,
-                  computeReconcilePayloadHash(value),
+                  prepared.request,
+                  computeReconcilePayloadHash(prepared.request),
                   undefined,
                   undefined,
                   admissionDispatched,
                   signal,
+                  prepared.onResult,
                 ) as Promise<SessionReconcileResult>,
               onDispatched,
             ),
@@ -386,6 +396,9 @@ export class RuntimeDomainOwner {
     request: RuntimeImSteerRequest,
     onDispatched?: () => void,
   ): Promise<RuntimeImSteerResult> {
+    if (this.#registry.currentInstanceId(computerId) !== instanceId) {
+      throw new RuntimeDomainRequestError("authority_unavailable", "The Computer instance is not current");
+    }
     const inputHash = computeRuntimeImSteerInputHash(request);
     const semanticHash = computeRuntimeImMessageSemanticHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
@@ -564,6 +577,7 @@ export class RuntimeDomainOwner {
         onDispatched,
       ) as Promise<ImMessageDeliveryResult>;
     }
+    this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
     const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched);
     const owner = { computerId, hash: requestHash, instanceId, promise };
     this.#startingDeliveries.set(request.requestId, owner);
@@ -805,6 +819,7 @@ export class RuntimeDomainOwner {
     semanticHash?: string,
     onDispatched?: () => void,
     signal?: AbortSignal,
+    onReconcileResult?: PreparedSessionReconcile["onResult"],
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
     const existing = this.#pending.get(request.requestId);
     if (existing) {
@@ -844,6 +859,7 @@ export class RuntimeDomainOwner {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
     }
+    this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
     if (this.#pending.size >= this.#options.maxPendingRequests) {
       throw new RuntimeDomainRequestError("capacity", "The runtime request owner is full");
     }
@@ -888,39 +904,44 @@ export class RuntimeDomainOwner {
       resolve: resolvePromise,
       timer,
     };
-    const pending = createPendingRequest(kind, base, inputHash, semanticHash);
+    const pending = createPendingRequest(kind, base, inputHash, semanticHash, onReconcileResult);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request);
-    onDispatched?.();
-    void dispatch.catch((error: unknown) => {
-      if (this.#pending.get(request.requestId) !== pending) return;
-      this.#pending.delete(request.requestId);
-      clearTimeout(timer);
-      try {
-        this.#logger?.warn(
-          {
-            code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
-            computerId,
-            instanceId,
-            requestId: request.requestId,
-          },
-          "Runtime domain request failed",
+    void dispatch
+      .then(() => onDispatched?.())
+      .catch((error: unknown) => {
+        if (this.#pending.get(request.requestId) !== pending) return;
+        this.#pending.delete(request.requestId);
+        clearTimeout(timer);
+        try {
+          this.#logger?.warn(
+            {
+              code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
+              computerId,
+              instanceId,
+              requestId: request.requestId,
+            },
+            "Runtime domain request failed",
+          );
+        } catch {
+          // Logging must never replace the request failure.
+        }
+        if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
+        if (pending.kind === "steer") {
+          void this.#custody
+            .releaseSteerDispatch(pending.request, pending.inputHash, "deferred")
+            .catch(() => undefined);
+        } else if (pending.kind === "delivery") {
+          void this.#custody
+            .releaseDeliveryDispatch(pending.request, pending.inputHash, "retry")
+            .catch(() => undefined);
+        }
+        pending.reject(
+          error instanceof Error
+            ? error
+            : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
         );
-      } catch {
-        // Logging must never replace the request failure.
-      }
-      if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
-      if (pending.kind === "steer") {
-        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
-      } else if (pending.kind === "delivery") {
-        void this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "retry").catch(() => undefined);
-      }
-      pending.reject(
-        error instanceof Error
-          ? error
-          : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
-      );
-    });
+      });
     return promise;
   }
 
@@ -931,7 +952,7 @@ export class RuntimeDomainOwner {
     context: RuntimeBusinessContext,
   ): Promise<void> {
     const pending = this.#pending.get(requestId);
-    if (!pending || pending.kind !== kind) return;
+    if (!pending || pending.kind !== kind || pending.completing) return;
     if (!this.#matchesContext(pending, context)) return;
     if (
       result.sessionId !== pending.request.sessionId ||
@@ -939,10 +960,20 @@ export class RuntimeDomainOwner {
     ) {
       return;
     }
-    if (result.status !== "rejected") {
-      await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
+    pending.completing = true;
+    try {
+      if (result.status !== "rejected") {
+        await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
+      }
+      if (this.#pending.get(requestId) !== pending) return;
+      await pending.onResult?.(result);
+      this.#settle(pending, result);
+    } catch (error) {
+      if (this.#pending.get(requestId) !== pending) return;
+      this.#pending.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.reject(error instanceof Error ? error : new Error("Reconcile result processing failed"));
     }
-    this.#settle(pending, result);
   }
 
   async #completeDelivery(result: ImMessageDeliveryResult, context: RuntimeBusinessContext): Promise<void> {

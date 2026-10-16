@@ -339,6 +339,8 @@ function defaultConfig() {
     autoMigrate: true,
     cloudIdentities: { enabled: false },
     cloudRunner: { enabled: false },
+    cloudModel: { enabled: false },
+    cloudBilling: { enabled: false },
     skillStorage: { enabled: false },
     channelTarget: {
       downloadBaseUrl: "https://download.test/releases",
@@ -418,7 +420,7 @@ beforeEach(() => {
     status: "rejected",
     code: "binding_inactive",
   });
-  const log = { info: vi.fn(), error: vi.fn() };
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   state.app = {
     addHook: vi.fn((_name: string, hook: () => Promise<void>) => {
       state.onClose = hook;
@@ -655,6 +657,22 @@ describe("Server startup", () => {
       "instance-3",
       expect.objectContaining({ desired: "stopped" }),
       undefined,
+    );
+  });
+
+  it("starts an image without billing despite a stale enable flag and reports the ignored flag", async () => {
+    state.config = {
+      ...defaultConfig(),
+      cloudBilling: { enabled: false, requested: true, capability: "absent" },
+    };
+
+    await startServer();
+
+    expect(state.events).toContain("listen");
+    expect((state.appOptions as { cloudBilling?: unknown }).cloudBilling).toBeUndefined();
+    expect((state.app as { log: { warn: ReturnType<typeof vi.fn> } }).log.warn).toHaveBeenCalledWith(
+      { event: "cloud_billing_flag_ignored", capability: "absent" },
+      expect.stringContaining("does not bundle cloud billing"),
     );
   });
 

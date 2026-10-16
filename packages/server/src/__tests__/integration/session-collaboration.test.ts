@@ -43,6 +43,7 @@ afterAll(async () => container.stop());
 beforeEach(async () => {
   const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
   try {
+    await sql.unsafe("drop schema if exists billing cascade");
     await sql.unsafe("drop schema if exists public cascade");
     await sql.unsafe("drop schema if exists drizzle cascade");
     await sql.unsafe("create schema public");
@@ -485,7 +486,7 @@ describe("Session collaboration authority", () => {
         desired: "ready",
         runtime: runtimeSnapshot(fixture.agentId),
       });
-      expect(busyReconcile.sessionCliProof).toEqual(first);
+      expect(busyReconcile.request.sessionCliProof).toEqual(first);
       await expect(proofs.authenticate(first.token)).resolves.toMatchObject({ sessionId: source.session.id });
 
       const replacementInstanceId = randomUUID();

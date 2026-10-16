@@ -222,6 +222,15 @@ export class ImCredentialEnvironmentManager {
     grant: Extract<RuntimeImCredentialGrantResult, { status: "succeeded" }>["grant"] & { provider: "slack" },
   ): Promise<{ configDir: string; environment: Record<string, string | undefined> }> {
     const configDir = await ensurePrivateDirectory(this.#root, this.#slackConfigDirPath(sessionId));
+    // Legacy Local executions have no credential proxy. Keep private download auth
+    // out of Agent command arguments and reuse the existing Turn cleanup boundary.
+    if (/[\r\n\0]/u.test(grant.botAccessToken)) throw new ImCredentialEnvironmentError("invalid_slack_token");
+    const downloadConfig = join(configDir, "download.curl");
+    await this.#writeEnvironmentFile(
+      downloadConfig,
+      `proto = "=https"\nheader = ${JSON.stringify(`Authorization: Bearer ${grant.botAccessToken}`)}\n`,
+      0o600,
+    );
     return {
       configDir,
       environment: {
@@ -229,6 +238,7 @@ export class ImCredentialEnvironmentManager {
         SLACK_USER_TOKEN: undefined,
         SLACK_APP_TOKEN: undefined,
         OPENTAG_SLACK_CONFIG_DIR: configDir,
+        OPENTAG_SLACK_DOWNLOAD_CONFIG: downloadConfig,
         // Slack 4.6/4.7 empirically honor this undocumented variable. It is only a
         // redundant fallback; the exact-target Turn launcher always supplies the
         // documented --config-dir flag as the load-bearing mechanism.

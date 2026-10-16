@@ -25,6 +25,7 @@ async function fixture(capability = true, ttlMs = 1000, registry = new Connectio
   const frames: Record<string, unknown>[] = [];
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       instanceId,
       installationId,

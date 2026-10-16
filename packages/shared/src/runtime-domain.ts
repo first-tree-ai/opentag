@@ -24,6 +24,7 @@ import {
 import { AgentRuntimeOptionsSchema } from "./runtime-configuration-options.js";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
 import { SessionMessageScheduledOriginSchema } from "./schedules.js";
+import { SlackAutoSetupRuntimeRequestSchema } from "./slack-auto-setup.js";
 import { TurnActivityRequestSchema, TurnActivityResultSchema } from "./turn-activity.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
@@ -173,6 +174,18 @@ export const EffectiveRuntimeSnapshotSchema = z
       .optional(),
   })
   .strict();
+
+/** Frozen 0.1.0 persisted shape; never used to authorize new work. */
+export const LegacyRuntimeSnapshotSchema = EffectiveRuntimeSnapshotSchema.omit({
+  selfConfigurationEnabled: true,
+}).extend({
+  execution: z.object({ approvalPolicy: z.literal("never"), networkAccess: z.boolean() }).strict(),
+});
+
+/** Published staging.16 through staging.43 added self-configuration before permissions. */
+const LegacyStagingRuntimeSnapshotSchema = LegacyRuntimeSnapshotSchema.extend({
+  selfConfigurationEnabled: z.boolean().optional(),
+});
 
 export const InputRejectReasonSchema = z.enum([
   "invalid_input",
@@ -1196,6 +1209,7 @@ export type RuntimeApprovalResult = z.infer<typeof RuntimeApprovalResultSchema>;
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   RuntimeApprovalDecisionSchema,
   ContextTreeOperationFrameSchema,
+  SlackAutoSetupRuntimeRequestSchema,
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
   RuntimeImSteerRequestSchema,
@@ -1339,8 +1353,58 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
   };
 }
 
+/** Frozen published layouts; only verify saved identities, never downgrade new work. */
+export function computeLegacyRuntimeSnapshotHashes(
+  input: unknown,
+  layout: "0.1.0" | "self-configuration" = "0.1.0",
+): RuntimeSnapshotHashes {
+  const snapshot: EffectiveRuntimeSnapshot =
+    layout === "self-configuration"
+      ? LegacyStagingRuntimeSnapshotSchema.parse(input)
+      : LegacyRuntimeSnapshotSchema.parse(input);
+  const agentConfigHash = hashTuple([
+    1,
+    snapshot.agentId,
+    snapshot.provider,
+    snapshot.revision.agent.sequence,
+    snapshot.revision.agent.id,
+    snapshot.instructions.platform,
+    snapshot.instructions.agent,
+    ...(layout === "self-configuration" ? [snapshot.selfConfigurationEnabled ?? false] : []),
+    snapshot.workspace.workspaceId,
+    snapshot.workspace.mode,
+    snapshot.workspace.sharing,
+    normalizeContextTrees(snapshot.contextTrees),
+  ]);
+  const sessionConfigHash = hashTuple([
+    1,
+    snapshot.revision.session.sequence,
+    snapshot.revision.session.id,
+    snapshot.model ?? null,
+    snapshot.reasoningEffort ?? null,
+    snapshot.instructions.session ?? null,
+    snapshot.execution.approvalPolicy,
+    snapshot.execution.networkAccess,
+    snapshot.budget?.maxDurationMs ?? null,
+  ]);
+  return {
+    agentConfigHash,
+    sessionConfigHash,
+    effectiveSnapshotHash: hashTuple([1, agentConfigHash, sessionConfigHash]),
+  };
+}
+
+export function computeLegacyDirectInputHash(input: unknown, layout: "0.1.0" | "self-configuration" = "0.1.0"): string {
+  const frame = DirectImMessageDeliveryRequestSchema.parse(input);
+  return directInputHash(frame, computeLegacyRuntimeSnapshotHashes(frame.runtime, layout).effectiveSnapshotHash);
+}
+
 export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): string {
   const frame = DirectImMessageDeliveryRequestSchema.parse(input);
+  return directInputHash(frame, computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash);
+}
+
+function directInputHash(frame: DirectImMessageDeliveryRequest, effectiveSnapshotHash: string): string {
   const payload = [
     1,
     frame.imMessageId,
@@ -1354,7 +1418,7 @@ export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): s
     frame.content.history ?? [],
     frame.content.historyTruncated ?? false,
     frame.content.resources ?? [],
-    computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash,
+    effectiveSnapshotHash,
     frame.deadlineAt ?? null,
   ];
   return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);

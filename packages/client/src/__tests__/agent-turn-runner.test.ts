@@ -913,6 +913,7 @@ describe("AgentTurnRunner", () => {
           prepare: vi.fn(async () => ({
             path: "/tmp/provider-env.sh",
             provider: "slack" as const,
+            allowedUnixSockets: ["/tmp/github-execution.sock"],
             web: {
               extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
               socketPath: "/tmp/opentag-web-test/web.sock",
@@ -928,6 +929,9 @@ describe("AgentTurnRunner", () => {
 
     const piPrompt = await runWith("pi");
     expect(piPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedUnixSockets: ["/tmp/github-execution.sock"] }),
+    );
+    expect(piPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
         configuration: {
           provider: {
@@ -941,6 +945,9 @@ describe("AgentTurnRunner", () => {
     );
     for (const providerId of ["codex", undefined]) {
       const other = await runWith(providerId);
+      expect(other).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedUnixSockets: ["/tmp/github-execution.sock"] }),
+      );
       expect(other.mock.calls[0]?.[0]).not.toHaveProperty("configuration");
     }
   });

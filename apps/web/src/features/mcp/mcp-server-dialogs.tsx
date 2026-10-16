@@ -1,11 +1,11 @@
 import type { MCPAgentServer } from "@opentag/shared/browser";
 import { useRef, useState } from "react";
-import { formatDateTime } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Dialog } from "../../ui/design-system.js";
 import { McpFooter } from "./mcp-form.js";
 import { actionError } from "./mcp-form-model.js";
 import { useDetachMcpServer, useRevokeMcpAuthorization } from "./mcp-queries.js";
+import { mcpTitle } from "./mcp-title.js";
 
 export function McpConfirmDialog({
   kind,
@@ -13,6 +13,7 @@ export function McpConfirmDialog({
   agentName,
   entry,
   onClose,
+  onBack,
   onConfirmed,
 }: {
   kind: "remove" | "revoke";
@@ -20,6 +21,7 @@ export function McpConfirmDialog({
   agentName: string;
   entry: MCPAgentServer;
   onClose: () => void;
+  onBack?: () => void;
   onConfirmed?: () => void;
 }) {
   const detach = useDetachMcpServer(agentId);
@@ -37,7 +39,7 @@ export function McpConfirmDialog({
       else await revoke.mutateAsync(entry.mcpServerId);
       (onConfirmed ?? onClose)();
     } catch (cause) {
-      setError(removing ? m.mcp_remove_retry({ server: entry.name }) : actionError(cause, m.mcp_revoke_failed()));
+      setError(removing ? m.mcp_remove_retry({ server: mcpTitle(entry) }) : actionError(cause, m.mcp_revoke_failed()));
     } finally {
       inFlight.current = false;
     }
@@ -48,14 +50,17 @@ export function McpConfirmDialog({
       role="alertdialog"
       busy={busy}
       onClose={onClose}
+      onBack={onBack}
       title={
-        removing ? m.mcp_detach_title({ server: entry.name }) : m.mcp_clear_credentials_title({ server: entry.name })
+        removing
+          ? m.mcp_detach_title({ server: mcpTitle(entry) })
+          : m.mcp_clear_credentials_title({ server: mcpTitle(entry) })
       }
     >
       <div className="grid gap-3">
         <p className="text-sm leading-relaxed text-kumo-subtle">
           {removing
-            ? m.mcp_remove_description({ server: entry.name, agent: agentName })
+            ? m.mcp_remove_description({ server: mcpTitle(entry), agent: agentName })
             : m.mcp_clear_credentials_help({ agent: agentName })}
         </p>
       </div>
@@ -64,7 +69,7 @@ export function McpConfirmDialog({
           {error}
         </p>
       ) : null}
-      <McpFooter busy={busy} onClose={onClose}>
+      <McpFooter busy={busy} onClose={onBack ?? onClose}>
         <Button
           aria-label={removing ? m.mcp_remove_action() : m.mcp_clear_credentials_submit()}
           disabled={busy}
@@ -76,29 +81,5 @@ export function McpConfirmDialog({
         </Button>
       </McpFooter>
     </Dialog>
-  );
-}
-export function McpServerInformation({ entry }: { entry: MCPAgentServer }) {
-  const authorization = entry.authorization;
-  return (
-    <div className="grid gap-4 text-sm">
-      <p className="whitespace-pre-wrap leading-relaxed text-kumo-subtle">
-        {entry.description ?? entry.discoveredDescription ?? m.mcp_details_no_description()}
-      </p>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3">
-        {authorization?.probeState === "succeeded" && authorization.probedAt ? (
-          <>
-            <dt className="text-kumo-subtle">{m.mcp_details_last_loaded()}</dt>
-            <dd>{formatDateTime(authorization.probedAt)}</dd>
-          </>
-        ) : null}
-        {entry.snapshot?.protocolVersion ? (
-          <>
-            <dt className="text-kumo-subtle">{m.mcp_details_protocol()}</dt>
-            <dd>{entry.snapshot.protocolVersion}</dd>
-          </>
-        ) : null}
-      </dl>
-    </div>
   );
 }

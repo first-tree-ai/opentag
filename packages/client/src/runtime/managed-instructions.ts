@@ -47,7 +47,7 @@ function renderCloudExecutionContext(): readonly string[] {
     "- You run inside a Session-scoped Cloud Sandbox. The workspace is this Session's own; it is not shared with other Sessions.",
     "- The workspace and Pi conversation for this Session recover from the last successful save when the environment is replaced. Unsaved changes can be lost; running processes and background services do not survive Turn cleanup or replacement.",
     "- Saved workspaces are limited to 256 MiB of file content, 50,000 entries and a 128 MiB compressed archive. Hard links, sockets, FIFOs and links outside the workspace cannot be saved. Keep dependency caches, large installs and disposable build output outside the workspace (for example /tmp); recreate them on later Turns. Exceeding these limits blocks further execution and requires recovery or explicit discard of unsaved changes.",
-    "- Credentials are execution-scoped and short-lived; the managed IM/Git CLIs reach providers through the platform proxy. Never ask the user for tokens and never persist credential material.",
+    "- Credentials are execution-scoped and short-lived; the managed IM/Git CLIs reach providers through the platform proxy. Never ask the user for tokens. Never persist execution-scoped handles or Session proof. Explicitly requested Slack App management uses a separate native login and private files as described below.",
     "",
   ];
 }
@@ -101,6 +101,20 @@ function renderSelfConfiguration(cliCommand: string): readonly string[] {
   ];
 }
 
+function renderSlackProvisioning(context: ManagedSessionContext): readonly string[] {
+  if (!context.sessionCliAvailable || context.sessionKind === "internal") return [];
+  const cli = context.cliCommand;
+  return [
+    "## Creating an Agent with its own Slack App",
+    "",
+    `Only when the user asks, use \`${cli} slack --help\` and \`${cli} agent provision-slack --help\`. The official management CLI is \`${cli} slack manage -- <official CLI arguments>\`; ordinary \`slack api\` still uses the current Bot's messaging proxy.`,
+    `Run management commands sequentially. Use a distinct --project-dir project-<creationIntentId> for each creation intent, including link and deploy, and keep its temporary files in that directory. Keep one creationIntentId, App ID, Team and configuration in context; keep secrets only under \`${cli} slack home\`, outside per-Turn HOME and archived workspace. The new Agent uses the current Computer, source Agent Runtime Provider and default permissions/duration; do not set computerId, permissions or maxDurationMs. Choose an explicit model for Cloud. The CLI help describes native ticket/challenge login, remote manifest installation and the capture-deploy hook. Wait for Slack administrator approval and complete credentials before requesting Account confirmation. Never repeat an uncertain App creation.`,
+    `Run \`${cli} agent provision-slack --request-file <path> --credentials-file <private-path> --json\` without --code-file to obtain the confirmation link locally. The owner opens it on their own device and returns one operation code. Never request a normal Account login code or run Account login in Cloud. Save the operation code privately and submit the same command with --code-file <private-path>; it makes one proof-authenticated request and receives no Account Tokens.`,
+    `Save successful provision-slack --json stdout privately. Only after binding, export the same App's remote manifest and use \`${cli} slack callbacks --help\` to prepare its callback update from that export and the provision result. The CLI supplies the exact required events and returned URLs; do not guess events or rebuild the App manifest. Validate, update the same App and re-export to verify, preserving other settings. Native command help is \`${cli} slack manage -- api --help\` (or -h), without --team or --output-file. Return the actual slack.binding.identity.botUserId mention and the App/Team DM link; display slack.binding.bot.displayName only when present. On a spent code or lost response, use a fresh operation code with the same intent and configuration. Callback failure retries only that update. Remove completed temporary secrets but keep valid native management login; Sandbox replacement can require reauthorization. Do not print credentials or claim real messaging without observing it.`,
+    "",
+  ];
+}
+
 function renderSession(context: ManagedSessionContext): readonly string[] {
   const local = context.environment === "local";
   return [
@@ -129,6 +143,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
     "",
     ...renderSessionCollaboration(context),
+    ...renderSlackProvisioning(context),
     "",
   ];
 }

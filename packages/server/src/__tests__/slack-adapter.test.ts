@@ -26,6 +26,26 @@ function slackEnvelope(event: Record<string, unknown>, eventId = "Ev-file-share"
 }
 
 describe("Slack installed-binding adapter", () => {
+  it("reads App and Bot User identity from bots.info", async () => {
+    const info = vi
+      .fn()
+      .mockResolvedValue({ ok: true, bot: { id: "B1", user_id: "U1", app_id: "A1", deleted: false } });
+    const api = new DefaultSlackApiClient(() => ({ bots: { info } }) as never);
+    await expect(api.botInfo("token", "B1")).resolves.toEqual({ id: "B1", userId: "U1", appId: "A1", deleted: false });
+    expect(info).toHaveBeenCalledWith({ bot: "B1" });
+  });
+
+  it.each([
+    { id: "B1", user_id: "U1", deleted: false },
+    { id: "B1", app_id: "A1", deleted: false },
+    { id: "B1", user_id: "U1", app_id: "A1" },
+  ])("rejects incomplete App identity from bots.info: %j", async (bot) => {
+    const api = new DefaultSlackApiClient(
+      () => ({ bots: { info: vi.fn().mockResolvedValue({ ok: true, bot }) } }) as never,
+    );
+    await expect(api.botInfo("token", "B1")).rejects.toThrow("SLACK_AUTH_IDENTITY_INCOMPLETE");
+  });
+
   it("reads the installed bot profile using users.info and checks identity", async () => {
     const info = vi.fn().mockResolvedValue({
       ok: true,

@@ -10,10 +10,98 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { ServiceLogger } from "../observability/service-logger.js";
-import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "../runtime/connection-registry.js";
+import {
+  COMPUTER_DELETED_CLOSE,
+  ConnectionRegistry,
+  canReceiveRuntimeSnapshot,
+} from "../runtime/connection-registry.js";
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
 describe("ConnectionRegistry", () => {
+  it.each([
+    undefined,
+    "bad",
+    "0.1.0",
+    "0.1.0+build.7",
+    "0.1.1-staging.1.1",
+    "0.1.1-staging.16.1",
+    "0.1.1-staging.43.2",
+  ])("blocks only new snapshots for the old format %s", async (clientVersion) => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID(),
+      instanceId = randomUUID(),
+      connectionId = randomUUID();
+    const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
+    const entry = {
+      clientVersion,
+      computerId,
+      instanceId,
+      connectionId,
+      installationId: randomUUID(),
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      negotiatedCapabilities: {},
+      lastHeartbeatAt: 1,
+      socket: { ...socket(), readyState: WebSocket.OPEN, send } as unknown as WebSocket,
+    };
+    await registry.register(entry, async () => undefined);
+    expect(canReceiveRuntimeSnapshot(entry)).toBe(false);
+    for (const frame of [
+      { type: "session:reconcile", desired: "ready", runtime: {} },
+      { type: "im:deliver", runtime: {} },
+      { type: "session:message:deliver", runtime: {} },
+    ])
+      await expect(registry.send(computerId, instanceId, frame)).rejects.toMatchObject({ code: "unavailable" });
+    expect(send).not.toHaveBeenCalled();
+    for (const frame of [
+      { type: "session:reconcile", desired: "stopped" },
+      { type: "provider-cli:prewarm", requestId: randomUUID(), providers: ["feishu", "slack"] },
+      { type: "im:steer" },
+      {
+        type: "turn:report:result",
+        requestId: randomUUID(),
+        turnId: "turn",
+        resultHash: "a".repeat(64),
+        status: "recorded",
+      },
+    ])
+      await expect(registry.send(computerId, instanceId, frame)).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(4);
+    expect(registry.currentInstanceId(computerId)).toBe(instanceId);
+  });
+
+  it.each(["0.1.1-staging.44.1", "0.1.1+build.7", "0.1.1-staging.61.1", "0.1.2-staging.1.1", "0.1.2", "1.0.0"])(
+    "sends current-format snapshots at %s without a global capability gate and retains the fence",
+    async (clientVersion) => {
+      const registry = new ConnectionRegistry();
+      const computerId = randomUUID(),
+        instanceId = randomUUID(),
+        connectionId = randomUUID();
+      const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
+      await registry.register(
+        {
+          clientVersion,
+          computerId,
+          instanceId,
+          connectionId,
+          installationId: randomUUID(),
+          protocolVersion: RUNTIME_PROTOCOL_V2,
+          negotiatedCapabilities: {},
+          lastHeartbeatAt: 1,
+          socket: { ...socket(), readyState: WebSocket.OPEN, send } as unknown as WebSocket,
+        },
+        async () => undefined,
+      );
+      expect(registry.canReceiveSnapshot(computerId, instanceId)).toBe(true);
+      await expect(
+        registry.send(computerId, instanceId, { type: "im:deliver", runtime: {} }, connectionId),
+      ).resolves.toBeUndefined();
+      expect(JSON.parse(send.mock.calls[0]?.[0] ?? "null")).toEqual({ type: "im:deliver", runtime: {}, connectionId });
+      await expect(
+        registry.send(computerId, instanceId, { type: "im:deliver", runtime: {} }, randomUUID()),
+      ).rejects.toMatchObject({ code: "instance_replaced" });
+    },
+  );
+
   it("keeps two Computers independently online", async () => {
     const registry = new ConnectionRegistry();
     const firstComputerId = randomUUID();
@@ -25,6 +113,7 @@ describe("ConnectionRegistry", () => {
 
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         computerId: firstComputerId,
         instanceId: firstInstanceId,
@@ -35,6 +124,7 @@ describe("ConnectionRegistry", () => {
     );
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         computerId: secondComputerId,
         instanceId: secondInstanceId,
@@ -64,6 +154,7 @@ describe("ConnectionRegistry", () => {
     });
     const registration = registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         computerId,
         instanceId: randomUUID(),
@@ -115,6 +206,7 @@ describe("ConnectionRegistry", () => {
     const secondInstance = randomUUID();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         instanceId: firstInstance,
         lastHeartbeatAt: 1,
@@ -125,6 +217,7 @@ describe("ConnectionRegistry", () => {
     );
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         instanceId: secondInstance,
         lastHeartbeatAt: 2,
@@ -151,6 +244,7 @@ describe("ConnectionRegistry", () => {
     const freshComputerId = randomUUID();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         instanceId: randomUUID(),
         lastHeartbeatAt: 10,
@@ -161,6 +255,7 @@ describe("ConnectionRegistry", () => {
     );
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         instanceId: randomUUID(),
         lastHeartbeatAt: 5,
@@ -171,6 +266,7 @@ describe("ConnectionRegistry", () => {
     );
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         instanceId: randomUUID(),
         lastHeartbeatAt: 20,
@@ -202,6 +298,7 @@ describe("ConnectionRegistry", () => {
     const stale = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         instanceId: randomUUID(),
         lastHeartbeatAt: 10,
@@ -226,6 +323,7 @@ describe("ConnectionRegistry", () => {
     const firstInstanceId = randomUUID();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         capabilities: { imCredentialGrant: 0 },
         capabilitiesUpdatedAt: 1,
         installationId: randomUUID(),
@@ -242,6 +340,7 @@ describe("ConnectionRegistry", () => {
     const verifiedSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         capabilities: { imCredentialGrant: 1 },
         capabilitiesUpdatedAt: 2,
         installationId: randomUUID(),
@@ -286,6 +385,7 @@ describe("ConnectionRegistry", () => {
     const instanceId = randomUUID();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         capabilities: { imCredentialGrant: 1 },
         capabilitiesUpdatedAt: 100,
         computerId,
@@ -325,7 +425,9 @@ describe("ConnectionRegistry", () => {
     } as unknown as WebSocket;
     await registry.register(
       {
+        clientVersion: "0.1.1",
         active: false,
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionReconcile]: 1 },
         installationId: randomUUID(),
         connectionId,
         instanceId,
@@ -366,6 +468,7 @@ describe("ConnectionRegistry", () => {
     const register = (connectionId: string) =>
       registry.register(
         {
+          clientVersion: "0.1.1",
           computerId,
           instanceId,
           connectionId,
@@ -394,6 +497,7 @@ describe("ConnectionRegistry", () => {
     const currentSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         instanceId,
         lastHeartbeatAt: 1,
@@ -463,6 +567,7 @@ describe("ConnectionRegistry", () => {
     const oldSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         installationId: randomUUID(),
         instanceId: oldInstanceId,
         lastHeartbeatAt: 1,
@@ -478,6 +583,7 @@ describe("ConnectionRegistry", () => {
 
     await registry.register(
       {
+        clientVersion: "0.1.1",
         capabilities: { imCredentialGrant: 0 },
         capabilitiesUpdatedAt: 2,
         installationId: randomUUID(),
@@ -503,6 +609,7 @@ describe("ConnectionRegistry", () => {
     const observedAt = new Date("2026-08-20T00:00:00.000Z");
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId: randomUUID(),
@@ -520,6 +627,7 @@ describe("ConnectionRegistry", () => {
 
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId: randomUUID(),
@@ -554,6 +662,7 @@ describe("ConnectionRegistry", () => {
 
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId: v2InstanceId,
@@ -578,6 +687,7 @@ describe("ConnectionRegistry", () => {
 
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId: v1InstanceId,
@@ -613,6 +723,7 @@ describe("ConnectionRegistry", () => {
     const runtimeSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -655,6 +766,7 @@ describe("ConnectionRegistry", () => {
     } as unknown as WebSocket;
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -670,6 +782,7 @@ describe("ConnectionRegistry", () => {
     const closedSocket = { ...socket(), readyState: WebSocket.CLOSED } as unknown as WebSocket;
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId: randomUUID(),
@@ -689,6 +802,7 @@ describe("ConnectionRegistry", () => {
     } as unknown as WebSocket;
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -708,6 +822,7 @@ describe("ConnectionRegistry", () => {
     const callbackSocket = { ...v2, readyState: WebSocket.OPEN, send: callbackError } as unknown as WebSocket;
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -724,6 +839,7 @@ describe("ConnectionRegistry", () => {
     const missingFenceInstance = randomUUID();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId: missingFenceInstance,
@@ -741,6 +857,7 @@ describe("ConnectionRegistry", () => {
     const fencedInstance = randomUUID();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId: fencedInstance,
@@ -768,6 +885,7 @@ describe("ConnectionRegistry", () => {
     } as unknown as WebSocket;
     await raceRegistry.register(
       {
+        clientVersion: "0.1.1",
         computerId: raceComputerId,
         installationId: randomUUID(),
         instanceId: raceInstanceId,
@@ -779,6 +897,7 @@ describe("ConnectionRegistry", () => {
     const sending = raceRegistry.send(raceComputerId, raceInstanceId, {});
     await raceRegistry.register(
       {
+        clientVersion: "0.1.1",
         computerId: raceComputerId,
         installationId: randomUUID(),
         instanceId: randomUUID(),
@@ -798,6 +917,7 @@ describe("ConnectionRegistry", () => {
     const runtimeSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -851,6 +971,7 @@ describe("ConnectionRegistry", () => {
     const runtimeSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -910,6 +1031,7 @@ describe("ConnectionRegistry", () => {
     const runtimeSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -989,6 +1111,7 @@ describe("ConnectionRegistry", () => {
     const runtimeSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -1034,6 +1157,7 @@ describe("ConnectionRegistry", () => {
     const runtimeSocket = socket();
     await registry.register(
       {
+        clientVersion: "0.1.1",
         computerId,
         installationId: randomUUID(),
         instanceId,
@@ -1105,6 +1229,7 @@ describe("ConnectionRegistry", () => {
     await expect(
       registry.register(
         {
+          clientVersion: "0.1.1",
           computerId,
           installationId: randomUUID(),
           instanceId,

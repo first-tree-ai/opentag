@@ -58,7 +58,7 @@ function parsePorcelainRefLine(line: string): { flag: string; to: string } | und
  * Selects fetch refspecs from ls-remote output for a ref-restricted snapshot. Remote pattern
  * matching is never the authority: its documented tail-glob semantics return attacker-planted
  * refs such as `refs/heads/x/refs/heads/main` for the exact pattern `refs/heads/main` (proven
- * locally against git 2.50). Only an exact authorized ref or a Session task-prefix (`.../*`)
+ * locally against git 2.50). Only an exact requested ref or an explicitly requested prefix (`.../*`)
  * match may enter the trusted snapshot; anything else the remote offers is skipped.
  */
 export function seedRefspecsForAllowedRefs(lsRemoteOutput: string, allowedRefs: readonly string[]): string[] {

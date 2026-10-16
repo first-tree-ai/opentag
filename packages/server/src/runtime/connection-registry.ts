@@ -1,11 +1,13 @@
 import {
   AGENT_RUNTIME_PROVIDERS,
   type AgentRuntimeProvider,
+  compareSemVer,
   type ImCliProvider,
   type ImCliReadinessStatus,
   type IntegrationCredentialExecutionReason,
   type IntegrationCredentialExecutionStatus,
   type ProviderCliArtifactPublicReason,
+  parseSemVer,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
@@ -67,6 +69,7 @@ export interface RuntimeControlIdentity {
 }
 
 export interface RuntimeConnectionEntry {
+  clientVersion?: string;
   active?: boolean;
   capabilities?: RuntimeClientCapabilities;
   capabilitiesUpdatedAt?: number;
@@ -427,6 +430,27 @@ export class ConnectionRegistry {
     return current;
   }
 
+  canReceiveSnapshot(computerId: string, instanceId: string): boolean {
+    const entry = this.#currentWritable(computerId, instanceId);
+    return entry !== undefined && canReceiveRuntimeSnapshot(entry);
+  }
+
+  assertSnapshotCompatible(computerId: string, instanceId: string, frame: unknown): void {
+    const entry = this.#currentWritable(computerId, instanceId);
+    if (!entry) throw new RuntimeRegistrySendError("unavailable", "The Computer instance is not current");
+    if (
+      frame !== null &&
+      typeof frame === "object" &&
+      "type" in frame &&
+      (frame.type === "im:deliver" ||
+        frame.type === "session:message:deliver" ||
+        (frame.type === "session:reconcile" && "runtime" in frame && frame.runtime !== undefined)) &&
+      !canReceiveRuntimeSnapshot(entry)
+    ) {
+      throw new RuntimeRegistrySendError("unavailable", "The Client must upgrade before receiving this snapshot");
+    }
+  }
+
   async send(computerId: string, instanceId: string, frame: unknown, expectedConnectionId?: string): Promise<void> {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
@@ -441,6 +465,7 @@ export class ConnectionRegistry {
     if (current.socket.readyState !== WebSocket.OPEN) {
       throw new RuntimeRegistrySendError("unavailable", "The Computer runtime socket is unavailable");
     }
+    this.assertSnapshotCompatible(computerId, instanceId, frame);
     let outbound = frame;
     if ((current.protocolVersion ?? RUNTIME_PROTOCOL_V1) === RUNTIME_PROTOCOL_V2) {
       try {
@@ -637,4 +662,11 @@ function withConnectionId(frame: unknown, connectionId?: string): unknown {
     throw new Error("The runtime frame carries a stale connection fence");
   }
   return { ...record, connectionId };
+}
+
+/** First published snapshot with self-configuration, approvals, commands and the current hash layout. */
+export function canReceiveRuntimeSnapshot(entry: RuntimeConnectionEntry): boolean {
+  if (entry.control?.kind === "cloud") return true;
+  const version = entry.clientVersion ? parseSemVer(entry.clientVersion) : undefined;
+  return version !== undefined && compareSemVer(version, "0.1.1-staging.44.1") >= 0;
 }

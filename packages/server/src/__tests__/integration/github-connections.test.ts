@@ -1,16 +1,15 @@
-import { GitHubConnectionStatusSchema, type GitHubRepositoryBinding } from "@opentag/shared";
+import { GitHubConnectionStatusSchema } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { agents, githubConnections, users } from "../../db/schema/index.js";
 import {
-  createGitHubRepositoryAdmissionProof,
   type GitHubAuthorizationFlowHandle,
-  GitHubBindingsService,
   GitHubConnectionService,
   type GitHubOAuthCompletionProof,
   sha256Hex,
 } from "../../services/github/index.js";
+import type { GitHubRepositoryBinding } from "../support/legacy-github-fixtures.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -36,10 +35,6 @@ const sessionHash = "a".repeat(64);
 
 function service() {
   return new GitHubConnectionService(client.database, { now: () => clock });
-}
-
-function bindingsService() {
-  return new GitHubBindingsService(client.database, { now: () => clock });
 }
 
 async function createAccount(email: string) {
@@ -110,21 +105,6 @@ function bindingFor(agentId: string): GitHubRepositoryBinding[] {
       agentScopes: [{ agentId, role: "code", access: "write", publish: "pull_request" }],
     },
   ];
-}
-
-function proofFor(
-  connection: { id: string; authorizationVersion: string; githubUserId: string | null },
-  bindings: GitHubRepositoryBinding[],
-  verifiedAt = clock,
-) {
-  if (connection.githubUserId === null) throw new Error("An active connection has a GitHub user");
-  return createGitHubRepositoryAdmissionProof({
-    connectionId: connection.id,
-    authorizationVersion: BigInt(connection.authorizationVersion),
-    githubUserId: connection.githubUserId,
-    bindings,
-    verifiedAt,
-  });
 }
 
 describe("GitHub connection lifecycle", () => {
@@ -219,16 +199,20 @@ describe("GitHub connection lifecycle", () => {
     const agentId = await createAgent(accountId, "assistant");
     const first = await activeConnection(accountId);
     const bindings = bindingFor(agentId);
-    await bindingsService().updateBindings(accountId, first.id, {
-      expectedAuthorizationVersion: BigInt(first.authorizationVersion),
-      bindings,
-      admissionProof: proofFor(first, bindings),
-    });
+    await client.database
+      .update(githubConnections)
+      .set({ repositoryBindings: bindings })
+      .where(eq(githubConnections.id, first.id));
 
     const replaced = await completeFlow(accountId, "777777", "replace");
     expect(replaced.completion.supersededConnectionId).toBe(first.id);
     expect(replaced.completion.connection.id).not.toBe(first.id);
-    expect(replaced.completion.connection.bindings).toEqual([]);
+    expect(replaced.completion.connection).not.toHaveProperty("bindings");
+    const [historical] = await client.database
+      .select()
+      .from(githubConnections)
+      .where(eq(githubConnections.id, first.id));
+    expect(historical?.repositoryBindings).toEqual(bindings);
     expect(replaced.completion.connection.authorizationVersion).toBe("1");
     expect(replaced.completion.connection.credentialGeneration).toBe("1");
     expect(replaced.completion.connection.githubUserId).toBe("777777");

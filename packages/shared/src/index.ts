@@ -103,6 +103,10 @@ export {
   RefreshTokenRequestSchema,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  SLACK_AGENT_PROVISION_CODE_PREFIX,
+  type SlackAgentProvisionCodeResponse,
+  SlackAgentProvisionCodeResponseSchema,
+  SlackAgentProvisionCodeSchema,
   type UpdateUserProfileRequest,
   UpdateUserProfileRequestSchema,
   UserDisplayNameSchema,
@@ -117,11 +121,7 @@ export {
   type ServiceId,
   ServiceIdSchema,
 } from "./channel.js";
-export {
-  isSupportedClientVersion,
-  MINIMUM_SUPPORTED_CLIENT_VERSION,
-  unsupportedClientVersionMessage,
-} from "./client-version.js";
+export * from "./cloud-billing.js";
 export * from "./cloud-product.js";
 export * from "./cloud-runner.js";
 export {
@@ -235,6 +235,7 @@ export {
 export * from "./execution-services.js";
 export * from "./github-integration.js";
 export * from "./github-management.js";
+export * from "./github-proxy-http.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
@@ -287,6 +288,7 @@ export {
   AGENT_SKILLS_INSTALL_RESOLVE_TEMPLATE,
   AGENT_SKILLS_INSTALL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
+  AGENT_SLACK_CONFIGURATION_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
   AGENT_SLACK_INTERACTIONS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
@@ -335,6 +337,8 @@ export {
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
+  agentSlackAutoSetupPath,
+  agentSlackConfigurationPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
@@ -351,6 +355,7 @@ export {
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_BINDINGS_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
+  GITHUB_INTEGRATION_INSTALLATION_PATH,
   GITHUB_INTEGRATION_PATH,
   GITHUB_INTEGRATION_REPOSITORIES_PATH,
   GITHUB_OAUTH_CALLBACK_PATH,
@@ -365,6 +370,7 @@ export {
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  MCP_CATALOG_ENDPOINTS_PATH,
   MCP_CLIENT_METADATA_PATH,
   MCP_OAUTH_CALLBACK_PATH,
   MCP_SERVER_BY_ID_TEMPLATE,
@@ -382,6 +388,7 @@ export {
   RUNTIME_AGENT_SCHEDULE_RESUME_TEMPLATE,
   RUNTIME_AGENT_SCHEDULE_TEMPLATE,
   RUNTIME_AGENT_SCHEDULES_PATH,
+  RUNTIME_AGENT_SLACK_PROVISION_PATH,
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   RUNTIME_SKILL_BUNDLE_TEMPLATE,
@@ -446,6 +453,8 @@ export {
   type ClientRuntimeBusinessFrame,
   ClientRuntimeBusinessFrameSchema,
   computeDirectInputHash,
+  computeLegacyDirectInputHash,
+  computeLegacyRuntimeSnapshotHashes,
   computeReconcilePayloadHash,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
@@ -462,6 +471,7 @@ export {
   InputRejectReasonSchema,
   type InternalSessionRuntimeOverrides,
   InternalSessionRuntimeOverridesSchema,
+  LegacyRuntimeSnapshotSchema,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   type ProviderCliArtifactStatusFrame,
   ProviderCliArtifactStatusFrameSchema,
@@ -598,7 +608,6 @@ export {
   HeartbeatResultFrameSchema,
   HeartbeatV1FrameSchema,
   HeartbeatV2FrameSchema,
-  missingRuntimeCapabilities,
   negotiateProviderReadinessFromHeaders,
   negotiateRuntimeCapabilities,
   RUNTIME_AGENT_RUNTIME_TEST_CLEANUP_MS,
@@ -696,6 +705,10 @@ export * from "./skill.js";
 export * from "./skill-discovery.js";
 export * from "./skill-preset.js";
 export * from "./skill-source.js";
+export * from "./slack-agent-provision.js";
+export * from "./slack-app-manifest.js";
+export * from "./slack-auto-setup.js";
+export * from "./slack-configuration.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,

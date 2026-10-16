@@ -51,7 +51,7 @@ const unusedAccountResolver = {
 const MODEL = "deepseek-v4.1-flash-expires-on-0910";
 // A Sonnet-first input list for default-preference and explicit-model coverage.
 const SONNET = "claude-sonnet-5";
-const GEMINI = "gemini-3.8-flash";
+const GEMINI = "gemini-4-argon";
 
 let unit: UnitDatabase;
 beforeAll(async () => {
@@ -284,6 +284,7 @@ async function localScope() {
   const registry = new ConnectionRegistry();
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       installationId: randomUUID(),
       instanceId,
@@ -879,7 +880,7 @@ describe("ImDeliveryWorker Cloud routing", () => {
     expect(row?.dispatchPayload).toMatchObject({ runtime: { model: MODEL } });
   });
 
-  it("dispatches the preferred Gemini default for a Sonnet-first catalog while both choices stay offered", async () => {
+  it("dispatches the preferred Gemini 4 default for a Sonnet-first catalog while both choices stay offered", async () => {
     const { scope, cloud, agent } = await cloudScope();
     await unit.database
       .update(agentRuntimeConfigs)

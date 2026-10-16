@@ -1,5 +1,5 @@
 import type { TaskReply, TaskSummary, TaskTurn } from "@opentag/shared/browser";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { TaskActivity } from "./task-conversation.js";
 
@@ -62,6 +62,42 @@ function turn(): TaskTurn {
     },
   };
 }
+
+it.each(["reply", "report", "status", "captured"])("shows the agent logo beside a %s entry", (kind) => {
+  const current = turn();
+  if (!current.report) throw new Error("Expected report fixture");
+  if (kind === "report") current.report.outgoingReplies = null;
+  if (kind === "status") current.report = null;
+  const avatarPath = "/api/v1/agents/22222222-2222-4222-8222-222222222222/avatar";
+  const { container } = render(
+    <TaskActivity
+      task={{ ...task, agent: { ...task.agent, avatarPath } }}
+      turns={kind === "captured" ? [] : [current]}
+      replies={kind === "captured" ? [capturedReply()] : undefined}
+      pagination={null}
+    />,
+  );
+  const images = container.querySelectorAll('[data-ui="task-message-agent"] img');
+  expect(images).toHaveLength(1);
+  expect(images[0]?.getAttribute("src")).toBe(avatarPath);
+  expect(container.querySelector('[data-ui="task-message-request"] img')).toBeNull();
+});
+
+it("falls back to agent initials when the chat logo fails or is removed", () => {
+  const avatarPath = "/api/v1/agents/22222222-2222-4222-8222-222222222222/avatar";
+  const { container, rerender } = render(
+    <TaskActivity task={{ ...task, agent: { ...task.agent, avatarPath } }} turns={[turn()]} pagination={null} />,
+  );
+  const image = container.querySelector('[data-ui="task-message-agent"] img');
+  expect(image).toBeTruthy();
+  fireEvent.error(image as HTMLImageElement);
+  expect(container.querySelector('[data-ui="task-message-agent"] img')).toBeNull();
+  expect(container.querySelector('[data-ui="task-message-agent"] [aria-hidden="true"]')?.textContent).toBe("A");
+
+  rerender(<TaskActivity task={task} turns={[turn()]} pagination={null} />);
+  expect(container.querySelector('[data-ui="task-message-agent"] img')).toBeNull();
+  expect(container.querySelector('[data-ui="task-message-agent"] [aria-hidden="true"]')?.textContent).toBe("A");
+});
 
 it("shows the summary beside replies and keeps it visible across refresh, duplicate pages and prepended history", () => {
   const current = turn();

@@ -96,7 +96,7 @@ function WorkspaceShell() {
               </Suspense>
             )}
           </div>
-          <Sidebar.Footer className="app-account-navigation h-14 px-1.5">
+          <Sidebar.Footer className="app-account-navigation h-14 w-full px-1.5 group-not-data-[state=collapsed]/sidebar:px-1.5">
             <Sidebar.Menu className="min-w-0 flex-1">
               <Sidebar.MenuItem>
                 <AccountMenu placement={agentId ? "sidebar" : "dock"} />
@@ -148,7 +148,7 @@ function GlobalHome({ compact, active }: { compact: boolean; active: boolean }) 
           data-compact={compact ? "true" : undefined}
         >
           <span className="app-home-icon grid size-6 shrink-0 place-items-center" aria-hidden="true">
-            <Icon className="size-5" name="home" />
+            <Icon className="size-4.5" name="home" weight="regular" />
           </span>
           <span className="app-nav-label">{m.shell_all_agents()}</span>
         </Link>

@@ -1,8 +1,9 @@
-import { rm } from "node:fs/promises";
+import { chmod, rm } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { SUPERVISOR_RESTART_EXIT_CODE } from "../handoff.js";
 import { resolveDaemonPaths } from "../paths.js";
+import { preserveSystemdEnvironment } from "./environment.js";
 import {
   buildServicePath,
   deriveServiceIdentity,
@@ -36,7 +37,14 @@ export function renderSystemdUnit(options: {
   path: string;
   serviceId: string;
 }): string {
-  const command = invocationArguments(options.invocation).map(quoteSystemdToken).join(" ");
+  const command = [
+    `PATH=${options.path}`,
+    "OPENTAG_SERVICE_MODE=1",
+    `OPENTAG_HOME=${options.home}`,
+    ...invocationArguments(options.invocation),
+  ]
+    .map((argument) => quoteSystemdToken(argument.replace(/\$/gu, () => "$$")))
+    .join(" ");
   return `[Unit]
 Description=OpenTag daemon (${options.serviceId})
 StartLimitIntervalSec=300
@@ -44,7 +52,9 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-ExecStart=${command}
+# Apply owned values after systemd compiles EnvironmentFile/UnsetEnvironment.
+# Escape dollar references in ExecStart so paths and values remain literal.
+ExecStart=/usr/bin/env ${command}
 # Exit code ${SUPERVISOR_RESTART_EXIT_CODE} is the reserved supervisor-restart handoff: a clean exit
 # that still forces a restart, used by the portable upgrade after the new version is live on disk.
 Restart=on-failure
@@ -82,7 +92,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
   const unitPath = join(userHome, ".config", "systemd", "user", identity.systemdUnitName);
   const systemctl = options.systemctl ?? "systemctl";
   const servicePath = buildServicePath(options.invocation, "linux", options.sourcePath);
-  const expected = renderSystemdUnit({
+  const template = renderSystemdUnit({
     home: options.home,
     invocation: options.invocation,
     path: servicePath,
@@ -118,6 +128,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
         drifted: true,
       });
     }
+    const expected = preserveSystemdEnvironment(template, definition);
     const configuredHome = extractSystemdHome(definition);
     if (!configuredHome) {
       return info("unknown", {
@@ -200,7 +211,8 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
       await preflight();
       const previous = await status();
       const drifted = previous.drifted ?? true;
-      await writeFileAtomically(unitPath, expected, 0o644, 0o700);
+      const expected = preserveSystemdEnvironment(template, await readRegularFile(unitPath));
+      await writeFileAtomically(unitPath, expected, 0o600, 0o700);
       await runRequired(options.runner, systemctl, ["--user", "daemon-reload"], "systemd daemon-reload");
       await runRequired(options.runner, systemctl, ["--user", "enable", identity.systemdUnitName], "systemd enable");
       if ((previous.state === "active" || previous.state === "unknown") && drifted) {
@@ -247,10 +259,12 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
       if (current === undefined) {
         throw new DaemonServiceError("NOT_INSTALLED", "The daemon service is not installed; run daemon install");
       }
+      const expected = preserveSystemdEnvironment(template, current);
       if (current !== expected) {
-        await writeFileAtomically(unitPath, expected, 0o644, 0o700);
+        await writeFileAtomically(unitPath, expected, 0o600, 0o700);
         await runRequired(options.runner, systemctl, ["--user", "daemon-reload"], "systemd daemon-reload");
       }
+      await chmod(unitPath, 0o600);
       return status();
     },
     async stop() {
@@ -310,7 +324,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
 }
 
 export function extractSystemdHome(definition: string): string | undefined {
-  const match = definition.match(/^Environment="OPENTAG_HOME=(.*)"$/mu);
+  const match = [...definition.matchAll(/^Environment="OPENTAG_HOME=((?:[^"\\]|\\.)*)"$/gmu)].at(-1);
   if (!match?.[1]) return undefined;
   return match[1].replace(/%%/g, "%").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
 }

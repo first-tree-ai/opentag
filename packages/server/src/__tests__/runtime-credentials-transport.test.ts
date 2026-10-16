@@ -4,7 +4,11 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { RuntimeCapabilityStore } from "../runtime-credentials/capability-store.js";
-import { type RuntimeConnectionFence, RuntimeCredentialBroker } from "../runtime-credentials/credential-broker.js";
+import {
+  type RuntimeConnectionFence,
+  RuntimeCredentialBroker,
+  RuntimeCredentialError,
+} from "../runtime-credentials/credential-broker.js";
 import { RuntimeProviderProxyTransport } from "../runtime-credentials/data-transport.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import { UnavailableRuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
@@ -129,6 +133,7 @@ function echoAdapter(): ProviderProxyAdapter {
 async function setup(
   adapter: ProviderProxyAdapter,
   options: {
+    logger?: { warn(record: Record<string, unknown>, message: string): void };
     connectionFence?: RuntimeConnectionFence;
     brokerConnectionFence?: RuntimeConnectionFence;
     cloud?: boolean;
@@ -194,6 +199,7 @@ async function setup(
     tickets,
     executions,
     ...(options.connectionFence ? { connectionFence: options.connectionFence } : {}),
+    ...(options.logger ? { logger: options.logger } : {}),
     authTimeoutMs: 150,
     revalidateIntervalMs: options.revalidateIntervalMs ?? 60_000,
     ...(options.chunkMaxBytes !== undefined ? { chunkMaxBytes: options.chunkMaxBytes } : {}),
@@ -201,10 +207,11 @@ async function setup(
   });
   const server = new WebSocketServer({ port: 0 });
   servers.push(server);
-  server.on("connection", (socket) => transport.attach(socket));
+  const connections: ReturnType<typeof transport.attach>[] = [];
+  server.on("connection", (socket) => connections.push(transport.attach(socket)));
   await once(server, "listening");
   const port = (server.address() as AddressInfo).port;
-  return { port, record, grant, tickets, executions, capabilities, transport, server, broker };
+  return { port, record, grant, tickets, executions, capabilities, transport, server, broker, connections };
 }
 
 async function connect(port: number, ticket: string): Promise<{ socket: WebSocket; queue: MessageQueue }> {
@@ -373,8 +380,16 @@ describe("RuntimeProviderProxyTransport", () => {
     const { socket, queue } = await connect(state.port, ticket);
     await queue.nextJson();
     for (let streamId = 1; streamId <= 9; streamId += 1) socket.send(openFrame(streamId, state.grant.token));
-    const [code] = (await once(socket, "close")) as [number, string];
-    expect(code).toBe(4400);
+    expect(await queue.nextJson()).toEqual({ type: "error", streamId: 9, code: "resource_limit" });
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    socket.send(JSON.stringify({ type: "end", streamId: 1 }));
+    expect(await queue.nextJson()).toMatchObject({ type: "response", streamId: 1 });
+    expect(await queue.nextJson()).toMatchObject({ type: "end", streamId: 1 });
+    socket.send(openFrame(10, state.grant.token));
+    socket.send(JSON.stringify({ type: "end", streamId: 10 }));
+    expect(await queue.nextJson()).toMatchObject({ type: "response", streamId: 10 });
+    expect(await queue.nextJson()).toMatchObject({ type: "end", streamId: 10 });
+    expect(state.connections[0]?.snapshot().active).toBe(7);
   });
 
   it("honors the credit window for long streaming responses", async () => {
@@ -684,6 +699,49 @@ describe("RuntimeProviderProxyTransport completion and credit accounting", () =>
     }),
   };
 
+  it.each([9000, 20000])(
+    "rejects an oversized %i-byte response header without killing another stream",
+    async (size) => {
+      let calls = 0;
+      const state = await setup({
+        handle: async () => ({
+          status: 200,
+          headers: Object.fromEntries(calls++ === 0 ? [["x-large", "x".repeat(size)]] : []),
+          body: (async function* () {})(),
+        }),
+      });
+      const { socket, queue } = await ready(ticketFor(state), state.port);
+      socket.send(openFrame(1, state.grant.token));
+      expect(await queue.nextJson()).toEqual({ type: "error", streamId: 1, code: "proxy_frame_too_large" });
+      socket.send(openFrame(2, state.grant.token));
+      expect(await queue.nextJson()).toMatchObject({ type: "response", streamId: 2 });
+      expect(await queue.nextJson()).toEqual({ type: "end", streamId: 2 });
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+    },
+  );
+
+  it("serves 1,000 requests on one connection with bounded retired state and no retained body", async () => {
+    const state = await setup(doneAdapter);
+    const { socket, queue } = await ready(ticketFor(state), state.port);
+    for (let id = 1; id <= 1000; id++) {
+      socket.send(openFrame(id, state.grant.token));
+      // The adapter deliberately does not consume this body; retirement must discard it.
+      socket.send(binaryFrame(id, Buffer.alloc(4096)));
+      socket.send(JSON.stringify({ type: "end", streamId: id }));
+      expect(await queue.nextJson()).toMatchObject({ type: "response", streamId: id });
+      expect((await queue.next()).binary).toBe(true);
+      expect(await queue.nextJson()).toEqual({ type: "end", streamId: id });
+      if (id % 250 === 0)
+        expect(state.connections[0]?.snapshot()).toEqual({ active: 0, retired: Math.min(id, 256), bufferedBytes: 0 });
+    }
+    expect(state.connections).toHaveLength(1);
+    // A late frame beyond the bounded history is inert, but an old open can never regain authority.
+    socket.send(JSON.stringify({ type: "credit", streamId: 1, bytes: 4 }));
+    socket.send(openFrame(1, state.grant.token));
+    const [code] = await once(socket, "close");
+    expect(code).toBe(4400);
+  }, 30_000);
+
   it("tolerates in-flight completion frames for a completed stream and keeps the socket usable", async () => {
     const state = await setup(doneAdapter);
     const { socket, queue } = await ready(ticketFor(state), state.port);
@@ -773,36 +831,40 @@ describe("RuntimeProviderProxyTransport completion and credit accounting", () =>
     expect(code).toBe(4400);
   });
 
-  it("streams more than two mebibytes in both directions with exact bytes and genuine credit", async () => {
-    const echo: ProviderProxyAdapter = {
-      handle: async (request) => ({
-        status: 200,
-        headers: { "content-type": "application/octet-stream" },
-        body: (async function* () {
-          for await (const chunk of request.body) yield chunk;
-        })(),
-      }),
-    };
-    const state = await setup(echo);
-    const { socket, queue } = await ready(ticketFor(state), state.port);
-    const size = 2 * 1024 * 1024 + 12_345;
-    const sent = Buffer.alloc(size);
-    for (let index = 0; index < size; index += 1) sent[index] = (index * 31 + 7) & 0xff;
-    const gate = creditGate(1_048_576);
-    socket.send(openFrame(1, state.grant.token));
-    const [echoed] = await Promise.all([
-      readEchoUntilEnd({ queue, socket, streamId: 1, grantUpload: (bytes) => gate.grant(bytes) }),
-      sendBodyUntilEnd(socket, 1, sent, gate),
-    ]);
-    expect(echoed.received.byteLength).toBe(size);
-    expect(createHash("sha256").update(echoed.received).digest("hex")).toBe(
-      createHash("sha256").update(sent).digest("hex"),
-    );
-    // Genuine multi-window consumption: the Server granted several full windows while the
-    // client granted download credit for every chunk it consumed.
-    expect(echoed.creditFrames).toBeGreaterThan(16);
-    socket.close();
-  }, 20_000);
+  it.each([6, 64])(
+    "streams %i MiB in both directions with exact bytes and genuine credit",
+    async (mib) => {
+      const echo: ProviderProxyAdapter = {
+        handle: async (request) => ({
+          status: 200,
+          headers: { "content-type": "application/octet-stream" },
+          body: (async function* () {
+            for await (const chunk of request.body) yield chunk;
+          })(),
+        }),
+      };
+      const state = await setup(echo);
+      const { socket, queue } = await ready(ticketFor(state), state.port);
+      const size = mib * 1024 * 1024 + 12_345;
+      const sent = Buffer.alloc(size);
+      for (let index = 0; index < size; index += 1) sent[index] = (index * 31 + 7) & 0xff;
+      const gate = creditGate(1_048_576);
+      socket.send(openFrame(1, state.grant.token));
+      const [echoed] = await Promise.all([
+        readEchoUntilEnd({ queue, socket, streamId: 1, grantUpload: (bytes) => gate.grant(bytes) }),
+        sendBodyUntilEnd(socket, 1, sent, gate),
+      ]);
+      expect(echoed.received.byteLength).toBe(size);
+      expect(createHash("sha256").update(echoed.received).digest("hex")).toBe(
+        createHash("sha256").update(sent).digest("hex"),
+      );
+      // Genuine multi-window consumption: the Server granted several full windows while the
+      // client granted download credit for every chunk it consumed.
+      expect(echoed.creditFrames).toBeGreaterThan(16);
+      socket.close();
+    },
+    20_000,
+  );
 });
 
 describe("RuntimeProviderProxyTransport execution fence", () => {
@@ -824,6 +886,94 @@ describe("RuntimeProviderProxyTransport execution fence", () => {
     socket.send(JSON.stringify({ type: "end", streamId: 1 }));
     expect(await queue.nextJson()).toMatchObject({ type: "error", code: "credential_scope_denied" });
     expect(adapter.handle).not.toHaveBeenCalled();
+    socket.close();
+  });
+});
+
+it("bounds target checks per stream and does not let a slow check delay another stream's revocation", async () => {
+  let releaseSlow = () => {};
+  const slow = new Promise<void>((resolve) => {
+    releaseSlow = resolve;
+  });
+  const slowCheck = vi.fn(async () => slow);
+  const adapter: ProviderProxyAdapter = {
+    handle: async (request) => {
+      request.setRevalidation?.(
+        request.path === "/slow"
+          ? slowCheck
+          : async () => {
+              throw new RuntimeCredentialError("credential_scope_denied");
+            },
+      );
+      return {
+        status: 200,
+        headers: {},
+        body: (async function* () {
+          yield Buffer.from("prefix");
+          await new Promise<void>((resolve) => {
+            if (request.signal.aborted) resolve();
+            else request.signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        })(),
+      };
+    },
+  };
+  const state = await setup(adapter, { revalidateIntervalMs: 10 });
+  const { ticket } = state.tickets.issue({
+    executionId: state.record.executionId,
+    computerId: COMPUTER,
+    instanceId: "instance-1",
+    connectionId: "connection-1",
+  });
+  const { socket, queue } = await connect(state.port, ticket);
+  await queue.nextJson();
+  try {
+    socket.send(openFrame(1, state.grant.token, "/slow"));
+    socket.send(openFrame(2, state.grant.token, "/fast"));
+    expect(await waitForFrame(queue, "cancel")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(slowCheck).toHaveBeenCalledTimes(1);
+  } finally {
+    releaseSlow();
+    socket.close();
+  }
+});
+
+describe("Provider stream failure diagnostics", () => {
+  it.each(["scope_denied", "private-error-code"])("logs only bounded provider/reason metadata for %s", async (code) => {
+    const logs: unknown[] = [];
+    const state = await setup(
+      {
+        handle: async () => {
+          throw Object.assign(new Error("private raw upstream message"), { code });
+        },
+      },
+      {
+        logger: {
+          warn(record, message) {
+            logs.push({ record, message });
+          },
+        },
+      },
+    );
+    const { ticket } = state.tickets.issue({
+      executionId: state.record.executionId,
+      computerId: COMPUTER,
+      instanceId: "instance-1",
+      connectionId: "connection-1",
+    });
+    const { socket, queue } = await connect(state.port, ticket);
+    await queue.nextJson();
+    socket.send(openFrame(1, state.grant.token, "/api/chat.postMessage"));
+    expect(await queue.nextJson()).toMatchObject({ type: "error", code });
+    expect(logs).toEqual([
+      {
+        record: { provider: "slack", code: code === "scope_denied" ? code : "upstream_unavailable" },
+        message: "Provider proxy stream failed",
+      },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain("private");
+    expect(JSON.stringify(logs)).not.toContain(state.record.executionId);
     socket.close();
   });
 });

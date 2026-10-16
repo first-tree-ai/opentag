@@ -22,6 +22,11 @@ import {
   rateLimitFailureMetadata,
   registerBrowserAuthRoutes,
 } from "./api/browser-auth.js";
+import {
+  registerCloudBillingReadinessRoute,
+  registerCloudBillingRoutes,
+  registerCloudBillingWebhook,
+} from "./api/cloud-billing.js";
 import { type CloudModelProxyRouteOptions, registerCloudModelProxyRoutes } from "./api/cloud-model-proxy.js";
 import { registerComputerSkillRoutes } from "./api/computer-skills.js";
 import { registerComputerRoutes } from "./api/computers.js";
@@ -39,18 +44,24 @@ import { RequestValidationError } from "./api/request-validation.js";
 import { registerRunnerWorkspaceRoutes } from "./api/runner-workspace.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
 import { type RuntimeAgentRoutesOptions, registerRuntimeAgentRoutes } from "./api/runtime-agent.js";
+import {
+  type RuntimeAgentSlackProvisionOptions,
+  registerRuntimeAgentSlackProvision,
+} from "./api/runtime-agent-slack-provision.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import type { RuntimeProviderProxyRoutesOptions } from "./api/runtime-provider-proxy.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerRuntimeSkillRoutes } from "./api/runtime-skills.js";
 import { type RuntimeWebRoutesOptions, registerRuntimeWebRoutes } from "./api/runtime-web.js";
 import { registerSkillRoutes } from "./api/skills.js";
+import { registerSlackConfigurationRoutes, type SlackConfigurationRouteOptions } from "./api/slack-configuration.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWebsiteSessionRoutes } from "./api/website-session.js";
 import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import type { CloudBilling } from "./cloud-billing.js";
 import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
 import type { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
@@ -124,6 +135,8 @@ export interface CreateAppOptions {
   };
   /** E4 controlled model path; present exactly when the deployment model proxy is enabled. */
   cloudModel?: CloudModelProxyRouteOptions;
+  cloudBilling?: CloudBilling;
+  cloudUsage?: import("./services/cloud-usage.js").CloudUsageService;
   /**
    * E5 Runner workspace persistence HTTP routes; present exactly when the Runner runtime
    * configured the object store. Authenticates the Runner bootstrap bearer token only — never
@@ -187,6 +200,7 @@ export interface CreateAppOptions {
     proofs?: Pick<SessionCliProofService, "authenticate">;
   };
   slackOAuth?: SlackOAuthRouteOptions;
+  slackConfiguration?: SlackConfigurationRouteOptions;
   /** GitHub integration management; always registered so the UI can read availability. */
   githubIntegrations?: Omit<GitHubIntegrationsRouteOptions, "authService" | "authOptions">;
   loggerStream?: FastifyLoggerOptions["stream"];
@@ -202,6 +216,7 @@ export interface CreateAppOptions {
   runtimeSessions?: RuntimeSessionRoutesOptions;
   /** Session-proof-authenticated Agent self-configuration (`opentag agent self`). */
   runtimeAgent?: RuntimeAgentRoutesOptions;
+  runtimeAgentSlackProvision?: RuntimeAgentSlackProvisionOptions;
   /** Session-proof-authenticated Agent Schedule management (`opentag agent self schedule`). */
   runtimeAgentSchedules?: RuntimeAgentScheduleRoutesOptions;
   /** Account-facing Schedule list/show/pause/resume/delete; no Account create or update exists. */
@@ -501,10 +516,14 @@ export function safeInboundRequestId(header: string | string[] | undefined): str
 /** Routes authenticated by the Session CLI proof rather than an Account or machine credential. */
 function registerSessionProofRoutes(
   app: FastifyInstance,
-  options: Pick<CreateAppOptions, "runtimeAgent" | "runtimeAgentSchedules" | "runtimeSessions">,
+  options: Pick<
+    CreateAppOptions,
+    "runtimeAgent" | "runtimeAgentSlackProvision" | "runtimeAgentSchedules" | "runtimeSessions"
+  >,
 ): void {
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeAgent) registerRuntimeAgentRoutes(app, options.runtimeAgent);
+  if (options.runtimeAgentSlackProvision) registerRuntimeAgentSlackProvision(app, options.runtimeAgentSlackProvision);
   if (options.runtimeAgentSchedules) registerRuntimeAgentScheduleRoutes(app, options.runtimeAgentSchedules);
 }
 
@@ -588,6 +607,8 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   const readinessHeaders = deploymentHeaders(options.deployment);
+  registerCloudBillingReadinessRoute(app, options.cloudBilling, readinessHeaders);
+  registerCloudBillingWebhook(app, options.cloudBilling);
   app.get("/readyz", async (request, reply) => {
     reply.headers(readinessHeaders);
     const snapshot = readiness.snapshot();
@@ -682,7 +703,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
-    if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
+    registerSlackSetupRoutes(app, authService, options, authOptions);
     if (options.githubIntegrations) {
       registerGitHubIntegrationsRoutes(app, { ...options.githubIntegrations, authService, authOptions });
     }
@@ -839,18 +860,31 @@ export function createApp(options: CreateAppOptions = {}) {
   return app;
 }
 
+function registerSlackSetupRoutes(
+  app: Parameters<typeof registerAccountRoutes>[0],
+  authService: UserAuthService,
+  options: CreateAppOptions,
+  authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
+): void {
+  if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
+  if (options.slackConfiguration)
+    registerSlackConfigurationRoutes(app, authService, options.slackConfiguration, authOptions);
+}
+
 function registerAvailableAccountRoutes(
   app: Parameters<typeof registerAccountRoutes>[0],
   authService: UserAuthService,
   options: CreateAppOptions,
   authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
 ): void {
+  registerCloudBillingRoutes(app, authService, options.cloudBilling, authOptions, options.cloudUsage);
   if (
     !(
       options.agentService ||
       options.agentSchedules ||
       options.cloudAvailability ||
       options.cloudModelCatalog ||
+      options.cloudBilling ||
       options.taskService ||
       options.computerService ||
       options.sandboxService ||

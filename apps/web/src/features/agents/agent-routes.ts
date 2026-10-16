@@ -36,10 +36,6 @@ export function agentSkillsLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/skills" } as const;
 }
 
-export function agentIntegrationsLink(agentId: string) {
-  return { params: { agentId }, to: "/agents/$agentId/integrations" } as const;
-}
-
 export function agentMcpLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/mcp" } as const;
 }

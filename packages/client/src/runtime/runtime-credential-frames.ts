@@ -67,9 +67,10 @@ export {
   PROVIDER_PROXY_AUTH_TIMEOUT_MS,
   PROVIDER_PROXY_CHUNK_MAX_BYTES,
   PROVIDER_PROXY_HEADER_MAX_BYTES,
+  PROVIDER_PROXY_HTTP_PROTOCOL,
   PROVIDER_PROXY_INITIAL_CREDIT_BYTES,
   PROVIDER_PROXY_MAX_FRAME_BYTES,
-  PROVIDER_PROXY_MAX_STREAM_OPENS_PER_CONNECTION,
+  PROVIDER_PROXY_MAX_RETIRED_STREAMS,
   PROVIDER_PROXY_MAX_STREAMS_PER_EXECUTION,
   PROVIDER_PROXY_STREAM_REVALIDATE_INTERVAL_MS,
   RUNTIME_CREDENTIAL_CAPABILITY_REFRESH_AFTER_MS,
@@ -128,7 +129,7 @@ export const RUNTIME_PROXY_PROVIDERS = RUNTIME_CREDENTIAL_PROVIDERS;
 
 /** Parse one Server business frame; returns undefined for non-credential frames. */
 export function parseRuntimeCredentialServerFrame(value: unknown): RuntimeCredentialServerFrame | undefined {
-  const parsed = RuntimeCredentialServerFrameSchema.safeParse(value);
+  const parsed = RuntimeCredentialServerFrameSchema.safeParse(withoutLegacyGitHubProviders(value));
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -146,4 +147,20 @@ export function runtimeProxyErrorReason(error: unknown): string {
   // Only canonical uppercase system/driver codes survive: capabilities, tickets, and local
   // handles are lowercase opaque strings and must never be echoed into logs.
   return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,31}$/.test(code) ? `${label}:${code}` : label;
+}
+
+/** Discard obsolete GitHub authority at the wire boundary while preserving valid IM work. */
+function withoutLegacyGitHubProviders(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const frame = value as Record<string, unknown>;
+  if (frame.type !== "runtime:execution:result" || frame.status !== "succeeded" || !Array.isArray(frame.providers))
+    return value;
+  return {
+    ...frame,
+    providers: frame.providers.filter((provider) => {
+      if (!provider || typeof provider !== "object" || provider.provider !== "github") return true;
+      const cli = provider.cli;
+      return !cli || typeof cli !== "object" || !("repositories" in cli);
+    }),
+  };
 }

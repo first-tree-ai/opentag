@@ -1,85 +1,144 @@
 import type { AccountComputerSummary } from "@opentag/shared/browser";
+import { type RefObject, useRef } from "react";
 import * as m from "../../paraglide/messages.js";
-import { Button, Collapsible, Icon } from "../../ui/design-system.js";
+import { useRemaining } from "../../setup/index.js";
+import { Button, Loader, StatusIndicator } from "../../ui/design-system.js";
 import {
   type ComputerConnectAdapter,
-  type ComputerConnectIntent,
   type ComputerConnectLifecycle,
   ComputerConnectLifecycleRoot,
-  ComputerConnectPresentation,
 } from "./computer-connect.js";
 import { ComputerRecoveryInstructions } from "./computer-recovery-instructions.js";
 
 type RecoveryComputer = Pick<AccountComputerSummary, "computerId" | "displayName" | "platform">;
 
-/** Account management and setup share the same help without treating ordinary offline as a reinstall. */
+/** One complete assistant task, with optional targeted authorization and observed connection results. */
 export function ComputerRecovery({
   computer,
   adapter,
   available = true,
+  returnFocusRef,
   onConnected,
 }: {
   readonly computer: RecoveryComputer;
   readonly adapter?: ComputerConnectAdapter;
-  /** Withhold recovery controls during inventory uncertainty without losing an existing attempt. */
+  /** Hide controls during inventory uncertainty while retaining the exact attempt. */
   readonly available?: boolean;
+  readonly returnFocusRef?: RefObject<HTMLElement | null>;
   readonly onConnected: () => void;
 }) {
-  const intent: ComputerConnectIntent = { mode: "repair", target: computer };
+  const recoveryRef = useRef<HTMLDivElement>(null);
   return (
-    <ComputerConnectLifecycleRoot adapter={adapter} intent={intent} onConnected={onConnected}>
-      {(lifecycle) =>
-        available ? (
-          <div className="grid min-w-0 gap-3 text-sm" data-ui="computer-recovery">
-            <p>{m.computer_connect_recovery_wake()}</p>
-            <Collapsible.Root>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-kumo-subtle">{m.computer_connect_recovery_still_offline()}</span>
-                <Collapsible.Trigger render={<Button variant="ghost" size="compact" className="text-kumo-link" />}>
-                  {m.computer_connect_recovery_help()}
-                  <Icon name="chevron-right" className="size-4 in-data-[panel-open]:rotate-90" />
-                </Collapsible.Trigger>
-              </div>
-              <Collapsible.Panel className="grid min-w-0 gap-4 pt-4">
-                <RecoveryHelp computer={computer} intent={intent} lifecycle={lifecycle} />
-              </Collapsible.Panel>
-            </Collapsible.Root>
-          </div>
-        ) : null
-      }
-    </ComputerConnectLifecycleRoot>
+    <div
+      ref={recoveryRef}
+      tabIndex={-1}
+      className="min-w-0 outline-none focus-visible:outline-2 focus-visible:outline-kumo-focus"
+    >
+      <ComputerConnectLifecycleRoot
+        adapter={adapter}
+        autoIssue={available}
+        intent={{ mode: "repair", target: computer }}
+        onConnected={onConnected}
+      >
+        {(lifecycle) =>
+          available ? (
+            <RecoveryHelp computer={computer} lifecycle={lifecycle} returnFocusRef={returnFocusRef ?? recoveryRef} />
+          ) : null
+        }
+      </ComputerConnectLifecycleRoot>
+    </div>
   );
 }
 
 function RecoveryHelp({
   computer,
-  intent,
   lifecycle,
+  returnFocusRef,
 }: {
   readonly computer: RecoveryComputer;
-  readonly intent: ComputerConnectIntent;
   readonly lifecycle: ComputerConnectLifecycle;
+  readonly returnFocusRef: RefObject<HTMLElement | null>;
 }) {
-  // The lifecycle lives above the disclosure: closing help never loses or reissues a live command.
-  // Once repair starts, replace the diagnostic instructions with the requested authorization.
-  if (lifecycle.state.kind !== "idle") {
-    return <ComputerConnectPresentation intent={intent} lifecycle={lifecycle} />;
-  }
+  const { error, state } = lifecycle;
   return (
-    <div className="grid min-w-0 gap-5" data-ui="computer-recovery-help">
-      <ComputerRecoveryInstructions computer={computer} />
-      <Collapsible.Root>
-        <Collapsible.Trigger render={<Button variant="ghost" size="compact" className="text-kumo-subtle" />}>
-          {m.computer_connect_recovery_repair_help()}
-          <Icon name="chevron-right" className="size-4 in-data-[panel-open]:rotate-90" />
-        </Collapsible.Trigger>
-        <Collapsible.Panel className="grid gap-3 pt-3">
-          <p className="text-kumo-subtle">{m.computer_connect_recovery_repair_scope()}</p>
-          <Button className="w-fit" variant="secondary" size="compact" onClick={lifecycle.issue}>
-            {m.computer_connect_repair_action()}
-          </Button>
-        </Collapsible.Panel>
-      </Collapsible.Root>
+    <div
+      className="grid min-w-0 gap-3 text-sm"
+      data-ui="computer-recovery"
+      data-state={state.kind}
+      aria-busy={state.kind === "idle" || state.kind === "issuing"}
+    >
+      <RecoveryContent computer={computer} lifecycle={lifecycle} returnFocusRef={returnFocusRef} />
+      {error && state.kind !== "issue-failed" && state.kind !== "expired" ? (
+        <p className="text-kumo-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
+  );
+}
+
+function RecoveryContent({
+  computer,
+  lifecycle,
+  returnFocusRef,
+}: {
+  readonly computer: RecoveryComputer;
+  readonly lifecycle: ComputerConnectLifecycle;
+  readonly returnFocusRef: RefObject<HTMLElement | null>;
+}) {
+  const { issue, state } = lifecycle;
+  switch (state.kind) {
+    case "issued":
+      return <IssuedRecovery computer={computer} issued={state.issued} returnFocusRef={returnFocusRef} />;
+    case "idle":
+    case "issuing":
+      return (
+        <p className="flex items-center gap-2 text-kumo-subtle" role="status">
+          <Loader size="sm" aria-hidden="true" />
+          {m.computer_connect_recovery_preparing()}
+        </p>
+      );
+    case "expired":
+    case "issue-failed":
+      return (
+        <div className="grid justify-items-start gap-3">
+          <p className="text-kumo-subtle" role="status">
+            {state.kind === "expired"
+              ? m.computer_connect_recovery_expired()
+              : m.computer_connect_recovery_prepare_failed()}
+          </p>
+          <Button variant="secondary" size="compact" onClick={issue}>
+            {state.kind === "expired" ? m.computer_connect_recovery_update() : m.common_try_again()}
+          </Button>
+        </div>
+      );
+    case "redeemed":
+      return (
+        <p className="text-kumo-subtle" role="status">
+          {m.computer_connect_recovery_waiting()}
+        </p>
+      );
+    case "connected":
+      return <StatusIndicator label={m.computer_connection_restored()} tone="success" />;
+  }
+}
+
+function IssuedRecovery({
+  computer,
+  issued,
+  returnFocusRef,
+}: {
+  readonly computer: RecoveryComputer;
+  readonly issued: Extract<ComputerConnectLifecycle["state"], { kind: "issued" }>["issued"];
+  readonly returnFocusRef: RefObject<HTMLElement | null>;
+}) {
+  const remaining = useRemaining(issued.expiresAt);
+  return remaining > 0 ? (
+    <ComputerRecoveryInstructions computer={computer} command={issued.command} returnFocusRef={returnFocusRef} />
+  ) : (
+    <p className="flex items-center gap-2 text-kumo-subtle" role="status">
+      <Loader size="sm" aria-hidden="true" />
+      {m.computer_connect_recovery_verifying()}
+    </p>
   );
 }

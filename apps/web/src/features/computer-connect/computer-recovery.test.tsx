@@ -1,155 +1,268 @@
+import type { AccountComputerSummary, ComputerConnectCodeStatus } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerConnectAdapter } from "./computer-connect.js";
 import { ComputerRecovery } from "./computer-recovery.js";
 
-const computer = { computerId: "review-mac", displayName: "Ada's Mac", platform: "darwin" } as const;
-const repairCommand = "opentag computer connect --server https://opentag.example.com -- repair-code";
-
+const computer: AccountComputerSummary = {
+  computerId: "review-mac",
+  displayName: "Ada's Mac",
+  platform: "darwin",
+  connectionStatus: "offline",
+  connectedAt: null,
+  lastSeenAt: null,
+  observedAt: "2026-10-10T00:00:00.000Z",
+  createdAt: "2026-10-10T00:00:00.000Z",
+  agentIds: [],
+};
+const command = "opentag connect --server https://opentag.example.com -- repair-code";
+const pending: ComputerConnectCodeStatus = {
+  connectCodeId: "repair-code",
+  state: "pending",
+  computerId: null,
+  redeemedAt: null,
+};
 function createAdapter() {
   return {
     issue: vi.fn<ComputerConnectAdapter["issue"]>().mockResolvedValue({
-      bootstrapCommand: repairCommand,
+      bootstrapCommand: command,
       connectCodeId: "repair-code",
       issuedAt: new Date().toISOString(),
       expiresIn: 900,
     }),
-    status: vi.fn<ComputerConnectAdapter["status"]>().mockResolvedValue({
-      connectCodeId: "repair-code",
-      state: "pending",
-      computerId: null,
-      redeemedAt: null,
-    }),
-    computers: vi.fn<ComputerConnectAdapter["computers"]>().mockResolvedValue({ computers: [] }),
+    status: vi.fn<ComputerConnectAdapter["status"]>().mockResolvedValue(pending),
+    computers: vi.fn<ComputerConnectAdapter["computers"]>().mockResolvedValue({ computers: [computer] }),
   };
 }
+async function settle() {
+  await act(async () => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  });
+}
+async function poll() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1_500);
+  });
+}
+function clipboard(fails = false) {
+  const writeText = fails
+    ? vi.fn().mockRejectedValue(new Error("NotAllowedError"))
+    : vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  return writeText;
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  Reflect.deleteProperty(navigator, "clipboard");
+});
 
 describe("shared Computer recovery", () => {
-  afterEach(() => Reflect.deleteProperty(navigator, "clipboard"));
-
-  it("shows the first action before exposing commands or repair", () => {
+  it("automatically prepares exactly one targeted task under Strict Mode, without repair disclosures", async () => {
     const adapter = createAdapter();
-    render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={vi.fn()} />);
-
-    expect(screen.getByText("Turn on or wake this computer and check its internet connection.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Get connection help" }).getAttribute("aria-expanded")).toBe("false");
+    render(
+      <StrictMode>
+        <ComputerRecovery computer={computer} adapter={adapter} onConnected={vi.fn()} />
+      </StrictMode>,
+    );
+    await settle();
+    expect(adapter.issue).toHaveBeenCalledExactlyOnceWith({ mode: "repair", target: computer });
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
-    expect(adapter.issue).not.toHaveBeenCalled();
-    expect(adapter.status).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Turn on or wake|Expires in|Waiting for/)).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("copies one diagnostic task for the correct Computer without issuing a code or claiming recovery", async () => {
-    const adapter = createAdapter();
-    const onConnected = vi.fn();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  it("copies the full task and authorization before expansion without claiming reconnection", async () => {
+    const adapter = createAdapter(),
+      onConnected = vi.fn(),
+      writeText = clipboard();
     render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    expect(await screen.findByText("Paste this into your coding assistant on Ada's Mac.")).toBeTruthy();
-    const instructions = screen.getByRole("region", { name: "Restore connection" });
-    expect(instructions.textContent).toContain("opentag doctor --json");
-    expect(screen.queryByRole("button", { name: "View instructions" })).toBeNull();
+    await settle();
+    const region = screen.getByRole("region", { name: "Restore connection" });
+    expect(region.textContent).not.toContain(command);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy instructions" })));
-
     const payload = writeText.mock.calls[0]?.[0] as string;
-    expect(payload).toContain("Ada's Mac.");
     expect(payload).toContain("Computer ID: review-mac.");
+    expect(payload).toContain("Computer: Ada's Mac.");
     expect(payload).toContain("opentag doctor --json");
     expect(payload).toContain("opentag daemon status --json");
-    expect(payload).toContain("only if the installed service is stopped");
-    expect(payload).toContain("Preserve the Computer and Agent bindings");
-    expect(payload).toContain("a running service alone is not proof");
-    expect(payload).toBe(instructions.textContent);
-    expect(payload).not.toContain(": '");
-    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
-    expect(screen.queryByText(/Waiting for/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
-    expect(screen.queryByText(/Terminal/)).toBeNull();
-    expect(screen.queryByText(/Expires in/)).toBeNull();
-    expect(adapter.issue).not.toHaveBeenCalled();
-    expect(adapter.status).not.toHaveBeenCalled();
+    expect(payload).toContain("Only if diagnostics show that new authorization is required");
+    expect(payload).toContain(command);
+    expect(payload).toContain("Do not create a new Computer");
+    expect(payload).toContain("Keep my Agents, settings, and local files");
+    expect(payload).not.toContain("Repair connection");
     expect(onConnected).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    expect(region.textContent).toBe(payload);
+    expect(screen.getByRole("button", { name: "Show less" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show less" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copied" })));
+    expect(writeText.mock.calls[1]?.[0]).toBe(payload);
+    expect(adapter.issue).toHaveBeenCalledOnce();
   });
 
-  it("only issues a targeted repair on request, replaces the task, and retains it across closing help", async () => {
+  it("expands and selects the complete task when clipboard access fails", async () => {
+    const writeText = clipboard(true);
+    render(<ComputerRecovery computer={computer} adapter={createAdapter()} onConnected={vi.fn()} />);
+    await settle();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy instructions" })));
+    expect(screen.getByText("Copy failed. Select and copy the instructions.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
+    expect(window.getSelection()?.toString()).toBe(writeText.mock.calls[0]?.[0]);
+    expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
+  });
+
+  it("withholds new authorization during uncertainty and retains the exact issued task afterward", async () => {
+    const adapter = createAdapter(),
+      onConnected = vi.fn();
+    const view = render(
+      <ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} available={false} />,
+    );
+    expect(adapter.issue).not.toHaveBeenCalled();
+    view.rerender(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    view.rerender(
+      <ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} available={false} />,
+    );
+    expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
+    await poll();
+    view.rerender(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    expect(adapter.issue).toHaveBeenCalledOnce();
+  });
+
+  it("retires expired instructions and only prepares a replacement when requested", async () => {
     const adapter = createAdapter();
     render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={vi.fn()} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Assistant requested a repair?" }));
-    expect(adapter.issue).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole("button", { name: "Repair connection" }));
-    expect(await screen.findByText("Expires in 15:00")).toBeTruthy();
-    expect(adapter.issue).toHaveBeenCalledExactlyOnceWith({ mode: "repair", target: computer });
-    expect(document.querySelector("code")?.textContent).toContain(repairCommand);
+    await settle();
+    screen.getByRole("button", { name: "Copy instructions" }).focus();
+    const recovery = document.querySelector('[data-ui="computer-recovery"]')?.parentElement;
+    adapter.status.mockResolvedValue({
+      connectCodeId: "repair-code",
+      state: "expired",
+      computerId: null,
+      redeemedAt: null,
+    });
+    await poll();
+    expect(document.activeElement).toBe(recovery);
+    expect(screen.getByRole("button", { name: "Update instructions" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
-    expect(screen.getAllByRole("button", { name: "Copy command" })).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
-    expect(document.querySelector("code")?.textContent).toContain(repairCommand);
-    expect(adapter.issue).toHaveBeenCalledTimes(1);
+    await poll();
+    expect(adapter.issue).toHaveBeenCalledOnce();
+    adapter.status.mockResolvedValue(pending);
+    adapter.issue.mockResolvedValue({
+      bootstrapCommand: "replacement-command",
+      connectCodeId: "replacement",
+      issuedAt: new Date().toISOString(),
+      expiresIn: 900,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update instructions" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("replacement-command");
+    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).not.toContain(command);
+    expect(adapter.issue).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps diagnosis available on other platforms without presenting a standalone service command", async () => {
-    render(
-      <ComputerRecovery
-        computer={{ ...computer, platform: "win32" }}
-        adapter={createAdapter()}
-        onConnected={vi.fn()}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
+  it("does not let an unrelated online Computer finish recovery, but observes restoration without redemption", async () => {
+    const adapter = createAdapter(),
+      onConnected = vi.fn();
+    adapter.computers.mockResolvedValue({
+      computers: [{ ...computer, computerId: "other", connectionStatus: "online" }, computer],
+    });
+    render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
+    await settle();
+    expect(onConnected).not.toHaveBeenCalled();
+    adapter.computers.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "online" }] });
+    await poll();
+    expect(onConnected).toHaveBeenCalledOnce();
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
+    await poll();
+    expect(onConnected).toHaveBeenCalledOnce();
   });
 
-  it("selects the visible instructions for manual copying when clipboard access fails", async () => {
-    const writeText = vi.fn().mockRejectedValue(new Error("NotAllowedError"));
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    render(<ComputerRecovery computer={computer} adapter={createAdapter()} onConnected={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy instructions" })));
-
-    expect(await screen.findByText("Copy failed. Select and copy the instructions.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
-    const instructions = screen.getByRole("region", { name: "Restore connection" });
-    expect(instructions?.textContent).toBe(writeText.mock.calls[0]?.[0]);
-    expect(window.getSelection()?.toString()).toBe(instructions?.textContent);
-
-    writeText.mockResolvedValue(undefined);
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy instructions" })));
-    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
-    expect(screen.queryByText("Copy failed. Select and copy the instructions.")).toBeNull();
+  it("shows progress only after redemption and waits for the exact newly connected Computer", async () => {
+    const adapter = createAdapter(),
+      onConnected = vi.fn(),
+      redeemedAt = new Date().toISOString();
+    adapter.status.mockResolvedValue({
+      connectCodeId: "repair-code",
+      state: "redeemed",
+      computerId: computer.computerId,
+      redeemedAt,
+    });
+    render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
+    await settle();
+    expect(screen.getByText("Authorization accepted. Waiting for OpenTag to come online…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
+    expect(onConnected).not.toHaveBeenCalled();
+    adapter.computers.mockResolvedValue({
+      computers: [{ ...computer, connectionStatus: "online", connectedAt: redeemedAt }],
+    });
+    await poll();
+    expect(onConnected).toHaveBeenCalledOnce();
   });
 
-  it("does not carry copied feedback or instructions to a different Computer", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  it("observes actual restoration even if the optional authorization status is unavailable", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const adapter = createAdapter();
     const onConnected = vi.fn();
-    const { rerender } = render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy instructions" })));
-    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+    adapter.status.mockRejectedValue(new Error("Authorization status unavailable"));
+    render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={onConnected} />);
+    await settle();
+    expect(onConnected).not.toHaveBeenCalled();
+    adapter.computers.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "online" }] });
+    await poll();
+    expect(onConnected).toHaveBeenCalledOnce();
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 
-    rerender(
-      <ComputerRecovery
-        computer={{ ...computer, computerId: "other-mac", displayName: "Other Mac" }}
-        adapter={adapter}
-        onConnected={onConnected}
-      />,
-    );
-    expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Get connection help" }));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy instructions" })));
-    expect(writeText.mock.calls[1]?.[0]).toContain("Other Mac.");
-    expect(writeText.mock.calls[1]?.[0]).not.toContain("Ada's Mac");
+  it("withholds expired authorization during a status outage without issuing a duplicate attempt", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = createAdapter();
+    adapter.issue.mockResolvedValue({
+      bootstrapCommand: command,
+      connectCodeId: "repair-code",
+      issuedAt: new Date().toISOString(),
+      expiresIn: 2,
+    });
+    adapter.status.mockRejectedValue(new Error("Authorization status unavailable"));
+    render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={vi.fn()} />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_001);
+    });
+    expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
+    expect(screen.getByText("Checking whether these instructions are still valid…")).toBeTruthy();
+    expect(adapter.issue).toHaveBeenCalledOnce();
+    adapter.status.mockResolvedValue({ ...pending, state: "expired" });
+    await poll();
+    expect(screen.getByRole("button", { name: "Update instructions" })).toBeTruthy();
+  });
+
+  it("recovers from issuance failure without exposing an incomplete task", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = createAdapter();
+    adapter.issue.mockRejectedValueOnce(new Error("failure"));
+    render(<ComputerRecovery computer={computer} adapter={adapter} onConnected={vi.fn()} />);
+    await settle();
+    expect(screen.getByText("Couldn’t prepare recovery instructions.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy instructions" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await settle();
+    expect(screen.getByRole("button", { name: "Copy instructions" })).toBeTruthy();
   });
 });

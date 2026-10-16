@@ -684,6 +684,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       { CLAUDE_CODE_USE_VERTEX: "1" },
     ]) {
       const environmentCredential = new ClaudeCodeAgentRuntimeFactory({
+        verifyCredential: async () => undefined,
         process: {
           command,
           env: { PATH: process.env.PATH, ...credential },
@@ -691,6 +692,36 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       });
       await expect(environmentCredential.probe({})).resolves.toMatchObject({ ready: true });
     }
+  });
+
+  it("honors native login failure even with an explicit token and validates a locally accepted token", async () => {
+    const directory = await temporaryDirectory("opentag-claude-token-probe-");
+    const command = join(directory, "claude-fixture");
+    const script = (loggedIn: boolean, apiProvider = "firstParty") => `#!/bin/sh
+if [ "$1" = "--version" ]; then echo '2.1.210 (Claude Code)'; exit 0; fi
+if [ "$1" = "--help" ]; then echo 'stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools auto --permission-prompt-tool --append-system-prompt'; exit 0; fi
+echo '{"loggedIn":${loggedIn},"apiProvider":"${apiProvider}"}'
+`;
+    await writeFile(command, script(false), { mode: 0o700 });
+    const verifyCredential = vi.fn(async () => ({
+      code: "credential_missing" as const,
+      message: "Credential rejected",
+    }));
+    const factory = new ClaudeCodeAgentRuntimeFactory({
+      process: { command, env: { CLAUDE_CODE_OAUTH_TOKEN: "synthetic" } },
+      verifyCredential,
+    });
+    await expect(factory.probe({})).resolves.toMatchObject({ ready: false, issues: [{ code: "credential_missing" }] });
+    expect(verifyCredential).not.toHaveBeenCalled();
+    await writeFile(command, script(true));
+    await expect(factory.probe({})).resolves.toMatchObject({
+      ready: false,
+      issues: [{ code: "credential_missing", message: "Credential rejected" }],
+    });
+    expect(verifyCredential).toHaveBeenCalledOnce();
+    await writeFile(command, script(true, "gateway"));
+    await expect(factory.probe({})).resolves.toMatchObject({ ready: true });
+    expect(verifyCredential).toHaveBeenCalledOnce();
   });
 
   it.each(["auto", "--permission-prompt-tool"])("rejects a CLI without %s support", async (missing) => {
@@ -703,7 +734,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       `#!/bin/sh
 if [ "$1" = "--version" ]; then echo '2.1.295 (Claude Code)'; exit 0; fi
 if [ "$1" = "--help" ]; then echo '${help.replace(missing, "")}'; exit 0; fi
-exit 1
+echo '{"loggedIn":true}'
 `,
       "utf8",
     );

@@ -57,6 +57,7 @@ export const queryKeys = {
    */
   mcp: {
     servers: () => ["mcp", "servers"] as const,
+    catalogEndpoints: () => ["mcp", "catalog-endpoints"] as const,
     serverRoot: () => ["mcp", "server"] as const,
     server: (mcpServerId: string) => ["mcp", "server", mcpServerId] as const,
     agentServers: (agentId: string) => ["mcp", "agents", agentId] as const,

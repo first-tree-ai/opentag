@@ -423,7 +423,6 @@ async function executeCloudIdentities(repositoryRoot) {
         OPENTAG_CLOUD_MODEL_ENABLED: "true",
         OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL: "https://models-fixture.example.com/v1",
         OPENTAG_CLOUD_MODEL_MASTER_KEY: "fixture-model-key-not-a-secret",
-        OPENTAG_CLOUD_MODEL_ALLOWED_MODELS: "fixture-model",
       }),
     );
     await runFlagOffCases(ctx);

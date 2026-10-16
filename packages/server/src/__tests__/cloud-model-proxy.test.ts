@@ -14,6 +14,8 @@ import {
   startCloudModelUpstream,
 } from "./fixtures/cloud-model-upstream.js";
 
+import { cloudTestOwner, createTestCloudModelService } from "./support/cloud-model-service.js";
+
 const SECRET = "unit-test-jwt-secret-at-least-32-characters";
 const SANDBOX_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
@@ -74,7 +76,13 @@ async function makeStack(input: {
   cleanups.grants.push(grants);
   const app = input.app ?? Fastify({ logger: input.logger ?? false });
   cleanups.apps.push(app);
-  registerCloudModelProxyRoutes(app, { config: makeConfig(input.upstream.baseUrl, input.configOverrides), grants });
+  const config = makeConfig(input.upstream.baseUrl, input.configOverrides);
+  registerCloudModelProxyRoutes(app, {
+    config,
+    grants,
+    modelService: createTestCloudModelService(config),
+    contextForExecution: async () => ({ ...cloudTestOwner, sessionId: SESSION_ID, source: "execution" }),
+  });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const address = app.server.address();
   if (!address || typeof address === "string") throw new Error("listen failed");

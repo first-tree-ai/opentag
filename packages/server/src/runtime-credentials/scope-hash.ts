@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RuntimeCredentialProvider } from "@opentag/shared";
-import type { RuntimeGitHubAdmissionBinding, RuntimeGitHubAdmissionResult } from "./github-admission.js";
+import type { RuntimeGitHubAdmissionResult } from "./github-admission.js";
 import type { RuntimeExecutionRecord } from "./types.js";
 
 export function computeImScopeHash(
@@ -30,24 +30,16 @@ export function computeImScopeHash(
     .digest("hex");
 }
 
-/**
- * Exact GitHub admission proof hash: authorization revision plus the full sorted repository scope
- * (repository identity, role/access, and the entire Agent scope: ref, publish mode, and task
- * delegation). `credentialGeneration` is deliberately excluded so a normal UAT token refresh does
- * not revoke unchanged scopes.
- */
+/** Task and Account authority is pinned independently of routine credential rotation. */
 export function computeGitHubScopeHash(
   execution: RuntimeExecutionRecord,
   bindingId: string,
   admission: RuntimeGitHubAdmissionResult,
 ): string {
-  const repositories = admission.bindings
-    .map(gitHubScopeTuple)
-    .sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
   return createHash("sha256")
     .update(
       canonicalJson([
-        2,
+        3,
         execution.executionId,
         execution.runId,
         execution.agentRevision,
@@ -56,14 +48,13 @@ export function computeGitHubScopeHash(
         "github",
         bindingId,
         admission.authorizationVersion,
-        repositories,
+        execution.accountId,
+        execution.sessionId,
+        execution.source,
+        "user-task",
       ]),
     )
     .digest("hex");
-}
-
-function gitHubScopeTuple(binding: RuntimeGitHubAdmissionBinding) {
-  return [binding.repositoryId, binding.fullName, binding.role, binding.access, binding.scope ?? null] as const;
 }
 
 /** Stable-key JSON so equal scope objects always hash identically regardless of key insertion order. */

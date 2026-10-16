@@ -8,7 +8,7 @@ import {
 import { z } from "zod";
 import { ensurePrivateDirectory, readDurableJson, writeDurableFile } from "../storage/durable-file.js";
 import {
-  managedRepositoryAllowed,
+  hasManagedGitHubTransport,
   mergeContextTreeEnvironment,
   resolveContextTreePackage,
   runContextTreeCli,
@@ -138,9 +138,9 @@ export class ContextTreeSettings {
       managedEnvironment &&
       input.action === "connect" &&
       input.repository &&
-      !managedRepositoryAllowed(managedEnvironment, input.repository)
+      !hasManagedGitHubTransport(managedEnvironment)
     ) {
-      // Explicit consistency check: the selected repository must be inside the managed grant set.
+      // Require the execution transport; repository admission is authoritative on the Server.
       return failed("permission_denied");
     }
     const run = this.#runner(frame, signal, managedEnvironment);

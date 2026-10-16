@@ -8,20 +8,16 @@ afterEach(() => vi.restoreAllMocks());
 async function openAuthentication() {
   await openDetails();
   fireEvent.click(screen.getByRole("button", { name: /Authentication/ }));
-  return screen.findByRole("dialog", { name: "linear authentication" });
+  return screen.findByRole("dialog", { name: "Authentication" });
 }
 async function method(name: string) {
-  fireEvent.click(screen.getByRole("combobox", { name: "Authorization method" }));
-  const option = await screen.findByRole("option", { name });
-  fireEvent.pointerMove(option, { pointerType: "mouse" });
-  fireEvent.pointerDown(option, { pointerType: "mouse" });
-  fireEvent.pointerUp(option, { pointerType: "mouse" });
+  const option = screen.getByRole("radio", { name });
   fireEvent.click(option);
-  await waitFor(() =>
-    expect(screen.getByRole("combobox", { name: "Authorization method" }).textContent).toContain(name),
-  );
+  await waitFor(() => expect(option.getAttribute("aria-checked")).toBe("true"));
 }
-const key = () => screen.getByLabelText("API key or token", { selector: "input" }) as HTMLInputElement;
+
+const key = () =>
+  screen.getByLabelText("API key or token", { selector: "input:not([type=radio])" }) as HTMLInputElement;
 
 describe("MCP authentication journeys", () => {
   it("preserves all three methods and changes the method only when submitted", async () => {
@@ -93,11 +89,11 @@ describe("MCP authentication journeys", () => {
     expect(revoke).not.toHaveBeenCalled();
     expect(within(confirm).getByText(/does not revoke access on the service’s website/)).toBeTruthy();
     fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(revoke).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Clear credentials…" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear credentials" }));
-    await screen.findByRole("dialog", { name: "linear authentication" });
+    await screen.findByRole("dialog", { name: "Authentication" });
     expect(revoke).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Clear credentials…" })).toBeNull();
   });

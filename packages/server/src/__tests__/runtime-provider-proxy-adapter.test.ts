@@ -366,6 +366,50 @@ describe("RuntimeProxyError", () => {
 
 describe("ImProviderProxyAdapter native Slack form bodies", () => {
   it.each([
+    ["files.info", { file: "F1", count: 20, token: "caller-token" }, "file=F1&count=20"],
+    ["conversations.info", { channel: "C1", include_num_members: true }, "channel=C1&include_num_members=true"],
+    ["users.info", { user: "U1" }, "user=U1"],
+    ["auth.test", {}, ""],
+  ])("encodes explicit JSON for the legacy %s read endpoint", async (method, params, expectedBody) => {
+    const { calls, fetchImpl } = captureFetch();
+    const { instance } = adapter({ fetchImpl });
+    await instance.handle(
+      request({ path: `/api/${method}`, headers: { "content-type": "application/json" }, body: jsonBody(params) }),
+      authorization(),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.headers["content-type"]).toBe("application/x-www-form-urlencoded");
+    expect(calls[0]?.body).toBe(expectedBody);
+  });
+
+  it.each([null, [], "file=F1"])("rejects non-object JSON read parameters before upstream: %j", async (params) => {
+    const { calls, fetchImpl } = captureFetch();
+    const { instance } = adapter({ fetchImpl });
+    await expect(
+      instance.handle(request({ path: "/api/files.info", body: jsonBody(params) }), authorization()),
+    ).rejects.toMatchObject({ code: "body_invalid" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("bounds the expanded form encoding before upstream", async () => {
+    const { calls, fetchImpl } = captureFetch();
+    const { instance } = adapter({ fetchImpl });
+    await expect(
+      instance.handle(
+        request({ path: "/api/files.info", body: jsonBody({ file: "中".repeat(20_000) }) }),
+        authorization(),
+      ),
+    ).rejects.toMatchObject({ code: "body_too_large" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      form: "file=F1&token=otrh_local",
+      forwarded: "file=F1",
+      operation: "files.info",
+      path: "/api/files.info",
+    },
     {
       forwarded: "channel=C-FIXTURE&text=native+acceptance",
       form: "channel=C-FIXTURE&text=native+acceptance&token=otrh_local",

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES } from "../index.js";
+import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, MCP_CATALOG_ENTRY_SCHEMA } from "../index.js";
 
 describe("mcp preset catalog shape", () => {
   it("exposes a non-empty category list in strict order", () => {
@@ -36,6 +36,44 @@ describe("mcp preset catalog shape", () => {
     }
   });
 
+  it("derives the slug id from the registry id and lists only offered entries", () => {
+    for (const entry of MCP_CATALOG_ENTRIES) {
+      expect(entry.registryId).toBe(`mcp/${entry.id}`);
+      expect(entry.name).toBe(entry.id);
+      expect(["active", "deprecated", "archived"]).toContain(entry.status);
+    }
+  });
+
+  it("carries the registry fields every entry needs", () => {
+    for (const entry of MCP_CATALOG_ENTRIES) {
+      expect(entry.whenToUse.en.length).toBeGreaterThan(0);
+      expect(entry.whenToUse.zh.length).toBeGreaterThan(0);
+      expect(entry.capabilities.length).toBeGreaterThan(0);
+      expect(entry.auth.methods).toContain(entry.auth.defaultKind);
+      expect(entry.auth.defaultKind).toBe(entry.defaultAuthKind);
+      expect(entry.auth.oauth !== undefined).toBe(entry.auth.methods.includes("oauth"));
+    }
+  });
+
+  it("gives every installable entry its connection fields and no other entry any", () => {
+    for (const entry of MCP_CATALOG_ENTRIES) {
+      if (entry.installable) {
+        expect(entry.url).toMatch(/^https:\/\//);
+        expect(entry.defaultAuthKind).toBe(entry.auth.defaultKind);
+      } else {
+        expect(entry.url).toBeUndefined();
+        expect(entry.defaultAuthKind).toBeUndefined();
+      }
+    }
+  });
+
+  it("exports the entry schema with the supported locales injected", () => {
+    const text = MCP_CATALOG_ENTRY_SCHEMA.$defs.localizedText;
+    expect(Object.keys(text.properties).sort()).toEqual(["en", "zh"]);
+    expect(MCP_CATALOG_ENTRY_SCHEMA.required).not.toContain("remotes");
+    expect(MCP_CATALOG_ENTRY_SCHEMA.anyOf).toEqual([{ required: ["packages"] }, { required: ["remotes"] }]);
+  });
+
   it("embeds every icon as a self-contained data URL", () => {
     for (const entry of MCP_CATALOG_ENTRIES) {
       expect(entry.iconUrl).toMatch(/^data:image\/(?:svg\+xml|png);base64,/);
@@ -48,17 +86,17 @@ describe("mcp preset catalog shape", () => {
     expect(byId.get("atlassian")).toMatchObject({
       url: "https://mcp.atlassian.com/v2/mcp?tools=all",
       defaultAuthKind: "oauth",
-      category: "engineering",
+      category: "projects",
     });
     expect(byId.get("airtable")).toMatchObject({
       url: "https://mcp.airtable.com/mcp",
       defaultAuthKind: "oauth",
-      category: "business-data",
+      category: "data",
     });
     expect(byId.get("amplitude")).toMatchObject({
       url: "https://mcp.amplitude.com/mcp",
       defaultAuthKind: "oauth",
-      category: "business-data",
+      category: "data",
     });
   });
 

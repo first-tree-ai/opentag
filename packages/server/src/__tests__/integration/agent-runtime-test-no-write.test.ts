@@ -79,6 +79,7 @@ describe("Agent Runtime test Postgres no-write", () => {
       const frames: unknown[] = [];
       await registry.register(
         {
+          clientVersion: "0.1.1",
           computerId: computer.id,
           installationId: computer.installationId,
           instanceId,

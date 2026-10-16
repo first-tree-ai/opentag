@@ -46,6 +46,7 @@ export const RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION = 3 as const;
 
 export const RUNTIME_CAPABILITY = {
   contextTreeSettings: "runtime.contextTreeSettings",
+  slackAutoSetup: "runtime.slackAutoSetup",
   agentRuntimeOptions: "runtime.agentRuntimeOptions",
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
@@ -57,6 +58,7 @@ export const RUNTIME_CAPABILITY = {
   providerCliReconcile: "runtime.providerCliReconcile",
   providerProxy: "runtime.providerProxy",
   runtimeCredential: "runtime.runtimeCredential",
+  githubUserTask: "runtime.githubUserTask",
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
@@ -67,6 +69,8 @@ export const RUNTIME_CAPABILITY = {
 
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.contextTreeSettings]: { min: 1, max: 1 },
+  // v2 adds confirmed approval states and safe install diagnostics; v1 peers use manual setup.
+  [RUNTIME_CAPABILITY.slackAutoSetup]: { min: 2, max: 2 },
   [RUNTIME_CAPABILITY.agentRuntimeOptions]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
@@ -78,6 +82,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.providerProxy]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.runtimeCredential]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.githubUserTask]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: {
     min: RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
     max: RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
@@ -90,8 +95,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
 } as const;
 
 export const RUNTIME_CLIENT_CAPABILITY_OFFERS = RUNTIME_SERVER_CAPABILITY_OFFERS;
-export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [RUNTIME_CAPABILITY.contextTreeSettings];
-export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [RUNTIME_CAPABILITY.contextTreeSettings];
+export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [];
+export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [];
 
 export const RUNTIME_MAX_FRAME_BYTES = 64 * 1024;
 export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;
@@ -566,13 +571,6 @@ export function negotiateRuntimeCapabilities(
     if (minimum <= maximum) negotiated[name] = maximum;
   }
   return negotiated;
-}
-
-export function missingRuntimeCapabilities(
-  required: readonly string[],
-  negotiated: RuntimeNegotiatedCapabilities,
-): string[] {
-  return required.filter((name) => negotiated[name] === undefined);
 }
 
 export function runtimeNegotiatedCapabilitiesEqual(

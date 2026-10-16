@@ -97,6 +97,7 @@ const ROOT_COVERAGE_EXCLUDE_PATTERNS = ["**/src/__tests__/**", "**/src/smoke/**"
 export const AGENT_RUNTIME_COVERAGE_INCLUDE = [
   "src/agent-runtime/**/*.ts",
   "src/providers/claude-code/agent-runtime.ts",
+  "src/providers/claude-code/credential-probe.ts",
   "src/providers/claude-code/hosted-tool-bridge.ts",
   "src/providers/claude-code/skill-plugin.ts",
   "src/providers/claude-code/process-wire.ts",
@@ -104,6 +105,7 @@ export const AGENT_RUNTIME_COVERAGE_INCLUDE = [
   "src/providers/codex/agent-runtime.ts",
   "src/providers/codex/app-server-wire.ts",
   "src/providers/codex/runtime-policy.ts",
+  "src/providers/codex/socket-permissions.ts",
   "src/providers/pi/agent-runtime.ts",
   "src/providers/pi/rpc-wire.ts",
   "src/providers/pi/runtime-policy.ts",
@@ -137,7 +139,12 @@ export const COVERAGE_REPORTER_FLAGS = [
   "--coverage.reporter=text-summary",
 ];
 
-export const TEST_REPORTER_FLAGS = (outputFile) => ["--reporter=json", `--outputFile=${outputFile}`];
+// JSON omits unhandled errors even when Vitest exits nonzero; keep the diagnostic reporter too.
+export const TEST_REPORTER_FLAGS = (outputFile) => [
+  "--reporter=default",
+  "--reporter=json",
+  `--outputFile.json=${outputFile}`,
+];
 
 function floorProjects(floors) {
   if (floors && typeof floors === "object" && floors.projects && typeof floors.projects === "object") {

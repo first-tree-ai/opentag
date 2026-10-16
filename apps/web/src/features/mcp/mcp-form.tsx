@@ -1,15 +1,7 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
-import {
-  Button,
-  Collapsible,
-  Field,
-  Icon,
-  KumoInputControl,
-  KumoSelectControl,
-  Radio,
-} from "../../ui/design-system.js";
-import { type AuthDraft, type HeaderMode, type HeaderRow, newHeader, validHeaders } from "./mcp-form-model.js";
+import { Button, Collapsible, Field, Icon, KumoInputControl, Radio } from "../../ui/design-system.js";
+import { type AuthDraft, type HeaderRow, newHeader } from "./mcp-form-model.js";
 import "./mcp.css";
 
 export function McpFooter({
@@ -99,92 +91,82 @@ export function McpHeaders({ rows, onChange }: { rows: HeaderRow[]; onChange: (r
     </div>
   );
 }
-export function McpHeaderMode({ value, onChange }: { value: HeaderMode; onChange: (mode: HeaderMode) => void }) {
-  return (
-    <fieldset className="mcp-radio">
-      <legend>{m.mcp_edit_advanced()}</legend>
-      <Radio.Group value={value} onValueChange={(value) => onChange(value as HeaderMode)}>
-        <Radio.Item value="inherit" label={m.mcp_headers_inherit()} />
-        <Radio.Item value="custom" label={m.mcp_headers_custom()} />
-        <Radio.Item value="none" label={m.mcp_edit_empty_extra_headers()} />
-      </Radio.Group>
-    </fieldset>
-  );
-}
-export function McpTokenSettings({
-  header,
-  prefix,
-  onHeader,
-  onPrefix,
-}: {
-  header: string;
-  prefix: string;
-  onHeader: (value: string) => void;
-  onPrefix: (value: string) => void;
-}) {
-  return (
-    <div className="mcp-token-fields">
-      <Field htmlFor="mcp-auth-header" label={m.mcp_edit_auth_header_label()}>
-        <KumoInputControl id="mcp-auth-header" value={header} onChange={(event) => onHeader(event.target.value)} />
-      </Field>
-      <Field htmlFor="mcp-auth-scheme" label={m.mcp_edit_auth_scheme_label()} hint={m.mcp_edit_auth_scheme_help()}>
-        <KumoInputControl id="mcp-auth-scheme" value={prefix} onChange={(event) => onPrefix(event.target.value)} />
-      </Field>
-    </div>
-  );
-}
 export function McpAuthFields({
   draft,
   onChange,
-  existing = false,
-  connectionSettings = true,
+  label = m.mcp_auth_label(),
+  variant = "setup",
+  fixedMethod = false,
 }: {
   draft: AuthDraft;
   onChange: (draft: AuthDraft) => void;
-  existing?: boolean;
-  connectionSettings?: boolean;
+  label?: string;
+  variant?: "setup" | "settings";
+  fixedMethod?: boolean;
 }) {
-  const help =
-    draft.kind === "oauth"
-      ? m.mcp_authorize_oauth_description()
-      : draft.kind === "bearer"
-        ? m.mcp_authorize_bearer_description()
-        : m.mcp_authorize_none_description();
+  const help = authMethodHelp(draft.kind, variant);
+  if (fixedMethod) return <McpAuthMethodDetails draft={draft} onChange={onChange} help={help} variant={variant} />;
+  const choiceClass = variant === "settings" ? "mcp-auth-choice" : undefined;
   return (
     <>
       <div>
-        <McpAuthMethod draft={draft} onChange={onChange} compact={!connectionSettings} />
-        <p className="mt-3 text-xs leading-relaxed text-kumo-subtle">{help}</p>
+        <fieldset className="mcp-radio">
+          <legend>{label}</legend>
+          {variant === "setup" ? (
+            <p className="mb-3 text-xs leading-relaxed text-kumo-subtle">{m.mcp_auth_help()}</p>
+          ) : null}
+          <Radio.Group
+            value={draft.kind}
+            onValueChange={(kind) => onChange({ ...draft, kind: kind as AuthDraft["kind"] })}
+          >
+            <Radio.Item
+              className={choiceClass}
+              value="oauth"
+              label={variant === "settings" ? m.mcp_settings_auth_browser() : m.mcp_auth_oauth()}
+            />
+            <Radio.Item className={choiceClass} value="bearer" label={m.mcp_auth_token()} />
+            <Radio.Item className={choiceClass} value="none" label={m.mcp_auth_none()} />
+          </Radio.Group>
+        </fieldset>
+        {variant === "setup" ? <p className="mt-3 text-xs leading-relaxed text-kumo-subtle">{help}</p> : null}
       </div>
-      {draft.kind === "bearer" ? <McpKeyField draft={draft} onChange={onChange} /> : null}
-      {connectionSettings ? (
-        <McpDisclosure label={m.mcp_advanced()}>
-          <div className="grid gap-4">
-            {draft.kind === "bearer" ? (
-              <McpTokenSettings
-                header={draft.authHeader}
-                prefix={draft.authScheme}
-                onHeader={(authHeader) => onChange({ ...draft, authHeader })}
-                onPrefix={(authScheme) => onChange({ ...draft, authScheme })}
-              />
-            ) : null}
-            {existing ? (
-              <McpHeaderMode value={draft.headerMode} onChange={(headerMode) => onChange({ ...draft, headerMode })} />
-            ) : (
-              <span className="text-sm font-medium">{m.mcp_edit_advanced()}</span>
-            )}
-            {!existing || draft.headerMode === "custom" ? (
-              <>
-                <McpHeaders rows={draft.headers} onChange={(headers) => onChange({ ...draft, headers })} />
-                {!validHeaders(draft.headers, draft.authHeader) ? (
-                  <p className="text-xs text-kumo-danger">{m.mcp_headers_invalid()}</p>
-                ) : null}
-              </>
-            ) : null}
-          </div>
-        </McpDisclosure>
-      ) : null}
+      <McpAuthMethodDetails draft={draft} onChange={onChange} help={help} variant={variant} />
     </>
+  );
+}
+
+function authMethodHelp(kind: AuthDraft["kind"], variant: "setup" | "settings"): string {
+  return kind === "oauth"
+    ? variant === "settings"
+      ? m.mcp_settings_auth_browser_help()
+      : m.mcp_authorize_oauth_description()
+    : kind === "bearer"
+      ? m.mcp_authorize_bearer_description()
+      : m.mcp_authorize_none_description();
+}
+
+function McpAuthMethodDetails({
+  draft,
+  onChange,
+  help,
+  variant,
+}: {
+  draft: AuthDraft;
+  onChange: (draft: AuthDraft) => void;
+  help: string;
+  variant: "setup" | "settings";
+}) {
+  const details = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (variant === "settings" && draft.kind === "bearer") {
+      details.current?.scrollIntoView?.({ block: "nearest" });
+    }
+  }, [draft.kind, variant]);
+  return (
+    <div ref={details} className={variant === "settings" ? "mcp-auth-method-details" : "contents"}>
+      {variant === "settings" ? <p className="text-xs leading-relaxed text-kumo-subtle">{help}</p> : null}
+      {draft.kind === "bearer" ? <McpKeyField draft={draft} onChange={onChange} /> : null}
+    </div>
   );
 }
 
@@ -208,48 +190,6 @@ export function McpHelp({
   );
 }
 
-function McpAuthMethod({
-  draft,
-  onChange,
-  compact,
-}: {
-  draft: AuthDraft;
-  onChange: (draft: AuthDraft) => void;
-  compact: boolean;
-}) {
-  return (
-    <>
-      {compact ? (
-        <Field label={m.mcp_authorize_kind_label()} htmlFor="mcp-auth-method">
-          <KumoSelectControl
-            className="w-full"
-            id="mcp-auth-method"
-            aria-label={m.mcp_authorize_kind_label()}
-            value={draft.kind}
-            onValueChange={(kind) => onChange({ ...draft, kind: kind as AuthDraft["kind"] })}
-          >
-            <option value="oauth">{m.mcp_browser_sign_in()}</option>
-            <option value="bearer">{m.mcp_auth_token()}</option>
-            <option value="none">{m.mcp_auth_none()}</option>
-          </KumoSelectControl>
-        </Field>
-      ) : (
-        <fieldset className="mcp-radio">
-          <legend>{m.mcp_auth_label()}</legend>
-          <p className="mb-3 text-xs leading-relaxed text-kumo-subtle">{m.mcp_auth_help()}</p>
-          <Radio.Group
-            value={draft.kind}
-            onValueChange={(kind) => onChange({ ...draft, kind: kind as AuthDraft["kind"] })}
-          >
-            <Radio.Item value="oauth" label={m.mcp_auth_oauth()} />
-            <Radio.Item value="bearer" label={m.mcp_auth_token()} />
-            <Radio.Item value="none" label={m.mcp_auth_none()} />
-          </Radio.Group>
-        </fieldset>
-      )}
-    </>
-  );
-}
 function McpKeyField({ draft, onChange }: { draft: AuthDraft; onChange: (draft: AuthDraft) => void }) {
   const [visible, setVisible] = useState(false);
   return (

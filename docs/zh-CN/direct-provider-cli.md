@@ -2,6 +2,8 @@
 
 [English](../direct-provider-cli.md)
 
+<!-- Synced with the English document: 2026-10-10 -->
+
 本地第三方包、路径、执行身份与凭证交接由已随产品发布的 Provider CLI 管理基础能力定义。
 OpenTag-managed Provider CLI 是当前操作系统账户可直接使用的全局命令；只有被授权的
 Turn 才会取得 OpenTag 投影的临时凭证。
@@ -28,8 +30,20 @@ OpenTag-managed artifact，并在上报 ready 前用真实 binding 凭证验证�
 
 每个可以写入 IM 的有效可见 Session Turn（包括 IM delivery 与 Internal Session 协作回调）开始前，Client 创建私有的
 `0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent 直接调用官方
-`lark-cli` 或 `slack api`，受管 launcher 自动加载凭据。直接通过 HTTP 传输 Slack 附件时，只读取文件中非敏感的
-执行代理 URL 和 CA 路径，并将其作为字面量参数传给 `curl`；不要 source 文件或添加授权头。
+`lark-cli` 或 `slack api`，受管 launcher 自动加载凭据。
+
+Slack 读接口使用原生 URL 编码的 `--data` 参数，例如 `slack api files.info --data 'file=F...'`；
+本地 CLI 直接请求 Slack 时，旧版 Slack 接口会忽略 JSON 参数。消息写入继续使用 `--json`。
+代理模式下，Server 也接受 JSON 读请求并统一转换上游编码。
+
+直接通过 HTTP 传输 Slack 附件时，只读取环境文件中非敏感的路由或配置路径。
+代理执行使用 `OPENTAG_PROVIDER_PROXY_URL`、`OPENTAG_PROVIDER_CA_PATH` 及执行级 handle URL，
+将路径作为字面量参数传给 `curl`。默认 Local 执行则提供 `OPENTAG_SLACK_DOWNLOAD_CONFIG`，
+指向现有 Session Slack 配置目录中的私有 `0600` curl 配置。
+只对 `files.info` 返回的 HTTPS `files.slack.com` URL 使用 `curl --disable --config '<path>'`，
+使 Bot token 不进入命令参数，并禁用用户默认 curl 配置。不得打印配置、source 环境文件、添加授权头、
+启用 verbose/trace/响应头输出或跟随重定向。公共 URL 和原生上传 URL 使用普通 HTTP 工具，不带此私有配置。
+凭据轮换时替换配置，Turn 结束时随 Slack 目录删除。
 Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的
 文件由下次启动恢复清理。Internal Session 永远不会收到该文件。
 

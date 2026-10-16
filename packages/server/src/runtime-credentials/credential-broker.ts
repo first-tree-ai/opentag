@@ -428,12 +428,12 @@ export class RuntimeCredentialBroker {
     }
     return {
       // Normal UAT refresh rotates `credentialGeneration` only; the scope hash intentionally
-      // excludes it so unchanged repository scopes do not revoke in-flight capabilities. An
-      // `authorizationVersion` change or any binding/role/access change does invalidate.
+      // excludes it so unchanged task authority survives rotation. Account, task source and
+      // `authorizationVersion` remain pinned; every target operation proves current rights.
       scopeHash: computeGitHubScopeHash(execution, bindingId, admission),
       authorizationRevision: `github:${admission.authorizationVersion}`,
       credentialGeneration: admission.credentialGeneration,
-      cli: gitHubCliMetadata(admission, execution),
+      cli: gitHubCliMetadata(admission),
     };
   }
 }
@@ -483,23 +483,6 @@ function imOutboxContext(
   };
 }
 
-function gitHubCliMetadata(
-  admission: RuntimeGitHubAdmissionResult,
-  execution: RuntimeExecutionRecord,
-): RuntimeCliMetadata {
-  return {
-    provider: "github",
-    connectionId: admission.connectionId,
-    repositories: admission.bindings.slice(0, 100).map((binding) => ({
-      repositoryId: binding.repositoryId,
-      fullName: binding.fullName,
-      role: binding.role,
-      access: binding.access,
-      ...(binding.scope?.branch ? { branch: binding.scope.branch } : {}),
-      ...(binding.scope?.publish ? { publish: binding.scope.publish } : {}),
-      ...(binding.access === "write"
-        ? { workBranchPrefix: `refs/heads/opentag/${execution.sessionId}/${binding.role}/` }
-        : {}),
-    })),
-  };
+function gitHubCliMetadata(admission: RuntimeGitHubAdmissionResult): RuntimeCliMetadata {
+  return { provider: "github", connectionId: admission.connectionId, authority: "user-task" };
 }

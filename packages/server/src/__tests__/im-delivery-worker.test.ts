@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   computeDirectInputHash,
+  computeLegacyDirectInputHash,
   computeRuntimeImSteerInputHash,
   type DirectImMessageDeliveryRequest,
   RUNTIME_CAPABILITY,
@@ -454,6 +455,7 @@ describe("ImDeliveryWorker database workflow", () => {
         .where(eq(imMessageDeliveries.id, secondFixture.deliveryId));
       await fixture.registry.register(
         {
+          clientVersion: "0.1.1",
           computerId: secondFixture.computerId,
           installationId: randomUUID(),
           instanceId: secondFixture.instanceId,
@@ -549,6 +551,7 @@ describe("ImDeliveryWorker database workflow", () => {
         .where(eq(imMessageDeliveries.id, secondFixture.deliveryId));
       await firstFixture.registry.register(
         {
+          clientVersion: "0.1.1",
           computerId: secondFixture.computerId,
           installationId: randomUUID(),
           instanceId: secondFixture.instanceId,
@@ -686,6 +689,7 @@ describe("ImDeliveryWorker database workflow", () => {
     for (const fixture of fixtures) {
       await registry.register(
         {
+          clientVersion: "0.1.1",
           computerId: fixture.computerId,
           installationId: randomUUID(),
           instanceId: fixture.instanceId,
@@ -903,6 +907,80 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_EXPIRED");
   });
 
+  it.each([
+    ["pending", "0.1.0", "0.1.0", {}],
+    ["accepted", "0.1.0", "0.1.0", {}],
+    ["accepted after upgrade", "0.1.1", "0.1.0", {}],
+    ["tampered", "0.1.0", "0.1.0", {}],
+    ["staging accepted", "0.1.1-staging.43.1", "self-configuration", { selfConfigurationEnabled: true }],
+    ["staging tampered", "0.1.1-staging.43.1", "self-configuration", { selfConfigurationEnabled: true }],
+  ] as const)(
+    "keeps legacy %s work behind the upgrade gate without new runtime snapshots",
+    async (scenario, clientVersion, layout, snapshotFields) => {
+      const fixture = await workerFixture(unit);
+      const request = { ...fixture.request, runtime: { ...fixture.runtime, ...snapshotFields } };
+      await fixture.registry.register(
+        {
+          clientVersion,
+          negotiatedCapabilities: { "runtime.sessionReconcile": 1 },
+          computerId: fixture.computerId,
+          installationId: randomUUID(),
+          instanceId: fixture.instanceId,
+          lastHeartbeatAt: Date.now(),
+          socket: { close: vi.fn() } as never,
+        },
+        async () => undefined,
+      );
+      if (scenario !== "pending") {
+        const inputHash = computeLegacyDirectInputHash(request, layout);
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({
+            state: "accepted",
+            dispatchRequestId: fixture.request.requestId,
+            dispatchInputHash: inputHash,
+            inputHash,
+            turnId: "legacy-turn",
+            acceptedAt: new Date(),
+            reportOwnerInstanceId: fixture.instanceId,
+            dispatchPayload: scenario.endsWith("tampered")
+              ? { ...request, content: { ...request.content, text: "changed" } }
+              : request,
+          })
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      }
+      const assembler = { assembleForSession: vi.fn() };
+      const domain = {
+        requestReconcile: vi.fn(async (_computerId: string, _instanceId: string, _request: unknown) => ({
+          status: "stopped",
+        })),
+        requestDelivery: vi.fn(),
+      };
+      const diagnostic = vi.fn();
+      await new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler,
+        registry: fixture.registry,
+        onDiagnostic: diagnostic,
+      }).runOnce();
+      expect(assembler.assembleForSession).not.toHaveBeenCalled();
+      expect(domain.requestDelivery).not.toHaveBeenCalled();
+      if (scenario.includes("accepted")) {
+        expect(domain.requestReconcile).toHaveBeenCalledWith(
+          fixture.computerId,
+          fixture.instanceId,
+          expect.objectContaining({ desired: "stopped" }),
+        );
+        expect(domain.requestReconcile.mock.calls[0]?.[2]).not.toHaveProperty("runtime");
+      } else {
+        expect(domain.requestReconcile).not.toHaveBeenCalled();
+      }
+      if (scenario.endsWith("tampered"))
+        expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+    },
+  );
+
   it("recovers accepted custody with pinned and legacy snapshots, including failures", async () => {
     const pinned = await workerFixture(unit);
     await unit.database
@@ -953,8 +1031,8 @@ describe("ImDeliveryWorker database workflow", () => {
       registry: legacy.registry,
       onDiagnostic: legacyDiagnostic,
     }).runOnce();
-    expect(legacyDiagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
-    expect(legacyAssembler).toHaveBeenCalledWith(legacy.sessionId);
+    expect(legacyDiagnostic).not.toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
+    expect(legacyAssembler).not.toHaveBeenCalled();
 
     const invalid = await workerFixture(unit);
     await unit.database
@@ -1302,6 +1380,7 @@ describe("ImDeliveryWorker database workflow", () => {
     // selects it for steering and must then defer it instead of re-selecting it every tick.
     await fixture.registry.register(
       {
+        clientVersion: "0.1.1",
         computerId: stalled.computerId,
         installationId: randomUUID(),
         instanceId: stalled.instanceId,
@@ -1950,6 +2029,7 @@ async function workerFixture(unit: UnitDatabase) {
   const registry = new ConnectionRegistry();
   await registry.register(
     {
+      clientVersion: "0.1.1",
       computerId,
       installationId: randomUUID(),
       instanceId,
@@ -2045,6 +2125,7 @@ async function steerFixture(unit: UnitDatabase) {
   const steerRegistry = new ConnectionRegistry();
   await steerRegistry.register(
     {
+      clientVersion: "0.1.1",
       computerId: fixture.computerId,
       installationId: randomUUID(),
       instanceId: fixture.instanceId,

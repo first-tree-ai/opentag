@@ -364,6 +364,65 @@ function internalToolsFixtureResponse(input: {
   return json(input.readNavigation());
 }
 
+function slackFixtureBinding(options: { bound?: boolean; provider?: "slack" | "feishu" }) {
+  if (!options.bound || options.provider !== "slack") return null;
+  return {
+    id: agentId,
+    agentId,
+    provider: "slack",
+    bindingState: "active",
+    bot: { displayName: "Reviewer", avatarUrl: null },
+    receiveMode: "mention_only",
+    lastInboundAt: null,
+    lastValidatedAt: null,
+    lastRuntimeObservationAt: null,
+    identity: {
+      provider: "slack",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      enterpriseId: null,
+      appIdEvidence: "configured",
+    },
+    credentialGeneration: 1,
+    grantedCapabilities: [],
+    reauthorizationRequired: false,
+    lastErrorCode: null,
+  };
+}
+
+function slackConfigurationResponse(
+  path: string,
+  method: string | undefined,
+  options: { bound?: boolean; provider?: "slack" | "feishu" },
+): Response | undefined {
+  if (path === `/api/v1/agents/${agentId}/im-binding/slack/configuration`) {
+    const binding = slackFixtureBinding(options);
+    return json({
+      agentDisplayName: "Reviewer",
+      eventsUrl: "https://qa.example/slack/events",
+      allowedIntent: binding ? "reauthorize" : "create",
+      blockedReason: null,
+      expectedMessaging: binding
+        ? { kind: "bound", provider: "slack", bindingId: agentId, credentialGeneration: 1 }
+        : { kind: "unbound" },
+      preferredRecovery: "credentials",
+      binding,
+      identityClosure: binding ? { status: "verified", verifiedAt: "2026-10-15T00:00:00.000Z" } : null,
+      handoff: binding ? { bindingState: "active", handoffReady: true } : null,
+    });
+  }
+  if (path === `/api/v1/agents/${agentId}/im-binding/slack/configuration/auto`)
+    return json({ status: "authorization_required", ticket: "test-ticket" });
+  if (path === `/api/v1/agents/${agentId}/im-binding/slack/oauth/start` && method === "POST") {
+    return json({
+      authorizationUrl: "https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state",
+      expiresAt: "2026-08-20T00:10:00.000Z",
+    });
+  }
+  return undefined;
+}
+
 export function installApi(
   options: {
     avatarPath?: string;
@@ -836,6 +895,8 @@ export function installApi(
       const bindingState = options.bindingReauth ? "reauthorization_required" : "active";
       return json({ bindingState, handoffReady: options.handoffReady ?? bindingState === "active" });
     }
+    const slackResponse = slackConfigurationResponse(path, init?.method, options);
+    if (slackResponse) return slackResponse;
     if (path === `/api/v1/agents/${agentId}/im-binding`) {
       if (options.bindingEvidenceFails) {
         return json(
@@ -851,7 +912,7 @@ export function installApi(
       }
       if (!options.bound) return new Response(null, { status: 204 });
       return json({
-        id: crypto.randomUUID(),
+        id: options.provider === "slack" ? agentId : crypto.randomUUID(),
         agentId,
         provider: options.provider ?? "feishu",
         bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active"),
@@ -864,12 +925,6 @@ export function installApi(
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts`) {
       return feishuSetupAttemptResponse(init, options.setupFailureCode);
-    }
-    if (path === `/api/v1/agents/${agentId}/im-binding/slack/oauth/start` && init?.method === "POST") {
-      return json({
-        authorizationUrl: "https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state",
-        expiresAt: "2026-08-20T00:10:00.000Z",
-      });
     }
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") {
       loggedOut = true;

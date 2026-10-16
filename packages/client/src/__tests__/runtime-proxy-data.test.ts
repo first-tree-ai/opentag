@@ -515,6 +515,46 @@ describe("RuntimeProxyDataConnection", () => {
     for (const pending of started) await expect(pending).rejects.toBeInstanceOf(Error);
   });
 
+  it("keeps active uploads alive beyond the opening idle timeout", async () => {
+    const fixture = await startDataFixture((socket) =>
+      socket.on("message", (data, binary) => {
+        if (binary) return;
+        const frame = decodeJson(data);
+        if (frame.type === "auth") socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID }));
+        if (frame.type === "end") {
+          socket.send(JSON.stringify({ type: "response", streamId: frame.streamId, status: 204, headers: {} }));
+          socket.send(JSON.stringify({ type: "end", streamId: frame.streamId }));
+        }
+      }),
+    );
+    const connection = await RuntimeProxyDataConnection.connect({
+      executionId: EXECUTION_ID,
+      ticket: "ticket-value-with-enough-bytes-1234",
+      url: fixture.url,
+      openTimeoutMs: 100,
+    });
+    try {
+      const response = await connection.openStream({
+        capability: "cap",
+        provider: "github",
+        bindingId: "b",
+        method: "POST",
+        path: "/team/code.git/git-receive-pack",
+        headers: {},
+        body: (async function* () {
+          for (let i = 0; i < 10; i++) {
+            await wait(30);
+            yield bytesOf("pack");
+          }
+        })(),
+      });
+      expect(response.status).toBe(204);
+      expect(connection.closed).toBe(false);
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("cancels with the open_timeout code when a stream never gets a response", async () => {
     const fixture = await startDataFixture((socket, requests) => {
       socket.on("message", (data, isBinary) => {
@@ -540,8 +580,8 @@ describe("RuntimeProxyDataConnection", () => {
           path: "/user",
           headers: {},
         }),
-      ).rejects.toMatchObject({ code: "aborted" });
-      // The client told the Server why: the open deadline expired, not a consumer cancel.
+      ).rejects.toMatchObject({ code: "open_timeout" });
+      // Both the caller and Server retain the timeout cause rather than a consumer cancel.
       await wait(20);
       expect(fixture.requests).toContainEqual(expect.objectContaining({ code: "open_timeout", type: "cancel" }));
       expect(connection.activeStreamCount).toBe(0);
@@ -2052,6 +2092,46 @@ describe("GitHub proxy typed HTTP failures (Cloud CONNECT)", () => {
       expect(response.body).not.toContain("private raw credential");
     } finally {
       tunnel.destroy();
+    }
+  });
+});
+
+describe("native HTTP protocol compatibility", () => {
+  it.each([false, true])("supports old-server reads and explicitly gates HEAD (v2=%s)", async (version2) => {
+    const readyVersion = version2 ? { httpVersion: 2 } : {};
+    const fixture = await startDataFixture((socket, requests) =>
+      socket.on("message", (data, binary) => {
+        if (binary) return;
+        const frame = decodeJson(data);
+        if (frame.type === "auth")
+          socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID, ...readyVersion }));
+        if (frame.type === "open") {
+          requests.push(frame);
+          socket.send(JSON.stringify({ type: "response", streamId: frame.streamId, status: 204, headers: {} }));
+          socket.send(JSON.stringify({ type: "end", streamId: frame.streamId }));
+        }
+      }),
+    );
+    const connection = await connectData(fixture.url);
+    const request = {
+      provider: "github" as const,
+      bindingId: "b",
+      capability: "cap",
+      method: "HEAD",
+      path: "/user",
+      headers: {},
+    };
+    try {
+      if (version2) expect((await connection.openStream(request)).status).toBe(204);
+      else
+        await expect(connection.openStream(request)).rejects.toMatchObject({
+          upstreamCode: "github_protocol_upgrade_required",
+        });
+      expect((await connection.openStream({ ...request, method: "GET" })).status).toBe(204);
+      expect(connection.closed).toBe(false);
+      expect(fixture.requests.map((frame) => frame.method)).toEqual(version2 ? ["HEAD", "GET"] : ["GET"]);
+    } finally {
+      await connection.close();
     }
   });
 });

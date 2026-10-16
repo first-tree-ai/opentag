@@ -1,414 +1,779 @@
 # The marketplace catalog.
 #
-# Each entry prefills a Server definition for a remote Streamable HTTP MCP endpoint. Only remote HTTP
-# Servers may be listed: OpenTag is a hosted service and cannot run a user's local stdio subprocess.
+# Each entry is a registry-style record for an MCP Server, validated against
+# `schema/mcp-catalog-entry.schema.json` by `pnpm catalog:generate`. An entry lists `remotes` (hosted
+# endpoints), `packages` (self-hosted packages), or both. Only an entry with a streamable-http remote
+# is installable and shown as an addable card; packages are recorded as data and are not yet
+# installable.
 #
-#   name             the definition name; must satisfy MCPServerNameSchema (lowercase letters, digits,
-#                    hyphens) so a card's human-readable name lives in `title` instead
-#   title            the card's name, in every supported locale
-#   description      the card's description, in every supported locale. Card copy only: the create
-#                    contract has no description field, so the definition starts without one and the
-#                    Agent page shows the Server's own description once a probe succeeds
-#   defaultAuthKind  a prefill for a new authorization, NEVER a claim about what the Server requires.
-#                    The catalog author confirms the method; the UI must state the method it will use
-#                    without asserting the Server demands it.
-#   oauthScopes      optional; the OAuth scopes the provider's consent screen is configured for,
-#                    requested when a card starts OAuth. The same bounds the start request enforces:
-#                    at most 64 scopes of at most 255 characters each. An entry that declares none
-#                    leaves scope selection to the flow's discovery rules.
-#   category         an id declared in `mcp-categories.yaml`
-#   website          the provider's site, retained as catalog metadata
-#   icon             a file under `packages/mcp-presets/icons/`
-#   iconIsOfficial   true only for a verified official product mark; unverified assets use a generic UI icon
-#   order            position within the category
+#   id                 `mcp/<slug>`; the slug is the Server definition name (MCPServerNameSchema:
+#                      lowercase letters, digits, hyphens) and the card id
+#   name               the card's name, in every supported locale
+#   summary            the card's description, in every supported locale. Card copy only: the create
+#                      contract has no description field
+#   when_to_use        one sentence that tells an Agent when this Server is the right tool
+#   keywords, aliases, tags
+#                      optional search terms; Discover search matches them
+#   capabilities       what the Server lets an Agent do, as kebab-case tokens
+#   status             active | deprecated | archived | removed. Only `active` entries are listed in
+#                      Discover; `removed` entries are not emitted at all
+#   auth.methods       the authorization kinds the Server accepts: none, bearer, oauth
+#   auth.default_kind  a prefill for a new authorization, NEVER a claim about what the Server requires.
+#                      The catalog author confirms the method; the UI must state the method it will use
+#                      without asserting the Server demands it.
+#   auth.oauth         required when `oauth` is a method (the generator rejects it otherwise); write
+#                      `oauth: {}` to leave scope selection to discovery
+#   auth.oauth.scopes  optional; the OAuth scopes the provider's consent screen is configured for,
+#                      requested when a card starts OAuth. At most 64 scopes of at most 255 characters
+#                      each.
+#   risk               side_effects (none | write | destructive) may not be weaker than any listed tool;
+#                      data_access is public or private
+#   remotes            hosted endpoints. The first streamable-http remote is the installable endpoint;
+#                      its `headers` hold the auth header (role: auth) and any static extra headers
+#                      (role: extra). An sse remote is data only
+#   packages           self-hosted packages (registry_type, identifier, version, transport, ...),
+#                      optionally with `prerequisites` and `platforms`; data only for now
+#   catalog            category (declared in `mcp-categories.yaml`), order within it, icon (a file under
+#                      `packages/mcp-presets/icons/`), and icon_is_official (true only for a verified
+#                      official product mark; unverified assets use a generic UI icon)
+#   homepage           the provider's site
 #
 # Entries carry no credential of any kind.
 
-- id: notion
-  name: notion
-  title:
-    en: Notion
-    zh: Notion
-  description:
-    en: Search and edit docs and wikis.
-    zh: 搜索和编辑文档与知识库。
-  url: https://mcp.notion.com/mcp
-  defaultAuthKind: oauth
-  category: docs
-  website: https://www.notion.com
-  icon: notion.png
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/notion
+  kind: mcp
+  name:
+    en: "Notion"
+    zh: "Notion"
+  summary:
+    en: "Search and edit docs and wikis."
+    zh: "搜索和编辑文档与知识库。"
+  when_to_use:
+    en: "Use when the task needs to find, read, or update pages and wikis in Notion."
+    zh: "当任务需要查找、阅读或更新 Notion 中的页面和知识库时使用。"
+  keywords: ["wiki", "notes", "knowledge base"]
+  capabilities: ["search-docs", "read-pages", "edit-pages"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.notion.com/mcp
+  catalog:
+    category: docs
+    order: 10
+    icon: notion.png
+    icon_is_official: true
+  homepage: https://www.notion.com
 
-- id: exa
-  name: exa
-  title:
-    en: Exa
-    zh: Exa
-  description:
-    en: Search the web for useful sources.
-    zh: 查找网页资料。
-  url: https://mcp.exa.ai/mcp
-  defaultAuthKind: none
-  category: search
-  website: https://exa.ai
-  icon: exa.svg
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/exa
+  kind: mcp
+  name:
+    en: "Exa"
+    zh: "Exa"
+  summary:
+    en: "Search the web for useful sources."
+    zh: "查找网页资料。"
+  when_to_use:
+    en: "Use when the task needs fresh web sources or research material."
+    zh: "当任务需要最新的网页资料或调研素材时使用。"
+  keywords: ["search", "web", "research"]
+  capabilities: ["web-search"]
+  status: active
+  auth:
+    methods: [none]
+    default_kind: none
+  risk:
+    side_effects: none
+    data_access: public
+  remotes:
+    - type: streamable-http
+      url: https://mcp.exa.ai/mcp
+  catalog:
+    category: search
+    order: 10
+    icon: exa.svg
+    icon_is_official: true
+  homepage: https://exa.ai
 
-- id: linear
-  name: linear
-  title:
-    en: Linear
-    zh: Linear
-  description:
-    en: Find and update tasks and projects.
-    zh: 查找和更新任务与项目。
-  url: https://mcp.linear.app/mcp
-  defaultAuthKind: oauth
-  category: projects
-  website: https://linear.app
-  icon: linear.svg
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/linear
+  kind: mcp
+  name:
+    en: "Linear"
+    zh: "Linear"
+  summary:
+    en: "Find and update tasks and projects."
+    zh: "查找和更新任务与项目。"
+  when_to_use:
+    en: "Use when the task needs to find or update Linear issues and projects."
+    zh: "当任务需要查找或更新 Linear 的工单与项目时使用。"
+  keywords: ["issues", "tickets", "tasks"]
+  capabilities: ["search-issues", "create-issues", "update-issues"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.linear.app/mcp
+  catalog:
+    category: projects
+    order: 10
+    icon: linear.svg
+    icon_is_official: true
+  homepage: https://linear.app
 
-- id: sentry
-  name: sentry
-  title:
-    en: Sentry
-    zh: Sentry
-  description:
-    en: Investigate errors and performance.
-    zh: 排查错误和性能问题。
-  url: https://mcp.sentry.dev/mcp
-  defaultAuthKind: oauth
-  category: development
-  website: https://sentry.io
-  icon: sentry.svg
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/sentry
+  kind: mcp
+  name:
+    en: "Sentry"
+    zh: "Sentry"
+  summary:
+    en: "Investigate errors and performance."
+    zh: "排查错误和性能问题。"
+  when_to_use:
+    en: "Use when the task needs to investigate errors, stack traces, or performance problems in Sentry."
+    zh: "当任务需要在 Sentry 中排查错误、堆栈或性能问题时使用。"
+  keywords: ["errors", "monitoring", "performance"]
+  capabilities: ["search-issues", "inspect-errors", "update-issues"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.sentry.dev/mcp
+  catalog:
+    category: development
+    order: 10
+    icon: sentry.svg
+    icon_is_official: true
+  homepage: https://sentry.io
 
-- id: atlassian
-  name: atlassian
-  title:
-    en: Atlassian
-    zh: Atlassian
-  description:
-    en: Find tasks and team documents.
-    zh: 查找任务和团队文档。
-  url: https://mcp.atlassian.com/v2/mcp?tools=all
-  defaultAuthKind: oauth
-  category: projects
-  website: https://www.atlassian.com
-  icon: atlassian.svg
-  iconIsOfficial: true
-  order: 40
+- schema_version: 1
+  id: mcp/atlassian
+  kind: mcp
+  name:
+    en: "Atlassian"
+    zh: "Atlassian"
+  summary:
+    en: "Find tasks and team documents."
+    zh: "查找任务和团队文档。"
+  when_to_use:
+    en: "Use when the task needs to find or update Jira work items or Confluence pages."
+    zh: "当任务需要查找或更新 Jira 工作项或 Confluence 页面时使用。"
+  keywords: ["jira", "confluence", "tickets"]
+  capabilities: ["search-issues", "update-issues", "read-pages", "edit-pages"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.atlassian.com/v2/mcp?tools=all
+  catalog:
+    category: projects
+    order: 40
+    icon: atlassian.svg
+    icon_is_official: true
+  homepage: https://www.atlassian.com
 
-- id: gmail
-  name: gmail
-  title:
-    en: Gmail
-    zh: Gmail
-  description:
-    en: Search emails and draft replies.
-    zh: 搜索邮件并起草回复。
-  url: https://gmailmcp.googleapis.com/mcp/v1
-  defaultAuthKind: oauth
-  oauthScopes:
-    - https://www.googleapis.com/auth/gmail.readonly
-    - https://www.googleapis.com/auth/gmail.compose
-  category: communication
-  website: https://workspace.google.com/products/gmail/
-  icon: gmail.svg
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/gmail
+  kind: mcp
+  name:
+    en: "Gmail"
+    zh: "Gmail"
+  summary:
+    en: "Search emails and draft replies."
+    zh: "搜索邮件并起草回复。"
+  when_to_use:
+    en: "Use when the task needs to search mail or draft a reply in Gmail."
+    zh: "当任务需要在 Gmail 中搜索邮件或起草回复时使用。"
+  keywords: ["email", "mail", "inbox"]
+  capabilities: ["search-email", "read-email", "draft-email"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes:
+        - https://www.googleapis.com/auth/gmail.readonly
+        - https://www.googleapis.com/auth/gmail.compose
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://gmailmcp.googleapis.com/mcp/v1
+  catalog:
+    category: communication
+    order: 10
+    icon: gmail.svg
+    icon_is_official: true
+  homepage: https://workspace.google.com/products/gmail/
 
-- id: google-drive
-  name: google-drive
-  title:
-    en: Google Drive
-    zh: Google Drive
-  description:
-    en: Find and read files.
-    zh: 查找和读取文件。
-  url: https://drivemcp.googleapis.com/mcp/v1
-  defaultAuthKind: oauth
-  oauthScopes:
-    - https://www.googleapis.com/auth/drive.readonly
-    - https://www.googleapis.com/auth/drive.file
-  category: docs
-  website: https://workspace.google.com/products/drive/
-  icon: google-drive.svg
-  iconIsOfficial: true
-  order: 20
+- schema_version: 1
+  id: mcp/google-drive
+  kind: mcp
+  name:
+    en: "Google Drive"
+    zh: "Google Drive"
+  summary:
+    en: "Find and read files."
+    zh: "查找和读取文件。"
+  when_to_use:
+    en: "Use when the task needs to find or read files in Google Drive."
+    zh: "当任务需要在 Google Drive 中查找或读取文件时使用。"
+  keywords: ["drive", "files", "storage"]
+  capabilities: ["search-files", "read-files", "create-files"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes:
+        - https://www.googleapis.com/auth/drive.readonly
+        - https://www.googleapis.com/auth/drive.file
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://drivemcp.googleapis.com/mcp/v1
+  catalog:
+    category: docs
+    order: 20
+    icon: google-drive.svg
+    icon_is_official: true
+  homepage: https://workspace.google.com/products/drive/
 
-- id: google-docs
-  name: google-docs
-  title:
-    en: Google Docs
-    zh: Google Docs
-  description:
-    en: Read and edit documents.
-    zh: 阅读和编辑文档。
-  url: https://docsmcp.googleapis.com/mcp/v1
-  defaultAuthKind: oauth
-  oauthScopes:
-    - https://www.googleapis.com/auth/drive.readonly
-    - https://www.googleapis.com/auth/drive.file
-    - https://www.googleapis.com/auth/documents.readonly
-    - https://www.googleapis.com/auth/documents
-  category: docs
-  website: https://workspace.google.com/products/docs/
-  icon: google-docs.svg
-  iconIsOfficial: true
-  order: 30
+- schema_version: 1
+  id: mcp/google-docs
+  kind: mcp
+  name:
+    en: "Google Docs"
+    zh: "Google Docs"
+  summary:
+    en: "Read and edit documents."
+    zh: "阅读和编辑文档。"
+  when_to_use:
+    en: "Use when the task needs to read or edit a Google Docs document."
+    zh: "当任务需要阅读或编辑 Google Docs 文档时使用。"
+  keywords: ["docs", "documents", "writing"]
+  capabilities: ["read-documents", "edit-documents"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes:
+        - https://www.googleapis.com/auth/drive.readonly
+        - https://www.googleapis.com/auth/drive.file
+        - https://www.googleapis.com/auth/documents.readonly
+        - https://www.googleapis.com/auth/documents
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://docsmcp.googleapis.com/mcp/v1
+  catalog:
+    category: docs
+    order: 30
+    icon: google-docs.svg
+    icon_is_official: true
+  homepage: https://workspace.google.com/products/docs/
 
-- id: google-sheets
-  name: google-sheets
-  title:
-    en: Google Sheets
-    zh: Google Sheets
-  description:
-    en: Read and update spreadsheet data.
-    zh: 读取和更新表格数据。
-  url: https://sheetsmcp.googleapis.com/mcp/v1
-  defaultAuthKind: oauth
-  oauthScopes:
-    - https://www.googleapis.com/auth/drive.readonly
-    - https://www.googleapis.com/auth/drive.file
-    - https://www.googleapis.com/auth/spreadsheets.readonly
-    - https://www.googleapis.com/auth/spreadsheets
-  category: data
-  website: https://workspace.google.com/products/sheets/
-  icon: google-sheets.svg
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/google-sheets
+  kind: mcp
+  name:
+    en: "Google Sheets"
+    zh: "Google Sheets"
+  summary:
+    en: "Read and update spreadsheet data."
+    zh: "读取和更新表格数据。"
+  when_to_use:
+    en: "Use when the task needs to read or update spreadsheet data in Google Sheets."
+    zh: "当任务需要读取或更新 Google Sheets 中的表格数据时使用。"
+  keywords: ["sheets", "spreadsheet", "tables"]
+  capabilities: ["read-spreadsheets", "update-spreadsheets"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes:
+        - https://www.googleapis.com/auth/drive.readonly
+        - https://www.googleapis.com/auth/drive.file
+        - https://www.googleapis.com/auth/spreadsheets.readonly
+        - https://www.googleapis.com/auth/spreadsheets
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://sheetsmcp.googleapis.com/mcp/v1
+  catalog:
+    category: data
+    order: 10
+    icon: google-sheets.svg
+    icon_is_official: true
+  homepage: https://workspace.google.com/products/sheets/
 
-- id: google-slides
-  name: google-slides
-  title:
-    en: Google Slides
-    zh: Google Slides
-  description:
-    en: Read and edit presentations.
-    zh: 阅读和编辑演示文稿。
-  url: https://slidesmcp.googleapis.com/mcp/v1
-  defaultAuthKind: oauth
-  oauthScopes:
-    - https://www.googleapis.com/auth/drive.readonly
-    - https://www.googleapis.com/auth/drive.file
-    - https://www.googleapis.com/auth/presentations.readonly
-    - https://www.googleapis.com/auth/presentations
-  category: docs
-  website: https://workspace.google.com/products/slides/
-  icon: google-slides.svg
-  iconIsOfficial: true
-  order: 40
+- schema_version: 1
+  id: mcp/google-slides
+  kind: mcp
+  name:
+    en: "Google Slides"
+    zh: "Google Slides"
+  summary:
+    en: "Read and edit presentations."
+    zh: "阅读和编辑演示文稿。"
+  when_to_use:
+    en: "Use when the task needs to read or edit a Google Slides presentation."
+    zh: "当任务需要阅读或编辑 Google Slides 演示文稿时使用。"
+  keywords: ["slides", "presentation", "deck"]
+  capabilities: ["read-presentations", "edit-presentations"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes:
+        - https://www.googleapis.com/auth/drive.readonly
+        - https://www.googleapis.com/auth/drive.file
+        - https://www.googleapis.com/auth/presentations.readonly
+        - https://www.googleapis.com/auth/presentations
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://slidesmcp.googleapis.com/mcp/v1
+  catalog:
+    category: docs
+    order: 40
+    icon: google-slides.svg
+    icon_is_official: true
+  homepage: https://workspace.google.com/products/slides/
 
-- id: google-calendar
-  name: google-calendar
-  title:
-    en: Google Calendar
-    zh: Google Calendar
-  description:
-    en: View events and check availability.
-    zh: 查看日程和空闲时间。
-  url: https://calendarmcp.googleapis.com/mcp/v1
-  defaultAuthKind: oauth
-  oauthScopes:
-    - https://www.googleapis.com/auth/calendar.calendarlist.readonly
-    - https://www.googleapis.com/auth/calendar.events.freebusy
-    - https://www.googleapis.com/auth/calendar.events.readonly
-  category: communication
-  website: https://workspace.google.com/products/calendar/
-  icon: google-calendar.svg
-  iconIsOfficial: true
-  order: 30
+- schema_version: 1
+  id: mcp/google-calendar
+  kind: mcp
+  name:
+    en: "Google Calendar"
+    zh: "Google Calendar"
+  summary:
+    en: "View events and check availability."
+    zh: "查看日程和空闲时间。"
+  when_to_use:
+    en: "Use when the task needs to view events or check availability in Google Calendar."
+    zh: "当任务需要查看 Google Calendar 的日程或空闲时间时使用。"
+  keywords: ["calendar", "schedule", "meetings"]
+  capabilities: ["list-events", "check-availability"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes:
+        - https://www.googleapis.com/auth/calendar.calendarlist.readonly
+        - https://www.googleapis.com/auth/calendar.events.freebusy
+        - https://www.googleapis.com/auth/calendar.events.readonly
+  risk:
+    side_effects: none
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://calendarmcp.googleapis.com/mcp/v1
+  catalog:
+    category: communication
+    order: 30
+    icon: google-calendar.svg
+    icon_is_official: true
+  homepage: https://workspace.google.com/products/calendar/
 
-- id: google-chat
-  name: google-chat
-  title:
-    en: Google Chat
-    zh: Google Chat
-  description:
-    en: Search chats and send messages.
-    zh: 搜索会话并发送消息。
-  url: https://chatmcp.googleapis.com/mcp/v1
-  defaultAuthKind: oauth
-  oauthScopes:
-    - https://www.googleapis.com/auth/chat.spaces.readonly
-    - https://www.googleapis.com/auth/chat.memberships.readonly
-    - https://www.googleapis.com/auth/chat.messages.readonly
-    - https://www.googleapis.com/auth/chat.messages.create
-    - https://www.googleapis.com/auth/chat.users.readstate
-  category: communication
-  website: https://workspace.google.com/products/chat/
-  icon: google-chat.svg
-  iconIsOfficial: true
-  order: 20
+- schema_version: 1
+  id: mcp/google-chat
+  kind: mcp
+  name:
+    en: "Google Chat"
+    zh: "Google Chat"
+  summary:
+    en: "Search chats and send messages."
+    zh: "搜索会话并发送消息。"
+  when_to_use:
+    en: "Use when the task needs to search conversations or send a message in Google Chat."
+    zh: "当任务需要在 Google Chat 中搜索会话或发送消息时使用。"
+  keywords: ["chat", "messaging", "spaces"]
+  capabilities: ["search-messages", "send-messages"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes:
+        - https://www.googleapis.com/auth/chat.spaces.readonly
+        - https://www.googleapis.com/auth/chat.memberships.readonly
+        - https://www.googleapis.com/auth/chat.messages.readonly
+        - https://www.googleapis.com/auth/chat.messages.create
+        - https://www.googleapis.com/auth/chat.users.readstate
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://chatmcp.googleapis.com/mcp/v1
+  catalog:
+    category: communication
+    order: 20
+    icon: google-chat.svg
+    icon_is_official: true
+  homepage: https://workspace.google.com/products/chat/
 
-- id: google-people
-  name: google-people
-  title:
-    en: People
-    zh: People
-  description:
-    en: Find contacts and colleague details.
-    zh: 查找联系人和同事资料。
-  url: https://people.googleapis.com/mcp/v1
-  defaultAuthKind: oauth
-  oauthScopes:
-    - https://www.googleapis.com/auth/directory.readonly
-    - https://www.googleapis.com/auth/userinfo.profile
-    - https://www.googleapis.com/auth/contacts.readonly
-  category: communication
-  website: https://developers.google.com/people
-  icon: google-people.svg
-  order: 40
+- schema_version: 1
+  id: mcp/google-people
+  kind: mcp
+  name:
+    en: "People"
+    zh: "People"
+  summary:
+    en: "Find contacts and colleague details."
+    zh: "查找联系人和同事资料。"
+  when_to_use:
+    en: "Use when the task needs contact or colleague details from Google People."
+    zh: "当任务需要查询 Google People 中的联系人或同事资料时使用。"
+  keywords: ["contacts", "directory", "colleagues"]
+  capabilities: ["find-contacts", "read-directory"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth:
+      scopes:
+        - https://www.googleapis.com/auth/directory.readonly
+        - https://www.googleapis.com/auth/userinfo.profile
+        - https://www.googleapis.com/auth/contacts.readonly
+  risk:
+    side_effects: none
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://people.googleapis.com/mcp/v1
+  catalog:
+    category: communication
+    order: 40
+    icon: google-people.svg
+    icon_is_official: false
+  homepage: https://developers.google.com/people
 
-- id: microsoft-365
-  name: microsoft-365
-  title:
-    en: Microsoft 365
-    zh: Microsoft 365
-  description:
-    en: View product roadmaps and Azure updates.
-    zh: 查看产品路线图和 Azure 更新。
-  url: https://www.microsoft.com/releasecommunications/mcp
-  defaultAuthKind: none
-  category: development
-  website: https://www.microsoft.com
-  icon: microsoft-365.svg
-  iconIsOfficial: true
-  order: 30
+- schema_version: 1
+  id: mcp/microsoft-365
+  kind: mcp
+  name:
+    en: "Microsoft 365"
+    zh: "Microsoft 365"
+  summary:
+    en: "View product roadmaps and Azure updates."
+    zh: "查看产品路线图和 Azure 更新。"
+  when_to_use:
+    en: "Use when the task needs Microsoft product roadmap or Azure update information."
+    zh: "当任务需要 Microsoft 产品路线图或 Azure 更新信息时使用。"
+  keywords: ["roadmap", "azure", "release notes"]
+  capabilities: ["read-roadmaps", "read-updates"]
+  status: active
+  auth:
+    methods: [none]
+    default_kind: none
+  risk:
+    side_effects: none
+    data_access: public
+  remotes:
+    - type: streamable-http
+      url: https://www.microsoft.com/releasecommunications/mcp
+  catalog:
+    category: development
+    order: 30
+    icon: microsoft-365.svg
+    icon_is_official: true
+  homepage: https://www.microsoft.com
 
-- id: asana
-  name: asana
-  title:
-    en: Asana
-    zh: Asana
-  description:
-    en: Find and update tasks and projects.
-    zh: 查找和更新任务与项目。
-  url: https://mcp.asana.com/v2/mcp
-  defaultAuthKind: oauth
-  category: projects
-  website: https://asana.com
-  icon: asana.png
-  iconIsOfficial: true
-  order: 20
+- schema_version: 1
+  id: mcp/asana
+  kind: mcp
+  name:
+    en: "Asana"
+    zh: "Asana"
+  summary:
+    en: "Find and update tasks and projects."
+    zh: "查找和更新任务与项目。"
+  when_to_use:
+    en: "Use when the task needs to find or update Asana tasks and projects."
+    zh: "当任务需要查找或更新 Asana 的任务与项目时使用。"
+  keywords: ["tasks", "projects", "work management"]
+  capabilities: ["search-tasks", "update-tasks", "manage-projects"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.asana.com/v2/mcp
+  catalog:
+    category: projects
+    order: 20
+    icon: asana.png
+    icon_is_official: true
+  homepage: https://asana.com
 
-- id: monday
-  name: monday
-  title:
-    en: monday.com
-    zh: monday.com
-  description:
-    en: Read and update board items.
-    zh: 查看和更新看板任务。
-  url: https://mcp.monday.com/mcp
-  defaultAuthKind: oauth
-  category: projects
-  website: https://monday.com
-  icon: monday.png
-  iconIsOfficial: true
-  order: 30
+- schema_version: 1
+  id: mcp/monday
+  kind: mcp
+  name:
+    en: "monday.com"
+    zh: "monday.com"
+  summary:
+    en: "Read and update board items."
+    zh: "查看和更新看板任务。"
+  when_to_use:
+    en: "Use when the task needs to read or update items on monday.com boards."
+    zh: "当任务需要读取或更新 monday.com 看板中的任务时使用。"
+  keywords: ["boards", "items", "work management"]
+  capabilities: ["read-boards", "update-items"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.monday.com/mcp
+  catalog:
+    category: projects
+    order: 30
+    icon: monday.png
+    icon_is_official: true
+  homepage: https://monday.com
 
-- id: hubspot
-  name: hubspot
-  title:
-    en: HubSpot
-    zh: HubSpot
-  description:
-    en: Find and update customer records.
-    zh: 查找和更新客户资料。
-  url: https://mcp.hubspot.com
-  defaultAuthKind: oauth
-  category: sales
-  website: https://www.hubspot.com
-  icon: hubspot.png
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/hubspot
+  kind: mcp
+  name:
+    en: "HubSpot"
+    zh: "HubSpot"
+  summary:
+    en: "Find and update customer records."
+    zh: "查找和更新客户资料。"
+  when_to_use:
+    en: "Use when the task needs to find or update customer records in HubSpot."
+    zh: "当任务需要查找或更新 HubSpot 中的客户资料时使用。"
+  keywords: ["crm", "contacts", "deals"]
+  capabilities: ["search-records", "update-records"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.hubspot.com
+  catalog:
+    category: sales
+    order: 10
+    icon: hubspot.png
+    icon_is_official: true
+  homepage: https://www.hubspot.com
 
-- id: figma
-  name: figma
-  title:
-    en: Figma
-    zh: Figma
-  description:
-    en: Read designs and inspect layouts.
-    zh: 读取设计稿和布局信息。
-  url: https://mcp.figma.com/mcp
-  defaultAuthKind: oauth
-  category: design
-  website: https://www.figma.com
-  icon: figma.svg
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/figma
+  kind: mcp
+  name:
+    en: "Figma"
+    zh: "Figma"
+  summary:
+    en: "Read designs and inspect layouts."
+    zh: "读取设计稿和布局信息。"
+  when_to_use:
+    en: "Use when the task needs to read a Figma design or inspect its layout."
+    zh: "当任务需要读取 Figma 设计稿或查看其布局时使用。"
+  keywords: ["design", "ui", "mockups"]
+  capabilities: ["read-designs", "inspect-layouts"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: none
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.figma.com/mcp
+  catalog:
+    category: design
+    order: 10
+    icon: figma.svg
+    icon_is_official: true
+  homepage: https://www.figma.com
 
-- id: canva
-  name: canva
-  title:
-    en: Canva
-    zh: Canva
-  description:
-    en: Create and export designs.
-    zh: 创建设计并导出文件。
-  url: https://mcp.canva.com/mcp
-  defaultAuthKind: oauth
-  category: design
-  website: https://www.canva.com
-  icon: canva.png
-  iconIsOfficial: true
-  order: 20
+- schema_version: 1
+  id: mcp/canva
+  kind: mcp
+  name:
+    en: "Canva"
+    zh: "Canva"
+  summary:
+    en: "Create and export designs."
+    zh: "创建设计并导出文件。"
+  when_to_use:
+    en: "Use when the task needs to create or export a design in Canva."
+    zh: "当任务需要在 Canva 中创建设计或导出文件时使用。"
+  keywords: ["design", "graphics", "presentations"]
+  capabilities: ["create-designs", "export-designs"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.canva.com/mcp
+  catalog:
+    category: design
+    order: 20
+    icon: canva.png
+    icon_is_official: true
+  homepage: https://www.canva.com
 
-- id: tavily
-  name: tavily
-  title:
-    en: Tavily
-    zh: Tavily
-  description:
-    en: Search the web and extract content.
-    zh: 搜索网页并提取内容。
-  url: https://mcp.tavily.com/mcp
-  defaultAuthKind: none
-  category: search
-  website: https://tavily.com
-  icon: tavily.svg
-  iconIsOfficial: true
-  order: 20
+- schema_version: 1
+  id: mcp/tavily
+  kind: mcp
+  name:
+    en: "Tavily"
+    zh: "Tavily"
+  summary:
+    en: "Search the web and extract content."
+    zh: "搜索网页并提取内容。"
+  when_to_use:
+    en: "Use when the task needs web search results or the content of specific pages."
+    zh: "当任务需要网页搜索结果或指定页面的内容时使用。"
+  keywords: ["search", "web", "crawl"]
+  capabilities: ["web-search", "extract-content"]
+  status: active
+  auth:
+    methods: [none]
+    default_kind: none
+  risk:
+    side_effects: none
+    data_access: public
+  remotes:
+    - type: streamable-http
+      url: https://mcp.tavily.com/mcp
+  catalog:
+    category: search
+    order: 20
+    icon: tavily.svg
+    icon_is_official: true
+  homepage: https://tavily.com
 
-- id: firecrawl
-  name: firecrawl
-  title:
-    en: Firecrawl
-    zh: Firecrawl
-  description:
-    en: Extract content from web pages.
-    zh: 提取网页内容。
-  url: https://mcp.firecrawl.dev/v2/mcp
-  defaultAuthKind: none
-  category: search
-  website: https://www.firecrawl.dev
-  icon: firecrawl.svg
-  iconIsOfficial: true
-  order: 30
+- schema_version: 1
+  id: mcp/firecrawl
+  kind: mcp
+  name:
+    en: "Firecrawl"
+    zh: "Firecrawl"
+  summary:
+    en: "Extract content from web pages."
+    zh: "提取网页内容。"
+  when_to_use:
+    en: "Use when the task needs the content of web pages in a clean, readable form."
+    zh: "当任务需要以清晰可读的形式获取网页内容时使用。"
+  keywords: ["scrape", "crawl", "web"]
+  capabilities: ["extract-content", "crawl-pages"]
+  status: active
+  auth:
+    methods: [none]
+    default_kind: none
+  risk:
+    side_effects: none
+    data_access: public
+  remotes:
+    - type: streamable-http
+      url: https://mcp.firecrawl.dev/v2/mcp
+  catalog:
+    category: search
+    order: 30
+    icon: firecrawl.svg
+    icon_is_official: true
+  homepage: https://www.firecrawl.dev
 
-- id: zapier
-  name: zapier
-  title:
-    en: Zapier
-    zh: Zapier
-  description:
-    en: Run actions across your apps.
-    zh: 跨应用执行任务。
-  url: https://mcp.zapier.com/api/v1/connect
-  defaultAuthKind: oauth
-  category: automation
-  website: https://zapier.com
-  icon: zapier.png
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/zapier
+  kind: mcp
+  name:
+    en: "Zapier"
+    zh: "Zapier"
+  summary:
+    en: "Run actions across your apps."
+    zh: "跨应用执行任务。"
+  when_to_use:
+    en: "Use when the task needs to run an action in an app the user connected to Zapier."
+    zh: "当任务需要在用户已接入 Zapier 的应用中执行操作时使用。"
+  keywords: ["automation", "workflow", "integrations"]
+  capabilities: ["run-actions", "connect-apps"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.zapier.com/api/v1/connect
+  catalog:
+    category: automation
+    order: 10
+    icon: zapier.png
+    icon_is_official: true
+  homepage: https://zapier.com
 
 # Official business and data endpoints. Atlassian, Airtable, and Amplitude are enabled by the
 # protected-resource identity compatibility for issue #814: discovery accepts the identity each
@@ -417,66 +782,130 @@
 # `client_secret_post` and `none`, not `client_secret_basic`); see #814 for the follow-up.
 # These presets still need end-to-end authorization and tool-call verification.
 
-- id: airtable
-  name: airtable
-  title:
-    en: Airtable
-    zh: Airtable
-  description:
-    en: Find and update table records.
-    zh: 查找和更新表格记录。
-  url: https://mcp.airtable.com/mcp
-  defaultAuthKind: oauth
-  category: data
-  website: https://www.airtable.com
-  icon: airtable.png
-  iconIsOfficial: true
-  order: 20
+- schema_version: 1
+  id: mcp/airtable
+  kind: mcp
+  name:
+    en: "Airtable"
+    zh: "Airtable"
+  summary:
+    en: "Find and update table records."
+    zh: "查找和更新表格记录。"
+  when_to_use:
+    en: "Use when the task needs to find or update records in an Airtable base."
+    zh: "当任务需要查找或更新 Airtable 数据表中的记录时使用。"
+  keywords: ["database", "tables", "records"]
+  capabilities: ["search-records", "update-records"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.airtable.com/mcp
+  catalog:
+    category: data
+    order: 20
+    icon: airtable.png
+    icon_is_official: true
+  homepage: https://www.airtable.com
 
-- id: supabase
-  name: supabase
-  title:
-    en: Supabase
-    zh: Supabase
-  description:
-    en: Query databases and inspect logs.
-    zh: 查询数据库和查看日志。
-  url: https://mcp.supabase.com/mcp
-  defaultAuthKind: oauth
-  category: development
-  website: https://supabase.com
-  icon: supabase.svg
-  iconIsOfficial: true
-  order: 20
+- schema_version: 1
+  id: mcp/supabase
+  kind: mcp
+  name:
+    en: "Supabase"
+    zh: "Supabase"
+  summary:
+    en: "Query databases and inspect logs."
+    zh: "查询数据库和查看日志。"
+  when_to_use:
+    en: "Use when the task needs to query a Supabase database or inspect its logs."
+    zh: "当任务需要查询 Supabase 数据库或查看其日志时使用。"
+  keywords: ["postgres", "database", "backend"]
+  capabilities: ["query-databases", "inspect-logs", "manage-projects"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: destructive
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.supabase.com/mcp
+  catalog:
+    category: development
+    order: 20
+    icon: supabase.svg
+    icon_is_official: true
+  homepage: https://supabase.com
 
-- id: amplitude
-  name: amplitude
-  title:
-    en: Amplitude
-    zh: Amplitude
-  description:
-    en: Analyze usage and conversion data.
-    zh: 分析使用情况和转化数据。
-  url: https://mcp.amplitude.com/mcp
-  defaultAuthKind: oauth
-  category: data
-  website: https://amplitude.com
-  icon: amplitude.png
-  iconIsOfficial: true
-  order: 30
+- schema_version: 1
+  id: mcp/amplitude
+  kind: mcp
+  name:
+    en: "Amplitude"
+    zh: "Amplitude"
+  summary:
+    en: "Analyze usage and conversion data."
+    zh: "分析使用情况和转化数据。"
+  when_to_use:
+    en: "Use when the task needs product usage or conversion data from Amplitude."
+    zh: "当任务需要 Amplitude 中的产品使用或转化数据时使用。"
+  keywords: ["analytics", "product", "conversion"]
+  capabilities: ["analyze-usage", "read-charts"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: none
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.amplitude.com/mcp
+  catalog:
+    category: data
+    order: 30
+    icon: amplitude.png
+    icon_is_official: true
+  homepage: https://amplitude.com
 
-- id: stripe
-  name: stripe
-  title:
-    en: Stripe
-    zh: Stripe
-  description:
-    en: Look up payments and subscriptions.
-    zh: 查询支付和订阅信息。
-  url: https://mcp.stripe.com
-  defaultAuthKind: oauth
-  category: finance
-  website: https://stripe.com
-  icon: stripe.svg
-  iconIsOfficial: true
-  order: 10
+- schema_version: 1
+  id: mcp/stripe
+  kind: mcp
+  name:
+    en: "Stripe"
+    zh: "Stripe"
+  summary:
+    en: "Look up payments and subscriptions."
+    zh: "查询支付和订阅信息。"
+  when_to_use:
+    en: "Use when the task needs to look up payments or subscriptions in Stripe."
+    zh: "当任务需要在 Stripe 中查询支付或订阅信息时使用。"
+  keywords: ["payments", "billing", "subscriptions"]
+  capabilities: ["lookup-payments", "lookup-subscriptions", "manage-customers"]
+  status: active
+  auth:
+    methods: [oauth]
+    default_kind: oauth
+    oauth: {}
+  risk:
+    side_effects: write
+    data_access: private
+  remotes:
+    - type: streamable-http
+      url: https://mcp.stripe.com
+  catalog:
+    category: finance
+    order: 10
+    icon: stripe.svg
+    icon_is_official: true
+  homepage: https://stripe.com

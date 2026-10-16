@@ -21,6 +21,7 @@ vi.mock("@opentag/mcp-presets", () => ({
     {
       id: "linear",
       name: "linear",
+      installable: true,
       url: "https://mcp.linear.app/sse",
       defaultAuthKind: "oauth",
       title: { en: "Linear", zh: "Linear" },
@@ -29,6 +30,7 @@ vi.mock("@opentag/mcp-presets", () => ({
     {
       id: "keys",
       name: "keys",
+      installable: true,
       url: "https://keys.example.com/mcp",
       defaultAuthKind: "bearer",
       title: { en: "Keys", zh: "密钥" },

@@ -9,12 +9,14 @@ vi.mock("@opentag/mcp-presets", () => ({
     {
       url: "https://mcp.provider.test/mcp",
       description: { en: "Search provider documents.", zh: "搜索服务商文档。" },
+      installable: true,
       iconUrl: "/provider.svg",
       iconIsOfficial: true,
     },
     {
       url: "https://mcp.unverified.test/mcp",
       description: { en: "Search team documents.", zh: "搜索团队文档。" },
+      installable: true,
       iconUrl: "/placeholder.svg",
     },
   ],

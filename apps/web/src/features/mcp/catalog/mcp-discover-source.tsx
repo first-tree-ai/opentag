@@ -1,4 +1,4 @@
-import type { McpCatalogCategory, McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpCatalogCategory, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import type { MCPAgentServer, MCPServer } from "@opentag/shared/browser";
 import { useState } from "react";
 import { getLocale } from "../../../i18n/locale.js";
@@ -12,12 +12,13 @@ import {
   localizedText,
   type McpCatalogEntryState,
   matchesCatalogEntry,
+  offeredEntries,
 } from "./mcp-catalog-model.js";
 
 /** Stays mounted during prerequisite guidance, preserving search, category, and scroll position. */
 export function McpDiscoverSource({
   categories,
-  entries,
+  entries: catalogEntries,
   servers,
   mounted,
   busy,
@@ -29,18 +30,19 @@ export function McpDiscoverSource({
   feedback,
 }: {
   categories: readonly McpCatalogCategory[];
-  entries: readonly McpCatalogEntry[];
+  entries: readonly McpInstallableCatalogEntry[];
   servers: readonly MCPServer[];
   mounted: readonly MCPAgentServer[];
   busy: boolean;
   pending?: Record<string, { action: "add" | "connect" }>;
-  onAdd: (entry: McpCatalogEntry) => void;
+  onAdd: (entry: McpInstallableCatalogEntry) => void;
   connectedIds?: string[];
   initialView?: { query: string; categoryId: string };
   onViewChange?: (view: { query: string; categoryId: string }) => void;
   feedback?: Record<string, McpCatalogFeedback>;
 }) {
   const locale = getLocale();
+  const entries = offeredEntries(catalogEntries);
   // Navigation depends on the full directory, never on search results or connection status.
   const shownCategories = categories.filter((category) => entriesInCategory(entries, category.id).length >= 2);
   const [categoryId, setCategoryId] = useState(
@@ -150,10 +152,10 @@ export function McpCatalogCard({
   pendingAction,
   feedback,
 }: {
-  entry: McpCatalogEntry;
+  entry: McpInstallableCatalogEntry;
   state?: McpCatalogEntryState;
   busy: boolean;
-  onAdd: (entry: McpCatalogEntry) => void;
+  onAdd: (entry: McpInstallableCatalogEntry) => void;
   connecting?: boolean;
   pendingAction?: "add" | "connect";
   feedback?: McpCatalogFeedback;

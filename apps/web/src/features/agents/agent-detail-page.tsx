@@ -63,8 +63,8 @@ export function AgentObjectHeader({
   const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
   /*
-   * The handle addresses the Agent in Feishu, where each Agent has its own bot. Slack routes one
-   * workspace Bot, so showing a per-Agent handle there names something nobody can address.
+   * The handle addresses the Agent in Feishu, where each Agent has its own bot. Slack uses the bound Bot identity,
+   * which can differ from the Agent handle.
    */
   const handle =
     agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack" ? undefined : agent.name;

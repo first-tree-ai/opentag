@@ -1,4 +1,4 @@
-import type { McpCatalogEntry, McpCatalogLocalizedText } from "@opentag/mcp-presets";
+import type { McpCatalogEntry, McpCatalogLocalizedText, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import {
   MCP_CATALOG_DEPLOYMENT_ENDPOINTS,
   type MCPAgentServer,
@@ -36,7 +36,7 @@ export function comparableUrl(value: string): string {
  * keeps the endpoint the catalog ships, because Servers created before the replacement still live
  * there and must keep their identity.
  */
-export type ServedCatalogEntry = McpCatalogEntry & { shippedUrl?: string };
+export type ServedCatalogEntry = McpInstallableCatalogEntry & { shippedUrl?: string };
 
 /**
  * Every endpoint that identifies an entry, preferred endpoint first: the one a new Server is created
@@ -56,10 +56,15 @@ export function catalogEntryUrls(entry: ServedCatalogEntry): string[] {
 }
 
 /** Match a known endpoint, allowing connection-specific query parameters and a trailing slash. */
-export function findCatalogEntryByUrl(value: string, entries: readonly McpCatalogEntry[]): McpCatalogEntry | undefined {
+export function findCatalogEntryByUrl(
+  value: string,
+  entries: readonly McpCatalogEntry[],
+): McpInstallableCatalogEntry | undefined {
   const target = catalogEndpoint(value);
   if (!target) return undefined;
-  return entries.find((entry) => catalogEntryUrls(entry).some((url) => catalogEndpoint(url) === target));
+  return installableEntries(entries).find((entry) =>
+    catalogEntryUrls(entry).some((url) => catalogEndpoint(url) === target),
+  );
 }
 
 /**
@@ -71,7 +76,7 @@ export function findCatalogEntryByUrl(value: string, entries: readonly McpCatalo
  * arbitrary URL.
  */
 export function resolveCatalogEntries(
-  entries: readonly McpCatalogEntry[],
+  entries: readonly McpInstallableCatalogEntry[],
   endpoints: readonly MCPCatalogEndpoint[],
 ): readonly ServedCatalogEntry[] {
   if (endpoints.length === 0) return entries;
@@ -93,17 +98,50 @@ function catalogEndpoint(value: string): string | undefined {
   }
 }
 
-/** Whether an entry matches the catalog search, over its name, its URL, and the active locale. */
-export function matchesCatalogEntry(entry: McpCatalogEntry, query: string, locale: Locale = getLocale()): boolean {
+/**
+ * Whether an entry matches the catalog search: its name, URL, and the active locale's title,
+ * description, and when-to-use text, plus its keywords, aliases, tags, and capabilities.
+ */
+export function matchesCatalogEntry(
+  entry: McpInstallableCatalogEntry,
+  query: string,
+  locale: Locale = getLocale(),
+): boolean {
   const term = query.trim().toLowerCase();
   if (term.length === 0) return true;
-  return [entry.name, entry.url, entry.title[locale], entry.description[locale]].some((value) =>
-    value.toLowerCase().includes(term),
-  );
+  const fields = [
+    entry.name,
+    entry.url,
+    entry.title[locale],
+    entry.description[locale],
+    entry.whenToUse[locale],
+    ...entry.capabilities,
+    ...(entry.keywords ?? []),
+    ...(entry.aliases ?? []),
+    ...(entry.tags ?? []),
+  ];
+  return fields.some((value) => value.toLowerCase().includes(term));
+}
+
+/** The entries Discover offers: `deprecated` and `archived` entries stay out of the directory. */
+export function offeredEntries(entries: readonly McpInstallableCatalogEntry[]): readonly McpInstallableCatalogEntry[] {
+  return entries.filter((entry) => entry.status === "active");
+}
+
+/**
+ * The shipped entries a card may offer to add: those with the streamable-http remote the Server
+ * create contract accepts. Entries that only list self-hosted packages are catalog data and stay out
+ * of every addable surface until the Server can run them.
+ */
+export function installableEntries(entries: readonly McpCatalogEntry[]): readonly McpInstallableCatalogEntry[] {
+  return entries.filter((entry): entry is McpInstallableCatalogEntry => entry.installable && entry.url !== undefined);
 }
 
 /** The entries of one category, in the generator's order. */
-export function entriesInCategory(entries: readonly McpCatalogEntry[], categoryId: string): McpCatalogEntry[] {
+export function entriesInCategory(
+  entries: readonly McpInstallableCatalogEntry[],
+  categoryId: string,
+): McpInstallableCatalogEntry[] {
   return entries.filter((entry) => entry.category === categoryId);
 }
 
@@ -129,7 +167,7 @@ function firstByEndpoint<T>(entry: ServedCatalogEntry, candidates: readonly T[],
 export type McpCatalogEntryState = "available" | "added" | "unconnected" | "disabled";
 
 export function catalogEntryState(
-  entry: McpCatalogEntry,
+  entry: McpInstallableCatalogEntry,
   servers: readonly MCPServer[],
   mounted: readonly MCPAgentServer[],
 ): McpCatalogEntryState {

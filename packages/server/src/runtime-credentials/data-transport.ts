@@ -1,17 +1,20 @@
 import {
   decodeProviderProxyDataFrame,
   encodeProviderProxyDataFrame,
+  GITHUB_PROXY_FAILURE_STATUSES,
   PROVIDER_PROXY_AUTH_TIMEOUT_MS,
   PROVIDER_PROXY_CHUNK_MAX_BYTES,
   PROVIDER_PROXY_HEADER_MAX_BYTES,
+  PROVIDER_PROXY_HTTP_PROTOCOL,
   PROVIDER_PROXY_INITIAL_CREDIT_BYTES,
-  PROVIDER_PROXY_MAX_STREAM_OPENS_PER_CONNECTION,
+  PROVIDER_PROXY_MAX_RETIRED_STREAMS,
   PROVIDER_PROXY_MAX_STREAMS_PER_EXECUTION,
   PROVIDER_PROXY_STREAM_REVALIDATE_INTERVAL_MS,
   RUNTIME_CREDENTIAL_CAPABILITY_TTL_MS,
   type RuntimeCredentialProvider,
   RuntimeProviderProxyAuthFrameSchema,
   RuntimeProviderProxyClientFrameSchema,
+  RuntimeProviderProxyResponseFrameSchema,
   type RuntimeProviderProxyServerFrame,
 } from "@opentag/shared";
 import type WebSocket from "ws";
@@ -32,7 +35,6 @@ interface ResolvedTransportLimits {
   chunkMaxBytes: number;
   initialCreditBytes: number;
   maxStreams: number;
-  maxOpens: number;
   revalidateIntervalMs: number;
 }
 
@@ -50,7 +52,6 @@ export interface RuntimeProviderProxyTransportOptions {
   chunkMaxBytes?: number;
   initialCreditBytes?: number;
   maxStreams?: number;
-  maxOpens?: number;
   revalidateIntervalMs?: number;
 }
 
@@ -88,13 +89,14 @@ export class RuntimeProviderProxyTransport {
       chunkMaxBytes: options.chunkMaxBytes ?? PROVIDER_PROXY_CHUNK_MAX_BYTES,
       initialCreditBytes: options.initialCreditBytes ?? PROVIDER_PROXY_INITIAL_CREDIT_BYTES,
       maxStreams: options.maxStreams ?? PROVIDER_PROXY_MAX_STREAMS_PER_EXECUTION,
-      maxOpens: options.maxOpens ?? PROVIDER_PROXY_MAX_STREAM_OPENS_PER_CONNECTION,
       revalidateIntervalMs: options.revalidateIntervalMs ?? PROVIDER_PROXY_STREAM_REVALIDATE_INTERVAL_MS,
     };
   }
 
-  attach(socket: WebSocket): void {
-    new ProxyDataConnection(socket, this.#options, this.#limits).start();
+  attach(socket: WebSocket): { snapshot(): { active: number; retired: number; bufferedBytes: number } } {
+    const connection = new ProxyDataConnection(socket, this.#options, this.#limits);
+    connection.start();
+    return { snapshot: () => connection.snapshot() };
   }
 }
 
@@ -103,10 +105,10 @@ class ProxyDataConnection {
   readonly #transport: RuntimeProviderProxyTransportOptions;
   readonly #limits: ResolvedTransportLimits;
   readonly #streams = new Map<number, ProxyStream>();
-  readonly #usedStreamIds = new Set<number>();
+  readonly #retired = new Map<number, ProxyStream>();
+  #highestStreamId = 0;
   #state: "await-auth" | "ready" | "closed" = "await-auth";
   #executionId?: string;
-  #opens = 0;
   #unsubscribeClose?: () => void;
   #revalidateTimer?: ReturnType<typeof setInterval>;
   #authTimer?: ReturnType<typeof setTimeout>;
@@ -115,6 +117,17 @@ class ProxyDataConnection {
     this.#socket = socket;
     this.#transport = options;
     this.#limits = limits;
+  }
+
+  snapshot(): { active: number; retired: number; bufferedBytes: number } {
+    return {
+      active: this.#streams.size,
+      retired: this.#retired.size,
+      bufferedBytes: [...this.#streams.values(), ...this.#retired.values()].reduce(
+        (n, stream) => n + stream.requestBody.byteLength,
+        0,
+      ),
+    };
   }
 
   start(): void {
@@ -181,7 +194,11 @@ class ProxyDataConnection {
     });
     this.#revalidateTimer = setInterval(() => void this.#revalidateStreams(), this.#limits.revalidateIntervalMs);
     this.#revalidateTimer.unref?.();
-    this.#sendJson({ type: "ready", executionId: execution.executionId });
+    this.#sendJson({
+      type: "ready",
+      executionId: execution.executionId,
+      ...(this.#socket.protocol === PROVIDER_PROXY_HTTP_PROTOCOL ? { httpVersion: 2 as const } : {}),
+    });
   }
 
   #onControlFrame(decoded: unknown): void {
@@ -195,10 +212,11 @@ class ProxyDataConnection {
       this.#onOpen(frame);
       return;
     }
-    const stream = this.#streams.get(frame.streamId);
+    const stream = this.#streams.get(frame.streamId) ?? this.#retired.get(frame.streamId);
     if (!stream) {
-      // Stream ids are bounded by the lifetime opens cap and can never be reused, so an unknown id
-      // is always a violation; a known closed id is still validated below.
+      // Evicted terminal IDs have no authority or resources. Late frames are inert; never
+      // recreate state or credit. Future IDs remain invalid and all opens are monotonic.
+      if (frame.streamId <= this.#highestStreamId) return;
       this.#fail(4400, "proxy_stream_unknown");
       return;
     }
@@ -238,16 +256,11 @@ class ProxyDataConnection {
     path: string;
     headers: Record<string, string>;
   }): void {
-    if (this.#usedStreamIds.has(frame.streamId)) {
+    if (frame.streamId <= this.#highestStreamId) {
       this.#fail(4400, "proxy_stream_reused");
       return;
     }
-    if (this.#opens >= this.#limits.maxOpens || this.#activeStreamCount() >= this.#limits.maxStreams) {
-      this.#fail(4400, "proxy_stream_limit");
-      return;
-    }
-    this.#usedStreamIds.add(frame.streamId);
-    this.#opens += 1;
+    this.#highestStreamId = frame.streamId;
     const stream: ProxyStream = {
       id: frame.streamId,
       state: "opening",
@@ -258,6 +271,11 @@ class ProxyDataConnection {
       requestEnded: false,
       responseStarted: false,
     };
+    if (this.#activeStreamCount() >= this.#limits.maxStreams) {
+      this.#sendJson({ type: "error", streamId: stream.id, code: "resource_limit" });
+      this.#closeStream(stream);
+      return;
+    }
     this.#streams.set(stream.id, stream);
     void this.#runStream(stream, frame).catch(() => undefined);
   }
@@ -308,8 +326,21 @@ class ProxyDataConnection {
       };
       const response = await adapter.handle(request, authorization);
       if (this.#streamClosed(stream)) return;
+      const head = {
+        type: "response" as const,
+        streamId: stream.id,
+        status: response.status,
+        headers: response.headers,
+      };
+      if (
+        Buffer.byteLength(JSON.stringify(head)) > this.#limits.headerMaxBytes ||
+        !RuntimeProviderProxyResponseFrameSchema.safeParse(head).success
+      ) {
+        await response.body[Symbol.asyncIterator]().return?.();
+        throw Object.assign(new Error("proxy_frame_too_large"), { code: "proxy_frame_too_large" });
+      }
       stream.responseStarted = true;
-      this.#sendJson({ type: "response", streamId: stream.id, status: response.status, headers: response.headers });
+      this.#sendJson(head);
       await this.#pipeResponseBody(stream, response.body);
       if (!this.#streamClosed(stream)) {
         this.#sendJson({ type: "end", streamId: stream.id });
@@ -332,13 +363,10 @@ class ProxyDataConnection {
 
   #logStreamFailure(provider: RuntimeCredentialProvider, code: string): void {
     // Operational diagnosis only: no paths, headers, capabilities, bodies, identities, or raw errors.
-    const safe = [
-      "scope_denied",
-      "invalid_request",
-      "unavailable",
-      "credential_scope_denied",
-      "provider_unavailable",
-    ].includes(code);
+    const safe =
+      ["scope_denied", "invalid_request", "unavailable", "credential_scope_denied", "provider_unavailable"].includes(
+        code,
+      ) || Object.hasOwn(GITHUB_PROXY_FAILURE_STATUSES, code);
     this.#transport.logger?.warn(
       { provider, code: safe ? code : "upstream_unavailable" },
       "Provider proxy stream failed",
@@ -406,8 +434,9 @@ class ProxyDataConnection {
       this.#fail(4400, "proxy_frame_invalid");
       return;
     }
-    const stream = this.#streams.get(decoded.streamId);
+    const stream = this.#streams.get(decoded.streamId) ?? this.#retired.get(decoded.streamId);
     if (!stream) {
+      if (decoded.streamId <= this.#highestStreamId && decoded.payload.byteLength <= this.#limits.chunkMaxBytes) return;
       this.#fail(4400, "proxy_stream_unknown");
       return;
     }
@@ -472,8 +501,17 @@ class ProxyDataConnection {
     if (stream.state === "closed") return;
     stream.state = "closed";
     stream.abort.abort();
-    stream.requestBody.end();
+    stream.requestBody.discard();
     stream.downloadNotify?.();
+    stream.downloadNotify = undefined;
+    stream.authorization = undefined;
+    stream.targetRecheck = undefined;
+    this.#streams.delete(stream.id);
+    this.#retired.set(stream.id, stream);
+    if (this.#retired.size > PROVIDER_PROXY_MAX_RETIRED_STREAMS) {
+      const oldest = this.#retired.keys().next().value;
+      if (oldest !== undefined) this.#retired.delete(oldest);
+    }
   }
 
   #sendJson(frame: RuntimeProviderProxyServerFrame): void {
@@ -504,6 +542,7 @@ class ProxyDataConnection {
     if (this.#revalidateTimer) clearInterval(this.#revalidateTimer);
     this.#unsubscribeClose?.();
     for (const stream of this.#streams.values()) this.#abortStream(stream);
+    this.#retired.clear();
   }
 }
 

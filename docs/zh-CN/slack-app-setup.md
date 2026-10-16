@@ -1,9 +1,11 @@
-# OpenTag Slack 公开分发
+# Slack App 连接
 
 [English](../slack-app-setup.md)
 
+同步日期：2026-10-15。
+
 每个 Agent 最多绑定一组当前 Slack App/Team/Bot 安装，每个 App/Team 组合归一个 Agent 所有。
-可以通过 OAuth 使用公开分发的 **@OpenTag** App，也可以在同一个工作区为每个 Agent 创建独立 Slack App。
+Web 新连接在同一个工作区为每个 Agent 创建独立 Slack App。已有官方 **@OpenTag** 绑定保留 OAuth 恢复。
 两种方式复用现有 Agent installation、加密凭证和 default route。创建 Agent 不强制绑定消息应用；
 可以选择**稍后配置**，再从消息设置连接。
 
@@ -15,13 +17,15 @@ remove/uninstall，使旧 row 保留历史 Agent owner 并进入 disabled，再�
 
 ## 自动创建并连接独立 App
 
-在创建引导或消息设置选择**使用自己的 Slack App**。绑定在线本地 Computer、使用最新 Client 时，默认进入自动流程：
+创建引导和消息设置共用**连接 Slack**弹窗。本地在线 Computer 使用授权命令与验证码；Cloud Agent 直接进入手动配置。切换方式保留当前 ticket，不重复授权；离开手动表单时清除凭证。
+
+支持自动配置的 Local Computer：
 
 新建 App 和 Bot 直接使用 Agent 的 `name`，不使用单独的 `displayName`；保留现有 Slack 名称合法性与长度限制。
 不添加随机后缀，此入口不会重命名已有 App。
 
 1. 将页面生成的 `/slackauthticket …` 粘贴到目标工作区的 Slack，核对官方 CLI 管理权限并确认。Slack 可在另一台设备操作，无需本机浏览器回调。
-2. 将 Slack 返回的 challenge 验证码填回页面，点击**创建并连接**。
+2. 将 Slack 返回的 challenge 验证码填回页面，点击**连接**。
 3. Computer 按固定清单创建并安装 App，Server 复用现有加密存储保存 Bot Token、Signing Secret，自动配置事件和交互回调。最后给 Bot 发一条私信验证实际收发。
 
 首次使用会复用 Provider CLI 能力准备官方 Slack CLI。Web 沿用当前 Account 登录和 Agent 归属校验；不向 Computer
@@ -31,7 +35,7 @@ Computer 生成的 ticket：官方 CLI 授权范围覆盖工作区 App 管理，
 工作区要求审批时，官方 CLI 自动提交安装申请。OpenTag 只有在 Slack 确认申请已存在且待审批后，才显示等待审批，
 并提供 App/工作区标识和该工作区的应用管理入口。在其中选择“安装申请（Requests to install）”；Workspace Owner 和
 指定的 App Manager 可处理申请，仅有 Workspace Admin 角色不一定具备此权限。组织策略可能要求组织应用管理者审批。
-批准后**继续连接**，安装并绑定同一个 App。申请待审批或被拒绝时，不重复安装、取消申请或创建新 App。
+批准后**继续**，安装并绑定同一个 App。申请待审批或被拒绝时，不重复安装、取消申请或创建新 App。
 若 Slack 确认当前账号无需他人批准即可安装，则历史申请不阻断安装。
 
 审批流程使用现有可选能力 `runtime.slackAutoSetup` 的版本 2 协商。需部署配套 Server/Web 并更新 Client；
@@ -53,7 +57,7 @@ Computer 生成的 ticket：官方 CLI 授权范围覆盖工作区 App 管理，
 不增加确认请求。CLI 从当前打包模块旁解析凭证采集入口，支持 npm 和 portable 布局，不依赖包名自解析。
 入口缺失或不可用只会关闭 Slack 自动配置，不阻断 daemon 启动；其他未提供该入口的 Client 宿主在创建 App 前回退手动配置。
 不新增表或数据库字段。
-Cloud Agent、离线 Computer 和旧 Client 可使用**手动连接 App**，原有两项凭证绑定和更新能力保留；官方 OAuth 入口也保留。
+Cloud Agent 直接进入**手动配置**；离线 Computer 和旧 Client 也可使用手动配置。已有官方绑定保留 OAuth 恢复。
 
 ## 本地 Agent 审批
 
@@ -163,13 +167,17 @@ manifest、轮换 installation 凭证代际、要求重新安装或授权、重�
 面向另行注册的测试 Team/App 的无凭证本地 live 验收清单见
 [slack-live-acceptance.md](./slack-live-acceptance.md)。
 
+Web 每个状态只有一个主要操作。安装失败重试原 App，只有授权失败才提供重新授权。已确认待审批时显示**查看审批**和次要的**继续**；拒绝或创建结果不明时不提供新建重试。App/Team 标识和安全错误码放入**诊断**。
+
+回调保存后显示**待验证**，真实签名事件闭合身份后才标为 Slack 已连接。Agent 运行时未就绪时另显示**Agent 准备中…**。重开配置使用中性验证提示，不因丢失页面内存重新要求已完成的手动步骤。
+
 ## Agent 配置流程
 
-配置 Slack 前先绑定 Computer。创建引导和消息设置都提供**使用自建 Slack App**，不依赖官方 OAuth 是否配置。
+配置 Slack 前先绑定 Computer。创建引导和消息设置都提供**连接 Slack**，不依赖官方 OAuth 是否配置。
 
-### 自建 Slack App
+### 手动配置
 
-1. 选择**使用自建 Slack App**，再点击**在 Slack 创建 App**并选择目标工作区。链接一次预填完整 Manifest：
+1. 选择**连接 Slack → 手动配置**，再点击**创建 App**并选择目标工作区。链接一次预填完整 Manifest：
    十八项 bot scopes、七项 bot events、当前 Agent 的 Events Request URL、可写 Messages 页，以及现有本地审批
    Interactivity 回调。创建 App 并安装到该工作区。
    Bot 按 [Slack 命名规则](https://docs.slack.dev/reference/app-manifest/) 使用 Agent 名称：小写字母、数字、`.`、`_`、`-`，
@@ -178,16 +186,16 @@ manifest、轮换 installation 凭证代际、要求重新安装或授权、重�
    **OAuth & Permissions → Install to workspace** 完成安装。Slack 提示操作过快时稍后重试，避免重复创建。
 2. 从 **OAuth & Permissions** 复制 **Bot User OAuth Token**，从 **Basic Information → App Credentials** 复制
    **Signing Secret**，粘贴回 OpenTag。只填写这两个字段，不填写 App ID 或 Bot 消息策略。
-3. 点击一次**保存并前往 Slack 验证**。OpenTag 通过 `auth.test`、实际 `x-oauth-scopes` 和 `bots.info` 核验
+3. 点击一次**保存**。OpenTag 通过 `auth.test`、实际 `x-oauth-scopes` 和 `bots.info` 核验
    App、Team、Bot User、Bot，再按预期 binding/generation 原子写入现有加密 installation 和 default route。
    不新增配置方式字段、Bot 策略字段、表、列或迁移。
 4. 在 Slack 的 **Event Subscriptions** 中，若 Request URL 尚未验证，点击 **Retry**。显示 **Verified** 后点击
-   **Save Changes**，再回 OpenTag 点击**打开 Bot 私聊**并发送消息。已验证且保存的设置无需重复验证。URL challenge 只证明
+   **Save Changes**，再回 OpenTag 点击**打开私聊**并发送消息。已验证且保存的设置无需重复验证。URL challenge 只证明
    Signing Secret；匹配的签名真实事件闭合身份，runtime handoff 也完成后才显示就绪。保存凭证或打开 Slack 不代表就绪。
 
 完整 Manifest 只用于新 App。已有 App 按页面补充 URL/events，不覆盖其余设置；权限变化后重新安装。
 更新凭证只填写变化的字段，空白保留原值，至少修改一项。App 对话框直接提供**更新凭证**，只在需要时展开
-**需要更换 Signing Secret？**。保存后给 Bot 发私信；未改动、已保存的 Events URL 不必重复验证或 Save Changes，
+**更新 Signing Secret**。保存后给 Bot 发私信；未改动、已保存的 Events URL 不必重复验证或 Save Changes，
 没有回复时再打开连接排查。更新保持 App、Team、Bot User、Bot ID、绑定身份、
 历史和 Agent `receiveMode`；旧代际或不同身份会被拒绝。确定性失败保留输入供修正；保存结果不确定时先读取当前状态，
 不自动重复提交。关闭、成功或切换 Agent 都清除表单凭证。管理响应不返回已存凭证。
@@ -335,6 +343,8 @@ subagent 不会再安装为额外的 Slack Bot。
 托管环境要求 HTTPS。缺一项会在进程启动时失败关闭。callback origin 必须与 `OPENTAG_PUBLIC_URL` 一致。Client secret、
 signing secret、OAuth code 与 token 都不会出现在管理 API 响应或日志中。带签名的 OAuth state 只会出现在 start endpoint
 返回的短期 Slack 授权 URL 中，并会在 callback 的 Server 请求日志中被移除。
+
+Web 仅为已有官方绑定保留 OAuth 恢复，独立 App 不再提供替换为官方 App 的入口。原 start/callback API 兼容旧客户端，本次不移除其 create 合同。
 
 已认证的 start `POST /api/v1/agents/:agentId/im-binding/slack/oauth/start` 仍是选择 default Agent route 的管理入口。它会签发
 带签名的 state，其中包含一次性 nonce，并绑定浏览器 session cookie、Account、Agent、意图（`create` / `reauthorize`）以及

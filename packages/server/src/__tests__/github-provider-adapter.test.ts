@@ -1,1575 +1,377 @@
-import { randomUUID } from "node:crypto";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
-import type { ProviderProxyRequest, ProviderProxyResponse } from "../runtime-credentials/provider-proxy-adapter.js";
-import type { GitHubUserTokenClient } from "../services/github/user-token-client.js";
-import { githubReadRepresentation, planGitHubRest } from "../services/github-proxy/api-policy.js";
-import { GitHubProxyApiTransport, jsonBody } from "../services/github-proxy/api-transport.js";
-import {
-  assertPullRequestRefs,
-  type GitHubExecutionRepository,
-  publicationScopes,
-} from "../services/github-proxy/execution-policy.js";
-import { GitPublicationGuard } from "../services/github-proxy/git-publication.js";
-import { GitReadTransport } from "../services/github-proxy/git-read-transport.js";
-import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
+import { gzipSync } from "node:zlib";
+import { githubProxyHeaders } from "@opentag/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GitHubProviderAdapter } from "../services/github-proxy/github-provider-adapter.js";
-import { GitHubUserTokenLeases } from "../services/github-proxy/user-token-leases.js";
-import type { VerifiedTreeHead } from "../services/github-proxy/verified-tree-head.js";
-import type { GitHubAgentScope } from "./support/legacy-github-fixtures.js";
+import { githubRequestTarget } from "../services/github-proxy/http-target.js";
+import { GitHubHttpTransport } from "../services/github-proxy/http-transport.js";
+import { body, bytes, githubProxyFixture, proxyAuthorization, proxyRequest } from "./support/github-proxy-fixture.js";
 
-let root: string, sessionId: string, executionId: string, bindingId: string;
-let workspace: GitWorkspace, adapter: GitHubProviderAdapter, repository: GitHubExecutionRepository;
-let extra: GitHubProviderAdapter[];
-let authorization: RuntimeProxyAuthorization;
-let upstream: ReturnType<typeof vi.fn<typeof fetch>>;
-let mint: ReturnType<typeof vi.fn<GitHubUserTokenClient["mint"]>>,
-  revoke: ReturnType<typeof vi.fn<GitHubUserTokenClient["revoke"]>>;
-const iat = "ghu_test_user_token";
-const metadata = { id: 123, node_id: "R_test", full_name: "owner/repository", default_branch: "main" };
-let writeBehavior: "ok" | "lost" | "secret" | "empty" | "malformed" | "reject422" | "status503" | "status408";
-let writeCount: number;
-const requests: { method: string; path: string; url: string; headers: Headers; body: unknown }[] = [];
-
-beforeEach(async () => {
-  root = await mkdtemp(join(await realpath(tmpdir()), "opentag-provider-adapter-"));
-  sessionId = randomUUID();
-  executionId = randomUUID();
-  bindingId = randomUUID();
-  workspace = new GitWorkspace();
-  extra = [];
-  repository = {
-    installationId: "456",
-    repositoryId: "123",
-    fullName: "owner/repository",
-    scopes: [{ role: "code", access: "write", publish: "pull_request" }],
-    protectedTreeRefs: ["refs/heads/master"],
-  };
-  writeBehavior = "ok";
-  writeCount = 0;
-  requests.length = 0;
-  authorization = {
-    executionId,
-    sessionId,
-    bindingId,
-    provider: "github",
-    purpose: "execution",
-    scopeHash: "a".repeat(64),
-    authorizationRevision: "github:1",
-    credentialGeneration: "2",
-    accountId: randomUUID(),
-    agentId: randomUUID(),
-    cli: { provider: "github" as const, connectionId: bindingId, authority: "user-task" },
-    resolveMaterial: async () => {
-      throw new Error("No user material may reach execution");
-    },
-    recheck: vi.fn(async () => undefined),
-  };
-  mint = vi.fn(async () => ({ token: iat, expiresAt: new Date(Date.now() + 3_600_000) }));
-  revoke = vi.fn(async () => undefined);
-  upstream = vi.fn(async (url, init) => {
-    const path = new URL(String(url)).pathname;
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    requests.push({ body, headers: new Headers(init?.headers), method: init?.method ?? "GET", path, url: String(url) });
-    if (path === "/repositories/123" || path === "/repos/owner/repository") return Response.json(metadata);
-    if (path === "/repos/owner/repository/pulls/1")
-      return Response.json({
-        number: 1,
-        node_id: "PR_one",
-        head: { ref: `opentag/${sessionId}/code/topic`, repo: { id: 123 } },
-        base: { ref: "main", repo: { id: 123 } },
-      });
-    if (init?.method !== "GET") return fixtureWrite(path, body);
-    return Response.json([]);
-  });
-  adapter = new GitHubProviderAdapter({
-    policy: { resolve: async () => [repository] },
-    leases: new GitHubUserTokenLeases({ mint, revoke }),
-    reads: new GitReadTransport({ workspace }),
-    publication: new GitPublicationGuard({ workspace }),
-    api: new GitHubProxyApiTransport(upstream),
-  });
-});
+const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
-  await Promise.all(extra.map((instance) => instance.close()));
-  await adapter.close();
-  await workspace?.close();
-  await rm(root, { recursive: true, force: true });
+  for (const close of cleanup.splice(0)) await close();
 });
-function request(
-  path: string,
-  method = "GET",
-  body?: unknown,
-  origin: string | null = "api.github.com",
-): ProviderProxyRequest {
-  return {
-    executionId,
-    sessionId,
-    bindingId,
-    provider: "github",
-    method,
-    path,
-    headers: origin === null ? {} : { "x-opentag-provider-origin": origin },
-    body: jsonBody(body),
-    capability: "trusted-runner-capability",
-    capabilityTtlSeconds: 60,
-    signal: new AbortController().signal,
-  };
-}
-/** A second adapter over the same mint/revoke stubs, for scope, transport, and Tree-head variants. */
-function adapterFor(
-  input: {
-    scopes?: GitHubAgentScope[];
-    reads?: { handle: (request: unknown) => Promise<ProviderProxyResponse> };
-    treeHeads?: Pick<VerifiedTreeHead, "verify">;
-    withApi?: boolean;
-  } = {},
-) {
-  const target: GitHubExecutionRepository = input.scopes ? { ...repository, scopes: input.scopes } : repository;
-  const built = new GitHubProviderAdapter({
-    policy: { resolve: async () => [target] },
-    leases: new GitHubUserTokenLeases({ mint, revoke }),
-    reads: (input.reads ?? new GitReadTransport({ workspace })) as GitReadTransport,
-    publication: new GitPublicationGuard({ workspace }),
-    ...(input.withApi === false ? {} : { api: new GitHubProxyApiTransport(upstream) }),
-    ...(input.treeHeads ? { treeHeads: input.treeHeads as VerifiedTreeHead } : {}),
-  });
-  extra.push(built);
-  return built;
-}
-// `authorization` is only assigned in `beforeEach`, so these scope builders must read `agentId`
-// lazily — the `it.each` argument tables are evaluated at registration time.
-const agentId = () => authorization?.agentId ?? "agent";
-const codeScope = (): GitHubAgentScope => ({
-  agentId: agentId(),
-  role: "code",
-  access: "write",
-  publish: "pull_request",
-});
-const treeScope = (overrides: Partial<GitHubAgentScope> = {}): GitHubAgentScope => ({
-  agentId: agentId(),
-  role: "context_tree",
-  access: "write",
-  publish: "pull_request",
-  branch: "refs/heads/main",
-  ...overrides,
-});
-async function responseJson(response: ProviderProxyResponse) {
-  const parts: Uint8Array[] = [];
-  for await (const part of response.body) parts.push(part);
-  return JSON.parse(Buffer.concat(parts).toString());
-}
-function pullBody() {
-  return { title: "Work", head: `opentag/${sessionId}/code/topic`, base: "main" };
+async function fixture(...args: Parameters<typeof githubProxyFixture>) {
+  const f = await githubProxyFixture(...args);
+  cleanup.push(f.close);
+  return f;
 }
 
-describe("production GitHub provider adapter", () => {
-  it("uses exactly one repository scoped user token before returning native REST output", async () => {
-    expect(await responseJson(await adapter.handle(request("/repos/owner/repository"), authorization))).toEqual(
-      metadata,
-    );
-    expect(mint).toHaveBeenCalledWith(
-      expect.objectContaining({
-        installationId: "456",
-        repositoryId: "123",
-        permissions: { contents: "read", pull_requests: "read" },
-      }),
-    );
-    expect(requests.every((item) => item.headers.get("authorization") === `Bearer ${iat}`)).toBe(true);
-    expect(requests.some((item) => item.headers.has("x-opentag-provider-origin"))).toBe(false);
-    expect(revoke).toHaveBeenCalledWith(iat);
-  });
-  it("denies another repository, encoded bypasses, and Git object writes before minting", async () => {
-    for (const path of [
-      "/repos/else/repository",
-      "/repos/owner/repository/%2e%2e/tokens",
-      "/repos/owner/repository/git/refs",
-    ]) {
-      await expect(
-        adapter.handle(request(path, path.endsWith("refs") ? "POST" : "GET", {}), authorization),
-      ).rejects.toThrow();
-    }
-    expect(mint).not.toHaveBeenCalled();
-  });
-  it("denies a foreign Session branch and a knowledge branch PR base", async () => {
-    for (const body of [
-      { ...pullBody(), head: `opentag/${randomUUID()}/code/topic` },
-      { ...pullBody(), base: "master" },
-    ])
-      await expect(
-        adapter.handle(request("/repos/owner/repository/pulls", "POST", body), authorization),
-      ).rejects.toThrow(/scope_denied/);
-    expect(writeCount).toBe(0);
-  });
-  it("makes one upstream write attempt and completes a native PR response", async () => {
-    const result = await adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization);
-    expect(await responseJson(result)).toMatchObject({ number: 1 });
-    expect(writeCount).toBe(1);
-  });
-  it("never replays a lost write; a caller retry is a fresh single attempt", async () => {
-    writeBehavior = "lost";
-    await expect(
-      adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-    expect(writeCount).toBe(1);
-    // The gateway itself does not retry or block: a new caller request goes upstream exactly once.
-    writeBehavior = "ok";
-    const result = await adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization);
-    expect(await responseJson(result)).toMatchObject({ number: 1 });
-    expect(writeCount).toBe(2);
-  });
-  it.each([
-    ["a 503", 503],
-    ["a 408", 408],
-  ])("surfaces %s write response as write_outcome_unknown after one attempt", async (_label, status) => {
-    writeBehavior = status === 503 ? "status503" : "status408";
-    await expect(
-      adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-    expect(writeCount).toBe(1);
-  });
-  it.each([
-    ["an empty 2xx body without mutation evidence", "empty"],
-    ["a malformed 2xx body", "malformed"],
-  ] as const)("surfaces %s as write_outcome_unknown", async (_label, behavior) => {
-    writeBehavior = behavior;
-    await expect(
-      adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-    expect(writeCount).toBe(1);
-  });
-  it("keeps a definite provider rejection visible as its own response", async () => {
-    writeBehavior = "reject422";
-    const result = await adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization);
-    expect(result.status).toBe(422);
-    expect(writeCount).toBe(1);
-  });
-  it.each(["ok", "reject422"] as const)(
-    "rechecks the fence after a %s write response without replay",
-    async (behavior) => {
-      writeBehavior = behavior;
-      authorization.recheck = async () => {
-        if (writeCount > 0) throw new Error("authorization revoked after the upstream attempt");
-      };
-      await expect(
-        adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-      ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-      expect(writeCount).toBe(1);
+describe("native connected-user GitHub adapter", () => {
+  it.each(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])(
+    "forwards %s without API, field, Session or repository planning",
+    async (method) => {
+      const received: string[] = [];
+      const f = await fixture(async (req, res) => {
+        received.push((await bytes(req)).toString());
+        res.writeHead(204);
+        res.end();
+      });
+      const response = await f.send({
+        method,
+        path: "/repos/team/new/issues/123/comments",
+        body: body(method === "HEAD" ? "" : '{"body":"https://example.com/?token=public"}'),
+      });
+      expect(response.status).toBe(204);
+      expect(await bytes(response.body)).toHaveLength(0);
+      expect(f.requests).toEqual([
+        {
+          host: "api.github.com",
+          path: "/repos/team/new/issues/123/comments",
+          authorization: "Bearer ghu_fixture_owner",
+        },
+      ]);
+      expect(f.management.getExecutionUserCredential).toHaveBeenCalledTimes(1);
+      expect(received).toHaveLength(1);
     },
   );
-  it("passes through ordinary response text that merely resembles an https URL", async () => {
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      const path = new URL(String(url)).pathname;
-      if (path === "/repositories/123") return (original as typeof fetch)(url, init);
-      return Response.json({
-        body: "https://",
-        note: "https://exa mple.com/not-a-url",
-        nested: [{ text: "https://" }],
-      });
+  it("keeps cold multi-target GraphQL aliases, fragments, partial data/errors and real introspection", async () => {
+    const payload = { data: { token: { id: "new" }, other: null }, errors: [{ message: "Native permission error" }] };
+    const seen: string[] = [];
+    const f = await fixture(async (req, res) => {
+      seen.push((await bytes(req)).toString());
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(payload));
     });
-    const response = await adapter.handle(request("/repos/owner/repository"), authorization);
-    expect(await responseJson(response)).toMatchObject({ body: "https://", note: "https://exa mple.com/not-a-url" });
+    const query =
+      '{ token: node(id:"cold") { id } other: repository(owner:"other",name:"repo"){name} __type(name:"NewType"){fields{name}} }';
+    const input = JSON.stringify({ query });
+    expect(
+      JSON.parse(
+        (await bytes((await f.send({ method: "POST", path: "/graphql", body: body(input) })).body)).toString(),
+      ),
+    ).toEqual(payload);
+    expect(seen).toEqual([input]);
   });
-  it("does not return a token-bearing URL from a provider response", async () => {
-    writeBehavior = "secret";
-    await expect(
-      adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-    expect(writeCount).toBe(1);
-  });
-  it("keeps the scoped user token alive through GraphQL mutation completion, with ID established by a scoped read", async () => {
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    revoke.mockClear();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/graphql")) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        expect(revoke).not.toHaveBeenCalled();
-      }
-      return (original as typeof fetch)(...args);
-    });
-    const body = {
-      query:
-        "mutation($input:CreatePullRequestInput!){createPullRequest(input:$input){pullRequest{id number headRefName baseRefName}}}",
-      variables: {
-        input: { repositoryId: "R_test", title: "Work", headRefName: pullBody().head, baseRefName: "main" },
-      },
-    };
-    expect(await responseJson(await adapter.handle(request("/graphql", "POST", body), authorization))).toHaveProperty(
-      "data.createPullRequest.pullRequest.number",
-      1,
-    );
-    expect(revoke).toHaveBeenCalledTimes(1);
-  });
-  it("completes an aliased GraphQL mutation with one attempt", async () => {
-    // A prior scoped read establishes the repository node identity the mutation policy requires.
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/graphql")) {
-        writeCount++;
-        return Response.json({
-          data: {
-            reviewAlias: {
-              pullRequest: { id: "PR_one", number: 1, headRefName: pullBody().head, baseRefName: "main" },
-            },
-          },
+  it.each([202, 204, 206, 304, 401, 403, 404, 422, 429, 500, 503])(
+    "preserves HTTP %i including native diagnostics",
+    async (status) => {
+      const f = await fixture((_req, res) => {
+        res.writeHead(status, {
+          "content-type": "application/json",
+          "x-github-request-id": "fixture-id",
+          "retry-after": "17",
         });
-      }
-      return (original as typeof fetch)(...args);
-    });
-    const body = {
-      query:
-        "mutation($input:CreatePullRequestInput!){reviewAlias:createPullRequest(input:$input){pullRequest{id number headRefName baseRefName}}}",
-      variables: {
-        input: { repositoryId: "R_test", title: "Work", headRefName: pullBody().head, baseRefName: "main" },
-      },
-    };
-    expect(await responseJson(await adapter.handle(request("/graphql", "POST", body), authorization))).toHaveProperty(
-      "data.reviewAlias.pullRequest.number",
-      1,
-    );
-    expect(writeCount).toBe(1);
-  });
-  it.each([
-    ["empty data", { data: {} }],
-    ["null mutation data", { data: { createPullRequest: null } }],
-    ["partial errors", { data: { createPullRequest: { pullRequest: null } }, errors: [{ message: "partial" }] }],
-  ])("surfaces a GraphQL 2xx with %s as write_outcome_unknown, never success or rejection", async (_label, payload) => {
-    // A prior scoped read establishes the repository node identity the mutation policy requires.
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/graphql")) {
-        writeCount++;
-        return Response.json(payload);
-      }
-      return (original as typeof fetch)(...args);
-    });
-    const body = {
-      query:
-        "mutation($input:CreatePullRequestInput!){createPullRequest(input:$input){pullRequest{id number headRefName baseRefName}}}",
-      variables: {
-        input: { repositoryId: "R_test", title: "Work", headRefName: pullBody().head, baseRefName: "main" },
-      },
-    };
-    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "write_outcome_unknown",
-    });
-    expect(writeCount).toBe(1);
-  });
-  it("rejects actor-scope GraphQL escapes before minting and cannot establish foreign PR nodes", async () => {
-    const hostile = {
-      query:
-        'query { repository(owner:"owner",name:"repository") { owner { ... on User { pullRequests(first:1){nodes{id number title}} } } } }',
-    };
-    mint.mockClear();
-    upstream.mockClear();
-    await expect(adapter.handle(request("/graphql", "POST", hostile), authorization)).rejects.toThrow(/policy/);
-    expect(mint).not.toHaveBeenCalled();
-    expect(upstream).not.toHaveBeenCalled();
-    // The rejected read cannot authorize a later mutation against a node it would have discovered.
-    const mutation = {
-      query: 'mutation($id:ID!){updatePullRequest(input:{pullRequestId:$id,title:"x"}){pullRequest{id}}}',
-      variables: { id: "PR_foreign" },
-    };
-    await expect(adapter.handle(request("/graphql", "POST", mutation), authorization)).rejects.toThrow(/policy/);
-    expect(mint).not.toHaveBeenCalled();
-    expect(writeCount).toBe(0);
-  });
-
-  it("rejects stale authorization after asynchronous scoped user token mint before sending anything upstream", async () => {
-    authorization.recheck = async () => {
-      throw new Error("revoked");
-    };
-    await expect(adapter.handle(request("/repos/owner/repository"), authorization)).rejects.toThrow("revoked");
-    expect(upstream).not.toHaveBeenCalled();
-    expect(revoke).toHaveBeenCalledWith(iat);
-  });
-  it("pins Tree PR head and base while excluding the Tree from a code write grant", () => {
-    repository.scopes.push({
-      role: "context_tree",
-      access: "write",
-      publish: "pull_request",
-      branch: "refs/heads/master",
-    });
-    expect(publicationScopes(repository, sessionId)).toEqual([
-      { role: "code", refPrefix: `refs/heads/opentag/${sessionId}/code/` },
-      { role: "context_tree", refPrefix: `refs/heads/opentag/${sessionId}/context_tree/` },
-    ]);
-    expect(() =>
-      assertPullRequestRefs({
-        repository,
-        sessionId,
-        head: `opentag/${sessionId}/context_tree/topic`,
-        base: "master",
-        defaultBranch: "main",
-      }),
-    ).not.toThrow();
-    expect(() =>
-      assertPullRequestRefs({
-        repository,
-        sessionId,
-        head: `opentag/${sessionId}/code/topic`,
-        base: "master",
-        defaultBranch: "main",
-      }),
-    ).toThrow();
-  });
-  it("plans raw multi-segment branch and commit refs while encoded separators stay denied", async () => {
-    for (const path of [
-      "/repos/owner/repository/branches/feature/topic",
-      "/repos/owner/repository/commits/feature/topic",
-      "/repos/owner/repository/commits/feature/topic/status",
-      "/repos/owner/repository/commits/feature/topic/statuses",
-    ])
-      expect(planGitHubRest("GET", new URL(`https://api.github.com${path}`))).toMatchObject({
-        operation: "read",
-        codeOnly: true,
+        res.end(JSON.stringify({ message: "native error", errors: [{ field: "base" }] }));
       });
-    expect(
-      planGitHubRest("GET", new URL("https://api.github.com/repos/owner/repository/commits/feature/topic/check-runs")),
-    ).toMatchObject({ operation: "read", extraPermission: "checks" });
-    // Empty ref segments and encoded or dot-segment escapes never reach the planner.
-    expect(() => planGitHubRest("GET", new URL("https://api.github.com/repos/owner/repository/branches/"))).toThrow();
-    mint.mockClear();
-    for (const path of [
-      "/repos/owner/repository/branches/feature%2Ftopic",
-      "/repos/owner/repository/branches/..%2f..",
-      "/repos/owner/repository/commits/../main",
-    ])
-      await expect(adapter.handle(request(path), authorization)).rejects.toThrow();
-    expect(mint).not.toHaveBeenCalled();
-  });
-
-  it("registers bounded CI reads and rejects authentication or administrative operations", () => {
-    expect(
-      planGitHubRest("GET", new URL("https://api.github.com/repos/owner/repository/actions/runs?per_page=100")),
-    ).toMatchObject({ extraPermission: "actions" });
-    for (const path of [
-      "/user",
-      "/installation/token",
-      "/repos/owner/repository/actions/secrets",
-      "/repos/owner/repository/pulls?per_page=101",
-    ])
-      expect(() => planGitHubRest("GET", new URL(`https://api.github.com${path}`))).toThrow();
-  });
-});
-
-it("revokes an scoped user token that finishes minting after its execution was closed", async () => {
-  let resolveMint: ((value: { token: string; expiresAt: Date }) => void) | undefined;
-  const pending = new Promise<{ token: string; expiresAt: Date }>((resolve) => {
-    resolveMint = resolve;
-  });
-  const leases = new GitHubUserTokenLeases({ mint: async () => pending, revoke });
-  const result = leases.acquire(executionId, {
-    accountId: authorization.accountId,
-    connectionId: bindingId,
-    authorizationRevision: "github:1",
-    fullName: "owner/repository",
-    installationId: "456",
-    repositoryId: "123",
-    permissions: { contents: "read" },
-  });
-  await leases.revokeExecution(executionId);
-  resolveMint?.({ token: iat, expiresAt: new Date(Date.now() + 3600000) });
-  await expect(result).rejects.toThrow(/scope_denied/);
-  expect(revoke).toHaveBeenCalledWith(iat);
-});
-
-describe("production GitHub provider adapter execution lifecycle", () => {
-  it("forgets the node index and revokes the execution's leases on closeExecution", async () => {
-    // A scoped read establishes the repository node so the index is non-empty when it is forgotten.
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    await adapter.closeExecution(executionId);
-    expect(revoke).toHaveBeenCalledWith(iat);
-    // The forgotten node can no longer authorize a mutation against it.
-    const mutation = {
-      query: 'mutation($id:ID!){updatePullRequest(input:{pullRequestId:$id,title:"x"}){pullRequest{id}}}',
-      variables: { id: "R_test" },
-    };
-    await expect(adapter.handle(request("/graphql", "POST", mutation), authorization)).rejects.toThrow(/policy/);
-  });
-
-  it("falls back to the real HTTP transport when no api transport is injected", async () => {
-    // The default path constructs a GitHubProxyApiTransport over global fetch. A denylisted path is
-    // rejected before any request is attempted, so this asserts the construction path safely.
-    const real = adapterFor({ withApi: false });
-    await expect(real.handle(request("/repos/owner/repository/%2e%2e/tokens"), authorization)).rejects.toThrow();
-  });
-});
-
-describe("production GitHub provider adapter request admission", () => {
-  it.each([
-    ["a foreign provider", { provider: "slack" }, {}],
-    ["a foreign authorization provider", {}, { provider: "slack" }],
-    ["a mismatched execution id", {}, { executionId: "another-execution" }],
-    ["a mismatched binding id", {}, { bindingId: "another-binding" }],
-  ] as const)("denies %s before resolving the policy", async (_label, requestPatch, authPatch) => {
-    const policy = vi.fn(async (_authorization: RuntimeProxyAuthorization, _signal: AbortSignal) => [repository]);
-    const guarded = new GitHubProviderAdapter({
-      policy: { resolve: policy },
-      leases: new GitHubUserTokenLeases({ mint, revoke }),
-      reads: new GitReadTransport({ workspace }),
-      publication: new GitPublicationGuard({ workspace }),
-      api: new GitHubProxyApiTransport(upstream),
-    });
-    extra.push(guarded);
-    await expect(
-      guarded.handle({ ...request("/repos/owner/repository"), ...requestPatch }, { ...authorization, ...authPatch }),
-    ).rejects.toMatchObject({ code: "scope_denied" });
-    expect(policy).not.toHaveBeenCalled();
-    expect(mint).not.toHaveBeenCalled();
-  });
-
-  it.each(["validation", "unknown"] as const)("denies a %s purpose", async (purpose) => {
-    await expect(
-      adapter.handle(request("/repos/owner/repository"), {
-        ...authorization,
-        purpose: purpose as RuntimeProxyAuthorization["purpose"],
-      }),
-    ).rejects.toMatchObject({ code: "scope_denied" });
-    expect(mint).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["the git origin with a non-git path", "github.com", "/repos/owner/repository", "GET"],
-    ["a GitHub origin the policy does not know", "api.github.com.evil.test", "/repos/owner/repository", "GET"],
-    ["no provider origin at all", null, "/repos/owner/repository", "GET"],
-  ] as const)("denies %s", async (_label, origin, path, method) => {
-    const built = request(path, method, undefined, origin);
-    await expect(adapter.handle(built, authorization)).rejects.toMatchObject({ code: "invalid_request" });
-    expect(mint).not.toHaveBeenCalled();
-  });
-
-  it("routes the github.com origin into the native Git smart HTTP handler", async () => {
-    const reads = { handle: vi.fn(async () => ({ status: 200, headers: {}, body: jsonBody(null) })) };
-    const built = adapterFor({ reads, scopes: [codeScope()] });
-    const path = "/owner/repository.git/info/refs?service=git-upload-pack";
-    const response = await built.handle(request(path, "GET", undefined, "github.com"), authorization);
-    expect(response.status).toBe(200);
-    expect(reads.handle).toHaveBeenCalledWith(expect.objectContaining({ service: "git-upload-pack", advertise: true }));
-  });
-
-  it("rejects a path the request URL guard refuses before resolving the policy", async () => {
-    const policy = vi.fn(async (_authorization: RuntimeProxyAuthorization, _signal: AbortSignal) => [repository]);
-    const guarded = new GitHubProviderAdapter({
-      policy: { resolve: policy },
-      leases: new GitHubUserTokenLeases({ mint, revoke }),
-      reads: new GitReadTransport({ workspace }),
-      publication: new GitPublicationGuard({ workspace }),
-      api: new GitHubProxyApiTransport(upstream),
-    });
-    extra.push(guarded);
-    for (const path of ["repos/owner/repository", "//api.github.com/x", "/repos/owner/repository#fragment"])
-      await expect(guarded.handle(request(path), authorization)).rejects.toMatchObject({ code: "invalid_request" });
-    expect(policy).not.toHaveBeenCalled();
-  });
-});
-
-describe("production GitHub provider adapter REST scope gates", () => {
-  it("denies a code-only read to a Tree-only grant without minting", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    mint.mockClear();
-    await expect(built.handle(request("/repos/owner/repository/branches/main"), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-    expect(mint).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    "/commits/main/check-runs",
-    "/commits/main/check-suites",
-    "/actions/runs",
-    "/actions/workflows",
-    "/actions/workflows/ci.yml/runs",
-    "/commits/main/status",
-    "/commits/main/statuses",
-    "/statuses/main",
-  ])("denies code authority to a Tree-only REST read of %s without minting", async (suffix) => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    await expect(built.handle(request(`/repos/owner/repository${suffix}`), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-    expect(mint).not.toHaveBeenCalled();
-    expect(upstream).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["a read-only Tree scope", [treeScope({ access: "read" })]],
-    ["a direct-publish Tree scope", [treeScope({ access: "write", publish: "direct" })]],
-    ["a code scope with no write", [{ agentId: "agent", role: "code", access: "read" }]],
-  ] as const)("denies a write on %s without minting", async (_label, scopes) => {
-    const built = adapterFor({ scopes: [...scopes] as GitHubAgentScope[] });
-    mint.mockClear();
-    await expect(
-      built.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toMatchObject({ code: "scope_denied" });
-    expect(mint).not.toHaveBeenCalled();
-  });
-
-  it("requests the extra checks permission for a check-runs read", async () => {
-    await adapter.handle(request("/repos/owner/repository/commits/main/check-runs"), authorization);
-    expect(mint).toHaveBeenCalledWith(
-      expect.objectContaining({ permissions: { contents: "read", pull_requests: "read", checks: "read" } }),
-    );
-  });
-
-  it.each([
-    "runs?head_sha=abc123&exclude_pull_requests=true",
-    "workflows",
-    "workflows/42",
-    "workflows/ci.yml",
-    "workflows/ci.yaml/runs",
-    "runs/7/jobs",
-    "jobs/3",
-  ])("requests only read-only Actions authority for %s", async (suffix) => {
-    await adapter.handle(request(`/repos/owner/repository/actions/${suffix}`), authorization);
-    expect(mint).toHaveBeenCalledWith(
-      expect.objectContaining({ permissions: { contents: "read", pull_requests: "read", actions: "read" } }),
-    );
-  });
-
-  it.each([
-    "workflows/42/dispatches",
-    "workflows/42/enable",
-    "workflows/42/disable",
-    "runs/7/cancel",
-    "runs/7/rerun",
-    "secrets",
-    "permissions",
-  ])("denies Actions mutation/admin route %s before minting", async (suffix) => {
-    for (const method of ["GET", "POST", "PATCH", "DELETE"])
-      await expect(
-        adapter.handle(request(`/repos/owner/repository/actions/${suffix}`, method), authorization),
-      ).rejects.toThrow();
-    expect(mint).not.toHaveBeenCalled();
-    expect(upstream).not.toHaveBeenCalled();
-  });
-  it.each(["head_sha=a&head_sha=b", `head_sha=${"a".repeat(513)}`, "head_sha=a&unknown=x", "per_page=101"])(
-    "keeps Actions query bounds for %s",
-    async (query) => {
-      await expect(
-        adapter.handle(request(`/repos/owner/repository/actions/runs?${query}`), authorization),
-      ).rejects.toThrow();
-      expect(mint).not.toHaveBeenCalled();
-      expect(upstream).not.toHaveBeenCalled();
+      const r = await f.send();
+      expect(r.status).toBe(status);
+      expect(r.headers["x-github-request-id"]).toBe("fixture-id");
+      expect(r.headers["retry-after"]).toBe("17");
+      const value = await bytes(r.body);
+      if ([204, 304].includes(status)) expect(value.length).toBe(0);
+      else expect(JSON.parse(value.toString()).message).toBe("native error");
     },
   );
-
-  it.each(["/commits/main/status", "/commits/feature/topic/statuses", "/statuses/feature/topic"])(
-    "requests only read-only commit-status authority for %s",
-    async (suffix) => {
-      expect(planGitHubRest("GET", new URL(`https://api.github.com/repos/owner/repository${suffix}`))).toMatchObject({
-        codeOnly: true,
-        extraPermission: "statuses",
-      });
-      await adapter.handle(request(`/repos/owner/repository${suffix}`), authorization);
-      expect(mint).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          permissions: { contents: "read", pull_requests: "read", statuses: "read" },
-        }),
-      );
-      expect(revoke).toHaveBeenCalledExactlyOnceWith(iat);
+  it("preserves encoded query, compare paths and end-to-end headers; strips caller credentials", async () => {
+    const f = await fixture((req, res) => {
+      expect(req.headers["x-github-api-version"]).toBe("2022-11-28");
+      expect(req.headers.range).toBe("bytes=0-9");
+      expect(req.headers.cookie).toBeUndefined();
+      expect(req.headers["x-opentag-internal"]).toBeUndefined();
+      res.end("native");
+    });
+    const r = await f.send({
+      path: "/repos/team/code/compare/main...feature?ref=feature%2Fx&path=docs/a...md",
+      headers: {
+        "x-opentag-provider-origin": "api.github.com",
+        authorization: "foreign",
+        cookie: "foreign",
+        "x-opentag-internal": "secret",
+        "x-github-api-version": "2022-11-28",
+        range: "bytes=0-9",
+      },
+    });
+    expect((await bytes(r.body)).toString()).toBe("native");
+    expect(f.requests[0]?.path).toContain("feature%2Fx");
+  });
+  it("streams gzip byte-for-byte and raw bodies beyond the old JSON limit", async () => {
+    const raw = Buffer.alloc(6 * 1024 * 1024, 97),
+      compressed = gzipSync(raw);
+    const f = await fixture((req, res) => {
+      const value = req.url === "/raw" ? raw : compressed;
+      res.setHeader("content-length", value.length);
+      if (req.url !== "/raw") res.setHeader("content-encoding", "gzip");
+      res.end(value);
+    });
+    const gzip = await f.send();
+    expect(gzip.headers["content-encoding"]).toBe("gzip");
+    expect((await bytes(gzip.body)).equals(compressed)).toBe(true);
+    const response = await f.send({ path: "/raw" });
+    expect((await bytes(response.body)).equals(raw)).toBe(true);
+  });
+  it("replaces the account token per request without minting, caching, revoking or replaying", async () => {
+    const f = await fixture((_req, res) => {
+      res.writeHead(401);
+      res.end("rotated");
+    });
+    await bytes((await f.send({ method: "POST", path: "/graphql", body: body("{}") })).body);
+    f.rotate("ghu_next");
+    await bytes((await f.send()).body);
+    expect(f.requests.map((r) => r.authorization)).toEqual(["Bearer ghu_fixture_owner", "Bearer ghu_next"]);
+    expect(f.management.getExecutionUserCredential).toHaveBeenCalledTimes(2);
+  });
+  it.each(["executionId", "sessionId", "bindingId", "provider", "purpose"])(
+    "rejects mismatched %s before upstream",
+    async (field) => {
+      const f = await fixture((_req, res) => res.end());
+      await expect(
+        f.adapter.handle(proxyRequest(f.authorization), { ...f.authorization, [field]: "foreign" }),
+      ).rejects.toMatchObject({ code: "scope_denied" });
+      expect(f.requests).toHaveLength(0);
+      expect(f.management.getExecutionUserCredential).not.toHaveBeenCalled();
     },
   );
-
-  it.each(["POST", "PATCH", "DELETE"])("never admits a commit-status %s mutation", async (method) => {
-    await expect(
-      adapter.handle(request("/repos/owner/repository/statuses/main", method, { state: "success" }), authorization),
-    ).rejects.toMatchObject({ code: "scope_denied" });
-    expect(mint).not.toHaveBeenCalled();
-    expect(upstream).not.toHaveBeenCalled();
+  it("rechecks authority after credential retrieval and never installs a repository polling hook", async () => {
+    const f = await fixture((_req, res) => res.end());
+    const setRevalidation = vi.fn();
+    await bytes((await f.send({ setRevalidation })).body);
+    expect(setRevalidation).not.toHaveBeenCalled();
+    f.authorization.recheck = async () => {
+      throw Error("cancelled");
+    };
+    await expect(f.send()).rejects.toThrow("cancelled");
+    expect(f.requests).toHaveLength(1);
+  });
+  it("fails explicitly when the current credential is unavailable", async () => {
+    const auth = proxyAuthorization();
+    const transport = { request: vi.fn() };
+    const adapter = new GitHubProviderAdapter({
+      management: { getExecutionUserCredential: async () => null },
+      transport,
+    });
+    await expect(adapter.handle(proxyRequest(auth), auth)).rejects.toMatchObject({
+      code: "github_credential_unavailable",
+    });
+    expect(transport.request).not.toHaveBeenCalled();
   });
 });
 
-describe("production GitHub provider adapter Tree-only REST reads", () => {
-  it("pins the pulls list to the configured knowledge branch", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    const response = await built.handle(request("/repos/owner/repository/pulls"), authorization);
-    expect(response.status).toBe(200);
-    // `url.pathname + url.search` is what actually reaches the fixed API origin.
-    expect(requests.at(-1)?.url).toBe("https://api.github.com/repos/owner/repository/pulls?base=main");
-  });
-
-  it("confirms a single pull request belongs to the knowledge branch", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repos/owner/repository/pulls/1")
-        return Response.json({ number: 1, base: { ref: "main", repo: { id: 123 } } });
-      return (original as typeof fetch)(url, init);
-    });
-    expect(await responseJson(await built.handle(request("/repos/owner/repository/pulls/1"), authorization))).toEqual({
-      number: 1,
-      base: { ref: "main", repo: { id: 123 } },
-    });
-  });
-
+describe("fixed transport boundary", () => {
   it.each([
-    ["a pull request on another base", { number: 1, base: { ref: "topic", repo: { id: 123 } } }],
-    ["an unavailable pull request", undefined],
-  ])("denies %s", async (_label, pull) => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repos/owner/repository/pulls/1")
-        return pull === undefined ? Response.json({ message: "Not Found" }, { status: 404 }) : Response.json(pull);
-      return (original as typeof fetch)(url, init);
-    });
-    await expect(built.handle(request("/repos/owner/repository/pulls/1"), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
+    "/app/installations/1/access_tokens",
+    "/applications/id/token",
+    "/installation/token",
+    "/login/oauth/access_token",
+    "/%61pp/installations",
+    "/repos/../app/installations",
+    "/%2561pp/installations",
+    "//evil.example/path",
+    "https://evil.example",
+    "/path\\escape",
+    "/path#fragment",
+  ])("rejects credentials/ambiguous targets %s", (path) => {
+    expect(() => githubRequestTarget("api.github.com", path, "POST")).toThrow();
   });
-
-  it("leaves a read outside the pull/issue families untouched by the Tree constraint", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      const path = new URL(String(url)).pathname;
-      if (path === "/repos/owner/repository") return Response.json({ ...metadata, private: true });
-      return (original as typeof fetch)(url, init);
-    });
-    expect(await responseJson(await built.handle(request("/repos/owner/repository"), authorization))).toMatchObject({
-      node_id: "R_test",
-    });
-  });
-
-  it("denies a Tree-only grant whose scope carries no branch", async () => {
-    const built = adapterFor({ scopes: [{ agentId: authorization.agentId, role: "context_tree", access: "read" }] });
-    await expect(built.handle(request("/repos/owner/repository/pulls"), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-  });
-
-  it("leaves an issue read outside the pull-request family alone for a Tree grant", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    const response = await built.handle(request("/repos/owner/repository/issues/1/comments"), authorization);
-    expect(response.status).toBe(200);
-    expect(requests.at(-1)?.url).toBe("https://api.github.com/repos/owner/repository/issues/1/comments");
-  });
-});
-
-describe("production GitHub provider adapter REST writes", () => {
-  it("updates a pull request through its checked identity in one attempt", async () => {
-    // The scoped read records PR 1's identity so the later PATCH is admissible.
-    await adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repos/owner/repository/pulls/1" && init?.method === "PATCH") {
-        writeCount++;
-        return Response.json({ number: 1, node_id: "PR_one", title: "Renamed" });
-      }
-      return (original as typeof fetch)(url, init);
-    });
-    const response = await adapter.handle(
-      request("/repos/owner/repository/pulls/1", "PATCH", { title: "Renamed" }),
-      authorization,
+  it("checks Git protocol paths without restricting refs or repository identities", () => {
+    expect(githubRequestTarget("github.com", "/team/anything.git/git-receive-pack", "POST").hostname).toBe(
+      "github.com",
     );
-    expect(response.status).toBe(200);
-    expect(await responseJson(response)).toMatchObject({ title: "Renamed" });
-    expect(writeCount).toBe(1);
+    expect(() => githubRequestTarget("github.com", "/login/oauth/access_token", "POST")).toThrow();
+    expect(() => githubRequestTarget("evil.example", "/user", "GET")).toThrow();
   });
-
-  it("validates the new base of an update against the same ref policy as the head", async () => {
-    await adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
-    await expect(
-      adapter.handle(request("/repos/owner/repository/pulls/1", "PATCH", { base: "master" }), authorization),
-    ).rejects.toMatchObject({ code: "scope_denied" });
-    expect(writeCount).toBe(0);
-  });
-
-  it("refuses an update whose repository check answer carries no pull request body", async () => {
-    // The provider check response is parsed before its status is judged, so a 404 body without the
-    // head/base pair is refused as an unreadable answer rather than read as a policy denial.
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repos/owner/repository/pulls/1")
-        return Response.json({ message: "Not Found" }, { status: 404 });
-      return (original as typeof fetch)(url, init);
-    });
-    await expect(
-      adapter.handle(request("/repos/owner/repository/pulls/1", "PATCH", { title: "Renamed" }), authorization),
-    ).rejects.toMatchObject({ code: "unavailable" });
-    expect(writeCount).toBe(0);
-  });
-
-  it("adds a comment only after confirming the issue belongs to the repository", async () => {
-    const response = await adapter.handle(
-      request("/repos/owner/repository/issues/1/comments", "POST", { body: "Looks good" }),
-      authorization,
-    );
-    expect(response.status).toBe(201);
-    expect(writeCount).toBe(1);
-  });
-
-  it.each([
-    [
-      "an issue in another repository",
-      { head: { ref: "topic", repo: { id: 999 } }, base: { ref: "main", repo: { id: 123 } } },
-      "scope_denied",
-    ],
-    ["an issue GitHub does not answer", undefined, "unavailable"],
-  ] as const)("denies a comment on %s", async (_label, pull, code) => {
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repos/owner/repository/pulls/1")
-        return pull === undefined ? Response.json({ message: "Not Found" }, { status: 404 }) : Response.json(pull);
-      return (original as typeof fetch)(url, init);
-    });
-    await expect(
-      adapter.handle(request("/repos/owner/repository/issues/1/comments", "POST", { body: "x" }), authorization),
-    ).rejects.toMatchObject({ code });
-    expect(writeCount).toBe(0);
-  });
-
-  it.each([
-    ["a create body missing the head ref", "POST", "/repos/owner/repository/pulls", { title: "Work" }],
-    ["a create body with an unknown key", "POST", "/repos/owner/repository/pulls", { ...pullBody(), extra: 1 }],
-    ["a comment body that is not an object", "POST", "/repos/owner/repository/issues/1/comments", "text"],
-  ] as const)("rejects %s with a schema failure before any upstream write", async (_label, method, path, body) => {
-    const error = await adapter.handle(request(path, method, body), authorization).catch((cause: unknown) => cause);
-    // A zod schema failure, not a policy error: the body never reached a route handler.
-    expect((error as Error).name).toBe("ZodError");
-    expect(writeCount).toBe(0);
-  });
-
-  it.each([
-    ["a non-JSON create body", "/repos/owner/repository/pulls"],
-    ["a non-JSON comment body", "/repos/owner/repository/issues/1/comments"],
-  ])("rejects %s as an invalid request before any upstream write", async (_label, path) => {
-    await expect(
-      adapter.handle({ ...request(path, "POST"), body: jsonBody(undefined) }, authorization),
-    ).rejects.toMatchObject({ code: "invalid_request" });
-    expect(writeCount).toBe(0);
-  });
-
-  it("rejects a body that is not a bounded object", async () => {
-    const built = adapterFor();
-    const unbounded = { ...request("/repos/owner/repository/pulls", "POST", {}), body: jsonBody("x".repeat(300_000)) };
-    await expect(built.handle(unbounded, authorization)).rejects.toMatchObject({ code: "invalid_request" });
-    expect(writeCount).toBe(0);
-  });
-});
-
-describe("production GitHub provider adapter Tree head verification", () => {
-  const treeHeadBody = () => ({
-    title: "Work",
-    head: `opentag/${sessionId}/context_tree/topic`,
-    base: "main",
-  });
-
-  it("verifies the published Tree head before a Tree-head pull request is created", async () => {
-    const verify = vi.fn(async () => "c".repeat(40));
-    const built = adapterFor({ scopes: [codeScope(), treeScope()], treeHeads: { verify } });
-    const response = await built.handle(
-      request("/repos/owner/repository/pulls", "POST", treeHeadBody()),
-      authorization,
-    );
-    expect(response.status).toBe(201);
-    expect(verify).toHaveBeenCalledWith(
-      expect.objectContaining({ repositoryId: "123", ref: `refs/heads/opentag/${sessionId}/context_tree/topic` }),
-    );
-    expect(writeCount).toBe(1);
-  });
-
-  it("denies a Tree-head write when no verifier is configured", async () => {
-    const built = adapterFor({ scopes: [codeScope(), treeScope()] });
-    await expect(
-      built.handle(request("/repos/owner/repository/pulls", "POST", treeHeadBody()), authorization),
-    ).rejects.toMatchObject({ code: "tree_invalid" });
-    expect(writeCount).toBe(0);
-  });
-
-  it("surfaces a verifier failure as the verifier's own error", async () => {
-    const verify = vi.fn(async () => {
-      throw new Error("tree verification failed");
-    });
-    const built = adapterFor({ scopes: [codeScope(), treeScope()], treeHeads: { verify } });
-    await expect(
-      built.handle(request("/repos/owner/repository/pulls", "POST", treeHeadBody()), authorization),
-    ).rejects.toThrow("tree verification failed");
-    expect(writeCount).toBe(0);
-  });
-
-  it("re-verifies the recorded Tree head after a successful write", async () => {
-    const verify = vi.fn(async () => "c".repeat(40));
-    const built = adapterFor({ scopes: [codeScope(), treeScope()], treeHeads: { verify } });
-    await built.handle(request("/repos/owner/repository/pulls", "POST", treeHeadBody()), authorization);
-    // Once before the attempt and once after the mutation landed.
-    expect(verify).toHaveBeenCalledTimes(2);
-    expect(writeCount).toBe(1);
-  });
-
-  it("fails closed with write_outcome_unknown when the post-write Tree head moved", async () => {
-    const verify = vi
-      .fn<VerifiedTreeHead["verify"]>()
-      .mockResolvedValueOnce("c".repeat(40))
-      .mockResolvedValueOnce("d".repeat(40));
-    const built = adapterFor({ scopes: [codeScope(), treeScope()], treeHeads: { verify } });
-    await expect(
-      built.handle(request("/repos/owner/repository/pulls", "POST", treeHeadBody()), authorization),
-    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-    expect(writeCount).toBe(1);
-  });
-
-  it("leaves a code-branch pull request untouched by Tree head verification", async () => {
-    const verify = vi.fn(async () => "c".repeat(40));
-    const built = adapterFor({ scopes: [codeScope(), treeScope()], treeHeads: { verify } });
+  it("removes connection-nominated and reserved headers without deleting ordinary API fields", () => {
     expect(
-      (await built.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization)).status,
-    ).toBe(201);
-    expect(verify).not.toHaveBeenCalled();
-    expect(writeCount).toBe(1);
+      githubProxyHeaders({
+        Connection: "X-Custom",
+        "x-custom": "value",
+        Authorization: "secret",
+        Cookie: "secret",
+        "Set-Cookie": "secret",
+        "x-opentag-provider-origin": "evil",
+        "x-github-api-version": "version",
+        "content-encoding": "gzip",
+      }),
+    ).toEqual({ "x-github-api-version": "version", "content-encoding": "gzip" });
   });
-});
-
-describe("production GitHub provider adapter GraphQL reads", () => {
-  it("answers a repository read and records the repository node identity", async () => {
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/graphql"))
-        return Response.json({ data: { repository: { id: "R_test", nameWithOwner: "owner/repository" } } });
-      return (original as typeof fetch)(...args);
-    });
-    const body = { query: 'query { repository(owner:"owner",name:"repository") { id nameWithOwner } }' };
-    expect(await responseJson(await adapter.handle(request("/graphql", "POST", body), authorization))).toEqual({
-      data: { repository: { id: "R_test", nameWithOwner: "owner/repository" } },
-    });
-  });
-
-  it("records nested pull request identities discovered by a scoped GraphQL read", async () => {
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/graphql")) {
-        if (String((args[1] as RequestInit).body).includes("mutation")) {
-          writeCount++;
-          return Response.json({ data: { updatePullRequest: { pullRequest: { id: "PR_one", number: 1 } } } });
-        }
-        return Response.json({
-          data: {
-            node: {
-              id: "R_test",
-              pullRequests: {
-                nodes: [{ id: "PR_one", number: 1, headRefName: "topic", baseRefName: "main" }],
-              },
-            },
-          },
-        });
+  it("follows trusted downloads internally without account credentials on any later hop", async () => {
+    const f = await fixture((req, res) => {
+      if (req.headers.host === "api.github.com") {
+        res.writeHead(302, { location: "https://productionresultssa13.blob.core.windows.net/file?sig=fixture" });
+        res.end();
+      } else {
+        expect(req.headers.authorization).toBeUndefined();
+        expect(req.headers.cookie).toBeUndefined();
+        res.end("artifact");
       }
-      return (original as typeof fetch)(...args);
     });
-    // The read must be scoped to a repository node the adapter already knows, so prime it first.
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    const body = {
-      query:
-        'query { node(id:"R_test") { ... on Repository { id pullRequests(first:1) { nodes { id number headRefName baseRefName } } } } }',
-    };
-    expect((await adapter.handle(request("/graphql", "POST", body), authorization)).status).toBe(200);
-    // The nested identity authorizes a GraphQL updatePullRequest mutation for that same node.
-    const mutation = {
-      query:
-        'mutation($id:ID!){updatePullRequest(input:{pullRequestId:$id,title:"x"}){pullRequest{id number headRefName baseRefName}}}',
-      variables: { id: "PR_one" },
-    };
-    expect((await adapter.handle(request("/graphql", "POST", mutation), authorization)).status).toBe(200);
-    expect(writeCount).toBe(1);
+    expect((await bytes((await f.send()).body)).toString()).toBe("artifact");
+    expect(f.requests).toHaveLength(2);
   });
-
-  it("validates the GraphQL body schema before resolving any node", async () => {
-    for (const body of [{}, { query: "" }, { query: "x", extra: 1 }])
-      await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toBeInstanceOf(Error);
-    expect(writeCount).toBe(0);
-  });
-});
-
-describe("production GitHub provider adapter GraphQL reads on a Tree grant", () => {
-  const treeReadBody = {
-    query: 'query { repository(owner:"owner",name:"repository") { id defaultBranchRef { name } } }',
-  };
-
-  it("constrains a Tree-scoped GraphQL read to the knowledge branch", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    await built.handle(request("/repos/owner/repository"), authorization);
-    const original = upstream.getMockImplementation();
-    const seen: unknown[] = [];
-    upstream.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/graphql")) {
-        seen.push(JSON.parse(String((args[1] as RequestInit).body)));
-        return Response.json({ data: { repository: { id: "R_test", ref: { name: "main" } } } });
-      }
-      return (original as typeof fetch)(...args);
-    });
-    expect((await built.handle(request("/graphql", "POST", treeReadBody), authorization)).status).toBe(200);
-    // `defaultBranchRef` is rewritten to an explicit `ref(qualifiedName: "refs/heads/main")`.
-    expect(JSON.stringify(seen[0])).toContain("refs/heads/main");
-  });
-
-  it("denies a Tree-scoped GraphQL read when the grant carries no knowledge branch", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read", branch: undefined })] });
-    await expect(built.handle(request("/graphql", "POST", treeReadBody), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-  });
-
-  it("denies a Tree-scoped GraphQL read that names an unknown node id", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    await built.handle(request("/repos/owner/repository"), authorization);
-    const body = { query: 'query { node(id:"PR_foreign") { ... on PullRequest { id number } } }' };
-    await expect(built.handle(request("/graphql", "POST", body), authorization)).rejects.toBeInstanceOf(Error);
-  });
-
-  it("denies a Tree-scoped GraphQL read that reaches a ref outside the knowledge branch", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    await built.handle(request("/repos/owner/repository"), authorization);
-    const body = {
-      query:
-        'query { repository(owner:"owner",name:"repository") { id ref(qualifiedName:"refs/heads/other") { name } } }',
-    };
-    await expect(built.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-  });
-
-  it("re-checks every node identity a Tree-scoped GraphQL read names", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    // A scoped REST read of PR 1 records both its node identity and its number.
-    await built.handle(request("/repos/owner/repository/pulls/1"), authorization);
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      const path = new URL(String(args[0])).pathname;
-      if (path === "/graphql") return Response.json({ data: { node: { id: "PR_one", number: 1 } } });
-      if (path === "/repos/owner/repository/pulls/1")
-        return Response.json({
-          number: 1,
-          node_id: "PR_one",
-          head: { ref: "topic", repo: { id: 123 } },
-          base: { ref: "main", repo: { id: 123 } },
-        });
-      return (original as typeof fetch)(...args);
-    });
-    const body = { query: 'query { node(id:"PR_one") { ... on PullRequest { id number } } }' };
-    expect((await built.handle(request("/graphql", "POST", body), authorization)).status).toBe(200);
-    // The recorded number is re-checked against the knowledge branch before the read is answered.
-    expect(
-      requests.filter((item) => item.url === "https://api.github.com/repos/owner/repository/pulls/1"),
-    ).toHaveLength(2);
-  });
-
-  it("denies a nested node identity the adapter never established", async () => {
-    // The target field is a repository the adapter already knows, so the GraphQL policy resolves;
-    // the nested `node` selection names an identity no scoped read ever recorded.
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    await built.handle(request("/repos/owner/repository"), authorization);
-    const body = {
-      query:
-        'query { repository(owner:"owner",name:"repository") { id node(id:"PR_foreign") { ... on PullRequest { id number } } } }',
-    };
-    await expect(built.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-  });
-
-  it("constrains a Tree read of the repository node, which carries no pull request number", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    // The scoped REST read records the repository node identity, and that identity has no number.
-    await built.handle(request("/repos/owner/repository"), authorization);
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      if (new URL(String(args[0])).pathname === "/graphql")
-        return Response.json({ data: { node: { id: "R_test", nameWithOwner: "owner/repository" } } });
-      return (original as typeof fetch)(...args);
-    });
-    const body = {
-      query: 'query { node(id:"R_test") { ... on Repository { id nameWithOwner } } }',
-    };
-    expect((await built.handle(request("/graphql", "POST", body), authorization)).status).toBe(200);
-  });
-
-  it("denies a Tree-scoped GraphQL read whose recorded pull request left the knowledge branch", async () => {
-    const built = adapterFor({ scopes: [treeScope({ access: "read" })] });
-    await built.handle(request("/repos/owner/repository/pulls/1"), authorization);
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      const path = new URL(String(args[0])).pathname;
-      if (path === "/graphql") return Response.json({ data: { node: { id: "PR_one", number: 1 } } });
-      if (path === "/repos/owner/repository/pulls/1")
-        return Response.json({
-          number: 1,
-          node_id: "PR_one",
-          head: { ref: "topic", repo: { id: 123 } },
-          base: { ref: "other", repo: { id: 123 } },
-        });
-      return (original as typeof fetch)(...args);
-    });
-    const body = { query: 'query { node(id:"PR_one") { ... on PullRequest { id number } } }' };
-    await expect(built.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-  });
-});
-
-describe("production GitHub provider adapter metadata binding", () => {
   it.each([
-    ["a mismatched repository id", { ...metadata, id: 999 }, "scope_denied"],
-    ["a mismatched full name", { ...metadata, full_name: "other/repository" }, "scope_denied"],
-    ["a missing full name", { ...metadata, full_name: undefined }, "scope_denied"],
-    ["a missing default branch", { ...metadata, default_branch: undefined }, "scope_denied"],
-    ["a non-object payload", [metadata], "unavailable"],
-  ] as const)("denies %s", async (_label, payload, code) => {
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repositories/123") return Response.json(payload);
-      return (original as typeof fetch)(url, init);
+    "http://api.github.com/file",
+    "https://127.0.0.1/file",
+    "https://evil.blob.core.windows.net/file",
+    "https://api.github.com:444/file",
+    "https://user:pass@api.github.com/file",
+  ])("rejects redirect %s without contacting it", async (location) => {
+    const f = await fixture((_req, res) => {
+      res.writeHead(302, { location });
+      res.end();
     });
-    await expect(built.handle(request("/repos/owner/repository"), authorization)).rejects.toMatchObject({ code });
+    await expect(f.send()).rejects.toThrow();
+    expect(f.requests).toHaveLength(1);
   });
-  it("compares the provider full name against the grant case-insensitively", async () => {
-    // The provider answers with a different casing than the grant; the binding still holds.
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repositories/123")
-        return Response.json({ ...metadata, full_name: "Owner/Repository" });
-      return (original as typeof fetch)(url, init);
+  it("does not replay redirected writes", async () => {
+    const f = await fixture((_req, res) => {
+      res.writeHead(307, { location: "https://api.github.com/repos/renamed/issues" });
+      res.end();
     });
-    await expect(built.handle(request("/repos/owner/repository"), authorization)).resolves.toMatchObject({
-      status: 200,
-    });
+    const r = await f.send({ method: "POST", path: "/repos/team/code/issues", body: body("{}") });
+    expect(r.status).toBe(307);
+    await bytes(r.body);
+    expect(f.requests).toHaveLength(1);
   });
-
-  it("serves a repository whose metadata carries no node id", async () => {
-    // `node_id` is optional in the binding check; without it no GraphQL node identity is recorded.
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repositories/123")
-        return Response.json({ id: 123, full_name: "owner/repository", default_branch: "main" });
-      return (original as typeof fetch)(url, init);
-    });
-    expect(await responseJson(await built.handle(request("/repos/owner/repository"), authorization))).toMatchObject({
-      id: 123,
-    });
-  });
-});
-
-describe("production GitHub provider adapter response sanitizing", () => {
-  it.each([
-    ["a token-bearing string", { note: `https://example.com/?token=${iat}` }],
-    ["a token-bearing nested value", { nested: [{ download_url: `https://x.invalid/${iat}` }] }],
-    ["a signed URL", { url: "https://example.com/file?X-Amz-Signature=x" }],
-    ["a URL-embedded password", { url: "https://user:pass@example.com/x" }],
-    ["a URL-embedded username", { url: "https://user@example.com/x" }],
-  ])("refuses a read response carrying %s", async (_label, payload) => {
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      const path = new URL(String(url)).pathname;
-      if (path === "/repositories/123") return (original as typeof fetch)(url, init);
-      return Response.json(payload);
-    });
-    const error = await built
-      .handle(request("/repos/owner/repository/commits/main"), authorization)
-      .then((response) => responseJson(response))
-      .catch((cause: unknown) => cause);
-    // The adapter refuses the response outright rather than forwarding scrubbed content, so no
-    // credential-shaped value can appear in the caller's stream.
-    expect(error).toMatchObject({ code: "unavailable" });
-    expect(String(error)).not.toContain(iat);
-  });
-
-  it.each([
-    ["an access token field", { access_token: iat, title: "Work" }],
-    ["a refresh token field", { refresh_token: iat }],
-    ["a client secret field", { client_secret: "client-secret-value" }],
-  ])("drops %s from a read response", async (_label, payload) => {
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      const path = new URL(String(url)).pathname;
-      if (path === "/repositories/123") return (original as typeof fetch)(url, init);
-      return Response.json(payload);
-    });
-    const json = JSON.stringify(
-      await responseJson(await built.handle(request("/repos/owner/repository/commits/main"), authorization)),
-    );
-    expect(json).not.toContain(iat);
-    expect(json).not.toContain("client-secret-value");
-  });
-
-  it.each([
-    ["an empty 2xx body", { status: 201, body: undefined }],
-    ["a 2xx array body", { status: 201, body: [1, 2] }],
-    ["a 2xx scalar body", { status: 201, body: 7 }],
-  ])("surfaces %s as write_outcome_unknown", async (_label, shape) => {
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (init?.method === "POST") {
-        writeCount++;
-        return Response.json(shape.body ?? null, { status: shape.status });
-      }
-      return (original as typeof fetch)(url, init);
-    });
+  it.for([["127.0.0.1"], ["140.82.112.3", "169.254.169.254"]])("pins only public DNS answers %j", async (addresses) => {
+    const connect = vi.fn();
+    const transport = new GitHubHttpTransport({ connect, resolveAddresses: async () => addresses });
     await expect(
-      built.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-    expect(writeCount).toBe(1);
+      transport.request({
+        url: new URL("https://api.github.com/user"),
+        method: "GET",
+        headers: {},
+        body: body(),
+        token: "secret",
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: "github_destination_blocked" });
+    expect(connect).not.toHaveBeenCalled();
   });
-
-  it.each([
-    ["a null data field", { data: null }],
-    ["an array data field", { data: [1] }],
-    ["a scalar data field", { data: "ok" }],
-  ])("surfaces a GraphQL 2xx with %s as write_outcome_unknown", async (_label, payload) => {
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/graphql")) {
-        writeCount++;
-        return Response.json(payload);
-      }
-      return (original as typeof fetch)(...args);
+  it("reports a truncated response without replaying the request", async () => {
+    const f = await fixture((_req, res) => {
+      res.writeHead(200, { "content-length": "100" });
+      res.write("partial");
+      setImmediate(() => res.destroy());
     });
-    const body = {
-      query:
-        "mutation($input:CreatePullRequestInput!){createPullRequest(input:$input){pullRequest{id number headRefName baseRefName}}}",
-      variables: {
-        input: { repositoryId: "R_test", title: "Work", headRefName: pullBody().head, baseRefName: "main" },
-      },
-    };
-    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "write_outcome_unknown",
-    });
-    expect(writeCount).toBe(1);
-  });
-
-  it("denies a GraphQL update whose recorded node identity carries no pull request number", async () => {
-    // The `repository-123` index entry is recorded by `#context` for the repository node itself. Its
-    // repositoryId matches a granted repository, so the policy resolves, but it carries no pull
-    // request number and can therefore never authorize an updatePullRequest mutation.
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repositories/123") return Response.json({ ...metadata, node_id: "123" });
-      return (original as typeof fetch)(url, init);
-    });
-    await built.handle(request("/repos/owner/repository"), authorization);
-    const body = {
-      query:
-        'mutation($id:ID!){updatePullRequest(input:{pullRequestId:$id,title:"x"}){pullRequest{id number headRefName baseRefName}}}',
-      variables: { id: "repository-123" },
-    };
-    const error = await built.handle(request("/graphql", "POST", body), authorization).catch((cause: unknown) => cause);
-    expect(error).toMatchObject({ code: "scope_denied" });
-    expect(writeCount).toBe(0);
-  });
-
-  it("denies a GraphQL addComment whose recorded subject carries no pull request number", async () => {
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (new URL(String(url)).pathname === "/repositories/123") return Response.json({ ...metadata, node_id: "123" });
-      return (original as typeof fetch)(url, init);
-    });
-    await built.handle(request("/repos/owner/repository"), authorization);
-    const body = {
-      query: 'mutation($id:ID!){addComment(input:{subjectId:$id,body:"x"}){commentEdge{node{id}}}}',
-      variables: { id: "repository-123" },
-    };
-    const error = await built.handle(request("/graphql", "POST", body), authorization).catch((cause: unknown) => cause);
-    expect(error).toMatchObject({ code: "scope_denied" });
-    expect(writeCount).toBe(0);
-  });
-
-  it("denies a GraphQL mutation with no input object at all", async () => {
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    const body = {
-      query: "mutation{pullRequests:createPullRequest{clientMutationId}}",
-    };
-    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toBeInstanceOf(Error);
-    expect(writeCount).toBe(0);
-  });
-
-  it("denies a create mutation whose input omits both ref names", async () => {
-    // A policy-valid input object may simply omit headRefName/baseRefName; the ref assertion then
-    // receives empty strings and must refuse the write rather than treat the absence as permissive.
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    const body = {
-      query:
-        "mutation($input:CreatePullRequestInput!){createPullRequest(input:$input){pullRequest{id number headRefName baseRefName}}}",
-      variables: { input: { repositoryId: "R_test", title: "Work" } },
-    };
-    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-    expect(writeCount).toBe(0);
-  });
-
-  it("treats a non-string new base as an absent base on a GraphQL update", async () => {
-    // The mutation input schema is key-checked, not value-typed, so a non-string baseRefName must be
-    // read as "no new base" rather than stringified into a ref assertion.
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    await adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      const path = new URL(String(args[0])).pathname;
-      if (path === "/graphql") {
-        writeCount++;
-        return Response.json({
-          data: {
-            updatePullRequest: {
-              pullRequest: { id: "PR_one", number: 1, headRefName: "topic", baseRefName: "main" },
-            },
-          },
-        });
-      }
-      return (original as typeof fetch)(...args);
-    });
-    const body = {
-      query:
-        "mutation($id:ID!,$base:String){updatePullRequest(input:{pullRequestId:$id,baseRefName:$base}){pullRequest{id number headRefName baseRefName}}}",
-      variables: { base: 123, id: "PR_one" },
-    };
-    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).resolves.toMatchObject({
-      status: 200,
-    });
-    expect(writeCount).toBe(1);
-  });
-
-  it("re-asserts a string new base against the ref policy on a GraphQL update", async () => {
-    await adapter.handle(request("/repos/owner/repository"), authorization);
-    await adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
-    const body = {
-      query:
-        'mutation($id:ID!){updatePullRequest(input:{pullRequestId:$id,baseRefName:"master"}){pullRequest{id number headRefName baseRefName}}}',
-      variables: { id: "PR_one" },
-    };
-    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
-      code: "scope_denied",
-    });
-    expect(writeCount).toBe(0);
-  });
-
-  it("ignores scalar and null entries in a read response when recording node identities", async () => {
-    const built = adapterFor();
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      const path = new URL(String(url)).pathname;
-      if (path === "/repositories/123") return (original as typeof fetch)(url, init);
-      return Response.json([1, null, "text", { number: 2, title: "Work" }, { nested: { deeper: null } }]);
-    });
-    expect(await responseJson(await built.handle(request("/repos/owner/repository/pulls"), authorization))).toEqual([
-      1,
-      null,
-      "text",
-      { number: 2, title: "Work" },
-      { nested: { deeper: null } },
-    ]);
+    const r = await f.send({ method: "POST", path: "/graphql", body: body("{}") });
+    await expect(bytes(r.body)).rejects.toMatchObject({ code: "github_response_truncated" });
+    expect(f.requests).toHaveLength(1);
   });
 });
 
-function fixtureWrite(path: string, body: { variables: { input: { headRefName: string } } }): Response {
-  writeCount++;
-  if (writeBehavior === "lost") throw new Error("untrusted transport detail");
-  if (writeBehavior === "secret")
-    return Response.json({ download_url: `https://github.com/private?token=${iat}` }, { status: 201 });
-  if (writeBehavior === "empty") return Response.json({}, { status: 201 });
-  if (writeBehavior === "malformed")
-    return new Response("this is not json", { status: 201, headers: { "content-type": "application/json" } });
-  if (writeBehavior === "reject422") return Response.json({ message: "Validation Failed" }, { status: 422 });
-  if (writeBehavior === "status503") return Response.json({ message: "server error" }, { status: 503 });
-  if (writeBehavior === "status408") return Response.json({ message: "timeout" }, { status: 408 });
-  if (path === "/graphql")
-    return Response.json({
-      data: {
-        createPullRequest: {
-          pullRequest: {
-            id: "PR_one",
-            number: 1,
-            headRefName: body.variables.input.headRefName,
-            baseRefName: "main",
-          },
+describe("native transport failure phases and cleanup", () => {
+  it("reports credential retrieval failure without exposing material or contacting upstream", async () => {
+    const request = vi.fn();
+    const adapter = new GitHubProviderAdapter({
+      management: {
+        getExecutionUserCredential: async () => {
+          throw Error("ghu_private_fixture");
         },
       },
+      transport: { request },
     });
-  return Response.json(
-    { number: 1, node_id: "PR_one", html_url: "https://github.com/owner/repository/pull/1" },
-    { status: 201 },
-  );
-}
-
-it.each(["REST", "GraphQL"] as const)("keeps %s target admission registered for the response stream", async (kind) => {
-  let allowed = true;
-  repository.recheck = async () => {
-    if (!allowed) throw Object.assign(new Error("Target access revoked"), { code: "scope_denied" });
-  };
-  const original = upstream.getMockImplementation();
-  upstream.mockImplementation(async (...args) =>
-    String(args[0]).endsWith("/graphql")
-      ? Response.json({ data: { repository: { id: "R_test", nameWithOwner: "owner/repository" } } })
-      : (original as typeof fetch)(...args),
-  );
-  const req =
-    kind === "REST"
-      ? request("/repos/owner/repository/pulls")
-      : request("/graphql", "POST", {
-          query: 'query { repository(owner: "owner", name: "repository") { id nameWithOwner } }',
-        });
-  let check: ((signal: AbortSignal) => Promise<void>) | undefined;
-  req.setRevalidation = (callback) => {
-    check = callback;
-  };
-  expect((await adapter.handle(req, authorization)).status).toBe(200);
-  expect(check).toBeDefined();
-  allowed = false;
-  await expect(check?.(req.signal)).rejects.toMatchObject({ code: "scope_denied" });
-});
-
-it.each(["diff", "patch"] as const)(
-  "preserves native %s output instead of JSON with an execution-scoped lease",
-  async (representation) => {
-    const patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-before\n+after\n";
-    let upstreamFinished = false;
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (url, init) => {
-      if (String(url).endsWith("/pulls/1")) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        expect(revoke).not.toHaveBeenCalled();
-        expect(new Headers(init?.headers).get("accept")).toBe(`application/vnd.github.${representation}`);
-        upstreamFinished = true;
-        return new Response(patch, { headers: { "content-type": "text/plain" } });
-      }
-      return original?.(url, init) as Promise<Response>;
+    const auth = proxyAuthorization();
+    await expect(adapter.handle(proxyRequest(auth), auth)).rejects.toMatchObject({
+      code: "github_credential_failed",
+      message: "github_credential_failed",
     });
-    const req = request("/repos/owner/repository/pulls/1");
-    const response = await adapter.handle(
-      { ...req, headers: { ...req.headers, accept: `application/vnd.github.v3.${representation}` } },
-      authorization,
-    );
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of response.body) chunks.push(chunk);
-    expect(Buffer.concat(chunks).toString()).toBe(patch);
-    expect(response.headers["content-type"]).toContain("text/plain");
-    expect(upstreamFinished).toBe(true);
-    expect(revoke).toHaveBeenCalledExactlyOnceWith(iat);
-  },
-);
-
-it("preserves raw binary contents byte-for-byte and never returns a scoped token", async () => {
-  const contents = Buffer.from([0xff, 0, 0x80, 0x41]);
-  const transport = new GitHubProxyApiTransport(async (_url, init) => {
-    expect(new Headers(init?.headers).get("accept")).toBe("application/vnd.github.raw");
-    return new Response(contents);
+    expect(request).not.toHaveBeenCalled();
   });
-  const result = await transport.request({
-    token: iat,
-    method: "GET",
-    path: "/repos/owner/repository/contents/image.bin",
-    representation: "raw",
-    signal: new AbortController().signal,
+  it.each([
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "github_tls_failed"],
+    ["ECONNREFUSED", "github_connect_failed"],
+  ])("classifies %s without raw exception text", async (code, expected) => {
+    const transport = new GitHubHttpTransport({
+      resolveAddresses: async () => ["140.82.112.3"],
+      connect: () => {
+        throw Object.assign(Error("ghu_private_fixture"), { code });
+      },
+    });
+    await expect(
+      transport.request({
+        url: new URL("https://api.github.com/user"),
+        method: "GET",
+        headers: {},
+        body: body(),
+        token: "ghu_private_fixture",
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: expected, message: expected });
   });
-  expect(result.value).toEqual(contents);
-  const unsafe = new GitHubProxyApiTransport(async () => new Response(`diff --git\n+${iat}\n`));
-  await expect(
-    unsafe.request({
-      token: iat,
+  it("bounds stalled DNS and supports cancellation before connecting", async () => {
+    const connect = vi.fn();
+    const transport = new GitHubHttpTransport({
+      idleTimeoutMs: 30,
+      resolveAddresses: () => new Promise(() => {}),
+      connect,
+    });
+    const request = {
+      url: new URL("https://api.github.com/user"),
       method: "GET",
-      path: "/repos/owner/repository/pulls/1",
-      representation: "diff",
+      headers: {},
+      body: body(),
+      token: "ghu_private_fixture",
       signal: new AbortController().signal,
-    }),
-  ).rejects.toThrow(/unavailable/);
-});
-
-it("answers only public schema probes after the current execution fence without minting", async () => {
-  const req = request("/graphql", "POST", {
-    query: '{WorkflowRun:__type(name:"WorkflowRun"){fields(includeDeprecated:true){name}}}',
+    };
+    await expect(transport.request(request)).rejects.toMatchObject({
+      code: "github_timeout",
+      message: "github_timeout",
+    });
+    const controller = new AbortController();
+    const result = transport.request({ ...request, signal: controller.signal });
+    controller.abort();
+    await expect(result).rejects.toBeDefined();
+    expect(connect).not.toHaveBeenCalled();
   });
-  expect(await responseJson(await adapter.handle(req, authorization))).toMatchObject({
-    data: { WorkflowRun: { fields: expect.arrayContaining([{ name: "event" }]) } },
+  it("does not retry a write whose connection fails after the body arrived", async () => {
+    let writes = 0;
+    const f = await fixture(async (req, res) => {
+      await bytes(req);
+      writes++;
+      res.destroy();
+    });
+    await expect(f.send({ method: "POST", body: body("write") })).rejects.toMatchObject({
+      code: "github_connect_failed",
+      message: "github_connect_failed",
+    });
+    expect(writes).toBe(1);
   });
-  expect(authorization.recheck).toHaveBeenCalled();
-  expect(mint).not.toHaveBeenCalled();
-  expect(upstream).not.toHaveBeenCalled();
-  const revoked = {
-    ...authorization,
-    recheck: async () => {
-      throw new Error("Execution revoked");
-    },
-  };
-  await expect(
-    adapter.handle(request("/graphql", "POST", { query: '{__type(name:"PullRequest"){fields{name}}}' }), revoked),
-  ).rejects.toThrow("revoked");
-});
-
-it.each([
-  "/repos/owner/repository/pulls",
-  "/repos/owner/repository/commits/sha/check-runs",
-  "/repos/owner/repository/commits/sha/comments",
-  "/repos/owner/repository/commits/sha/status",
-  "/repos/owner/repository/commits/sha/statuses",
-  "/repos/owner/repository/statuses/sha",
-])("rejects diff media on JSON-only route %s", (path) => {
-  expect(() =>
-    githubReadRepresentation(new URL(path, "https://api.github.com"), "application/vnd.github.diff"),
-  ).toThrow(/scope_denied/);
-});
-
-it.each(["tree", "code", "mixed"])("keeps GraphQL check permissions within the %s grant", async (role) => {
-  const scopes =
-    role === "tree" ? [treeScope({ access: "read" })] : role === "code" ? [codeScope()] : [codeScope(), treeScope()];
-  const built = adapterFor({ scopes });
-  const original = upstream.getMockImplementation();
-  upstream.mockImplementation(async (...args) => {
-    if (String(args[0]).endsWith("/graphql"))
-      return Response.json({
-        data: {
-          repository: { pullRequest: { id: "PR_one", number: 1, statusCheckRollup: { contexts: { nodes: [] } } } },
-        },
+  it("uses an idle response deadline, excluding time spent waiting for the consumer", async () => {
+    const f = await fixture((_req, res) => {
+      res.write("first");
+      setTimeout(() => res.end("last"), 40);
+    }, 100);
+    const response = await f.send();
+    const iterator = response.body[Symbol.asyncIterator]();
+    expect((await iterator.next()).done).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(Buffer.from((await iterator.next()).value).toString()).toBe("last");
+    expect((await iterator.next()).done).toBe(true);
+  });
+  it("closes the upstream socket on consumer break", async () => {
+    let closed = false;
+    const f = await fixture((_req, res) => {
+      res.on("close", () => {
+        closed = true;
       });
-    return (original as typeof fetch)(...args);
+      res.write("first");
+    });
+    for await (const _chunk of (await f.send()).body) break;
+    await vi.waitFor(() => expect(closed).toBe(true));
   });
-  const body = {
-    query:
-      '{repository(owner:"owner",name:"repository"){pullRequest(number:1){id number statusCheckRollup{contexts(first:1){nodes{...on CheckRun{name checkSuite{workflowRun{event}}}}}}}}}',
-  };
-  expect((await built.handle(request("/graphql", "POST", body), authorization)).status).toBe(200);
-  if (role === "tree") expect(requests.some((row) => row.path === "/repos/owner/repository/pulls/1")).toBe(true);
-  expect(mint).toHaveBeenCalledWith(
-    expect.objectContaining({
-      permissions: {
-        contents: "read",
-        pull_requests: "read",
-        ...(role === "tree" ? {} : { checks: "read", actions: "read" }),
-      },
-    }),
-  );
-});
-
-it("passes response check permissions to a code mutation after checking the PR identity", async () => {
-  await adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
-  mint.mockClear();
-  const original = upstream.getMockImplementation();
-  upstream.mockImplementation(async (...args) => {
-    if (String(args[0]).endsWith("/graphql"))
-      return Response.json({ data: { closePullRequest: { pullRequest: { id: "PR_one" } } } });
-    return (original as typeof fetch)(...args);
+  it("stops an idle upstream body with an explicit timeout", async () => {
+    const f = await fixture((_req, res) => {
+      res.write("prefix");
+    }, 30);
+    await expect(bytes((await f.send()).body)).rejects.toMatchObject({ code: "github_timeout" });
   });
-  const query = `mutation { closePullRequest(input:{pullRequestId:"PR_one"}) { pullRequest {
-    statusCheckRollup { contexts(first:1) { nodes { ... on CheckRun {
-      isRequired(pullRequestId:"PR_one") checkSuite { workflowRun { event } }
-    } } } }
-  } } }`;
-  expect((await adapter.handle(request("/graphql", "POST", { query }), authorization)).status).toBe(200);
-  expect(mint).toHaveBeenCalledWith(
-    expect.objectContaining({
-      permissions: { contents: "read", pull_requests: "write", checks: "read", actions: "read" },
-    }),
-  );
 });

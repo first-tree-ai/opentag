@@ -1,4 +1,4 @@
-import type { McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import {
   CANVA_DEVELOPER_PORTAL_MCP_URL,
   type MCPAgentServer,
@@ -26,6 +26,13 @@ const CATALOG = vi.hoisted(() => ({
       name: "canva",
       title: { en: "Canva", zh: "Canva" },
       description: { en: "Create designs.", zh: "创建设计。" },
+      registryId: "mcp/canva",
+      whenToUse: { en: "Use for canva.", zh: "用于 canva。" },
+      installable: true,
+      status: "active",
+      capabilities: ["search"],
+      auth: { methods: ["oauth"], defaultKind: "oauth", oauth: {} },
+      risk: { sideEffects: "none", dataAccess: "private" },
       url: "https://mcp.canva.com/mcp",
       defaultAuthKind: "oauth",
       category: "design",
@@ -72,7 +79,7 @@ function canvaMount(url: string, authorization: MCPAuthorizationSummary | null):
     authorization,
   }) as MCPAgentServer;
 }
-const entries = CATALOG.entries as McpCatalogEntry[];
+const entries = CATALOG.entries as McpInstallableCatalogEntry[];
 
 beforeEach(() => {
   vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);

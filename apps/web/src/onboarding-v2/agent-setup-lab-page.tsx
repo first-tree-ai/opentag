@@ -23,6 +23,7 @@ import {
 } from "./agent-setup-lab-model.js";
 import type { AgentSetupPreviewView } from "./agent-setup-page.js";
 import { AgentSetupSurface, type CreationPreviewView } from "./page.js";
+import { createLabSlackSetup } from "./setup-lab-slack.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
 
 type LabPhase = "creation" | "admission" | "setup";
@@ -386,6 +387,7 @@ function LabPreview({
   readonly phase: LabPhase;
   readonly version: number;
 }) {
+  const setupAdapter = useMemo(() => ({ ...memory.adapter, slackSetup: createLabSlackSetup(memory) }), [memory]);
   if (navigationTarget) {
     return <LabNavigationPreview target={navigationTarget} onReturn={() => onNavigationTargetChange(undefined)} />;
   }
@@ -424,7 +426,7 @@ function LabPreview({
       onOpenAgent={() => onNavigationTargetChange("agent")}
       onSetupPreviewViewChange={onSetupViewChange}
       refreshSignal={version}
-      setupAdapter={memory.adapter}
+      setupAdapter={setupAdapter}
       setupPreviewInitialView={labPreviewPageFor(configuration.scenario) === "messaging" ? "messaging" : undefined}
     />
   );

@@ -19,20 +19,15 @@ import { AuthServiceError } from "./services/auth/index.js";
 import type { ComputerAuthContext, ComputerAuthVerifier } from "./services/computers/index.js";
 import type { ApplicationCipher } from "./services/crypto.js";
 import type { GitHubIntegrationComposition } from "./services/github/composition.js";
-import { GitPublicationGuard } from "./services/github-proxy/git-publication.js";
-import { GitReadTransport } from "./services/github-proxy/git-read-transport.js";
-import { GitWorkspace } from "./services/github-proxy/git-workspace.js";
 import { GitHubProviderAdapter } from "./services/github-proxy/github-provider-adapter.js";
 import { GitHubRuntimePolicy } from "./services/github-proxy/runtime-policy.js";
-import { GitHubUserTokenLeases } from "./services/github-proxy/user-token-leases.js";
-import { VerifiedTreeHead } from "./services/github-proxy/verified-tree-head.js";
 
 /**
  * Server-owned assembly: only opaque capabilities cross the runtime control connection. The
  * composition is stateless beyond PostgreSQL and bounded memory: there is no persistent control
  * volume, no file-backed write journal, and no additional file-backed Cloud credential store.
- * Git staging uses disposable temporary workspaces that are removed on a normal close and are
- * never restored as authority after a restart.
+ * GitHub execution forwards native HTTP bytes; separate Tree settings verification owns its
+ * temporary workspaces and read-only credential leases.
  *
  * E4 adds a second, independent Cloud control authority: the per-Sandbox Runner connection
  * fence. It is composed with the Local registry for credential opens/sweeps/revocation routing,
@@ -84,32 +79,9 @@ export async function createPlatformRuntime(options: {
     ? new GitHubRuntimePolicy({
         database: options.database,
         management: options.github.management,
-        execution: executions,
       })
     : undefined;
-  let workspace: GitWorkspace | undefined;
-  let github: GitHubProviderAdapter | undefined;
-  if (policy && options.github) {
-    // Ephemeral Git staging: the exclusive temporary root is created lazily on the first Git
-    // operation and removed on close. Construction itself performs no filesystem writes; a
-    // partial-construction failure disposes anything already created.
-    workspace = new GitWorkspace();
-    try {
-      const staging = workspace;
-      github = new GitHubProviderAdapter({
-        policy,
-        leases: new GitHubUserTokenLeases(options.github.userTokens, () =>
-          options.logger?.warn({ code: "user_token_revoke_failed" }, "GitHub user token revocation failed"),
-        ),
-        reads: new GitReadTransport({ workspace: staging }),
-        publication: new GitPublicationGuard({ workspace: staging }),
-        treeHeads: new VerifiedTreeHead({ workspace: staging }),
-      });
-    } catch (error) {
-      await workspace.close();
-      throw error;
-    }
-  }
+  const github = options.github ? new GitHubProviderAdapter({ management: options.github.management }) : undefined;
   const controlAuthority = createCloudControlAuthority(options);
   const credentials = createRuntimeCredentialServices({
     slackWorkingStatus: options.slackWorkingStatus,
@@ -137,12 +109,6 @@ export async function createPlatformRuntime(options: {
     ...mcpCredentialOptions(options.mcpMounts),
     ...(options.logger ? { logger: options.logger } : {}),
   });
-  const unsubscribe = executions.onClose(({ executionId }) => {
-    policy?.forgetExecution(executionId);
-    void github
-      ?.closeExecution(executionId)
-      .catch(() => options.logger?.warn({ code: "user_token_revoke_failed" }, "GitHub credential cleanup failed"));
-  });
   return {
     credentials,
     auth: new KindAwareComputerAuthVerifier(
@@ -161,13 +127,6 @@ export async function createPlatformRuntime(options: {
     },
     close: async () => {
       credentials.close();
-      unsubscribe();
-      try {
-        await github?.close();
-      } finally {
-        // The ephemeral workspace root is removed even when GitHub credential cleanup fails.
-        await workspace?.close();
-      }
     },
   };
 }

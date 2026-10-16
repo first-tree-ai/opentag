@@ -235,6 +235,7 @@ export {
 export * from "./execution-services.js";
 export * from "./github-integration.js";
 export * from "./github-management.js";
+export * from "./github-proxy-http.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,

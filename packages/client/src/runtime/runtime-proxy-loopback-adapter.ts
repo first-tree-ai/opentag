@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import tls from "node:tls";
 import { promisify } from "node:util";
+import { githubProxyHeaders } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
   RUNTIME_PROVIDER_ORIGIN_HEADER,
@@ -826,12 +827,12 @@ function forwardedRequestHeaders(
 ): Record<string, string> {
   const filtered: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
-    if (!REQUEST_HEADER_ALLOWLIST.has(name) || value === undefined) continue;
+    if ((provider !== "github" && !REQUEST_HEADER_ALLOWLIST.has(name)) || value === undefined) continue;
     filtered[name] = Array.isArray(value) ? value.join(", ") : value;
   }
   // The adapter sets the reserved origin; a caller-supplied value is never honored. Only the
   // GitHub adapter consumes it (git vs REST/GraphQL); IM origins stay provider-fixed.
-  if (provider === "github") filtered[RUNTIME_PROVIDER_ORIGIN_HEADER] = originHost;
+  if (provider === "github") return { ...githubProxyHeaders(filtered), [RUNTIME_PROVIDER_ORIGIN_HEADER]: originHost };
   return filtered;
 }
 

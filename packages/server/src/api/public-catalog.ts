@@ -1,4 +1,4 @@
-import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
+import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, type McpCatalogPackage } from "@opentag/mcp-presets";
 import {
   PUBLIC_MCP_SERVERS_PATH,
   PUBLIC_SKILLS_PATH,
@@ -33,6 +33,33 @@ export interface PublicCatalogRoutesOptions {
 /** Static per server revision; five minutes keeps a website within a deploy or two without per-view requests. */
 const CACHE_CONTROL = "public, max-age=300";
 
+/**
+ * A package as the website may see it: identity and shape only. Argument and variable values and
+ * defaults are never projected, so the response cannot carry a configured value.
+ */
+function projectPackage(pkg: McpCatalogPackage) {
+  return {
+    registryType: pkg.registryType,
+    identifier: pkg.identifier,
+    version: pkg.version,
+    runtimeHint: pkg.runtimeHint,
+    transport: pkg.transport,
+    packageArguments: pkg.packageArguments?.map((argument) => ({
+      type: argument.type,
+      name: argument.name,
+      description: argument.description,
+      isRequired: argument.isRequired,
+      isSecret: argument.isSecret,
+    })),
+    environmentVariables: pkg.environmentVariables?.map((variable) => ({
+      name: variable.name,
+      description: variable.description,
+      isRequired: variable.isRequired,
+      isSecret: variable.isSecret,
+    })),
+  };
+}
+
 export function registerPublicCatalogRoutes(app: FastifyInstance, options: PublicCatalogRoutesOptions): void {
   if (options.publicOrigin !== OFFICIAL_PUBLIC_ORIGIN && options.origins.length === 0) return;
   /* Once the surface is enabled, the official origins are always part of the allowlist. */
@@ -62,11 +89,23 @@ export function registerPublicCatalogRoutes(app: FastifyInstance, options: Publi
       name: entry.name,
       title: { ...entry.title },
       description: { ...entry.description },
+      registryId: entry.registryId,
+      installable: entry.installable,
+      packages: entry.packages?.map(projectPackage),
+      prerequisites: entry.prerequisites ? [...entry.prerequisites] : undefined,
+      platforms: entry.platforms ? [...entry.platforms] : undefined,
+      whenToUse: { ...entry.whenToUse },
+      capabilities: [...entry.capabilities],
+      keywords: entry.keywords ? [...entry.keywords] : undefined,
+      aliases: entry.aliases ? [...entry.aliases] : undefined,
+      tags: entry.tags ? [...entry.tags] : undefined,
+      status: entry.status,
+      risk: { sideEffects: entry.risk.sideEffects, dataAccess: entry.risk.dataAccess },
       category: entry.category,
       website: entry.website,
       iconUrl: entry.iconUrl,
       order: entry.order,
-      defaultAuthKind: entry.defaultAuthKind,
+      defaultAuthKind: entry.auth.defaultKind,
     })),
   });
 

@@ -55,6 +55,35 @@ function checkOAuthScopes(entry: McpCatalogEntry, out: McpCatalogViolation[]): v
 }
 
 /**
+ * The create payload the add flow sends, including the optional header fields, so the full Server
+ * schema decides header names and the auth-header collision rule. A non-installable entry carries no
+ * connection fields at all.
+ */
+function checkCreatePayload(entry: McpCatalogEntry, out: McpCatalogViolation[]): void {
+  const subject = entry.id;
+  if (!entry.installable) {
+    for (const field of ["url", "defaultAuthKind", "authHeader", "authScheme", "extraHeaders"] as const) {
+      if (entry[field] !== undefined) {
+        out.push({ subject, field, message: "must be absent when the entry is not installable" });
+      }
+    }
+    return;
+  }
+  const create = CreateMCPServerRequestSchema.safeParse({
+    name: entry.name,
+    url: entry.url,
+    defaultAuthKind: entry.defaultAuthKind,
+    ...(entry.authHeader === undefined ? {} : { authHeader: entry.authHeader }),
+    ...(entry.authScheme === undefined ? {} : { authScheme: entry.authScheme }),
+    ...(entry.extraHeaders === undefined ? {} : { extraHeaders: entry.extraHeaders }),
+  });
+  if (create.success) return;
+  for (const issue of create.error.issues) {
+    out.push({ subject, field: issue.path.join(".") || "entry", message: issue.message });
+  }
+}
+
+/**
  * Validate one entry against the same create schema the Server enforces, plus the card fields the
  * catalog owns. Pure and browser-safe; the outbound-address policy is Node-only and is checked by
  * the generator and the test suite.
@@ -67,16 +96,7 @@ export function validateMcpCatalogEntry(
   const subject = entry.id;
   if (!ID_PATTERN.test(entry.id)) out.push({ subject, field: "id", message: `must match ${ID_PATTERN}` });
 
-  const create = CreateMCPServerRequestSchema.safeParse({
-    name: entry.name,
-    url: entry.url,
-    defaultAuthKind: entry.defaultAuthKind,
-  });
-  if (!create.success) {
-    for (const issue of create.error.issues) {
-      out.push({ subject, field: issue.path.join(".") || "entry", message: issue.message });
-    }
-  }
+  checkCreatePayload(entry, out);
 
   if (!categoryIds.has(entry.category)) {
     out.push({ subject, field: "category", message: `"${entry.category}" is not a declared category` });

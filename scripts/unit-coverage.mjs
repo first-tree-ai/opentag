@@ -139,7 +139,12 @@ export const COVERAGE_REPORTER_FLAGS = [
   "--coverage.reporter=text-summary",
 ];
 
-export const TEST_REPORTER_FLAGS = (outputFile) => ["--reporter=json", `--outputFile=${outputFile}`];
+// JSON omits unhandled errors even when Vitest exits nonzero; keep the diagnostic reporter too.
+export const TEST_REPORTER_FLAGS = (outputFile) => [
+  "--reporter=default",
+  "--reporter=json",
+  `--outputFile.json=${outputFile}`,
+];
 
 function floorProjects(floors) {
   if (floors && typeof floors === "object" && floors.projects && typeof floors.projects === "object") {

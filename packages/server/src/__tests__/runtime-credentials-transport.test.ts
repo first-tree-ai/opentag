@@ -207,10 +207,11 @@ async function setup(
   });
   const server = new WebSocketServer({ port: 0 });
   servers.push(server);
-  server.on("connection", (socket) => transport.attach(socket));
+  const connections: ReturnType<typeof transport.attach>[] = [];
+  server.on("connection", (socket) => connections.push(transport.attach(socket)));
   await once(server, "listening");
   const port = (server.address() as AddressInfo).port;
-  return { port, record, grant, tickets, executions, capabilities, transport, server, broker };
+  return { port, record, grant, tickets, executions, capabilities, transport, server, broker, connections };
 }
 
 async function connect(port: number, ticket: string): Promise<{ socket: WebSocket; queue: MessageQueue }> {
@@ -379,8 +380,16 @@ describe("RuntimeProviderProxyTransport", () => {
     const { socket, queue } = await connect(state.port, ticket);
     await queue.nextJson();
     for (let streamId = 1; streamId <= 9; streamId += 1) socket.send(openFrame(streamId, state.grant.token));
-    const [code] = (await once(socket, "close")) as [number, string];
-    expect(code).toBe(4400);
+    expect(await queue.nextJson()).toEqual({ type: "error", streamId: 9, code: "resource_limit" });
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    socket.send(JSON.stringify({ type: "end", streamId: 1 }));
+    expect(await queue.nextJson()).toMatchObject({ type: "response", streamId: 1 });
+    expect(await queue.nextJson()).toMatchObject({ type: "end", streamId: 1 });
+    socket.send(openFrame(10, state.grant.token));
+    socket.send(JSON.stringify({ type: "end", streamId: 10 }));
+    expect(await queue.nextJson()).toMatchObject({ type: "response", streamId: 10 });
+    expect(await queue.nextJson()).toMatchObject({ type: "end", streamId: 10 });
+    expect(state.connections[0]?.snapshot().active).toBe(7);
   });
 
   it("honors the credit window for long streaming responses", async () => {
@@ -690,6 +699,49 @@ describe("RuntimeProviderProxyTransport completion and credit accounting", () =>
     }),
   };
 
+  it.each([9000, 20000])(
+    "rejects an oversized %i-byte response header without killing another stream",
+    async (size) => {
+      let calls = 0;
+      const state = await setup({
+        handle: async () => ({
+          status: 200,
+          headers: Object.fromEntries(calls++ === 0 ? [["x-large", "x".repeat(size)]] : []),
+          body: (async function* () {})(),
+        }),
+      });
+      const { socket, queue } = await ready(ticketFor(state), state.port);
+      socket.send(openFrame(1, state.grant.token));
+      expect(await queue.nextJson()).toEqual({ type: "error", streamId: 1, code: "proxy_frame_too_large" });
+      socket.send(openFrame(2, state.grant.token));
+      expect(await queue.nextJson()).toMatchObject({ type: "response", streamId: 2 });
+      expect(await queue.nextJson()).toEqual({ type: "end", streamId: 2 });
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+    },
+  );
+
+  it("serves 1,000 requests on one connection with bounded retired state and no retained body", async () => {
+    const state = await setup(doneAdapter);
+    const { socket, queue } = await ready(ticketFor(state), state.port);
+    for (let id = 1; id <= 1000; id++) {
+      socket.send(openFrame(id, state.grant.token));
+      // The adapter deliberately does not consume this body; retirement must discard it.
+      socket.send(binaryFrame(id, Buffer.alloc(4096)));
+      socket.send(JSON.stringify({ type: "end", streamId: id }));
+      expect(await queue.nextJson()).toMatchObject({ type: "response", streamId: id });
+      expect((await queue.next()).binary).toBe(true);
+      expect(await queue.nextJson()).toEqual({ type: "end", streamId: id });
+      if (id % 250 === 0)
+        expect(state.connections[0]?.snapshot()).toEqual({ active: 0, retired: Math.min(id, 256), bufferedBytes: 0 });
+    }
+    expect(state.connections).toHaveLength(1);
+    // A late frame beyond the bounded history is inert, but an old open can never regain authority.
+    socket.send(JSON.stringify({ type: "credit", streamId: 1, bytes: 4 }));
+    socket.send(openFrame(1, state.grant.token));
+    const [code] = await once(socket, "close");
+    expect(code).toBe(4400);
+  }, 30_000);
+
   it("tolerates in-flight completion frames for a completed stream and keeps the socket usable", async () => {
     const state = await setup(doneAdapter);
     const { socket, queue } = await ready(ticketFor(state), state.port);
@@ -779,36 +831,40 @@ describe("RuntimeProviderProxyTransport completion and credit accounting", () =>
     expect(code).toBe(4400);
   });
 
-  it("streams more than two mebibytes in both directions with exact bytes and genuine credit", async () => {
-    const echo: ProviderProxyAdapter = {
-      handle: async (request) => ({
-        status: 200,
-        headers: { "content-type": "application/octet-stream" },
-        body: (async function* () {
-          for await (const chunk of request.body) yield chunk;
-        })(),
-      }),
-    };
-    const state = await setup(echo);
-    const { socket, queue } = await ready(ticketFor(state), state.port);
-    const size = 2 * 1024 * 1024 + 12_345;
-    const sent = Buffer.alloc(size);
-    for (let index = 0; index < size; index += 1) sent[index] = (index * 31 + 7) & 0xff;
-    const gate = creditGate(1_048_576);
-    socket.send(openFrame(1, state.grant.token));
-    const [echoed] = await Promise.all([
-      readEchoUntilEnd({ queue, socket, streamId: 1, grantUpload: (bytes) => gate.grant(bytes) }),
-      sendBodyUntilEnd(socket, 1, sent, gate),
-    ]);
-    expect(echoed.received.byteLength).toBe(size);
-    expect(createHash("sha256").update(echoed.received).digest("hex")).toBe(
-      createHash("sha256").update(sent).digest("hex"),
-    );
-    // Genuine multi-window consumption: the Server granted several full windows while the
-    // client granted download credit for every chunk it consumed.
-    expect(echoed.creditFrames).toBeGreaterThan(16);
-    socket.close();
-  }, 20_000);
+  it.each([6, 64])(
+    "streams %i MiB in both directions with exact bytes and genuine credit",
+    async (mib) => {
+      const echo: ProviderProxyAdapter = {
+        handle: async (request) => ({
+          status: 200,
+          headers: { "content-type": "application/octet-stream" },
+          body: (async function* () {
+            for await (const chunk of request.body) yield chunk;
+          })(),
+        }),
+      };
+      const state = await setup(echo);
+      const { socket, queue } = await ready(ticketFor(state), state.port);
+      const size = mib * 1024 * 1024 + 12_345;
+      const sent = Buffer.alloc(size);
+      for (let index = 0; index < size; index += 1) sent[index] = (index * 31 + 7) & 0xff;
+      const gate = creditGate(1_048_576);
+      socket.send(openFrame(1, state.grant.token));
+      const [echoed] = await Promise.all([
+        readEchoUntilEnd({ queue, socket, streamId: 1, grantUpload: (bytes) => gate.grant(bytes) }),
+        sendBodyUntilEnd(socket, 1, sent, gate),
+      ]);
+      expect(echoed.received.byteLength).toBe(size);
+      expect(createHash("sha256").update(echoed.received).digest("hex")).toBe(
+        createHash("sha256").update(sent).digest("hex"),
+      );
+      // Genuine multi-window consumption: the Server granted several full windows while the
+      // client granted download credit for every chunk it consumed.
+      expect(echoed.creditFrames).toBeGreaterThan(16);
+      socket.close();
+    },
+    20_000,
+  );
 });
 
 describe("RuntimeProviderProxyTransport execution fence", () => {

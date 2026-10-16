@@ -24,7 +24,7 @@ import type {
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAgentSetupStageReport } from "../analytics/milestones.js";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, browserApi, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
@@ -39,7 +39,7 @@ import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { FeishuActivationWaiting } from "../im/feishu-activation-waiting.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
-import { SlackCustomApp } from "../im/slack-custom-app.js";
+import { SlackCustomApp, type SlackSetupApi } from "../im/slack-custom-app.js";
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { queryKeys } from "../query/keys.js";
@@ -297,7 +297,8 @@ async function performSetupAction(
         await adapter.startFeishuAttempt(agentId, "create", { kind: "unbound" });
         return undefined;
       }
-      return adapter.startSlackInstall(agentId, "create", { kind: "unbound" });
+      // The dedicated-App dialog owns new Slack connections; OAuth is recovery-only here.
+      throw new Error("New messaging connections require the dedicated App dialog");
     case "cancel-messaging-attempt":
       await adapter.cancelFeishuAttempt(action.attemptId);
       return undefined;
@@ -779,6 +780,7 @@ function AgentSetupPageContent({
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
         <SetupPhaseView
+          slackApi={adapter.slackSetup}
           agentId={agentId}
           computerAdapter={computerAdapter}
           controller={controller}
@@ -794,6 +796,7 @@ function AgentSetupPageContent({
 }
 
 function SetupPhaseView({
+  slackApi,
   agentId,
   computerAdapter,
   controller,
@@ -805,6 +808,7 @@ function SetupPhaseView({
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  readonly slackApi?: SlackSetupApi;
   readonly controller: AgentSetupController;
   readonly oauthError?: string;
   readonly onOpenAgent?: () => void;
@@ -856,6 +860,7 @@ function SetupPhaseView({
       previewInitialView={previewInitialView}
       report={report}
       snapshot={phase.snapshot}
+      slackApi={slackApi}
     />
   );
 }
@@ -892,6 +897,7 @@ function shouldShowSetupTitle(stage: AgentSetupSnapshot["stage"], awaitingPrepar
 }
 
 function AgentSetupSnapshotView({
+  slackApi,
   agentId,
   computerAdapter,
   controller,
@@ -902,6 +908,7 @@ function AgentSetupSnapshotView({
   report,
   snapshot,
 }: {
+  readonly slackApi?: SlackSetupApi;
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
@@ -983,7 +990,12 @@ function AgentSetupSnapshotView({
         snapshot={snapshot}
       />
       {stage === "needs-messaging" && !awaitingPreparationContinue ? (
-        <MessagingSetupSection controller={controller} oauthError={oauthError} snapshot={snapshot} />
+        <MessagingSetupSection
+          controller={controller}
+          oauthError={oauthError}
+          snapshot={snapshot}
+          slackApi={slackApi}
+        />
       ) : null}
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
@@ -1488,10 +1500,12 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
 }
 
 function MessagingSetupSection({
+  slackApi,
   controller,
   oauthError,
   snapshot,
 }: {
+  readonly slackApi?: SlackSetupApi;
   readonly controller: AgentSetupController;
   readonly oauthError?: string;
   readonly snapshot: AgentSetupSnapshot;
@@ -1507,10 +1521,7 @@ function MessagingSetupSection({
         </Text>
       </header>
       {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
-      {messaging.kind === "not-configured" ? (
-        <MessagingStartChoice busyKey={controller.busyKey} onStart={controller.act} snapshot={snapshot} />
-      ) : null}
-      <SlackSetupConfiguration controller={controller} snapshot={snapshot} />
+      <MessagingConnections controller={controller} snapshot={snapshot} slackApi={slackApi} />
       {messaging.kind === "authorizing" && messaging.provider === "feishu" ? (
         <FeishuAuthorizing
           busyKey={controller.busyKey}
@@ -1543,11 +1554,15 @@ function setupExitLabel(snapshot: AgentSetupSnapshot | undefined): string {
 
 /** Custom App setup remains available independently of the official OAuth actions. */
 function SlackSetupConfiguration({
+  slackApi,
   controller,
   snapshot,
+  renderTrigger,
 }: {
+  slackApi?: SlackSetupApi;
   controller: AgentSetupController;
   snapshot: AgentSetupSnapshot;
+  renderTrigger?: ComponentProps<typeof SlackCustomApp>["renderTrigger"];
 }) {
   const messaging = snapshot.messaging;
   if (messaging.kind !== "not-configured" && !("provider" in messaging && messaging.provider === "slack")) return null;
@@ -1557,62 +1572,105 @@ function SlackSetupConfiguration({
   );
   return (
     <SlackCustomApp
+      api={slackApi}
       agentId={snapshot.agent.id}
       bindingId={"bindingId" in messaging ? messaging.bindingId : undefined}
       onSaved={controller.reload}
+      manualOnly={snapshot.computer.kind === "cloud"}
       onOAuth={reauthorize ? () => void controller.act(reauthorize) : undefined}
-      oauthLabel={
-        snapshot.messaging.kind === "blocked" && snapshot.messaging.code !== "reauthorization-required"
-          ? m.im_reconnect()
-          : m.im_update_permissions()
-      }
+      renderTrigger={renderTrigger}
     />
   );
 }
 
-function MessagingStartChoice({
-  busyKey,
-  onStart,
+/** Keep the configuration dialog in one tree position while the saved binding refreshes. */
+function MessagingConnections({
+  controller,
+  slackApi,
   snapshot,
 }: {
-  readonly busyKey: AgentSetupAction | undefined;
-  readonly onStart: (action: AgentSetupAction) => Promise<boolean>;
+  readonly controller: AgentSetupController;
+  readonly slackApi?: SlackSetupApi;
   readonly snapshot: AgentSetupSnapshot;
 }) {
+  const starting = useRef(false);
+  async function start(action: AgentSetupAction) {
+    if (starting.current) return;
+    starting.current = true;
+    try {
+      await controller.act(action);
+    } finally {
+      starting.current = false;
+    }
+  }
+  const choosing = snapshot.messaging.kind === "not-configured";
   const startActions = snapshot.actions.filter(
     (action): action is Extract<AgentSetupAction, { kind: "start-messaging" }> => action.kind === "start-messaging",
   );
-  if (startActions.length === 0) return <p className={HINT}>{m.onboarding_v2_messaging_description()}</p>;
+  const slack = startActions.find((action) => action.provider === "slack");
+  const feishu = startActions.find((action) => action.provider === "feishu");
+  if (!choosing && "provider" in snapshot.messaging && snapshot.messaging.provider !== "slack") return null;
   return (
     <>
-      <p className={HINT}>{m.onboarding_v2_messaging_description()}</p>
-      <ul className={CHOICE_GRID} data-ui="agent-setup-messaging-choices">
-        {startActions.map((action) => (
-          <li key={action.provider}>
+      {choosing ? <p className={HINT}>{m.onboarding_v2_messaging_description()}</p> : null}
+      <ul
+        className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
+        data-ui={choosing && startActions.length ? "agent-setup-messaging-choices" : undefined}
+      >
+        <li key="slack">
+          <SlackSetupConfiguration
+            controller={controller}
+            snapshot={snapshot}
+            slackApi={slackApi}
+            renderTrigger={
+              choosing && slack
+                ? ({ onClick, disabled, ref }) => (
+                    <Button
+                      ref={ref}
+                      className={CARD}
+                      disabled={disabled || controller.busyKey !== undefined}
+                      onClick={() => {
+                        if (!starting.current) onClick();
+                      }}
+                      variant="ghost"
+                    >
+                      <MessagingChoiceCopy provider="slack" />
+                    </Button>
+                  )
+                : undefined
+            }
+          />
+        </li>
+        {choosing && feishu ? (
+          <li key="feishu">
             <Button
               className={CARD}
-              disabled={busyKey !== undefined}
-              loading={busyKey?.kind === "start-messaging" && busyKey.provider === action.provider}
-              onClick={() => void onStart(action)}
+              disabled={controller.busyKey !== undefined}
+              loading={controller.busyKey?.kind === "start-messaging" && controller.busyKey.provider === "feishu"}
+              onClick={() => void start(feishu)}
               variant="ghost"
             >
-              <BrandMark brand={action.provider} label={providerTitle(action.provider)} />
-              <CardCopy
-                description={
-                  action.provider === "feishu"
-                    ? m.onboarding_v2_messaging_feishu_description({
-                        provider: messagingProviderAlternateBrand(),
-                      })
-                    : m.onboarding_v2_messaging_provider_description({
-                        provider: providerTitle(action.provider),
-                      })
-                }
-                title={providerTitle(action.provider)}
-              />
+              <MessagingChoiceCopy provider="feishu" />
             </Button>
           </li>
-        ))}
+        ) : null}
       </ul>
+    </>
+  );
+}
+
+function MessagingChoiceCopy({ provider }: { provider: "slack" | "feishu" }) {
+  return (
+    <>
+      <BrandMark brand={provider} label={providerTitle(provider)} />
+      <CardCopy
+        description={
+          provider === "feishu"
+            ? m.onboarding_v2_messaging_feishu_description({ provider: messagingProviderAlternateBrand() })
+            : m.onboarding_v2_messaging_provider_description({ provider: providerTitle(provider) })
+        }
+        title={providerTitle(provider)}
+      />
     </>
   );
 }

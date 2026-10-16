@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { strToU8, zipSync } from "fflate";
 import {
   type DocumentNode,
   type FragmentDefinitionNode,
@@ -12,13 +12,15 @@ import {
   type SelectionNode,
   type SelectionSetNode,
 } from "graphql";
-import type { RuntimeProxyAuthorization } from "../../runtime-credentials/credential-broker.js";
-import { GitHubProxyApiTransport } from "../../services/github-proxy/api-transport.js";
-import { GitPublicationGuard } from "../../services/github-proxy/git-publication.js";
-import { GitReadTransport } from "../../services/github-proxy/git-read-transport.js";
-import { GitWorkspace } from "../../services/github-proxy/git-workspace.js";
 import { GitHubProviderAdapter } from "../../services/github-proxy/github-provider-adapter.js";
-import { GitHubUserTokenLeases } from "../../services/github-proxy/user-token-leases.js";
+import { GitHubHttpTransport } from "../../services/github-proxy/http-transport.js";
+import { nativeProxyChannel } from "./native-proxy-channel.js";
+
+async function bytes(input: AsyncIterable<Uint8Array>) {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of input) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
 
 /** Project only selected response fields, as GraphQL does; extra fixture fields break native gh decoders. */
 function project(set: SelectionSetNode, value: unknown, fragments: Map<string, FragmentDefinitionNode>): unknown {
@@ -62,26 +64,24 @@ function mutateFixture(
     "closePullRequest",
     "reopenPullRequest",
     "addComment",
+    "addPullRequestReview",
+    "mergePullRequest",
   ].find((name) => query.includes(name));
   if (!operation) return undefined;
   if (operation === "closePullRequest") pr.state = "CLOSED";
   if (operation === "reopenPullRequest") pr.state = "OPEN";
+  if (operation === "mergePullRequest") pr.state = "MERGED";
   const input = record(record(body.variables).input);
   if (input.title) pr.title = input.title;
   return graphResponse(query, {
     [operation]: {
       __typename: "Payload",
       pullRequest: pr,
+      pullRequestReview: { id: "PRR_fixture", state: "APPROVED" },
       commentEdge: { node: { id: "IC_fixture", url: `${pr.url}#issuecomment-1` } },
       subject: pr,
     },
   });
-}
-function fixtureHttpAuthorized(request: http.IncomingMessage, response: http.ServerResponse): boolean {
-  if (request.headers.host === "api.github.com" && request.headers.authorization === "token otrh_fixture") return true;
-  response.writeHead(403);
-  response.end();
-  return false;
 }
 
 function graphResponse(query: string, value: unknown): Response {
@@ -96,14 +96,13 @@ function graphResponse(query: string, value: unknown): Response {
   return Response.json({ data: project(operation.selectionSet, value, fragments) });
 }
 
-export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; privateRepository?: boolean } = {}) {
+export async function nativeGhFixture(
+  options: { denyProjectMetadata?: boolean; privateRepository?: boolean; cloud?: boolean } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "ot-gh-server-"));
-  const socketPath = join(root, "g.sock");
-  const executionId = randomUUID(),
-    sessionId = randomUUID(),
-    bindingId = randomUUID();
+
   const fullName = "team/code",
-    branch = `opentag/${sessionId}/code/fixture`;
+    branch = "feature/ordinary-work";
   const repo = {
     id: "R_fixture",
     databaseId: 123,
@@ -116,6 +115,7 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
     hasIssuesEnabled: true,
     hasWikiEnabled: false,
     isFork: false,
+    mergeCommitAllowed: true,
     parent: null,
   };
   const contexts = {
@@ -161,6 +161,8 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
     milestone: null,
     autoMergeRequest: null,
     mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
+    viewerCanUpdate: true,
     additions: 1,
     deletions: 1,
     createdAt: "2026-10-14T01:00:00Z",
@@ -170,15 +172,25 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
     reactionGroups: [],
     commits: { nodes: [{ commit: { oid: "1".repeat(40), statusCheckRollup: { contexts } } }], totalCount: 1 },
   };
-  const foreignPr = { ...pr, id: "PR_foreign", number: 2, headRefName: `opentag/${randomUUID()}/code/foreign` };
-  const upstreamRequests: { method: string; path: string; search: string; body: unknown; accept: string | null }[] = [];
-  const permissions: unknown[] = [];
-  const tokenPermissions = new Map<string, Record<string, string>>();
-  const counts = { minted: 0, revoked: 0 };
+  const foreignPr: Record<string, unknown> = {
+    ...pr,
+    id: "PR_foreign",
+    number: 2,
+    headRefName: "opentag/different-session/code/foreign",
+  };
+  const upstreamRequests: {
+    host: string;
+    method: string;
+    path: string;
+    search: string;
+    body: unknown;
+    accept: string | null;
+  }[] = [];
   interface FixtureRequest {
     method: string;
     body: unknown;
     accept: string | null;
+    search: URLSearchParams;
   }
   const metadata = () =>
     Response.json({
@@ -211,8 +223,80 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
     head_commit: { message: "Fixture commit" },
   };
   const runs = () => Response.json({ total_count: 1, workflow_runs: [workflowRun] });
+  const log = "2026-10-14T01:00:00.0000000Z fixture-log-line\n";
+  const download = (name: string, host = "productionresultssa9.blob.core.windows.net") =>
+    new Response(null, {
+      status: 302,
+      headers: { location: `https://${host}/storage/${name}?sig=fixture-only` },
+    });
   const routes: Record<string, (request: FixtureRequest) => Response> = {
+    [`/repos/${fullName}/issues`]: ({ search }) => {
+      const page = Number(search.get("page") ?? "1");
+      return Response.json([{ number: page }], {
+        headers:
+          page < 300 ? { link: `<https://api.github.com/repos/${fullName}/issues?page=${page + 1}>; rel="next"` } : {},
+      });
+    },
+    [`/repos/${fullName}/issues/99/comments`]: ({ body }) =>
+      Response.json({ id: 99, body: record(body).body, user: { login: "fixture-owner" } }),
+    [`/repos/${fullName}/actions/runs/7/logs`]: () =>
+      download("run.zip", "results-receiver.actions.githubusercontent.com"),
+    [`/repos/${fullName}/actions/jobs/99/logs`]: () => download("job.txt"),
+    [`/repos/${fullName}/actions/runs/7/artifacts`]: () =>
+      Response.json({
+        total_count: 1,
+        artifacts: [
+          {
+            id: 55,
+            name: "fixture-artifact",
+            size_in_bytes: 100,
+            expired: false,
+            archive_download_url: `https://api.github.com/repos/${fullName}/actions/artifacts/55/zip`,
+          },
+        ],
+      }),
+    [`/repos/${fullName}/actions/artifacts/55/zip`]: () => download("artifact.zip"),
+    "/storage/run.zip": () =>
+      new Response(Buffer.from(zipSync({ "build/1_Run tests.txt": strToU8(log), "0_build.txt": strToU8(log) })), {
+        headers: { "content-type": "application/zip" },
+      }),
+    "/storage/artifact.zip": () =>
+      new Response(Buffer.from(zipSync({ "result.txt": strToU8("fixture-artifact-bytes\n") })), {
+        headers: { "content-type": "application/zip" },
+      }),
+    "/storage/job.txt": () => new Response(log),
+    [`/repos/${fullName}/releases/tags/v1.0.0`]: () =>
+      Response.json({
+        id: 1,
+        tag_name: "v1.0.0",
+        name: "Fixture release",
+        draft: false,
+        prerelease: false,
+        zipball_url: `https://api.github.com/repos/${fullName}/zipball/v1.0.0`,
+        assets: [
+          {
+            id: 88,
+            name: "fixture.txt",
+            size: 22,
+            state: "uploaded",
+            api_url: `https://api.github.com/repos/${fullName}/releases/assets/88`,
+            url: `https://api.github.com/repos/${fullName}/releases/assets/88`,
+            browser_download_url: `https://github.com/${fullName}/releases/download/v1.0.0/fixture.txt`,
+          },
+        ],
+      }),
+    [`/repos/${fullName}/releases/assets/88`]: () => download("release.txt", "release-assets.githubusercontent.com"),
+    [`/repos/${fullName}/zipball/v1.0.0`]: () => download("archive.zip", "codeload.github.com"),
+    "/storage/release.txt": () => new Response("fixture-release-bytes\n"),
+    "/storage/archive.zip": () =>
+      new Response(Buffer.from(zipSync({ "team-code/file.txt": strToU8("fixture-archive-bytes\n") })), {
+        headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="code-v1.0.0.zip"' },
+      }),
     "/repositories/123": metadata,
+    [`/repos/${fullName}/pulls/2/merge`]: () =>
+      Response.json({ merged: true, sha: "2".repeat(40), message: "Merged by fixture owner" }),
+    [`/repos/${fullName}/pulls/2/reviews`]: () =>
+      Response.json({ id: 12, state: "APPROVED", user: { login: "fixture-owner" } }),
     [`/repos/${fullName}/actions/workflows`]: () => Response.json({ total_count: 1, workflows: [workflow] }),
     [`/repos/${fullName}/actions/workflows/42`]: () => Response.json(workflow),
     [`/repos/${fullName}/actions/workflows/ci.yml`]: () => Response.json(workflow),
@@ -220,7 +304,30 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
     [`/repos/${fullName}/actions/workflows/ci.yml/runs`]: runs,
     [`/repos/${fullName}/actions/runs`]: runs,
     [`/repos/${fullName}/actions/runs/7`]: () => Response.json(workflowRun),
-    [`/repos/${fullName}/actions/runs/7/jobs`]: () => Response.json({ total_count: 0, jobs: [] }),
+    [`/repos/${fullName}/actions/runs/7/jobs`]: () =>
+      Response.json({
+        total_count: 1,
+        jobs: [
+          {
+            id: 99,
+            name: "build",
+            status: "completed",
+            conclusion: "success",
+            started_at: "2026-10-14T01:00:00Z",
+            completed_at: "2026-10-14T01:00:01Z",
+            steps: [
+              {
+                name: "Run tests",
+                number: 1,
+                status: "completed",
+                conclusion: "success",
+                started_at: "2026-10-14T01:00:00Z",
+                completed_at: "2026-10-14T01:00:01Z",
+              },
+            ],
+          },
+        ],
+      }),
     [`/repos/${fullName}`]: metadata,
     [`/repos/${fullName}/pulls/1`]: ({ method, accept }) => {
       if (method === "GET" && /diff|patch/.test(accept ?? ""))
@@ -246,6 +353,25 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
     "/graphql": ({ body }) => {
       const payload = record(body),
         query = String(payload.query ?? "");
+      if (/\b__type\s*\(/.test(query))
+        return graphResponse(query, {
+          __type: {
+            fields: [
+              "id",
+              "number",
+              "statusCheckRollup",
+              "assignedActors",
+              "nodes",
+              "pageInfo",
+              "checkRunCount",
+              "checkRunCountsByState",
+              "statusContextCount",
+              "statusContextCountsByState",
+              "event",
+              "workflow",
+            ].map((name) => ({ name })),
+          },
+        });
       if (options.denyProjectMetadata && query.includes("PullRequestProjectItems"))
         return Response.json({
           errors: [
@@ -258,9 +384,14 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
         });
       const variables = record(payload.variables);
       const selected =
-        variables.pr_number === 2 || variables.number === 2 || variables.id === "PR_foreign" ? foreignPr : pr;
+        variables.pr_number === 2 ||
+        variables.number === 2 ||
+        variables.id === "PR_foreign" ||
+        record(variables.input).pullRequestId === "PR_foreign"
+          ? foreignPr
+          : pr;
       return (
-        mutateFixture(query, payload, pr) ??
+        mutateFixture(query, payload, selected) ??
         graphResponse(query, {
           node: selected,
           repository: {
@@ -277,138 +408,84 @@ export async function nativeGhFixture(options: { denyProjectMetadata?: boolean; 
       Response.json([{ context: "private-ci", state: "success" }]),
     [`/repos/${fullName}/statuses/feature/topic`]: () => Response.json([{ context: "private-ci", state: "success" }]),
   };
-  const requiredReadPermission = (path: string) =>
-    path.includes("/actions/") ? "actions" : /\/(?:status|statuses)(?:\/|$)/.test(path) ? "statuses" : undefined;
-  const upstream: typeof fetch = async (url, init) => {
-    const parsed = new URL(String(url)),
-      path = parsed.pathname,
-      method = init?.method ?? "GET";
-    const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined;
-    const accept = new Headers(init?.headers).get("accept");
-    upstreamRequests.push({ method, path, search: parsed.search, body, accept });
-    const requiredPermission = requiredReadPermission(path);
-    if (options.privateRepository && requiredPermission) {
-      const token = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "") ?? "";
-      if (tokenPermissions.get(token)?.[requiredPermission] !== "read")
-        return Response.json({ message: "Resource not accessible by integration" }, { status: 403 });
-    }
-    const route = routes[path];
-    if (!route) throw new Error(`Unregistered fixture request: ${method} ${path}`);
-    return route({ method, body, accept });
-  };
-  const workspace = new GitWorkspace();
-  const adapter = new GitHubProviderAdapter({
-    policy: {
-      resolve: async () => [
-        {
-          fullName,
-          repositoryId: "123",
-          installationId: "456",
-          scopes: [{ role: "code", access: "write", publish: "pull_request" }],
-          protectedTreeRefs: [],
-        },
-      ],
-    },
-    leases: new GitHubUserTokenLeases({
-      mint: async (input) => {
-        counts.minted++;
-        permissions.push(input.permissions);
-        const token = `ghu_fixture_${counts.minted}`;
-        tokenPermissions.set(token, { ...input.permissions });
-        return { token, expiresAt: new Date(Date.now() + 60000) };
-      },
-      revoke: async (token) => {
-        tokenPermissions.delete(token);
-        counts.revoked++;
-      },
-    }),
-    api: new GitHubProxyApiTransport(upstream),
-    reads: new GitReadTransport({ workspace }),
-    publication: new GitPublicationGuard({ workspace }),
-  });
-  const authorization: RuntimeProxyAuthorization = {
-    executionId,
-    sessionId,
-    bindingId,
-    provider: "github",
-    purpose: "execution",
-    scopeHash: "a".repeat(64),
-    authorizationRevision: "github:1",
-    credentialGeneration: "1",
-    accountId: randomUUID(),
-    agentId: randomUUID(),
-    cli: { provider: "github", connectionId: bindingId, authority: "user-task" },
-    recheck: async () => {},
-    resolveMaterial: async () => {
-      throw new Error("No material for fixture Sandbox");
-    },
-  };
-  const server = http.createServer((request, response) => {
+  const upstream = http.createServer((request, response) => {
     void (async () => {
-      if (!fixtureHttpAuthorized(request, response)) return;
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      try {
-        const result = await adapter.handle(
+      const parsed = new URL(request.url ?? "/", "https://api.github.com");
+      const method = request.method ?? "GET";
+      const raw = await bytes(request);
+      const body: unknown = parseFixtureBody(raw);
+      const accept = request.headers.accept ?? null;
+      upstreamRequests.push({
+        host: request.headers.host ?? "",
+        method,
+        path: parsed.pathname,
+        search: parsed.search,
+        body,
+        accept,
+      });
+      assertFixtureCredential(request);
+      const route = routes[parsed.pathname];
+      const denied = options.privateRepository && !["GET", "HEAD"].includes(method) && parsed.pathname !== "/graphql";
+      let value = Response.json({ message: "Not Found" }, { status: 404 });
+      if (route) value = route({ method, body, accept, search: parsed.searchParams });
+      if (denied) value = Response.json({ message: "Resource not accessible by integration" }, { status: 403 });
+      response.writeHead(value.status, Object.fromEntries(value.headers.entries()));
+      response.end(Buffer.from(await value.arrayBuffer()));
+    })().catch(() => response.destroy());
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  const address = upstream.address();
+  if (!address || typeof address === "string") throw Error("Fixture address missing");
+  const adapter = new GitHubProviderAdapter({
+    management: {
+      getExecutionUserCredential: async () => ({
+        accessToken: "ghu_fixture_owner",
+        githubUserId: "owner",
+        credentialGeneration: 1n,
+        accessExpiresAt: new Date(Date.now() + 60000),
+      }),
+    },
+    transport: new GitHubHttpTransport({
+      resolveAddresses: async () => ["140.82.112.3"],
+      connect: (url, options, listener) =>
+        http.request(
           {
-            executionId,
-            sessionId,
-            bindingId,
-            provider: "github",
-            method: request.method ?? "GET",
-            path: request.url ?? "/",
-            headers: { accept: request.headers.accept ?? "", "x-opentag-provider-origin": "api.github.com" },
-            body: (async function* () {
-              yield Buffer.concat(chunks);
-            })(),
-            capability: "fixture",
-            capabilityTtlSeconds: 60,
-            signal: new AbortController().signal,
+            ...options,
+            hostname: "127.0.0.1",
+            port: address.port,
+            path: url.pathname + url.search,
+            headers: { ...options.headers, host: url.host },
           },
-          authorization,
-        );
-        response.writeHead(result.status, result.headers);
-        for await (const chunk of result.body) response.write(chunk);
-        response.end();
-      } catch {
-        response.writeHead(403);
-        response.end("scope_denied");
-      }
-    })().catch(() => {
-      response.destroy();
-    });
+          listener,
+        ),
+    }),
   });
-  server.listen(socketPath);
-  await once(server, "listening");
-  await chmod(socketPath, 0o600);
-  await writeFile(join(root, "config.yml"), `version: 1\nhttp_unix_socket: ${JSON.stringify(socketPath)}\n`, {
-    mode: 0o600,
-  });
+  const channel = await nativeProxyChannel(root, adapter, options.cloud);
   return {
     root,
+    channel,
     branch,
     fullName,
     upstreamRequests,
-    permissions,
-    counts,
+    foreignPr,
     pr,
-    environment: {
-      HOME: root,
-      PATH: process.env.PATH,
-      GH_HOST: "github.com",
-      GH_TOKEN: "otrh_fixture",
-      GH_CONFIG_DIR: root,
-      GH_PROMPT_DISABLED: "1",
-      GH_NO_UPDATE_NOTIFIER: "1",
-    },
+    environment: { ...channel.environment, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" },
     async close() {
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        server.closeAllConnections();
-      });
-      await adapter.close();
-      await workspace.close();
+      await channel.close();
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
       await rm(root, { recursive: true, force: true });
     },
   };
+}
+
+function parseFixtureBody(raw: Buffer): unknown {
+  return raw.length ? JSON.parse(raw.toString()) : undefined;
+}
+
+function assertFixtureCredential(request: http.IncomingMessage): void {
+  const expected = request.headers.host === "api.github.com" ? "Bearer ghu_fixture_owner" : undefined;
+  if (request.headers.authorization !== expected) throw Error("Wrong owner token");
+  if (request.headers.cookie !== undefined) throw Error("Unexpected cookie");
 }

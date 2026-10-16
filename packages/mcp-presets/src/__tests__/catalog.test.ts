@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { checkOutboundUrl } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
-import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, validateMcpCatalog } from "../index.js";
+import { MCP_CATALOG_CATEGORIES, MCP_CATALOG_ENTRIES, MCP_CATALOG_ENTRY_SCHEMA, validateMcpCatalog } from "../index.js";
 
 describe("mcp preset catalog shape", () => {
   it("exposes a non-empty category list in strict order", () => {
@@ -35,6 +35,44 @@ describe("mcp preset catalog shape", () => {
       expect(entry.description.en.length).toBeGreaterThan(0);
       expect(entry.description.zh.length).toBeGreaterThan(0);
     }
+  });
+
+  it("derives the slug id from the registry id and lists only offered entries", () => {
+    for (const entry of MCP_CATALOG_ENTRIES) {
+      expect(entry.registryId).toBe(`mcp/${entry.id}`);
+      expect(entry.name).toBe(entry.id);
+      expect(["active", "deprecated", "archived"]).toContain(entry.status);
+    }
+  });
+
+  it("carries the registry fields every entry needs", () => {
+    for (const entry of MCP_CATALOG_ENTRIES) {
+      expect(entry.whenToUse.en.length).toBeGreaterThan(0);
+      expect(entry.whenToUse.zh.length).toBeGreaterThan(0);
+      expect(entry.capabilities.length).toBeGreaterThan(0);
+      expect(entry.auth.methods).toContain(entry.auth.defaultKind);
+      expect(entry.auth.defaultKind).toBe(entry.defaultAuthKind);
+      expect(entry.auth.oauth !== undefined).toBe(entry.auth.methods.includes("oauth"));
+    }
+  });
+
+  it("gives every installable entry its connection fields and no other entry any", () => {
+    for (const entry of MCP_CATALOG_ENTRIES) {
+      if (entry.installable) {
+        expect(entry.url).toMatch(/^https:\/\//);
+        expect(entry.defaultAuthKind).toBe(entry.auth.defaultKind);
+      } else {
+        expect(entry.url).toBeUndefined();
+        expect(entry.defaultAuthKind).toBeUndefined();
+      }
+    }
+  });
+
+  it("exports the entry schema with the supported locales injected", () => {
+    const text = MCP_CATALOG_ENTRY_SCHEMA.$defs.localizedText;
+    expect(Object.keys(text.properties).sort()).toEqual(["en", "zh"]);
+    expect(MCP_CATALOG_ENTRY_SCHEMA.required).not.toContain("remotes");
+    expect(MCP_CATALOG_ENTRY_SCHEMA.anyOf).toEqual([{ required: ["packages"] }, { required: ["remotes"] }]);
   });
 
   it("embeds every icon as a self-contained data URL", () => {
@@ -80,16 +118,39 @@ describe("mcp preset catalog shape", () => {
 
   it("points every entry at an endpoint the outbound gate would dial", () => {
     for (const entry of MCP_CATALOG_ENTRIES) {
+      if (!entry.installable || entry.url === undefined) continue;
       const verdict = checkOutboundUrl(entry.url, { allowLoopback: false });
       expect(verdict, entry.id).not.toHaveProperty("failure");
     }
   });
 
   it("reports violations for a malformed entry", () => {
-    const base = MCP_CATALOG_ENTRIES[0];
-    if (!base) throw new Error("catalog is empty");
+    const base = MCP_CATALOG_ENTRIES.find((entry) => entry.installable);
+    if (!base) throw new Error("catalog has no installable entry");
     const bad = { ...base, name: "Bad Name", category: "missing", website: "ftp://x", oauthScopes: [] };
     const fields = validateMcpCatalog(MCP_CATALOG_CATEGORIES, [bad]).map((v) => v.field);
     expect(fields).toEqual(expect.arrayContaining(["name", "category", "website", "oauthScopes"]));
+  });
+
+  describe("optional create-request headers", () => {
+    const base = MCP_CATALOG_ENTRIES.find((entry) => entry.installable);
+    if (!base) throw new Error("catalog has no installable entry");
+    const fieldsOf = (entry: typeof base) =>
+      validateMcpCatalog(MCP_CATALOG_CATEGORIES, [entry]).map((violation) => violation.field);
+
+    it("rejects an invalid HTTP header name", () => {
+      expect(fieldsOf({ ...base, authHeader: "bad header" })).toContain("authHeader");
+      expect(fieldsOf({ ...base, extraHeaders: { "bad header": "v" } }).length).toBeGreaterThan(0);
+    });
+
+    it("rejects an extra header that repeats the authorization header", () => {
+      const entry = { ...base, authHeader: "x-api-key", extraHeaders: { "x-api-key": "v" } };
+      expect(fieldsOf(entry).length).toBeGreaterThan(0);
+    });
+
+    it("rejects connection fields on a non-installable entry", () => {
+      const entry = { ...base, installable: false };
+      expect(fieldsOf(entry)).toEqual(expect.arrayContaining(["url", "defaultAuthKind"]));
+    });
   });
 });

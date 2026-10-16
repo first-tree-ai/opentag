@@ -1,7 +1,8 @@
 import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
-  PROVIDER_PROXY_MAX_STREAM_OPENS_PER_CONNECTION,
+  PROVIDER_PROXY_HTTP_PROTOCOL,
+  PROVIDER_PROXY_MAX_RETIRED_STREAMS,
   RUNTIME_PROXY_DATA_BINARY_FRAME_MAX_BYTES,
   RUNTIME_PROXY_DATA_CHUNK_BYTES,
   RUNTIME_PROXY_DATA_HEADER_MAX_BYTES,
@@ -204,13 +205,14 @@ export class RuntimeProxyDataConnection {
   #closed = false;
   #closeSocket!: () => void;
   #nextStreamId = 1;
+  #httpVersion?: 2;
 
   private constructor(socket: WebSocket, options: RuntimeProxyDataConnectionOptions) {
     this.#socket = socket;
     this.#logger = options.logger ?? createLogger("runtime-proxy-data");
     this.#maxQueuedOpens = options.maxQueuedOpens ?? 64;
     this.#maxStreams = options.maxStreams ?? RUNTIME_PROXY_DATA_MAX_STREAMS;
-    this.#tombstoneLimit = PROVIDER_PROXY_MAX_STREAM_OPENS_PER_CONNECTION;
+    this.#tombstoneLimit = PROVIDER_PROXY_MAX_RETIRED_STREAMS;
     this.#openTimeoutMs = options.openTimeoutMs ?? 30_000;
     this.#closePromise = new Promise((resolve) => {
       this.#closeSocket = resolve;
@@ -243,10 +245,10 @@ export class RuntimeProxyDataConnection {
     if (options.url.includes("?") || options.url.includes("#")) {
       throw new RuntimeProxyDataError("protocol_error", "The data endpoint URL must not carry query parameters");
     }
-    const socket = (options.webSocketFactory ?? ((url, socketOptions) => new WebSocket(url, socketOptions)))(
-      options.url,
-      { maxPayload: RUNTIME_PROXY_DATA_BINARY_FRAME_MAX_BYTES, perMessageDeflate: false },
-    );
+    const socket = (
+      options.webSocketFactory ??
+      ((url, socketOptions) => new WebSocket(url, PROVIDER_PROXY_HTTP_PROTOCOL, socketOptions))
+    )(options.url, { maxPayload: RUNTIME_PROXY_DATA_BINARY_FRAME_MAX_BYTES, perMessageDeflate: false });
     const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 15_000;
     return new Promise<RuntimeProxyDataConnection>((resolve, reject) => {
       let settled = false;
@@ -308,7 +310,9 @@ export class RuntimeProxyDataConnection {
         }
         settled = true;
         cleanup();
-        resolve(new RuntimeProxyDataConnection(socket, options));
+        const connection = new RuntimeProxyDataConnection(socket, options);
+        connection.#httpVersion = ready.data.httpVersion;
+        resolve(connection);
       });
       socket.on("error", () => {
         fail(new RuntimeProxyDataError("connection_lost", "The data connection failed during the handshake"));
@@ -374,7 +378,21 @@ export class RuntimeProxyDataConnection {
   }
 
   #startStream(request: RuntimeProxyOpenStreamRequest): Promise<RuntimeProxyStreamResponse> {
-    const streamId = this.#allocateStreamId();
+    if (request.method === "HEAD" && this.#httpVersion !== 2)
+      return Promise.reject(
+        new RuntimeProxyDataError(
+          "stream_error",
+          "Update the Server to use HEAD requests",
+          undefined,
+          "github_protocol_upgrade_required",
+        ),
+      );
+    let streamId: number;
+    try {
+      streamId = this.#allocateStreamId();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     const stream = new ProxyStream(streamId);
     stream.inbound = new StreamChunkQueue(
       (bytes) => this.#grantInboundCredit(stream, bytes),
@@ -397,14 +415,7 @@ export class RuntimeProxyDataConnection {
         reject(error);
       };
     });
-    stream.openTimer = setTimeout(() => {
-      stream.openTimer = undefined;
-      this.#cancelStream(stream, "open_timeout");
-      stream.rejectOpen?.(
-        new RuntimeProxyDataError("open_timeout", "The data stream did not produce a response in time"),
-      );
-    }, this.#openTimeoutMs);
-    stream.openTimer.unref();
+    this.#refreshOpenTimeout(stream);
     const onAbort = () => {
       this.#cancelStream(stream, "aborted");
       stream.rejectOpen?.(new RuntimeProxyDataError("aborted", "The stream was aborted"));
@@ -433,13 +444,25 @@ export class RuntimeProxyDataConnection {
     return openPromise;
   }
 
+  /** Bound idle opening time, not an actively uploading Git pack's total duration. */
+  #refreshOpenTimeout(stream: ProxyStream): void {
+    if (stream.responded || stream.settled) return;
+    if (stream.openTimer) clearTimeout(stream.openTimer);
+    stream.openTimer = setTimeout(() => {
+      stream.openTimer = undefined;
+      this.#cancelStream(stream, "open_timeout");
+    }, this.#openTimeoutMs);
+    stream.openTimer.unref();
+  }
+
   #allocateStreamId(): number {
-    for (let attempts = 0; attempts < 0xffffffff; attempts += 1) {
-      const candidate = this.#nextStreamId;
-      this.#nextStreamId = this.#nextStreamId >= 0xffffffff ? 1 : this.#nextStreamId + 1;
-      if (!this.#streams.has(candidate) && !this.#tombstones.has(candidate)) return candidate;
+    if (this.#nextStreamId > 0x7fffffff) {
+      const error = new RuntimeProxyDataError("too_many_streams", "The data connection exhausted stream identifiers");
+      this.#failAll(error);
+      this.#socket.close(1000, "stream_identifiers_exhausted");
+      throw error;
     }
-    throw new RuntimeProxyDataError("too_many_streams", "The data connection exhausted stream identifiers");
+    return this.#nextStreamId++;
   }
 
   async #pumpRequestBody(stream: ProxyStream, body: AsyncIterable<Uint8Array> | undefined): Promise<void> {
@@ -477,6 +500,7 @@ export class RuntimeProxyDataConnection {
       new DataView(frame.buffer).setUint32(0, stream.streamId, false);
       frame.set(slice, 4);
       if (!(await this.#sendBinary(frame))) return false;
+      this.#refreshOpenTimeout(stream);
     }
     return true;
   }
@@ -484,6 +508,7 @@ export class RuntimeProxyDataConnection {
   #finishRequestSide(stream: ProxyStream): void {
     if (stream.requestEnded || stream.settled) return;
     stream.requestEnded = true;
+    this.#refreshOpenTimeout(stream);
     this.#sendControl({ type: "end", streamId: stream.streamId });
     this.#completeIfDone(stream);
   }
@@ -620,6 +645,7 @@ export class RuntimeProxyDataConnection {
         });
         break;
       case "credit":
+        this.#refreshOpenTimeout(stream);
         stream.sendCredit.available += frame.bytes;
         if (stream.sendCredit.available > RUNTIME_PROXY_DATA_INITIAL_CREDIT_BYTES) {
           this.#protocolViolation("The data connection exceeded the stream credit window");
@@ -725,7 +751,14 @@ export class RuntimeProxyDataConnection {
   #cancelStream(stream: ProxyStream, code: string): void {
     if (stream.settled) return;
     this.#sendControl({ type: "cancel", streamId: stream.streamId, code });
-    this.#failStream(stream, new RuntimeProxyDataError("aborted", `The data stream was cancelled: ${code}`), true);
+    this.#failStream(
+      stream,
+      new RuntimeProxyDataError(
+        code === "open_timeout" ? "open_timeout" : "aborted",
+        `The data stream was cancelled: ${code}`,
+      ),
+      true,
+    );
   }
 
   #failStream(stream: ProxyStream, error: Error, tombstone = false): void {

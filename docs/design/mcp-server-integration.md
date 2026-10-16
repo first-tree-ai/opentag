@@ -458,7 +458,7 @@ Operator setup:
 - Create an OAuth client of type **Web application** in Google Cloud and register
   `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as an authorized redirect URI.
 - On the OAuth consent screen's data access, add every scope the eight catalog entries request
-  (`oauthScopes` in `packages/mcp-presets/mcp-catalog.yaml`). The entries carry Google's
+  (`auth.oauth.scopes` in `packages/mcp-presets/mcp-catalog.yaml`). The entries carry Google's
   recommended per-product subset, which deliberately avoids restricted scopes such as
   `https://mail.google.com/`.
 - Google issues a refresh token only for `access_type=offline`, with `prompt=consent` on
@@ -550,7 +550,7 @@ On a mismatch, the response's `error`, `error_description`, and `error_uri` are 
 adopted — a mismatched response is evidence of an attack, not a hint about what went wrong.
 
 **Scopes**, in priority order: scopes an explicit request names (the CLI's `--scopes`, or a catalog
-entry's `oauthScopes`); otherwise the challenge's `scope`; otherwise the Protected Resource Metadata
+entry's `auth.oauth.scopes`); otherwise the challenge's `scope`; otherwise the Protected Resource Metadata
 document's `scopes_supported`; otherwise no `scope` parameter at all. The protected resource's own
 list is the fallback the specification names, and it is load-bearing for Google, whose authorization
 endpoint rejects a request carrying no `scope`. `offline_access` is added only when the
@@ -1222,7 +1222,8 @@ The catalog is committed repository data in the `@opentag/mcp-presets` workspace
 | Source | Holds |
 | --- | --- |
 | `packages/mcp-presets/mcp-categories.yaml` | the category set: id, a localized label, and the tab order |
-| `packages/mcp-presets/mcp-catalog.yaml` | the entries: slug, localized title and description, URL, default authorization kind, category, provider site, icon, order, optional bearer header configuration, and an optional `oauthScopes` list — the scopes the provider's consent screen is configured for |
+| `packages/mcp-presets/mcp-catalog.yaml` | the entries, one registry-style record each: `id` (`mcp/<slug>`), localized `name`, `summary`, and `when_to_use`, `capabilities`, `status`, `auth` (`methods`, `default_kind`, and `oauth.scopes` — the scopes the provider's consent screen is configured for), `risk`, `remotes` endpoints with their header configuration and/or self-hosted `packages` (with `prerequisites` and `platforms`), `catalog` placement (category, order, icon), and `homepage` |
+| `packages/mcp-presets/schema/mcp-catalog-entry.schema.json` | the JSON Schema (draft 2020-12) every entry is validated against; the generator injects the supported locales |
 | `packages/mcp-presets/icons/` | the monochrome card marks referenced by the entries |
 
 `scripts/generate-mcp-catalog.mjs` compiles the sources into
@@ -1241,9 +1242,9 @@ uploads it explicitly, and the Presets catalog never offers it.
 The current Add server flow uses an exact catalog endpoint match to supply authentication defaults
 and a suggested name. Each Web installation creates its own definition; the Account registry is consulted only to resolve
 a creation-name conflict.
-`default_auth_kind` remains a prefill for the new authorization, never a statement about the Server.
+`auth.default_kind` remains a prefill for the new authorization, never a statement about the Server.
 
-An entry's `oauthScopes`, when present, travel as the OAuth start request's explicit scopes, so the
+An entry's `auth.oauth.scopes`, when present, travel as the OAuth start request's explicit scopes, so the
 provider's consent screen is asked for exactly the scopes the catalog author recorded. An entry that
 declares none leaves scope selection to the flow's own discovery rules. The Add server flow consults
 scopes only for an exact endpoint match. Google's entries
@@ -1259,8 +1260,23 @@ known limitation: its authorization server advertises `client_secret_post` and `
 `client_secret_basic` the dynamic-registration path presents, so its authorization stays unverified
 until token-endpoint authentication-method support exists (issue #814 tracks the follow-up).
 
+Discover lists only `active` entries. A `deprecated` or `archived` entry is compiled but hidden, and
+a `removed` entry is not emitted. Discover search also matches an entry's `keywords`, `aliases`,
+`tags`, `capabilities`, and `when_to_use` text. The compiled module keeps the flat card fields the
+Web App reads (`id` as the slug, `title`, `description`, `url`, `defaultAuthKind`, `oauthScopes`,
+`category`, `website`, `iconUrl`, `order`) as values derived from the registry fields, and adds
+`registryId`, `whenToUse`, `capabilities`, `status`, `risk`, and `auth`.
+
 The generator refuses, at build time, at minimum:
 
+- an entry that does not validate against the entry schema: an unknown key, a non-HTTPS remote, an
+  unknown package registry type, an unknown `status`, a missing locale, or neither `packages` nor
+  `remotes`;
+- a package whose named argument has no name, whose secret carries a value or default, whose
+  credential-looking variable is not marked secret, or whose value looks like a credential;
+- an `auth.default_kind` that is not in `auth.methods`, or an `oauth` method without an `auth.oauth`
+  block (and the reverse);
+- a `risk.side_effects` weaker than the strongest tool side effect, or a duplicate tool name;
 - an entry URL the outbound policy would refuse;
 - a create payload the Server would reject — the entry is validated by `CreateMCPServerRequestSchema`
   itself, so its name, auth header and scheme, and extra headers follow the same rules the Server
@@ -1268,14 +1284,18 @@ The generator refuses, at build time, at minimum:
 - an entry that names a category the category source does not declare;
 - a declared category that no entry references, so the tab bar never shows a tab that leads nowhere;
 - a duplicate entry or category id;
-- an `oauthScopes` list that is empty, carries a blank or oversized scope, or exceeds the start
-  request's bounds;
+- an `auth.oauth.scopes` list that is empty, carries a blank or oversized scope, or exceeds the
+  start request's bounds;
 - a localized field that omits any supported locale, taken from the i18n project settings;
 - an entry whose referenced icon file does not exist;
 - a compiled module that does not match its sources.
 
-Only remote Streamable HTTP Servers may be listed: OpenTag is a hosted service and cannot run a user's
-local stdio subprocess.
+Only a Server with a remote Streamable HTTP endpoint is **installable**. An entry may also record
+self-hosted `packages` (stdio and similar) as catalog data: the deployment has sandboxes, but the
+Server create contract and runtime do not run packages yet, so such an entry is emitted with
+`installable: false`, carries no flat connection fields, is withheld from Discover and URL matching,
+and is exposed read-only in the public catalog (with package values and defaults omitted). An SSE
+remote is data only as well. This document's Server-create contract is unchanged.
 
 **Staleness is not asserted by `pnpm check`.** Whether a listed endpoint still answers, and whether its
 authorization method is still what the catalog says, cannot be decided without the public network, and

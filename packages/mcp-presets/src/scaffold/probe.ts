@@ -265,11 +265,10 @@ function modernCall(send: Fetcher, version: string): Call {
     );
 }
 
-/** The JSON-RPC error in a failure body, if the body is one. */
+/** The JSON-RPC error for request 1 in a failure body, read through the same JSON/SSE seam as a success. */
 async function rpcErrorOf(response: Response): Promise<{ code: number; data?: unknown } | undefined> {
   try {
-    const body: unknown = JSON.parse(await response.text());
-    const error = isRecord(body) ? body.error : undefined;
+    const error = (await readRpcMessage(response, 1))?.error;
     return isRecord(error) && typeof error.code === "number" ? { code: error.code, data: error.data } : undefined;
   } catch {
     return undefined;
@@ -334,7 +333,12 @@ async function discoverModern(send: Fetcher, version: string, retried = false): 
     return { kind: "failed", reason: "server/discover answered 2xx but not with a JSON-RPC result" };
   return {
     kind: "session",
-    session: { era: "modern", version, call, serverInfo: readServerInfo(message.result, "modern") },
+    session: {
+      era: version === MCP_MODERN_PROTOCOL_VERSION ? "modern" : "legacy",
+      version,
+      call,
+      serverInfo: readServerInfo(message.result, "modern"),
+    },
   };
 }
 
@@ -410,7 +414,7 @@ export async function probeMcpEndpoint(url: string, options: ProbeOptions = {}):
     return {
       ok: true,
       authKind: "none",
-      evidence: `${session.era === "modern" ? "server/discover" : "initialize"} answered anonymously (protocol ${session.version})`,
+      evidence: `${session.afterInitialize === undefined ? "server/discover" : "initialize"} answered anonymously (protocol ${session.version})`,
       serverInfo: session.serverInfo,
       protocolVersion: session.version,
       protocolEra: session.era,

@@ -277,6 +277,31 @@ describe("protocol eras", () => {
     expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: odd })).toMatchObject({ ok: false });
   });
 
+  it("reads a modern error from a 400 SSE body, finite or open, before deciding to downgrade", async () => {
+    const event = `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32022, message: "v", data: { supported: ["2025-11-25"] } } })}\n\n`;
+    for (const open of [false, true]) {
+      const methods: string[] = [];
+      const peer = (async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as { id: number; method: string };
+        const version = (init.headers as Record<string, string>)["mcp-protocol-version"];
+        methods.push(`${body.method}@${version ?? ""}`);
+        if (version === "2026-07-28") {
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(event));
+              if (!open) controller.close();
+            },
+          });
+          return new Response(stream, { status: 400, headers: { "content-type": "text/event-stream" } });
+        }
+        return json({ jsonrpc: "2.0", id: body.id, result: body.method === "tools/list" ? { tools: [] } : {} });
+      }) as unknown as typeof fetch;
+      const result = await probeMcpEndpoint("https://x.test/mcp", { fetch: peer, timeoutMs: 2000 });
+      expect(result).toMatchObject({ ok: true, protocolEra: "legacy" });
+      expect(methods).toEqual(["server/discover@2026-07-28", "server/discover@2025-11-25", "tools/list@2025-11-25"]);
+    }
+  });
+
   it("treats a numeric or empty nextCursor as an incomplete inventory and null as absent", async () => {
     const withCursor = (cursor: unknown) =>
       (async (_url: string, init: RequestInit) => {

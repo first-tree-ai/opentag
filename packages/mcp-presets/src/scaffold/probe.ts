@@ -100,20 +100,41 @@ export function safeText(value: string, max = MAX_SAFE_TEXT): string {
   return JSON.stringify(flat.length > max ? `${flat.slice(0, max)}...` : flat);
 }
 
-/** The RPC message with the given id, from a JSON body, a JSON batch, or a (partial) SSE body. */
-export function parseRpcBody(contentType: string, body: string, id: number): Record<string, unknown> | undefined {
-  const candidates = contentType.includes("text/event-stream")
-    ? body
-        .split(/\r?\n/)
+/**
+ * The payload of each SSE event: its `data:` lines joined with newlines, per the SSE framing rules.
+ * While the stream is still open (`complete` false) the last, unterminated frame is left alone.
+ */
+function sseEventPayloads(body: string, complete: boolean): string[] {
+  const frames = body.replace(/\r\n?/g, "\n").split("\n\n");
+  if (!complete) frames.pop();
+  return frames
+    .map((frame) =>
+      frame
+        .split("\n")
         .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
-    : [body];
+        .map((line) => (line.startsWith("data: ") ? line.slice(6) : line.slice(5)))
+        .join("\n"),
+    )
+    .filter((payload) => payload.length > 0);
+}
+
+/**
+ * The RPC message with the given id, from a JSON body, a JSON batch, or an SSE body. `complete` is
+ * false for a body that may still be arriving.
+ */
+export function parseRpcBody(
+  contentType: string,
+  body: string,
+  id: number,
+  complete = true,
+): Record<string, unknown> | undefined {
+  const candidates = contentType.includes("text/event-stream") ? sseEventPayloads(body, complete) : [body];
   for (const text of candidates) {
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch {
-      continue; // Not JSON, or an SSE event still in flight.
+      continue; // Not JSON.
     }
     for (const message of Array.isArray(parsed) ? parsed : [parsed]) {
       if (isRecord(message) && message.id === id && ("result" in message || "error" in message)) return message;
@@ -139,7 +160,7 @@ async function readRpcMessage(response: Response, id: number): Promise<Record<st
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const message = parseRpcBody(contentType, buffer, id);
+      const message = parseRpcBody(contentType, buffer, id, false);
       if (message !== undefined) return message;
     }
     return parseRpcBody(contentType, buffer, id);

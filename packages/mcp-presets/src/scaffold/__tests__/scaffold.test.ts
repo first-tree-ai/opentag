@@ -55,6 +55,9 @@ describe("probeMcpEndpoint", () => {
     expect(parseRpcBody("text/event-stream", body, 1)?.result).toEqual({ ok: true });
     expect(parseRpcBody("text/event-stream", body, 2)).toBeUndefined();
     expect(parseRpcBody("text/event-stream", "data: nope\n", 1)).toBeUndefined();
+    const split = 'data: {"jsonrpc":"2.0",\r\ndata: "id":4,"result":{}}\r\n\r\n';
+    expect(parseRpcBody("text/event-stream", split, 4)?.result).toEqual({});
+    expect(parseRpcBody("text/event-stream", 'data: {"id":5,"result":{}}', 5, false)).toBeUndefined();
     expect(parseRpcBody("application/json", '[{"id":3,"result":{}}]', 3)).toBeDefined();
   });
 });
@@ -300,6 +303,86 @@ describe("protocol eras", () => {
       expect(result).toMatchObject({ ok: true, protocolEra: "legacy" });
       expect(methods).toEqual(["server/discover@2026-07-28", "server/discover@2025-11-25", "tools/list@2025-11-25"]);
     }
+  });
+
+  it("assembles a multiline SSE event on an open stream for discover, initialize, and tools/list", async () => {
+    const encoder = new TextEncoder();
+    // One event, one `data:` line per line of pretty-printed JSON: valid only once the lines are joined.
+    const sse = (message: object) =>
+      `event: message\n${JSON.stringify(message, null, 2)
+        .split("\n")
+        .map((line) => `data: ${line}`)
+        .join("\n")}\n\n`;
+    const openStream = (message: object) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(sse(message)));
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    const peer = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id: number; method: string };
+      if (body.method === "server/discover") {
+        return openStream({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { _meta: { "io.modelcontextprotocol/serverInfo": { name: "Multi" } } },
+        });
+      }
+      return openStream({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: { tools: [{ name: "read", annotations: { readOnlyHint: true } }] },
+      });
+    }) as unknown as typeof fetch;
+    const result = await probeMcpEndpoint("https://x.test/mcp", { fetch: peer, timeoutMs: 2000 });
+    expect(result).toMatchObject({
+      ok: true,
+      protocolEra: "modern",
+      toolsComplete: true,
+      serverInfo: { name: "Multi" },
+    });
+    if (result.ok) expect(result.tools.map((tool) => tool.name)).toEqual(["read"]);
+
+    const legacy = legacyOnly((async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id?: number; method: string };
+      if (body.method === "initialize")
+        return openStream({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { protocolVersion: "2025-06-18", serverInfo: { name: "L" } },
+        });
+      if (body.method === "tools/list") return openStream({ jsonrpc: "2.0", id: body.id, result: { tools: [] } });
+      return new Response(null, { status: 202 });
+    }) as unknown as typeof fetch);
+    expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: legacy, timeoutMs: 2000 })).toMatchObject({
+      ok: true,
+      protocolEra: "legacy",
+      toolsComplete: true,
+    });
+  });
+
+  it("recognizes a modern error split across data lines in a 400 SSE body", async () => {
+    const lines = JSON.stringify(
+      { jsonrpc: "2.0", id: 1, error: { code: -32022, message: "v", data: { supported: ["2025-11-25"] } } },
+      null,
+      2,
+    ).split("\n");
+    const methods: string[] = [];
+    const peer = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { id: number; method: string };
+      const version = (init.headers as Record<string, string>)["mcp-protocol-version"];
+      methods.push(`${body.method}@${version ?? ""}`);
+      if (version === "2026-07-28") {
+        const frame = `event: message\r\n${lines.map((line) => `data: ${line}`).join("\r\n")}\r\n\r\n`;
+        return new Response(frame, { status: 400, headers: { "content-type": "text/event-stream" } });
+      }
+      return json({ jsonrpc: "2.0", id: body.id, result: body.method === "tools/list" ? { tools: [] } : {} });
+    }) as unknown as typeof fetch;
+    expect(await probeMcpEndpoint("https://x.test/mcp", { fetch: peer })).toMatchObject({ ok: true });
+    expect(methods).toEqual(["server/discover@2026-07-28", "server/discover@2025-11-25", "tools/list@2025-11-25"]);
   });
 
   it("treats a numeric or empty nextCursor as an incomplete inventory and null as absent", async () => {

@@ -1,8 +1,10 @@
 # The marketplace catalog.
 #
-# Each entry is a registry-style record for a remote Streamable HTTP MCP endpoint, validated against
-# `schema/mcp-catalog-entry.schema.json` by `pnpm catalog:generate`. Only remote HTTP Servers may be
-# listed: OpenTag is a hosted service and cannot run a user's local stdio subprocess.
+# Each entry is a registry-style record for an MCP Server, validated against
+# `schema/mcp-catalog-entry.schema.json` by `pnpm catalog:generate`. An entry lists `remotes` (hosted
+# endpoints), `packages` (self-hosted packages), or both. Only an entry with a streamable-http remote
+# is installable and shown as an addable card; packages are recorded as data and are not yet
+# installable.
 #
 #   id                 `mcp/<slug>`; the slug is the Server definition name (MCPServerNameSchema:
 #                      lowercase letters, digits, hyphens) and the card id
@@ -19,13 +21,18 @@
 #   auth.default_kind  a prefill for a new authorization, NEVER a claim about what the Server requires.
 #                      The catalog author confirms the method; the UI must state the method it will use
 #                      without asserting the Server demands it.
-#   auth.oauth.scopes  required when `oauth` is a method; the OAuth scopes the provider's consent screen
-#                      is configured for, requested when a card starts OAuth. At most 64 scopes of at
-#                      most 255 characters each.
+#   auth.oauth         required when `oauth` is a method (the generator rejects it otherwise); write
+#                      `oauth: {}` to leave scope selection to discovery
+#   auth.oauth.scopes  optional; the OAuth scopes the provider's consent screen is configured for,
+#                      requested when a card starts OAuth. At most 64 scopes of at most 255 characters
+#                      each.
 #   risk               side_effects (none | write | destructive) may not be weaker than any listed tool;
 #                      data_access is public or private
-#   remotes[0]         the Streamable HTTP endpoint; `headers` holds the auth header (role: auth) and any
-#                      static extra headers (role: extra)
+#   remotes            hosted endpoints. The first streamable-http remote is the installable endpoint;
+#                      its `headers` hold the auth header (role: auth) and any static extra headers
+#                      (role: extra). An sse remote is data only
+#   packages           self-hosted packages (registry_type, identifier, version, transport, ...),
+#                      optionally with `prerequisites` and `platforms`; data only for now
 #   catalog            category (declared in `mcp-categories.yaml`), order within it, icon (a file under
 #                      `packages/mcp-presets/icons/`), and icon_is_official (true only for a verified
 #                      official product mark; unverified assets use a generic UI icon)

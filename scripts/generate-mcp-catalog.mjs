@@ -9,7 +9,11 @@
  *
  * Each entry is first validated against `schema/mcp-catalog-entry.schema.json` (JSON Schema 2020-12,
  * with the supported locales injected from the i18n project). The checks a schema cannot express
- * follow: auth cross-references, the risk ordering, category membership, and the create payload.
+ * follow: auth cross-references (an `oauth` method requires an `auth.oauth` block, whose scopes are
+ * optional), the risk ordering, package rules, category membership, and the create payload.
+ *
+ * An entry may list `packages`, `remotes`, or both. Only the first streamable-http remote makes it
+ * installable and supplies the flat connection fields; package-only entries are valid data.
  *
  * Every catalog invariant is enforced here rather than at a user's click: an endpoint the outbound
  * policy would refuse, a name the Server would reject, an undeclared or unreferenced category, a

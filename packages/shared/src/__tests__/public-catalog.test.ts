@@ -25,6 +25,12 @@ const mcpResponse = {
       name: "notion",
       title: { en: "Notion", zh: "Notion" },
       description: { en: "Docs, wikis, and project pages.", zh: "文档、知识库与项目页面。" },
+      registryId: "mcp/notion",
+      whenToUse: { en: "Use for pages and wikis.", zh: "用于页面和知识库。" },
+      capabilities: ["search-docs"],
+      keywords: ["wiki"],
+      status: "active",
+      risk: { sideEffects: "write", dataAccess: "private" },
       category: "general",
       website: "https://www.notion.com",
       iconUrl: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
@@ -93,6 +99,8 @@ describe("public MCP catalog schema", () => {
       { authHeader: "Authorization" },
       { authScheme: "Bearer" },
       { extraHeaders: { "x-workspace-id": "workspace" } },
+      { remotes: [{ type: "streamable-http", url: "https://mcp.notion.com/mcp" }] },
+      { auth: { methods: ["oauth"] } },
     ]) {
       expect(
         PublicMcpCatalogResponseSchema.safeParse({

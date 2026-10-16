@@ -35,7 +35,7 @@ export interface E2ERuntime {
   devEmail: string;
   setClaudeStubMode(mode: ClaudeStubMode): Promise<void>;
   setSetupIncomplete(): Promise<void>;
-  setSetupComplete(): Promise<void>;
+  setSetupComplete(accountId?: string): Promise<void>;
   seedTask(agentId: string): Promise<string>;
   userId: string;
 }
@@ -287,10 +287,11 @@ export const test = browserTest.extend<Record<never, never>, { e2eRuntime: E2ERu
               `update users set setup_completed_at = null, updated_at = now() where id = '${runtime.userId}'`,
             );
           },
-          setSetupComplete: async () => {
+          setSetupComplete: async (accountId = runtime.userId) => {
+            if (!/^[0-9a-f-]{36}$/iu.test(accountId)) throw new Error("Invalid E2E Account id");
             await psql(
               runtime.databaseURL,
-              `update users set setup_completed_at = now(), updated_at = now() where id = '${runtime.userId}'`,
+              `update users set setup_completed_at = now(), updated_at = now() where id = '${accountId}'`,
             );
           },
           seedTask: (agentId) => seedTask(runtime, agentId),

@@ -28,7 +28,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: "Restore connection" }));
-    expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Reviewer settings" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,
     );
@@ -46,7 +46,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, computerStatus: () => status });
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Copy instructions" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
     status = "online";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online")).toBeTruthy();

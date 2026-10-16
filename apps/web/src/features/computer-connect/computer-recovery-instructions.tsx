@@ -29,7 +29,9 @@ export function ComputerRecoveryInstructions({
   });
   return (
     <div ref={instructionsRef} className="grid min-w-0 gap-3" data-ui="computer-recovery-instructions">
-      <p className="text-sm text-kumo-subtle">{m.computer_connect_recovery_intro()}</p>
+      <p className="text-sm text-kumo-subtle">
+        {m.computer_connect_recovery_intro({ computerName: computer.displayName })}
+      </p>
       <InstructionBlock
         key={instructions}
         preview={m.computer_connect_recovery_preview()}

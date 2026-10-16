@@ -9,7 +9,13 @@ import { createDiagnosticEnvelope, normalizeError } from "../../observability/di
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { fetchSharedResource } from "../../query/session-cache.js";
-import { CommandBlock, formatRemaining, readConnectCodeVerdict, useRemaining } from "../../setup/index.js";
+import {
+  CommandBlock,
+  formatRemaining,
+  InstructionBlock,
+  readConnectCodeVerdict,
+  useRemaining,
+} from "../../setup/index.js";
 import { Button, Loader, StatusIndicator } from "../../ui/design-system.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
@@ -29,6 +35,8 @@ export type ComputerConnectIntent =
 export interface ComputerConnectProps {
   readonly adapter?: ComputerConnectAdapter;
   readonly intent: ComputerConnectIntent;
+  /** Page guidance only; both locations use the same connection task and authorization. */
+  readonly executionLocation?: "current" | "another";
   readonly onConnected?: (computer: AccountComputerSummary) => void;
 }
 
@@ -265,10 +273,12 @@ async function pollIssuedCommand({
  * Callers choose only create versus a repair target and decide what to do after connection. The
  * module owns every ordering rule inside that seam, including retiring stale issue and poll work.
  */
-export function ComputerConnect({ adapter, intent, onConnected }: ComputerConnectProps) {
+export function ComputerConnect({ adapter, intent, executionLocation = "current", onConnected }: ComputerConnectProps) {
   return (
     <ComputerConnectLifecycleRoot adapter={adapter} intent={intent} onConnected={onConnected}>
-      {(lifecycle) => <ComputerConnectPresentation intent={intent} lifecycle={lifecycle} />}
+      {(lifecycle) => (
+        <ComputerConnectPresentation executionLocation={executionLocation} intent={intent} lifecycle={lifecycle} />
+      )}
     </ComputerConnectLifecycleRoot>
   );
 }
@@ -519,9 +529,11 @@ function ComputerConnectAttempt({
 }
 
 export function ComputerConnectPresentation({
+  executionLocation = "current",
   intent,
   lifecycle,
 }: {
+  readonly executionLocation?: "current" | "another";
   readonly intent: ComputerConnectIntent;
   readonly lifecycle: ComputerConnectLifecycle;
 }) {
@@ -535,7 +547,9 @@ export function ComputerConnectPresentation({
     state.kind === "issued" || state.kind === "issuing"
       ? targetName
         ? m.computer_connect_repair_command_intro({ computerName: targetName })
-        : m.computer_connect_create_command_intro()
+        : executionLocation === "another"
+          ? m.computer_connect_another_intro()
+          : m.computer_connect_create_command_intro()
       : undefined;
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
@@ -558,7 +572,7 @@ export function ComputerConnectPresentation({
         state={state}
         targetName={targetName}
       />
-      <ConnectCommandSurface comment={comment} error={error} issue={issue} state={state} />
+      <ConnectCommandSurface comment={comment} error={error} intent={intent} issue={issue} state={state} />
     </div>
   );
 }
@@ -566,11 +580,13 @@ export function ComputerConnectPresentation({
 function ConnectCommandSurface({
   comment,
   error,
+  intent,
   issue,
   state,
 }: {
   readonly comment: string;
   readonly error?: string;
+  readonly intent: ComputerConnectIntent;
   readonly issue: () => void;
   readonly state: ComputerConnectState;
 }) {
@@ -611,7 +627,24 @@ function ConnectCommandSurface({
       </div>
     );
   }
-  return <CommandBlock {...labels} key={state.issued.command} command={state.issued.command} comment={comment} />;
+  const instructions =
+    intent.mode === "repair"
+      ? m.computer_connect_recovery_instructions({
+          computerName: intent.target.displayName,
+          computerId: intent.target.computerId,
+          command: state.issued.command,
+        })
+      : m.computer_connect_create_instructions({ command: state.issued.command });
+  return (
+    <InstructionBlock
+      {...labels}
+      key={instructions}
+      instructions={instructions}
+      preview={intent.mode === "repair" ? m.computer_connect_recovery_preview() : m.computer_connect_create_preview()}
+      expansion={{ show: m.computer_instructions_show(), hide: m.computer_instructions_hide() }}
+      label={intent.mode === "repair" ? m.computer_connect_recovery_title() : m.computer_connect_create_title()}
+    />
+  );
 }
 
 function AttemptStatus({

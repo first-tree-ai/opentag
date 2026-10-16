@@ -170,7 +170,7 @@ describe("agent setup lab controls", () => {
 
     await chooseOption("Computers on the account", "Several");
     expect(screen.getByText("1 changed")).toBeTruthy();
-    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Choose a computer for this Agent" })).toBeTruthy();
 
     await chooseOption("Computers on the account", "No computers yet");
     expect(screen.queryByText("1 changed")).toBeNull();

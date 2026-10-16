@@ -10,17 +10,24 @@ import {
   findCatalogEntryByUrl,
   localizedText,
   matchesCatalogEntry,
+  offeredEntries,
   resolveCatalogEntries,
 } from "./mcp-catalog-model.js";
 
 function catalogEntry(overrides: Partial<McpCatalogEntry> = {}): McpCatalogEntry {
   return {
     id: "notion",
+    registryId: "mcp/notion",
     name: "notion",
     title: { en: "Notion", zh: "Notion" },
     description: { en: "Docs and wikis.", zh: "文档与知识库。" },
+    whenToUse: { en: "Use for pages and wikis.", zh: "用于页面和知识库。" },
     url: "https://mcp.notion.com/mcp",
     defaultAuthKind: "oauth",
+    status: "active",
+    capabilities: ["search-docs"],
+    auth: { methods: ["oauth"], defaultKind: "oauth", oauth: {} },
+    risk: { sideEffects: "write", dataAccess: "private" },
     category: "general",
     website: "https://www.notion.com",
     iconUrl: "/assets/notion.svg",
@@ -246,5 +253,30 @@ describe("deployment catalog endpoints", () => {
     expect(resolveCatalogEntries(entries, [{ catalogId: "unknown", url: CANVA_DEVELOPER_PORTAL_MCP_URL }])).toEqual(
       entries,
     );
+  });
+});
+
+describe("registry search fields", () => {
+  it("matches keywords, aliases, tags, capabilities, and when-to-use text", () => {
+    const entry = catalogEntry({
+      keywords: ["wiki"],
+      aliases: ["notion-hq"],
+      tags: ["productivity"],
+      capabilities: ["search-docs"],
+    });
+    for (const term of ["wiki", "NOTION-HQ", "productivity", "search-docs", "pages and wikis"]) {
+      expect(matchesCatalogEntry(entry, term, "en")).toBe(true);
+    }
+    expect(matchesCatalogEntry(entry, "用于页面", "zh")).toBe(true);
+    expect(matchesCatalogEntry(entry, "unrelated", "en")).toBe(false);
+  });
+
+  it("offers only active entries", () => {
+    const entries = [
+      catalogEntry({ id: "a" }),
+      catalogEntry({ id: "b", status: "deprecated" }),
+      catalogEntry({ id: "c", status: "archived" }),
+    ];
+    expect(offeredEntries(entries).map((entry) => entry.id)).toEqual(["a"]);
   });
 });

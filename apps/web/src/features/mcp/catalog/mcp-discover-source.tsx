@@ -12,12 +12,13 @@ import {
   localizedText,
   type McpCatalogEntryState,
   matchesCatalogEntry,
+  offeredEntries,
 } from "./mcp-catalog-model.js";
 
 /** Stays mounted during prerequisite guidance, preserving search, category, and scroll position. */
 export function McpDiscoverSource({
   categories,
-  entries,
+  entries: catalogEntries,
   servers,
   mounted,
   busy,
@@ -41,6 +42,7 @@ export function McpDiscoverSource({
   feedback?: Record<string, McpCatalogFeedback>;
 }) {
   const locale = getLocale();
+  const entries = offeredEntries(catalogEntries);
   // Navigation depends on the full directory, never on search results or connection status.
   const shownCategories = categories.filter((category) => entriesInCategory(entries, category.id).length >= 2);
   const [categoryId, setCategoryId] = useState(

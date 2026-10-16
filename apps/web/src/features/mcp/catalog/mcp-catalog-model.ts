@@ -93,13 +93,30 @@ function catalogEndpoint(value: string): string | undefined {
   }
 }
 
-/** Whether an entry matches the catalog search, over its name, its URL, and the active locale. */
+/**
+ * Whether an entry matches the catalog search: its name, URL, and the active locale's title,
+ * description, and when-to-use text, plus its keywords, aliases, tags, and capabilities.
+ */
 export function matchesCatalogEntry(entry: McpCatalogEntry, query: string, locale: Locale = getLocale()): boolean {
   const term = query.trim().toLowerCase();
   if (term.length === 0) return true;
-  return [entry.name, entry.url, entry.title[locale], entry.description[locale]].some((value) =>
-    value.toLowerCase().includes(term),
-  );
+  const fields = [
+    entry.name,
+    entry.url,
+    entry.title[locale],
+    entry.description[locale],
+    entry.whenToUse[locale],
+    ...entry.capabilities,
+    ...(entry.keywords ?? []),
+    ...(entry.aliases ?? []),
+    ...(entry.tags ?? []),
+  ];
+  return fields.some((value) => value.toLowerCase().includes(term));
+}
+
+/** The entries Discover offers: `deprecated` and `archived` entries stay out of the directory. */
+export function offeredEntries(entries: readonly McpCatalogEntry[]): readonly McpCatalogEntry[] {
+  return entries.filter((entry) => entry.status === "active");
 }
 
 /** The entries of one category, in the generator's order. */

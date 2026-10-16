@@ -73,6 +73,19 @@ export const PublicMcpCatalogServerSchema = z
     name: MCPServerNameSchema,
     title: PublicCatalogLocalizedTextSchema,
     description: PublicCatalogLocalizedTextSchema,
+    registryId: z.string().regex(/^mcp\/[a-z][a-z0-9-]*$/),
+    whenToUse: PublicCatalogLocalizedTextSchema,
+    capabilities: z.array(z.string().min(1)).min(1),
+    keywords: z.array(z.string().min(1)).optional(),
+    aliases: z.array(z.string().min(1)).optional(),
+    tags: z.array(z.string().min(1)).optional(),
+    status: z.enum(["active", "deprecated", "archived"]),
+    risk: z
+      .object({
+        sideEffects: z.enum(["none", "write", "destructive"]),
+        dataAccess: z.enum(["public", "private"]),
+      })
+      .strict(),
     category: z.string().min(1),
     website: z.string().url(),
     iconUrl: z.string().min(1),

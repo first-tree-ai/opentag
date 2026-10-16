@@ -42,6 +42,11 @@ const allowedUntranslatedValues = new Set([
   "GitHub",
   "Lark CLI",
   "Slack CLI",
+  // Official credential names and settings paths remain recognizable in both locales.
+  "Bot Token",
+  "Signing Secret",
+  "Basic Information → App Credentials",
+  "OAuth & Permissions → Bot User OAuth Token",
   "Token",
   "Tokens",
   "Context Tree",

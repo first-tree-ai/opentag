@@ -477,6 +477,7 @@
   "ProvisionSlackAgentResponseSchema",
   "PublicCatalogLocalizedTextSchema",
   "PublicMcpCatalogCategorySchema",
+  "PublicMcpCatalogPackageSchema",
   "PublicMcpCatalogResponseSchema",
   "PublicMcpCatalogServerSchema",
   "PublicSkillCatalogCategorySchema",

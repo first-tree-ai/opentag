@@ -269,7 +269,7 @@ export function sharedConversationDestination(provider: ImBindingSummary["provid
 }
 
 /**
- * Feishu gives each Agent its own bot, so the handle addresses it. Slack routes one workspace Bot,
+ * Feishu gives each Agent its own bot, so the handle addresses it. Slack uses the bound Bot identity,
  * so the verified Bot name is used and no per-Agent handle is synthesized.
  */
 export function messagingChannelLabel(agent: AgentDetailView, binding: ImBindingSummary): string {

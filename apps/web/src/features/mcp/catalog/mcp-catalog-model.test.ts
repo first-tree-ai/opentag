@@ -1,4 +1,4 @@
-import type { McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpCatalogEntry, McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import { CANVA_DEVELOPER_PORTAL_MCP_URL, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import {
@@ -8,19 +8,28 @@ import {
   entriesInCategory,
   findCatalogBinding,
   findCatalogEntryByUrl,
+  installableEntries,
   localizedText,
   matchesCatalogEntry,
+  offeredEntries,
   resolveCatalogEntries,
 } from "./mcp-catalog-model.js";
 
-function catalogEntry(overrides: Partial<McpCatalogEntry> = {}): McpCatalogEntry {
+function catalogEntry(overrides: Partial<McpInstallableCatalogEntry> = {}): McpInstallableCatalogEntry {
   return {
     id: "notion",
+    registryId: "mcp/notion",
     name: "notion",
     title: { en: "Notion", zh: "Notion" },
     description: { en: "Docs and wikis.", zh: "文档与知识库。" },
+    whenToUse: { en: "Use for pages and wikis.", zh: "用于页面和知识库。" },
     url: "https://mcp.notion.com/mcp",
     defaultAuthKind: "oauth",
+    installable: true,
+    status: "active",
+    capabilities: ["search-docs"],
+    auth: { methods: ["oauth"], defaultKind: "oauth", oauth: {} },
+    risk: { sideEffects: "write", dataAccess: "private" },
     category: "general",
     website: "https://www.notion.com",
     iconUrl: "/assets/notion.svg",
@@ -218,7 +227,10 @@ describe("deployment catalog endpoints", () => {
     expect(resolved[0]).toBe(notion);
     expect(resolved[1]).toEqual({ ...canva, url: CANVA_DEVELOPER_PORTAL_MCP_URL, shippedUrl: canva.url });
     // The preferred endpoint comes first, and the shipped one is never lost or repeated.
-    expect(catalogEntryUrls(resolved[1] as McpCatalogEntry)).toEqual([CANVA_DEVELOPER_PORTAL_MCP_URL, canva.url]);
+    expect(catalogEntryUrls(resolved[1] as McpInstallableCatalogEntry)).toEqual([
+      CANVA_DEVELOPER_PORTAL_MCP_URL,
+      canva.url,
+    ]);
     expect(findCatalogEntryByUrl(canva.url, resolved)).toBe(resolved[1]);
     expect(findCatalogEntryByUrl(CANVA_DEVELOPER_PORTAL_MCP_URL, resolved)).toBe(resolved[1]);
   });
@@ -231,10 +243,10 @@ describe("deployment catalog endpoints", () => {
       name: "canva",
       effective: { ...mount().effective, url: canva.url },
     });
-    expect(findCatalogBinding(served as McpCatalogEntry, [waitlist], [working])).toBe(working);
-    expect(catalogEntryState(served as McpCatalogEntry, [waitlist], [working])).toBe("added");
+    expect(findCatalogBinding(served as McpInstallableCatalogEntry, [waitlist], [working])).toBe(working);
+    expect(catalogEntryState(served as McpInstallableCatalogEntry, [waitlist], [working])).toBe("added");
     // The same holds when the Account list has not loaded and only the mount's URL is known.
-    expect(catalogEntryState(served as McpCatalogEntry, [], [working])).toBe("added");
+    expect(catalogEntryState(served as McpInstallableCatalogEntry, [], [working])).toBe("added");
   });
 
   it("refuses an endpoint the shared contract does not name for that entry", () => {
@@ -246,5 +258,44 @@ describe("deployment catalog endpoints", () => {
     expect(resolveCatalogEntries(entries, [{ catalogId: "unknown", url: CANVA_DEVELOPER_PORTAL_MCP_URL }])).toEqual(
       entries,
     );
+  });
+});
+
+describe("registry search fields", () => {
+  it("matches keywords, aliases, tags, capabilities, and when-to-use text", () => {
+    const entry = catalogEntry({
+      keywords: ["wiki"],
+      aliases: ["notion-hq"],
+      tags: ["productivity"],
+      capabilities: ["search-docs"],
+    });
+    for (const term of ["wiki", "NOTION-HQ", "productivity", "search-docs", "pages and wikis"]) {
+      expect(matchesCatalogEntry(entry, term, "en")).toBe(true);
+    }
+    expect(matchesCatalogEntry(entry, "用于页面", "zh")).toBe(true);
+    expect(matchesCatalogEntry(entry, "unrelated", "en")).toBe(false);
+  });
+
+  it("offers only active entries", () => {
+    const entries = [
+      catalogEntry({ id: "a" }),
+      catalogEntry({ id: "b", status: "deprecated" }),
+      catalogEntry({ id: "c", status: "archived" }),
+    ];
+    expect(offeredEntries(entries).map((entry) => entry.id)).toEqual(["a"]);
+  });
+});
+
+describe("installable entries", () => {
+  it("drops entries that only list self-hosted packages", () => {
+    const packagesOnly: McpCatalogEntry = {
+      ...catalogEntry({ id: "local" }),
+      installable: false,
+      url: undefined,
+      defaultAuthKind: undefined,
+      packages: [{ registryType: "npm", identifier: "@scope/server", version: "1.0.0", transport: "stdio" }],
+    };
+    const result = installableEntries([catalogEntry(), packagesOnly]);
+    expect(result.map((entry) => entry.id)).toEqual(["notion"]);
   });
 });

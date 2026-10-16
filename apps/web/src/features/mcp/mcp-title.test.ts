@@ -5,7 +5,13 @@ const locale = vi.hoisted(() => ({ value: "en" }));
 vi.mock("../../i18n/locale.js", () => ({ getLocale: () => locale.value }));
 vi.mock("@opentag/mcp-presets", () => ({
   MCP_CATALOG_ENTRIES: [
-    { id: "sample", name: "sample", url: "https://sample.test/mcp", title: { en: "Sample", zh: "示例" } },
+    {
+      id: "sample",
+      name: "sample",
+      installable: true,
+      url: "https://sample.test/mcp",
+      title: { en: "Sample", zh: "示例" },
+    },
   ],
 }));
 

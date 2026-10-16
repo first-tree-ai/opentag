@@ -1,13 +1,28 @@
 import {
   type SaveSlackConfigurationRequest,
   SLACK_SUBSCRIBED_BOT_EVENTS,
+  type SlackAutoSetupResponse,
   type SlackConfigurationView,
 } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
+import { type FormEvent, type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
+import { isHandoffChecking } from "../features/agents/agent-model.js";
+import { agentDetailLink } from "../features/agents/agent-routes.js";
+import { spaceScriptBoundary } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
-import { Banner, Button, buttonClassName, Collapsible, Dialog, Input, InputArea } from "../ui/design-system.js";
+import {
+  Banner,
+  Button,
+  buttonClassName,
+  Collapsible,
+  Dialog,
+  DropdownMenu,
+  Input,
+  InputArea,
+} from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
 import { messagingProviderLabel } from "./provider-label.js";
 import {
   slackAppCreateUrl,
@@ -18,24 +33,46 @@ import {
 import { SlackAutoConnect } from "./slack-auto-connect.js";
 import { slackConfigurationMessage } from "./slack-configuration.js";
 
+export type SlackSetupApi = {
+  slackConfiguration: typeof browserApi.slackConfiguration;
+  saveSlackConfiguration: typeof browserApi.saveSlackConfiguration;
+  autoSetupSlack: typeof browserApi.autoSetupSlack;
+};
+
 interface Props {
+  api?: SlackSetupApi;
   agentId: string;
   bindingId?: string;
   onSaved: () => void;
   onOAuth?: () => void;
-  oauthLabel?: string;
+  manualOnly?: boolean;
+  onDisconnect?: () => void;
+  renderTrigger?: (control: {
+    onClick: () => void;
+    disabled: boolean;
+    ref: RefObject<HTMLButtonElement | null>;
+  }) => ReactNode;
 }
 
 export function SlackCustomApp(props: Props) {
   return <SlackCustomAppFlow key={props.agentId} {...props} />;
 }
 
-function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }: Props) {
+function SlackCustomAppFlow({
+  api = browserApi,
+  agentId,
+  bindingId,
+  onSaved,
+  onOAuth,
+  manualOnly = false,
+  renderTrigger,
+  onDisconnect,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<SlackConfigurationView>();
   const [busy, setBusy] = useState(false);
   const [autoResume, setAutoResume] = useState(false);
-  const [autoConfigured, setAutoConfigured] = useState(false);
+  const [savedMethod, setSavedMethod] = useState<"auto" | "manual">();
   const [error, setError] = useState<string>();
   const saving = useRef(false);
   const mounted = useRef(true);
@@ -48,7 +85,9 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
   }, []);
   const configuration = useQuery({
     queryKey: ["slack-configuration", agentId, bindingId],
-    queryFn: () => browserApi.slackConfiguration(agentId),
+    queryFn: () => api.slackConfiguration(agentId),
+    // A new binding key must not remove the open post-save verification dialog.
+    placeholderData: (previous) => previous,
     retry: false,
     refetchInterval: (query) => (open && !editing && query.state.data?.handoff?.handoffReady === false ? 2_000 : false),
     refetchIntervalInBackground: false,
@@ -56,7 +95,7 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
   const view = configuration.data;
 
   function close() {
-    if (saving.current) return;
+    if (saving.current || busy) return;
     setEditing(undefined);
     setAutoResume(false);
     setError(undefined);
@@ -66,6 +105,7 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
     if (!view) return;
     setError(undefined);
     setAutoResume(false);
+    setSavedMethod(undefined);
     setEditing(view.allowedIntent === "create" || view.binding?.reauthorizationRequired ? view : undefined);
     setOpen(true);
   }
@@ -78,14 +118,15 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
   async function resumeAfterLostResponse(input: SaveSlackConfigurationRequest): Promise<boolean> {
     const observed = await configuration.refetch();
     const current = observed.data?.binding;
-    if (!current) return false;
+    if (current?.provider !== "slack") return false;
     const expected = input.expectedMessaging;
     if (expected.kind === "unbound") return true;
     return current.id === expected.bindingId && current.credentialGeneration > expected.credentialGeneration;
   }
-  function finishSave() {
-    setAutoResume(false);
+  function finishSave(method: "auto" | "manual" = "manual") {
     if (!mounted.current) return;
+    setSavedMethod(method);
+    setAutoResume(false);
     setEditing(undefined);
     onSaved();
   }
@@ -101,7 +142,7 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
     setBusy(true);
     setError(undefined);
     try {
-      await browserApi.saveSlackConfiguration(agentId, input);
+      await api.saveSlackConfiguration(agentId, input);
       if (!mounted.current) return;
       setEditing(undefined);
       await configuration.refetch();
@@ -115,96 +156,327 @@ function SlackCustomAppFlow({ agentId, bindingId, onSaved, onOAuth, oauthLabel }
     }
   }
 
-  if (!view || isNotFound(configuration.error))
-    return unavailableSlackEntry(configuration.error, bindingId, onOAuth, oauthLabel);
-  if (view.binding?.provider === "feishu") return null;
-  if (view.blockedReason)
-    return <Banner variant="error" description={customAppError(new ApiError(409, "", view.blockedReason))} />;
+  if (view?.binding?.provider === "feishu") return null;
+  const officialRecovery = view?.preferredRecovery === "oauth" ? onOAuth : undefined;
   return (
     <>
-      <SlackAppEntry view={view} trigger={trigger} onOpen={start} onOAuth={onOAuth} />
-      {open ? (
-        <Dialog
+      <SlackConfigurationEntry
+        view={view}
+        bindingId={bindingId}
+        busy={busy}
+        renderTrigger={renderTrigger}
+        trigger={trigger}
+        onOpen={start}
+        onOAuth={officialRecovery}
+        onDisconnect={onDisconnect}
+        onEdit={() => {
+          start();
+          update();
+        }}
+      />
+      {!open ? (
+        <SlackConfigurationFeedback
+          view={view}
+          bindingId={bindingId}
+          error={configuration.error}
+          onRetry={() => void configuration.refetch()}
+          onDisconnect={onDisconnect}
+        />
+      ) : null}
+      {open && view ? (
+        <SlackConfigurationDialog
+          view={view}
+          editing={editing}
           busy={busy}
-          returnFocusRef={trigger}
+          autoResume={autoResume}
+          trigger={trigger}
+          error={error}
+          readError={configuration.isError}
           onClose={close}
-          title={m.im_slack_custom_title({ provider: messagingProviderLabel("slack"), agent: view.agentDisplayName })}
+          onRetry={() => void configuration.refetch()}
         >
-          <div className="grid gap-4">
-            {error ? <Banner variant="error" role="alert" description={error} /> : null}
-            {configuration.isError ? (
-              <Banner
-                variant="error"
-                role="alert"
-                description={m.im_slack_status_failed({ provider: messagingProviderLabel("slack") })}
-              />
-            ) : null}
-            {editing ? (
-              editing.allowedIntent === "create" || autoResume ? (
-                <>
-                  <SlackAutoConnect
-                    agentId={agentId}
-                    resume={autoResume}
-                    onBusy={setBusy}
-                    onConnected={async () => {
-                      setAutoConfigured(true);
-                      await configuration.refetch();
-                      finishSave();
-                    }}
-                  />
-                  <Collapsible.Root>
-                    <Collapsible.Trigger render={<Button variant="ghost" type="button" />}>
-                      {m.im_slack_auto_manual()}
-                    </Collapsible.Trigger>
-                    <Collapsible.Panel className="pt-3">
-                      <SlackCredentialForm
-                        agentId={agentId}
-                        view={editing}
-                        busy={busy}
-                        onSave={save}
-                        onCancel={close}
-                      />
-                    </Collapsible.Panel>
-                  </Collapsible.Root>
-                </>
-              ) : (
-                <SlackCredentialForm agentId={agentId} view={editing} busy={busy} onSave={save} onCancel={close} />
-              )
-            ) : (
-              <SlackAppStatus
-                view={view}
-                onUpdate={update}
-                onOAuth={onOAuth}
-                onClose={close}
-                autoConfigured={autoConfigured}
-                onAutoResume={() => {
-                  setAutoResume(true);
-                  setEditing(view);
-                }}
-              />
-            )}
-          </div>
-        </Dialog>
+          {editing ? (
+            <SlackSetupEditor
+              api={api}
+              agentId={agentId}
+              view={editing}
+              busy={busy}
+              manualOnly={manualOnly}
+              automatic={editing.allowedIntent === "create" || autoResume}
+              onBusy={setBusy}
+              onSave={save}
+              onConnected={async () => {
+                await configuration.refetch();
+                setBusy(false);
+                finishSave("auto");
+              }}
+            />
+          ) : (
+            <SlackAppStatus
+              agentId={agentId}
+              view={view}
+              onUpdate={update}
+              onOAuth={officialRecovery}
+              savedMethod={savedMethod}
+              onAutoResume={() => {
+                setAutoResume(true);
+                setEditing(view);
+              }}
+            />
+          )}
+        </SlackConfigurationDialog>
       ) : null}
     </>
   );
 }
 
-function isNotFound(cause: unknown): boolean {
-  return cause instanceof ApiError && cause.status === 404;
+function SlackConfigurationEntry({
+  view,
+  bindingId,
+  busy,
+  renderTrigger,
+  trigger,
+  onOpen,
+  onOAuth,
+  onDisconnect,
+  onEdit,
+}: {
+  view?: SlackConfigurationView;
+  bindingId?: string;
+  busy: boolean;
+  renderTrigger?: Props["renderTrigger"];
+  trigger: RefObject<HTMLButtonElement | null>;
+  onOpen: () => void;
+  onOAuth?: () => void;
+  onDisconnect?: () => void;
+  onEdit: () => void;
+}) {
+  const bindingMatches = !bindingId || view?.binding?.id === bindingId;
+  const disabled = busy || !view || Boolean(view.blockedReason) || !bindingMatches;
+  if (renderTrigger) return renderTrigger({ onClick: onOpen, disabled, ref: trigger });
+  if (view && !view.blockedReason && bindingMatches)
+    return (
+      <SlackAppEntry
+        view={view}
+        trigger={trigger}
+        onOpen={onOpen}
+        onOAuth={onOAuth}
+        onDisconnect={onDisconnect}
+        onEdit={onEdit}
+      />
+    );
+  return (
+    <Button
+      ref={trigger}
+      variant="secondary"
+      disabled={disabled}
+      icon={<ProviderIcon className="size-4" provider="slack" />}
+    >
+      {bindingId ? m.im_slack_continue_setup() : m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
+    </Button>
+  );
 }
 
-function unavailableSlackEntry(
-  error: unknown,
-  bindingId: string | undefined,
-  onOAuth: Props["onOAuth"],
-  label?: string,
-) {
-  if (isNotFound(error))
-    return bindingId && onOAuth ? <Button onClick={onOAuth}>{label ?? m.im_update_permissions()}</Button> : null;
-  return error ? (
-    <Banner variant="error" description={m.im_slack_status_failed({ provider: messagingProviderLabel("slack") })} />
-  ) : null;
+function SlackConfigurationFeedback({
+  view,
+  bindingId,
+  error,
+  onRetry,
+  onDisconnect,
+}: {
+  view?: SlackConfigurationView;
+  bindingId?: string;
+  error: unknown;
+  onRetry: () => void;
+  onDisconnect?: () => void;
+}) {
+  return (
+    <>
+      {error ? (
+        <div className="grid gap-2">
+          <Banner
+            variant="error"
+            role="alert"
+            description={
+              error instanceof ApiError && error.status === 404
+                ? m.im_slack_upgrade_required({ provider: messagingProviderLabel("slack") })
+                : m.im_slack_status_failed()
+            }
+          />
+          <Button variant="ghost" onClick={onRetry}>
+            {m.im_slack_retry()}
+          </Button>
+        </div>
+      ) : null}
+      {view?.blockedReason ? (
+        <Banner variant="error" description={customAppError(new ApiError(409, "", view.blockedReason))} />
+      ) : null}
+      {bindingId && onDisconnect && (!view || view.blockedReason) ? (
+        <Button variant="ghost" onClick={onDisconnect}>
+          {spaceScriptBoundary(m.im_disconnect({ providerName: messagingProviderLabel("slack") }))}
+        </Button>
+      ) : null}
+    </>
+  );
+}
+
+function SlackConfigurationDialog({
+  view,
+  editing,
+  busy,
+  autoResume,
+  trigger,
+  error,
+  readError,
+  onClose,
+  onRetry,
+  children,
+}: {
+  view: SlackConfigurationView;
+  editing?: SlackConfigurationView;
+  busy: boolean;
+  autoResume: boolean;
+  trigger: RefObject<HTMLButtonElement | null>;
+  error?: string;
+  readError: boolean;
+  onClose: () => void;
+  onRetry: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Dialog
+      busy={busy}
+      returnFocusRef={trigger}
+      onClose={onClose}
+      title={
+        editing?.allowedIntent === "reauthorize" && !autoResume
+          ? m.im_slack_update_credentials()
+          : m.im_connect_slack({ provider: messagingProviderLabel("slack") })
+      }
+      description={view.agentDisplayName}
+    >
+      <div className="grid gap-4">
+        {error ? <Banner variant="error" role="alert" description={error} /> : null}
+        {readError ? (
+          <div className="grid gap-2">
+            <Banner variant="error" role="alert" description={m.im_slack_status_failed()} />
+            <Button variant="secondary" onClick={onRetry}>
+              {m.im_slack_retry()}
+            </Button>
+          </div>
+        ) : null}
+        {!editing && !view.binding ? <p role="status">{m.im_slack_auto_saved()}</p> : null}
+        {children}
+      </div>
+    </Dialog>
+  );
+}
+
+function SlackSetupEditor({
+  api,
+  agentId,
+  view,
+  automatic,
+  manualOnly,
+  busy,
+  onBusy,
+  onSave,
+  onConnected,
+}: {
+  agentId: string;
+  view: SlackConfigurationView;
+  api: SlackSetupApi;
+  automatic: boolean;
+  manualOnly: boolean;
+  busy: boolean;
+  onBusy: (busy: boolean) => void;
+  onSave: (input: SaveSlackConfigurationRequest) => Promise<void>;
+  onConnected: () => Promise<void>;
+}) {
+  const [manual, setManual] = useState(!automatic || manualOnly);
+  const [result, setResult] = useState<SlackAutoSetupResponse>();
+  const handleResult = useCallback((next: SlackAutoSetupResponse) => {
+    setResult(next);
+    if (next.status === "failed" && ["capability_missing", "manual_required"].includes(next.code)) setManual(true);
+  }, []);
+  const failure = result?.status === "failed" ? result.code : undefined;
+  const canReturn =
+    automatic && !manualOnly && !["capability_missing", "manual_required", "create_uncertain"].includes(failure ?? "");
+  return (
+    <>
+      {automatic && !manualOnly ? (
+        <SlackAutoConnect
+          api={api}
+          agentId={agentId}
+          resume={view.allowedIntent !== "create"}
+          hidden={manual}
+          onBusy={onBusy}
+          onConnected={onConnected}
+          onResult={handleResult}
+          onManual={() => setManual(true)}
+        />
+      ) : null}
+      {manual ? (
+        <ManualSlackSetup
+          agentId={agentId}
+          view={view}
+          busy={busy}
+          onSave={onSave}
+          cloud={manualOnly}
+          existingApp={
+            Boolean(result && "appId" in result && result.appId) ||
+            failure === "create_uncertain" ||
+            failure === "manual_required"
+          }
+          unavailable={failure === "capability_missing" || failure === "manual_required"}
+          onBack={canReturn ? () => setManual(false) : undefined}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function ManualSlackSetup({
+  agentId,
+  view,
+  busy,
+  onSave,
+  cloud,
+  existingApp,
+  unavailable,
+  onBack,
+}: {
+  agentId: string;
+  view: SlackConfigurationView;
+  busy: boolean;
+  onSave: (input: SaveSlackConfigurationRequest) => Promise<void>;
+  cloud: boolean;
+  existingApp: boolean;
+  unavailable: boolean;
+  onBack?: () => void;
+}) {
+  return (
+    <>
+      {cloud && view.allowedIntent === "create" ? (
+        <p className="text-sm text-kumo-subtle">{m.im_slack_cloud_manual()}</p>
+      ) : null}
+      {unavailable ? <p className="text-sm text-kumo-subtle">{m.im_slack_auto_unavailable()}</p> : null}
+      <SlackCredentialForm agentId={agentId} view={view} busy={busy} onSave={onSave} existingApp={existingApp} />
+      {onBack ? (
+        <Button variant="ghost" disabled={busy} onClick={onBack}>
+          {m.common_back()}
+        </Button>
+      ) : null}
+    </>
+  );
+}
+
+function slackEntryLabel(view: SlackConfigurationView, oauthAvailable: boolean) {
+  if (!view.binding) return m.im_connect_slack({ provider: messagingProviderLabel("slack") });
+  if (view.binding.reauthorizationRequired && view.preferredRecovery === "oauth" && oauthAvailable)
+    return m.im_slack_explicit_oauth();
+  if (view.identityClosure?.status === "pending") return m.im_slack_continue_setup();
+  return m.im_slack_update_credentials();
 }
 
 function SlackAppEntry({
@@ -212,25 +484,36 @@ function SlackAppEntry({
   trigger,
   onOpen,
   onOAuth,
+  onDisconnect,
+  onEdit,
 }: {
   view: SlackConfigurationView;
   trigger: React.RefObject<HTMLButtonElement | null>;
   onOpen: () => void;
   onOAuth?: () => void;
+  onDisconnect?: () => void;
+  onEdit: () => void;
 }) {
   const pending = view.identityClosure?.status === "pending";
   const binding = view.binding;
   if (!binding || pending || binding.reauthorizationRequired) {
-    const label = !binding
-      ? m.im_slack_custom_entry({ provider: messagingProviderLabel("slack") })
-      : pending
-        ? m.im_slack_continue_setup({ provider: messagingProviderLabel("slack") })
-        : m.im_slack_update_credentials();
     const recoverWithOAuth = binding?.reauthorizationRequired && view.preferredRecovery === "oauth";
     return (
-      <Button ref={trigger} variant="secondary" onClick={recoverWithOAuth && onOAuth ? onOAuth : onOpen}>
-        {label}
-      </Button>
+      <>
+        <Button
+          ref={trigger}
+          variant="secondary"
+          icon={!binding ? <ProviderIcon className="size-4" provider="slack" /> : undefined}
+          onClick={recoverWithOAuth && onOAuth ? onOAuth : onOpen}
+        >
+          {slackEntryLabel(view, Boolean(onOAuth))}
+        </Button>
+        {binding && onDisconnect ? (
+          <Button variant="ghost" onClick={onDisconnect}>
+            {spaceScriptBoundary(m.im_disconnect({ providerName: messagingProviderLabel("slack") }))}
+          </Button>
+        ) : null}
+      </>
     );
   }
   if (binding.identity.provider !== "slack") return null;
@@ -242,27 +525,42 @@ function SlackAppEntry({
         target="_blank"
         rel="noreferrer"
       >
-        {m.im_slack_open_dm()}
+        {m.im_slack_open()}
       </a>
-      <Button ref={trigger} variant="ghost" onClick={onOpen}>
-        {m.im_slack_more_settings({ provider: messagingProviderLabel("slack") })}
-      </Button>
+      {onDisconnect ? (
+        <DropdownMenu>
+          <DropdownMenu.Trigger render={<Button ref={trigger} variant="ghost" />}>
+            {m.im_slack_more_settings()}
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end">
+            <DropdownMenu.Item onClick={onEdit}>{m.im_slack_update_credentials()}</DropdownMenu.Item>
+            <DropdownMenu.Item onClick={onOpen}>{m.im_slack_existing_app_help()}</DropdownMenu.Item>
+            <DropdownMenu.Item onClick={onDisconnect}>
+              {spaceScriptBoundary(m.im_disconnect({ providerName: messagingProviderLabel("slack") }))}
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu>
+      ) : (
+        <Button ref={trigger} variant="ghost" onClick={onOpen}>
+          {m.im_slack_more_settings()}
+        </Button>
+      )}
     </>
   );
 }
 
 function SlackCredentialForm({
+  existingApp,
   agentId,
   view,
   busy,
   onSave,
-  onCancel,
 }: {
   agentId: string;
   view: SlackConfigurationView;
   busy: boolean;
   onSave: (input: SaveSlackConfigurationRequest) => Promise<void>;
-  onCancel: () => void;
+  existingApp: boolean;
 }) {
   // Credentials live only in this mounted form. Success, close and Agent changes destroy it.
   const [token, setToken] = useState("");
@@ -282,7 +580,11 @@ function SlackCredentialForm({
   }
   return (
     <form className="grid gap-4" onSubmit={submit} autoComplete="off">
-      {create ? (
+      {create && existingApp ? (
+        <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer">
+          {m.im_slack_your_apps()}
+        </a>
+      ) : create ? (
         <SlackAppCreation agentId={agentId} view={view} />
       ) : (
         <p className="text-sm text-kumo-subtle">{m.im_slack_update_help()}</p>
@@ -328,13 +630,12 @@ function SlackCredentialForm({
         </Collapsible.Panel>
       </Collapsible.Root>
       <div className="flex flex-wrap gap-3">
-        <Button type="submit" disabled={busy} loading={busy}>
-          {create
-            ? m.im_slack_save_configuration({ provider: messagingProviderLabel("slack") })
-            : m.im_slack_update_credentials()}
-        </Button>
-        <Button type="button" variant="ghost" disabled={busy} onClick={onCancel}>
-          {m.common_cancel()}
+        <Button
+          type="submit"
+          disabled={busy || (create ? !token.trim() || !secret.trim() : !token.trim() && !secret.trim())}
+          loading={busy}
+        >
+          {m.im_slack_save_configuration()}
         </Button>
       </div>
     </form>
@@ -420,98 +721,140 @@ function SlackAppCreation({ agentId, view }: { agentId: string; view: SlackConfi
 }
 
 function SlackAppStatus({
+  agentId,
   view,
   onUpdate,
   onOAuth,
-  onClose,
-  autoConfigured,
+  savedMethod,
   onAutoResume,
 }: {
+  agentId: string;
   view: SlackConfigurationView;
   onUpdate: () => void;
   onOAuth?: () => void;
-  onClose: () => void;
-  autoConfigured?: boolean;
+  savedMethod?: "auto" | "manual";
   onAutoResume: () => void;
 }) {
   const identity = view.binding?.identity;
   if (identity?.provider !== "slack") return null;
   const appSettings = `https://api.slack.com/apps/${encodeURIComponent(identity.appId)}/event-subscriptions`;
-  const pending = view.identityClosure?.status === "pending";
+  const verified = view.identityClosure?.status === "verified";
+  const verifyUrl = needsSlackUrlVerification(view, savedMethod);
   return (
     <>
-      <strong>{view.binding?.bot.displayName ?? identity.appId}</strong>
-      <span className="text-sm text-kumo-subtle">{identity.teamId}</span>
+      <strong>{view.binding?.bot.displayName ?? m.im_slack_current_app()}</strong>
       <Banner
         role="status"
         variant="secondary"
-        description={pending && autoConfigured ? m.im_slack_auto_saved() : slackSetupStatus(view)}
+        description={
+          verified
+            ? m.im_slack_connected({ provider: messagingProviderLabel("slack") })
+            : m.im_slack_pending_verification()
+        }
       />
-      <div className="flex flex-wrap gap-3">
-        {pending && view.preferredRecovery !== "oauth" ? (
-          <Button variant="secondary" onClick={onAutoResume}>
-            {m.im_slack_auto_resume()}
-          </Button>
-        ) : null}
-        {pending && !view.binding?.lastInboundAt && !autoConfigured ? (
-          <a className={buttonClassName({ variant: "secondary" })} href={appSettings} target="_blank" rel="noreferrer">
-            {m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })}
-          </a>
-        ) : null}
+      {!verified ? (
+        <p className="text-sm">{verifyUrl ? m.im_slack_verify_instructions() : m.im_slack_auto_saved()}</p>
+      ) : null}
+      {verified && !view.handoff?.handoffReady ? (
+        <>
+          <p role="status">
+            {isHandoffChecking(view.handoff) ? m.im_slack_preparing_agent() : m.im_slack_check_agent()}
+          </p>
+          <Link className={buttonClassName({ variant: "primary" })} {...agentDetailLink(agentId)}>
+            {m.im_slack_agent_status()}
+          </Link>
+        </>
+      ) : (
         <a
-          className={buttonClassName({ variant: "secondary" })}
-          href={slackBotConversationUrl(identity.appId, identity.teamId)}
+          className={buttonClassName({ variant: "primary" })}
+          href={verifyUrl ? appSettings : slackBotConversationUrl(identity.appId, identity.teamId)}
           target="_blank"
           rel="noreferrer"
         >
-          {m.im_slack_open_dm()}
+          {verifyUrl ? m.im_slack_open_settings() : m.im_slack_open_dm()}
         </a>
-        <Button variant="secondary" onClick={onUpdate}>
-          {m.im_slack_update_credentials()}
-        </Button>
-        <Button variant="ghost" onClick={onClose}>
-          {m.im_slack_close()}
-        </Button>
-      </div>
-      <Collapsible.Root>
-        <Collapsible.Trigger render={<Button variant="ghost" />}>{m.im_slack_existing_app_help()}</Collapsible.Trigger>
-        <Collapsible.Panel className="grid gap-3 pt-3">
-          <p className="text-sm text-kumo-subtle">
-            {m.im_slack_existing_app_instructions({ provider: messagingProviderLabel("slack") })}
-          </p>
-          <code className="break-all text-sm">{view.eventsUrl}</code>
-          <ul className="text-sm">
-            {SLACK_SUBSCRIBED_BOT_EVENTS.map((event) => (
-              <li key={event}>{event}</li>
-            ))}
-          </ul>
-          <a href={appSettings} target="_blank" rel="noreferrer">
-            {m.im_slack_open_settings({ provider: messagingProviderLabel("slack") })}
-          </a>
-          {onOAuth ? (
-            <Button variant="ghost" onClick={onOAuth}>
-              {m.im_slack_explicit_oauth()}
-            </Button>
-          ) : null}
-        </Collapsible.Panel>
-      </Collapsible.Root>
+      )}
+      <SlackAppHelp
+        view={view}
+        identity={identity}
+        appSettings={appSettings}
+        verified={verified}
+        onUpdate={onUpdate}
+        onOAuth={onOAuth}
+        onAutoResume={onAutoResume}
+      />
     </>
   );
 }
 
-function slackSetupStatus(view: SlackConfigurationView): string {
-  if (view.identityClosure?.status === "verified")
-    return view.handoff?.handoffReady
-      ? m.im_slack_ready({ provider: messagingProviderLabel("slack") })
-      : m.im_slack_preparing_agent({ provider: messagingProviderLabel("slack") });
-  if (view.binding?.lastInboundAt) return m.im_slack_verify_updated_credentials();
-  return view.binding?.lastRuntimeObservationAt
-    ? m.im_slack_waiting_message({ provider: messagingProviderLabel("slack") })
-    : m.im_slack_verify_instructions();
+function needsSlackUrlVerification(view: SlackConfigurationView, method?: "auto" | "manual") {
+  return (
+    view.identityClosure?.status !== "verified" &&
+    method === "manual" &&
+    !view.binding?.lastRuntimeObservationAt &&
+    !view.binding?.lastInboundAt
+  );
+}
+
+function SlackAppHelp({
+  view,
+  identity,
+  appSettings,
+  verified,
+  onUpdate,
+  onOAuth,
+  onAutoResume,
+}: {
+  view: SlackConfigurationView;
+  identity: Extract<NonNullable<SlackConfigurationView["binding"]>["identity"], { provider: "slack" }>;
+  appSettings: string;
+  verified: boolean;
+  onUpdate: () => void;
+  onOAuth?: () => void;
+  onAutoResume: () => void;
+}) {
+  return (
+    <Collapsible.Root>
+      <Collapsible.Trigger render={<Button variant="ghost" />}>{m.im_slack_existing_app_help()}</Collapsible.Trigger>
+      <Collapsible.Panel className="grid gap-3 pt-3">
+        <p className="text-sm text-kumo-subtle">
+          {m.im_slack_existing_app_instructions({ provider: messagingProviderLabel("slack") })}
+        </p>
+        <a href={appSettings} target="_blank" rel="noreferrer">
+          {m.im_slack_open_settings()}
+        </a>
+        {view.preferredRecovery !== "oauth" && !verified ? (
+          <Button variant="secondary" onClick={onAutoResume}>
+            {m.im_slack_auto_continue()}
+          </Button>
+        ) : null}
+        <Button variant="secondary" onClick={onUpdate}>
+          {m.im_slack_update_credentials()}
+        </Button>
+        {onOAuth ? (
+          <Button variant="ghost" onClick={onOAuth}>
+            {m.im_slack_explicit_oauth()}
+          </Button>
+        ) : null}
+        <Collapsible.Root>
+          <Collapsible.Trigger render={<Button variant="ghost" />}>{m.im_slack_diagnostics()}</Collapsible.Trigger>
+          <Collapsible.Panel className="grid gap-2 pt-2 text-sm text-kumo-subtle">
+            <p>{m.im_slack_auto_app_context({ app: identity.appId, team: identity.teamId })}</p>
+            <code className="break-all">{view.eventsUrl}</code>
+            <ul>
+              {SLACK_SUBSCRIBED_BOT_EVENTS.map((event) => (
+                <li key={event}>{event}</li>
+              ))}
+            </ul>
+          </Collapsible.Panel>
+        </Collapsible.Root>
+      </Collapsible.Panel>
+    </Collapsible.Root>
+  );
 }
 
 function customAppError(cause: unknown): string {
-  if (!(cause instanceof ApiError)) return m.im_slack_status_failed({ provider: messagingProviderLabel("slack") });
+  if (!(cause instanceof ApiError)) return m.im_slack_status_failed();
   if (cause.code === "SLACK_BINDING_IDENTITY_MISMATCH") return m.im_slack_identity_mismatch();
   if (cause.code === "SLACK_CONFIGURATION_CONFLICT") return m.im_slack_configuration_changed();
   if (cause.code === "SLACK_CREDENTIALS_UNAVAILABLE") return m.im_slack_credentials_unavailable();

@@ -78,7 +78,7 @@ describe("SlackConfiguration", () => {
       "Couldn’t connect Slack. Start the connection again from this Agent.",
     );
     expect(screen.queryByLabelText("Slack App ID")).toBeNull();
-    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
+    expect(screen.queryByLabelText("Bot Token")).toBeNull();
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
   });
 

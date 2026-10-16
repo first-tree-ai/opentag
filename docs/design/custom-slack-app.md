@@ -9,6 +9,8 @@ See [Slack setup](../slack-app-setup.md) for the capability contract and operati
 
 ## Design and user flow
 
+The current Web entry is **Connect Slack** in both Agent setup and Messaging settings. Local automatic setup uses one command and code; manual setup replaces the dialog contents rather than adding another form. Existing official bindings retain restricted OAuth recovery. The dated manual-flow acceptance below remains historical.
+
 Each Agent uses a different user-created Slack App, installed in the same Team. A current App/Team pair belongs to one
 Agent; another Agent cannot claim it. Agent creation succeeds without a Computer or messaging app. Connecting an app
 retains the existing Computer requirement. The creation guide and Messaging settings share one concrete configuration

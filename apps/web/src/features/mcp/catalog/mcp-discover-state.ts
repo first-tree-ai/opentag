@@ -1,4 +1,4 @@
-import type { McpCatalogEntry } from "@opentag/mcp-presets";
+import type { McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import { CreateMCPServerRequestSchema, type MCPAgentServer, type MCPServer } from "@opentag/shared/browser";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
@@ -28,11 +28,11 @@ export type DiscoverProps = {
   agentName: string;
   mounted: MCPAgentServer[];
   onClose: () => void;
-  onAdded: (entry: MCPAgentServer, catalog: McpCatalogEntry, server?: MCPServer) => void;
+  onAdded: (entry: MCPAgentServer, catalog: McpInstallableCatalogEntry, server?: MCPServer) => void;
   initialContext?: McpReturnContext;
   initialOutcome?: "cancelled" | "failed";
 };
-type Setup = { catalog: McpCatalogEntry; binding: MCPAgentServer; server?: MCPServer; temporary: boolean };
+type Setup = { catalog: McpInstallableCatalogEntry; binding: MCPAgentServer; server?: MCPServer; temporary: boolean };
 type Pending = { checking: boolean; action: "add" | "connect"; serverId?: string };
 type Failure = McpCatalogFeedback & { serverId?: string };
 const catalogAction = (binding?: MCPAgentServer): "add" | "connect" => (binding ? "connect" : "add");
@@ -143,7 +143,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
     const removed = await discardMcpSetup(props.agentId, setup.binding.mcpServerId, (id) => detach.mutateAsync(id));
     if (removed) created.current.delete(setup.catalog.id);
   }
-  async function resolveSetup(catalog: McpCatalogEntry): Promise<Setup> {
+  async function resolveSetup(catalog: McpInstallableCatalogEntry): Promise<Setup> {
     const existing = findCatalogBinding(catalog, servers, props.mounted);
     if (existing)
       return {
@@ -221,7 +221,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       (window.matchMedia("(max-width: 640px)").matches && inFlight.current.size > 0)
     );
   }
-  async function addFromCatalog(catalog: McpCatalogEntry, token?: string) {
+  async function addFromCatalog(catalog: McpInstallableCatalogEntry, token?: string) {
     if (cannotStart(catalog.id)) return;
     inFlight.current.add(catalog.id);
     const knownBinding = findCatalogBinding(catalog, servers, props.mounted);
@@ -262,7 +262,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       }
     }
   }
-  async function reportFailure(cause: unknown, catalog: McpCatalogEntry, setup?: Setup, token?: string) {
+  async function reportFailure(cause: unknown, catalog: McpInstallableCatalogEntry, setup?: Setup, token?: string) {
     const label = connectionFailure(cause, setup?.binding.authorization?.kind ?? catalog.defaultAuthKind);
     if (token) setError(label);
     else
@@ -320,7 +320,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
   };
 }
 
-function prepareCatalogOAuth(catalog: McpCatalogEntry, binding?: MCPAgentServer, server?: MCPServer) {
+function prepareCatalogOAuth(catalog: McpInstallableCatalogEntry, binding?: MCPAgentServer, server?: MCPServer) {
   const kind = connectionAuthKind(binding?.effective.url ?? catalog.url, binding, server);
   if (kind !== "oauth") return undefined;
   const reauthorize = Boolean(binding && connectorFeedback(binding).action === "authorize");

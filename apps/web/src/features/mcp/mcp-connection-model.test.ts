@@ -1,6 +1,7 @@
-import { MCP_CATALOG_ENTRIES } from "@opentag/mcp-presets";
+import { MCP_CATALOG_ENTRIES, type McpInstallableCatalogEntry } from "@opentag/mcp-presets";
 import { CANVA_DEVELOPER_PORTAL_MCP_URL } from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
+import { installableEntries } from "./catalog/mcp-catalog-model.js";
 import { connectionAuthKind, connectionPreset } from "./mcp-connection-model.js";
 import { authorization, detail, entry } from "./mcp-test-fixtures.js";
 
@@ -9,6 +10,7 @@ vi.mock("@opentag/mcp-presets", () => ({
     {
       id: "service",
       name: "service",
+      installable: true,
       url: "https://service.test/mcp",
       defaultAuthKind: "oauth",
       oauthScopes: ["read"],
@@ -17,6 +19,7 @@ vi.mock("@opentag/mcp-presets", () => ({
     {
       id: "canva",
       name: "canva",
+      installable: true,
       url: "https://mcp.canva.com/mcp",
       defaultAuthKind: "oauth",
     },
@@ -62,7 +65,7 @@ describe("connection method precedence", () => {
 
 describe("Preset method configuration", () => {
   it("uses a uniquely submitted configuration only after the old credential was revoked", () => {
-    const preset = MCP_CATALOG_ENTRIES[0];
+    const preset = installableEntries(MCP_CATALOG_ENTRIES)[0];
     if (!preset) throw new Error("Missing multi-method preset");
     const switched = entry({
       effective: { url: preset.url, authHeader: "authorization", authScheme: "Bearer", extraHeaders: {} },
@@ -78,7 +81,7 @@ describe("Preset method configuration", () => {
     const preset = {
       ...MCP_CATALOG_ENTRIES[0],
       keyAuth: { url: "https://service.test/key", authHeader: "x-api-key", authScheme: "" },
-    } as NonNullable<(typeof MCP_CATALOG_ENTRIES)[0]>;
+    } as McpInstallableCatalogEntry;
     expect(presetAuthKinds(preset)).toEqual(["oauth", "bearer"]);
     expect(presetAuthConfig(preset, "bearer")).toEqual({
       url: "https://service.test/key",
@@ -92,7 +95,7 @@ describe("Preset method configuration", () => {
 describe("Details configuration classification", () => {
   it("preserves an existing OAuth installation on a catalog's shared legacy endpoint", async () => {
     const { settingsPreset } = await import("./mcp-connection-model.js");
-    const preset = MCP_CATALOG_ENTRIES[0];
+    const preset = installableEntries(MCP_CATALOG_ENTRIES)[0];
     if (!preset?.keyAuth) throw new Error("Missing multi-method preset");
     const legacy = entry({
       effective: { url: preset.keyAuth.url, authHeader: "authorization", authScheme: "Bearer", extraHeaders: {} },
@@ -105,7 +108,7 @@ describe("Details configuration classification", () => {
     const preset = {
       ...MCP_CATALOG_ENTRIES[0],
       keyAuth: { url: "https://service.test/key", authHeader: "x-api-key", authScheme: "" },
-    } as NonNullable<(typeof MCP_CATALOG_ENTRIES)[0]>;
+    } as McpInstallableCatalogEntry;
     const pending = entry({
       effective: { url: preset.url, authHeader: "authorization", authScheme: "Bearer", extraHeaders: {} },
       authorization: { ...authorization(), kind: "bearer", status: "revoked", hasCredential: false },
@@ -114,7 +117,7 @@ describe("Details configuration classification", () => {
   });
   it("keeps custom query parameters and headers editable without a database source flag", async () => {
     const { settingsPreset } = await import("./mcp-connection-model.js");
-    const preset = MCP_CATALOG_ENTRIES[0];
+    const preset = installableEntries(MCP_CATALOG_ENTRIES)[0];
     if (!preset) throw new Error("Missing test preset");
     const configured = entry({
       effective: { url: preset.url, authHeader: "authorization", authScheme: "Bearer", extraHeaders: {} },

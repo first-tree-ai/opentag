@@ -3,6 +3,7 @@ import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES } from "@opentag/shared/bro
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
+import { installableEntries } from "./catalog/mcp-catalog-model.js";
 import { McpPage } from "./mcp-page.js";
 import { AGENT_ID, authorization, entry, openDetails, SERVER_ID, stub, wrap } from "./mcp-test-fixtures.js";
 
@@ -78,7 +79,7 @@ describe("MCP inline authentication", () => {
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
   it("shows a preset's visible read-only address and only supported alternative methods", async () => {
-    const preset = MCP_CATALOG_ENTRIES.find((item) => item.id === "firecrawl");
+    const preset = installableEntries(MCP_CATALOG_ENTRIES).find((item) => item.id === "firecrawl");
     if (!preset?.keyAuth) throw new Error("Missing Firecrawl methods");
     const binding = entry({
       name: "firecrawl",
@@ -108,7 +109,7 @@ describe("MCP inline authentication", () => {
     expect(browserApi.revokeMcpAuthorization).not.toHaveBeenCalled();
   });
   it("saves an alternate preset key without restoring the old method after a rejected probe", async () => {
-    const preset = MCP_CATALOG_ENTRIES.find((item) => item.id === "firecrawl");
+    const preset = installableEntries(MCP_CATALOG_ENTRIES).find((item) => item.id === "firecrawl");
     if (!preset?.keyAuth) throw new Error("Missing Firecrawl methods");
     let current = entry({
       name: preset.name,
@@ -153,7 +154,7 @@ describe("MCP inline authentication", () => {
     expect((screen.getByLabelText("Connector address") as HTMLInputElement).value).toBe(preset.keyAuth.url);
   });
   it("does not offer a method switch for a single-method preset", async () => {
-    const preset = MCP_CATALOG_ENTRIES.find((item) => item.id === "notion");
+    const preset = installableEntries(MCP_CATALOG_ENTRIES).find((item) => item.id === "notion");
     if (!preset) throw new Error("Missing Notion");
     stub([
       entry({

@@ -65,10 +65,13 @@ curl -sS -i -X POST <endpoint> \
 
 `pnpm catalog:add --url <endpoint>` runs the credential-free `initialize` above for you, then reads
 `serverInfo` and `tools/list`, classifies the authorization method from the `401` challenge, and prints
-a ready-to-edit YAML entry with the evidence as comments. It is a dry run by default; `--write`
-appends the entry to `mcp-catalog.yaml` and `--icon-file <path>` copies the icon. Every guessed field
-is listed under "Review before committing": the copy, the website, and the icon still need a human.
-The scaffold supplies facts, not decisions: still confirm them against the provider's documentation.
+a ready-to-edit registry-style YAML entry with the evidence as comments. The tool inventory comes from
+`tools/list`, each tool's `side_effect` from its `readOnlyHint` / `destructiveHint` annotations (a tool
+with neither counts as `write`), and `risk.side_effects` is the strongest of them. It is a dry run by
+default; `--write` appends the entry to `mcp-catalog.yaml` and `--icon-file <path>` copies the icon.
+Every guessed field is listed under "Review before committing": the copy, `when_to_use`, the homepage,
+`icon_is_official`, and the icon still need a human. The scaffold supplies facts, not decisions: still
+confirm them against the provider's documentation.
 
 ## Step 2 — Choose the entry identity
 

@@ -7,7 +7,8 @@
  * package entry, which the Web App imports.
  */
 export const PROBE_PROTOCOL_VERSION = "2025-06-18";
-const MAX_TOOL_NAMES = 50;
+const MAX_TOOLS = 256;
+const MAX_DESCRIPTION = 500;
 
 export type ProbeAuthKind = "none" | "oauth" | "bearer";
 
@@ -15,6 +16,15 @@ export interface McpProbeServerInfo {
   readonly name?: string;
   readonly title?: string;
   readonly version?: string;
+}
+
+export type ProbeSideEffect = "none" | "write" | "destructive";
+
+export interface McpProbeTool {
+  readonly name: string;
+  readonly description?: string;
+  /** From the tool's `readOnlyHint` / `destructiveHint` annotations; `write` when it declares neither. */
+  readonly sideEffect: ProbeSideEffect;
 }
 
 export type McpProbeResult =
@@ -26,7 +36,7 @@ export type McpProbeResult =
       readonly serverInfo?: McpProbeServerInfo;
       readonly protocolVersion?: string;
       readonly instructions?: string;
-      readonly toolNames: readonly string[];
+      readonly tools: readonly McpProbeTool[];
     }
   | { readonly ok: false; readonly reason: string };
 
@@ -91,8 +101,20 @@ function defined<T extends object>(value: { [K in keyof T]: T[K] | undefined }):
 
 type Post = (body: unknown, sessionId?: string) => Promise<Response>;
 
+function readTool(tool: unknown): McpProbeTool | undefined {
+  if (!isRecord(tool)) return undefined;
+  const name = str(tool.name);
+  if (name === undefined || !/^[A-Za-z0-9_.-]+$/.test(name) || name.length > 128) return undefined;
+  const annotations = isRecord(tool.annotations) ? tool.annotations : {};
+  let sideEffect: ProbeSideEffect = "write";
+  if (annotations.readOnlyHint === true) sideEffect = "none";
+  else if (annotations.destructiveHint === true) sideEffect = "destructive";
+  const description = str(tool.description)?.replace(/\s+/g, " ").slice(0, MAX_DESCRIPTION);
+  return { name, sideEffect, ...(description === undefined ? {} : { description }) };
+}
+
 /** `tools/list` is informational: any failure yields an empty list rather than failing the probe. */
-async function listToolNames(post: Post, sessionId: string | undefined): Promise<string[]> {
+async function listTools(post: Post, sessionId: string | undefined): Promise<McpProbeTool[]> {
   try {
     await post({ jsonrpc: "2.0", method: "notifications/initialized" }, sessionId);
     const listed = await post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, sessionId);
@@ -100,10 +122,10 @@ async function listToolNames(post: Post, sessionId: string | undefined): Promise
     const body = parseRpcBody(listed.headers.get("content-type") ?? "", await listed.text());
     const tools = isRecord(body?.result) ? body.result.tools : undefined;
     if (!Array.isArray(tools)) return [];
-    return tools
-      .map((tool) => (isRecord(tool) ? str(tool.name) : undefined))
-      .filter((name): name is string => name !== undefined)
-      .slice(0, MAX_TOOL_NAMES);
+    const read = tools.map(readTool).filter((tool): tool is McpProbeTool => tool !== undefined);
+    return read
+      .filter((tool, index) => read.findIndex((other) => other.name === tool.name) === index)
+      .slice(0, MAX_TOOLS);
   } catch {
     return [];
   }
@@ -144,7 +166,7 @@ export async function probeMcpEndpoint(url: string, options: ProbeOptions = {}):
 
   if (response.status === 401) {
     const { kind, evidence } = classifyChallenge(response.headers.get("www-authenticate"));
-    return { ok: true, authKind: kind, evidence, toolNames: [] };
+    return { ok: true, authKind: kind, evidence, tools: [] };
   }
   if (!response.ok) {
     return {
@@ -157,7 +179,7 @@ export async function probeMcpEndpoint(url: string, options: ProbeOptions = {}):
   if (!isRecord(result)) {
     return { ok: false, reason: "initialize answered 2xx but not with a JSON-RPC result" };
   }
-  const toolNames = await listToolNames(post, response.headers.get("mcp-session-id") ?? undefined);
+  const tools = await listTools(post, response.headers.get("mcp-session-id") ?? undefined);
   return {
     ok: true,
     authKind: "none",
@@ -167,6 +189,6 @@ export async function probeMcpEndpoint(url: string, options: ProbeOptions = {}):
       protocolVersion: str(result.protocolVersion),
       instructions: str(result.instructions),
     }),
-    toolNames,
+    tools,
   };
 }

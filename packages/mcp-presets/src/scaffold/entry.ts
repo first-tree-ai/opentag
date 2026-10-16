@@ -1,25 +1,28 @@
 import type { McpCatalogCategory, McpCatalogEntry } from "../mcp-catalog.gen.js";
-import type { McpProbeResult, ProbeAuthKind } from "./probe.js";
+import type { McpProbeResult, ProbeAuthKind, ProbeSideEffect } from "./probe.js";
 
 const ORDER_STEP = 10;
-const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
-const MAX_NAME_LENGTH = 64;
+const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
+const MAX_SLUG_LENGTH = 64;
+const MAX_CAPABILITIES = 32;
+const SIDE_EFFECT_RANK: Record<ProbeSideEffect, number> = { none: 0, write: 1, destructive: 2 };
 
 export interface ScaffoldInput {
   readonly url: string;
   readonly probe: Extract<McpProbeResult, { ok: true }>;
   readonly id?: string;
   readonly category?: string;
-  readonly website?: string;
-  readonly titleEn?: string;
-  readonly titleZh?: string;
-  readonly descriptionEn?: string;
-  readonly descriptionZh?: string;
+  readonly homepage?: string;
+  readonly nameEn?: string;
+  readonly nameZh?: string;
+  readonly summaryEn?: string;
+  readonly summaryZh?: string;
   readonly authKind?: ProbeAuthKind;
   readonly order?: number;
 }
 
 export interface ScaffoldedEntry {
+  /** The slug: the definition name and the icon file's basename. */
   readonly id: string;
   readonly yaml: string;
   readonly iconFile: string;
@@ -29,14 +32,12 @@ export interface ScaffoldedEntry {
 
 /** Lowercase, hyphen-separated, starts with a letter, and within the definition-name limit. */
 export function slugify(raw: string): string {
-  const slug = raw
+  return raw
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
     .replace(/^[0-9-]+/, "")
-    .slice(0, MAX_NAME_LENGTH)
-    .replace(/-+$/g, "");
-  return slug;
+    .slice(0, MAX_SLUG_LENGTH)
+    .replace(/^-+|-+$/g, "");
 }
 
 function stripGenericWords(slug: string): string {
@@ -44,10 +45,10 @@ function stripGenericWords(slug: string): string {
   return stripped.length > 0 ? stripped : slug;
 }
 
-/** Derive an entry id from the server's own name, falling back to the host's first meaningful label. */
+/** Derive a slug from the server's own name, falling back to the host's first meaningful label. */
 export function deriveId(url: string, serverName: string | undefined): string {
   const fromName = serverName === undefined ? "" : stripGenericWords(slugify(serverName));
-  if (ID_PATTERN.test(fromName)) return fromName;
+  if (SLUG_PATTERN.test(fromName)) return fromName;
   const labels = new URL(url).hostname.split(".").filter((label) => !["www", "mcp", "api", "app"].includes(label));
   return slugify(labels[0] ?? "server") || "server";
 }
@@ -70,12 +71,25 @@ function q(value: string): string {
   return JSON.stringify(value);
 }
 
+/** Capability tokens come from tool names: `search_docs` becomes `search-docs`. */
+export function capabilitiesFromTools(names: readonly string[]): string[] {
+  const tokens = names.map((name) => slugify(name.replace(/[._]/g, "-"))).filter((token) => token.length > 0);
+  return [...new Set(tokens)].slice(0, MAX_CAPABILITIES);
+}
+
+function strongest(effects: readonly ProbeSideEffect[]): ProbeSideEffect {
+  return effects.reduce<ProbeSideEffect>(
+    (top, effect) => (SIDE_EFFECT_RANK[effect] > SIDE_EFFECT_RANK[top] ? effect : top),
+    "none",
+  );
+}
+
 interface Copy {
-  readonly titleEn: string;
-  readonly titleZh: string;
-  readonly descriptionEn: string;
-  readonly descriptionZh: string;
-  readonly website: string;
+  readonly nameEn: string;
+  readonly nameZh: string;
+  readonly summaryEn: string;
+  readonly summaryZh: string;
+  readonly homepage: string;
 }
 
 /** Use what the operator supplied or the probe found, and record each guess as a review item. */
@@ -85,28 +99,28 @@ function resolveCopy(input: ScaffoldInput, id: string, todos: string[]): Copy {
     if (supplied === undefined) todos.push(note);
     return supplied ?? fallback;
   };
-  const probedTitle = input.titleEn ?? info?.title ?? info?.name;
-  const titleEn = probedTitle ?? titleCase(id);
-  if (probedTitle === undefined) todos.push("title: derived from the id, confirm the brand name");
-  const titleZh = guess(input.titleZh, titleEn, "title.zh: copied from en, translate if the brand has a Chinese name");
+  const probedName = input.nameEn ?? info?.title ?? info?.name;
+  const nameEn = probedName ?? titleCase(id);
+  if (probedName === undefined) todos.push("name: derived from the id, confirm the brand name");
+  const nameZh = guess(input.nameZh, nameEn, "name.zh: copied from en, translate if the brand has a Chinese name");
   const host = new URL(input.url);
   return {
-    titleEn,
-    titleZh,
-    descriptionEn: guess(
-      input.descriptionEn,
-      `Use ${titleEn} from your agent.`,
-      "description.en: placeholder, write one short sentence",
+    nameEn,
+    nameZh,
+    summaryEn: guess(
+      input.summaryEn,
+      `Use ${nameEn} from your agent.`,
+      "summary.en: placeholder, write one short sentence",
     ),
-    descriptionZh: guess(
-      input.descriptionZh,
-      `在智能体中使用 ${titleZh}。`,
-      "description.zh: placeholder, write one short sentence",
+    summaryZh: guess(
+      input.summaryZh,
+      `在智能体中使用 ${nameZh}。`,
+      "summary.zh: placeholder, write one short sentence",
     ),
-    website: guess(
-      input.website,
+    homepage: guess(
+      input.homepage,
       `${host.protocol}//${host.hostname.replace(/^(mcp|api)\./, "")}`,
-      "website: derived from the endpoint host, point it at the provider's site",
+      "homepage: derived from the endpoint host, point it at the provider's site",
     ),
   };
 }
@@ -114,24 +128,62 @@ function resolveCopy(input: ScaffoldInput, id: string, todos: string[]): Copy {
 function resolveCategory(input: ScaffoldInput, categories: readonly McpCatalogCategory[], todos: string[]): string {
   const ids = categories.map((category) => category.id);
   const category = input.category ?? (ids.includes("general") ? "general" : undefined);
-  if (category === undefined || !ids.includes(category))
+  if (category === undefined || !ids.includes(category)) {
     throw new Error(`pass --category with one of: ${ids.join(", ")}`);
+  }
   if (input.category === undefined) todos.push("category: defaulted to general, confirm it fits");
   return category;
 }
 
 function probeComments(probe: ScaffoldInput["probe"]): string[] {
   const info = probe.serverInfo;
-  const tools = probe.toolNames;
+  const version = info?.version === undefined ? "" : ` ${info.version}`;
   return [
     `# Probed ${new Date().toISOString().slice(0, 10)}: ${probe.evidence}`,
-    ...(info?.name === undefined
-      ? []
-      : [`# serverInfo: ${info.name}${info.version === undefined ? "" : ` ${info.version}`}`]),
-    ...(tools.length === 0
-      ? []
-      : [`# tools (${tools.length}): ${tools.slice(0, 8).join(", ")}${tools.length > 8 ? ", ..." : ""}`]),
+    ...(info?.name === undefined ? [] : [`# serverInfo: ${info.name}${version}`]),
   ];
+}
+
+function renderTools(probe: ScaffoldInput["probe"]): string[] {
+  if (probe.tools.length === 0) return [];
+  return [
+    "  tools:",
+    ...probe.tools.flatMap((tool) => [
+      `    - name: ${tool.name}`,
+      ...(tool.description === undefined ? [] : [`      description: ${q(tool.description)}`]),
+      `      side_effect: ${tool.sideEffect}`,
+    ]),
+  ];
+}
+
+interface Risk {
+  readonly sideEffects: ProbeSideEffect;
+  readonly dataAccess: "public" | "private";
+}
+
+/** A tool list gives the strongest effect; without one, assume the conservative `write`. */
+function resolveRisk(probe: ScaffoldInput["probe"], authKind: ProbeAuthKind, todos: string[]): Risk {
+  const known = probe.tools.length > 0;
+  todos.push(
+    known
+      ? "risk.side_effects: taken from tool annotations (a tool without a hint counts as write); confirm"
+      : "risk.side_effects: assumed write because no tool list was readable; confirm against the provider's docs",
+  );
+  todos.push("risk.data_access: confirm whether the Server reads only public data");
+  return {
+    sideEffects: known ? strongest(probe.tools.map((tool) => tool.sideEffect)) : "write",
+    dataAccess: authKind === "none" ? "public" : "private",
+  };
+}
+
+function resolveCapabilities(probe: ScaffoldInput["probe"], id: string, todos: string[]): string[] {
+  const fromTools = capabilitiesFromTools(probe.tools.map((tool) => tool.name));
+  if (fromTools.length > 0) {
+    todos.push("capabilities: copied from tool names, group them into a few user-level capabilities");
+    return fromTools;
+  }
+  todos.push("capabilities: placeholder, list what the Server lets an Agent do");
+  return [`use-${id}`.slice(0, MAX_SLUG_LENGTH)];
 }
 
 export function scaffoldEntry(
@@ -140,8 +192,10 @@ export function scaffoldEntry(
   categories: readonly McpCatalogCategory[],
 ): ScaffoldedEntry {
   const id = input.id ?? deriveId(input.url, input.probe.serverInfo?.name);
-  if (!ID_PATTERN.test(id)) throw new Error(`id "${id}" must match ${ID_PATTERN}`);
-  if (entries.some((entry) => entry.id === id || entry.name === id)) {
+  if (!SLUG_PATTERN.test(id) || id.length > MAX_SLUG_LENGTH) {
+    throw new Error(`id "${id}" must match ${SLUG_PATTERN} and be at most ${MAX_SLUG_LENGTH} characters`);
+  }
+  if (entries.some((entry) => entry.id === id)) {
     throw new Error(`catalog already has an entry named "${id}"; pass --id to choose another`);
   }
   if (entries.some((entry) => entry.url === input.url)) throw new Error(`catalog already lists ${input.url}`);
@@ -149,27 +203,48 @@ export function scaffoldEntry(
   const todos: string[] = [];
   const category = resolveCategory(input, categories, todos);
   const copy = resolveCopy(input, id, todos);
+  const authKind = input.authKind ?? input.probe.authKind;
+  const risk = resolveRisk(input.probe, authKind, todos);
+  const capabilities = resolveCapabilities(input.probe, id, todos);
   const iconFile = `${id}.svg`;
   todos.push(
     `icon: add packages/mcp-presets/icons/${iconFile} (or .png and edit \`icon\`), and record its source in icons/README.md`,
   );
+  todos.push("when_to_use: placeholder, write one sentence that tells an Agent when this Server is the right tool");
 
   const lines = [
     ...probeComments(input.probe),
-    `- id: ${id}`,
-    `  name: ${id}`,
-    "  title:",
-    `    en: ${q(copy.titleEn)}`,
-    `    zh: ${q(copy.titleZh)}`,
-    "  description:",
-    `    en: ${q(copy.descriptionEn)}`,
-    `    zh: ${q(copy.descriptionZh)}`,
-    `  url: ${input.url}`,
-    `  defaultAuthKind: ${input.authKind ?? input.probe.authKind}`,
-    `  category: ${category}`,
-    `  website: ${copy.website}`,
-    `  icon: ${iconFile}`,
-    `  order: ${input.order ?? nextOrder(entries, category)}`,
+    "- schema_version: 1",
+    `  id: mcp/${id}`,
+    "  kind: mcp",
+    "  name:",
+    `    en: ${q(copy.nameEn)}`,
+    `    zh: ${q(copy.nameZh)}`,
+    "  summary:",
+    `    en: ${q(copy.summaryEn)}`,
+    `    zh: ${q(copy.summaryZh)}`,
+    "  when_to_use:",
+    `    en: ${q(`Use when the task needs ${copy.nameEn}.`)}`,
+    `    zh: ${q(`当任务需要 ${copy.nameZh} 时使用。`)}`,
+    `  capabilities: [${capabilities.map(q).join(", ")}]`,
+    "  status: active",
+    "  auth:",
+    `    methods: [${authKind}]`,
+    `    default_kind: ${authKind}`,
+    ...(authKind === "oauth" ? ["    oauth: {}"] : []),
+    "  risk:",
+    `    side_effects: ${risk.sideEffects}`,
+    `    data_access: ${risk.dataAccess}`,
+    ...renderTools(input.probe),
+    "  remotes:",
+    "    - type: streamable-http",
+    `      url: ${input.url}`,
+    "  catalog:",
+    `    category: ${category}`,
+    `    order: ${input.order ?? nextOrder(entries, category)}`,
+    `    icon: ${iconFile}`,
+    "    icon_is_official: false",
+    `  homepage: ${copy.homepage}`,
   ];
   return { id, yaml: `${lines.join("\n")}\n`, iconFile, todos };
 }

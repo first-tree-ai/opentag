@@ -9,6 +9,17 @@ The server contract is separately covered with authenticated route/service tests
 The historical import-only and discovery/import screenshots below were captured in the Codex in-app browser with the same fixture entry. Earlier
 reader screenshots retain the previous action labels. Historical discovery screenshots show an entry that is now hidden.
 
+## Centered row actions (2026-10-16)
+
+On wide content containers, the switch and More menu are vertically centered against the entire name-and-description
+group, with the existing horizontal gap and right inset. Compact containers keep the controls centered in the name
+track and the single-line description below it, so long names and descriptions cannot overlap the controls.
+
+The production component preview was reused with the current module styles. Browser measurements at 320px, 390px,
+768px and 1440px confirmed the respective center alignment, separate text/action areas and no page overflow. The
+switch and More menu remained independent; Enter opened details and Escape closed it. Axe scans of the 320px and
+1440px lists reported no violations. No reusable component, theme value or CSS exception was added.
+
 ## Compact list descriptions (2026-10-16)
 
 Skill rows retain a single-line description at every width. The description tooltip and native name title are removed;
@@ -38,6 +49,10 @@ or CSS exception was added.
 
 | View | Viewport | Evidence |
 | --- | --- | --- |
+| Centered actions, desktop | 1440 × 900 | [Current desktop](controls-centered-desktop.png) |
+| Centered actions, tablet | 768 × 844 | [Current tablet](controls-centered-768.png) |
+| Name-track actions, mobile | 390 × 844 | [Current mobile](controls-centered-390.png) |
+| Name-track actions, narrow mobile | 320 × 844 | [Current narrow mobile](controls-centered-320.png) |
 | Single-line descriptions, keyboard focus | 1440 × 900 | [Current desktop](list-single-line-desktop.jpg) |
 | Single-line descriptions, mobile | 390 × 844 | [Current mobile](list-single-line-390.jpg) |
 | Single-line descriptions, narrow mobile | 320 × 844 | [Current narrow mobile](list-single-line-320.jpg) |
@@ -68,8 +83,9 @@ or CSS exception was added.
 - The name, description and content whitespace open details through one native button. Real coordinate clicks on the
   description and the far corner of the content area passed; the switch and More menu operated without opening details.
   Enter and Space opened the reader, Escape restored trigger focus, and 320px/390px entries remained within the viewport.
-- Names render at 16px/600, descriptions at 14px. Controls align with the name at 1440px/768px/390px/320px and in a
-  narrow desktop content container. Mobile descriptions span the full content width below the name and controls.
+- Names render at 16px/600, descriptions at 14px. Controls center against the name-and-description group at
+  1440px/768px and against the name at 390px/320px and in a narrow desktop content container. Mobile descriptions
+  span the full content width below the name and controls.
 - Historical tooltip validation, before 2026-10-16: description tooltips appeared only when the actual text was clipped. A long description showed a tooltip at 320px;
   widening the viewport to 1440px removed it while hovered, and an untruncated description stayed quiet.
   ResizeObserver and font-loading events keep the measurement current.

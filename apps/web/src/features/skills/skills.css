@@ -62,8 +62,7 @@
 .skill-row-controls {
   grid-column: 2;
   grid-row: 1;
-  align-self: start;
-  margin-top: 0.25rem;
+  align-self: center;
   position: relative;
   /* Keep mobile controls above the stretched details target. */
   z-index: 1;
@@ -257,6 +256,8 @@
     align-self: center;
   }
   .skill-row-controls {
+    /* Center within the name track; leave the full-width description unobstructed. */
+    align-self: start;
     height: 2.75rem;
     margin-top: 0.5rem;
   }

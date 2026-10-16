@@ -72,7 +72,10 @@ jobs:
           appendFileSync(process.env.GITHUB_ENV, `OPENTAG_TEST_SLACK_BINARY=${result.selected.path}\n`);
           NODE
       - name: Slack native HTTPS, identity and message regressions
-        run: pnpm --filter @opentag/client exec vitest run src/__tests__/slack-native-proxy.test.ts --maxWorkers=1
+        run: |
+          command -v openssl
+          openssl version
+          pnpm --filter @opentag/client exec vitest run src/__tests__/slack-native-proxy.test.ts --maxWorkers=1
       - name: Install the pinned Codex sandbox for offline macOS permission regressions
         if: runner.os == 'macOS'
         shell: bash

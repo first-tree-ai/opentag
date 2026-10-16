@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import type net from "node:net";
@@ -613,6 +613,7 @@ export class RuntimeProxyLoopbackAdapter {
 export async function generateExecutionCa(materialDir: string): Promise<RuntimeProxyLoopbackCaMaterial> {
   const keyPath = join(materialDir, "loopback-ca-key.pem");
   const certPath = join(materialDir, "loopback-ca.pem");
+  const configPath = join(materialDir, "loopback-ca.cnf");
   const subjectAltName = [
     "DNS:github.com",
     "DNS:api.github.com",
@@ -623,33 +624,42 @@ export async function generateExecutionCa(materialDir: string): Promise<RuntimeP
     "IP:127.0.0.1",
   ].join(",");
   try {
-    await execFileAsync(
-      "openssl",
-      [
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-days",
-        "2",
-        "-subj",
-        "/CN=OpenTag execution loopback CA",
-        "-addext",
-        `subjectAltName=${subjectAltName}`,
-        "-addext",
-        "basicConstraints=critical,CA:TRUE",
-        "-addext",
-        "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign",
-        "-addext",
-        "extendedKeyUsage=serverAuth",
-        "-keyout",
-        keyPath,
-        "-out",
-        certPath,
-      ],
-      { timeout: 30_000 },
-    );
+    // LibreSSL appends -addext to ambient x509_extensions, producing duplicate extensions.
+    // Own the minimal request configuration; explicit extensions below are the only authority.
+    await writeFile(configPath, "[req]\ndistinguished_name=dn\n[dn]\n", { mode: 0o600 });
+    try {
+      await execFileAsync(
+        "openssl",
+        [
+          "req",
+          "-config",
+          configPath,
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-days",
+          "2",
+          "-subj",
+          "/CN=OpenTag execution loopback CA",
+          "-addext",
+          `subjectAltName=${subjectAltName}`,
+          "-addext",
+          "basicConstraints=critical,CA:TRUE",
+          "-addext",
+          "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign",
+          "-addext",
+          "extendedKeyUsage=serverAuth",
+          "-keyout",
+          keyPath,
+          "-out",
+          certPath,
+        ],
+        { timeout: 30_000 },
+      );
+    } finally {
+      await rm(configPath, { force: true });
+    }
   } catch (error) {
     throw new RuntimeProxyLoopbackError(
       "ca_generation_failed",

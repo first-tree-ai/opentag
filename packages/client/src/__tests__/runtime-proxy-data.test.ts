@@ -1689,10 +1689,10 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     tunnel.destroy();
   });
 
-  it("fails CA generation through the real OpenSSL CLI when the material directory is unusable", async () => {
+  it("fails CA generation when the material directory is unusable", async () => {
     const root = await mkdtemp(join(tmpdir(), "opentag-adapter-ca-"));
     roots.push(root);
-    // A plain file where the material directory must be makes OpenSSL's real key write fail.
+    // A plain file cannot hold the private CA material.
     const blocked = join(root, "blocked");
     await writeFile(blocked, "not a directory");
     await expect(generateExecutionCa(blocked)).rejects.toMatchObject({

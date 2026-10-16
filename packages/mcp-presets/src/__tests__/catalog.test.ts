@@ -132,6 +132,55 @@ describe("mcp preset catalog shape", () => {
     expect(fields).toEqual(expect.arrayContaining(["name", "category", "website", "oauthScopes"]));
   });
 
+  describe("card and cross-entry rules", () => {
+    const base = MCP_CATALOG_ENTRIES.find((entry) => entry.installable);
+    if (!base) throw new Error("catalog has no installable entry");
+    const violationsOf = (entries: (typeof base)[], categories = MCP_CATALOG_CATEGORIES) =>
+      validateMcpCatalog(categories, entries).map((violation) => `${violation.subject}:${violation.field}`);
+
+    it("rejects a malformed id, icon, order, and blank localized copy", () => {
+      const bad = {
+        ...base,
+        id: "Bad_ID",
+        iconUrl: "https://example.com/icon.png",
+        order: -1,
+        title: { en: " ", zh: "" },
+        description: { en: "", zh: " " },
+      };
+      expect(violationsOf([bad])).toEqual(
+        expect.arrayContaining([
+          "Bad_ID:id",
+          "Bad_ID:iconUrl",
+          "Bad_ID:order",
+          "Bad_ID:title.en",
+          "Bad_ID:title.zh",
+          "Bad_ID:description.en",
+          "Bad_ID:description.zh",
+        ]),
+      );
+    });
+
+    it("rejects duplicate ids, names, and order slots", () => {
+      const fields = violationsOf([base, { ...base }]);
+      expect(fields).toEqual(expect.arrayContaining([`${base.id}:id`, `${base.id}:name`, `${base.id}:order`]));
+    });
+
+    it("rejects a duplicate category id and a blank category label", () => {
+      const category = MCP_CATALOG_CATEGORIES[0];
+      if (!category) throw new Error("catalog has no category");
+      const fields = violationsOf([], [category, { ...category, label: { en: "", zh: category.label.zh } }]);
+      expect(fields).toEqual(expect.arrayContaining([`${category.id}:id`, `${category.id}:label.en`]));
+    });
+
+    it("rejects out-of-bounds OAuth scopes", () => {
+      expect(violationsOf([{ ...base, oauthScopes: [" ", "x".repeat(256)] }])).toEqual(
+        expect.arrayContaining([`${base.id}:oauthScopes[0]`, `${base.id}:oauthScopes[1]`]),
+      );
+      const tooMany = Array.from({ length: 65 }, (_, index) => `scope-${index}`);
+      expect(violationsOf([{ ...base, oauthScopes: tooMany }])).toContain(`${base.id}:oauthScopes`);
+    });
+  });
+
   describe("optional create-request headers", () => {
     const base = MCP_CATALOG_ENTRIES.find((entry) => entry.installable);
     if (!base) throw new Error("catalog has no installable entry");

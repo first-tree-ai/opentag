@@ -47,6 +47,10 @@ Retry reads the latest confirmed authorization. A failed method switch keeps the
 submitted configuration. Editable fields stay disabled while a credential write is pending;
 OAuth Cancel and Open remain available during authorization.
 
+The list, Details, and Discover keep a previous tool snapshot visible during background refresh.
+Loading tools is shown before the first completed snapshot; explicit authorization and Retry retain
+their progress feedback. Confirmed authorization or probe failures still show their recovery action.
+
 Browser journeys use fictional provider responses. Actual provider consent and platform-client setup
 are not verified by those tests.
 

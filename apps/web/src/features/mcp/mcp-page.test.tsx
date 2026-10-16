@@ -70,6 +70,15 @@ describe("MCP connector list", () => {
     expect(await screen.findByText("Loading tools…")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
+  it("keeps the list and Details quiet when saved tools are being refreshed", async () => {
+    stub([entry({ authorization: { ...authorization(), kind: "oauth", probeState: "pending" } })]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    await screen.findByRole("button", { name: "linear" });
+    expect(screen.queryByText("Loading tools…")).toBeNull();
+    await openDetails();
+    expect(screen.getByRole("button", { name: "Reauthorize" })).toBeTruthy();
+    expect(screen.queryByText("Loading tools…")).toBeNull();
+  });
   it("treats a completed empty tool list as a neutral result", async () => {
     stub([entry({ authorization: { ...authorization(), toolsCount: 0 } })]);
     wrap(<McpPage agentId={AGENT_ID} />);

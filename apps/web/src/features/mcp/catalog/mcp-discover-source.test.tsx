@@ -460,6 +460,31 @@ describe("Discover installation and recovery", () => {
     expect(target.getByRole("img", { name: "Added" })).toBeTruthy();
     expect(target.queryByRole("button")).toBeNull();
   });
+  it.each([0, 3])("keeps a saved result with %i tools quiet during background refresh", async (toolsCount) => {
+    const binding = mountFor(serverFor("beta"), {
+      ...summary("active"),
+      kind: "none",
+      hasCredential: false,
+      probeState: "pending",
+      probedAt: "2026-09-16T00:00:00.000Z",
+      toolsCount,
+    });
+    if (toolsCount === 0 && binding.snapshot) binding.snapshot.tools = [];
+    await discover({ mounted: [binding] });
+    const target = within(catalogText("Beta").closest("li") as HTMLElement);
+    expect(target.getByRole("img", { name: "Added" })).toBeTruthy();
+    expect(target.queryByText("Loading tools…")).toBeNull();
+    expect(target.queryByRole("button")).toBeNull();
+    if (toolsCount === 0) expect(target.getByText("No tools available")).toBeTruthy();
+  });
+  it("keeps initial tool loading visible when there is no completed snapshot", async () => {
+    const binding = mountFor(serverFor("beta"), { ...summary("active"), probeState: "pending", toolsCount: null });
+    binding.snapshot = null;
+    await discover({ mounted: [binding] });
+    const target = within(catalogText("Beta").closest("li") as HTMLElement);
+    expect(target.getByText("Loading tools…")).toBeTruthy();
+    expect(target.queryByRole("img", { name: "Added" })).toBeNull();
+  });
   it("uses the same network reason and Retry as the list", async () => {
     const binding = mountFor(serverFor("beta"), {
       ...summary("active"),

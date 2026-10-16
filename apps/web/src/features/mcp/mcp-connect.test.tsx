@@ -99,6 +99,7 @@ describe("MCP recovery actions", () => {
     expect(screen.getByText("Request timed out")).toBeTruthy();
     fireEvent.click(retry);
     await waitFor(() => expect(probe).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
+    expect(screen.getByText("Loading tools…")).toBeTruthy();
     fireEvent.click(retry);
     expect(probe).toHaveBeenCalledTimes(1);
     finish(ready);

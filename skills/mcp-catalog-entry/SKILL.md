@@ -68,7 +68,7 @@ curl -sS -i -X POST <endpoint> \
 a ready-to-edit registry-style YAML entry with the evidence as comments. The tool inventory comes from
 `tools/list`, each tool's `side_effect` from its `readOnlyHint` / `destructiveHint` annotations (a tool
 with neither counts as `write`), and `risk.side_effects` is the strongest of them. It is a dry run by
-default; `--write` appends the entry to `mcp-catalog.yaml` and `--icon-file <path>` copies the icon.
+default; `--write` appends the entry to `mcp-catalog.yaml`, and `--icon-file <path>` copies the icon only together with `--write`. `--category` is required. `tools/list` is paged to exhaustion; if any page fails the inventory is dropped and risk falls back to `write`. A `401` without a Bearer challenge proves no method, so the command then requires `--auth`. The command refuses hosts that resolve to a non-public address; `--skip-dns-check` bypasses that for fake-IP DNS proxies.
 Every guessed field is listed under "Review before committing": the copy, `when_to_use`, the homepage,
 `icon_is_official`, and the icon still need a human. The scaffold supplies facts, not decisions: still
 confirm them against the provider's documentation.

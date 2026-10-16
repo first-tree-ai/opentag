@@ -2,22 +2,24 @@ import { appendFile, copyFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { checkOutboundUrl } from "@opentag/shared";
 import type { McpCatalogCategory, McpCatalogEntry } from "../mcp-catalog.gen.js";
+import { assertPublicDestination, type HostLookup, lookupAddresses } from "./destination.js";
 import { type ScaffoldInput, scaffoldEntry } from "./entry.js";
 import { type McpProbeResult, type ProbeAuthKind, probeMcpEndpoint } from "./probe.js";
 
 export const USAGE = `Usage: pnpm catalog:add --url <endpoint> [options]
 
   --url <url>            the remote Streamable HTTP MCP endpoint (required)
+  --category <id>        a category id from mcp-categories.yaml (required)
   --id <slug>            entry slug and definition name (default: derived from serverInfo)
-  --category <id>        a category id from mcp-categories.yaml
   --name <text>          card name, English (default: serverInfo.title or name)
   --name-zh <text>       card name, Chinese
   --summary <text>       card description, English
   --summary-zh <text>    card description, Chinese
   --homepage <url>       the provider's site
-  --auth <kind>          override the probed method: oauth | bearer | none
+  --auth <kind>          oauth | bearer | none; required when the probe cannot prove a method
   --order <n>            position within the category (default: last + 10)
-  --icon-file <path>     copy this SVG or PNG into icons/ as <slug>.<ext>
+  --icon-file <path>     with --write, copy this SVG or PNG into icons/ as <slug>.<ext>
+  --skip-dns-check       skip the check that the host resolves to a public address (fake-IP DNS proxies)
   --write                append the entry to mcp-catalog.yaml (default: print only)
   --json                 print a machine-readable report
 `;
@@ -30,6 +32,7 @@ export interface CliDeps {
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
   readonly fetch?: typeof fetch;
+  readonly lookup?: HostLookup;
 }
 
 class CliError extends Error {}
@@ -49,6 +52,7 @@ function parseCli(argv: readonly string[]) {
       auth: { type: "string" },
       order: { type: "string" },
       "icon-file": { type: "string" },
+      "skip-dns-check": { type: "boolean", default: false },
       write: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -86,7 +90,7 @@ function toScaffoldInput(values: Values, url: string, probe: OkProbe): ScaffoldI
 
 function render(values: Values, id: string, yaml: string, probe: OkProbe, todos: readonly string[]): string {
   if (values.json) {
-    return `${JSON.stringify({ id, written: values.write, evidence: probe.evidence, tools: probe.tools.length, todos, yaml })}\n`;
+    return `${JSON.stringify({ id, written: values.write, evidence: probe.evidence, tools: probe.tools.length, toolsComplete: probe.toolsComplete, todos, yaml })}\n`;
   }
   return [
     `${yaml}\n`,
@@ -95,6 +99,28 @@ function render(values: Values, id: string, yaml: string, probe: OkProbe, todos:
     todos.length > 0 ? `\nReview before committing:\n${todos.map((todo) => `  - ${todo}`).join("\n")}\n` : "",
     "\nThen run: pnpm catalog:generate\n",
   ].join("");
+}
+
+/** Copy the operator's icon into `icons/` (only when writing) and point the entry at it. */
+async function applyIcon(
+  values: Values,
+  scaffold: { id: string; yaml: string; iconFile: string; todos: readonly string[] },
+  deps: CliDeps,
+): Promise<{ yaml: string; todos: readonly string[] }> {
+  const source = values["icon-file"];
+  if (source === undefined) return scaffold;
+  if (!values.write) {
+    return {
+      yaml: scaffold.yaml,
+      todos: [...scaffold.todos, `icon: --icon-file ${source} was not copied because this is a dry run`],
+    };
+  }
+  const iconFile = `${scaffold.id}.${source.toLowerCase().endsWith(".png") ? "png" : "svg"}`;
+  await copyFile(source, new URL(`icons/${iconFile}`, deps.packageDir));
+  return {
+    yaml: scaffold.yaml.replace(`icon: ${scaffold.iconFile}`, `icon: ${iconFile}`),
+    todos: scaffold.todos.filter((todo) => !todo.startsWith("icon:")),
+  };
 }
 
 async function execute(argv: readonly string[], deps: CliDeps): Promise<void> {
@@ -110,19 +136,12 @@ async function execute(argv: readonly string[], deps: CliDeps): Promise<void> {
   if (verdict.url.protocol !== "https:") throw new CliError("the catalog lists https endpoints only");
   const url = verdict.url.toString();
 
+  if (!values["skip-dns-check"]) await assertPublicDestination(verdict.url.hostname, deps.lookup ?? lookupAddresses);
   const probe = await probeMcpEndpoint(url, deps.fetch === undefined ? {} : { fetch: deps.fetch });
   if (!probe.ok) throw new CliError(probe.reason);
 
   const scaffold = scaffoldEntry(toScaffoldInput(values, url, probe), deps.entries, deps.categories);
-  let yaml = scaffold.yaml;
-  let todos = scaffold.todos;
-  const iconSource = values["icon-file"];
-  if (iconSource !== undefined) {
-    const iconFile = `${scaffold.id}.${iconSource.toLowerCase().endsWith(".png") ? "png" : "svg"}`;
-    await copyFile(iconSource, new URL(`icons/${iconFile}`, deps.packageDir));
-    yaml = yaml.replace(`icon: ${scaffold.iconFile}`, `icon: ${iconFile}`);
-    todos = todos.filter((todo) => !todo.startsWith("icon:"));
-  }
+  const { yaml, todos } = await applyIcon(values, scaffold, deps);
   if (values.write) await appendFile(new URL("mcp-catalog.yaml", deps.packageDir), `\n${yaml}`);
   deps.stdout(render(values, scaffold.id, yaml, probe, todos));
 }

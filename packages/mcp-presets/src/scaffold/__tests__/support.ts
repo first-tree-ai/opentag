@@ -30,9 +30,34 @@ export function anonymousFetch(calls: string[] = []): typeof fetch {
             { name: "delete_doc", annotations: { destructiveHint: true } },
             { name: "edit_doc" },
             { name: "edit_doc" },
-            { name: "bad name" },
           ],
         },
+      });
+    }
+    return new Response(null, { status: 202 });
+  }) as unknown as typeof fetch;
+}
+
+/** A server whose `tools/list` spans two pages; the later page holds the destructive tool. */
+export function pagedFetch(headers: Array<Record<string, string>> = []): typeof fetch {
+  return (async (_url: string, init: RequestInit) => {
+    headers.push(init.headers as Record<string, string>);
+    const body = JSON.parse(String(init.body)) as { id?: number; method: string; params?: { cursor?: string } };
+    if (body.method === "initialize") {
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { protocolVersion: "2025-06-18", serverInfo: { name: "paged" } },
+      });
+    }
+    if (body.method === "tools/list") {
+      const first = body.params?.cursor === undefined;
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: first
+          ? { tools: [{ name: "read_one", annotations: { readOnlyHint: true } }], nextCursor: "page2" }
+          : { tools: [{ name: "drop_all", annotations: { destructiveHint: true } }] },
       });
     }
     return new Response(null, { status: 202 });

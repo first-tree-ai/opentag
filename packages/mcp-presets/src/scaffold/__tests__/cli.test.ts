@@ -21,6 +21,7 @@ async function fixture() {
       stdout: (text) => out.push(text),
       stderr: (text) => err.push(text),
       fetch: fetchImpl,
+      lookup: async () => ["93.184.216.34"],
     });
   return { dir, out, err, run };
 }
@@ -47,6 +48,46 @@ describe("catalog:add", () => {
     expect(yaml).toContain("icon: acme.png");
     expect(await readFile(join(dir, "icons", "acme.png"), "utf8")).toBe("png");
     expect(out.join("")).not.toContain("icon: add");
+  });
+
+  it("does not copy the icon on a dry run", async () => {
+    const { dir, out, run } = await fixture();
+    const icon = join(dir, "source.svg");
+    await writeFile(icon, "svg");
+    expect(await run(["--url", "https://mcp.acme.test/mcp", "--category", category, "--icon-file", icon])).toBe(0);
+    expect(out.join("")).toContain("was not copied");
+    await expect(readFile(join(dir, "icons", "acme.svg"), "utf8")).rejects.toThrow();
+  });
+
+  it("refuses a hostname that resolves to a private address", async () => {
+    const { dir, err } = await fixture();
+    const code = await runCli(["--url", "https://mcp.acme.test/mcp", "--category", category], {
+      packageDir: pathToFileURL(`${dir}/`),
+      entries: MCP_CATALOG_ENTRIES,
+      categories: MCP_CATALOG_CATEGORIES,
+      stdout: () => undefined,
+      stderr: (text) => err.push(text),
+      fetch: anonymousFetch(),
+      lookup: async () => ["10.0.0.5"],
+    });
+    expect(code).toBe(1);
+    expect(err.join("")).toContain("non-public");
+    const skipped = await runCli(["--url", "https://mcp.acme.test/mcp", "--category", category, "--skip-dns-check"], {
+      packageDir: pathToFileURL(`${dir}/`),
+      entries: MCP_CATALOG_ENTRIES,
+      categories: MCP_CATALOG_CATEGORIES,
+      stdout: () => undefined,
+      stderr: () => undefined,
+      fetch: anonymousFetch(),
+      lookup: async () => ["10.0.0.5"],
+    });
+    expect(skipped).toBe(0);
+  });
+
+  it("requires --category", async () => {
+    const { err, run } = await fixture();
+    expect(await run(["--url", "https://mcp.acme.test/mcp"])).toBe(1);
+    expect(err.join("")).toContain("--category");
   });
 
   it("prints JSON when asked", async () => {

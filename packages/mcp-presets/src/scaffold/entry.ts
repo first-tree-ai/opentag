@@ -1,9 +1,11 @@
 import type { McpCatalogCategory, McpCatalogEntry } from "../mcp-catalog.gen.js";
-import type { McpProbeResult, ProbeAuthKind, ProbeSideEffect } from "./probe.js";
+import { type McpProbeResult, type ProbeAuthKind, type ProbeSideEffect, safeText } from "./probe.js";
 
 const ORDER_STEP = 10;
 const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
-const MAX_SLUG_LENGTH = 64;
+/** The schema caps the whole registry id at 64 characters, and `mcp/` takes 4 of them. */
+const MAX_SLUG_LENGTH = 60;
+const MAX_CAPABILITY_LENGTH = 64;
 const MAX_CAPABILITIES = 32;
 const SIDE_EFFECT_RANK: Record<ProbeSideEffect, number> = { none: 0, write: 1, destructive: 2 };
 
@@ -51,6 +53,20 @@ export function deriveId(url: string, serverName: string | undefined): string {
   if (SLUG_PATTERN.test(fromName)) return fromName;
   const labels = new URL(url).hostname.split(".").filter((label) => !["www", "mcp", "api", "app"].includes(label));
   return slugify(labels[0] ?? "server") || "server";
+}
+
+/** `https://host` and `https://host/` are the same endpoint. */
+function normalizeUrl(raw: string): string {
+  try {
+    return new URL(raw).href;
+  } catch {
+    return raw;
+  }
+}
+
+function entryUrls(entry: McpCatalogEntry): string[] {
+  const urls = [entry.url, ...(entry.remotes ?? []).map((remote) => remote.url)];
+  return urls.filter((url): url is string => url !== undefined).map(normalizeUrl);
 }
 
 export function nextOrder(entries: readonly McpCatalogEntry[], category: string): number {
@@ -125,13 +141,12 @@ function resolveCopy(input: ScaffoldInput, id: string, todos: string[]): Copy {
   };
 }
 
-function resolveCategory(input: ScaffoldInput, categories: readonly McpCatalogCategory[], todos: string[]): string {
+function resolveCategory(input: ScaffoldInput, categories: readonly McpCatalogCategory[]): string {
   const ids = categories.map((category) => category.id);
-  const category = input.category ?? (ids.includes("general") ? "general" : undefined);
+  const category = input.category;
   if (category === undefined || !ids.includes(category)) {
     throw new Error(`pass --category with one of: ${ids.join(", ")}`);
   }
-  if (input.category === undefined) todos.push("category: defaulted to general, confirm it fits");
   return category;
 }
 
@@ -140,7 +155,7 @@ function probeComments(probe: ScaffoldInput["probe"]): string[] {
   const version = info?.version === undefined ? "" : ` ${info.version}`;
   return [
     `# Probed ${new Date().toISOString().slice(0, 10)}: ${probe.evidence}`,
-    ...(info?.name === undefined ? [] : [`# serverInfo: ${info.name}${version}`]),
+    ...(info?.name === undefined ? [] : [`# serverInfo: ${safeText(`${info.name}${version}`)}`]),
   ];
 }
 
@@ -149,7 +164,7 @@ function renderTools(probe: ScaffoldInput["probe"]): string[] {
   return [
     "  tools:",
     ...probe.tools.flatMap((tool) => [
-      `    - name: ${tool.name}`,
+      `    - name: ${q(tool.name)}`,
       ...(tool.description === undefined ? [] : [`      description: ${q(tool.description)}`]),
       `      side_effect: ${tool.sideEffect}`,
     ]),
@@ -163,11 +178,11 @@ interface Risk {
 
 /** A tool list gives the strongest effect; without one, assume the conservative `write`. */
 function resolveRisk(probe: ScaffoldInput["probe"], authKind: ProbeAuthKind, todos: string[]): Risk {
-  const known = probe.tools.length > 0;
+  const known = probe.toolsComplete && probe.tools.length > 0;
   todos.push(
     known
       ? "risk.side_effects: taken from tool annotations (a tool without a hint counts as write); confirm"
-      : "risk.side_effects: assumed write because no tool list was readable; confirm against the provider's docs",
+      : "risk.side_effects: assumed write because the full tool list was not readable; confirm against the provider's docs",
   );
   todos.push("risk.data_access: confirm whether the Server reads only public data");
   return {
@@ -183,7 +198,7 @@ function resolveCapabilities(probe: ScaffoldInput["probe"], id: string, todos: s
     return fromTools;
   }
   todos.push("capabilities: placeholder, list what the Server lets an Agent do");
-  return [`use-${id}`.slice(0, MAX_SLUG_LENGTH)];
+  return [`use-${id}`.slice(0, MAX_CAPABILITY_LENGTH)];
 }
 
 export function scaffoldEntry(
@@ -198,12 +213,19 @@ export function scaffoldEntry(
   if (entries.some((entry) => entry.id === id)) {
     throw new Error(`catalog already has an entry named "${id}"; pass --id to choose another`);
   }
-  if (entries.some((entry) => entry.url === input.url)) throw new Error(`catalog already lists ${input.url}`);
+  if (entries.some((entry) => entryUrls(entry).includes(normalizeUrl(input.url)))) {
+    throw new Error(`catalog already lists ${input.url}`);
+  }
 
   const todos: string[] = [];
-  const category = resolveCategory(input, categories, todos);
+  const category = resolveCategory(input, categories);
   const copy = resolveCopy(input, id, todos);
   const authKind = input.authKind ?? input.probe.authKind;
+  if (authKind === "unknown") {
+    throw new Error(
+      `${input.probe.evidence}; the authorization method is not proven, so pass --auth oauth|bearer|none`,
+    );
+  }
   const risk = resolveRisk(input.probe, authKind, todos);
   const capabilities = resolveCapabilities(input.probe, id, todos);
   const iconFile = `${id}.svg`;
@@ -238,13 +260,13 @@ export function scaffoldEntry(
     ...renderTools(input.probe),
     "  remotes:",
     "    - type: streamable-http",
-    `      url: ${input.url}`,
+    `      url: ${q(input.url)}`,
     "  catalog:",
     `    category: ${category}`,
     `    order: ${input.order ?? nextOrder(entries, category)}`,
     `    icon: ${iconFile}`,
     "    icon_is_official: false",
-    `  homepage: ${copy.homepage}`,
+    `  homepage: ${q(copy.homepage)}`,
   ];
   return { id, yaml: `${lines.join("\n")}\n`, iconFile, todos };
 }

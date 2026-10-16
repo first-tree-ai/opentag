@@ -27,6 +27,16 @@ function deliveryRetentionMs(delivery: { attention: DeliveryAttention; continuit
   return delivery.attention === "direct" || delivery.continuity === true ? DIRECT_TTL_MS : AMBIENT_TTL_MS;
 }
 
+/**
+ * Whether an inherited delivery was retained for the direct window, so a revision (edit or recall) of
+ * an unaddressed Thread follow-up keeps its continuity retention. Deliveries do not persist continuity,
+ * but they are written on the message's `receivedAt` clock and only an out-of-order direct root extends
+ * them; task cancellation shortens one to now, and a cancelled delivery has no continuity to keep.
+ */
+function hadDirectRetention(expiresAt: Date, receivedAt: Date | undefined): boolean {
+  return receivedAt !== undefined && expiresAt.getTime() - receivedAt.getTime() > AMBIENT_TTL_MS;
+}
+
 interface OverflowCandidate {
   sessionId: string;
   attention: DeliveryAttention;
@@ -273,6 +283,7 @@ export class ImMessageInbox {
               .select({
                 id: imMessages.id,
                 threadKey: imMessages.threadKey,
+                receivedAt: imMessages.receivedAt,
               })
               .from(imMessages)
               .where(
@@ -295,6 +306,7 @@ export class ImMessageInbox {
                       attention: imMessageDeliveries.attention,
                       generation: sessionPlacements.generation,
                       conversationKind: sessions.conversationKind,
+                      expiresAt: imMessageDeliveries.expiresAt,
                     })
                     .from(imMessageDeliveries)
                     .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
@@ -435,10 +447,11 @@ export class ImMessageInbox {
             }> = [];
             if (event.conversation.kind === "unknown") {
               deliveries.push(
-                ...inheritedDeliveries.map(({ sessionId, attention, generation }) => ({
+                ...inheritedDeliveries.map(({ sessionId, attention, generation, expiresAt }) => ({
                   sessionId,
                   attention,
                   generation,
+                  continuity: hadDirectRetention(expiresAt, previousCurrent?.receivedAt),
                 })),
               );
             } else {

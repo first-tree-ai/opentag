@@ -2830,6 +2830,90 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("keeps continuity retention when an unknown Feishu revision inherits an ambient Thread follow-up", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_retention",
+        teamId: "workspace_retention",
+        botOpenId: "ou_retention_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
+      const inbox = new ImMessageInbox(value.database);
+      const threadEvent = (providerEventId: string, externalMessageId: string, occurredAt: string) => {
+        const event = revisionEvent({
+          providerEventId,
+          externalMessageId,
+          operation: "created",
+          occurredAt,
+          revisionKey: "1",
+        });
+        event.externalAppId = "cli_retention";
+        event.externalTeamId = "workspace_retention";
+        event.providerContext = {
+          provider: "feishu",
+          chatType: "group",
+          threadId: "omt_retention",
+          rootId: "om_retention_root",
+        };
+        event.message.threadKey = "omt_retention";
+        return event;
+      };
+      const addressed = threadEvent("feishu-retention-addressed", "om_retention_addressed", "2026-08-19T00:00:01.000Z");
+      addressed.mentions = [{ externalId: "ou_retention_bot", displayName: "Assistant" }];
+      await inbox.ingest(imBindingId, 1, addressed);
+      const followUpEvent = threadEvent(
+        "feishu-retention-follow-up",
+        "om_retention_follow_up",
+        "2026-08-19T00:00:02.000Z",
+      );
+      followUpEvent.mentions = [];
+      const followUp = await inbox.ingest(imBindingId, 1, followUpEvent);
+
+      const recalled = revisionEvent({
+        providerEventId: "feishu-retention-recalled",
+        externalMessageId: "om_retention_follow_up",
+        operation: "deleted",
+        occurredAt: "2026-08-19T00:00:03.000Z",
+        revisionKey: "2",
+      });
+      recalled.externalAppId = "cli_retention";
+      recalled.externalTeamId = "workspace_retention";
+      recalled.providerContext = { provider: "feishu" };
+      recalled.conversation.kind = "unknown";
+      recalled.message.threadKey = null;
+      recalled.mentions = [];
+      const revision = await inbox.ingest(imBindingId, 1, recalled);
+
+      const retained = async (deliveryId: string | undefined) => {
+        const [row] = await value.database
+          .select({
+            attention: imMessageDeliveries.attention,
+            kind: sessions.kind,
+            expiresAt: imMessageDeliveries.expiresAt,
+          })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.id, deliveryId as string));
+        return row;
+      };
+      const original = await retained(followUp.deliveryIds[0]);
+      const inherited = await retained(revision.deliveryIds[0]);
+      expect(original).toMatchObject({ attention: "ambient", kind: "thread" });
+      expect(inherited).toMatchObject({ attention: "ambient", kind: "thread" });
+      // The recall keeps the follow-up's direct-continuity window instead of falling back to one day.
+      for (const row of [original, inherited]) {
+        expect((row?.expiresAt.getTime() ?? 0) - Date.now()).toBeGreaterThan(2 * 24 * 60 * 60 * 1000);
+      }
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("keeps all-message Channel ambient fan-out independent and does not implicitly revive ended Threads", async () => {
     const value = await fixture();
     try {

@@ -56,6 +56,7 @@ describe("Skill details reader", () => {
       expect.any(AbortSignal),
     );
     const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(skill.description)).toBeTruthy();
     expect(within(dialog).getByRole("link", { name: "Download" }).getAttribute("download")).toBe("reader.tar.gz");
     fireEvent.click(within(dialog).getByRole("button", { name: "Source" }));
     expect(dialog.querySelector("pre")?.textContent).toBe(content);

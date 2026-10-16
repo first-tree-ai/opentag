@@ -9,6 +9,19 @@ The server contract is separately covered with authenticated route/service tests
 The historical import-only and discovery/import screenshots below were captured in the Codex in-app browser with the same fixture entry. Earlier
 reader screenshots retain the previous action labels. Historical discovery screenshots show an entry that is now hidden.
 
+## Compact list descriptions (2026-10-16)
+
+Skill rows retain a single-line description at every width. The description tooltip and native name title are removed;
+hover or keyboard focus reveals a chevron inside the existing details target. The reader shows the full description
+above the file content in the scrolling reading region. Each row isolates its stacking context so its independent
+switch and More menu cannot paint over the reader dialog.
+
+These screenshots use production components and the OpenTag theme in a disposable built preview with synthetic
+in-memory API responses in the Codex in-app browser. Checks at 320px, 390px, 768px and 1440px found no horizontal
+overflow; descriptions remained one line. Coordinate clicks on the description opened details, while the switch
+and More menu stayed independent. Shift+Tab revealed the focused details target and chevron; Enter opened the reader
+and closing returned focus. No new axe scan, reusable block, theme value or CSS exception was added.
+
 ## Empty state refinement (2026-10-12)
 
 The empty Skills list now sits directly on the page background, with a 32px document icon, an 18px semantic
@@ -25,6 +38,10 @@ or CSS exception was added.
 
 | View | Viewport | Evidence |
 | --- | --- | --- |
+| Single-line descriptions, keyboard focus | 1440 × 900 | [Current desktop](list-single-line-desktop.jpg) |
+| Single-line descriptions, mobile | 390 × 844 | [Current mobile](list-single-line-390.jpg) |
+| Single-line descriptions, narrow mobile | 320 × 844 | [Current narrow mobile](list-single-line-320.jpg) |
+| Full description above the file content | 1440 × 900 | [Current reader](reader-full-description.jpg) |
 | Borderless empty state, desktop | 1440 × 900 | [Current desktop](empty-refined-desktop.png) |
 | Borderless empty state, narrow mobile | 320 × 640 | [Current empty state](empty-refined-320.png) |
 | Borderless Chinese empty state, narrow mobile | 320 × 640 | [Current Chinese empty state](empty-refined-zh-320.png) |
@@ -53,7 +70,7 @@ or CSS exception was added.
   Enter and Space opened the reader, Escape restored trigger focus, and 320px/390px entries remained within the viewport.
 - Names render at 16px/600, descriptions at 14px. Controls align with the name at 1440px/768px/390px/320px and in a
   narrow desktop content container. Mobile descriptions span the full content width below the name and controls.
-- Description tooltips appear only when the actual text is clipped. A long description showed a tooltip at 320px;
+- Historical tooltip validation, before 2026-10-16: description tooltips appeared only when the actual text was clipped. A long description showed a tooltip at 320px;
   widening the viewport to 1440px removed it while hovered, and an untruncated description stayed quiet.
   ResizeObserver and font-loading events keep the measurement current.
 - Explore skills is temporarily absent from the header and empty state while discovery is being designed. One outlined

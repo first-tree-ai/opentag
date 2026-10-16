@@ -1,9 +1,9 @@
 import type { Skill } from "@opentag/shared/browser";
 import { DownloadSimple, Trash } from "@phosphor-icons/react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, DropdownMenu, Icon, Switch, Text, Tooltip } from "../../ui/design-system.js";
+import { Banner, Button, DropdownMenu, Icon, Switch, Text } from "../../ui/design-system.js";
 import { skillErrorMessage } from "./skills-page-model.js";
 import { useUpdateSkill } from "./skills-queries.js";
 
@@ -31,29 +31,6 @@ export function SkillRow({
   // Agent can never be written through a mutation that belongs to another.
   const update = useUpdateSkill();
   const [error, setError] = useState<string>();
-  const descriptionRef = useRef<HTMLParagraphElement>(null);
-  const [descriptionTruncated, setDescriptionTruncated] = useState(false);
-
-  useLayoutEffect(() => {
-    const description = descriptionRef.current;
-    if (!description) return;
-    if (!skill.description) {
-      setDescriptionTruncated(false);
-      return;
-    }
-    const measure = () =>
-      setDescriptionTruncated(
-        description.scrollWidth > description.clientWidth || description.scrollHeight > description.clientHeight,
-      );
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(description);
-    document.fonts?.addEventListener("loadingdone", measure);
-    return () => {
-      observer.disconnect();
-      document.fonts?.removeEventListener("loadingdone", measure);
-    };
-  }, [skill.description]);
 
   const toggle = async (enabled: boolean) => {
     if (update.isPending) return;
@@ -67,12 +44,8 @@ export function SkillRow({
 
   return (
     <li className="skill-row min-w-0 p-4" data-ui="skill-row">
-      <Tooltip
-        content={skill.description}
-        disabled={!descriptionTruncated}
-        render={<div className="skill-row-content min-w-0 rounded-md hover:bg-kumo-tint" />}
-      >
-        <Text as="h2" title={skill.name} variant="heading" DANGEROUS_className="min-w-0 truncate">
+      <div className="skill-row-content min-w-0 rounded-md hover:bg-kumo-tint">
+        <Text as="h2" variant="heading" DANGEROUS_className="min-w-0 truncate">
           <Button
             aria-label={m.skills_details_open({ name: skill.name })}
             aria-haspopup="dialog"
@@ -83,10 +56,11 @@ export function SkillRow({
             <span className="truncate">{skill.name}</span>
           </Button>
         </Text>
-        <p className="skill-row-description ui-text text-kumo-subtle" data-text-size="sm" ref={descriptionRef}>
+        <p className="skill-row-description ui-text text-kumo-subtle" data-text-size="sm">
           {skill.description}
         </p>
-      </Tooltip>
+        <Icon name="chevron-right" className="skill-row-chevron text-kumo-subtle" />
+      </div>
       <div className="skill-row-controls flex shrink-0 items-center gap-3">
         <Switch
           aria-label={m.skills_toggle_label({ name: skill.name })}

@@ -59,13 +59,13 @@
     "zod": "^4.5.1"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.8",
-    "@testcontainers/postgresql": "^12.1.0",
+    "@electric-sql/pglite": "^0.5.9",
+    "@testcontainers/postgresql": "^12.2.0",
     "@types/tar-stream": "^3.1.4",
     "@types/ws": "^8.18.1",
-    "drizzle-kit": "^0.31.10",
+    "drizzle-kit": "^0.31.11",
     "graphql": "17.0.2",
-    "testcontainers": "^12.1.0",
-    "vitest": "^5.0.1"
+    "testcontainers": "^12.2.0",
+    "vitest": "^5.0.4"
   }
 }

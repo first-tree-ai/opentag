@@ -140,7 +140,7 @@ describe("runProviderCliEnsure", () => {
     await writeFakeCli(bin, "feishu", "1.0.92");
     // slack has no candidate and its fixture catalog points at a dead loopback port:
     // the managed install fails deterministically without any external network.
-    const slackFixture = await makeManagedFixture("slack", "4.7.0");
+    const slackFixture = await makeManagedFixture("slack", "4.10.0");
     await slackFixture.close();
     const feishuEntry = PROVIDER_CLI_CATALOG.find((entry) => entry.provider === "feishu");
     expect(feishuEntry).toBeDefined();
@@ -324,7 +324,7 @@ describe("runProviderCliEnsure", () => {
         if (ms !== PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS || terminalWaits > 0) return;
         terminalWaits += 1;
         // Model the daemon completing the same install while the foreground command waits.
-        await writeFakeCli(bin, "slack", "4.7.0");
+        await writeFakeCli(bin, "slack", "4.10.0");
         await rm(lockPath, { force: true });
       },
       stdout: (chunk) => stdout.push(chunk),

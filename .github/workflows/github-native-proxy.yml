@@ -56,6 +56,23 @@ jobs:
           chmod +x "$binary"
           "$binary" --version
           echo "OPENTAG_TEST_GH_BINARY=$binary" >> "$GITHUB_ENV"
+      - name: Install the reviewed Slack CLI for offline HTTPS regressions
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { join } from "node:path";
+          import { ProviderCliManager } from "./packages/client/dist/index.mjs";
+          const manager = new ProviderCliManager({
+            accountHome: join(process.env.RUNNER_TEMP, "opentag-native-slack"),
+            env: { PATH: process.env.PATH },
+          });
+          const result = await manager.ensure("slack", { mode: "managed-only", pathUpdate: false });
+          if (!result.ok || !result.selected) throw new Error(JSON.stringify(result));
+          appendFileSync(process.env.GITHUB_ENV, `OPENTAG_TEST_SLACK_BINARY=${result.selected.path}\n`);
+          NODE
+      - name: Slack native HTTPS, identity and message regressions
+        run: pnpm --filter @opentag/client exec vitest run src/__tests__/slack-native-proxy.test.ts --maxWorkers=1
       - name: Install the pinned Codex sandbox for offline macOS permission regressions
         if: runner.os == 'macOS'
         shell: bash

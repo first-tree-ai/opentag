@@ -2,11 +2,16 @@
 
 [English](../direct-provider-cli.md)
 
-<!-- Synced with the English document: 2026-10-10 -->
+<!-- Synced with the English document: 2026-10-16 -->
 
 本地第三方包、路径、执行身份与凭证交接由已随产品发布的 Provider CLI 管理基础能力定义。
 OpenTag-managed Provider CLI 是当前操作系统账户可直接使用的全局命令；只有被授权的
 Turn 才会取得 OpenTag 投影的临时凭证。
+
+Slack 要求 CLI `4.10.0` 或更高版本。它使用的 Go 1.27 证书加载器在 macOS 上支持执行级
+`SSL_CERT_FILE`，让原生身份检查和消息发送可使用现有 HTTPS 代理。详见
+[Slack 发布记录](https://github.com/slackapi/slack-cli/releases/tag/v4.10.0) 和
+[Go 证书变更](https://go.dev/doc/go1.27#crypto/x509)。
 
 OpenTag 负责 IM 入站路由、Integration 凭证、Client 临时凭证投影和 provider 原生入站引用，不提供消息发送、回复、Reaction 或上传 API。
 

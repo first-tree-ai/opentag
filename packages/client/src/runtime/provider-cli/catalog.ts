@@ -8,13 +8,14 @@ import type { ProviderCliProvider } from "./types.js";
  * in an OpenTag release. Nothing here is fetched from a mutable remote `latest`
  * manifest. Probe contracts run without credentials and never call a provider API.
  *
- * Current entries were reviewed on 2026-08-30:
- * - lark-cli v1.0.92 archive digests match the upstream-published `checksums.txt` from
+ * Reviewed sources:
+ * - lark-cli v1.0.92 (2026-08-30) archive digests match the upstream-published `checksums.txt` from
  *   https://github.com/larksuite/cli/releases/tag/v1.0.92; executable digests were
  *   computed from those verified archives.
- * - Slack CLI v4.7.0 archives were downloaded from the official
- *   https://downloads.slack-edge.com/slack-cli/ prefix (Slack publishes no checksum
- *   file); digests were computed from those archives.
+ * - Slack CLI v4.10.0 (2026-10-16) archive digests match GitHub release asset digests
+ *   at https://github.com/slackapi/slack-cli/releases/tag/v4.10.0; executable digests
+ *   were computed from those verified archives. Go 1.27 honors SSL_CERT_FILE on macOS
+ *   (https://go.dev/doc/go1.27), required by the execution-local HTTPS proxy.
  */
 export interface ProviderCliProbeContract {
   /** Arguments that print the version, e.g. `["--version"]` or `["version"]`. */
@@ -73,8 +74,8 @@ const MIB = 1024 * 1024;
 const LARK_VERSION = "1.0.92";
 const LARK_RELEASE_BASE = `https://github.com/larksuite/cli/releases/download/v${LARK_VERSION}`;
 
-const SLACK_VERSION = "4.7.0";
-const SLACK_RELEASE_BASE = `https://downloads.slack-edge.com/slack-cli`;
+const SLACK_VERSION = "4.10.0";
+const SLACK_RELEASE_BASE = `https://github.com/slackapi/slack-cli/releases/download/v${SLACK_VERSION}`;
 
 export const PROVIDER_CLI_CATALOG: readonly ProviderCliCatalogEntry[] = [
   {
@@ -156,7 +157,7 @@ export const PROVIDER_CLI_CATALOG: readonly ProviderCliCatalogEntry[] = [
     command: "slack",
     displayName: "Slack CLI",
     version: SLACK_VERSION,
-    compatibility: ">=4.2.0 <5.0.0",
+    compatibility: ">=4.10.0 <5.0.0",
     probes: {
       versionArgs: ["version"],
       surfaceArgs: ["api", "--help"],
@@ -177,48 +178,48 @@ export const PROVIDER_CLI_CATALOG: readonly ProviderCliCatalogEntry[] = [
         arch: "arm64",
         archiveType: "tar.gz",
         url: `${SLACK_RELEASE_BASE}/slack_cli_${SLACK_VERSION}_macOS_arm64.tar.gz`,
-        sha256: "ccb6dc5910e06e8b12ff4d9690d015b72f8a81249ea716e8829dddddfd39d404",
-        archiveBytes: 7_414_910,
-        maxExtractedBytes: 20_181_840 + 4 * MIB,
+        sha256: "0f897eee17ce549ba1f34c389c2591c32c191ce94eea15cd4b92053d8f35c80a",
+        archiveBytes: 7_602_398,
+        maxExtractedBytes: 20_527_104 + 4 * MIB,
         executablePath: "bin/slack",
-        executableSha256: "61edbf3b490dc552fb223d623fbc10e01338db07043504f2cd01a6da349840aa",
-        executableBytes: 20_181_840,
+        executableSha256: "c5052abde30361430c8cc294fcae24824bb5951ac1493f5a18871274496f78e6",
+        executableBytes: 20_527_104,
       },
       {
         platform: "darwin",
         arch: "x64",
         archiveType: "tar.gz",
         url: `${SLACK_RELEASE_BASE}/slack_cli_${SLACK_VERSION}_macOS_amd64.tar.gz`,
-        sha256: "8a66be49be2e23cb19a08dc58fb1d7695eaad9b649556ea9a06a3f7c9b5142dc",
-        archiveBytes: 8_265_622,
-        maxExtractedBytes: 22_089_968 + 4 * MIB,
+        sha256: "1ae1db7c4da5e861e24ee4c0f09965829d0f7508a080f87692193678549b5895",
+        archiveBytes: 8_490_341,
+        maxExtractedBytes: 22_471_888 + 4 * MIB,
         executablePath: "bin/slack",
-        executableSha256: "cdb7ba5142c07192dea457d3f13f6f828e20618713205e4236a636fe0a46281e",
-        executableBytes: 22_089_968,
+        executableSha256: "a270df6fc6287e04de933ec4da4372f705b8572e904ec4a9965604a5ae67fbaf",
+        executableBytes: 22_471_888,
       },
       {
         platform: "linux",
         arch: "x64",
         archiveType: "tar.gz",
         url: `${SLACK_RELEASE_BASE}/slack_cli_${SLACK_VERSION}_linux_amd64.tar.gz`,
-        sha256: "9d06c481bca07c1afffd106462e5ad3a8748334eb3b09aba3911a557673b5429",
-        archiveBytes: 8_060_859,
-        maxExtractedBytes: 21_401_762 + 4 * MIB,
+        sha256: "9772b17f70c4ec522ea6ae25545220dfe17d6afb5babe28fa1cd55a24b2abffa",
+        archiveBytes: 8_257_319,
+        maxExtractedBytes: 21_778_592 + 4 * MIB,
         executablePath: "bin/slack",
-        executableSha256: "54d9ea4405cea1fd9bb3803b1d243f699236d5ac2ae0fe8e2ac4c8a23cbb670f",
-        executableBytes: 21_401_762,
+        executableSha256: "ff0e9711bb0ecbc7e0644488f5cffdac69b8f1f4cc7e5ab174b07fc979ab2dc2",
+        executableBytes: 21_778_592,
       },
       {
         platform: "linux",
         arch: "arm64",
         archiveType: "tar.gz",
         url: `${SLACK_RELEASE_BASE}/slack_cli_${SLACK_VERSION}_linux_arm64.tar.gz`,
-        sha256: "365834eda454783c6229a4cf5fe392df650d81a0465b8701c57b7c2a544db11a",
-        archiveBytes: 7_281_730,
-        maxExtractedBytes: 19_595_426 + 4 * MIB,
+        sha256: "a930e089977e1138320efbe3bc49dc18f40d187bbbf4a9c7ff419c443bc52d30",
+        archiveBytes: 7_430_050,
+        maxExtractedBytes: 19_988_640 + 4 * MIB,
         executablePath: "bin/slack",
-        executableSha256: "0024b00f1c6cf8a41fffaaf8d5feb7dee58b814dec37bea58242e243c7f3e2fa",
-        executableBytes: 19_595_426,
+        executableSha256: "72355e94ca06b3264c98262c40e47dd7355d5d45b6c88ef8d2dabb43908020cc",
+        executableBytes: 19_988_640,
       },
     ],
   },

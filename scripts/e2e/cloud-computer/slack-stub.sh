@@ -15,7 +15,7 @@ done
 cmd="${args[0]:-}"
 sub="${args[1]:-}"
 if [[ "$cmd" == "version" || "$cmd" == "--version" ]]; then
-  echo "Using slack v4.7.0"
+  echo "Using slack v4.10.0"
   exit 0
 fi
 if [[ "$cmd" == "api" && "$sub" == "--help" ]]; then

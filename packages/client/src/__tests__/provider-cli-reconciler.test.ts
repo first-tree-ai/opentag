@@ -80,7 +80,7 @@ function readyInspect(overrides: Partial<ReadyInspection> = {}): ReadyInspection
     selection: {
       kind: "managed" as const,
       path: "/bin/true",
-      version: "4.7.0",
+      version: "4.10.0",
       generation: 1,
       trust: "catalog-verified" as const,
     },
@@ -114,7 +114,7 @@ async function externalReadyFixture() {
   const target = join(accountHome, "slack");
   await writeFile(target, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const identity = await computeFileIdentity(target);
-  const fingerprint = computeTargetFingerprint(identity, "4.7.0");
+  const fingerprint = computeTargetFingerprint(identity, "4.10.0");
   const selection = await writeProviderCliSelection(
     layout,
     "slack",
@@ -123,7 +123,7 @@ async function externalReadyFixture() {
       executablePath: identity.path,
       fingerprint,
       trust: "catalog-verified",
-      version: "4.7.0",
+      version: "4.10.0",
     },
     undefined,
   );
@@ -133,7 +133,7 @@ async function externalReadyFixture() {
       selection: {
         kind: "external",
         path: identity.path,
-        version: "4.7.0",
+        version: "4.10.0",
         generation: selection.generation,
         trust: "catalog-verified",
       },
@@ -315,7 +315,7 @@ describe("provider CLI reconciler", () => {
     const replacement = join(dirname(fixture.inspection.selection.path), "slack-next");
     await writeFile(replacement, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     const identity = await computeFileIdentity(replacement);
-    const fingerprint = computeTargetFingerprint(identity, "4.7.0");
+    const fingerprint = computeTargetFingerprint(identity, "4.10.0");
     const selection = await writeProviderCliSelection(
       fixture.layout,
       "slack",
@@ -324,7 +324,7 @@ describe("provider CLI reconciler", () => {
         executablePath: identity.path,
         fingerprint,
         trust: "catalog-verified",
-        version: "4.7.0",
+        version: "4.10.0",
       },
       fixture.selection,
     );
@@ -334,7 +334,7 @@ describe("provider CLI reconciler", () => {
         selection: {
           kind: "external",
           path: identity.path,
-          version: "4.7.0",
+          version: "4.10.0",
           generation: selection.generation,
           trust: "catalog-verified",
         },
@@ -377,7 +377,7 @@ describe("provider CLI reconciler", () => {
     const replacement = join(dirname(fixture.inspection.selection.path), "slack-history");
     await writeFile(replacement, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     const identity = await computeFileIdentity(replacement);
-    const fingerprint = computeTargetFingerprint(identity, "4.7.0");
+    const fingerprint = computeTargetFingerprint(identity, "4.10.0");
     const selection = await writeProviderCliSelection(
       fixture.layout,
       "slack",
@@ -386,7 +386,7 @@ describe("provider CLI reconciler", () => {
         executablePath: identity.path,
         fingerprint,
         trust: "catalog-verified",
-        version: "4.7.0",
+        version: "4.10.0",
       },
       fixture.selection,
     );
@@ -395,7 +395,7 @@ describe("provider CLI reconciler", () => {
       selection: {
         kind: "external",
         path: identity.path,
-        version: "4.7.0",
+        version: "4.10.0",
         generation: selection.generation,
         trust: "catalog-verified",
       },
@@ -504,7 +504,7 @@ describe("provider CLI reconciler", () => {
     const replacement = join(dirname(fixture.inspection.selection.path), "slack-rotated");
     await writeFile(replacement, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     const identity = await computeFileIdentity(replacement);
-    const fingerprint = computeTargetFingerprint(identity, "4.7.0");
+    const fingerprint = computeTargetFingerprint(identity, "4.10.0");
     await writeProviderCliSelection(
       fixture.layout,
       "slack",
@@ -513,7 +513,7 @@ describe("provider CLI reconciler", () => {
         executablePath: identity.path,
         fingerprint,
         trust: "catalog-verified",
-        version: "4.7.0",
+        version: "4.10.0",
       },
       fixture.selection,
     );
@@ -988,7 +988,7 @@ describe("provider CLI reconciler", () => {
         executablePath: target,
         fingerprint: `v1:${"a".repeat(64)}`,
         trust: "catalog-verified",
-        version: "4.7.0",
+        version: "4.10.0",
       },
       undefined,
     );
@@ -1001,7 +1001,7 @@ describe("provider CLI reconciler", () => {
           selection: {
             kind: "external",
             path: target,
-            version: "4.7.0",
+            version: "4.10.0",
             generation: first.generation,
             trust: "catalog-verified",
           },
@@ -1013,7 +1013,7 @@ describe("provider CLI reconciler", () => {
           selection: {
             kind: "external",
             path: target,
-            version: "4.7.0",
+            version: "4.10.0",
             generation: first.generation + 1,
             trust: "catalog-verified",
           },
@@ -1035,7 +1035,7 @@ describe("provider CLI reconciler", () => {
         executablePath: target,
         fingerprint: `v1:${"b".repeat(64)}`,
         trust: "catalog-verified",
-        version: "4.7.0",
+        version: "4.10.0",
       },
       first,
     );
@@ -1061,16 +1061,16 @@ describe("provider CLI reconciler", () => {
     });
     const digest = "d".repeat(64);
     const identity = await computeFileIdentity(target);
-    const fingerprint = computeTargetFingerprint(identity, "4.7.0", digest);
+    const fingerprint = computeTargetFingerprint(identity, "4.10.0", digest);
     const selection = await writeProviderCliSelection(
       layout,
       "slack",
       {
         kind: "managed",
-        artifactId: `4.7.0/darwin-arm64/${digest}`,
+        artifactId: `4.10.0/darwin-arm64/${digest}`,
         targetPath: identity.path,
         fingerprint,
-        version: "4.7.0",
+        version: "4.10.0",
       },
       undefined,
     );
@@ -1081,7 +1081,7 @@ describe("provider CLI reconciler", () => {
         selection: {
           kind: "managed",
           path: identity.path,
-          version: "4.7.0",
+          version: "4.10.0",
           generation: selection.generation,
           trust: "catalog-verified",
         },

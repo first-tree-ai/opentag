@@ -32,7 +32,7 @@ Binaries on `PATH` stay root-owned and the unprivileged `runner` user keeps dedi
 | `context-tree` | `@first-tree-ai/context-tree@0.1.16` from `apps/cli` (not a second pin) |
 | `git` | inherited from the digest-pinned Node image (`2.39.5`, asserted at build; no apt download) |
 | `gh` | GitHub CLI `2.100.0`, checksum-verified linux/amd64 release |
-| `slack` / `lark-cli` | Reviewed Provider CLI catalog (Slack `4.7.0`, Lark `1.0.92`) with skip-update env/args |
+| `slack` / `lark-cli` | Reviewed Provider CLI catalog (Slack `4.10.0`, Lark `1.0.92`) with skip-update env/args |
 
 Native Slack/Lark executables keep their upstream basenames in the root-owned internal directory
 `/opt/opentag/tools/internal/`; the user-facing commands in `/opt/opentag/tools/bin/` are the

@@ -127,8 +127,8 @@ describe("executeProviderCliTurnPlan", () => {
     for (const kind of ["managed", "external"] as const) {
       const { accountHome, layout, manager } = await trackedHarness();
       const target = await installTurnTarget(join(accountHome, "bin"), "slack");
-      if (kind === "managed") await writeManagedTurnSelection(layout, "slack", target, "4.7.0");
-      else await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+      if (kind === "managed") await writeManagedTurnSelection(layout, "slack", target, "4.10.0");
+      else await writeExternalTurnSelection(layout, "slack", target, "4.10.0");
       const configDir = await makePrivateSlackConfigDir(accountHome);
       const prepared = await manager.prepare({
         provider: "slack",
@@ -161,7 +161,7 @@ describe("executeProviderCliTurnPlan", () => {
   it("rejects a Slack config dir that is world-readable, a symlink, or missing", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(layout, "slack", target, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(accountHome);
     const prepared = await manager.prepare({
       provider: "slack",
@@ -225,7 +225,7 @@ describe("executeProviderCliTurnPlan", () => {
   it("rejects Slack argv that tries to override OpenTag-managed authority flags", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(layout, "slack", target, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(accountHome);
     const prepared = await manager.prepare({
       provider: "slack",
@@ -259,7 +259,7 @@ describe("executeProviderCliTurnPlan", () => {
   it("honors the frozen Slack config dir when HOME is unwritable", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"), "slack");
-    await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+    await writeExternalTurnSelection(layout, "slack", target, "4.10.0");
     const configDir = await makePrivateSlackConfigDir(accountHome);
     const prepared = await manager.prepare({
       provider: "slack",

@@ -205,7 +205,7 @@ describe("provider-cli local E2E", () => {
   });
 
   it("never prompts and keeps stdout to one document in non-TTY JSON mode", async () => {
-    const fixture = await makeManagedFixture("slack", "4.7.0");
+    const fixture = await makeManagedFixture("slack", "4.10.0");
     try {
       const accountHome = await makeTempDir("opentag-e2e-");
       const harness = makeHarness(accountHome, {
@@ -221,7 +221,7 @@ describe("provider-cli local E2E", () => {
       // The Slack launcher prepends the update-check suppression flag transparently.
       const launcher = join(accountHome, ".opentag", "provider-cli", "bin", "slack");
       const { stdout } = await execFileAsync(launcher, ["version"]);
-      expect(stdout.trim()).toBe("Using slack v4.7.0");
+      expect(stdout.trim()).toBe("Using slack v4.10.0");
     } finally {
       await fixture.close();
     }

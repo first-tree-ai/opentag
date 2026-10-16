@@ -408,7 +408,7 @@ exit 1
         grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
         requestId: fence.requestId,
         targetPath,
-        version: "4.7.0",
+        version: "4.10.0",
       },
       fence,
     );
@@ -444,7 +444,7 @@ exit 1
           grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
           requestId: fence.requestId,
           targetPath: "/bin/true",
-          version: "4.7.0",
+          version: "4.10.0",
         },
         fence,
       ),
@@ -468,7 +468,7 @@ exit 1
         grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
         requestId: fence.requestId,
         targetPath: "/bin/true",
-        version: "4.7.0",
+        version: "4.10.0",
       },
       fence,
     );
@@ -489,7 +489,7 @@ exit 1
           grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
           requestId: fence.requestId,
           targetPath: "/bin/true",
-          version: "4.7.0",
+          version: "4.10.0",
         },
         fence,
       ),
@@ -515,7 +515,7 @@ exit 1
       grant: { provider: "slack" as const, botAccessToken: "xoxb-secret-token" },
       requestId: fence.requestId,
       targetPath: "/bin/true",
-      version: "4.7.0",
+      version: "4.10.0",
     };
     const first = runner.run(request, fence);
     await vi.waitFor(() => expect(execFile).toHaveBeenCalledTimes(1));
@@ -543,7 +543,7 @@ exit 1
           grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
           requestId: fence.requestId,
           targetPath: "/bin/true",
-          version: "4.7.0",
+          version: "4.10.0",
         },
         fence,
       ),
@@ -564,7 +564,7 @@ exit 1
           grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
           requestId: fence.requestId,
           targetPath: nonJson,
-          version: "4.7.0",
+          version: "4.10.0",
         },
         fence,
       ),
@@ -585,7 +585,7 @@ exit 1
       grant: { provider: "slack" as const, botAccessToken: "xoxb-secret-token" },
       requestId: fence.requestId,
       targetPath: "/bin/true",
-      version: "4.7.0",
+      version: "4.10.0",
     };
     await expect(oversized.run(request, fence)).resolves.toMatchObject({ status: "needs_attention" });
 
@@ -641,7 +641,7 @@ exit 1
           expiresAt: new Date(Date.now() + 15_000).toISOString(),
           requestId: fence.requestId,
           targetPath: "/bin/true",
-          version: "4.7.0",
+          version: "4.10.0",
           agentId: fence.agentId,
           validationRunId: "77777777-7777-4777-8777-777777777777",
         },
@@ -673,7 +673,7 @@ exit 1
           grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
           requestId: fence.requestId,
           targetPath: "/bin/true",
-          version: "4.7.0",
+          version: "4.10.0",
         },
         fence,
       ),
@@ -889,7 +889,7 @@ exit 1
           expiresAt: new Date(Date.now() + 15_000).toISOString(),
           requestId: fence.requestId,
           targetPath: "/bin/true",
-          version: "4.7.0",
+          version: "4.10.0",
         },
         fence,
       ),
@@ -905,7 +905,7 @@ exit 1
       grant: { provider: "slack" as const, botAccessToken: "xoxb-secret-token" },
       requestId: fence.requestId,
       targetPath: "/bin/true",
-      version: "4.7.0",
+      version: "4.10.0",
     };
     const removeHome = await mkdtemp(join(tmpdir(), "opentag-validation-cleanup-remove-"));
     const removeRunner = new ProviderCliValidationRunner({ home: removeHome });
